@@ -78,12 +78,15 @@ class DotsVocoderSlotPool:
         *,
         num_slots: int,
         chunk_size: int,
+        latent_dim: int,
+        graph_runner: Any | None = None,
     ) -> None:
         if num_slots < 1:
             raise ValueError(f"num_slots must be >= 1, got {num_slots}")
         if chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
         self._inference = inference
+        self.graph_runner = graph_runner
         self.num_slots = int(num_slots)
         self.chunk_size = int(chunk_size)
         # note (guozhihao-224): probe shapes through the public stream-state
@@ -93,6 +96,7 @@ class DotsVocoderSlotPool:
         window = probe.decoder.window
         layers, _, hidden = hidden_h.shape
         _, channels, window_size = window.shape
+        self._latent_dim = int(latent_dim)
         self._window_size = int(window_size)
         self._lookahead = int(inference._decoder_stream_lookahead())
         self._hop_size = int(inference.vocoder.hop_size)
@@ -105,6 +109,31 @@ class DotsVocoderSlotPool:
         self._emitted_frames = [0] * self.num_slots
         self._free_slots = list(reversed(range(self.num_slots)))
         self._in_use: set[int] = set()
+
+    @property
+    def device(self) -> torch.device:
+        return self._window.device
+
+    def new_step_inputs(
+        self, batch: int, frames: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Zeroed (packed, hidden_h, hidden_c, window, valid) laid out for forward()."""
+        layers, _, hidden = self._lstm_h.shape
+        _, channels, window_size = self._window.shape
+        lstm_kwargs = {"dtype": self._lstm_h.dtype, "device": self.device}
+        return (
+            torch.zeros(batch, self._latent_dim, frames, **lstm_kwargs),
+            torch.zeros(layers, batch, hidden, **lstm_kwargs),
+            torch.zeros(layers, batch, hidden, **lstm_kwargs),
+            torch.zeros(
+                batch,
+                channels,
+                window_size,
+                dtype=self._window.dtype,
+                device=self.device,
+            ),
+            torch.zeros(batch, dtype=torch.int64, device=self.device),
+        )
 
     def acquire(self) -> int:
         if not self._free_slots:
@@ -175,16 +204,17 @@ class DotsVocoderSlotPool:
             dtype=torch.int64,
         )
 
-        inference = self._inference
-        # note (guozhihao-224): call VocoderInference private eager helpers so
-        # rows can age independently; stream_step's scalar counters are
-        # lockstep-only. Expect breakage if upstream renames these.
-        inference._validate_stream_latents(packed)
-        decoder_input, (hidden_h, hidden_c) = inference._decode_stream_latents(
-            packed, (hidden_h, hidden_c)
+        self._inference._validate_stream_latents(packed)
+        replayed = (
+            None
+            if self.graph_runner is None
+            else self.graph_runner.run(packed, hidden_h, hidden_c, window, valid)
         )
-        new_window = append_decoder_input_per_row(decoder_input, window, valid)
-        audio_window = inference._decode_stream_window(new_window)
+        audio_window, hidden_h, hidden_c, new_window = (
+            self.forward(packed, hidden_h, hidden_c, window, valid)
+            if replayed is None
+            else replayed
+        )
 
         self._lstm_h[:, slot_index, :] = hidden_h
         self._lstm_c[:, slot_index, :] = hidden_c
@@ -196,6 +226,28 @@ class DotsVocoderSlotPool:
                 slot, audio_window[row : row + 1], final=False
             )
         return out
+
+    @torch.no_grad()
+    def forward(
+        self,
+        packed: torch.Tensor,
+        hidden_h: torch.Tensor,
+        hidden_c: torch.Tensor,
+        window: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # note (lennox): CUDA graph capture boundary; keep slot bookkeeping and
+        # anything host-side out of it.
+        inference = self._inference
+        # note (guozhihao-224): call VocoderInference private eager helpers so
+        # rows can age independently; stream_step's scalar counters are
+        # lockstep-only. Expect breakage if upstream renames these.
+        decoder_input, (hidden_h, hidden_c) = inference._decode_stream_latents(
+            packed, (hidden_h, hidden_c)
+        )
+        new_window = append_decoder_input_per_row(decoder_input, window, valid)
+        audio_window = inference._decode_stream_window(new_window)
+        return audio_window, hidden_h, hidden_c, new_window
 
     @torch.no_grad()
     def flush(self, slot: int) -> torch.Tensor:

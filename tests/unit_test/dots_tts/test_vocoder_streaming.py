@@ -131,7 +131,7 @@ def test_append_decoder_input_keeps_independent_row_ages() -> None:
 
 def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
     inference = _FakeInference()
-    pool = DotsVocoderSlotPool(inference, num_slots=4, chunk_size=6)
+    pool = DotsVocoderSlotPool(inference, num_slots=4, chunk_size=6, latent_dim=5)
     s0 = pool.acquire()
     s1 = pool.acquire()
     older = torch.ones(1, 3, 5)
@@ -154,7 +154,9 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
-    pool = DotsVocoderSlotPool(_FakeInference(), num_slots=2, chunk_size=6)
+    pool = DotsVocoderSlotPool(
+        _FakeInference(), num_slots=2, chunk_size=6, latent_dim=5
+    )
     a = pool.acquire()
     b = pool.acquire()
     with pytest.raises(ValueError, match="uniform latent length"):

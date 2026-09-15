@@ -217,7 +217,7 @@ class TestVocoderFactorySignature:
         out = apply_typed_stage_kwargs(
             stages.create_vocoder_executor,
             {},
-            {"stream_slots": 8},
+            {"stream_slots": 8, "enable_streaming_audio_vae_cuda_graph": True},
             stage_name="vocoder",
         )
-        assert out == {"stream_slots": 8}
+        assert out == {"stream_slots": 8, "enable_streaming_audio_vae_cuda_graph": True}
