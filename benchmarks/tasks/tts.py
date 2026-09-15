@@ -637,6 +637,14 @@ def run_seedtts_transcribe(
 # ---------------------------------------------------------------------------
 
 
+class SpeechGenerationError(RuntimeError):
+    """A speech request failed: non-2xx status or unusable response body.
+
+    Raised by the voice-clone clients so harness send functions can record a
+    per-request failure instead of crashing the whole benchmark run.
+    """
+
+
 class VoiceCloneTTS:
     """Voice cloning via /v1/audio/speech (OAI TTS API format)."""
 
@@ -839,7 +847,7 @@ class VoiceCloneOmni:
         async with session.post(api_url, json=payload) as response:
             if response.status != 200:
                 error_text = await response.text()
-                raise RuntimeError(f"HTTP {response.status}: {error_text}")
+                raise SpeechGenerationError(f"HTTP {response.status}: {error_text}")
             if stream:
                 wav_bytes, usage = await self._read_streaming_chat_audio(
                     response,
@@ -853,19 +861,19 @@ class VoiceCloneOmni:
 
         choices = resp_json.get("choices", [])
         if not choices:
-            raise ValueError("No choices in response")
+            raise SpeechGenerationError("No choices in response")
 
         message = choices[0].get("message", {})
         audio_obj = message.get("audio")
         if audio_obj is None:
-            raise ValueError(
+            raise SpeechGenerationError(
                 f"No audio in response for sample '{sample.sample_id}'. "
                 f"Text response: {message.get('content', 'N/A')[:100]}"
             )
 
         audio_b64 = audio_obj.get("data")
         if not audio_b64:
-            raise ValueError("Empty audio data in response")
+            raise SpeechGenerationError("Empty audio data in response")
 
         wav_bytes = base64.b64decode(audio_b64)
         usage = resp_json.get("usage", {})
@@ -909,7 +917,9 @@ class VoiceCloneOmni:
             )
 
         if not pcm_chunks or pcm_format is None:
-            raise ValueError("No audio chunks received from streaming response")
+            raise SpeechGenerationError(
+                "No audio chunks received from streaming response"
+            )
         return _build_streaming_wav_bytes(pcm_chunks, pcm_format), usage
 
     async def evaluate_sample(
