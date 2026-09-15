@@ -54,8 +54,13 @@ class SpeechTokenizerV3:
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
 
+        # note (db-ol): the cuDNN conv plan is rebuilt whenever the input shape differs
+        # from the previous call, and the default search setting makes rebuilds slow.
         providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            [
+                ("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}),
+                "CPUExecutionProvider",
+            ]
             if device.startswith("cuda")
             else ["CPUExecutionProvider"]
         )
