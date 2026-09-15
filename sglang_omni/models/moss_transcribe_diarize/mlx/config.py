@@ -50,14 +50,20 @@ class ModelConfig:
             self.audio_config = AudioEncoderConfig()
         elif isinstance(self.audio_config, dict):
             self.audio_config = AudioEncoderConfig.from_dict(self.audio_config)
+        else:
+            pass
 
         if self.text_config is None:
             self.text_config = TextConfig()
         elif isinstance(self.text_config, dict):
             self.text_config = TextConfig.from_dict(self.text_config)
+        else:
+            pass
 
         if self.adaptor_input_dim is None:
             self.adaptor_input_dim = self.audio_config.d_model * self.audio_merge_size
+        else:
+            pass
         self.text_config.tie_word_embeddings = self.tie_word_embeddings
 
     @classmethod

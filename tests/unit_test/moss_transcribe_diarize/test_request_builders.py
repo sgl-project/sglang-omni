@@ -210,7 +210,7 @@ def test_apple_rejects_unsupported_sampling(
 
     with pytest.raises(ValueError, match="supports only greedy decoding") as error:
         request_builder(
-            _payload(
+            payload(
                 params=params,
                 metadata={EXPLICIT_GENERATION_PARAMS_KEY: list(params)},
             )

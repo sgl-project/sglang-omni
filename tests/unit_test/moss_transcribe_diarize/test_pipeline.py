@@ -11,7 +11,7 @@ import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
-from sglang_omni.models.moss_transcribe_diarize import stages
+from sglang_omni.models.moss_transcribe_diarize import engine_builder, stages
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -23,6 +23,7 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     missing_additional_chat_templates_compat,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
@@ -165,17 +166,20 @@ def test_moss_transcribe_diarize_mlx_uses_single_request_apple_profile(
     assert scheduler_kwargs["request_build_max_workers"] == 1
 
 
-def test_moss_transcribe_diarize_mlx_context_override_sizes_mlx_pool(
+@pytest.mark.parametrize("use_mlx", [True, False], ids=["mlx", "mps"])
+def test_moss_transcribe_diarize_apple_context_override_sizes_pool(
     monkeypatch: pytest.MonkeyPatch,
+    use_mlx: bool,
 ) -> None:
     from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: use_mlx)
     monkeypatch.setattr(
         "sglang_omni.models.moss_transcribe_diarize.engine_builder.current_platform.is_mps",
         lambda: True,
     )
     builder = make_moss_engine_builder()
+    builder.device = "mps"
     builder.context_length = 131072
     overrides = {
         **builder.generation_defaults(dtype="bfloat16"),
@@ -206,7 +210,7 @@ def test_moss_transcribe_diarize_torch_mps_uses_bounded_apple_profile(
 
     defaults = builder.generation_defaults(dtype="bfloat16")
 
-    assert builder._uses_torch_mps() is True
+    assert builder.uses_torch_mps() is True
     assert defaults["context_length"] == 32768
     assert defaults["max_total_tokens"] == 32768
     assert defaults["max_prefill_tokens"] == 32768
@@ -220,12 +224,10 @@ def test_moss_transcribe_diarize_mlx_uses_scheduler_runner(
 ) -> None:
     from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
-    from sglang_omni.model_runner import mlx_model_worker
-
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     selected = object()
     monkeypatch.setattr(
-        mlx_model_worker,
+        engine_builder,
         "MlxSchedulerModelRunner",
         lambda worker, output: selected,
     )
@@ -240,20 +242,18 @@ def test_moss_transcribe_diarize_torch_mps_installs_runner_and_hf_decoder(
 ) -> None:
     from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
-    from sglang_omni.models.moss_transcribe_diarize import torch_mps_runner
-
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     builder = make_moss_engine_builder()
     builder.device = "mps"
     selected = SimpleNamespace(abort_request=object())
     monkeypatch.setattr(
-        torch_mps_runner,
+        engine_builder,
         "MossTranscribeDiarizeTorchMpsModelRunner",
         lambda worker, output: selected,
     )
     installed: list[tuple[object, str]] = []
     monkeypatch.setattr(
-        torch_mps_runner,
+        engine_builder,
         "install_torch_mps_language_model",
         lambda model, path: installed.append((model, path)),
     )
@@ -273,8 +273,19 @@ def test_moss_transcribe_diarize_torch_mps_installs_runner_and_hf_decoder(
     assert builder.make_abort_callback() is selected.abort_request
 
 
-def test_moss_transcribe_diarize_mlx_rejects_multi_request_profile(
+@pytest.mark.parametrize(
+    ("setting", "value", "error"),
+    [
+        ("disable_radix_cache", False, "disabled radix cache"),
+        ("mlx_enable_sampling", True, "mlx_enable_sampling=False"),
+        ("quantization", "awq", "unquantized HF weights"),
+    ],
+)
+def test_moss_transcribe_diarize_mlx_rejects_unsupported_options(
     monkeypatch: pytest.MonkeyPatch,
+    setting: str,
+    value: bool | str,
+    error: str,
 ) -> None:
     from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
 
@@ -282,15 +293,19 @@ def test_moss_transcribe_diarize_mlx_rejects_multi_request_profile(
 
     monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     monkeypatch.setattr(platforms.current_platform, "is_mps", lambda: True)
+    monkeypatch.setattr(
+        AsrEngineBuilder, "validate_before_infrastructure", lambda self, args: None
+    )
     server_args = SimpleNamespace(
-        max_running_requests=2,
+        max_running_requests=1,
         disable_radix_cache=True,
         chunked_prefill_size=-1,
         mlx_enable_sampling=False,
         quantization=None,
     )
+    setattr(server_args, setting, value)
 
-    with pytest.raises(ValueError, match="max_running_requests=1"):
+    with pytest.raises(ValueError, match=error):
         make_moss_engine_builder().validate_before_infrastructure(server_args)
 
 

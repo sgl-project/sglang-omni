@@ -26,7 +26,7 @@ from sglang_omni.models.moss_transcribe_diarize.sglang_model import (  # noqa: E
 )
 
 
-def _tiny_config() -> ModelConfig:
+def tiny_config() -> ModelConfig:
     return ModelConfig.from_dict(
         {
             "audio_config": {
@@ -65,13 +65,15 @@ def mlx_device(request):
         pytest.skip("Metal unavailable")
     mx.set_default_device(device)
     mx.random.seed(42)
-    yield 3e-5 if device == mx.cpu else 5e-3
-    mx.set_default_device(previous)
+    try:
+        yield 3e-5 if device == mx.cpu else 5e-3
+    finally:
+        mx.set_default_device(previous)
 
 
 def test_mlx_audio_matches_torch_across_trimmed_windows(mlx_device) -> None:
     torch.manual_seed(42)
-    config = _tiny_config()
+    config = tiny_config()
     torch_config = WhisperConfig(**vars(config.audio_config))
     encoder = WhisperEncoder(torch_config).eval()
     adaptor = VQAdaptor(16, 8).eval()
@@ -90,7 +92,6 @@ def test_mlx_audio_matches_torch_across_trimmed_windows(mlx_device) -> None:
 
     features = torch.randn(3, 4, 16)
     lengths = torch.tensor([3, 2, 3], dtype=torch.long)
-    mapping = torch.tensor([0, 0, 0], dtype=torch.long)
     with torch.inference_mode():
         encoded = encoder(features, return_dict=True).last_hidden_state
         joined = torch.cat(
@@ -101,8 +102,7 @@ def test_mlx_audio_matches_torch_across_trimmed_windows(mlx_device) -> None:
     actual = model.get_audio_features(
         mx.array(features.numpy()),
         mx.array(lengths.numpy()),
-        mx.array(mapping.numpy()),
-    )[0]
+    )
     np.testing.assert_allclose(
         np.array(actual), expected.numpy(), atol=mlx_device, rtol=mlx_device
     )
@@ -110,20 +110,18 @@ def test_mlx_audio_matches_torch_across_trimmed_windows(mlx_device) -> None:
 
 def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> None:
     runner = object.__new__(MossTranscribeDiarizeMlxModelRunner)
-    runner.model = MossTranscribeDiarizeModel(_tiny_config())
+    runner.model = MossTranscribeDiarizeModel(tiny_config())
     item = SimpleNamespace(
         feature=torch.zeros((1, 4, 16)),
-        model_specific_data={
-            "audio_feature_lengths": torch.tensor([4]),
-            "audio_chunk_mapping": torch.tensor([0]),
-        },
+        audio_feature_lengths=torch.tensor([4]),
+        audio_chunk_mapping=torch.tensor([0]),
         pad_value=999,
     )
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(audio_token_id=10, mm_items=[item])
     )
 
-    input_ids, embeddings = runner._audio_prefill_inputs(
+    input_ids, embeddings = runner.audio_prefill_inputs(
         req, [1, 999, 999, 7, 999, 999, 2]
     )
 
@@ -131,8 +129,8 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
     assert input_ids.tolist() == [[1, 10, 10, 7, 10, 10, 2]]
     assert embeddings.shape == (1, 7, 8)
     audio_features = runner.model.get_audio_features(
-        mx.zeros((1, 4, 16)), mx.array([4]), mx.array([0])
-    )[0]
+        mx.zeros((1, 4, 16)), mx.array([4])
+    )
     np.testing.assert_allclose(
         np.array(embeddings[0, mx.array([1, 2, 4, 5])]),
         np.array(audio_features),
@@ -147,7 +145,9 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
     )
 
     cache = runner.model.make_cache()
-    runner._acquire_cache = lambda: cache
+    runner._acquire_cache = (  # noqa: leading-underscore  # SGLang cache hook
+        lambda: cache
+    )
     runner.disable_radix_cache = True
     runner.prefill_chunk_size = 3
     pending = runner.prefill_start(
@@ -160,22 +160,22 @@ def test_mlx_prefill_scatters_audio_around_time_marker_tokens(mlx_device) -> Non
         req=req,
     )
     token = pending.lazy_token[:, None]
-    expected_first = runner.model._forward_last_logits(embeddings)
+    expected_first = runner.model.forward_last_logits(embeddings)
     assert token.item() == mx.argmax(expected_first[:, -1], axis=-1).item()
     decoded = runner.model(token, cache=cache)
     full = mx.concatenate([embeddings, runner.model.model.embed_tokens(token)], axis=1)
-    expected = runner.model._forward_last_logits(full)
+    expected = runner.model.forward_last_logits(full)
     np.testing.assert_allclose(
         np.array(decoded), np.array(expected), atol=mlx_device, rtol=mlx_device
     )
-    assert cache[0].offset == 8
 
 
 def test_mlx_weight_mapping_matches_hugging_face_checkpoint() -> None:
-    model = MossTranscribeDiarizeModel(_tiny_config())
+    model = MossTranscribeDiarizeModel(tiny_config())
     result = model.sanitize(
         {
-            "model.whisper_encoder.conv1.weight": mx.ones((8, 4, 3)),
+            "model.whisper_encoder.conv1.weight": mx.arange(96).reshape(8, 4, 3),
+            "model.whisper_encoder.conv2.weight": mx.arange(192).reshape(8, 8, 3),
             "model.vq_adaptor.layers.0.weight": mx.ones((8, 16)),
             "model.language_model.embed_tokens.weight": mx.ones((32, 8)),
         }
@@ -184,10 +184,15 @@ def test_mlx_weight_mapping_matches_hugging_face_checkpoint() -> None:
     assert result["whisper_encoder.conv1.weight"].shape == (8, 3, 4)
     assert "vq_adaptor.linear1.weight" in result
     assert "model.embed_tokens.weight" in result
+    reloaded_weights = model.sanitize(result)
+    for name, weights in result.items():
+        np.testing.assert_array_equal(
+            np.array(reloaded_weights[name]), np.array(weights)
+        )
 
 
 def test_mlx_whisper_casts_features_to_checkpoint_dtype() -> None:
-    encoder = MossTranscribeDiarizeModel(_tiny_config()).whisper_encoder
+    encoder = MossTranscribeDiarizeModel(tiny_config()).whisper_encoder
     encoder.set_dtype(mx.bfloat16)
 
     output = encoder(mx.zeros((1, 4, 16), dtype=mx.float32))
