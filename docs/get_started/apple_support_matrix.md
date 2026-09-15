@@ -174,6 +174,11 @@ covered above. Their results are reproduced here with attribution and links to t
 original reports. They were collated for this page and were not independently
 reproduced on those machines.
 
+A block is added here when the report states its checkpoint, revision and timing
+protocol, and the reporter confirms it. For per-device numbers that are not
+collated this way, see
+[Discussion #2158](https://github.com/sgl-project/sglang-omni/discussions/2158).
+
 Each block keeps its own reported environment, input and timing protocol. The runs
 above used a WAV input at `6ff46426` with three warm-ups and twenty timed requests
 per service launch, reporting a median for each of two launches. Both reports below
