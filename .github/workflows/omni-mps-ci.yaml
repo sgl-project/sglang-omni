@@ -1,0 +1,125 @@
+name: Omni MPS CI
+
+# Stage A follows SGLang's pr-test-mlx.yml: changes -> gate -> UT -> finish.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+concurrency:
+  group: omni-mps-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      changes_exist: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.apple == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Detect Apple runtime changes
+        if: ${{ github.event_name == 'pull_request' }}
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            apple:
+              - "sglang_omni/**/!(*.md)"
+              - "tests/unit_test/**/!(*.md)"
+              - "pyproject.toml"
+              - "install.sh"
+              - ".github/scripts/run_apple_ut.py"
+              - ".github/scripts/pr_ci_gate.py"
+              - ".github/workflows/omni-mps-ci.yaml"
+
+  pr-gate:
+    needs: check-changes
+    if: ${{ needs.check-changes.outputs.changes_exist == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check PR opt-in, lint, and mergeability
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py --require-run-ci
+
+  stage-a-unit-test-mps:
+    needs: [check-changes, pr-gate]
+    if: ${{ needs.check-changes.outputs.changes_exist == 'true' && needs.pr-gate.result == 'success' }}
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SGLANG_IS_IN_CI: "true"
+      SGLANG_USE_MLX: "0"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare Apple CI directories
+        shell: bash
+        run: |
+          ci_root="$(mktemp -d "${RUNNER_TEMP}/omni-mps.XXXXXX")"
+          {
+            echo "SGLANG_OMNI_VENV=${ci_root}/venv"
+            echo "SGLANG_OMNI_CACHE=${ci_root}/source"
+            echo "APPLE_UT_REPORT_DIR=${ci_root}/reports"
+          } >> "$GITHUB_ENV"
+      - name: Install Apple runtime
+        shell: bash
+        run: bash install.sh --non-interactive
+      - name: Run model-free MPS unit tests
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          ffmpeg_lib="$(brew --prefix ffmpeg@7)/lib"
+          export DYLD_LIBRARY_PATH="${ffmpeg_lib}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          "$SGLANG_OMNI_VENV/bin/python" .github/scripts/run_apple_ut.py mps
+      - name: Upload MPS unit test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: omni-mps-ut-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.APPLE_UT_REPORT_DIR }}
+          if-no-files-found: warn
+          retention-days: 7
+
+  omni-mps-ci-finish:
+    needs: [check-changes, pr-gate, stage-a-unit-test-mps]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check required stage results
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PYTHON'
+          import json
+          import os
+
+          jobs = json.loads(os.environ["JOB_RESULTS"])
+          required = ["check-changes"]
+          if jobs["check-changes"]["outputs"].get("changes_exist") == "true":
+              required += ["pr-gate", "stage-a-unit-test-mps"]
+          for name in required:
+              result = jobs[name]["result"]
+              print(f"{name}: {result}")
+              if result != "success":
+                  raise SystemExit(f"Required job {name} did not succeed: {result}")
+          print("Omni MPS CI passed.")
+          PYTHON
