@@ -444,8 +444,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 request_id=request_id,
                 type="result",
                 data=StagePayload(
-                    request_id=self._stream_payloads[request_id].request_id,
-                    request=self._stream_payloads[request_id].request,
+                    request_id=self.stream_payloads[request_id].request_id,
+                    request=self.stream_payloads[request_id].request,
                     data=payload_data,
                 ),
             )

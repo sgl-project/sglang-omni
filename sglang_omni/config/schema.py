@@ -18,14 +18,24 @@ REPLICA_SEPARATOR = "@r"
 
 @dataclass(frozen=True, slots=True)
 class RealtimeTranscriptionConfig:
-    """Pipeline-owned declaration for live ASR over ``/v1/realtime``."""
+    """Pipeline-owned declaration for live ASR over /v1/realtime."""
 
     strategy_cls: type[StreamingASRStrategy]
     decode_interval_ms: int = 2000
+    # Whether the model accepts server-VAD segmentation. When False the
+    # session never runs a VAD, and a client asking for turn_detection
+    # server_vad gets an error.
+    server_vad: bool = False
+    # Longest audio one segment may span before a forced split. None
+    # means the session never splits on length.
+    max_segment_s: float | None = None
 
     def __post_init__(self) -> None:
         if self.decode_interval_ms <= 0:
             raise ValueError("realtime transcription decode interval must be positive")
+
+        if self.max_segment_s is not None and self.max_segment_s <= 0:
+            raise ValueError("realtime transcription max_segment_s must be positive")
 
 
 def replica_instance_name(logical_name: str, replica_id: int) -> str:
@@ -487,6 +497,17 @@ class EngineStageConfig(StageConfig):
     engine: EngineArgs | None = Field(default_factory=EngineArgs)
 
 
+DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS = 4
+
+
+def default_max_concurrent_long_audio_requests(
+    max_running_requests: int | None, max_concurrent_chunks: int
+) -> int:
+    if max_running_requests is None or max_running_requests < 1:
+        return DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS
+    return max(1, max_running_requests // (2 * max(int(max_concurrent_chunks), 1)))
+
+
 class AudioChunkingConfig(BaseModel):
     """Operator-tunable scheduling policy for long-audio transcription.
 
@@ -515,6 +536,9 @@ class AudioChunkingConfig(BaseModel):
     # This is a pre-request cap.
     max_concurrent_chunks: int = Field(default=8, ge=1)
 
+    # Note (Jeffro): How many long uploads the HTTP process admits at once.
+    max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
+
     def model_post_init(self, __context: Any = None) -> None:
         if (
             self.max_total_audio_s is not None
@@ -539,6 +563,7 @@ class ResolvedAudioChunking:
     max_total_audio_s: float | None = 3600.0
     min_tail_s: float = 0.5
     max_concurrent_chunks: int = 8
+    max_concurrent_long_audio_requests: int = DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS
     condition_on_previous_text: bool = False
 
     @classmethod
@@ -680,18 +705,52 @@ class PipelineConfig(BaseModel):
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
+        self._warn_long_audio_admission_exceeds_engine()
+
+    def _warn_long_audio_admission_exceeds_engine(self) -> None:
+        """Warn when long audio alone can fill every engine running slot."""
+        if not type(self).allow_audio_chunking:
+            return
+        explicit = self.audio_chunking.max_concurrent_long_audio_requests
+        engine = self.stage_named(self.resolved_entry_stage).engine
+        max_running = engine.max_running_requests if engine is not None else None
+        if explicit is None or max_running is None:
+            return
+        chunks = self.audio_chunking.max_concurrent_chunks
+        if explicit * chunks >= max_running:
+            logger.warning(
+                "audio_chunking.max_concurrent_long_audio_requests=%d x "
+                "max_concurrent_chunks=%d = %d engine requests, which is not "
+                "below engine.max_running_requests=%d (per replica): when "
+                "long audio is saturated, short transcriptions queue behind "
+                "its chunks. Lower one of the two or raise "
+                "max_running_requests (which also resizes CUDA graph capture).",
+                explicit,
+                chunks,
+                explicit * chunks,
+                max_running,
+            )
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
         """The merged long-audio contract: model ClassVars + operator policy."""
         cls = type(self)
+        policy = self.audio_chunking
+        long_audio_requests = policy.max_concurrent_long_audio_requests
+        if long_audio_requests is None:
+            engine = self.stage_named(self.resolved_entry_stage).engine
+            long_audio_requests = default_max_concurrent_long_audio_requests(
+                engine.max_running_requests if engine is not None else None,
+                policy.max_concurrent_chunks,
+            )
         return ResolvedAudioChunking(
             allow_audio_chunking=cls.allow_audio_chunking,
-            max_audio_clip_s=self.audio_chunking.max_audio_clip_s,
+            max_audio_clip_s=policy.max_audio_clip_s,
             max_native_clip_s=cls.max_native_clip_s,
-            max_total_audio_s=self.audio_chunking.max_total_audio_s,
+            max_total_audio_s=policy.max_total_audio_s,
             min_tail_s=cls.min_tail_s,
-            max_concurrent_chunks=self.audio_chunking.max_concurrent_chunks,
+            max_concurrent_chunks=policy.max_concurrent_chunks,
+            max_concurrent_long_audio_requests=long_audio_requests,
             condition_on_previous_text=cls.condition_on_previous_text,
         )
 

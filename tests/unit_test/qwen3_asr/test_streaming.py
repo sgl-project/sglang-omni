@@ -166,6 +166,30 @@ def test_qwen_strategy_waits_for_unfixed_chunks_before_using_prefix() -> None:
     assert third.extra_params["_asr_streaming_prefix_text"] == "hello world"
 
 
+def test_qwen_strategy_skips_prefix_until_language_is_known() -> None:
+    strategy = Qwen3ASRStreamingStrategy()
+    state = strategy.create_state(model_name="qwen3-asr", language=None)
+    for _ in range(2):
+        strategy.build_decode_request(
+            audio=b"wav", state=state, is_final=False, request_id="r"
+        )
+        strategy.update_hypothesis(generated_text="noise", language=None, state=state)
+
+    # Two rounds without a detected language: no prefix on the third decode.
+    third = strategy.build_decode_request(
+        audio=b"wav", state=state, is_final=False, request_id="r2"
+    )
+    assert third.extra_params["_asr_streaming_prefix_text"] is None
+    assert "language" not in third.extra_params
+
+    strategy.update_hypothesis(generated_text="hello", language="English", state=state)
+    fourth = strategy.build_decode_request(
+        audio=b"wav", state=state, is_final=False, request_id="r3"
+    )
+    assert fourth.extra_params["_asr_streaming_prefix_text"] == "hello"
+    assert fourth.extra_params["language"] == "English"
+
+
 def test_qwen_strategy_extracts_language_and_visible_transcript() -> None:
     strategy = Qwen3ASRStreamingStrategy()
     state = strategy.create_state(

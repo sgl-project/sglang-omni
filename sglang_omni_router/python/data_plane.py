@@ -18,7 +18,7 @@ import itertools
 import logging
 import os
 import signal
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from typing import Callable
 
 import httpx
@@ -767,35 +767,37 @@ def create_dp_app_from_env() -> FastAPI:
     generation = int(os.environ[DP_GENERATION_ENV])
     total = int(os.environ.get(EXPECTED_DPS_ENV, "1"))
 
-    admission = None
-    shm_path = os.environ.get(ADMISSION_SHM_ENV)
-    admission_file = None
-    if shm_path:
-        admission_file = open(shm_path, "r+b")
-        admission_mmap = mmap_module.mmap(
-            admission_file.fileno(), admission_file_size(total)
-        )
-        admission = SharedAdmission(
-            admission_mmap,
-            slots=total,
-            own_index=dp_index,
-            max_inflight=config.effective_max_inflight,
-            generation=generation,
-            pid=os.getpid(),
-            on_fenced=_default_fence_reaction,
-        )
+    # Preserve the returned app's ownership of the open file.
+    with ExitStack() as stack:
+        admission = None
+        shm_path = os.environ.get(ADMISSION_SHM_ENV)
+        admission_file = None
+        if shm_path:
+            admission_file = stack.enter_context(open(shm_path, "r+b"))
+            admission_mmap = mmap_module.mmap(
+                admission_file.fileno(), admission_file_size(total)
+            )
+            admission = SharedAdmission(
+                admission_mmap,
+                slots=total,
+                own_index=dp_index,
+                max_inflight=config.effective_max_inflight,
+                generation=generation,
+                pid=os.getpid(),
+                on_fenced=_default_fence_reaction,
+            )
 
-    app = create_data_plane_app(
-        config,
-        snapshot_path=os.environ[SNAPSHOT_PATH_ENV],
-        dp_index=dp_index,
-        generation=generation,
-        internal_client=internal_client,
-        forward_client=forward_client,
-        internal_token=token,
-        admission=admission,
-        total_data_planes=total,
-    )
-    # Note (Jiaxin Deng): keep the shm file object alive for the app's lifetime.
-    app.state.admission_shm_file = admission_file
-    return app
+        app = create_data_plane_app(
+            config,
+            snapshot_path=os.environ[SNAPSHOT_PATH_ENV],
+            dp_index=dp_index,
+            generation=generation,
+            internal_client=internal_client,
+            forward_client=forward_client,
+            internal_token=token,
+            admission=admission,
+            total_data_planes=total,
+        )
+        app.state.admission_shm_file = admission_file
+        stack.pop_all()
+        return app

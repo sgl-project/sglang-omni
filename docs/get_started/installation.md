@@ -55,9 +55,8 @@ uv pip install --prerelease=allow "sglang-omni==0.1.5"
 
 ## 🍎 Option B: macOS Apple Silicon installer
 
-From a checkout of this branch, run:
-
 ```bash
+git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
 ./install.sh
 source .venv-apple/bin/activate
 ```

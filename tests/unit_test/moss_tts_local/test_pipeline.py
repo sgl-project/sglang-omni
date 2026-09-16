@@ -1208,9 +1208,8 @@ def test_result_adapter_empty_generation():
         stage_payload=payload,
         engine_start_s=0.0,
     )
-    result = apply_sglang_moss_tts_local_result(payload, data)
-    codes = torch.as_tensor(result.data["audio_codes"])
-    assert codes.shape == (0, N_VQ)
+    with pytest.raises(RuntimeError, match="generated no audio frames"):
+        apply_sglang_moss_tts_local_result(payload, data)
 
 
 # Repetition penalty parity

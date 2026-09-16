@@ -1577,13 +1577,14 @@ def _wav_upload(duration_s: float, sample_rate: int = 16000) -> bytes:
     return encode_wav(rng.uniform(-0.5, 0.5, samples).astype(np.float32), sample_rate)
 
 
-def _chunking_test_client(
+def _chunking_app(
     transcription_client: Any,
     *,
     max_total_audio_s: float | None = None,
     max_native_clip_s: float | None = None,
     architectures: list[str] | None = None,
-) -> TestClient:
+    max_concurrent_long_audio_requests: int = 4,
+):
     from sglang_omni.config import ResolvedAudioChunking
 
     policy = ResolvedAudioChunking(
@@ -1593,16 +1594,167 @@ def _chunking_test_client(
         max_total_audio_s=max_total_audio_s,
         min_tail_s=0.5,
         max_concurrent_chunks=8,
+        max_concurrent_long_audio_requests=max_concurrent_long_audio_requests,
         condition_on_previous_text=False,
     )
+    return create_app(
+        transcription_client,
+        model_name="asr",
+        architectures=architectures,
+        audio_chunking=policy,
+    )
+
+
+def _chunking_test_client(
+    transcription_client: Any,
+    *,
+    max_total_audio_s: float | None = None,
+    max_native_clip_s: float | None = None,
+    architectures: list[str] | None = None,
+) -> TestClient:
     return TestClient(
-        create_app(
+        _chunking_app(
             transcription_client,
-            model_name="asr",
+            max_total_audio_s=max_total_audio_s,
+            max_native_clip_s=max_native_clip_s,
             architectures=architectures,
-            audio_chunking=policy,
         )
     )
+
+
+class GatedTranscriptionClient:
+    """completion() parks every chunk until the test opens the gate."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+        self.requests: list[str] = []
+        self.aborted: list[str] = []
+
+    def health(self) -> dict[str, Any]:
+        return {"running": True}
+
+    async def completion(self, request, *, request_id: str, **kwargs):
+        from sglang_omni.client.types import CompletionResult
+
+        self.requests.append(request_id)
+        self.started.set()
+        await self.gate.wait()
+        index = request_id.rsplit("-chunk-", 1)[-1]
+        return CompletionResult(request_id=request_id, text=f"part{index}")
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
+def _asgi_client(app):
+    import httpx
+
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://asr"
+    )
+
+
+async def _post_transcription(client, upload: bytes, name: str = "long.wav"):
+    return await client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": (name, upload, "audio/wav")},
+    )
+
+
+def test_long_audio_past_the_admission_cap_is_rejected_before_decoding(
+    monkeypatch,
+) -> None:
+    # Note (Jeffro): One admitted upload holds the only slot; the next long
+    # upload must get 503 without ever decoding (the slot is what bounds
+    # resident waveforms), and short uploads must not be gated at all.
+    from sglang_omni.serve import transcriptions
+
+    decodes: list[int] = []
+    real_plan = transcriptions.plan_audio_chunks
+
+    def counting_plan(audio_bytes, chunking):
+        decodes.append(1)
+        return real_plan(audio_bytes, chunking)
+
+    monkeypatch.setattr(transcriptions, "plan_audio_chunks", counting_plan)
+
+    async def scenario() -> None:
+        gated = GatedTranscriptionClient()
+        app = _chunking_app(gated, max_concurrent_long_audio_requests=1)
+        admission = app.state.long_audio_admission
+        async with _asgi_client(app) as client:
+            first = asyncio.create_task(_post_transcription(client, _wav_upload(2.5)))
+            await asyncio.wait_for(gated.started.wait(), timeout=10.0)
+            assert admission.active == 1
+            assert decodes == [1]
+
+            rejected = await _post_transcription(client, _wav_upload(2.5))
+            assert rejected.status_code == 503
+            assert "max_concurrent_long_audio_requests" in rejected.json()["detail"]
+            assert decodes == [1]
+            assert admission.active == 1
+
+            # A short clip is one engine request with no waveform to hold.
+            gated.gate.set()
+            short = await _post_transcription(client, _wav_upload(0.5), "short.wav")
+            assert short.status_code == 200
+
+            response = await first
+            assert response.status_code == 200
+            assert admission.active == 0
+
+            # The slot is free again for the next long upload.
+            again = await _post_transcription(client, _wav_upload(2.5))
+            assert again.status_code == 200
+            assert admission.active == 0
+
+    asyncio.run(scenario())
+
+
+def test_long_audio_admission_is_released_when_a_chunk_fails() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient(fail_chunk=0)
+    app = _chunking_app(transcription_client, max_concurrent_long_audio_requests=1)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+    assert response.status_code == 500
+    assert app.state.long_audio_admission.active == 0
+
+    transcription_client.fail_chunk = None
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr"},
+        files={"file": ("long.wav", _wav_upload(2.5), "audio/wav")},
+    )
+    assert response.status_code == 200
+    assert app.state.long_audio_admission.active == 0
+
+
+def test_long_audio_admission_counter_contract() -> None:
+    from fastapi import HTTPException
+
+    from sglang_omni.serve.transcriptions import LongAudioAdmission
+
+    with pytest.raises(ValueError):
+        LongAudioAdmission(0)
+    gate = LongAudioAdmission(2)
+    assert gate.try_acquire() and gate.try_acquire()
+    assert not gate.try_acquire()
+    with pytest.raises(HTTPException) as info:
+        gate.acquire_or_reject()
+    assert info.value.status_code == 503
+    gate.release()
+    gate.acquire_or_reject()
+    gate.release()
+    gate.release()
+    with pytest.raises(RuntimeError):
+        gate.release()
 
 
 def test_long_audio_is_transcribed_chunk_by_chunk() -> None:
@@ -3446,3 +3598,41 @@ def test_stub_endpoint_checks_auth_before_501() -> None:
 
     resp = client.post("/update_weights_from_tensor", json={})
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_speech_empty_generation_error_allows_next_request(stream: bool) -> None:
+    message = "MOSS-TTS Local generated no audio frames. Please retry the request."
+
+    class FailOnceClient(SuccessfulSpeechClient):
+        failed = False
+
+        async def generate(self, request, request_id=None):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError(message)
+            async for chunk in super().generate(request, request_id):
+                yield chunk
+
+        async def speech(self, request, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise ClientError(message)
+            return await super().speech(request, **kwargs)
+
+        async def abort(self, request_id):
+            pass
+
+    client = TestClient(create_app(FailOnceClient(), model_name="moss-tts"))
+    body = {
+        "model": "moss-tts",
+        "input": "hello",
+        "stream": stream,
+        "response_format": "pcm" if stream else "wav",
+    }
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 500
+    assert message in response.json()["error"]["message"]
+    response = client.post("/v1/audio/speech", json=body)
+    assert response.status_code == 200
+    assert response.content

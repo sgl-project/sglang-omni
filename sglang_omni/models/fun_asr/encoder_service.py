@@ -33,8 +33,8 @@ _FRONTEND_CONFIG_FIELDS = (
     "sampling_rate",
     "frame_length",
     "frame_shift",
-    "lfr_m",
-    "lfr_n",
+    "num_frames_lfr",
+    "stride_lfr",
     "window",
 )
 

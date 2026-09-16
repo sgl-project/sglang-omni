@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +61,10 @@ class _Runner(MlxSchedulerModelRunner):
         self._last_mlx_pending = None
         self._execution_bridge = None
         self.finalized = []
+
+    @staticmethod
+    def _mlx_stream_context():
+        return nullcontext()
 
     def _finalize(
         self,
@@ -179,6 +185,28 @@ def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
     assert not runner.lookahead_eligible(
         SimpleNamespace(reqs=[request("a"), request("b")])
     )
+
+
+def test_mlx_scheduler_stream_is_valid_on_its_execution_thread() -> None:
+    mx = pytest.importorskip("mlx.core")
+    runner = object.__new__(MlxSchedulerModelRunner)
+    runner._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
+    source = mx.arange(4)
+    mx.eval(source)
+    observed = []
+
+    def evaluate() -> None:
+        with runner._mlx_stream_context():
+            result = source + 1
+            mx.async_eval(result)
+            mx.eval(result)
+            observed.extend(result.tolist())
+
+    thread = threading.Thread(target=evaluate)
+    thread.start()
+    thread.join()
+
+    assert observed == [1, 2, 3, 4]
 
 
 def test_mlx_scheduler_runner_uses_future_map_bridge(monkeypatch) -> None:

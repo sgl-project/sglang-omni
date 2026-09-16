@@ -532,10 +532,10 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
             _cuda_graph_runner=runner,
         )
         assert scheduler._pipeline_active is overlap
-        scheduler._stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
-        scheduler._get_or_create_stream_state("req-1")
+        scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
+        scheduler.get_or_create_stream_state("req-1")
         for i in range(21):
-            scheduler._on_chunk(
+            scheduler.handle_stream_chunk(
                 "req-1",
                 StreamItem(
                     i,
@@ -544,7 +544,7 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
                     metadata={"stream": True},
                 ),
             )
-        scheduler._on_done("req-1")
+        scheduler.handle_stream_done("req-1")
         messages = [
             scheduler.outbox.get_nowait() for _ in range(scheduler.outbox.qsize())
         ]

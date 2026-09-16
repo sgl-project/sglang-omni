@@ -291,7 +291,7 @@ def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
 
-class FinalLayer_mlp(nn.Module):
+class FinalLayer_mlp(nn.Module):  # noqa: N801 - Preserve the existing class name.
     """
     The final layer adopted from DiT.
     """

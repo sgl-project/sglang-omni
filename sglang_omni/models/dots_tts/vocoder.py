@@ -149,8 +149,8 @@ class DotsTTSStreamingVocoder(
 ):
     """Streaming AudioVAE with slot-pooled equal-T batched eager decode."""
 
-    _can_batch_stream_chunks = True
-    _stream_chunk_batch_distinct_requests = True
+    can_batch_stream_chunks = True
+    stream_chunk_batch_distinct_requests = True
 
     def __init__(
         self,
@@ -179,7 +179,7 @@ class DotsTTSStreamingVocoder(
         self._slot_pool = slot_pool
         # note (guozhihao-224): coalesce width follows max_batch_size only;
         # stream_slots is admission capacity and must not redefine the batch cap.
-        self._stream_chunk_batch_max = int(max_batch_size)
+        self.stream_chunk_batch_max = int(max_batch_size)
         super().__init__(
             self._batch_vocoder.decode_payload,
             batch_compute_fn=self._batch_vocoder.decode_payloads,
@@ -309,7 +309,7 @@ class DotsTTSStreamingVocoder(
     def select_step_participants(self) -> list[tuple[str, _DotsStreamState]]:
         slotted = [
             (request_id, state)
-            for request_id, state in self._stream_state_items()
+            for request_id, state in self.stream_state_items()
             if state.slot is not None and self._pending_ready(state)
         ]
         if not slotted:
@@ -321,7 +321,7 @@ class DotsTTSStreamingVocoder(
         for entry in slotted:
             frames = self._step_frames(entry[1])
             by_frames.setdefault(frames, []).append(entry)
-        return max(by_frames.values(), key=len)[: self._stream_chunk_batch_max]
+        return max(by_frames.values(), key=len)[: self.stream_chunk_batch_max]
 
     def build_step_plan(
         self, participants: list[tuple[str, _DotsStreamState]]

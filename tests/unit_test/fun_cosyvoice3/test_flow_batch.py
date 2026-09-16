@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedRows
 from sglang_omni.models.fun_cosyvoice3.stages import (
     FlowBatchInput,
     FunCosyVoice3Flow,
-    _pack_flow_inputs,
+    pack_flow_inputs,
 )
 
 
@@ -40,6 +43,38 @@ class _RecordingEstimator(torch.nn.Module):
             }
         )
         return (0.1 * x + mu + spks.unsqueeze(-1) + cond) * mask
+
+
+class _RecordingPackedEstimator:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def row_attention(self, rows: PackedRows, *, streaming: bool) -> SimpleNamespace:
+        return SimpleNamespace(rows=rows, streaming=streaming)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mu: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+        t: torch.Tensor,
+        rows: PackedRows,
+        attention: SimpleNamespace,
+    ) -> torch.Tensor:
+        self.calls.append(
+            {
+                "lengths": rows.lengths,
+                "t": t.detach().clone(),
+                "streaming": attention.streaming,
+            }
+        )
+        positions = rows.positions.to(x.dtype).view(1, -1, 1)
+        return 0.1 * x + mu + spks + cond + 0.01 * positions
+
+
+def _packed(flow: _FakeFlow) -> FunCosyVoice3Flow:
+    return FunCosyVoice3Flow(flow, packed_estimator=flow.packed_estimator)
 
 
 class _RecordingTRTEstimator:
@@ -115,10 +150,12 @@ class _FakeFlow(torch.nn.Module):
         self.token_mel_ratio = token_mel_ratio
         self.input_embedding = torch.nn.Embedding(32, channels)
         self.spk_embed_affine_layer = torch.nn.Linear(3, channels, bias=False)
-        self.pre_lookahead_layer = torch.nn.Identity()
+        self.pre_lookahead_layer = lambda x, context=None: x
+        self.pre_lookahead_len = 3
         self.decoder = _FakeDecoder(
             channels, max_frames=max_frames, estimator=estimator
         )
+        self.packed_estimator = _RecordingPackedEstimator()
         with torch.no_grad():
             self.input_embedding.weight.copy_(
                 torch.arange(32 * channels, dtype=torch.float32).reshape(32, channels)
@@ -158,7 +195,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
         _input([0], prompt_token=[5, 6, 7]),
     ]
 
-    packed = _pack_flow_inputs(flow, items)
+    packed = pack_flow_inputs(flow, items)
 
     assert packed.token.dtype == torch.int32
     assert packed.token.tolist() == [[4, 0, 8, 0], [5, 6, 7, 0]]
@@ -173,7 +210,7 @@ def test_pack_flow_inputs_keeps_prompt_and_target_contiguous() -> None:
 
 
 def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
-    packed = _pack_flow_inputs(
+    packed = pack_flow_inputs(
         _FakeFlow(),
         [
             _input([0], prompt_token=[]),
@@ -188,7 +225,6 @@ def test_pack_flow_inputs_builds_variable_length_token_masks() -> None:
     ]
     assert packed.prompt_mel_lengths == (0, 4)
     assert packed.total_mel_lengths == (2, 8)
-    assert packed.total_mel_lengths_tensor.tolist() == [2, 8]
 
 
 def test_flow_batch_builds_variable_length_mel_masks_and_conditions() -> None:
@@ -355,9 +391,9 @@ def test_flow_causal_batch_uses_streaming_mask_and_strips_lookahead() -> None:
         _input([1] * 28),
         _input([2] * 28),
     ]
-    mels = FunCosyVoice3Flow(flow).inference_causal(items)
-    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
-    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    mels = _packed(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.packed_estimator.calls)
+    assert flow.packed_estimator.calls[0]["lengths"] == (50, 50, 50, 50)
     assert mels[0].shape == (1, 4, 50)
     assert mels[1].shape == (1, 4, 50)
 
@@ -368,9 +404,9 @@ def test_flow_causal_batch_follow_up_equal_lengths_strip_lookahead() -> None:
         _input([1] * 78, prompt_token=[3] * 25),
         _input([2] * 78, prompt_token=[4] * 25),
     ]
-    mels = FunCosyVoice3Flow(flow).inference_causal(items)
-    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
-    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    mels = _packed(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.packed_estimator.calls)
+    assert flow.packed_estimator.calls[0]["lengths"] == (200, 200, 200, 200)
     # 78 generated tokens minus lookahead 3 = 75; 75 * 2 mel frames
     assert mels[0].shape == (1, 4, 150)
     assert mels[1].shape == (1, 4, 150)
@@ -382,10 +418,9 @@ def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:
         _input([2] * 78, prompt_token=[4] * 50),
     ]
     serial = [
-        FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal([item])[0]
-        for item in items
+        _packed(_FakeFlow(max_frames=512)).inference_causal([item])[0] for item in items
     ]
-    batched = FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal(items)
+    batched = _packed(_FakeFlow(max_frames=512)).inference_causal(items)
     assert batched[0].shape == serial[0].shape
     assert batched[1].shape == serial[1].shape
     for actual, expected in zip(batched, serial, strict=True):

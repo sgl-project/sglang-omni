@@ -125,7 +125,7 @@ from sglang_omni.serve.streaming import (
 from sglang_omni.serve.streaming import (
     close_async_iterator_if_supported as _close_async_iterator_if_supported,
 )
-from sglang_omni.serve.transcriptions import register_transcriptions
+from sglang_omni.serve.transcriptions import LongAudioAdmission, register_transcriptions
 from sglang_omni.serve.translations import register_translations
 
 logger = logging.getLogger(__name__)
@@ -258,6 +258,9 @@ def create_app(
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
+    app.state.long_audio_admission = LongAudioAdmission(
+        app.state.audio_chunking.max_concurrent_long_audio_requests
+    )
     app.state.realtime_enabled = enable_realtime
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
     app.state.realtime_transcription = realtime_transcription
@@ -1223,7 +1226,6 @@ def _register_realtime(app: FastAPI) -> None:
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
         transcription_config=app.state.realtime_transcription,
-        audio_chunking=app.state.audio_chunking,
         smart_turn_model=smart_turn_model,
     )
     app.state.realtime_manager = manager

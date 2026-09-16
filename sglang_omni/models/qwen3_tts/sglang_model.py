@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import math
 import os
 import time
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ from sglang_omni.models.qwen3_tts.predictor_kernels import (
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logits_with_seed_top_k_top_p,
+    sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -61,6 +63,42 @@ _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
 def _predictor_graph_env_enabled() -> bool:
     value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV, "1").strip().lower()
     return value not in ("0", "false", "off", "no")
+
+
+def _predictor_gqa_attention(
+    q: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    num_heads: int,
+    num_key_value_heads: int,
+) -> torch.Tensor:
+    """Run Predictor GQA, preferring Ascend's inference kernel on NPU."""
+    if q.device.type == "npu":
+        fused_attention = getattr(
+            getattr(torch.ops, "npu", None),
+            "npu_fused_infer_attention_score",
+            None,
+        )
+        if fused_attention is not None:
+            output, _ = fused_attention(
+                q.transpose(1, 2).contiguous(),
+                key.transpose(1, 2).contiguous(),
+                value.transpose(1, 2).contiguous(),
+                num_heads=num_heads,
+                num_key_value_heads=num_key_value_heads,
+                input_layout="BSND",
+                scale=1.0 / math.sqrt(q.shape[-1]),
+            )
+            return output.transpose(1, 2)
+
+    return torch.nn.functional.scaled_dot_product_attention(
+        q,
+        key,
+        value,
+        is_causal=False,
+        enable_gqa=True,
+    )
 
 
 def _quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
@@ -100,6 +138,8 @@ def _sample_seeded_categorical(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor:
+    if logprobs.device.type == "npu":
+        return sample_from_logprobs_with_seed_npu(logprobs, seeds, positions)
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
 
 
@@ -1259,6 +1299,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     def _resolve_predictor_graph_enabled(self) -> bool:
         if not _predictor_graph_env_enabled():
             return False
+        if self.device.type != "cuda":
+            return False
         if bool(get_exec().graph.disable_cuda_graph):
             return False
         # Note: (Jiaxin Deng) capture under TP would record collectives; the
@@ -1702,36 +1744,39 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         batch_size: int,
         cache_len: int,
     ) -> torch.Tensor:
-        hidden_states = token_embeds
-        hidden_size = hidden_states.shape[-1]
+        hidden_size = token_embeds.shape[-1]
         positions = self._predictor_position_rows[cache_len, :batch_size]
+        # note(ratish): 2D rows for the fused add and norm, which every
+        # backend's kernel expects and which writes both operands in place.
+        residual = token_embeds
+        mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
-            residual = hidden_states
-            normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
-            normed = normed.reshape(batch_size, 1, hidden_size)
+            if mlp_out is None:
+                normed = layer.input_layernorm(residual.reshape(-1, hidden_size))
+            else:
+                normed, residual = layer.input_layernorm(
+                    mlp_out, residual.reshape(-1, hidden_size)
+                )
+                residual = residual.reshape(batch_size, 1, hidden_size)
             attn_input = self._predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
-                hidden_states=normed,
+                hidden_states=normed.reshape(batch_size, 1, hidden_size),
                 positions=positions,
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
-            hidden_states = self._predictor_o_proj_add_residual(
+            residual = self._predictor_o_proj_add_residual(
                 layer.self_attn.o_proj,
                 attn_input,
                 residual,
             )
-            residual = hidden_states
-            normed = layer.post_attention_layernorm(
-                hidden_states.reshape(-1, hidden_size)
-            )
-            mlp_out = layer.mlp(normed).reshape(batch_size, 1, hidden_size)
-            hidden_states = residual + mlp_out
-        hidden_states = self.code_predictor.model.norm(
-            hidden_states.reshape(-1, hidden_size)
+            normed = layer.post_attention_layernorm(residual.reshape(-1, hidden_size))
+            mlp_out = layer.mlp(normed)
+        normed, _ = self.code_predictor.model.norm(
+            mlp_out, residual.reshape(-1, hidden_size)
         )
-        return hidden_states.reshape(batch_size, 1, hidden_size)
+        return normed.reshape(batch_size, 1, hidden_size)
 
     @staticmethod
     def _predictor_o_proj_add_residual(
@@ -1856,22 +1901,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         cached_v = self._predictor_v_cache[
             layer_idx, :batch_size, : cache_len + 1
         ].transpose(1, 2)
-        num_kv_groups = attn.num_heads // attn.num_kv_heads
-        if num_kv_groups == 1:
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                cached_k,
-                cached_v,
-                is_causal=False,
-            )
-        else:
-            attn_output = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                cached_k,
-                cached_v,
-                is_causal=False,
-                enable_gqa=True,
-            )
+        attn_output = _predictor_gqa_attention(
+            q,
+            cached_k,
+            cached_v,
+            num_heads=attn.num_heads,
+            num_key_value_heads=attn.num_kv_heads,
+        )
         attn_output = attn_output.transpose(1, 2).reshape(
             batch_size, attn.num_heads * attn.head_dim
         )

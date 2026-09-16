@@ -4,6 +4,8 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
+DEFAULT_DEEPSTACK_VISUAL_INDEXES = [8, 16, 24]
+
 _MROPE_ROPE_SCALING_KEYS = frozenset(
     {"interleaved", "mrope_interleaved", "mrope_section"}
 )
@@ -92,12 +94,15 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
         temporal_patch_size=2,
         out_hidden_size=3584,
         num_position_embeddings=2304,
-        deepstack_visual_indexes=[8, 16, 24],
+        deepstack_visual_indexes=...,
         tokens_per_second=None,
         initializer_range=0.02,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        if deepstack_visual_indexes is ...:
+            deepstack_visual_indexes = DEFAULT_DEEPSTACK_VISUAL_INDEXES
 
         self.depth = depth
         self.hidden_size = hidden_size

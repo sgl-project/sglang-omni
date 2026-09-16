@@ -79,6 +79,30 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Ascend NPU baseline
+
+The NPU configurations use SGLang's `ascend` attention backend for the Talker
+and PyTorch SDPA for both Speech Tokenizer instances. Talker graph capture
+(`cuda_graph`), private Talker compile, and asynchronous vocoder decode stay
+disabled. The 0.6B Base
+configuration has been validated with 16 concurrent requests; the other
+configurations retain a conservative single-request baseline.
+
+```bash
+# 0.6B Base
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --config examples/configs/qwen3_tts_0_6b_npu.yaml \
+  --port 8000
+```
+
+Use `qwen3_tts_1_7b_npu.yaml`, `qwen3_tts_0_6b_customvoice_npu.yaml`, or
+`qwen3_tts_1_7b_voicedesign_npu.yaml` for the other supported checkpoints.
+The 0.6B and 1.7B files intentionally have separate `mem_fraction_static`
+starting values. Calibrate configurations that retain the single-request
+baseline on the target NPU before increasing `max_running_requests` or any
+vocoder batch limit.
+
 ### Deterministic Inference
 
 Dynamic batching can change Qwen3-TTS codec and waveform outputs even when the
@@ -92,7 +116,8 @@ enable_deterministic_inference: true
 When enabled, the same prompt, reference audio, and seed produce byte-identical
 PCM across runtime batch sizes. This mode reduces throughput because it
 serializes reference preprocessing and vocoder decoding and disables both the
-initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
+initial and follow-up vocoder graph-capture paths (`initial_cuda_graph` and
+`followup_cuda_graph`), so it is disabled by default.
 
 ### Overload / admission policy
 

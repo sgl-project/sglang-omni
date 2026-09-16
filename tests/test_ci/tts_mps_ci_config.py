@@ -2,7 +2,7 @@
 """Performance policy for the TTS MPS DP2 validation stage.
 
 References are raw worst-of-five observations from a CI-comparable H100, held
-pre-slack exactly as `.claude/skills/tune-ci-thresholds` writes them. CI
+pre-slack exactly as the external `calibrate-h100-ci` skill writes them. CI
 assertion slack is derived here, never baked into the stored reference, so a
 recalibration only ever rewrites the `_REF` literals.
 
@@ -148,7 +148,7 @@ def check_mps_performance(
         failed.append(
             "uncalibrated performance references: "
             + ", ".join(sorted(uncalibrated))
-            + "; run .claude/skills/tune-ci-thresholds with 5 repeats"
+            + "; run calibrate-h100-ci from sglang-omni-calibration with 5 repeats"
         )
     return {
         "status": "pass" if not failed else "fail",

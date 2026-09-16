@@ -392,7 +392,9 @@ class RouterSupervisor:
 
         admission_shm_path = os.path.join(self._workdir, "admission.shm")
         create_admission_file(admission_shm_path, self._router_processes)
-        self._admission_file = open(admission_shm_path, "r+b")
+        self._admission_file = open(  # noqa: SIM115 - Closed by rollback/shutdown.
+            admission_shm_path, "r+b"
+        )
         self._admission_mmap = mmap.mmap(
             self._admission_file.fileno(),
             admission_file_size(self._router_processes),

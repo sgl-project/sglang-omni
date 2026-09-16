@@ -15,6 +15,10 @@ import torch
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+    move_conv_padding_to_host,
+)
 from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
@@ -26,6 +30,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -45,6 +50,25 @@ _QWEN_TTS_INSTALL_HINT = (
     "docs/cookbook/qwen3_tts.md."
 )
 
+_NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS = frozenset(
+    {"flash_attention_2", "flash_attention_3", "flash_attention_4"}
+)
+
+
+def _resolve_qwen3_tts_attn_implementation(
+    device: str | torch.device,
+    attn_implementation: str | None,
+) -> str | None:
+    device_type = str(device).strip().partition(":")[0].lower()
+    if not current_platform.is_npu() or device_type != "npu":
+        return attn_implementation
+    if attn_implementation in _NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS:
+        raise ValueError(
+            "Qwen3-TTS speech tokenizer cannot use "
+            f"attn_implementation={attn_implementation!r} on NPU; use 'sdpa'"
+        )
+    return attn_implementation or "sdpa"
+
 
 def _load_qwen3_tts_tokenizer(
     model_path: str,
@@ -59,6 +83,9 @@ def _load_qwen3_tts_tokenizer(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
+    attn_implementation = _resolve_qwen3_tts_attn_implementation(
+        device, attn_implementation
+    )
     checkpoint_dir = _resolve_checkpoint(model_path)
     tokenizer_path = os.path.join(checkpoint_dir, "speech_tokenizer")
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
@@ -80,9 +107,14 @@ def _load_qwen3_tts_tokenizer(
             kwargs["attn_implementation"] = attn_implementation
 
         logger.info(
-            f"Loading Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
+            "Loading Qwen3-TTS speech tokenizer from %s on %s "
+            "with attn_implementation=%s",
+            tokenizer_path,
+            device,
+            attn_implementation or "upstream-default",
         )
         tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        move_conv_padding_to_host(tokenizer.model.encoder)
         _SPEECH_TOKENIZERS[key] = tokenizer
         return tokenizer
 
@@ -215,6 +247,9 @@ def create_sglang_tts_engine_executor(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     server_args_overrides: dict[str, Any] | None = None,
+    reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
+        DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+    ),
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -222,6 +257,9 @@ def create_sglang_tts_engine_executor(
         attn_implementation=attn_implementation,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        reference_encoder_cuda_graph_bucket_frames=(
+            reference_encoder_cuda_graph_bucket_frames
+        ),
     ).build(
         model_path,
         device=device,
@@ -263,6 +301,7 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
+    incremental_codec_cuda_graph_window_frames: Sequence[int] | None = None,
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
@@ -310,6 +349,9 @@ def create_vocoder_executor(
         incremental_codec_compile=incremental_codec_compile,
         incremental_codec_cuda_graph_cold_frames=(
             incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_window_frames=(
+            incremental_codec_cuda_graph_window_frames
         ),
         incremental_codec_cuda_graph_min_free_gb=(
             incremental_codec_cuda_graph_min_free_gb

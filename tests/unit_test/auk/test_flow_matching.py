@@ -59,3 +59,46 @@ def test_batch_matches_individual_sampling_with_different_lengths(cfg_strength):
     assert torch.equal(torch.random.get_rng_state(), rng)
     for output, reference in zip(actual, expected):
         torch.testing.assert_close(output, reference, rtol=1e-5, atol=1e-6)
+
+
+def test_bf16_backbone_integrates_in_fp32_and_tracks_fp32_backbone():
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+
+    torch.manual_seed(7)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=1,
+            num_single_layers=1,
+        ),
+        num_llm_layers=2,
+    ).eval()
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    items = [
+        AuKSampleItem(
+            torch.randn(text, 16),
+            torch.ones(text, dtype=torch.bool),
+            frames,
+            torch.randn(ref, 8) if ref else None,
+            seed=seed,
+            ref_length=ref,
+        )
+        for text, frames, ref, seed in [(5, 19, 4, 1), (3, 15, 0, 3)]
+    ]
+    sampling = dict(steps=3, cfg_strength=2.0)
+    expected = flow.sample_batch(items, **sampling)
+    flow.transformer.to(torch.bfloat16)
+    actual = flow.sample_batch(items, **sampling)
+    for output, reference in zip(actual, expected):
+        assert output.dtype == torch.float32
+        assert torch.isfinite(output).all()
+        cosine = torch.nn.functional.cosine_similarity(
+            output.flatten(), reference.flatten(), dim=0
+        )
+        assert cosine > 0.99, cosine

@@ -428,16 +428,12 @@ def apply_sglang_moss_tts_local_result(
     data: MossTTSLocalSGLangRequestData,
 ) -> StagePayload:
     state = data.state
-    n_vq = (
-        int(data.prompt_rows.shape[1] - 1)
-        if data.prompt_rows is not None and data.prompt_rows.ndim == 2
-        else 12
-    )
-    if data.output_rows:
-        generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
-        state.audio_codes = generated_rows[:, 1:].detach().cpu()
-    else:
-        state.audio_codes = torch.empty((0, n_vq), dtype=torch.long)
+    if not data.output_rows:
+        raise RuntimeError(
+            "MOSS-TTS Local generated no audio frames. Please retry the request."
+        )
+    generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
+    state.audio_codes = generated_rows[:, 1:].detach().cpu()
 
     state.prompt_tokens = len(data.input_ids) if data.input_ids is not None else 0
     state.completion_tokens = len(data.output_rows)

@@ -286,12 +286,12 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
-    NPU, CPU and Apple keep the base None: before this hook they would have run
-    a CUDA capture path and failed inside it.
+    CPU and Apple keep the base None.
     """
     from sglang_omni.platforms.apple import AppleOmniPlatform
     from sglang_omni.platforms.device_graph import (
         CudaDeviceGraphBackend,
+        NpuDeviceGraphBackend,
         XpuDeviceGraphBackend,
     )
     from sglang_omni.platforms.musa import MUSAOmniPlatform
@@ -302,7 +302,7 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
         ROCMOmniPlatform: CudaDeviceGraphBackend,
         MUSAOmniPlatform: CudaDeviceGraphBackend,
         xpu_platform.XPUOmniPlatform: XpuDeviceGraphBackend,
-        NPUOmniPlatform: None,
+        NPUOmniPlatform: NpuDeviceGraphBackend,
         CPUOmniPlatform: None,
         AppleOmniPlatform: None,
         OmniPlatform: None,

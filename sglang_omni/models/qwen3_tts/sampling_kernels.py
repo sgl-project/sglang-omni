@@ -5,18 +5,29 @@ from __future__ import annotations
 
 import torch
 
-try:
-    import triton
-    import triton.language as tl
+from sglang_omni.platforms import current_platform
 
-    _TRITON_GATHER_SUPPORTED = hasattr(tl, "gather")
-except ImportError:  # pragma: no cover - depends on runtime image
+if not current_platform.is_npu():
+    try:
+        import triton
+        import triton.language as tl
+
+        _TRITON_GATHER_SUPPORTED = hasattr(tl, "gather")
+    except ImportError:  # pragma: no cover - depends on runtime image
+        triton = None
+        tl = None
+        _TRITON_GATHER_SUPPORTED = False
+else:
     triton = None
     tl = None
     _TRITON_GATHER_SUPPORTED = False
 
 
-if triton is not None:
+def _has_triton_runtime() -> bool:
+    return triton is not None and not current_platform.is_npu()
+
+
+if _has_triton_runtime():
 
     @triton.jit
     def _rotl32(x, r: tl.constexpr) -> tl.uint32:
@@ -447,12 +458,126 @@ def _next_power_of_2(value: int) -> int:
     return 1 << (int(value) - 1).bit_length()
 
 
+_UINT32_MASK = 0xFFFFFFFF
+
+
+def _rotl32_pytorch(value: torch.Tensor, shift: int) -> torch.Tensor:
+    value = value & _UINT32_MASK
+    return ((value << shift) | (value >> (32 - shift))) & _UINT32_MASK
+
+
+def _murmur3_mix_pytorch(hash_value: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+    key = (key * 0xCC9E2D51) & _UINT32_MASK
+    key = _rotl32_pytorch(key, 15)
+    key = (key * 0x1B873593) & _UINT32_MASK
+    hash_value = hash_value ^ key
+    hash_value = _rotl32_pytorch(hash_value, 13)
+    return (hash_value * 5 + 0xE6546B64) & _UINT32_MASK
+
+
+def _fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
+    hash_value = hash_value ^ (hash_value >> 16)
+    hash_value = (hash_value * 0x85EBCA6B) & _UINT32_MASK
+    hash_value = hash_value ^ (hash_value >> 13)
+    hash_value = (hash_value * 0xC2B2AE35) & _UINT32_MASK
+    return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
+
+
+def _murmur_hash32_pytorch(
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    num_cols: int,
+) -> torch.Tensor:
+    """Vectorized MurmurHash32 with an Ascend-safe CPU integer fallback."""
+    if seeds.device.type == "npu":
+        # Ascend can fault in the int64 rotate expression under sustained
+        # concurrent sampling. The hash inputs are tiny; compute only this
+        # integer-only portion on CPU and return the exact uint32 values.
+        return _murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
+            seeds.device
+        )
+
+    seeds = seeds.to(dtype=torch.int64).view(-1, 1)
+    positions = positions.to(dtype=torch.int64).view(-1, 1)
+    columns = torch.arange(num_cols, device=seeds.device, dtype=torch.int64).view(1, -1)
+
+    hash_value = torch.zeros(
+        (seeds.shape[0], num_cols), device=seeds.device, dtype=torch.int64
+    )
+    hash_value = _murmur3_mix_pytorch(hash_value, seeds & _UINT32_MASK)
+    hash_value = _murmur3_mix_pytorch(hash_value, (seeds >> 32) & _UINT32_MASK)
+    hash_value = _murmur3_mix_pytorch(hash_value, positions & _UINT32_MASK)
+    hash_value = _murmur3_mix_pytorch(hash_value, columns)
+    return _fmix32_pytorch(hash_value ^ 16)
+
+
+def _seeded_gumbel_argmax_float32(
+    logprobs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """Seeded categorical sampling without float64 or CUDA-only kernels."""
+    if logprobs.ndim != 2:
+        raise ValueError("logprobs must be a 2D tensor")
+    batch_size, num_cols = logprobs.shape
+    if seeds.shape != (batch_size,) or positions.shape != (batch_size,):
+        raise ValueError("seeds and positions must contain one value per row")
+    if num_cols == 0:
+        raise ValueError("logprobs must contain at least one column")
+
+    hashes = _murmur_hash32_pytorch(seeds, positions, num_cols)
+    uniform = hashes.to(dtype=torch.float32) / float(_UINT32_MASK)
+    # 0 and UINT32_MAX are valid hashes. Keep both away from log boundaries;
+    # UINT32_MAX rounds to 1.0 after conversion to float32.
+    uniform.clamp_(
+        min=torch.finfo(torch.float32).tiny,
+        max=1.0 - 2.0**-24,
+    )
+    gumbel = -torch.log(-torch.log(uniform))
+    return torch.argmax(logprobs.to(dtype=torch.float32) + gumbel, dim=1)
+
+
+def sample_from_logprobs_with_seed_npu(
+    logprobs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor | None:
+    """Use the float32 seeded sampler on NPU and leave other backends unchanged."""
+    if logprobs.device.type != "npu":
+        return None
+    if seeds.device != logprobs.device or positions.device != logprobs.device:
+        raise ValueError("logprobs, seeds, and positions must be on the same device")
+    if logprobs.shape[0] == 0:
+        return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    return _seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+
+
+def _all_tensors_on_npu(*tensors: torch.Tensor) -> bool:
+    return all(tensor.device.type == "npu" for tensor in tensors)
+
+
 def sample_from_sorted_logprobs_with_seed_small_k(
     logprobs: torch.Tensor,
     sorted_idx: torch.Tensor,
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor | None:
+    if _all_tensors_on_npu(logprobs, sorted_idx, seeds, positions):
+        if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
+            return None
+        if seeds.ndim != 1 or positions.ndim != 1:
+            return None
+        batch_size, num_cols = logprobs.shape
+        if batch_size == 0:
+            return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+        if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
+            return None
+        if num_cols <= 0:
+            return None
+
+        sampled_rank = _seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+        return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1)
+
     if (
         _seeded_gumbel_sample_sorted_kernel is None
         or not logprobs.is_cuda
