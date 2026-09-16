@@ -178,7 +178,7 @@ speculative generality.
 ## TOOLING
 
 - This repository already configures linting, formatting, and other checks in
-  [.pre-commit-config.yaml](../.pre-commit-config.yaml). Run
+  [.pre-commit-config.yaml](/.pre-commit-config.yaml). Run
   `pre-commit run --all-files` before completing a change.
 - Test actual failure contracts and supported fallback paths;
   do not add tests solely to preserve speculative recovery scaffolding.
