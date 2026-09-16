@@ -25,8 +25,9 @@ below.
    `create_sglang_infrastructure`, and returns an `OmniScheduler`.
 6. Write `request_builders.py` and `payload_types.py`. Wire abort cleanup
    into every scheduler that touches shared state.
-7. Add `examples/configs/<name>.yaml` and list the model in
-   [docs/basic_usage/tts.md](../basic_usage/tts.md).
+7. List the model in [docs/basic_usage/tts.md](../basic_usage/tts.md). Add
+   `examples/configs/<name>.yaml` only when it carries meaningful non-default
+   settings; otherwise document the direct `--model-path` launch.
 8. Add the GPU-free unit tests listed at the bottom.
 
 ## Layout
@@ -82,10 +83,16 @@ class. `sglang_omni/models/registry.py` walks every subpackage of
 `architecture` attribute against the model's HF config; no manual list to
 edit anywhere.
 
-Once the code side works, drop a runnable launch file under
-`examples/configs/<name>.yaml` and add the model to
-[docs/basic_usage/tts.md](../basic_usage/tts.md) so users have something to
-point `sgl-omni serve --config` at.
+Once the code side works, add the model to
+[docs/basic_usage/tts.md](../basic_usage/tts.md). If users need reproducible
+non-default settings such as hardware placement, topology, quantization,
+memory budgets, or performance tuning, add a runnable preset under
+`examples/configs/<name>.yaml` and document the corresponding
+`sgl-omni serve --config` command. If registry discovery plus the built-in
+pipeline defaults are sufficient, document `sgl-omni serve --model-path ...`
+instead. Do not add a wrapper config that only repeats `config_cls` and
+`model_path`; Fun-CosyVoice3 and Higgs TTS are examples of models that launch
+directly from `--model-path`.
 
 ### SGLang wiring
 

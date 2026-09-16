@@ -2,6 +2,18 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
+## Configuration Presets
+
+Files under `examples/configs/` are reusable presets for deployments that need
+meaningful overrides such as hardware placement, topology, quantization, memory
+budgets, or performance tuning. Not every supported model needs a preset. When
+the model registry can discover the pipeline from the checkpoint and the
+built-in defaults are sufficient, launch it with `--model-path` alone instead
+of adding a wrapper config that only repeats the config class and model path.
+
+The [TTS usage guide](../docs/basic_usage/tts.md#supported-tts-models) identifies
+which model families have example configs and which use `--model-path` only.
+
 ## Unified Launcher
 
 `run_omni.py` keeps model and topology choices in reusable presets. Use
