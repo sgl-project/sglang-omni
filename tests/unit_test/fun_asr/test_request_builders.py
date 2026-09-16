@@ -322,11 +322,6 @@ def test_fun_asr_request_builder_rejects_audio_over_vad_limit(monkeypatch) -> No
 def test_fun_asr_request_builder_enforces_scheduler_request_limits(
     monkeypatch,
 ) -> None:
-    # PR #1788 clamps requests that pass the surface token-budget check but
-    # cannot satisfy scheduler page reserves. That clamp only runs when
-    # enforce_request_limits is True; Fun-ASR must opt in like the other
-    # pipelines (Qwen3-ASR, Qwen3-TTS, ...) or admission mismatches slip
-    # through uncaught.
     monkeypatch.setattr(
         transcription,
         "load_audio",
