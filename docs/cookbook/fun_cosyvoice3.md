@@ -159,7 +159,6 @@ sgl-omni serve \
 ```
 
 
-
 ## Synthesizing Speech
 
 ### Zero-shot Voice Cloning
