@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -1358,6 +1358,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return captured
 
+    # Keep CUDA on the original no-grad path. MUSA graph capture rejects
+    # inplace updates to inference tensors created by the warmup.
     @torch.no_grad()
     def _capture_predictor_graph(
         self,
@@ -1370,6 +1372,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         cyclic collector while a stream is capturing destroys its pool inside
         the capture."""
         device = self._predictor_k_cache.device
+        capture_mode = (
+            torch.inference_mode() if device.type == "musa" else nullcontext()
+        )
         if self._predictor_capture_stream is None:
             self._predictor_capture_stream = torch.cuda.Stream(device=device)
         capture_stream = self._predictor_capture_stream
@@ -1398,20 +1403,21 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             # note(ratish): the outer stream context restores the current stream
             # when a failed capture raises from capture_end before torch.cuda.graph
             # restores it.
-            with (
-                torch.cuda.device(device),
-                self._predictor_graph_capture_state(bucket_size, signature),
-                torch.cuda.stream(capture_stream),
-            ):
-                for _ in range(_PREDICTOR_GRAPH_WARMUP_PASSES):
-                    run_once()
-                with torch.cuda.graph(
-                    graph.graph,
-                    pool=self._predictor_graph_memory_pool(),
-                    stream=capture_stream,
-                    capture_error_mode="thread_local",
+            with capture_mode:
+                with (
+                    torch.cuda.device(device),
+                    self._predictor_graph_capture_state(bucket_size, signature),
+                    torch.cuda.stream(capture_stream),
                 ):
-                    graph.result_codes, graph.summed_embeddings = run_once()
+                    for _ in range(_PREDICTOR_GRAPH_WARMUP_PASSES):
+                        run_once()
+                    with torch.cuda.graph(
+                        graph.graph,
+                        pool=self._predictor_graph_memory_pool(),
+                        stream=capture_stream,
+                        capture_error_mode="thread_local",
+                    ):
+                        graph.result_codes, graph.summed_embeddings = run_once()
         except Exception:
             # Note: (Jiaxin Deng) release the graph's private memory pool
             # eagerly; the raising object may linger on traceback frames.
