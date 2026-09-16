@@ -8,6 +8,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.utils.gpu_compat import apply_torch_compile_cache_env
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 _DECODE_CUDA_GRAPH_ALIASES = {
@@ -113,6 +114,8 @@ def build_sglang_server_args(
     else:
         pass
     kwargs.setdefault("device", platform_device_type())
+    kwargs.setdefault("enable_torch_compile", True)
+    apply_torch_compile_cache_env()
     apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)
     server_args.resolve_once()

@@ -102,7 +102,7 @@ def create_sglang_fun_asr_executor(
     max_new_tokens: int = 200,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
-    enable_torch_compile: bool = False,
+    enable_torch_compile: bool = True,
     enable_encoder_torch_compile: bool = False,
     enable_encoder_cuda_graph: bool = False,
     enable_async_decode: bool = True,

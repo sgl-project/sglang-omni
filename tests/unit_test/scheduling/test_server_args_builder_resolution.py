@@ -22,6 +22,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.utils.gpu_compat import apply_torch_compile_cache_env
 from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
 
@@ -69,3 +70,33 @@ def test_encoder_mem_reserve_reads_the_declared_fraction(tmp_path: Path) -> None
     assert resolution_result(server_args, "mem_fraction_static") == round(
         declared - 0.1, 3
     )
+
+
+def test_builder_defaults_torch_compile_on(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is True
+
+
+def test_builder_preserves_explicit_torch_compile_off(tmp_path: Path) -> None:
+    server_args = build_sglang_server_args(
+        write_mini_llama_checkpoint(tmp_path),
+        context_length=2048,
+        device="cuda",
+        enable_torch_compile=False,
+    )
+
+    assert resolution_result(server_args, "enable_torch_compile") is False
+
+
+def test_torch_compile_cache_env_sets_default_and_keeps_existing() -> None:
+    env: dict[str, str] = {}
+    cache_dir = apply_torch_compile_cache_env(env)
+
+    assert cache_dir == env["TORCHINDUCTOR_CACHE_DIR"]
+    assert cache_dir.endswith("sglang-omni/torchinductor")
+
+    env["TORCHINDUCTOR_CACHE_DIR"] = "/tmp/custom-inductor"
+    assert apply_torch_compile_cache_env(env) == "/tmp/custom-inductor"
