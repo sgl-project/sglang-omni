@@ -91,7 +91,7 @@ memory budgets, or performance tuning, add a runnable preset under
 `sgl-omni serve --config` command. If registry discovery plus the built-in
 pipeline defaults are sufficient, document `sgl-omni serve --model-path ...`
 instead. Do not add a wrapper config that only repeats `config_cls` and
-`model_path`; Fun-CosyVoice3 and Higgs TTS are examples of models that launch
+`model_path`; Fun-CosyVoice3, Higgs TTS and AuK are examples of models that launch
 directly from `--model-path`.
 
 ### SGLang wiring
