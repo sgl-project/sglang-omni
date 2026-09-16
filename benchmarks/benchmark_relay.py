@@ -79,6 +79,7 @@ def find_free_port() -> str:
 def sender_process(
     args,
     meta_queue,
+    ack_queue,
     barrier,
     relay_type: str,
     data_size_mb: int,
@@ -130,6 +131,16 @@ def sender_process(
             torch.float16 if "cuda" in str(relay_kwargs["device"]) else torch.float32
         )
 
+        async def _await_receiver_ack(op) -> None:
+            # note (leekaimao): the shm put op resolves only after the receiver
+            # acks consumption (same shape as comm/engine.py's control-plane
+            # ack), so consume the ack before awaiting put completion.
+            if relay_type.lower() != "shm":
+                return
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, ack_queue.get)
+            op.mark_receiver_done()
+
         async def _sender_loop():
             print(f"[Sender] Warm-up {args.warmup_iters} iters...")
             for i in range(args.warmup_iters):
@@ -143,6 +154,7 @@ def sender_process(
                 # NCCL requires dst_rank; other relays ignore it.
                 op = await relay.put_async(src_tensor, dst_rank=1)
                 meta_queue.put(op.metadata)
+                await _await_receiver_ack(op)
                 await op.wait_for_completion()
 
             print(f"[Sender] Measuring {args.num_iters} iters...")
@@ -156,6 +168,7 @@ def sender_process(
 
                 op = await relay.put_async(src_tensor, dst_rank=1)
                 meta_queue.put(op.metadata)
+                await _await_receiver_ack(op)
                 await op.wait_for_completion()
 
             print("[Sender] Done.")
@@ -174,6 +187,7 @@ def sender_process(
 def receiver_process(
     args,
     meta_queue,
+    ack_queue,
     barrier,
     relay_type: str,
     data_size_mb: int,
@@ -240,6 +254,7 @@ def receiver_process(
                 )
                 op = await relay.get_async(remote_meta, dest_tensor)
                 await op.wait_for_completion()
+                ack_queue.put(None)
                 if "cuda" in str(relay_kwargs["device"]):
                     torch.cuda.synchronize()
 
@@ -259,6 +274,7 @@ def receiver_process(
 
                 op = await relay.get_async(remote_meta, dest_tensor)
                 await op.wait_for_completion()
+                ack_queue.put(None)
 
                 if "cuda" in str(relay_kwargs["device"]):
                     torch.cuda.synchronize()
@@ -312,6 +328,7 @@ def benchmark_relay(args, backend_type: str):
         benchmark_sizes, desc=f"Benchmarking {backend_type.upper()} Relay"
     ):
         meta_queue = multiprocessing.Queue()
+        ack_queue = multiprocessing.Queue()
         init_barrier = multiprocessing.Barrier(2)
         receiver, sender = multiprocessing.Pipe()
 
@@ -323,6 +340,7 @@ def benchmark_relay(args, backend_type: str):
             args=(
                 args,
                 meta_queue,
+                ack_queue,
                 init_barrier,
                 backend_type,
                 size,
@@ -335,6 +353,7 @@ def benchmark_relay(args, backend_type: str):
             args=(
                 args,
                 meta_queue,
+                ack_queue,
                 init_barrier,
                 backend_type,
                 size,
@@ -383,13 +402,52 @@ def tabulate_and_save(
         f.write(table)
 
 
+def _backend_unavailable_reason(name: str) -> str | None:
+    """Returns why a backend cannot run on this host, or None if it can."""
+    if name == "nixl":
+        from sglang_omni.relay.nixl import NIXL_AVAILABLE
+
+        if not NIXL_AVAILABLE:
+            return "nixl is not installed"
+    elif name == "mooncake":
+        from sglang_omni.relay.mooncake import MOONCAKE_AVAILABLE
+
+        if not MOONCAKE_AVAILABLE:
+            return "mooncake-transfer-engine is not installed"
+    elif name == "nccl":
+        if not (torch.cuda.is_available() and torch.cuda.device_count() >= 2):
+            return "nccl requires at least 2 CUDA devices"
+    return None
+
+
+def resolve_backend_types(requested: str) -> list[str]:
+    """Validates backend availability before spawning worker processes.
+
+    A missing transport library kills the worker subprocesses before they can
+    report results, and the harness then blocks forever on the results pipe.
+    For "all", unavailable backends are skipped with a notice; for an explicit
+    backend the run aborts with a clear error instead of hanging.
+    """
+    if requested != "all":
+        reason = _backend_unavailable_reason(requested)
+        if reason is not None:
+            raise SystemExit(f"backend '{requested}' is unavailable: {reason}")
+        return [requested]
+
+    backends = []
+    for name in ["nixl", "shm", "nccl", "mooncake"]:
+        reason = _backend_unavailable_reason(name)
+        if reason is not None:
+            print(f"[skip] {name}: {reason}")
+            continue
+        backends.append(name)
+    return backends
+
+
 if __name__ == "__main__":
     multiprocessing.set_start_method("spawn", force=True)
     args = parse_args()
-    if args.backend_type == "all":
-        backend_types = ["nixl", "shm", "nccl", "mooncake"]
-    else:
-        backend_types = [args.backend_type]
+    backend_types = resolve_backend_types(args.backend_type)
 
     for backend_type in backend_types:
         benchmark_sizes, latency_list, throughput_list = benchmark_relay(
