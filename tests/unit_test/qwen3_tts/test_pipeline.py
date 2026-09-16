@@ -361,7 +361,14 @@ def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
 ) -> None:
     from transformers import AutoProcessor
 
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    monkeypatch.setattr(
+        engine_builder_mod,
+        "_should_capture_predictor_graphs",
+        lambda *, server_args, device: not bool(server_args.disable_cuda_graph),
+    )
 
     loads: list[str] = []
     predictor_captures: list[tuple] = []
@@ -2086,7 +2093,7 @@ def test_qwen3_tts_cpu_seeded_sampling_skips_npu_sampler(
     assert sampled.tolist() == [1, 1]
 
 
-def test_qwen3_tts_predictor_graph_is_cuda_only(
+def test_qwen3_tts_predictor_graph_needs_a_recording_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
@@ -6897,6 +6904,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
     from transformers.utils import generic
 
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
     from sglang_omni.models.qwen3_tts import model_runner as model_runner_mod
     from sglang_omni.models.qwen3_tts import request_builders as request_builders_mod
     from sglang_omni.models.qwen3_tts import stages
@@ -6906,6 +6914,10 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     from sglang_omni.scheduling import bootstrap as bootstrap_mod
     from sglang_omni.scheduling import omni_scheduler as scheduler_mod
     from sglang_omni.scheduling import sglang_backend
+
+    monkeypatch.setattr(
+        engine_builder_mod, "_should_capture_predictor_graphs", lambda **_: True
+    )
 
     check_model_inputs_calls = []
     expected_cuda_graph_bs = [
