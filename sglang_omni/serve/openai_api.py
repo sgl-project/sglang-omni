@@ -8,6 +8,7 @@ Provides the following endpoints:
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
 - WS   /v1/audio/speech/stream — Stateful TTS WebSocket streaming
 - POST /v1/audio/transcriptions — Speech-to-text transcription
+- POST /v1/audio/diarizations — Speaker intervals (Omni extension)
 - GET  /v1/audio/voices      — List preset and uploaded TTS voices
 - POST /v1/audio/voices      — Upload a persistent TTS reference voice
 - DELETE /v1/audio/voices/{name} — Delete an uploaded TTS voice
@@ -68,6 +69,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
@@ -299,6 +301,7 @@ def create_app(
     _register_speech_batch(app)
     _register_speech_ws(app)
     register_transcriptions(app)
+    register_diarizations(app)
     register_translations(app)
     if enable_realtime:
         _register_realtime(app)
