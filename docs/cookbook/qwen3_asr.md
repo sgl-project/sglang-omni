@@ -17,10 +17,79 @@ MODEL_PATH="$(
 )"
 ```
 
-### Apple Silicon (MLX)
+### 🍎 Apple Silicon (MLX)
+
+#### Method 1: Using the install.sh Script
+
+```bash
+git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
+./install.sh
+source .venv-apple/bin/activate
+```
+
+The script is idempotent and creates (or reuses) `.venv-apple`, installs the
+Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
+already available), installs SGLang `v0.5.19` from source with its `all_mps`
+extra, and installs this checkout with `uv pip`. SGLang's optional Rust
+extensions are not needed by this Apple Silicon path and are skipped.
+`ffmpeg@7` is intentional: `torchcodec==0.15.0` ships loaders for FFmpeg 4 through 8
+only, and the unversioned formula installs FFmpeg 9. At runtime, expose its libraries:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Homebrew must be installed before running the script. If `brew` is missing, the
+script prints an error and exits; install it yourself from
+[brew.sh](https://brew.sh), then rerun. The installer never invokes `sudo` or
+Homebrew's bootstrapper. Use `--non-interactive` (or `NONINTERACTIVE=1`) to
+disable Homebrew auto-update in CI, `SGLANG_OMNI_VENV=/path/to/venv` to choose a virtualenv, and
+`SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3` to enable optional extras.
+The persistent SGLang source checkout defaults to
+`~/.cache/sglang-omni/sglang-v0.5.19` and can be changed with
+`SGLANG_SOURCE_DIR`. Slow or proxied networks can override the installer's uv
+defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
+
+This path currently supports macOS 14 or newer on `arm64` only (the pinned
+`torch==2.13.0`, `torchvision==0.28.0` and `torchcodec==0.15.0` wheels are built
+for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
+MLX/Torch-MPS paths. Other platforms should use the
+Docker, manual, or Intel XPU instructions below. Common failures are a missing
+Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
+`DYLD_LIBRARY_PATH` export when starting an audio server.
+
+##### Run from a hosted installer
+
+The script also supports a downloaded or `curl | bash` invocation: when it is
+not inside an sglang-omni checkout, it clones the repository specified by
+`SGLANG_OMNI_REPO` and `SGLANG_OMNI_REF` into the cache and installs that
+checkout. Prefer downloading, reviewing, and then running a pinned script:
+
+```bash
+curl -fsSLo /tmp/sglang-omni-install.sh \
+  https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh
+less /tmp/sglang-omni-install.sh
+chmod +x /tmp/sglang-omni-install.sh
+SGLANG_OMNI_REF=<commit> /tmp/sglang-omni-install.sh
+```
+
+Piping a remote script directly to Bash executes code without a review step;
+use it only when that trade-off is acceptable:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh \
+  | SGLANG_OMNI_REF=<commit> bash
+```
+
+For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
+`SGLANG_OMNI_REF` explicitly. The hosted mode stores the project checkout at
+`~/.cache/sglang-omni/sglang-omni-<ref>` by default; override it with
+`SGLANG_OMNI_PROJECT_DIR`.
+
+#### Method 2: Manual Configuration
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula(by following Installation): draft All future MLX-supported Model shall use a unified installation approach.
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
 ```bash
 brew install ffmpeg@7
@@ -333,7 +402,26 @@ YAML keys:
 |---|---|---|
 | `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. Capped at the native clip limit. |
 | `--audio_chunking.max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+
+The last knob is the aggregate guard. Each admitted upload holds its decoded
+waveform (float32 at 16 kHz, about 230 MB for an hour) and drives up to
+`max_concurrent_chunks` engine requests, so:
+
+- decoded waveforms held at once are at most
+  `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4` bytes
+  (decoding itself has transient peaks above that);
+- engine slots long audio can take together are at most
+  `max_concurrent_long_audio_requests × max_concurrent_chunks`.
+
+The default keeps that product at half of `--asr.engine.max_running_requests`
+so short requests always have slots left. Setting the knob explicitly to a
+value whose product reaches `max_running_requests` logs a warning at startup:
+it is not an error, since extra chunks only queue in the engine, but short
+requests then wait behind long audio whenever it is saturated. Raising
+`max_running_requests` instead also resizes CUDA graph capture, so treat it
+as the GPU capacity knob and this one as the long-audio share of it.
 
 The model properties are ClassVars on `Qwen3ASRPipelineConfig`; no
 configuration path reaches them:
