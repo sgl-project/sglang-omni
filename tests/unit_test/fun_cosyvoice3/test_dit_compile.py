@@ -141,3 +141,4 @@ def test_vocoder_factory_exposes_dit_torch_compile_flag() -> None:
     assert signature.parameters["enable_dit_torch_compile"].default is False
     assert signature.parameters["enable_flow_cuda_graph"].default is True
     assert signature.parameters["enable_flow_estimator_trt"].default is False
+    assert signature.parameters["enable_dit_fused_rope"].default is False
