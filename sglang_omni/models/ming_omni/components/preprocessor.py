@@ -16,7 +16,10 @@ from sglang_omni.models.ming_omni.components.common import (
 )
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState, PromptInputs
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
-from sglang_omni.preprocessing.audio import compute_audio_cache_key, load_audio_path
+from sglang_omni.preprocessing.audio import (
+    compute_audio_cache_key,
+    ensure_audio_list_async,
+)
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
@@ -194,6 +197,44 @@ def _inject_top_level_audios(
         messages[idx] = {**msg, "content": new_content}
         break
     return messages
+
+
+def _extract_audio_inputs(messages: list[dict[str, Any]]) -> list[str]:
+    """Extract audio references from inline multimodal message parts.
+
+    The OpenAI-compatible API accepts both ``audio_url`` parts and raw
+    ``input_audio`` parts.  Normalize the latter to a data URL so all inputs
+    use the same URL/local-file decoder and preserve the message order used by
+    the prompt placeholders.
+    """
+    audio_inputs: list[str] = []
+    for message in messages:
+        content = message.get("content", "")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "audio_url":
+                audio_url = item.get("audio_url", {})
+                value = (
+                    audio_url.get("url", "")
+                    if isinstance(audio_url, dict)
+                    else str(audio_url)
+                )
+                if value:
+                    audio_inputs.append(value)
+            elif item_type == "input_audio":
+                input_audio = item.get("input_audio", {})
+                if not isinstance(input_audio, dict):
+                    continue
+                data = input_audio.get("data")
+                if not data:
+                    continue
+                audio_format = str(input_audio.get("format") or "wav").lower()
+                audio_inputs.append(f"data:audio/{audio_format};base64,{data}")
+    return audio_inputs
 
 
 def _inject_top_level_videos(
@@ -422,7 +463,10 @@ class MingPreprocessor:
         # different content -> different key so it never falsely aliases image
         # placeholder positions (which share the same generic image_patch_token).
         image_cache_key = compute_image_cache_key(raw_images) if raw_images else None
-        audio_cache_key = compute_audio_cache_key(audio_urls) if audio_urls else None
+        audio_inputs = _extract_audio_inputs(messages)
+        audio_cache_key = (
+            compute_audio_cache_key(audio_inputs) if audio_inputs else None
+        )
         video_cache_key = (
             compute_video_cache_key(
                 raw_videos,
@@ -466,13 +510,13 @@ class MingPreprocessor:
             if raw_videos
             else None
         )
-        audio_coros = (
-            [
-                asyncio.to_thread(load_audio_path, url, target_sr=WHISPER_SAMPLE_RATE)
-                for url in audio_urls
-            ]
-            if audio_urls
-            else []
+        audio_coro = (
+            ensure_audio_list_async(
+                audio_inputs,
+                target_sr=WHISPER_SAMPLE_RATE,
+            )
+            if audio_inputs
+            else None
         )
 
         # Gather all loads concurrently
@@ -481,7 +525,8 @@ class MingPreprocessor:
             all_tasks.append(image_coro)
         if video_coro is not None:
             all_tasks.append(video_coro)
-        all_tasks.extend(audio_coros)
+        if audio_coro is not None:
+            all_tasks.append(audio_coro)
 
         if all_tasks:
             results = await asyncio.gather(*all_tasks, return_exceptions=True)
@@ -507,7 +552,15 @@ class MingPreprocessor:
             else:
                 # ensure_video_list_async returns (videos, sample_fps, audio)
                 videos = vid_result[0] if isinstance(vid_result, tuple) else vid_result
-        audio_results = results[idx:]
+        audio_results: list[Any] = []
+        if audio_coro is not None:
+            audio_result = results[idx]
+            if isinstance(audio_result, BaseException):
+                raise ValueError(
+                    f"Failed to load Ming audio input: {audio_result}"
+                ) from audio_result
+            if isinstance(audio_result, list):
+                audio_results = audio_result
 
         waveforms: list[np.ndarray] = [
             a for a in audio_results if isinstance(a, np.ndarray)
