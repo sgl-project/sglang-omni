@@ -312,7 +312,7 @@ class MossTTSModelRunner(ModelRunner):
             delayed = (
                 _INT64_MAX
                 if int(getattr(data, "delayed_length", _INF_DELAY)) == _INF_DELAY
-                else int(getattr(data, "delayed_length"))
+                else int(data.delayed_length)
             )
             state = torch.tensor(
                 [

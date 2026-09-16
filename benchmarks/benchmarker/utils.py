@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import requests as requests_lib
@@ -204,8 +204,9 @@ def start_server_from_cmd(
     elif tee:
         # Tee (file + stdout): TP=2 fixture wants the file for grep + live
         # output for `pytest -s`. Pattern from sglang's popen_launch_server.
-        log_handle = open(log_file, "w")
-        try:
+        # Keep the log open after return; the tee thread closes it in finally.
+        with ExitStack() as stack:
+            log_handle = stack.enter_context(open(log_file, "w"))
             proc = subprocess.Popen(
                 cmd,
                 env=process_env,
@@ -215,27 +216,24 @@ def start_server_from_cmd(
                 text=True,
                 bufsize=1,
             )
-        except Exception:
-            log_handle.close()
-            raise
 
-        def _tee_stdout(src, sink) -> None:
-            try:
-                for line in iter(src.readline, ""):
-                    sink.write(line)
-                    sink.flush()
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-            finally:
-                src.close()
-                sink.close()
+            def _tee_stdout(src, sink) -> None:
+                try:
+                    for line in iter(src.readline, ""):
+                        sink.write(line)
+                        sink.flush()
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                finally:
+                    src.close()
+                    sink.close()
 
-        # log_handle ownership is handed to the thread; its finally closes it.
-        threading.Thread(
-            target=_tee_stdout,
-            args=(proc.stdout, log_handle),
-            daemon=True,
-        ).start()
+            threading.Thread(
+                target=_tee_stdout,
+                args=(proc.stdout, log_handle),
+                daemon=True,
+            ).start()
+            stack.pop_all()
     else:
         with open(log_file, "w") as log_handle:
             proc = subprocess.Popen(

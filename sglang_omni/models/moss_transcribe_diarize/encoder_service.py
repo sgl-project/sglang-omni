@@ -136,9 +136,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         items: list[Any],
         embedding: torch.Tensor,
     ) -> list[torch.Tensor]:
-        token_counts = [
-            int(getattr(item, "audio_feature_lengths").sum()) for item in items
-        ]
+        token_counts = [int(item.audio_feature_lengths.sum()) for item in items]
         if embedding.shape[0] != sum(token_counts):
             raise RuntimeError(
                 f"encoder output rows {embedding.shape[0]} != expected "

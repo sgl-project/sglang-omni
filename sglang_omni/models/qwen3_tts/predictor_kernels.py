@@ -5,15 +5,25 @@ from __future__ import annotations
 
 import torch
 
-try:
-    import triton
-    import triton.language as tl
-except ImportError:  # pragma: no cover - depends on runtime image
+from sglang_omni.platforms import current_platform
+
+if not current_platform.is_npu():
+    try:
+        import triton
+        import triton.language as tl
+    except ImportError:  # pragma: no cover - depends on runtime image
+        triton = None
+        tl = None
+else:
     triton = None
     tl = None
 
 
-if triton is not None:
+def _has_triton_runtime() -> bool:
+    return triton is not None and not current_platform.is_npu()
+
+
+if _has_triton_runtime():
 
     @triton.jit
     def _gather_codec_embedding_and_add_kernel(

@@ -125,7 +125,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "trust_remote_code": True,
         }
 
-    def setup_model(
+    def before_memory_pool(
         self,
         *,
         model_worker: Any,
@@ -136,7 +136,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     ) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
-        del checkpoint_dir, gpu_id
+        # note(ratish): the fine-tuned weights and the ONNX sessions live for
+        # the whole process, so they are built before sglang reads free memory
+        # for the KV pool.
+        del checkpoint_dir, gpu_id, server_args
         root = self._checkpoint_root
         assert root is not None, "checkpoint_root not set"
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
@@ -177,6 +180,17 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             use_mlx=use_mlx(),
             model_revision=root,
         )
+
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx

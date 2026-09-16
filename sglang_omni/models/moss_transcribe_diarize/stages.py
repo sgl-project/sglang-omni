@@ -42,7 +42,7 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
                     return []
                 raise
 
-        setattr(module, "list_repo_templates", wrapped)
+        module.list_repo_templates = wrapped
         patched.append((module, original))
 
     try:
@@ -51,7 +51,7 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
         yield
     finally:
         for module, original in reversed(patched):
-            setattr(module, "list_repo_templates", original)
+            module.list_repo_templates = original
 
 
 def _default_context_length(model_path: str) -> int:

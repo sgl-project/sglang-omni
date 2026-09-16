@@ -18,7 +18,7 @@ import logging
 import mmap
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from typing import cast
 
 import httpx
@@ -168,15 +168,18 @@ def create_control_plane_app(
     admission_view: AdmissionAggregateView | None = None
     admission_shm_file = None
     if admission_shm_path and expected_data_planes:
-        admission_shm_file = open(admission_shm_path, "rb")
-        admission_view = AdmissionAggregateView(
-            mmap.mmap(
-                admission_shm_file.fileno(),
-                admission_file_size(expected_data_planes),
-                access=mmap.ACCESS_READ,
-            ),
-            expected_data_planes,
-        )
+        # Keep the existing file lifetime: the app's lifespan closes it.
+        with ExitStack() as stack:
+            admission_shm_file = stack.enter_context(open(admission_shm_path, "rb"))
+            admission_view = AdmissionAggregateView(
+                mmap.mmap(
+                    admission_shm_file.fileno(),
+                    admission_file_size(expected_data_planes),
+                    access=mmap.ACCESS_READ,
+                ),
+                expected_data_planes,
+            )
+            stack.pop_all()
 
     # Note (Jiaxin Deng): the CP never relays data traffic, so its pool is
     # sized to the worker count, not to the admission bound.
