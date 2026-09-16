@@ -18,6 +18,7 @@ Usage:
     python -m benchmarks.dataset.prepare --dataset videomme-ci-50
     python -m benchmarks.dataset.prepare --dataset videomme-ci-25
     python -m benchmarks.dataset.prepare --dataset videoamme-ci-50
+    python -m benchmarks.dataset.prepare --dataset gsm8k-test-50
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ DATASETS: dict[str, str] = {
     "videomme-ci-50": "zhaochenyang20/Video_MME_ci",
     "videomme-ci-25": "zhaochenyang20/Video_MME_ci_25",
     "videoamme-ci-50": "zhaochenyang20/Video_AMME_ci",
+    # GSM8K text reasoning; the CI subset is the deterministic first 50 of the
+    # "main" test split (see benchmarks/dataset/gsm8k.py).
+    "gsm8k-test-50": "openai/gsm8k",
 }
 
 
@@ -86,7 +90,10 @@ def download_dataset(
             revision or "default",
         )
 
-    if dataset_id == "MMMU/MMMU":
+    if dataset_id == "openai/gsm8k":
+        # GSM8K ships a "main" config; the benchmark reads the test split.
+        load_dataset(dataset_id, "main", split="test", **revision_kwargs)
+    elif dataset_id == "MMMU/MMMU":
         config_names = get_dataset_config_names(dataset_id, **revision_kwargs)
         for config_name in config_names:
             load_dataset(

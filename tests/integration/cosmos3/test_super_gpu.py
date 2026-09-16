@@ -116,15 +116,21 @@ async def _running(config):
         assert not alive, "Owned stage/native processes remained after shutdown"
 
 
-async def _generate(runner, request):
+async def _generate(runner, request, request_id=None):
     from sglang_omni.client import Client
 
-    chunks = []
-    async with asyncio.timeout(
-        float(os.environ.get("COSMOS3_SUPER_REQUEST_TIMEOUT", "900"))
-    ):
-        async for chunk in Client(runner.coordinator).generate(request):
+    async def collect():
+        chunks = []
+        async for chunk in Client(runner.coordinator).generate(
+            request, request_id=request_id
+        ):
             chunks.append(chunk)
+        return chunks
+
+    chunks = await asyncio.wait_for(
+        collect(),
+        timeout=float(os.environ.get("COSMOS3_SUPER_REQUEST_TIMEOUT", "900")),
+    )
     assert len(chunks) == 1 and chunks[0].finish_reason in ("stop", "length")
     return chunks[0]
 
@@ -346,4 +352,71 @@ async def test_super_reasoner(tmp_path, mode, deployment):
             ),
         )
         assert chunk.text and chunk.text.strip()
+        response = chunk.text.strip().lower()
+        if mode == "text":
+            assert response.endswith("4"), response
+        elif mode == "image":
+            assert "red" in response, response
+        else:
+            assert "red" in response and "blue" in response, response
+            assert response.index("red") < response.index("blue"), response
         (tmp_path / "response.txt").write_text(chunk.text)
+
+
+@pytest.mark.asyncio
+async def test_super_reasoner_lifecycle(tmp_path, deployment):
+    from sglang_omni.client import Client, GenerateRequest, SamplingParams
+
+    model, devices = deployment
+    config = _config("reasoner", model, devices, tmp_path)
+    long_request = GenerateRequest(
+        prompt="Count upward from one, writing every integer on a separate line.",
+        sampling=SamplingParams(temperature=0.0, max_new_tokens=2048),
+        stream=False,
+    )
+
+    # A native request can be cancelled without poisoning the live deployment.
+    async with _running(config) as runner:
+        client = Client(runner.coordinator)
+        request_id = "cosmos3-super-cancel"
+        pending = asyncio.create_task(
+            _generate(runner, long_request, request_id=request_id), name=request_id
+        )
+        for _ in range(100):
+            if await client.get_status(request_id) is not None:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("Cancellation request was not admitted")
+        aborted = await client.abort(request_id)
+        assert aborted.success
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, timeout=30)
+        followup = await _generate(
+            runner,
+            GenerateRequest(
+                prompt="What is two plus two? Give a short answer.",
+                sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
+                stream=False,
+            ),
+        )
+        assert followup.text and followup.text.strip().endswith("4")
+
+    # The runner notices an unexpected stage death and releases the process tree.
+    async with _running(config) as runner:
+        worker = runner._groups[0].processes[0]
+        worker.terminate()
+        with pytest.raises(RuntimeError, match="Dead stage process"):
+            await asyncio.wait_for(runner.wait_failed(), timeout=30)
+
+    # A fresh native owner can start after the failed worker has been cleaned up.
+    async with _running(config) as runner:
+        restarted = await _generate(
+            runner,
+            GenerateRequest(
+                prompt="What is two plus two? Give a short answer.",
+                sampling=SamplingParams(temperature=0.0, max_new_tokens=128),
+                stream=False,
+            ),
+        )
+        assert restarted.text and restarted.text.strip().endswith("4")

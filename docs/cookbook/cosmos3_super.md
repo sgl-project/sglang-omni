@@ -19,21 +19,36 @@ Use a local checkpoint or `nvidia/Cosmos3-Super@<revision>`. The adapters preser
 checkpoint metadata and served names. HTTP setup resolves one snapshot for both
 the frontend and generation worker, preventing a moving revision from diverging.
 
+No separate download step is required: the example configs pin
+`nvidia/Cosmos3-Super@<revision>`, and at first launch the stage resolver
+(`sglang_omni/utils/checkpoint.py:resolve_checkpoint`) calls `snapshot_download`
+for that exact revision, exactly like standard SGLang/vLLM serving. Export
+`HF_TOKEN` (the repo is gated) and, if you want the weights on a specific disk,
+point `HF_HOME`/`HF_HUB_CACHE` at it before serving. Passing `--model-path` a
+local snapshot dir skips the download entirely.
+
 ```bash
-SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
+SGLANG_OMNI_STARTUP_TIMEOUT=1800 HF_TOKEN=... sgl-omni serve \
   --config examples/configs/cosmos3_super_generation.yaml \
-  --model-path /models/Cosmos3-Super --host 127.0.0.1 --port 8000
+  --host 127.0.0.1 --port 8000
 ```
 
+An explicit prefetch is **optional** — useful only to land weights on a fast
+local SSD (`hf download nvidia/Cosmos3-Super@<revision> --local-dir ...`) or to
+fail fast on a missing token before GPUs are allocated. It is not a prerequisite
+for serving.
+
 For understanding, substitute `cosmos3_super_reasoner.yaml`. Run them separately;
-both reserve GPUs 0–3. Generation mounts native media routes; Reasoner serves
+both default to GPUs 0–1. Generation mounts native media routes; Reasoner serves
 `/v1/chat/completions`. Neither configuration enables interleaved generation.
 
-The four-H100 allocation is **provisional**, not a measured memory requirement:
+The two-GPU allocation is the tested default on this hardware; the layout is
+**provisional**, not a measured memory requirement:
 
 - `runtime_gpu_ids` reserves the native workers' GPUs; stage `tp_size: 1` means one Omni owner.
-- Generation enables FSDP weight sharding and forwards native execution options, following [Edge #2107](https://github.com/sgl-project/sglang-omni/pull/2107). It does not hard-code Ulysses or CFG parallelism.
-- Reasoner uses native SRT TP=4. Native `server_args_overrides.tp_size` is distinct from Omni's stage process count.
+- Generation enables FSDP weight sharding (`hsdp_shard_dim: 2`) and forwards native execution options, following [Edge #2107](https://github.com/sgl-project/sglang-omni/pull/2107). It does not hard-code Ulysses or CFG parallelism.
+- Reasoner uses native SRT TP=2. Native `server_args_overrides.tp_size` is distinct from Omni's stage process count.
+- To scale up (e.g. TP=4 on four GPUs), widen `runtime_gpu_ids` and raise the native `tp_size`/`hsdp_shard_dim` to match.
 
 CFG remains available through request parameters such as `guidance_scale` and
 `negative_prompt`; choosing where its branches execute is a separate setting.
@@ -72,7 +87,7 @@ export COSMOS3_SUPER_RUN_GPU=1
 export COSMOS3_SUPER_MODEL_PATH=/models/Cosmos3-Super
 export COSMOS3_SUPER_CHECKPOINT_REVISION='<checkpoint commit>'
 export COSMOS3_SUPER_NATIVE_REVISION='<native commit and patch identifier>'
-export COSMOS3_SUPER_GPU_IDS=0,1,2,3
+export COSMOS3_SUPER_GPU_IDS=0,1
 python -m pytest -q tests/integration/cosmos3/test_super_gpu.py \
   --junitxml=results/cosmos3-super.xml --durations=0
 ```
@@ -93,7 +108,7 @@ recovery remain unqualified. Pytest durations include startup and cleanup and ar
 not inference latency benchmarks. JUnit records case outcomes and revision/GPU
 metadata. Raw media and Reasoner responses remain in pytest's temporary directory.
 
-Repeat with 1, 2, or 8 GPU IDs in separate campaigns. The tests load the example
+Repeat with 1, 4, or 8 GPU IDs in separate campaigns. The tests load the example
 YAMLs and adjust their allocation: multi-GPU generation uses FSDP, one GPU uses
 layerwise transformer offload, and Reasoner uses native TP equal to the allocation.
 Memory fit is unqualified; one-GPU offload also needs sufficient host RAM.
