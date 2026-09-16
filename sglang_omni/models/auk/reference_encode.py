@@ -66,7 +66,7 @@ class AuKConditionEncoder:
         model.lm_head = torch.nn.Identity()
         model.requires_grad_(False)
         model.eval()
-        self.model = model.to(device=self.device, dtype=torch.float32)
+        self.model = model.to(device=self.device, dtype=dtype)
 
     @property
     def num_hidden_layers(self) -> int:
