@@ -138,25 +138,53 @@ def make_arkasr_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        # mel: pad to the clip's true length (short clips do not pay the full
-        # 30s of FFT). ARK's WhisperEncoder is variable-length; conv2 stride-2
-        # then merge_factor determines the audio-token count.
-        extracted = feature_extractor(
-            audio,
-            sampling_rate=_SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-            padding="longest",
-            truncation=True,
-        )
-        features = extracted.input_features  # [num_mel_bins, T]
-        feature_attention_mask = getattr(extracted, "attention_mask", None)
-        if feature_attention_mask is None:
-            feature_attention_mask = torch.ones(
-                (features.shape[0], features.shape[-1]), dtype=torch.long
+        cached_embedding = None
+        estimated_audio_tokens = None
+        if audio_encoder_service is not None:
+            try:
+                hop_length = int(feature_extractor.hop_length)
+                max_mel_frames = int(feature_extractor.nb_max_frames)
+            except AttributeError as exc:
+                raise ValueError(
+                    "ARK-ASR feature extractor is missing its audio-length metadata"
+                ) from exc
+            if hop_length <= 0 or max_mel_frames <= 0:
+                raise ValueError(
+                    "ARK-ASR feature extractor has invalid audio-length metadata"
+                )
+            estimated_mel_frames = min(len(audio) // hop_length, max_mel_frames)
+            estimated_audio_tokens = arkasr_num_audio_tokens(
+                estimated_mel_frames, merge_factor
             )
-        num_mel_frames = int(feature_attention_mask.sum().item())
-        num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint,
+                estimated_audio_tokens,
+            )
+
+        if cached_embedding is None:
+            # note (zhaochen20): pad to the clip length because ARK's encoder
+            # accepts variable-length mel input.
+            extracted = feature_extractor(
+                audio,
+                sampling_rate=_SAMPLE_RATE,
+                return_tensors="pt",
+                return_attention_mask=True,
+                padding="longest",
+                truncation=True,
+            )
+            features = extracted.input_features  # [batch, num_mel_bins, T]
+            feature_attention_mask = getattr(extracted, "attention_mask", None)
+            if feature_attention_mask is None:
+                feature_attention_mask = torch.ones(
+                    (features.shape[0], features.shape[-1]), dtype=torch.long
+                )
+            num_mel_frames = int(feature_attention_mask.sum().item())
+            num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
+        else:
+            features = None
+            feature_attention_mask = None
+            assert estimated_audio_tokens is not None
+            num_audio_tokens = estimated_audio_tokens
 
         input_ids = _build_prompt_ids(num_audio_tokens)
 
@@ -218,6 +246,9 @@ def make_arkasr_scheduler_adapters(
             prompt_token_ids=input_ids,
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
+            prefill_coalesce_after_build_drain_hint=(
+                None if audio_encoder_service is None else cached_embedding is not None
+            ),
             audio_duration_s=audio_duration_s,
             language=str(params.get("language") or "en"),
             engine_start_s=time.perf_counter(),
@@ -225,6 +256,13 @@ def make_arkasr_scheduler_adapters(
         )
         if audio_encoder_service is None:
             return req_data
+        if cached_embedding is not None:
+            return DeferredAdmission(
+                value=req_data,
+                ready=audio_encoder_service.submit_cached_item(
+                    audio_item, cached_embedding
+                ),
+            )
         return DeferredAdmission(
             value=req_data,
             ready=audio_encoder_service.submit_item(audio_item),
