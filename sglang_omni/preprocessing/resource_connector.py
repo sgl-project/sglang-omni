@@ -71,6 +71,22 @@ def resolve_allowed_local_media_path(path: str | Path) -> Path:
     return resolved
 
 
+def _resolve_local_file(
+    filepath: str | Path, *, allowed_local_media_path: Path | None
+) -> Path:
+    """Resolve a local path, applying containment when an allowlist is set.
+
+    Callers decide what a missing allowlist means: file:// URLs treat it as a
+    rejection, bare paths fall back to the trusted-local default.
+    """
+    resolved = Path(filepath).expanduser().resolve()
+    if allowed_local_media_path is not None and not resolved.is_relative_to(
+        allowed_local_media_path
+    ):
+        raise ValueError(f"File path {resolved} is not within allowed directory.")
+    return resolved
+
+
 def _next_redirect_url(response: httpx.Response) -> str:
     location = response.headers.get("location")
     if not location:
@@ -291,12 +307,23 @@ class MultiModalResourceConnector:
         netloc = url_spec.netloc or ""
         if netloc and netloc != "localhost":
             raise ValueError(f"File URL netloc is not supported: {netloc}")
-        filepath = Path(url2pathname(url_spec.path)).resolve()
+        filepath = _resolve_local_file(
+            url2pathname(url_spec.path),
+            allowed_local_media_path=self.allowed_local_media_path,
+        )
+        return media_io.load_file(filepath)
 
-        try:
-            filepath.relative_to(self.allowed_local_media_path)
-        except ValueError:
-            raise ValueError(f"File path {filepath} is not within allowed directory.")
+    def load_local_path(self, path: str | Path, media_io: MediaIO[_M]) -> _M:
+        """Load media from a bare local path.
+
+        Bare paths keep the trusted-local behavior of unconfigured servers
+        (allowed), but are scoped to allowed_local_media_path once it is
+        configured. Existence and size checks are delegated to
+        media_io.load_file.
+        """
+        filepath = _resolve_local_file(
+            path, allowed_local_media_path=self.allowed_local_media_path
+        )
         return media_io.load_file(filepath)
 
     def load_resource(

@@ -782,19 +782,19 @@ class SpeechRequestValidator:
         self, value: str, *, param: str
     ) -> dict[str, str]:
         url = urlparse(value)
-        if url.scheme not in {"http", "https", "data", "file"}:
-            if url.scheme:
-                raise bad_request(
-                    f"{param} must be an http, https, data, file:// URL, or local path",
-                    param=param,
-                )
-            return {"audio_path": str(Path(value).expanduser().resolve())}
-        try:
-            return self.reference_connector.load_resource(
-                value,
-                _SpeechReferenceMediaIO(param),
-                max_bytes=MAX_REFERENCE_AUDIO_BYTES,
+        if url.scheme and url.scheme not in {"http", "https", "data", "file"}:
+            raise bad_request(
+                f"{param} must be an http, https, data, file:// URL, or local path",
+                param=param,
             )
+        media_io = _SpeechReferenceMediaIO(param)
+        try:
+            if url.scheme:
+                return self.reference_connector.load_resource(
+                    value, media_io, max_bytes=MAX_REFERENCE_AUDIO_BYTES
+                )
+            # Bare local paths follow the same allowlist and file checks as file://.
+            return self.reference_connector.load_local_path(value, media_io)
         except (RuntimeError, ValueError, OSError) as exc:
             raise bad_request(str(exc), param=param) from exc
 
@@ -934,8 +934,10 @@ class _SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
         return {"data": data, "media_type": media_type}
 
     def load_file(self, filepath: Path) -> dict[str, str]:
+        if not filepath.exists():
+            raise ValueError(f"{self.param} file does not exist: {filepath}")
         if not filepath.is_file():
-            raise ValueError(f"file:// {self.param} path must be a file: {filepath}")
+            raise ValueError(f"{self.param} is not a file: {filepath}")
         _validate_reference_size(filepath.stat().st_size, param=self.param)
         return {"audio_path": str(filepath)}
 
