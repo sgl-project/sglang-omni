@@ -33,6 +33,7 @@ from sglang_omni.pipeline.control_plane import PullSocket, PushSocket, send_to_e
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import elapsed_ms as _comm_elapsed_ms
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
+from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
 from sglang_omni.profiler.comm_trace import now_ns as _comm_now_ns
 from sglang_omni.proto import (
     DataAckMessage,
@@ -71,6 +72,19 @@ class _PendingTransfer(msgspec.Struct):
     retain_pending_on_failure: bool = False
     receiver_terminal: bool = False
     cleanup_requested: bool = False
+
+
+def _pending_transfer_bytes(pending: _PendingTransfer) -> int:
+    total = 0
+    for op in pending.ops:
+        try:
+            size = op.metadata["transfer_info"]["size"]
+        except Exception:
+            return -1
+        if type(size) is not int or size < 0:
+            return -1
+        total += size
+    return total
 
 
 class _PayloadSendJob(msgspec.Struct, frozen=True):
@@ -1090,6 +1104,7 @@ class CommEngine:
 
     async def _watch_pending(self, object_id: str, pending: _PendingTransfer) -> bool:
         retained = False
+        watch_start = _comm_now_ns() if _comm_trace_enabled() else None
         try:
             ack = (
                 asyncio.shield(pending.ack)
@@ -1103,12 +1118,14 @@ class CommEngine:
                 await op.wait_for_completion(timeout=self._ack_timeout_s)
             return pending.cleanup_requested
         except asyncio.CancelledError as exc:
+            self._trace_pending_failure(object_id, pending, exc, watch_start)
             if pending.retain_pending_on_failure and not pending.receiver_terminal:
                 # A local failure is not proof that the peer stopped reading.
                 self._retain_pending_kv_transfer(object_id, pending, exc)
                 retained = True
             raise
         except Exception as exc:
+            self._trace_pending_failure(object_id, pending, exc, watch_start)
             if pending.retain_pending_on_failure and not pending.receiver_terminal:
                 self._retain_pending_kv_transfer(object_id, pending, exc)
                 retained = True
@@ -1128,6 +1145,24 @@ class CommEngine:
                 if pending.lease is not None:
                     pending.lease.release()
 
+    def _trace_pending_failure(
+        self,
+        object_id: str,
+        pending: _PendingTransfer,
+        error: BaseException,
+        watch_start: int | None,
+    ) -> None:
+        if watch_start is None or not _comm_trace_enabled():
+            return
+        _comm_trace(
+            "comm_transfer_failed",
+            object_id=object_id,
+            num_ops=len(pending.ops),
+            error=type(error).__name__,
+            timeout_s=self._ack_timeout_s,
+            elapsed_ms=round(_comm_elapsed_ms(watch_start), 6),
+        )
+
     def _retain_pending_kv_transfer(
         self,
         object_id: str,
@@ -1136,13 +1171,15 @@ class CommEngine:
     ) -> None:
         self._pending.pop(object_id, None)
         self._retained_pending_kv_transfers.append(pending)
-        _comm_trace(
-            "comm_kv_pending_retained",
-            object_id=object_id,
-            retained_count=len(self._retained_pending_kv_transfers),
-            num_ops=len(pending.ops),
-            error=type(error).__name__,
-        )
+        if _comm_trace_enabled():
+            _comm_trace(
+                "comm_kv_pending_retained",
+                object_id=object_id,
+                retained_count=len(self._retained_pending_kv_transfers),
+                num_ops=len(pending.ops),
+                bytes=_pending_transfer_bytes(pending),
+                error=type(error).__name__,
+            )
         logger.error(
             "Retaining pending KV transfer %s after sender failure: %s",
             object_id,
