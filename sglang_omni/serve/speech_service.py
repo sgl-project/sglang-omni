@@ -782,25 +782,19 @@ class SpeechRequestValidator:
         self, value: str, *, param: str
     ) -> dict[str, str]:
         url = urlparse(value)
-        if url.scheme not in {"http", "https", "data", "file"}:
+        if url.scheme and url.scheme not in {"http", "https", "data", "file"}:
+            raise bad_request(
+                f"{param} must be an http, https, data, file:// URL, or local path",
+                param=param,
+            )
+        media_io = _SpeechReferenceMediaIO(param)
+        try:
             if url.scheme:
-                raise bad_request(
-                    f"{param} must be an http, https, data, file:// URL, or local path",
-                    param=param,
+                return self.reference_connector.load_resource(
+                    value, media_io, max_bytes=MAX_REFERENCE_AUDIO_BYTES
                 )
             # Bare local paths follow the same allowlist and file checks as file://.
-            try:
-                return self.reference_connector.load_local_path(
-                    value, _SpeechReferenceMediaIO(param)
-                )
-            except (RuntimeError, ValueError, OSError) as exc:
-                raise bad_request(str(exc), param=param) from exc
-        try:
-            return self.reference_connector.load_resource(
-                value,
-                _SpeechReferenceMediaIO(param),
-                max_bytes=MAX_REFERENCE_AUDIO_BYTES,
-            )
+            return self.reference_connector.load_local_path(value, media_io)
         except (RuntimeError, ValueError, OSError) as exc:
             raise bad_request(str(exc), param=param) from exc
 
