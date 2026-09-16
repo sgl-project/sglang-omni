@@ -55,6 +55,7 @@ dependencies = [
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",  # Match the pinned sglang stack
     "librosa>=0.11.0",
+    "sentencepiece>=0.2.0",   # PersonaPlex / Moshi text tokenizer
     "pandas",
     "tabulate",
     "typer>=0.9.0",
