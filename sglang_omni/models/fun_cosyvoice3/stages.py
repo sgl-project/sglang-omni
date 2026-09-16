@@ -1782,7 +1782,7 @@ def create_vocoder_executor(
     enable_flow_cuda_graph: bool = True,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
-    enable_dit_fused_rope: bool = False,
+    enable_dit_fused_rope: bool = True,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
     token_hop_len: int = TOKEN_HOP_LEN,
