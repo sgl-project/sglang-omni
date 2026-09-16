@@ -20,6 +20,9 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     _missing_additional_chat_templates_compat,
     create_sglang_moss_transcribe_diarize_executor,
 )
+from sglang_omni.models.moss_transcribe_diarize.streaming import (
+    MossTranscribeDiarizeStreamingStrategy,
+)
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
@@ -86,6 +89,9 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
         is MossTranscribeDiarizePipelineConfig
     )
     assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
+    realtime = MossTranscribeDiarizePipelineConfig.realtime_transcription
+    assert realtime.strategy_cls is MossTranscribeDiarizeStreamingStrategy
+    assert realtime.decode_interval_ms == 2000
 
 
 def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
