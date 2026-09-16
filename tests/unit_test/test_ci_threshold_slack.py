@@ -5,66 +5,37 @@ from __future__ import annotations
 
 import pytest
 
-from tests.utils import apply_slack, readable_upper_gate
+from tests.utils import apply_slack
 
+SLACK_HIGHER = 0.875
 SLACK_LOWER = 1.125
 
 
-def test_a_sub_second_reference_keeps_its_slack() -> None:
-    # note (luojiaxuan): the MMSU text reference is 0.201 s, and rounding
-    # 0.201 * 1.125 to one decimal gives 0.2, a gate below the reference it
-    # came from, which fails a run that matches its own calibration.
-    thresholds = apply_slack(
+def test_gates_are_the_slacked_references() -> None:
+    reference = {
+        "throughput_qps": 79.438,
+        "output_tok_per_req_s": 10.3,
+        "latency_mean_s": 0.201,
+        "rtf_mean": 0.2939,
+    }
+
+    thresholds = apply_slack({16: reference})[16]
+
+    assert thresholds == pytest.approx(
         {
-            16: {
-                "throughput_qps": 78.8,
-                "output_tok_per_req_s": 10.2,
-                "latency_mean_s": 0.201,
-            }
+            "throughput_qps_min": 79.438 * SLACK_HIGHER,
+            "output_tok_per_req_s_min": 10.3 * SLACK_HIGHER,
+            "latency_mean_s_max": 0.201 * SLACK_LOWER,
+            "rtf_mean_max": 0.2939 * SLACK_LOWER,
         }
-    )[16]
-
-    assert thresholds["latency_mean_s_max"] == pytest.approx(0.201 * SLACK_LOWER)
-    assert thresholds["latency_mean_s_max"] > 0.201
-
-
-@pytest.mark.parametrize(
-    ("reference", "digits", "rounds_up"),
-    [
-        (7.964, 1, True),
-        (11.249, 1, True),
-        (0.851, 1, True),
-        (0.5662, 2, True),
-        (0.201, 1, False),
-        (0.2941, 2, False),
-    ],
-)
-def test_rounding_only_ever_loosens(
-    reference: float, digits: int, rounds_up: bool
-) -> None:
-    gate = readable_upper_gate(reference, SLACK_LOWER, digits)
-    slacked = reference * SLACK_LOWER
-
-    assert gate >= slacked
-    # note (luojiaxuan): the readable value stays the gate wherever it is the
-    # looser of the two, so no calibrated suite gets a stricter gate.
-    assert gate >= round(slacked, digits)
-    if rounds_up:
-        assert gate == pytest.approx(round(slacked, digits))
-    else:
-        assert gate == pytest.approx(slacked)
+    )
+    # note (luojiaxuan): 0.201 s is the MMSU text reference, small enough that
+    # a gate readable to one decimal sits below the reference it came from.
+    assert thresholds["latency_mean_s_max"] > reference["latency_mean_s"]
 
 
-def test_higher_is_better_gates_are_untouched() -> None:
-    thresholds = apply_slack(
-        {
-            8: {
-                "throughput_qps": 78.8,
-                "output_tok_per_req_s": 10.2,
-                "latency_mean_s": 7.964,
-            }
-        }
-    )[8]
+@pytest.mark.parametrize("latency", [0.201, 7.964])
+def test_a_latency_gate_is_neither_rounded_up_nor_down(latency: float) -> None:
+    thresholds = apply_slack({16: {"throughput_qps": 78.8, "latency_mean_s": latency}})
 
-    assert thresholds["throughput_qps_min"] == pytest.approx(68.95, abs=1e-9)
-    assert thresholds["output_tok_per_req_s_min"] == pytest.approx(8.9, abs=1e-9)
+    assert thresholds[16]["latency_mean_s_max"] == pytest.approx(latency * SLACK_LOWER)
