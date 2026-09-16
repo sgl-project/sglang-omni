@@ -192,7 +192,6 @@ if [[ "${EXTRAS}" == *"fun-cosyvoice3"* ]]; then
   log "Detected fun-cosyvoice3 extra. Ensuring 'sox' is installed..."
   ensure_formula sox
 fi
-
 ensure_formula uv
 
 if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then
