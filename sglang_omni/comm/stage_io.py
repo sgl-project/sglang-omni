@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import pickle
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from multiprocessing.reduction import ForkingPickler
 from typing import Any
 
@@ -164,11 +164,8 @@ def serialize_direct_cuda_ipc_payload(payload: StagePayload) -> dict[str, Any]:
     data_without_tensors, tensors = extract_cuda_tensors(payload.data)
     if not tensors:
         raise ValueError("direct CUDA IPC payload requires at least one CUDA tensor")
-    header = StagePayload(
-        request_id=payload.request_id,
-        request=payload.request,
-        data=data_without_tensors,
-    )
+    # replace preserves wire fields and resets init=False scheduler-local state.
+    header = replace(payload, data=data_without_tensors)
     header_bytes = pickle.dumps(header)
     return {
         "_type": _DIRECT_CUDA_IPC_PAYLOAD_TYPE,
@@ -242,11 +239,7 @@ def deserialize_direct_cuda_ipc_payload(data_ref: dict[str, Any]) -> StagePayloa
         if path in tensors:
             raise ValueError(f"duplicate direct CUDA IPC tensor path {path!r}")
         tensors[path] = tensor
-    return StagePayload(
-        request_id=header.request_id,
-        request=header.request,
-        data=restore_tensors(header.data, tensors),
-    )
+    return replace(header, data=restore_tensors(header.data, tensors))
 
 
 def serialize_direct_cuda_ipc_stream_chunk(
@@ -385,11 +378,8 @@ async def write_payload(
 ) -> tuple[DataRef, Any]:
     data_without_tensors, tensors = extract_tensors(payload.data)
     packed, entries = _pack_tensors(tensors, device=relay_device(relay))
-    header = StagePayload(
-        request_id=payload.request_id,
-        request=payload.request,
-        data=data_without_tensors,
-    )
+    # replace preserves wire fields and resets init=False scheduler-local state.
+    header = replace(payload, data=data_without_tensors)
     op = await relay.put_async(
         packed,
         request_id=request_id,
@@ -434,11 +424,7 @@ async def read_payload(
         for entry in data_ref.tensors
     }
     relay.cleanup(request_id)
-    return StagePayload(
-        request_id=header.request_id,
-        request=header.request,
-        data=restore_tensors(header.data, tensors),
-    )
+    return replace(header, data=restore_tensors(header.data, tensors))
 
 
 async def write_tensor(

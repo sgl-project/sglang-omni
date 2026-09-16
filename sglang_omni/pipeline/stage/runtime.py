@@ -161,6 +161,7 @@ class Stage:
         self._running = False
         self._aborted: set[str] = set()
         self._active_requests: set[str] = set()
+        self._request_arrivals: dict[str, object] = {}
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
         self._first_stream_chunk_seen: set[str] = set()
@@ -449,6 +450,12 @@ class Stage:
     async def _on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
         if request_id in self._aborted:
+            # A new coordinator admission needs an explicit answer. Late
+            # downstream data still follows the silent stale-result path.
+            await self._send_failure(
+                request_id,
+                "Request ID was retired after abort or failure. Use a fresh request ID",
+            )
             return
         self._record_replica_bindings(request_id, msg.replica_bindings)
         self._active_requests.add(request_id)
@@ -968,6 +975,10 @@ class Stage:
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
             self._tp_fanout.fanout_work(payload)
+        arrival_id = object()
+        self._request_arrivals[request_id] = arrival_id
+        if isinstance(payload, StagePayload):
+            payload.arrival_id = arrival_id
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
@@ -1154,6 +1165,18 @@ class Stage:
                             )
                     elif out.type == "error":
                         await self._send_failure(out.request_id, str(out.data))
+                    elif out.type == "discard":
+                        metadata = out.metadata or {}
+                        if not metadata.get(
+                            "keep_active", False
+                        ) and self._request_arrivals.get(
+                            out.request_id
+                        ) is metadata.get(
+                            "arrival_id"
+                        ):
+                            self._clear_request_state(out.request_id)
+                elif out.type == "result":
+                    self._release_scheduler_result(out.data, delivered=False)
 
                 if batch_index + 1 >= _OUTBOX_DRAIN_BATCH_SIZE:
                     await asyncio.sleep(0)
@@ -1176,6 +1199,7 @@ class Stage:
                 continue
 
             if out.type == "result":
+                self._release_scheduler_result(out.data, delivered=False)
                 self._clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
@@ -1265,10 +1289,52 @@ class Stage:
         if isinstance(transfer, KVPageTransfer) and transfer.lease is not None:
             transfer.lease.release()
 
+    def _release_scheduler_result(self, result: Any, *, delivered: bool) -> None:
+        """Settle optional scheduler-owned resources after routing or dropping."""
+        release = getattr(self.scheduler, "release_result", None)
+        if release is not None:
+            release(result, delivered=delivered)
+
     async def _route_result(self, request_id: str, result: Any) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
+        """Route a result and settle its resources even when routing fails."""
+        delivered = False
+
+        def on_submitted() -> None:
+            nonlocal delivered
+            delivered = True
+
+        try:
+            await self._route_scheduler_result(request_id, result, on_submitted)
+        except BaseException:
+            try:
+                self._release_scheduler_result(result, delivered=delivered)
+            except Exception:
+                logger.exception(
+                    "Stage %s failed to release result for %s", self.name, request_id
+                )
+            raise
+        self._release_scheduler_result(result, delivered=delivered)
+
+    async def _route_scheduler_result(
+        self, request_id: str, result: Any, on_submitted: Callable[[], None]
+    ) -> None:
+        """Route while recording transport acceptance before local cleanup."""
         if not self._owns_external_io:
             self._clear_request_state(request_id)
+            return
+        validate_result = getattr(self.scheduler, "validate_result", None)
+        if validate_result is not None and not validate_result(result):
+            return
+        arrival_id = (
+            result.arrival_id
+            if isinstance(result, StagePayload) and result.arrival_id is not None
+            else self._request_arrivals.get(request_id)
+        )
+        next_stages = self.get_next(request_id, result)
+        claim_result = getattr(self.scheduler, "claim_result", None)
+        if claim_result is not None and not claim_result(
+            result, terminal=next_stages is None
+        ):
             return
         # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
@@ -1288,7 +1354,6 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1297,14 +1362,19 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data if isinstance(result, StagePayload) else result,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data if isinstance(result, StagePayload) else result,
             )
+            if getattr(self.scheduler, "release_result", None) is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+            on_submitted()
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
@@ -1324,8 +1394,15 @@ class Stage:
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
+                on_submitted()
 
-        self._clear_request_state(request_id)
+        # Sending can yield into a fast cycle that has already dispatched the
+        # next turn. Never clear the newer arrival's input or stream state.
+        if self._request_arrivals.get(request_id) is arrival_id:
+            self._clear_request_state(
+                request_id,
+                keep_continuation=self._is_terminal and next_stages is not None,
+            )
 
     async def _send_to_stage(
         self,
@@ -1819,17 +1896,22 @@ class Stage:
         )
         self._clear_request_state(request_id)
 
-    def _clear_request_state(self, request_id: str) -> None:
-        self._active_requests.discard(request_id)
+    def _clear_request_state(
+        self, request_id: str, *, keep_continuation: bool = False
+    ) -> None:
+        if not keep_continuation:
+            self._active_requests.discard(request_id)
+            self._request_arrivals.pop(request_id, None)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
             self._stream_queue.close(request_id)
-        stale_keys = [
-            key for key in self._stream_chunk_counters if key[0] == request_id
-        ]
-        for key in stale_keys:
-            self._stream_chunk_counters.pop(key, None)
-        self._first_stream_chunk_seen.discard(request_id)
+        if not keep_continuation:
+            stale_keys = [
+                key for key in self._stream_chunk_counters if key[0] == request_id
+            ]
+            for key in stale_keys:
+                self._stream_chunk_counters.pop(key, None)
+            self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
         self._replica_bindings.pop(request_id, None)

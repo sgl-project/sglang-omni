@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import msgpack
 import zmq
@@ -90,12 +91,29 @@ class PushSocket:
         self._socket.connect(self.endpoint)
         logger.debug("PUSH socket connected to %s", self.endpoint)
 
-    async def send(self, msg: ControlMessage) -> None:
-        """Send a message."""
+    async def send(
+        self,
+        msg: ControlMessage,
+        *,
+        on_submitted: Callable[[], None] | None = None,
+    ) -> None:
+        """Send a message and optionally report transport acceptance."""
         if self._socket is None:
             raise RuntimeError("Socket not connected")
         data = serialize_message(msg)
-        await self._socket.send(data)
+        pending = self._socket.send(data)
+        try:
+            await pending
+        finally:
+            # Cancellation can reach this task after ZMQ accepted the message.
+            # Report the exact send outcome before the caller releases resources.
+            if (
+                on_submitted is not None
+                and pending.done()
+                and not pending.cancelled()
+                and pending.exception() is None
+            ):
+                on_submitted()
         logger.debug("PUSH sent %s to %s", type(msg).__name__, self.endpoint)
 
     def close(self) -> None:
@@ -315,11 +333,16 @@ class StageControlPlane:
         """Send a stage-to-stage control message."""
         await send_to_endpoint(self._next_stage_sockets, next_stage_endpoint, msg)
 
-    async def send_complete(self, msg: CompleteMessage) -> None:
-        """Send completion notification to coordinator."""
+    async def send_complete(
+        self,
+        msg: CompleteMessage,
+        *,
+        on_submitted: Callable[[], None] | None = None,
+    ) -> None:
+        """Send completion, with an optional nonthrowing acceptance callback."""
         if self._coordinator_socket is None:
             raise RuntimeError("Control plane not started")
-        await self._coordinator_socket.send(msg)
+        await self._coordinator_socket.send(msg, on_submitted=on_submitted)
 
     async def send_stream(self, msg: StreamMessage) -> None:
         """Send a stream chunk to coordinator."""

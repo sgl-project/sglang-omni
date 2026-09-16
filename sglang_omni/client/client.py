@@ -32,6 +32,7 @@ from sglang_omni.client.types import (
 )
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto.continuation import UMMSegment
 
 
 class Client:
@@ -103,7 +104,9 @@ class Client:
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
-            if chunk.text:
+            if chunk.segments is not None:
+                text_parts = [chunk.text]
+            elif chunk.text:
                 text_parts.append(chunk.text)
             if chunk.audio_data is not None:
                 audio_chunks.append(chunk.audio_data)
@@ -149,6 +152,8 @@ class Client:
             request_id=request_id,
             text=full_text,
             audio=audio,
+            media=last_chunk.media,
+            segments=last_chunk.segments,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -188,7 +193,7 @@ class Client:
                     )
 
                 text = chunk.text
-                if chunk.modality == "text" and text:
+                if (chunk.modality == "text" or chunk.segments is not None) and text:
                     if chunk.finish_reason is None:
                         streamed_text += text
                     elif streamed_text and text.startswith(streamed_text):
@@ -202,6 +207,7 @@ class Client:
                     finish_reason=chunk.finish_reason,
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
+                    segment=chunk.segment,
                 )
 
     # ------------------------------------------------------------------
@@ -474,6 +480,33 @@ class Client:
             result.request_id = request_id
             return result
         if isinstance(result, dict):
+            if "segments" in result:
+                raw_segments = result["segments"]
+                session_id = result.get("session_id")
+                if not isinstance(raw_segments, list) or not isinstance(
+                    session_id, str
+                ):
+                    raise ValueError("Invalid UMM terminal manifest")
+                chunk.segments = [UMMSegment.from_dict(item) for item in raw_segments]
+                if any(
+                    item.session_id != session_id or item.segment_index != index
+                    for index, item in enumerate(chunk.segments)
+                ):
+                    raise ValueError(
+                        "UMM terminal segments must share an ordered session"
+                    )
+                chunk.text = "".join(
+                    item.data for item in chunk.segments if item.kind == "text"
+                )
+                chunk.media = [
+                    item.data for item in chunk.segments if item.kind != "text"
+                ]
+                chunk.finish_reason = result.get("finish_reason", "stop")
+                chunk.modality = "mixed"
+                language = result.get("language")
+                if isinstance(language, str):
+                    chunk.language = language
+                return chunk
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
             # talker_stream.
             audio_result = None
@@ -527,6 +560,7 @@ class Client:
             finish_reason = result.get("finish_reason")
             if finish_reason is not None:
                 chunk.finish_reason = finish_reason
+            chunk.media = result.get("media")
             chunk.stage_id = result.get("stage_id")
             chunk.stage_name = result.get("stage_name")
             modality = result.get("modality")
@@ -563,6 +597,15 @@ class Client:
                 data.modality = chunk.modality
             return data
         if isinstance(data, dict):
+            if data.get("type") == "segment":
+                chunk.segment = UMMSegment.from_dict(data)
+                chunk.index = chunk.segment.segment_index
+                chunk.modality = chunk.segment.kind
+                if chunk.segment.kind == "text":
+                    chunk.text = chunk.segment.data
+                else:
+                    chunk.media = [chunk.segment.data]
+                return chunk
             text = data.get("text")
             if isinstance(text, str):
                 chunk.text = text

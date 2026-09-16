@@ -54,6 +54,7 @@ from sglang_omni.client import (
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     apply_speed,
+    audio_to_base64,
     encode_pcm,
     select_audio_delta,
 )
@@ -72,7 +73,7 @@ from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
 from sglang_omni.serve.openai_errors import (
-    is_bad_request_error as _is_bad_request_error,
+    http_status_from_error as _http_status_from_error,
 )
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -673,7 +674,9 @@ def _common_model_info_value(
 
 def _register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
-    async def chat_completions(req: ChatCompletionRequest) -> Response:
+    async def chat_completions(
+        req: ChatCompletionRequest, request: Request
+    ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
 
@@ -691,15 +694,17 @@ def _register_chat_completions(app: FastAPI) -> None:
 
         if req.stream:
             return _ClosableStreamingResponse(
-                _chat_stream(
-                    client,
-                    gen_req,
-                    request_id,
-                    response_id,
-                    created,
-                    model,
-                    req,
-                    audio_format,
+                _chat_stream_errors(
+                    _chat_stream(
+                        client,
+                        gen_req,
+                        request_id,
+                        response_id,
+                        created,
+                        model,
+                        req,
+                        audio_format,
+                    )
                 ),
                 media_type="text/event-stream",
             )
@@ -713,6 +718,7 @@ def _register_chat_completions(app: FastAPI) -> None:
             model,
             req,
             audio_format,
+            request,
         )
 
 
@@ -725,23 +731,27 @@ async def _chat_non_stream(
     model: str,
     req: ChatCompletionRequest,
     audio_format: str,
+    request: Request,
 ) -> JSONResponse:
     """Handle non-streaming chat completions."""
     try:
-        result = await client.completion(
+        result = await _generate_with_disconnect_watch(
+            request,
+            client,
             gen_req,
             request_id=request_id,
             audio_format=audio_format,
         )
     except ClientError as exc:
-        if _is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=_http_status_from_error(exc), detail=str(exc)
+        ) from exc
     except Exception as exc:
-        logger.exception("Error generating response for request %s", request_id)
-        if _is_bad_request_error(exc):
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if _http_status_from_error(exc) == 500:
+            logger.exception("Error generating response for request %s", request_id)
+        raise HTTPException(
+            status_code=_http_status_from_error(exc), detail=str(exc)
+        ) from exc
 
     requested_modalities = req.modalities or ["text"]
 
@@ -757,6 +767,9 @@ async def _chat_non_stream(
             "data": result.audio.data,
             "transcript": result.audio.transcript,
         }
+
+    if result.segments is not None:
+        message["segments"] = [segment.to_dict() for segment in result.segments]
 
     if "content" not in message and "audio" not in message:
         message["content"] = result.text
@@ -785,6 +798,27 @@ async def _chat_non_stream(
     )
 
     return JSONResponse(content=response.model_dump())
+
+
+async def _chat_stream_errors(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Report errors after streaming headers while closing the owned iterator."""
+    async with aclosing(stream):
+        try:
+            async for frame in stream:
+                yield frame
+        except Exception as exc:
+            status = _http_status_from_error(exc)
+            if status >= 500:
+                logger.exception("Error generating chat stream")
+            error = {
+                "error": {
+                    "message": str(exc),
+                    "type": "invalid_request_error" if status < 500 else "server_error",
+                    "code": status,
+                }
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+            yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 async def _chat_stream(
@@ -835,6 +869,9 @@ async def _chat_stream(
 
             delta = ChatCompletionStreamDelta()
             emit = False
+            if chunk.segment is not None:
+                delta.segment = chunk.segment.to_dict()
+                emit = True
 
             # Send role on first chunk
             if not role_sent:
@@ -995,7 +1032,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         _explicit_generation_params(req),
     )
 
-    extra_params: dict[str, Any] = {}
+    extra_params: dict[str, Any] = dict(req.model_extra or {})
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1022,7 +1059,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
 
 def _register_generate(app: FastAPI) -> None:
     @app.post("/generate")
-    async def generate(req: RolloutGenerateRequest) -> Response:
+    async def generate(req: RolloutGenerateRequest, request: Request) -> Response:
         client: Client = app.state.client
 
         provided = [
@@ -1033,10 +1070,15 @@ def _register_generate(app: FastAPI) -> None:
                 status_code=400,
                 detail="exactly one of input_ids, prompt, or messages is required",
             )
-        if req.stream:
+        if req.stream and (
+            req.return_logprob
+            or req.return_omni_rollout
+            or req.return_routed_experts
+            or req.return_indexer_topk
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="stream=true is not supported by /generate yet",
+                detail="Streaming /generate does not support rollout artifacts",
             )
 
         request_id = str(uuid.uuid4())
@@ -1044,25 +1086,97 @@ def _register_generate(app: FastAPI) -> None:
 
         try:
             gen_req = _build_rollout_generate_request(req)
-            result = await client.completion(
+            if req.stream:
+                return _ClosableStreamingResponse(
+                    _generate_stream(client, gen_req, request_id),
+                    media_type="text/event-stream",
+                )
+            result = await _generate_with_disconnect_watch(
+                request,
+                client,
                 gen_req,
                 request_id=request_id,
                 audio_format=audio_format,
             )
         except ClientError as exc:
-            if _is_bad_request_error(exc):
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=_http_status_from_error(exc), detail=str(exc)
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("Error generating rollout for request %s", request_id)
-            if _is_bad_request_error(exc):
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            if _http_status_from_error(exc) == 500:
+                logger.exception("Error generating rollout for request %s", request_id)
+            raise HTTPException(
+                status_code=_http_status_from_error(exc), detail=str(exc)
+            ) from exc
 
         response = _build_generate_response(req, result, audio_format)
         return JSONResponse(content=response.model_dump())
+
+
+async def _generate_stream(
+    client: Client, request: GenerateRequest, request_id: str
+) -> AsyncIterator[str]:
+    """Yield ordered segments and an explicit terminal snapshot as SSE."""
+    stream = client.generate(request, request_id=request_id)
+    try:
+        async with aclosing(stream):
+            async for chunk in stream:
+                if chunk.segment is not None:
+                    event, data = "segment", chunk.segment.to_dict()
+                else:
+                    event = "complete" if chunk.finish_reason is not None else "chunk"
+                    data = chunk.to_dict()
+                    data.pop("audio_data", None)
+                    if chunk.audio_data is not None:
+                        sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
+                        data["audio"] = GenerateAudio(
+                            data=audio_to_base64(
+                                chunk.audio_data,
+                                sample_rate=sample_rate,
+                                output_format="wav",
+                            ),
+                            format="wav",
+                            sample_rate=sample_rate,
+                        ).model_dump(exclude_none=True)
+                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    except Exception as exc:
+        logger.exception("Error streaming generation for request %s", request_id)
+        data = {"error": {"message": str(exc), "type": "generation_error"}}
+        yield f"event: error\ndata: {json.dumps(data)}\n\n"
+        return
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
+
+
+async def _generate_with_disconnect_watch(
+    request: Request,
+    client: Client,
+    gen_req: GenerateRequest,
+    *,
+    request_id: str,
+    audio_format: str,
+) -> CompletionResult:
+    result_task = asyncio.create_task(
+        client.completion(gen_req, request_id=request_id, audio_format=audio_format)
+    )
+    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {result_task, disconnect_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if result_task in done:
+            return result_task.result()
+        raise asyncio.CancelledError
+    except asyncio.CancelledError:
+        await client.abort(request_id)
+        raise
+    finally:
+        for task in (result_task, disconnect_task):
+            if not task.done():
+                await _cancel_task_bounded(task)
+            else:
+                _discard_cancelled_task_result(task)
 
 
 def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
@@ -1202,7 +1316,17 @@ def _build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text,
+        audio=audio,
+        media=result.media,
+        segments=(
+            [segment.to_dict() for segment in result.segments]
+            if result.segments is not None
+            else None
+        ),
+        meta_info=meta_info,
+    )
 
 
 def _register_realtime(app: FastAPI) -> None:

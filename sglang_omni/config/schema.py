@@ -364,6 +364,10 @@ class StageConfig(BaseModel):
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
     process: str | None = None
+    allow_child_processes: bool = False
+    """Allow a native engine to own subprocesses inside this stage process."""
+    runtime_gpu_ids: list[int] | None = None
+    """GPUs reserved for an engine that launches its own workers."""
     gpu_memory_fraction: float | None = Field(
         default=None,
         gt=0,
@@ -423,6 +427,21 @@ class StageConfig(BaseModel):
     comm: CommConfig | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
+        if self.runtime_gpu_ids is not None:
+            if not self.allow_child_processes or self.tp_size != 1:
+                raise ValueError(
+                    "runtime_gpu_ids requires one stage process that owns children"
+                )
+            if (
+                not isinstance(self.gpu, int)
+                or not self.runtime_gpu_ids
+                or self.runtime_gpu_ids[0] != self.gpu
+                or any(gpu < 0 for gpu in self.runtime_gpu_ids)
+                or len(set(self.runtime_gpu_ids)) != len(self.runtime_gpu_ids)
+            ):
+                raise ValueError(
+                    "runtime_gpu_ids must be unique GPUs starting with the stage GPU"
+                )
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of "
@@ -603,6 +622,8 @@ class PipelineConfig(BaseModel):
 
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
+    native_media_stage: ClassVar[str | None] = None
+    native_media_factory_path: ClassVar[str | None] = None
     requires_model_capabilities: ClassVar[bool] = False
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = ()
     required_speech_reference_count: ClassVar[int | None] = None
@@ -648,6 +669,7 @@ class PipelineConfig(BaseModel):
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
+    max_in_flight: int | None = Field(default=None, gt=0, strict=True)
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
@@ -899,13 +921,16 @@ class PipelineConfig(BaseModel):
             if not s.factory_path:
                 raise ValueError(f"Stage {s.name!r} missing factory")
             has_next = s.next is not None
-            if has_next == bool(s.terminal):
+            # A dynamic terminal stage may continue to a declared stage or
+            # return None to complete the request.
+            if s.route_fn is not None:
+                if not s.next:
+                    raise ValueError(
+                        f"Stage {s.name!r} dynamic routing requires declared next stages"
+                    )
+            elif has_next == bool(s.terminal):
                 raise ValueError(
                     f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
-                )
-            if s.terminal and s.route_fn is not None:
-                raise ValueError(
-                    f"Stage {s.name!r} cannot set route_fn on a terminal stage"
                 )
             if s.stream_done_to_fn is not None and not s.stream_to:
                 raise ValueError(
