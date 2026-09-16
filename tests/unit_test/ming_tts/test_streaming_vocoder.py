@@ -238,13 +238,13 @@ def _start_external_abort_after_tombstone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> threading.Thread:
     recorded = threading.Event()
-    original = scheduler._record_aborted_request_id
+    original = scheduler.record_aborted_request_id
 
     def record_and_signal(aborted_request_id: str) -> None:
         original(aborted_request_id)
         recorded.set()
 
-    monkeypatch.setattr(scheduler, "_record_aborted_request_id", record_and_signal)
+    monkeypatch.setattr(scheduler, "record_aborted_request_id", record_and_signal)
     thread = threading.Thread(target=scheduler.abort, args=(request_id,), daemon=True)
     thread.start()
     assert recorded.wait(_WAIT_TIMEOUT_S)
@@ -265,7 +265,7 @@ def test_stream_capacity_bounds_chunk_collection_not_full_batching() -> None:
     scheduler.inbox.put(chunk_messages[1])
     scheduler.inbox.put(chunk_messages[2])
 
-    collected_chunks = scheduler._collect_stream_chunk_batch(chunk_messages[0])
+    collected_chunks = scheduler.collect_stream_chunk_batch(chunk_messages[0])
 
     assert collected_chunks == chunk_messages[:2]
     assert scheduler.inbox.get_nowait() == chunk_messages[2]
@@ -280,7 +280,7 @@ def test_stream_capacity_bounds_chunk_collection_not_full_batching() -> None:
     ]
     scheduler.inbox.put(full_messages[1])
 
-    assert scheduler._collect_new_request_batch(full_messages[0]) == full_messages[:1]
+    assert scheduler.collect_new_request_batch(full_messages[0]) == full_messages[:1]
     assert scheduler.inbox.get_nowait() == full_messages[1]
 
 
@@ -312,8 +312,8 @@ def test_ming_stream_ingress_rejects_owned_contract_errors(
     assert [(message.request_id, message.type) for message in messages] == [
         ("invalid-ingress", "error")
     ]
-    assert scheduler._is_aborted("invalid-ingress")
-    assert "invalid-ingress" not in scheduler._stream_states
+    assert scheduler.is_aborted("invalid-ingress")
+    assert "invalid-ingress" not in scheduler.stream_states
     assert decoder.stream_calls == []
 
 
@@ -591,9 +591,9 @@ def test_successful_mixed_wave_commits_terminal_before_releasing_slot(
             tuple(
                 (
                     request_id,
-                    scheduler._stream_states[request_id].terminal_committed,
-                    len(scheduler._stream_states[request_id].pending_patches),
-                    scheduler._stream_states[request_id].emitted_samples,
+                    scheduler.stream_states[request_id].terminal_committed,
+                    len(scheduler.stream_states[request_id].pending_patches),
+                    scheduler.stream_states[request_id].emitted_samples,
                     scheduler._slot_bindings.slot_for(request_id),
                 )
                 for request_id in request_ids
@@ -678,8 +678,8 @@ def test_wave_failure_aborts_only_participants_and_future_wave_succeeds() -> Non
         ("failed-b", "error"),
     }
     assert scheduler._slot_bindings.slot_for("inactive-holder") == holder_slot
-    assert scheduler._is_aborted("failed-a")
-    assert scheduler._is_aborted("failed-b")
+    assert scheduler.is_aborted("failed-a")
+    assert scheduler.is_aborted("failed-b")
     assert len(decoder.reset_rows_calls) == 1
     failed_call_count = len(decoder.stream_calls)
     scheduler.on_stream_chunk_batch(
@@ -812,8 +812,8 @@ def test_slotless_full_failure_is_request_local(
         ("failed-full", "error")
     ]
     assert error_pattern in str(error[0].data)
-    assert scheduler._is_aborted("failed-full")
-    assert "failed-full" not in scheduler._stream_states
+    assert scheduler.is_aborted("failed-full")
+    assert "failed-full" not in scheduler.stream_states
     assert len(decoder.full_calls) == 1
     assert thread.is_alive()
 
@@ -939,7 +939,7 @@ def test_external_abort_during_fixed_wave_suppresses_output_and_resets_after_fen
         scheduler, "aborted-in-flight", monkeypatch
     )
 
-    assert scheduler._is_aborted("aborted-in-flight")
+    assert scheduler.is_aborted("aborted-in-flight")
     assert abort_thread.is_alive()
     assert decoder.reset_rows_calls == []
     decoder.block_release.set()
@@ -1001,7 +1001,7 @@ def test_external_abort_during_slotless_full_suppresses_output(
         scheduler, "aborted-full", monkeypatch
     )
 
-    assert scheduler._is_aborted("aborted-full")
+    assert scheduler.is_aborted("aborted-full")
     assert abort_thread.is_alive()
     decoder.full_block_release.set()
     abort_thread.join(timeout=_WAIT_TIMEOUT_S)
@@ -1013,7 +1013,7 @@ def test_external_abort_during_slotless_full_suppresses_output(
     assert decoder.trace[-1][0] == "full"
     assert decoder.trace[-1][2] == scheduler_thread.ident
     assert decoder.reset_rows_calls == []
-    assert "aborted-full" not in scheduler._stream_states
+    assert "aborted-full" not in scheduler.stream_states
     assert scheduler._slot_bindings.slot_for("holder") == 0
     _stop(scheduler, scheduler_thread)
 
@@ -1174,7 +1174,7 @@ def test_healthy_stop_resets_full_bank_once_with_live_bound_state() -> None:
 
     scheduler.stop()
 
-    assert scheduler._stream_states == {}
+    assert scheduler.stream_states == {}
     assert scheduler._slot_bindings.slot_for("live-holder") is None
     assert decoder.reset_rows_calls == []
     assert decoder.reset_all_calls == 1

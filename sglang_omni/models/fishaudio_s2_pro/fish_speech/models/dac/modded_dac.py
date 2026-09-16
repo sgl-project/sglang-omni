@@ -1,7 +1,8 @@
 import math
 import typing as tp
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from types import EllipsisType
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -12,6 +13,14 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.utils.parametrizations import weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
+
+DEFAULT_ENCODER_STRIDES = [2, 4, 8, 8]
+DEFAULT_ENCODER_TRANSFORMER_LAYERS = [0, 0, 4, 4]
+DEFAULT_DECODER_TRANSFORMER_LAYERS = [0, 0, 0, 0]
+DEFAULT_DAC_ENCODER_RATES = [2, 4, 8, 8]
+DEFAULT_DAC_DECODER_RATES = [8, 8, 4, 2]
+DEFAULT_DAC_ENCODER_TRANSFORMER_LAYERS = [0, 0, 0, 0]
+DEFAULT_DAC_DECODER_TRANSFORMER_LAYERS = [0, 0, 0, 0]
 
 
 @dataclass
@@ -666,13 +675,17 @@ class Encoder(nn.Module):
     def __init__(
         self,
         d_model: int = 64,
-        strides: list = [2, 4, 8, 8],
+        strides: list[int] | None = None,
         d_latent: int = 64,
-        n_transformer_layers: list = [0, 0, 4, 4],
+        n_transformer_layers: list[int] | None = None,
         transformer_general_config: ModelArgs = None,
         causal: bool = False,
     ):
         super().__init__()
+        if strides is None:
+            strides = DEFAULT_ENCODER_STRIDES
+        if n_transformer_layers is None:
+            n_transformer_layers = DEFAULT_ENCODER_TRANSFORMER_LAYERS
         conv_class = CausalWNConv1d if causal else WNConv1d
         # Create first convolution
         self.block = [conv_class(1, d_model, kernel_size=7, padding=3)]
@@ -760,10 +773,12 @@ class Decoder(nn.Module):
         rates,
         d_out: int = 1,
         causal: bool = False,
-        n_transformer_layers: list = [0, 0, 0, 0],
+        n_transformer_layers: list[int] | None = None,
         transformer_general_config=None,
     ):
         super().__init__()
+        if n_transformer_layers is None:
+            n_transformer_layers = DEFAULT_DECODER_TRANSFORMER_LAYERS
         conv_class = CausalWNConv1d if causal else WNConv1d
         # Add first conv layer
         layers = [conv_class(input_channel, channels, kernel_size=7, padding=3)]
@@ -800,19 +815,27 @@ class DAC(BaseModel, CodecMixin):
     def __init__(
         self,
         encoder_dim: int = 64,
-        encoder_rates: List[int] = [2, 4, 8, 8],
+        encoder_rates: list[int] | None = None,
         latent_dim: int = None,
         decoder_dim: int = 1536,
-        decoder_rates: List[int] = [8, 8, 4, 2],
+        decoder_rates: list[int] | None | EllipsisType = ...,
         quantizer: torch.nn.Module = None,
         sample_rate: int = 44100,
         causal: bool = True,
-        encoder_transformer_layers: List[int] = [0, 0, 0, 0],
-        decoder_transformer_layers: List[int] = [0, 0, 0, 0],
+        encoder_transformer_layers: list[int] | None = None,
+        decoder_transformer_layers: list[int] | None = None,
         overwrite_decoder: torch.nn.Module = None,
         transformer_general_config=None,
     ):
         super().__init__()
+        if encoder_rates is None:
+            encoder_rates = DEFAULT_DAC_ENCODER_RATES
+        if decoder_rates is ...:
+            decoder_rates = DEFAULT_DAC_DECODER_RATES
+        if encoder_transformer_layers is None:
+            encoder_transformer_layers = DEFAULT_DAC_ENCODER_TRANSFORMER_LAYERS
+        if decoder_transformer_layers is None:
+            decoder_transformer_layers = DEFAULT_DAC_DECODER_TRANSFORMER_LAYERS
 
         self.encoder_dim = encoder_dim
         self.encoder_rates = encoder_rates

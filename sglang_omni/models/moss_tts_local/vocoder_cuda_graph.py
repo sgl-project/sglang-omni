@@ -117,7 +117,7 @@ class MossVocoderCudaGraphRunner:
         if decoder is None or not callable(getattr(decoder, "modules", None)):
             return False
         return any(
-            hasattr(module, "context") and getattr(module, "context") is None
+            hasattr(module, "context") and module.context is None
             for module in decoder.modules()
         )
 

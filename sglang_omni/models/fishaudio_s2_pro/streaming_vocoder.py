@@ -306,7 +306,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             codec, stream_overlap_tokens
         )
         self._stream_crossfade_samples = int(stream_crossfade_samples)
-        self._stream_states: dict[str, _StreamVocoderState] = {}
+        self.stream_states: dict[str, _StreamVocoderState] = {}
 
         super().__init__(
             self._vocode_payload,
@@ -314,7 +314,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
-        self._payloads = self._stream_payloads
+        self._payloads = self.stream_payloads
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         return self._is_streaming_payload(payload)
@@ -324,12 +324,12 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
         del payload
-        self._stream_states.setdefault(request_id, _StreamVocoderState())
+        self.stream_states.setdefault(request_id, _StreamVocoderState())
 
     def on_stream_chunk(
         self, request_id: str, chunk: StreamItem
     ) -> list[OutgoingMessage]:
-        state = self._stream_states.setdefault(request_id, _StreamVocoderState())
+        state = self.stream_states.setdefault(request_id, _StreamVocoderState())
         codes = chunk.data
         if not isinstance(codes, torch.Tensor):
             raise TypeError(
@@ -358,7 +358,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         ]
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        state = self._stream_states.get(request_id)
+        state = self.stream_states.get(request_id)
         if state is None:
             return []
 
@@ -421,7 +421,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         return messages
 
     def clear_stream_state(self, request_id: str) -> None:
-        self._stream_states.pop(request_id, None)
+        self.stream_states.pop(request_id, None)
 
     def _vocode_payload(self, payload: StagePayload) -> StagePayload:
         return self._vocode_payloads([payload])[0]

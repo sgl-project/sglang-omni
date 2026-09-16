@@ -39,6 +39,7 @@ repos:
         args: [--select=F401, --fixable=F401]
         files: ^(benchmarks/|docs/|examples/)
         exclude: \.ipynb$
+      - id: ruff-check
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:

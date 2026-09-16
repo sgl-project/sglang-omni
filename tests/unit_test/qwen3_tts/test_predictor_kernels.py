@@ -7,9 +7,50 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from sglang_omni.models.qwen3_tts import predictor_kernels
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
 )
+from sglang_omni.models.qwen3_tts.sglang_model import _predictor_gqa_attention
+from sglang_omni.platforms import current_platform
+
+
+def test_predictor_triton_kernel_is_disabled_on_npu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_kernels, "triton", object())
+    monkeypatch.setattr(predictor_kernels.current_platform, "is_npu", lambda: True)
+
+    assert not predictor_kernels._has_triton_runtime()
+
+
+def test_predictor_gqa_attention_cpu_matches_sdpa() -> None:
+    q = torch.randn(2, 4, 1, 8)
+    key = torch.randn(2, 2, 5, 8)
+    value = torch.randn(2, 2, 5, 8)
+
+    actual = _predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    expected = F.scaled_dot_product_attention(
+        q, key, value, is_causal=False, enable_gqa=True
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+def test_predictor_npu_fused_attention_matches_sdpa() -> None:
+    device = torch.device("npu:0")
+    q = torch.randn(2, 4, 1, 128, device=device, dtype=torch.bfloat16)
+    key = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
+    value = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
+
+    actual = _predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    expected = F.scaled_dot_product_attention(
+        q, key, value, is_causal=False, enable_gqa=True
+    )
+    torch.npu.synchronize(device)
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 def test_gather_codec_embedding_and_add_cpu_falls_back_without_writes():

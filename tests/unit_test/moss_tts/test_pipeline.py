@@ -829,10 +829,10 @@ def test_moss_tts_vocoder_uses_batch_base_path(monkeypatch: pytest.MonkeyPatch) 
         ),
     ).to_dict()
 
-    results = asyncio.run(scheduler._batch_fn([first, second]))
+    results = asyncio.run(scheduler.batch_fn([first, second]))
 
-    assert scheduler._max_batch_size == 2
-    assert scheduler._max_batch_wait_s == pytest.approx(0.004)
+    assert scheduler.max_batch_size == 2
+    assert scheduler.max_batch_wait_s == pytest.approx(0.004)
     assert decoded_segments == [
         [[1, 3], [2, 4]],
         [[5, 7], [6, 8]],

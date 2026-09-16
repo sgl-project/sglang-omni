@@ -177,10 +177,10 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         language_config = _as_qwen3_config(getattr(config, "language_config", None))
         config.language_config = language_config
         config.hidden_size = int(
-            getattr(config, "hidden_size", getattr(language_config, "hidden_size"))
+            getattr(config, "hidden_size", language_config.hidden_size)
         )
         config.vocab_size = int(
-            getattr(config, "vocab_size", getattr(language_config, "vocab_size"))
+            getattr(config, "vocab_size", language_config.vocab_size)
         )
         config.n_vq = int(getattr(config, "n_vq", 32))
         config.channels = int(getattr(config, "channels", config.n_vq + 1))

@@ -90,8 +90,8 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
     scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
     scheduler.inbox.put(IncomingMessage("c", "new_request", _payload("c")))
 
-    batch = scheduler._collect_new_request_batch(first)
-    scheduler._handle_new_request_batch(batch)
+    batch = scheduler.collect_new_request_batch(first)
+    scheduler.handle_new_request_batch(batch)
 
     assert scheduler.batch_calls == [["a", "b", "c"]]
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
@@ -108,42 +108,42 @@ def test_non_streaming_batch_skips_done_before_later_payloads(source: str) -> No
         IncomingMessage("c", "new_request", _payload("c")),
     ]
     pending_count = {"inbox": 0, "pending": 4, "split": 2}[source]
-    scheduler._pending_messages.extend(messages[:pending_count])
+    scheduler.pending_messages.extend(messages[:pending_count])
     for msg in messages[pending_count:]:
         scheduler.inbox.put(msg)
 
-    batch = scheduler._collect_new_request_batch(first)
-    scheduler._handle_new_request_batch(batch)
-    while scheduler._pending_messages:
-        scheduler._handle_message(scheduler._next_message(), None)
+    batch = scheduler.collect_new_request_batch(first)
+    scheduler.handle_new_request_batch(batch)
+    while scheduler.pending_messages:
+        scheduler.handle_message(scheduler.next_message(), None)
 
     assert scheduler.batch_calls == [["a", "b", "c"]]
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
-    assert not scheduler._pending_messages
-    assert not scheduler._pending_done
+    assert not scheduler.pending_messages
+    assert not scheduler.pending_done
 
 
 def test_non_streaming_batch_preserves_pending_cost_boundary() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=4)
-    scheduler._request_cost_fn = lambda payload: payload.data["cost"]
-    scheduler._max_batch_cost = 3
+    scheduler.request_cost_fn = lambda payload: payload.data["cost"]
+    scheduler.max_batch_cost = 3
     requests = []
     for rid, cost in (("a", 1), ("b", 2), ("c", 3), ("d", 1), ("e", 1)):
         payload = _payload(rid)
         payload.data["cost"] = cost
         requests.append(IncomingMessage(rid, "new_request", payload))
     done = IncomingMessage("b", "stream_done")
-    scheduler._pending_messages.extend([done, *requests[1:4]])
+    scheduler.pending_messages.extend([done, *requests[1:4]])
     scheduler.inbox.put(requests[4])
 
-    batch = scheduler._collect_new_request_batch(requests[0])
+    batch = scheduler.collect_new_request_batch(requests[0])
 
     assert batch == requests[:2]
-    assert list(scheduler._pending_messages) == [done, *requests[2:4]]
+    assert list(scheduler.pending_messages) == [done, *requests[2:4]]
     assert scheduler.inbox.qsize() == 1
-    scheduler._handle_new_request_batch(batch)
-    while scheduler._pending_messages or not scheduler.inbox.empty():
-        scheduler._handle_message(scheduler._next_message(), None)
+    scheduler.handle_new_request_batch(batch)
+    while scheduler.pending_messages or not scheduler.inbox.empty():
+        scheduler.handle_message(scheduler.next_message(), None)
 
     assert scheduler.batch_calls == [["a", "b"], ["d", "e"]]
     assert scheduler.single_calls == ["c"]
@@ -154,21 +154,21 @@ def test_non_streaming_batch_preserves_pending_cost_boundary() -> None:
         "d",
         "e",
     ]
-    assert not scheduler._pending_done
+    assert not scheduler.pending_done
 
 
 def test_non_streaming_batch_stops_at_pending_active_stream_done() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=3)
-    scheduler._on_streaming_new_request("stream", _payload("stream", stream=True))
+    scheduler.handle_streaming_new_request("stream", _payload("stream", stream=True))
     first = IncomingMessage("a", "new_request", _payload("a"))
     done = IncomingMessage("stream", "stream_done")
     pending = IncomingMessage("b", "new_request", _payload("b"))
     newer = IncomingMessage("c", "new_request", _payload("c"))
-    scheduler._pending_messages.extend([done, pending])
+    scheduler.pending_messages.extend([done, pending])
     scheduler.inbox.put(newer)
 
-    assert scheduler._collect_new_request_batch(first) == [first]
-    assert list(scheduler._pending_messages) == [done, pending]
+    assert scheduler.collect_new_request_batch(first) == [first]
+    assert list(scheduler.pending_messages) == [done, pending]
     assert scheduler.inbox.get_nowait() is newer
 
 
@@ -180,50 +180,50 @@ def test_streaming_simple_scheduler_keeps_streaming_request_out_of_batch() -> No
     )
     scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
 
-    batch = scheduler._collect_new_request_batch(first)
+    batch = scheduler.collect_new_request_batch(first)
 
     assert [msg.request_id for msg in batch] == ["a"]
-    assert scheduler._next_message().request_id == "stream"
-    assert scheduler._next_message().request_id == "b"
+    assert scheduler.next_message().request_id == "stream"
+    assert scheduler.next_message().request_id == "b"
 
 
 def test_streaming_simple_scheduler_done_before_payload_finalizes_later() -> None:
     scheduler = _TestStreamingScheduler()
 
-    scheduler._on_done("req")
-    scheduler._on_streaming_new_request("req", _payload("req", stream=True))
+    scheduler.handle_stream_done("req")
+    scheduler.handle_streaming_new_request("req", _payload("req", stream=True))
 
     out = scheduler.outbox.get_nowait()
     assert out.type == "result"
     assert out.data == {"done": "req"}
-    assert "req" not in scheduler._pending_done
+    assert "req" not in scheduler.pending_done
     assert "req" not in scheduler.stream_state
 
 
 def test_streaming_simple_scheduler_ignores_late_non_streaming_done() -> None:
     scheduler = _TestStreamingScheduler()
 
-    scheduler._handle_new_request_batch(
+    scheduler.handle_new_request_batch(
         [IncomingMessage("req", "new_request", _payload("req", stream=False))]
     )
-    scheduler._on_done("req")
+    scheduler.handle_stream_done("req")
 
     assert scheduler.outbox.get_nowait().type == "result"
-    assert "req" not in scheduler._pending_done
+    assert "req" not in scheduler.pending_done
 
 
 def test_streaming_simple_scheduler_abort_clears_all_stream_state() -> None:
     scheduler = _TestStreamingScheduler()
-    scheduler._stream_payloads["req"] = _payload("req", stream=True)
-    scheduler._pending_done.add("req")
+    scheduler.stream_payloads["req"] = _payload("req", stream=True)
+    scheduler.pending_done.add("req")
     scheduler.stream_state.add("req")
 
     scheduler.abort("req")
 
-    assert "req" not in scheduler._stream_payloads
-    assert "req" not in scheduler._pending_done
+    assert "req" not in scheduler.stream_payloads
+    assert "req" not in scheduler.pending_done
     assert "req" not in scheduler.stream_state
-    assert "req" in scheduler._aborted_request_ids
+    assert "req" in scheduler.aborted_request_ids
 
 
 def test_streaming_simple_scheduler_keeps_queued_control_message_out_of_batch() -> None:
@@ -233,13 +233,13 @@ def test_streaming_simple_scheduler_keeps_queued_control_message_out_of_batch() 
     scheduler.inbox.put(IncomingMessage("stream", "stream_chunk", chunk))
     scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
 
-    batch = scheduler._collect_new_request_batch(first)
+    batch = scheduler.collect_new_request_batch(first)
 
     assert [msg.request_id for msg in batch] == ["a"]
-    next_msg = scheduler._next_message()
+    next_msg = scheduler.next_message()
     assert next_msg.request_id == "stream"
     assert next_msg.type == "stream_chunk"
-    assert scheduler._next_message().request_id == "b"
+    assert scheduler.next_message().request_id == "b"
 
 
 def _chunk(request_id: str, value: str) -> IncomingMessage:
@@ -253,7 +253,7 @@ def _raw_chunk(request_id: str, value: object) -> IncomingMessage:
 
 
 class _BatchStreamingScheduler(_TestStreamingScheduler):
-    _can_batch_stream_chunks = True
+    can_batch_stream_chunks = True
 
     def __init__(self, **kw: int) -> None:
         self.pump_batches: list[list[str]] = []
@@ -262,7 +262,7 @@ class _BatchStreamingScheduler(_TestStreamingScheduler):
     def on_stream_chunk_batch(self, items):
         self.pump_batches.append([rid for rid, _ in items])
         for request_id, item in items:
-            if self._is_aborted(request_id):
+            if self.is_aborted(request_id):
                 continue
             self.outbox.put(
                 OutgoingMessage(
@@ -275,17 +275,17 @@ class _BatchStreamingScheduler(_TestStreamingScheduler):
 
 
 class _DefaultBatchScheduler(_TestStreamingScheduler):
-    _can_batch_stream_chunks = True
+    can_batch_stream_chunks = True
 
 
 class _DistinctBatchStreamingScheduler(_BatchStreamingScheduler):
-    _stream_chunk_batch_distinct_requests = True
+    stream_chunk_batch_distinct_requests = True
 
 
 def test_stream_chunk_batch_opt_out_dispatches_one_at_a_time() -> None:
     scheduler = _TestStreamingScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert [m.request_id for m in _drain_results(scheduler)] == ["a"]
     assert scheduler.inbox.get_nowait().request_id == "b"
 
@@ -294,7 +294,7 @@ def test_stream_chunk_batch_coalesces_queued_chunks_into_one_pump() -> None:
     scheduler = _BatchStreamingScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))
     scheduler.inbox.put(_chunk("c", "z"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "b", "c"]]
     assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y", "z"]
 
@@ -303,17 +303,17 @@ def test_stream_chunk_batch_coalesces_queued_chunks_into_one_pump() -> None:
 def test_stream_chunk_batch_coalesces_pending_before_inbox(cap: int) -> None:
     scheduler = _BatchStreamingScheduler(max_batch_size=cap)
     chunks = [_chunk(rid, rid) for rid in ("a", "b", "c", "d", "e")]
-    scheduler._pending_messages.extend(chunks[1:3])
+    scheduler.pending_messages.extend(chunks[1:3])
     for msg in chunks[3:]:
         scheduler.inbox.put(msg)
 
-    scheduler._handle_message(chunks[0], None)
+    scheduler.handle_message(chunks[0], None)
 
     assert scheduler.pump_batches == [[msg.request_id for msg in chunks[:cap]]]
     assert [m.data["chunk"] for m in _drain_results(scheduler)] == [
         msg.data.data for msg in chunks[:cap]
     ]
-    assert [scheduler._next_message() for _ in chunks[cap:]] == chunks[cap:]
+    assert [scheduler.next_message() for _ in chunks[cap:]] == chunks[cap:]
 
 
 def test_stream_chunk_batch_can_stop_before_duplicate_request() -> None:
@@ -322,11 +322,11 @@ def test_stream_chunk_batch_can_stop_before_duplicate_request() -> None:
     scheduler.inbox.put(_chunk("a", "second"))
     scheduler.inbox.put(_chunk("c", "z"))
 
-    scheduler._handle_message(_chunk("a", "first"), None)
+    scheduler.handle_message(_chunk("a", "first"), None)
 
     assert scheduler.pump_batches == [["a", "b"]]
-    assert scheduler._next_message().data.data == "second"
-    assert scheduler._next_message().request_id == "c"
+    assert scheduler.next_message().data.data == "second"
+    assert scheduler.next_message().request_id == "c"
 
 
 def test_stream_chunk_batch_stops_at_non_chunk_and_pushes_back() -> None:
@@ -334,10 +334,10 @@ def test_stream_chunk_batch_stops_at_non_chunk_and_pushes_back() -> None:
     scheduler.inbox.put(_chunk("b", "y"))
     scheduler.inbox.put(IncomingMessage("c", "new_request", _payload("c")))
     scheduler.inbox.put(_chunk("d", "w"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "b"]]
-    assert scheduler._next_message().request_id == "c"
-    assert scheduler._next_message().request_id == "d"
+    assert scheduler.next_message().request_id == "c"
+    assert scheduler.next_message().request_id == "d"
 
 
 def test_stream_chunk_batch_skips_aborted_requests() -> None:
@@ -345,7 +345,7 @@ def test_stream_chunk_batch_skips_aborted_requests() -> None:
     scheduler.abort("b")
     scheduler.inbox.put(_chunk("b", "y"))
     scheduler.inbox.put(_chunk("c", "z"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "c"]]
     assert [m.request_id for m in _drain_results(scheduler)] == ["a", "c"]
 
@@ -354,20 +354,20 @@ def test_stream_chunk_batch_respects_cap() -> None:
     scheduler = _BatchStreamingScheduler(max_batch_size=2)
     for rid in ("b", "c", "d"):
         scheduler.inbox.put(_chunk(rid, rid))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "b"]]
-    assert scheduler._next_message().request_id == "c"
+    assert scheduler.next_message().request_id == "c"
 
 
 def test_stream_chunk_batch_default_hook_emits_per_chunk_in_order() -> None:
     scheduler = _DefaultBatchScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("b", "y"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     assert [m.data["chunk"] for m in _drain_results(scheduler)] == ["x", "y"]
 
 
 class _RaisingDefaultBatchScheduler(_TestStreamingScheduler):
-    _can_batch_stream_chunks = True
+    can_batch_stream_chunks = True
 
     def on_stream_chunk(self, request_id, item):
         if request_id == "bad":
@@ -379,11 +379,11 @@ def test_stream_chunk_batch_default_hook_isolates_failing_item() -> None:
     scheduler = _RaisingDefaultBatchScheduler(max_batch_size=4)
     scheduler.inbox.put(_chunk("bad", "y"))
     scheduler.inbox.put(_chunk("c", "z"))
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
     out = _drain_results(scheduler)
     assert [m.request_id for m in out if m.type == "stream"] == ["a", "c"]
     assert any(m.request_id == "bad" and m.type == "error" for m in out)
-    assert scheduler._is_aborted("bad")
+    assert scheduler.is_aborted("bad")
 
 
 def test_stream_chunk_batch_validates_items_before_hook() -> None:
@@ -391,13 +391,13 @@ def test_stream_chunk_batch_validates_items_before_hook() -> None:
     scheduler.inbox.put(_raw_chunk("bad", "not-a-stream-item"))
     scheduler.inbox.put(_chunk("c", "z"))
 
-    scheduler._handle_message(_chunk("a", "x"), None)
+    scheduler.handle_message(_chunk("a", "x"), None)
 
     out = _drain_results(scheduler)
     assert scheduler.pump_batches == [["a", "c"]]
     assert [m.request_id for m in out if m.type == "stream"] == ["a", "c"]
     assert any(m.request_id == "bad" and m.type == "error" for m in out)
-    assert scheduler._is_aborted("bad")
+    assert scheduler.is_aborted("bad")
 
 
 def test_stream_chunk_batch_filters_request_aborted_during_validation() -> None:
@@ -405,12 +405,12 @@ def test_stream_chunk_batch_filters_request_aborted_during_validation() -> None:
     scheduler.inbox.put(_raw_chunk("bad", "not-a-stream-item"))
     scheduler.inbox.put(_chunk("c", "z"))
 
-    scheduler._handle_message(_chunk("bad", "x"), None)
+    scheduler.handle_message(_chunk("bad", "x"), None)
 
     out = _drain_results(scheduler)
     assert [m.request_id for m in out if m.type == "stream"] == ["c"]
     assert any(m.request_id == "bad" and m.type == "error" for m in out)
-    assert scheduler._is_aborted("bad")
+    assert scheduler.is_aborted("bad")
     assert "bad" not in scheduler.stream_state
 
 
@@ -420,10 +420,10 @@ class _ReadyStepScheduler(_TestStreamingScheduler):
         self.ready = False
         super().__init__(**kw)
 
-    def _has_ready_work(self) -> bool:
+    def has_ready_work(self) -> bool:
         return self.ready
 
-    def _run_ready_step(self) -> None:
+    def run_ready_step(self) -> None:
         self.events.append("step")
         self.ready = False
         self.stop()
@@ -438,13 +438,13 @@ class _ReadyStepScheduler(_TestStreamingScheduler):
 def test_serving_loop_drains_pending_then_inbox_before_the_ready_step() -> None:
     scheduler = _ReadyStepScheduler()
     scheduler.ready = True
-    scheduler._pending_messages.append(_chunk("a", "x"))
+    scheduler.pending_messages.append(_chunk("a", "x"))
     scheduler.inbox.put(_chunk("b", "y"))
 
     scheduler.start()
 
     assert scheduler.events == ["chunk:a", "chunk:b", "step"]
-    assert not scheduler._pending_messages
+    assert not scheduler.pending_messages
     assert scheduler.inbox.empty()
 
 
@@ -456,19 +456,19 @@ class _DeferredDoneScheduler(_TestStreamingScheduler):
 
 def test_stream_done_returning_none_defers_completion() -> None:
     scheduler = _DeferredDoneScheduler()
-    scheduler._on_streaming_new_request("req", _payload("req", stream=True))
+    scheduler.handle_streaming_new_request("req", _payload("req", stream=True))
 
-    scheduler._on_done("req")
+    scheduler.handle_stream_done("req")
 
     assert "req" in scheduler.stream_state
-    assert "req" in scheduler._stream_payloads
-    assert "req" not in scheduler._pending_done
+    assert "req" in scheduler.stream_payloads
+    assert "req" not in scheduler.pending_done
     assert _drain_results(scheduler) == []
 
-    scheduler._complete_stream_request(
+    scheduler.complete_stream_request(
         "req", [OutgoingMessage("req", "result", {"done": "req"})]
     )
 
     assert [msg.data for msg in _drain_results(scheduler)] == [{"done": "req"}]
     assert "req" not in scheduler.stream_state
-    assert "req" not in scheduler._stream_payloads
+    assert "req" not in scheduler.stream_payloads
