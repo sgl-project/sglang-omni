@@ -6,7 +6,7 @@ Covers T2I, T2V, I2V, T2V+sound (structured prompts bundled in the checkpoint's
 modes at their native recipes from the checkpoint's own examples:
 
   * forward_dynamics -- full 4-chunk autoregressive AgiBotWorld rollout
-    (assets/example_action_fd_agibotworld_*), 480x480, 29-D actions.
+    (assets/example_action_fd_agibotworld_*), 640x640, 29-D actions.
   * inverse_dynamics -- bundled AV example video (assets/example_action_id_av_0_*),
     9-D actions.
 
@@ -17,8 +17,7 @@ the functional smoke suite (tests/integration/cosmos3/test_super_gpu.py).
 Generation is driven in-process through ``MultiProcessPipelineRunner`` and the
 SDK ``Client`` (the native media path), not an HTTP server.
 
-Super's DiT does not fit two 80GB GPUs while resident, so this bakes in DiT
-layerwise offload (the same override the 2-GPU validation used).
+The generation YAML selects the validated two-GPU layerwise-offload recipe.
 
 Opt in on the GPU node, matching tests/integration/cosmos3/test_super_gpu.py:
 
@@ -142,7 +141,9 @@ MODES = ["t2i", "t2v", "i2v", "t2vs", "v2v", "forward_dynamics", "inverse_dynami
 
 
 def _devices() -> list[int]:
-    devices = [int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1").split(",")]
+    devices = [
+        int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1").split(",")
+    ]
     assert len(devices) in (1, 2, 4, 8) and len(set(devices)) == len(devices)
     return devices
 
@@ -173,25 +174,10 @@ def _compact(path: Path) -> str:
 
 
 def _config(model: Path, devices: list[int], output: Path):
-    from sglang_omni.config.manager import ConfigManager
+    from tests.integration.cosmos3.test_super_gpu import _config as smoke_config
 
-    config = ConfigManager.from_file(str(GENERATION_CONFIG)).config
-    config.model_path = str(model)
-    stage = config.stages[0]
-    stage.gpu, stage.runtime_gpu_ids = devices[0], devices
-    stage.factory.output_dir = str(output)
-    overrides = stage.factory.server_args_overrides
-    overrides.update(
-        use_fsdp_inference=len(devices) > 1,
-        hsdp_shard_dim=len(devices),
-        # Super's DiT is excluded from auto offload and does not fit 2x80GB fully
-        # resident, so offload it layerwise. Keeping 24 of 128 layers resident is
-        # the tuned 2-GPU default: it fits (~67 GiB/GPU peak at this recipe, ~11%
-        # faster than resident=1) while leaving headroom; ~40 OOMs.
-        component_residency={"transformer": "layerwise-offload"},
-        layerwise_resident_layers={"transformer": 24},
-    )
-    return config
+    # Share placement and the single-GPU fallback; leave the recipe in the YAML.
+    return smoke_config("generation", str(model), devices, output)
 
 
 @asynccontextmanager
@@ -301,9 +287,8 @@ def _video_size(path: Path) -> tuple[int, int]:
 
 
 def _last_frame_png(video_path: Path, dest: Path):
-    from PIL import Image  # noqa: F401  (kept for parity; to_image returns PIL)
-
     import av
+    from PIL import Image  # noqa: F401  (kept for parity; to_image returns PIL)
 
     last = None
     with av.open(str(video_path)) as container:
@@ -453,9 +438,13 @@ async def test_generation_quality(tmp_path):
             assert chunk.media and len(chunk.media) == 1
             item = chunk.media[0]
             if mode in ("policy", "inverse_dynamics"):
-                _check_action(item, mode, inputs["num_frames"] - 1, inputs["raw_action_dim"])
+                _check_action(
+                    item, mode, inputs["num_frames"] - 1, inputs["raw_action_dim"]
+                )
             else:
-                _check_media(item, inputs["num_frames"], inputs["width"], inputs["height"])
+                _check_media(
+                    item, inputs["num_frames"], inputs["width"], inputs["height"]
+                )
                 if mode == "t2vs":
                     _check_audio(item["path"], SOUND_DURATION)
 

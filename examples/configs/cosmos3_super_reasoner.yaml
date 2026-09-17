@@ -1,4 +1,4 @@
-# Candidate topology; requires independent GPU memory, quality, and lifecycle qualification.
+# Two-H100 80GB Reasoner recipe; see docs/cookbook/cosmos3_super.md.
 config_cls: Cosmos3ReasonerPipelineConfig
 name: cosmos3-super-reasoner
 model_path: nvidia/Cosmos3-Super@fe77b66696d645f663b8f27e942b3b43e4629e23

@@ -1,93 +1,113 @@
-# Cosmos3 Super: shared native adapters
+# Cosmos3-Super
 
-Base Super uses the shared Cosmos3 generation and Reasoner adapters. Native SGLang owns checkpoint geometry, weights, preprocessing, sampling, GPU workers, and caches; Omni owns stage placement, request conversion, and result delivery. 
-The specialized Super Image2Video/Text2Image "checkpoints" will be a separate PR contribution.
+Base Super uses the shared Cosmos3 adapters: Omni handles requests and worker
+ownership; native SGLang loads the model and runs inference. The specialized
+Super Image2Video and Text2Image checkpoints are separate work.
 
-This builds on [#2050](https://github.com/sgl-project/sglang-omni/pull/2050), [#2048](https://github.com/sgl-project/sglang-omni/pull/2048), and [#2049](https://github.com/sgl-project/sglang-omni/pull/2049). Use their compatible native prerequisites for cancellation, saved outputs, worker-failure-aware HTTP RPC, and startup cleanup. Omni can shut down a returned native owner if adapter setup fails; native construction must clean up workers it creates before returning. Partial-rank startup recovery still needs GPU testing.
+## Configs
 
-## Launch
+Both configs pin `nvidia/Cosmos3-Super@fe77b66696d645f663b8f27e942b3b43e4629e23`
+and use GPUs 0–1. Run them separately on a two-GPU machine.
 
-Use a local checkpoint or `nvidia/Cosmos3-Super@<revision>`. The adapters preserve checkpoint metadata and served names. HTTP setup resolves one snapshot for both the frontend and generation worker, preventing a moving revision from diverging.
+| Config | Use | Native settings |
+| --- | --- | --- |
+| [cosmos3_super_generation.yaml](../../examples/configs/cosmos3_super_generation.yaml) | Images, video, sound, actions | Two native workers; TP=1; transformer layerwise offload with 24 resident layers per stack |
+| [cosmos3_super_reasoner.yaml](../../examples/configs/cosmos3_super_reasoner.yaml) | Text/image/video understanding | TP=2; 32,768-token context; memory fraction 0.6; up to 8 concurrent requests |
 
-No separate download step is required: the example configs pin `nvidia/Cosmos3-Super@<revision>`, and at first launch the stage resolver (`sglang_omni/utils/checkpoint.py:resolve_checkpoint`) calls `snapshot_download` for that exact revision, exactly like standard SGLang/vLLM serving. Export `HF_TOKEN` (the repo is gated) and, if you want the weights on a specific disk, point `HF_HOME`/`HF_HUB_CACHE` at it before serving. Passing `--model-path` a local snapshot dir skips the download entirely.
+`runtime_gpu_ids` selects the GPUs. Stage `tp_size: 1` means one Omni owner;
+`factory.server_args_overrides` goes to the native runtime. Generation leaves
+Ulysses and CFG placement at native defaults. Request-time `guidance_scale` and
+`negative_prompt` still control CFG.
+
+### Why generation offloads weights
+
+The automatic residency setup ran out of memory on two H100 80GB GPUs. The recipe
+enables SGLang's existing layerwise offload: weights move from host memory to GPU
+as needed. `layerwise_resident_layers: {transformer: 24}` keeps 24 layers in
+**each** 64-layer stack (`gen_layers` and `language_model.layers`), 48 total.
+This trades latency for lower GPU memory use; host RAM and transfer bandwidth
+also matter.
+
+Although the YAML enables FSDP, the pinned native runtime only applies it to
+resident components. The offloaded transformer is **not FSDP-sharded**. The
+failed automatic setup (on SGLang 0.5.19) selected component offload, so it does
+not prove that explicit resident FSDP cannot fit two GPUs. That comparison is pending.
+
+The two-GPU campaign used this setting for 720p generation. Its reported
+189-frame I2V check is longer than the saved 121-frame CI outputs; that run's
+memory log is not in the artifact bundle. Treat 24 as the tested recipe setting,
+not a memory guarantee for arbitrary requests or concurrency.
+
+## Runtime and launch
+
+The recorded SDK generation and Reasoner runs used native SGLang
+`4e9e407d3720045d59cae185c05f33649f4e544e`, `sglang-kernel==0.4.7`, and
+`flashinfer-python==0.6.18`. Released SGLang 0.5.19 did not register the Super
+Reasoner architecture.
+
+Export `HF_TOKEN` for the gated checkpoint. The pinned snapshot downloads on
+first launch; optionally set `HF_HOME` to choose the cache disk. From the repo root:
 
 ```bash
-SGLANG_OMNI_STARTUP_TIMEOUT=1800 HF_TOKEN=... sgl-omni serve \
+SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
+  --config examples/configs/cosmos3_super_reasoner.yaml \
+  --host 127.0.0.1 --port 8000
+```
+
+This serves `/v1/chat/completions`. Add `--model-path /models/Cosmos3-Super`
+to use an existing local snapshot instead of the pinned Hub download.
+
+**Generation HTTP has an additional native prerequisite.** The benchmark commit
+lacks `AsyncSchedulerClient.initialize(..., worker_failure=...)`; Omni rejects
+it before startup. The [media foundation #2048](https://github.com/sgl-project/sglang-omni/pull/2048)
+requires that API and propagation of `app.state.scheduler_failure`. Once those
+native lifecycle changes are installed, launch the media routes with:
+
+```bash
+SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
   --config examples/configs/cosmos3_super_generation.yaml \
   --host 127.0.0.1 --port 8000
 ```
 
-An explicit prefetch is **optional** — useful only to land weights on a fast local SSD (`hf download nvidia/Cosmos3-Super@<revision> --local-dir ...`) or to fail fast on a missing token before GPUs are allocated. It is not a prerequisite for serving.
+The SDK generation tests below bypass HTTP setup and ran on the recorded commit.
+They do not establish HTTP compatibility or partial-rank startup recovery.
+Neither config enables interleaved generation.
 
-For understanding, substitute `cosmos3_super_reasoner.yaml`. Run them separately; both default to GPUs 0–1. Generation mounts native media routes; Reasoner serves `/v1/chat/completions`. Neither configuration enables interleaved generation.
+## Reproduce the GPU checks
 
-The two-GPU allocation is the tested default on this hardware; the layout is **provisional**, not a measured memory requirement:
-
-- `runtime_gpu_ids` reserves the native workers' GPUs; stage `tp_size: 1` means one Omni owner.
-- Generation enables FSDP weight sharding (`hsdp_shard_dim: 2`) and forwards native execution options, following [Edge #2107](https://github.com/sgl-project/sglang-omni/pull/2107). It does not hard-code Ulysses or CFG parallelism.
-- Reasoner uses native SRT TP=2. Native `server_args_overrides.tp_size` is distinct from Omni's stage process count.
-- To scale up (e.g. TP=4 on four GPUs), widen `runtime_gpu_ids` and raise the native `tp_size`/`hsdp_shard_dim` to match.
-
-CFG remains available through request parameters such as `guidance_scale` and `negative_prompt`; choosing where its branches execute is a separate setting.
-
-## SDK requests
-
-Pass native sampling fields in `GenerateRequest(prompt={...}, stream=False)`. 
-Complete startup/request/shutdown examples are in the [GPU tests](../../tests/integration/cosmos3/test_super_gpu.py).
-
-| Task | Main native fields | Output |
-| --- | --- | --- |
-| T2I / T2V | `prompt`, `num_frames` (1 for an image) | Image/video |
-| I2V | Add `image_path` | Video |
-| V2V continuation | `video_path`, `condition_frame_indexes`, `condition_video_keep` | Video |
-| Video with sound | Add `sound_duration` in seconds | Video with audio |
-| Policy / inverse dynamics | `action_mode`, image/video input, domain settings | Action JSON |
-| Forward dynamics | `action_mode="forward_dynamics"`, `image_path`, `action`, domain settings | Video |
-
-Policy/inverse requests may omit the prompt and call native `generate_action()`.
-Specify `num_frames` as action horizon + 1, and supply native domain settings
-(`domain_name` or `domain_id`, and `raw_action_dim`). Results use
-`chunk.media=[{"path": ".../action.json", "modality": "action"}]` with native
-`action_generation_response()` formatting. Forward dynamics stays on `generate()`.
-Active action calls must settle before cancelled output is removed because the
-native action SDK has no cancellation-event argument. HTTP uses the mounted
-native endpoint schemas, including their observation envelopes.
-
-## Run on H100
-
-Install the compatible native runtime plus pytest, pytest-asyncio, psutil, Pillow,
-NumPy, and PyAV. Run cases sequentially on one node; do not use pytest-xdist.
+Use the runtime above, plus pytest, pytest-asyncio, psutil, Pillow, NumPy and PyAV.
+Run sequentially, without pytest-xdist:
 
 ```bash
 export COSMOS3_SUPER_RUN_GPU=1
-export COSMOS3_SUPER_MODEL_PATH=/models/Cosmos3-Super
-export COSMOS3_SUPER_CHECKPOINT_REVISION='<checkpoint commit>'
-export COSMOS3_SUPER_NATIVE_REVISION='<native commit and patch identifier>'
-export COSMOS3_SUPER_GPU_IDS=0,1
-python -m pytest -q tests/integration/cosmos3/test_super_gpu.py \
-  --junitxml=results/cosmos3-super.xml --durations=0
+
+# Generation YAML → Omni SDK → native generator; seven modes, one shared server.
+python -m pytest -s tests/test_model/test_cosmos3_super_generator_ci.py
+
+# Reasoner YAML → HTTP server → shared benchmark scorer.
+python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
+python -m benchmarks.dataset.prepare --dataset videomme-ci-50
+python -m pytest -s tests/test_model/test_cosmos3_super_reasoner_ci.py
+
+# Small synthetic inputs: eight generation modes (including policy), three
+# Reasoner modes, plus Reasoner cancellation, stage death and fresh restart.
+python -m pytest -s tests/integration/cosmos3/test_super_gpu.py
 ```
 
-There are **11 independent smoke cases**: generation `t2i`, `t2v`, `i2v`, `v2v`,
-`sound`, `policy`, `inverse_dynamics`, `forward_dynamics`; Reasoner `text`, `image`,
-`video`. Select one by its pytest node ID, for example:
+The generation CI uses bundled inputs (plus a custom T2I prompt) and 35 steps;
+T2V/I2V/sound/V2V run at 1280×720, 121 frames. It checks decoded outputs and
+action shapes. The smoke suite uses four steps and synthetic inputs. These
+checks do not measure visual quality or action accuracy against a reference.
 
-```bash
-python -m pytest -q 'tests/integration/cosmos3/test_super_gpu.py::test_super_generation[sound]'
-```
+The [saved two-H100 results](https://github.com/thekevinli/sglang-benchmark-artifacts/tree/473829277ba26b35bf2f46f3584749d907b43fd2/pr-2201-cosmos3-super-adapters/2gpu)
+include MMMU 30/50 and VideoMME 28/50, both with zero failed requests. The
+Reasoner lifecycle case passed, with resource-tracker warnings about semaphore
+and shared-memory cleanup. Native rank failure and partial startup remain untested.
 
-These are smoke tests, not a quality bar. Synthetic inputs and just four denoising
-steps confirm each mode runs end to end: the videos decode, audio is present and
-about the right length, action arrays come back finite and correctly shaped, the
-Reasoner returns something nonempty, and every spawned process is gone afterward
-(T2I also re-serves from a cold start). Output quality and GPU-failure recovery
-aren't checked here.
-
-The layerwise offload only exists to fit two 80GB cards — Super's DiT won't stay
-resident on 2x H100, so the generation config streams it, keeping 24 of 128 layers
-on-GPU (one on a single GPU). With more GPUs you don't need it: FSDP shards the DiT
-thin enough to keep all 128 layers resident, so drop the `component_residency` /
-`layerwise_resident_layers` overrides and generation runs faster. The Reasoner just
-uses native TP equal to the GPU count. Startup and request timeouts default to
-1800 s and 900 s; override them with `COSMOS3_SUPER_STARTUP_TIMEOUT` and
-`COSMOS3_SUPER_REQUEST_TIMEOUT`.
+Only two GPUs are qualified here. For a future four-GPU run, change
+`runtime_gpu_ids` to `[0, 1, 2, 3]` and generation `hsdp_shard_dim` to 4, or
+Reasoner native `tp_size` to 4. Keep generation TP=1 and Omni stage TP=1.
+To test resident FSDP, set `component_residency: {transformer: resident}` and
+remove `layerwise_resident_layers`. This is an unqualified alternative on any
+GPU count; measure memory before adopting it. Merely adding GPUs while keeping
+layerwise offload does not shard the transformer's weights on this runtime.
