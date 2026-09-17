@@ -153,6 +153,18 @@ tests/
     │   ├── test_paged_rollback.py
     │   ├── test_request_builders.py
     │   └── test_streaming_codec.py
+    ├── personaplex/
+    │   ├── test_code2wav_stream.py
+    │   ├── test_depformer.py
+    │   ├── test_engine_builder.py
+    │   ├── test_hf_config.py
+    │   ├── test_mimi_streaming.py
+    │   ├── test_model_runner.py
+    │   ├── test_prompts.py
+    │   ├── test_request_builders.py
+    │   ├── test_sglang_model.py
+    │   ├── test_stages.py
+    │   └── test_timeline.py
     ├── qwen3_asr/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_pipeline.py
@@ -857,6 +869,19 @@ that happened to contain an older version of the test.
   stream waits and decode resumption using simulated decode preparation.
   Tests run on CPU without model weights; request and rollback tests require
   SGLang, but do not start an engine.
+
+- `unit_test/personaplex/`: PersonaPlex delayed-timeline contract (stream
+  delays, prompt phases, packaged-voice rows and the first generative
+  position), chunked Mimi equivalence with whole-sequence encode/decode on
+  random weights and the ring cache's oldest-entry drop, depformer per-step weight slicing and teacher forcing, the
+  Llama-shaped backbone config and checkpoint shim, checkpoint weight routing
+  and embedding columns, model-runner prefill/decode rows and frame handoff,
+  per-request streaming code2wav and abort cleanup, preprocessing (caller
+  channel, `audios` input, role prompt, voice resolution, `stage_params`),
+  voice-archive unpacking (read-only fallback, no partial folder), and
+  request lowering (decode budget, reference sampling defaults over client
+  filler values, seeds, stream chunks, context limit, input validation). CPU
+  only, no weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

@@ -15,6 +15,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_cosyvoice3_layout,
     try_resolve_arch_from_mistral_config,
     try_resolve_arch_from_nemo_config,
+    try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
 )
 
@@ -46,6 +47,8 @@ def resolve_config_cls_for_model_path(model_path: str):
         arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
     if arch is None:
         arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    if arch is None:
+        arch = try_resolve_arch_from_personaplex_layout(repo_id, revision=revision)
     if arch is None:
         hint = f", check that revision {revision} exists" if revision else ""
         raise ValueError(

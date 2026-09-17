@@ -26,6 +26,12 @@ _BAD_REQUEST_MARKERS = (
     "AuK accepts at most one",
     "AuK expected a",
     "AuK references must be",
+    "PersonaPlex request needs",
+    "PersonaPlex needs at least one 80 ms frame",
+    "PersonaPlex seed must be",
+    "PersonaPlex takes one caller recording",
+    "Unsupported PersonaPlex audio input",
+    "; packaged voices:",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(
