@@ -69,18 +69,6 @@ def _predictor_graph_env_override() -> bool | None:
     return value.strip().lower() not in ("0", "false", "off", "no")
 
 
-def predictor_graph_policy_enabled() -> bool:
-    """Whether recording the predictor chain is wanted, before any device question."""
-    # Note: (Jiaxin Deng) capture under TP would record collectives; the
-    # graphed chain is only validated single-rank, so TP stays eager.
-    if int(get_parallel().tp_size) != 1:
-        return False
-    override = _predictor_graph_env_override()
-    if override is not None:
-        return override
-    return current_platform.enable_tts_predictor_graph()
-
-
 def _predictor_gqa_attention(
     q: torch.Tensor,
     key: torch.Tensor,
@@ -1322,7 +1310,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # Device first: a device that cannot record answers without published config.
         if current_platform.get_device_graph_backend(self._predictor_device) is None:
             return False
-        if not predictor_graph_policy_enabled():
+        # Note: (Jiaxin Deng) capture under TP would record collectives; the
+        # graphed chain is only validated single-rank, so TP stays eager.
+        if int(get_parallel().tp_size) != 1:
+            return False
+        override = _predictor_graph_env_override()
+        if override is None:
+            should_capture = current_platform.enable_tts_predictor_graph()
+        else:
+            should_capture = override
+        if not should_capture:
             return False
         return not bool(get_exec().graph.disable_cuda_graph)
 
