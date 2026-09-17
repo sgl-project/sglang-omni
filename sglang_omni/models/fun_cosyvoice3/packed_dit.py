@@ -17,9 +17,9 @@ from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 
 logger = logging.getLogger(__name__)
 
-# note (ratish): a row's chunks share a key prefix, so FA3 pages are one frame.
-_FA3_PAGE_SIZE = 1
-_FA3_DTYPES = (torch.float16, torch.bfloat16)
+# note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
+FA3_PAGE_SIZE = 1
+FA3_DTYPES = (torch.float16, torch.bfloat16)
 
 
 @dataclass(frozen=True)
@@ -173,7 +173,7 @@ class RaggedRowAttention:
     ) -> torch.Tensor:
         """query, key, value: (1, total, heads * head_dim). Returns the same
         shape."""
-        page_shape = (-1, _FA3_PAGE_SIZE, self.heads, self.head_dim)
+        page_shape = (-1, FA3_PAGE_SIZE, self.heads, self.head_dim)
         out = flash_attn_with_kvcache(
             q=query[0].reshape(-1, self.heads, self.head_dim),
             k_cache=key[0].reshape(page_shape),
@@ -215,7 +215,7 @@ class PackedDiT:
     ) -> PackedRowAttention:
         attention = self.dit.transformer_blocks[0].attn
         chunk_size = self.chunk_size if streaming else None
-        if self.is_ragged and dtype in _FA3_DTYPES:
+        if self.is_ragged and dtype in FA3_DTYPES:
             return RaggedRowAttention(
                 rows,
                 chunk_size=chunk_size,
