@@ -1,4 +1,4 @@
-# 🍎 Apple Silicon (MPS / MLX) Installation
+# 🍎 Apple Silicon Installation
 
 This page covers installing `sglang-omni` on Apple Silicon (macOS `arm64`) for
 models that support the MLX or Torch-MPS backend. It is the shared base for
@@ -80,11 +80,16 @@ decoding can succeed without loading FFmpeg.
 | `UV_HTTP_TIMEOUT` | `300` | Per-request uv timeout (seconds) |
 | `UV_HTTP_RETRIES` | `5` | uv network retry count |
 
-Use `--non-interactive` (or `NONINTERACTIVE=1`) to disable Homebrew auto-update
-in CI. Slow or proxied networks can override the installer's uv defaults with
-`UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
-### Run from a hosted installer
+The installer never invokes `sudo` or Homebrew's bootstrapper. Use `--non-interactive` (or `NONINTERACTIVE=1`) to
+disable Homebrew auto-update in CI, `SGLANG_OMNI_VENV=/path/to/venv` to choose a virtualenv, and
+`SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3` to enable optional extras.
+The persistent SGLang source checkout defaults to
+`~/.cache/sglang-omni/sglang-v0.5.19` and can be changed with
+`SGLANG_SOURCE_DIR`. Slow or proxied networks can override the installer's uv
+defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
+
+## Method 2: Run from a hosted installer
 
 The script also supports a downloaded or `curl | bash` invocation: when it is
 not inside an sglang-omni checkout, it clones the repository specified by
@@ -110,7 +115,7 @@ curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/in
 For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 `SGLANG_OMNI_REF` explicitly.
 
-## Method 2: Manual Configuration
+## Method 3: Manual Configuration
 
 If you prefer not to use `install.sh`, set up the environment by hand.
 
