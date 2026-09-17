@@ -2,18 +2,17 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
-## Configuration Presets
+## Example Configs
 
-Files under `examples/configs/` are reusable presets for deployments that need
-settings beyond the model-owned defaults, such as hardware placement, topology,
-quantization, memory budgets, or performance tuning. Not every supported model
-needs a preset. When the model registry can discover the pipeline from the checkpoint
-and the built-in defaults are sufficient, launch it with `--model-path` directly.
-A file containing only the config class and model path does not define a
-distinct deployment preset.
+Files under `examples/configs/` provide reusable launch configurations. For a
+TTS integration, add an example config when it records a reproducible deployment
+choice, such as selecting a pipeline variant or configuring hardware placement,
+topology, quantization, memory budgets, or performance tuning. When registry
+discovery and the model defaults are sufficient, document direct
+`--model-path` launch instead.
 
-The [TTS usage guide](../docs/basic_usage/tts.md#supported-tts-models) identifies
-which model families have example configs and which use `--model-path` only.
+The [TTS usage guide](../docs/basic_usage/tts.md#supported-tts-models) shows the
+documented launch configuration for each listed TTS model family.
 
 ## Unified Launcher
 
