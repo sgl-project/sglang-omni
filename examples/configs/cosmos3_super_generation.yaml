@@ -18,4 +18,10 @@ stages:
         # 2-GPU node default; widen with runtime_gpu_ids for larger allocations.
         hsdp_shard_dim: 2
         hsdp_replicate_dim: 1
+        # Super's DiT does not fit two 80GB GPUs fully resident, so stream it
+        # layerwise, keeping 24 of 128 layers on-device (the tuned 2-GPU default:
+        # fits the full generation matrix with headroom). Raise runtime_gpu_ids
+        # for more GPUs, or lower this for a smaller memory footprint.
+        component_residency: {transformer: layerwise-offload}
+        layerwise_resident_layers: {transformer: 24}
         warmup_mode: "off"
