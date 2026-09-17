@@ -1068,7 +1068,7 @@ class _FakeProcessor:
         return {"input_ids": rows}
 
 
-def _payload(text: str = "hello") -> StagePayload:
+def payload(text: str = "hello") -> StagePayload:
     return StagePayload(
         request_id="req-1",
         request=OmniRequest(inputs={"text": text}, params={}, metadata={}),
@@ -1120,7 +1120,7 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
         stages.MossLocalReferenceEncoder,
     )
     assert (
-        rb._QUEUE.snapshot().context.reference_encoder._service._cache.max_size == 8192
+        rb._QUEUE.snapshot().context.reference_encoder._service.cache.max_size == 8192
     )
 
 
@@ -1163,7 +1163,7 @@ def test_create_preprocessing_executor_uses_shared_encoder(monkeypatch):
 def test_preprocess_and_result_adapter():
     set_moss_tts_local_preprocessing_context(processor=_FakeProcessor())
     try:
-        payload = preprocess_moss_tts_local_payload(_payload())
+        payload = preprocess_moss_tts_local_payload(payload())
         assert payload.data.get("_moss_tts_local_prepared_request") == "req-1"
 
         from sglang_omni.models.moss_tts_local.request_builders import (
@@ -1200,7 +1200,7 @@ def test_preprocess_and_result_adapter():
 
 
 def test_result_adapter_empty_generation():
-    payload = _payload()
+    payload = payload()
     data = MossTTSLocalSGLangRequestData(
         input_ids=torch.zeros(4, dtype=torch.long),
         max_new_tokens=16,
@@ -1546,7 +1546,7 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     assert calls[0] == [2, 5]
 
 
-# _MossLocalReferenceEncoder
+# MossLocalReferenceEncoder
 
 
 def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
@@ -1615,7 +1615,7 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
     )
     assert encode_count == 1
 
-    # ON-miss: first call to _MossLocalReferenceEncoder (cache empty)
+    # ON-miss: first call to MossLocalReferenceEncoder (cache empty)
     cached_enc = MossLocalReferenceEncoder(
         fake_batched, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
@@ -1693,8 +1693,8 @@ def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
         _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
 
-    # _BatchedReferenceEncoder.encode checks duration before enqueuing;
-    # _MossLocalReferenceEncoder calls through so the duration check still fires.
+    # BatchedReferenceEncoder.encode checks duration before enqueuing;
+    # MossLocalReferenceEncoder calls through so the duration check still fires.
     with pytest.raises(ValueError, match="100"):
         enc.encode(str(ref))
 
@@ -2001,11 +2001,11 @@ def test_post_process_outputs_skips_chunked_rows():
     )
 
     # Build minimal sched_req stubs.
-    def _req(inflight_middle_chunks):
+    def req(inflight_middle_chunks):
         return types.SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks)
 
     def _sched_req(rid, inflight_middle_chunks):
-        data = types.SimpleNamespace(req=_req(inflight_middle_chunks), output_rows=[])
+        data = types.SimpleNamespace(req=req(inflight_middle_chunks), output_rows=[])
         return types.SimpleNamespace(request_id=rid, data=data)
 
     req_a = _sched_req(
@@ -2331,7 +2331,7 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
     runner.model = types.SimpleNamespace(frame_graph_max_bs=16)
 
-    def _batch(penalties):
+    def batch(penalties):
         return types.SimpleNamespace(
             reqs=[
                 types.SimpleNamespace(
@@ -2341,14 +2341,14 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
             ]
         )
 
-    assert runner.lookahead_eligible(_batch([1.0, 1.0])) is True
-    assert runner.lookahead_eligible(_batch([1.0, 1.3])) is False  # rep-penalty eager
-    assert runner.lookahead_eligible(_batch([1.0] * 17)) is False  # bs over graph cap
+    assert runner.lookahead_eligible(batch([1.0, 1.0])) is True
+    assert runner.lookahead_eligible(batch([1.0, 1.3])) is False  # rep-penalty eager
+    assert runner.lookahead_eligible(batch([1.0] * 17)) is False  # bs over graph cap
 
 
 def test_async_launch_resolve_matches_sync_collect():
     """post_decode_launch + post_decode_resolve must yield the same published
-    next_token_ids and the same output_rows append as synchronous _collect_frame.
+    next_token_ids and the same output_rows append as synchronous collect_frame.
     The launch hands resolve a device snapshot of the published ids so they
     survive the next step clobbering the aliased output_ids tensor in place; CPU
     stub: eager decode (no CUDA graph).
@@ -2383,6 +2383,7 @@ def test_async_launch_resolve_matches_sync_collect():
             (1, hidden_size), 3, dtype=torch.bfloat16
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner._async_enabled = True
         runner.model = model
         runner._outbox = None
         return runner
@@ -2403,7 +2404,7 @@ def test_async_launch_resolve_matches_sync_collect():
         )
         return types.SimpleNamespace(request_id="rid", data=data)
 
-    def _result():
+    def result():
         return types.SimpleNamespace(
             logits_output=types.SimpleNamespace(
                 hidden_states=torch.zeros(1, hidden_size)
@@ -2412,12 +2413,13 @@ def test_async_launch_resolve_matches_sync_collect():
 
     # Synchronous collect.
     rs = _make_runner()
-    req_s, res_s, sb_s = _sched_req(), _result(), types.SimpleNamespace()
+    rs._async_enabled = False
+    req_s, res_s, sb_s = _sched_req(), result(), types.SimpleNamespace()
     rs.collect_frame(res_s, None, sb_s, [req_s])
 
     # Async launch + resolve (separate runner/pool to avoid cross-overwrite).
     ra = _make_runner()
-    req_a, res_a = _sched_req(), _result()
+    req_a, res_a = _sched_req(), result()
     host_buf = ra.post_decode_launch(res_a, None, [req_a])
     # Launch hands resolve a private device snapshot of the published ids.
     assert host_buf is not None
@@ -2483,6 +2485,7 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
         (1, hidden_size), 3, dtype=torch.bfloat16
     )
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner._async_enabled = True
     runner.model = model
 
     data = types.SimpleNamespace(
@@ -2550,11 +2553,12 @@ def test_chunked_rows_do_not_advance_sampling_steps():
             (1, hidden_size), 3, dtype=torch.bfloat16
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner._async_enabled = True
         runner.model = model
         runner._outbox = None
         return runner
 
-    def _result():
+    def result():
         return types.SimpleNamespace(
             logits_output=types.SimpleNamespace(
                 hidden_states=torch.zeros(1, hidden_size)
@@ -2586,7 +2590,7 @@ def test_chunked_rows_do_not_advance_sampling_steps():
     # Single-shot prefill: the only chunk is final, advances sampling_steps to 1.
     r = _make_runner()
     single = types.SimpleNamespace(request_id="r", data=_data(inflight_middle_chunks=0))
-    r.run_frame_decode(_result(), types.SimpleNamespace(), [single])
+    r.run_frame_decode(result(), types.SimpleNamespace(), [single])
     assert _pool_sampling_steps(r, "r") == 1
 
     # Three-chunk prefill on the same request: the mid chunks do not advance, the
@@ -2596,7 +2600,7 @@ def test_chunked_rows_do_not_advance_sampling_steps():
     sched = types.SimpleNamespace(request_id="r", data=data)
     for inflight_middle_chunks, expected_steps in ((2, 0), (1, 0), (0, 1)):
         data.req.inflight_middle_chunks = inflight_middle_chunks
-        r.run_frame_decode(_result(), types.SimpleNamespace(), [sched])
+        r.run_frame_decode(result(), types.SimpleNamespace(), [sched])
         assert _pool_sampling_steps(r, "r") == expected_steps
 
 

@@ -22,12 +22,14 @@ That host sync blocks CUDA-graph capture and the async-decode lookahead
 
 ## Approach
 
-`sglang_omni/models/moss_tts_local/radix_hash.py` computes the generated-row key
-entirely in int64 torch ops -- a fixed-coefficient polynomial (Horner) hash:
+`sglang_omni/models/moss_tts_local/radix_hash.py` fuses token-row construction
+and radix hashing into one Triton kernel on CUDA. The hash algorithm is
+unchanged; inputs unsupported by the Triton path use the original int64 Torch
+implementation:
 
 ```
 acc = 0
-for channel in range(C):                       # C = 13, static
+for channel in range(C):                       # C is fixed by the model configuration
     acc = (acc * BASE + row[:, channel]) % MOD
 key = acc % HASH_SPACE                          # continuing frames
 key = audio_end_id                              # EOS rows (torch.where)
@@ -39,18 +41,15 @@ key = audio_end_id                              # EOS rows (torch.where)
   (in the band) so `Req._check_vocab_boundary_finish` still fires eos.
 
 The prompt path is **unchanged**: `build_row_cache_key_ids` (blake2b) stays for
-prompt preprocessing. Only `model_runner._row_radix_token_ids`'s generated-row
-path is swapped to the GPU hash. This boundary is deliberate -- the prompt hash
+prompt preprocessing. Generated rows now use `build_rows_and_radix_token_ids`
+to fuse row construction and GPU hashing. This boundary is deliberate -- the prompt hash
 is not on the decode hot path and never enters a capture region.
 
 ## Capture-safety argument
 
-The hash uses only elementwise int64 ops (`mul`, `add`, `remainder`,
-`where`) over a **static** channel count, on the input tensor's device. There is
-no `.cpu()`, `.item()`, `.tolist()`, numpy round-trip, data-dependent control
-flow, or dynamic shape. The Python `for` over `range(13)` unrolls into a fixed
-op sequence at trace/capture time. Therefore the function introduces no host
-sync and is CUDA-graph capturable / async-decode safe.
+The Triton kernels compute the hash entirely on device, without host readback
+or synchronization. Warm up the kernels before CUDA-graph capture. The Torch
+fallback remains capture-safe on CUDA.
 
 ### No int64 overflow
 
