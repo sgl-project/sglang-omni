@@ -119,7 +119,7 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 
 If you prefer not to use `install.sh`, set up the environment by hand.
 
-### 1. Install FFmpeg 7
+### Install FFmpeg 7
 
 ```bash
 brew install ffmpeg@7
@@ -130,7 +130,7 @@ Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. See
 [FFmpeg 7 and `DYLD_LIBRARY_PATH`](#ffmpeg-7-and-dyld_library_path) above for
 details.
 
-### 2. Create a virtual environment and install
+### Create a virtual environment and install
 
 Create one virtual environment for both repositories, then install the pinned
 SGLang tag from source with its `all_mps` dependencies before installing
@@ -152,7 +152,7 @@ Replace `<model-extra>` with the extra named in your model's cookbook, or omit
 it if none is required. This installs MLX through SGLang; it does not install
 or use the `mlx-audio` package.
 
-### 3. Verify the runtime
+### Verify the runtime
 
 Before downloading a model, verify both Metal and FFmpeg loading:
 
