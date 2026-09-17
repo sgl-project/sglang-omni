@@ -26,9 +26,8 @@ below.
 6. Write `request_builders.py` and `payload_types.py`. Wire abort cleanup
    into every scheduler that touches shared state.
 7. List the model in [docs/basic_usage/tts.md](../basic_usage/tts.md). Add
-   `examples/configs/<name>.yaml` when it selects a pipeline variant or records
-   reproducible settings beyond the model defaults; otherwise document the
-   direct `--model-path` launch.
+   `examples/configs/<name>.yaml` when it documents a reusable non-default
+   launch configuration; otherwise document the direct `--model-path` launch.
 8. Add the GPU-free unit tests listed at the bottom.
 
 ## Layout
@@ -85,14 +84,13 @@ class. `sglang_omni/models/registry.py` walks every subpackage of
 edit anywhere.
 
 Once the code side works, add the model to
-[docs/basic_usage/tts.md](../basic_usage/tts.md). If users need a reproducible
-deployment choice, such as selecting a pipeline variant or configuring hardware
-placement, topology, quantization, memory budgets, or performance tuning, add a
-runnable example config under `examples/configs/<name>.yaml` and document the
-corresponding `sgl-omni serve --config` command. If registry discovery and the
-model defaults are sufficient, document the direct
-`sgl-omni serve --model-path ...` launch instead. Fun-CosyVoice3, AuK, and
-Higgs TTS are examples of direct `--model-path` launch.
+[docs/basic_usage/tts.md](../basic_usage/tts.md). If users need reproducible
+non-default settings such as GPU placement, process topology, quantization,
+memory budgets, or tuning parameters, add a runnable example config under
+`examples/configs/<name>.yaml` and document the corresponding
+`sgl-omni serve --config` command. If registry discovery and the model defaults
+are sufficient, document the direct `sgl-omni serve --model-path ...` launch
+instead.
 
 ### SGLang wiring
 
