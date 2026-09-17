@@ -266,7 +266,9 @@ def test_the_ragged_read_matches_the_padded_read(chunk_size: int | None) -> None
     head_dim = 64
     rows = pack_rows(LENGTHS, device)
     query, key, value = (
-        torch.randn(1, rows.total, heads * head_dim, device=device, dtype=torch.bfloat16)
+        torch.randn(
+            1, rows.total, heads * head_dim, device=device, dtype=torch.bfloat16
+        )
         for _ in range(3)
     )
     ragged = RaggedRowAttention(
