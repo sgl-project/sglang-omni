@@ -287,17 +287,22 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
-        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
-        (False, {}),
+        (
+            True,
+            {
+                "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
+                "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1",
+            },
+        ),
+        (False, {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}),
     ],
 )
-def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
+def test_qwen3_omni_talker_stage_env_defaults(
     monkeypatch: pytest.MonkeyPatch,
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """aiter's greedy_sample is wrong below 16384 vocab entries; the Talker
-    codec head has 3072, so the ROCm Talker process falls back to torch.argmax."""
+    """The Talker pins the order-fixed MoE finalize; ROCm also avoids aiter greedy."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (
