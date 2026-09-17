@@ -8,8 +8,9 @@ Files under `examples/configs/` are reusable presets for deployments that need
 meaningful overrides such as hardware placement, topology, quantization, memory
 budgets, or performance tuning. Not every supported model needs a preset. When
 the model registry can discover the pipeline from the checkpoint and the
-built-in defaults are sufficient, launch it with `--model-path` alone instead
-of adding a wrapper config that only repeats the config class and model path.
+built-in defaults are sufficient, launch it with `--model-path` directly.
+A file containing only the config class and model path does not define a
+distinct deployment preset.
 
 The [TTS usage guide](../docs/basic_usage/tts.md#supported-tts-models) identifies
 which model families have example configs and which use `--model-path` only.
