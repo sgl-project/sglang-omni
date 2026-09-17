@@ -92,6 +92,45 @@ Docker, manual, or Intel XPU instructions below. Common failures are a missing
 Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
 `DYLD_LIBRARY_PATH` export when starting an audio server.
 
+### Apple unit tests
+
+Apple CI has two independent workflows: **Omni MLX CI** and **Omni MPS CI**.
+In **Actions**, select either workflow and choose **Run workflow** to run its
+Stage A unit tests. Manual dispatch always runs the suite, including when the
+selected ref has no relevant changes.
+
+The workflow structure follows SGLang's
+[`pr-test-mlx.yml`](https://github.com/sgl-project/sglang/blob/main/.github/workflows/pr-test-mlx.yml):
+change detection, a PR gate, backend-specific stages, and a final status check.
+For pull requests, runtime, unit-test, dependency, installer, and CI changes
+trigger Stage A after the current `run-ci` label, draft state, lint, and
+mergeability checks pass. Documentation-only changes skip the Mac job and
+complete the final check. A failed or cancelled required stage fails that
+check.
+
+Both workflows use `[self-hosted, macOS, ARM64]` and prepare separate Python
+3.12 environments with the existing Apple installer. The MLX stage sets
+`SGLANG_USE_MLX=1`; the Torch MPS stage sets it to `0`. A single matching runner
+processes the two jobs sequentially. Stage A currently covers the model-free
+unit tests below; end-to-end model tests can be added as a later stage.
+
+To run the same suite locally after installation:
+
+```bash
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+.venv-apple/bin/python .github/scripts/run_apple_ut.py mps
+.venv-apple/bin/python .github/scripts/run_apple_ut.py mlx
+```
+
+The test entry point selects the backend before importing SGLang, verifies a
+real Metal operation, and runs the Apple platform, Torch MPS audio runner,
+MLX audio model, and MLX scheduler tests. These use small initialized models
+and mocked loaders with Hugging Face offline mode enabled. Missing hardware,
+empty test runs, and skipped cases fail the suite. JUnit reports and environment
+versions are uploaded as `omni-mlx-ut-<run-id>-<attempt>` or
+`omni-mps-ut-<run-id>-<attempt>`; local runs write to `results/apple-ut`, or
+`APPLE_UT_REPORT_DIR` when set.
+
 ### Run from a hosted installer
 
 The script also supports a downloaded or `curl | bash` invocation: when it is
