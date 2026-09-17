@@ -187,11 +187,6 @@ ensure_formula() {
 }
 
 ensure_formula ffmpeg@7
-# (kaizuo li note)Auto-install sox if fun-cosyvoice3 extra is requested for Apple Silicon
-if [[ "${EXTRAS}" == *"fun-cosyvoice3"* ]]; then
-  log "Detected fun-cosyvoice3 extra. Ensuring 'sox' is installed..."
-  ensure_formula sox
-fi
 ensure_formula uv
 
 if ! command -v git >/dev/null 2>&1 || ! git --version >/dev/null 2>&1; then

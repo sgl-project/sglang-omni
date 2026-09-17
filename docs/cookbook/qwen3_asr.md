@@ -6,7 +6,10 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` for your platform:
+
+- **NVIDIA CUDA / general** — [Installation](../get_started/installation.md)
+- **Apple Silicon (MPS/MLX)** — [Installation — Apple Silicon](../get_started/installation_mps.md)
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
@@ -17,114 +20,9 @@ MODEL_PATH="$(
 )"
 ```
 
-### 🍎 Apple Silicon (MLX)
+### 🍎 Apple Silicon (MLX/MLP)
 
-#### Method 1: Using the install.sh Script
-
-```bash
-git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
-./install.sh
-source .venv-apple/bin/activate
-```
-
-The script is idempotent and creates (or reuses) `.venv-apple`, installs the
-Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
-already available), installs SGLang `v0.5.19` from source with its `all_mps`
-extra, and installs this checkout with `uv pip`. SGLang's optional Rust
-extensions are not needed by this Apple Silicon path and are skipped.
-`ffmpeg@7` is intentional: `torchcodec==0.15.0` ships loaders for FFmpeg 4 through 8
-only, and the unversioned formula installs FFmpeg 9. At runtime, expose its libraries:
-
-```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-Homebrew must be installed before running the script. If `brew` is missing, the
-script prints an error and exits; install it yourself from
-[brew.sh](https://brew.sh), then rerun. The installer never invokes `sudo` or
-Homebrew's bootstrapper. Use `--non-interactive` (or `NONINTERACTIVE=1`) to
-disable Homebrew auto-update in CI, `SGLANG_OMNI_VENV=/path/to/venv` to choose a virtualenv, and
-`SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3` to enable optional extras.
-The persistent SGLang source checkout defaults to
-`~/.cache/sglang-omni/sglang-v0.5.19` and can be changed with
-`SGLANG_SOURCE_DIR`. Slow or proxied networks can override the installer's uv
-defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
-
-This path currently supports macOS 14 or newer on `arm64` only (the pinned
-`torch==2.13.0`, `torchvision==0.28.0` and `torchcodec==0.15.0` wheels are built
-for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
-MLX/Torch-MPS paths. Other platforms should use the
-Docker, manual, or Intel XPU instructions below. Common failures are a missing
-Homebrew/uv on `PATH`, an unavailable Python 3.12 toolchain, or forgetting the
-`DYLD_LIBRARY_PATH` export when starting an audio server.
-
-##### Run from a hosted installer
-
-The script also supports a downloaded or `curl | bash` invocation: when it is
-not inside an sglang-omni checkout, it clones the repository specified by
-`SGLANG_OMNI_REPO` and `SGLANG_OMNI_REF` into the cache and installs that
-checkout. Prefer downloading, reviewing, and then running a pinned script:
-
-```bash
-curl -fsSLo /tmp/sglang-omni-install.sh \
-  https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh
-less /tmp/sglang-omni-install.sh
-chmod +x /tmp/sglang-omni-install.sh
-SGLANG_OMNI_REF=<commit> /tmp/sglang-omni-install.sh
-```
-
-Piping a remote script directly to Bash executes code without a review step;
-use it only when that trade-off is acceptable:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh \
-  | SGLANG_OMNI_REF=<commit> bash
-```
-
-For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
-`SGLANG_OMNI_REF` explicitly. The hosted mode stores the project checkout at
-`~/.cache/sglang-omni/sglang-omni-<ref>` by default; override it with
-`SGLANG_OMNI_PROJECT_DIR`.
-
-#### Method 2: Manual Configuration
-
-The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
-
-```bash
-brew install ffmpeg@7
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
-supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
-directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
-
-macOS may remove `DYLD_*` variables when a SIP-protected system executable
-launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
-for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
-`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
-can succeed without loading FFmpeg.
-
-Create one virtual environment for both repositories, then install the pinned
-SGLang tag from source with its `all_mps` dependencies before installing
-SGLang-Omni:
-
-```bash
-git clone --branch v0.5.19 https://github.com/sgl-project/sglang.git
-git clone https://github.com/sgl-project/sglang-omni.git
-
-uv venv -p 3.12 sglang-omni/.venv-apple
-source sglang-omni/.venv-apple/bin/activate
-
-cd sglang
-cp python/pyproject_other.toml python/pyproject.toml
-uv pip install -e "python[all_mps]"
-
-cd ../sglang-omni
-uv pip install -e .
-```
+#### MLX
 
 This installs MLX through SGLang. It does not install or use the `mlx-audio`
 package. Before downloading a model, verify both Metal and FFmpeg loading:
@@ -159,6 +57,8 @@ HTTP and SSE transcription interfaces below are the same as on CUDA;
 The Apple paths do not provide sampling penalties or token logprobs yet. MLX
 can batch multiple requests, but `max_running_requests=1` is recommended when
 single-request latency matters; increase it only when throughput is preferred.
+
+#### Torch/MPS
 
 To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
 and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
