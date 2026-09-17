@@ -430,7 +430,7 @@ class _Qwen3TTSInitialDecodeGraphs:
         )
         self._input_frames = tuple(sorted(set(int(f) for f in frames if int(f) > 0)))
         self._batch_sizes = tuple(sorted(set(int(size) for size in batch_sizes)))
-        self._enabled = bool(enabled and device.type == "cuda")
+        self._enabled = bool(enabled and device.type in {"cuda", "musa"})
         self._graphs: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
         self._inputs: dict[tuple[int, int], torch.Tensor] = {}
         self._outputs: dict[tuple[int, int], torch.Tensor] = {}
@@ -638,10 +638,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         parameter = next(parameters(), None) if callable(parameters) else None
         codec_state_dtype = parameter.dtype if parameter is not None else torch.float32
         if (
-            self._device.type == "cuda"
+            self._device.type in {"cuda", "musa"}
             and self._device.index is None
             and parameter is not None
-            and parameter.device.type == "cuda"
+            and parameter.device.type in {"cuda", "musa"}
         ):
             self._device = parameter.device
         if fused_snake_activation:
@@ -761,7 +761,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             False
             if (self._enable_stateful_codec_decoder and self._deterministic_inference)
             else (
-                self._device.type == "cuda"
+                self._device.type in {"cuda", "musa"}
                 if async_decode is None
                 else bool(async_decode)
             )
@@ -810,9 +810,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._codec_slots_in_flight: set[int] = set()
         self._codec_slots_deferred: set[int] = set()
         self._decode_staging = threading.local()
-        self._pinned_staging_disabled = self._device.type != "cuda"
+        self._pinned_staging_disabled = self._device.type not in {"cuda", "musa"}
         self._cuda_decode_failed = False
-        if self._device.type == "cuda":
+        if self._device.type in {"cuda", "musa"}:
             followup_priority = self._decode_stream_priority()
             self._decode_stream = torch.cuda.Stream(
                 device=self._device,
@@ -935,7 +935,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             enabled and self._async_decode and not self._deterministic_inference
         )
         graph_priority = (
-            self._decode_stream_priority() if self._device.type == "cuda" else 0
+            self._decode_stream_priority()
+            if self._device.type in {"cuda", "musa"}
+            else 0
         )
         graph_batch_sizes = self._resolve_incremental_warm_graph_batch_sizes(
             max_batch_size=min(
@@ -1275,7 +1277,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # stream, so the newest chunk's event also covers every older one.
         codes_ready = state.pending_codes_ready
         state.pending_codes_ready = None
-        if codes_ready is None and codes.is_cuda:
+        if codes_ready is None and codes.device.type in {"cuda", "musa"}:
             # note(ratish): raw CUDA IPC orders only the receiver's default
             # stream after the producer; the decode workers read on their own.
             # note (luojiaxuan): so `record` has to land on that same default
