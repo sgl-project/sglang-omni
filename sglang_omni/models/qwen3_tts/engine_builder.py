@@ -18,8 +18,6 @@ from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
 )
-from sglang_omni.models.qwen3_tts.sglang_model import predictor_graph_policy_enabled
-from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -27,15 +25,6 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _should_capture_predictor_graphs(*, server_args: Any, device: str) -> bool:
-    """Whether the startup predictor capture runs."""
-    if not predictor_graph_policy_enabled():
-        return False
-    if bool(resolved_view(server_args).disable_cuda_graph):
-        return False
-    return current_platform.get_device_graph_backend(torch.device(device)) is not None
 
 
 def _is_truthy(value: Any) -> bool:
@@ -179,7 +168,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
                 else self.reference_encoder_cuda_graph_bucket_frames
             ),
         )
-        if not _should_capture_predictor_graphs(server_args=server_args, device=device):
+        if disable_cuda_graph:
             return
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.

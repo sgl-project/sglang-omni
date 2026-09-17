@@ -1038,7 +1038,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._predictor_graph_capture_count = 0
         self._predictor_graph_startup_count = 0
         self._predictor_graph_pool = None
-        self._predictor_capture_stream: Any | None = None
+        self._predictor_capture_stream: torch.Stream | None = None
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -1389,11 +1389,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         device = self._predictor_k_cache.device
         module = torch.get_device_module(device)
         backend = current_platform.get_device_graph_backend(device)
-        if backend is None:
-            raise RuntimeError(
-                f"{device.type} names no device graph backend for the Qwen3-TTS "
-                "predictor graph"
-            )
         if self._predictor_capture_stream is None:
             self._predictor_capture_stream = module.Stream(device=device)
         capture_stream = self._predictor_capture_stream

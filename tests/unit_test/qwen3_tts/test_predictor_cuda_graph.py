@@ -764,45 +764,6 @@ def test_env_switch_parsing(monkeypatch: pytest.MonkeyPatch):
     assert sglang_model_module._predictor_graph_env_override() is True
 
 
-def test_startup_capture_follows_the_platform_and_the_resolved_config(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """The startup capture needs a backend, single-rank TP, and graphs enabled."""
-    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
-    from sglang_omni.models.qwen3_tts.engine_builder import (
-        _should_capture_predictor_graphs,
-    )
-
-    tp = SimpleNamespace(tp_size=1)
-    monkeypatch.setattr(sglang_model_module, "get_parallel", lambda: tp)
-
-    def with_backend(backend):
-        monkeypatch.setattr(
-            engine_builder_mod.current_platform,
-            "get_device_graph_backend",
-            lambda device: backend,
-        )
-
-    enabled = SimpleNamespace(disable_cuda_graph=False, _resolved_overrides=())
-    with_backend(object())
-    assert _should_capture_predictor_graphs(server_args=enabled, device="cuda:0")
-
-    with_backend(None)
-    assert not _should_capture_predictor_graphs(server_args=enabled, device="cuda:0")
-
-    with_backend(object())
-    declared_off = SimpleNamespace(
-        disable_cuda_graph=False,
-        _resolved_overrides=(("_handle_dwdp", {"disable_cuda_graph": True}),),
-    )
-    assert not _should_capture_predictor_graphs(
-        server_args=declared_off, device="cuda:0"
-    )
-
-    tp.tp_size = 2
-    assert not _should_capture_predictor_graphs(server_args=enabled, device="cuda:0")
-
-
 def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -847,14 +808,6 @@ def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
         engine_builder_mod.request_builders,
         "set_qwen3_tts_preprocessing_context",
         lambda **kwargs: contexts.append(kwargs),
-    )
-    monkeypatch.setattr(
-        engine_builder_mod.current_platform,
-        "get_device_graph_backend",
-        lambda device: object(),
-    )
-    monkeypatch.setattr(
-        sglang_model_module, "get_parallel", lambda: SimpleNamespace(tp_size=1)
     )
 
     builder = Qwen3TtsEngineBuilder()
