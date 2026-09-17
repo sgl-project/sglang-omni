@@ -54,9 +54,17 @@ speculative generality.
 ## NAMING
 
 - Classes PascalCase; functions/variables snake_case; constants UPPER_SNAKE.
-  Use a leading underscore only for private functions and variables. Public
-  functions and variables must not have a leading underscore.
   Preserve language-defined special methods such as `__init__`.
+- **Do not prefix names with `_` by default.** A leading underscore is the
+  exception, not a habit or a "this is internal" badge. It is not a marker
+  for "used only in this class", "set in `__init__`", or "not part of the
+  HTTP API". Use `_` only when the name must stay invisible to every caller
+  outside its defining class or module — a helper that would be a mistake
+  to call from anywhere else. Attributes other methods of the same class
+  read are public: `is_ragged`, never `_is_ragged`. Boolean names already
+  start with `is_` / `has_` / `should_` / `can_`; do not add a second
+  underscore in front. Public functions, variables, and constants must not
+  have a leading underscore.
 - Names say what, not how: `load_checkpoint` not `do_thing`; `num_codebooks` not `n`.
   Single letters only for loop indices (`i`,`j`) or math (`x`,`y`,`t`).
 - Interface names must identify the domain meaning, role, or unit of a value.

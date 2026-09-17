@@ -49,8 +49,10 @@ class _RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def row_attention(self, rows: PackedRows, *, streaming: bool) -> SimpleNamespace:
-        return SimpleNamespace(rows=rows, streaming=streaming)
+    def row_attention(
+        self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
+    ) -> SimpleNamespace:
+        return SimpleNamespace(rows=rows, streaming=streaming, dtype=dtype)
 
     def forward(
         self,
