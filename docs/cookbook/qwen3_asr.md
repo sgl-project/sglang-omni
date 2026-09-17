@@ -9,7 +9,7 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 Install `sglang-omni` for your platform:
 
 - **NVIDIA CUDA / general** — [Installation](../get_started/installation.md)
-- **Apple Silicon (MPS/MLX)** — [Installation — Apple Silicon](../get_started/installation_mps.md)
+- **Apple Silicon** — [Installation — Apple Silicon](../get_started/installation_mps.md)
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
