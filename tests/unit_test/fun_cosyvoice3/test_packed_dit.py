@@ -9,6 +9,7 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
+    RaggedRowAttention,
     RowAttention,
     chunk_causal_mask,
     gather_rows,
@@ -155,7 +156,9 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
             padded["cond"],
             streaming=streaming,
         )
-        attention = estimator.row_attention(packed["rows"], streaming=streaming)
+        attention = estimator.row_attention(
+            packed["rows"], streaming=streaming, dtype=packed["x"].dtype
+        )
         out = estimator.forward(
             packed["x"],
             packed["mu"],
@@ -229,7 +232,9 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
             packed["cond"],
             packed["t"],
             packed["rows"],
-            estimator.row_attention(packed["rows"], streaming=True),
+            estimator.row_attention(
+                packed["rows"], streaming=True, dtype=packed["x"].dtype
+            ),
         )
         for index, length in enumerate(LENGTHS):
             rows = pack_rows((length,), CPU)
@@ -240,9 +245,34 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
                 padded["cond"][index : index + 1, :, :length].transpose(1, 2),
                 padded["t"],
                 rows,
-                estimator.row_attention(rows, streaming=True),
+                estimator.row_attention(rows, streaming=True, dtype=packed["x"].dtype),
             )
             start = int(packed["rows"].starts_host[index])
             torch.testing.assert_close(
                 together[:, start : start + length], alone, rtol=1e-9, atol=1e-9
             )
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("chunk_size", [CHUNK, None])
+def test_the_ragged_read_matches_the_padded_read(chunk_size: int | None) -> None:
+    from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+
+    device = torch.device("cuda")
+    if not _is_fa3_supported():
+        pytest.skip("FA3 is unavailable on this device")
+    torch.manual_seed(2)
+    heads = 2
+    head_dim = 64
+    rows = pack_rows(LENGTHS, device)
+    query, key, value = (
+        torch.randn(
+            1, rows.total, heads * head_dim, device=device, dtype=torch.bfloat16
+        )
+        for _ in range(3)
+    )
+    ragged = RaggedRowAttention(
+        rows, chunk_size=chunk_size, heads=heads, head_dim=head_dim
+    )(query, key, value)
+    padded = RowAttention(rows, chunk_size=chunk_size, heads=heads)(query, key, value)
+    torch.testing.assert_close(ragged, padded, rtol=2e-2, atol=2e-2)

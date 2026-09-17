@@ -4,12 +4,22 @@ along the sequence for every per token module, attention within each row."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 import torch
 import torch.nn.functional as F
+from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
+from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+
+logger = logging.getLogger(__name__)
+
+# note (ratish, chenyang): a row's chunks share a key prefix, so FA3 pages are one frame.
+FA3_PAGE_SIZE = 1
+FA3_DTYPES = (torch.float16, torch.bfloat16)
 
 
 @dataclass(frozen=True)
@@ -74,6 +84,26 @@ def chunk_causal_mask(
     return position.unsqueeze(0) < chunk_end.unsqueeze(1)
 
 
+def chunk_segments(
+    lengths: Sequence[int], chunk_size: int | None
+) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+    """One query segment per (row, chunk), reading that row's frames
+    [0, chunk end). Without a chunk size a row is one segment."""
+    segment_rows: list[int] = []
+    segment_ends: list[int] = []
+    offsets: list[int] = [0]
+    for row, length in enumerate(lengths):
+        span = length if chunk_size is None else chunk_size
+        frame = 0
+        while frame < length:
+            end = min((frame // span + 1) * span, length)
+            segment_rows.append(row)
+            segment_ends.append(end)
+            offsets.append(offsets[-1] + end - frame)
+            frame = end
+    return tuple(segment_rows), tuple(segment_ends), tuple(offsets)
+
+
 class RowAttention:
     """Attention within each row of a packed sequence, computed as the padded
     DiT computes it: one SDPA call over the rows scattered to the padded layout,
@@ -109,24 +139,90 @@ class RowAttention:
         return gather_rows(out.transpose(1, 2).reshape(row_count, width, -1), self.rows)
 
 
+class RaggedRowAttention:
+    """Row attention on the packed sequence via FA3 paged KV, no pad-to-widest."""
+
+    def __init__(
+        self,
+        rows: PackedRows,
+        *,
+        chunk_size: int | None,
+        heads: int,
+        head_dim: int,
+    ) -> None:
+        self.heads = heads
+        self.head_dim = head_dim
+        device = rows.row_ids.device
+        segment_rows, segment_ends, offsets = chunk_segments(rows.lengths, chunk_size)
+        self.cache_seqlens = torch.tensor(
+            segment_ends, dtype=torch.int32, device=device
+        )
+        self.cu_seqlens_q = torch.tensor(offsets, dtype=torch.int32, device=device)
+        self.max_seqlen_q = max(end - start for start, end in pairwise(offsets))
+        starts = rows.starts_host[list(segment_rows)].to(device)
+        # note (ratish): FA3 page ids must land inside the packed keys; pad with page 0.
+        page = torch.arange(max(segment_ends), dtype=torch.int32, device=device)
+        self.page_table = torch.where(
+            page.unsqueeze(0) < self.cache_seqlens.unsqueeze(1),
+            starts.unsqueeze(1) + page.unsqueeze(0),
+            0,
+        )
+
+    def __call__(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        """query, key, value: (1, total, heads * head_dim). Returns the same
+        shape."""
+        page_shape = (-1, FA3_PAGE_SIZE, self.heads, self.head_dim)
+        out = flash_attn_with_kvcache(
+            q=query[0].reshape(-1, self.heads, self.head_dim),
+            k_cache=key[0].reshape(page_shape),
+            v_cache=value[0].reshape(page_shape),
+            cache_seqlens=self.cache_seqlens,
+            page_table=self.page_table,
+            cu_seqlens_q=self.cu_seqlens_q,
+            max_seqlen_q=self.max_seqlen_q,
+            causal=False,
+        )
+        return out.reshape(1, -1, self.heads * self.head_dim)
+
+
+PackedRowAttention = RowAttention | RaggedRowAttention
+
+
 class PackedDiT:
     """DiT.forward over a packed sequence with the same modules in the same
-    order; the attention and the causal conv position embedding run on the
-    rows scattered to the padded layout, everything else per token."""
+    order; conv pos-emb stays padded, attention is ragged on FA3 half-precision
+    CUDA and padded elsewhere.
+    """
 
     def __init__(self, dit: torch.nn.Module) -> None:
         self.dit = dit
+        device = next(dit.parameters()).device
+        self.is_ragged = device.type == "cuda" and _is_fa3_supported()
+        logger.info(
+            "Fun-CosyVoice3 Flow row attention on %s: %s",
+            device,
+            "ragged FA3" if self.is_ragged else "padded SDPA",
+        )
 
     @property
     def chunk_size(self) -> int:
         return int(self.dit.static_chunk_size)
 
-    def row_attention(self, rows: PackedRows, *, streaming: bool) -> RowAttention:
-        return RowAttention(
-            rows,
-            chunk_size=self.chunk_size if streaming else None,
-            heads=self.dit.transformer_blocks[0].attn.heads,
-        )
+    def row_attention(
+        self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
+    ) -> PackedRowAttention:
+        attention = self.dit.transformer_blocks[0].attn
+        chunk_size = self.chunk_size if streaming else None
+        if self.is_ragged and dtype in FA3_DTYPES:
+            return RaggedRowAttention(
+                rows,
+                chunk_size=chunk_size,
+                heads=attention.heads,
+                head_dim=attention.inner_dim // attention.heads,
+            )
+        return RowAttention(rows, chunk_size=chunk_size, heads=attention.heads)
 
     def forward(
         self,
@@ -136,7 +232,7 @@ class PackedDiT:
         cond: torch.Tensor,
         t: torch.Tensor,
         rows: PackedRows,
-        attention: RowAttention,
+        attention: PackedRowAttention,
     ) -> torch.Tensor:
         """x, mu, cond, spks: (1, total, channels); t: (1,). Returns
         (1, total, out_channels)."""
@@ -174,7 +270,7 @@ class PackedDiT:
         attn: torch.nn.Module,
         x: torch.Tensor,
         rope: tuple[torch.Tensor, Any],
-        attention: RowAttention,
+        attention: PackedRowAttention,
     ) -> torch.Tensor:
         from x_transformers.x_transformers import apply_rotary_pos_emb
 
@@ -204,7 +300,9 @@ def solve_flow_euler_packed(
     conditional rows and their unconditional twins share one DiT call."""
     total = noise.shape[1]
     twin_rows = pack_rows(rows.lengths * 2, noise.device)
-    attention = estimator.row_attention(twin_rows, streaming=streaming)
+    attention = estimator.row_attention(
+        twin_rows, streaming=streaming, dtype=spks.dtype
+    )
     mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)
     spks_cfg = torch.cat((spks, torch.zeros_like(spks)), dim=0)
