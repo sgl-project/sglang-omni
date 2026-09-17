@@ -190,5 +190,12 @@ speculative generality.
 - This repository already configures linting, formatting, and other checks in
   [.pre-commit-config.yaml](/.pre-commit-config.yaml). Run
   `pre-commit run --all-files` before completing a change.
+- Test the public contract (inputs → outputs), not internal layout.
+  Do not snapshot helper tuples, page tables, prefix sums, or other
+  encodings that can change without changing behavior. A representation
+  refactor that preserves the caller's result should not break tests.
+- Do not add a new test file for one case that belongs next to the
+  existing suite. Put GPU or optional-backend cases on the same module
+  with a marker; skip when that backend is absent.
 - Test actual failure contracts and supported fallback paths;
   do not add tests solely to preserve speculative recovery scaffolding.

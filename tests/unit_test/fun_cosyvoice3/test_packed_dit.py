@@ -9,9 +9,9 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     PackedDiT,
+    RaggedRowAttention,
     RowAttention,
     chunk_causal_mask,
-    chunk_segments,
     gather_rows,
     pack_rows,
     scatter_rows,
@@ -253,17 +253,24 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
             )
 
 
-def test_chunk_segments_cut_each_row_at_its_chunk_ends() -> None:
-    assert chunk_segments(LENGTHS, CHUNK) == (
-        (0, 0, 0, 1, 2, 2, 2, 2, 2, 3, 3),
-        (4, 8, 11, 4, 4, 8, 12, 16, 19, 4, 7),
-        (0, 4, 8, 11, 15, 19, 23, 27, 31, 34, 38, 41),
-    )
+@pytest.mark.accelerator
+@pytest.mark.parametrize("chunk_size", [CHUNK, None])
+def test_the_ragged_read_matches_the_padded_read(chunk_size: int | None) -> None:
+    from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 
-
-def test_chunk_segments_give_one_segment_per_row_without_a_chunk() -> None:
-    assert chunk_segments(LENGTHS, None) == (
-        (0, 1, 2, 3),
-        (11, 4, 19, 7),
-        (0, 11, 15, 34, 41),
+    device = torch.device("cuda")
+    if not _is_fa3_supported():
+        pytest.skip("FA3 is unavailable on this device")
+    torch.manual_seed(2)
+    heads = 2
+    head_dim = 64
+    rows = pack_rows(LENGTHS, device)
+    query, key, value = (
+        torch.randn(1, rows.total, heads * head_dim, device=device, dtype=torch.bfloat16)
+        for _ in range(3)
     )
+    ragged = RaggedRowAttention(
+        rows, chunk_size=chunk_size, heads=heads, head_dim=head_dim
+    )(query, key, value)
+    padded = RowAttention(rows, chunk_size=chunk_size, heads=heads)(query, key, value)
+    torch.testing.assert_close(ragged, padded, rtol=2e-2, atol=2e-2)
