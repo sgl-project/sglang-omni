@@ -1,11 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Cosmos3-Super generation quality CI (T2I / T2V / I2V / T2V+sound).
+"""Cosmos3-Super generation CI for every mode.
 
-Reproduces the checkpoint's official 1280x720x189 quality recipe using the
-structured prompts bundled in the checkpoint's ``assets/`` directory, so the run
-needs no external data. Generation is driven in-process through
-``MultiProcessPipelineRunner`` and the SDK ``Client`` (the native media path),
-not an HTTP server.
+Covers T2I, T2V, I2V, T2V+sound (structured prompts bundled in the checkpoint's
+``assets/``), V2V continuation (continues the bundled i2v output), and the action
+modes at their native recipes from the checkpoint's own examples:
+
+  * forward_dynamics -- full 4-chunk autoregressive AgiBotWorld rollout
+    (assets/example_action_fd_agibotworld_*), 480x480, 29-D actions.
+  * inverse_dynamics -- bundled AV example video (assets/example_action_id_av_0_*),
+    9-D actions.
+
+Policy (Edge-Policy-DROID) is intentionally not covered here: the checkpoint
+ships no policy example and it needs an external DROID sample, so it is left to
+the functional smoke suite (tests/integration/cosmos3/test_super_gpu.py).
+
+Generation is driven in-process through ``MultiProcessPipelineRunner`` and the
+SDK ``Client`` (the native media path), not an HTTP server.
 
 Super's DiT does not fit two 80GB GPUs while resident, so this bakes in DiT
 layerwise offload (the same override the 2-GPU validation used).
@@ -121,7 +131,14 @@ T2I_PROMPT = {
     "resolution": {"H": 720, "W": 1280},
     "aspect_ratio": 1.7778,
 }
-MODES = ["t2i", "t2v", "i2v", "t2vs"]
+
+# Modes handled by the single-call path (forward_dynamics is a multi-chunk
+# rollout handled separately). Quality modes first, then V2V + inverse dynamics.
+# Policy (Edge-Policy-DROID) is intentionally excluded: the checkpoint ships no
+# policy example and it needs an external DROID sample, so it is left to the
+# functional smoke suite (tests/integration/cosmos3/test_super_gpu.py).
+SINGLE_CALL_MODES = ["t2i", "t2v", "i2v", "t2vs", "v2v", "inverse_dynamics"]
+MODES = ["t2i", "t2v", "i2v", "t2vs", "v2v", "forward_dynamics", "inverse_dynamics"]
 
 
 def _devices() -> list[int]:
@@ -260,7 +277,45 @@ def _check_audio(path: str, expected_seconds: float) -> None:
     assert abs(seconds - expected_seconds) <= 0.15
 
 
-def _case_inputs(mode: str, assets: Path) -> dict:
+def _check_action(item: dict, mode: str, horizon: int, dimension: int) -> None:
+    import numpy as np
+
+    assert item["modality"] == "action"
+    response = json.loads(Path(item["path"]).read_text())
+    assert response["object"] == "action.generation"
+    assert len(response["data"]) == 1
+    action = response["data"][0]["action"]
+    assert action["action_mode"] == mode
+    assert action["shape"] == [horizon, dimension]
+    values = np.asarray(action["values"], dtype=float)
+    assert values.shape == (horizon, dimension) and np.isfinite(values).all()
+
+
+def _video_size(path: Path) -> tuple[int, int]:
+    import av
+
+    with av.open(str(path)) as container:
+        for frame in container.decode(video=0):
+            return frame.width, frame.height
+    raise AssertionError(f"No decodable frames in {path}")
+
+
+def _last_frame_png(video_path: Path, dest: Path):
+    from PIL import Image  # noqa: F401  (kept for parity; to_image returns PIL)
+
+    import av
+
+    last = None
+    with av.open(str(video_path)) as container:
+        for frame in container.decode(video=0):
+            last = frame.to_image()
+    assert last is not None, f"No decodable frames in {video_path}"
+    last.save(dest)
+    return dest
+
+
+def _case_inputs(mode: str, assets: Path, tmp_dir: Path) -> dict:
+    """Build the request for a single-call mode (all except forward_dynamics)."""
     if mode == "t2i":
         return {
             **RECIPE,
@@ -268,21 +323,107 @@ def _case_inputs(mode: str, assets: Path) -> dict:
             "prompt": json.dumps(T2I_PROMPT, separators=(",", ":")),
             "negative_prompt": _compact(assets / "negative_prompt.json"),
         }
-    inputs = {
-        **RECIPE,
-        "negative_prompt": _compact(assets / "negative_prompt.json"),
-        "prompt": _compact(assets / f"example_{mode}_prompt.json"),
-    }
-    if mode == "i2v":
-        inputs["image_path"] = str(assets / "example_i2v_input.jpg")
-    if mode == "t2vs":
-        inputs["sound_duration"] = SOUND_DURATION
-    return inputs
+    if mode in ("t2v", "i2v", "t2vs"):
+        inputs = {
+            **RECIPE,
+            "negative_prompt": _compact(assets / "negative_prompt.json"),
+            "prompt": _compact(assets / f"example_{mode}_prompt.json"),
+        }
+        if mode == "i2v":
+            inputs["image_path"] = str(assets / "example_i2v_input.jpg")
+        if mode == "t2vs":
+            inputs["sound_duration"] = SOUND_DURATION
+        return inputs
+
+    if mode == "v2v":
+        # Continue the checkpoint's own i2v output clip with its i2v prompt.
+        return {
+            **RECIPE,
+            "negative_prompt": _compact(assets / "negative_prompt.json"),
+            "prompt": _compact(assets / "example_i2v_prompt.json"),
+            "video_path": str(assets / "example_i2v_output.mp4"),
+            "condition_frame_indexes": [0, 1],
+            "condition_video_keep": "first",
+        }
+
+    if mode == "inverse_dynamics":
+        # Bundled AV example video -> action; horizon/dim from the reference output.
+        ref = json.loads((assets / "example_action_id_av_0_output.json").read_text())
+        horizon, dim = ref["shape"]
+        video = assets / "example_action_id_av_0_input.mp4"
+        width, height = _video_size(video)
+        return {
+            "width": width,
+            "height": height,
+            "num_frames": horizon + 1,
+            "adjust_frames": False,
+            "fps": 5,
+            "num_inference_steps": RECIPE["num_inference_steps"],
+            "guidance_scale": 1.0,
+            "seed": RECIPE["seed"],
+            "video_path": str(video),
+            "action_mode": "inverse_dynamics",
+            "domain_name": "av",
+            "raw_action_dim": dim,
+            "use_system_prompt": False,
+            "use_duration_template": False,
+        }
+
+    raise AssertionError(f"Unhandled single-call mode: {mode}")
+
+
+async def _run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str]:
+    """Full 4-chunk autoregressive AgiBotWorld rollout.
+
+    Chunk 0 conditions on the bundled first frame; chunks 1-3 condition on the
+    previous chunk's final generated frame. Each chunk validates as a
+    (chunk_size+1)-frame square video.
+    """
+    meta = json.loads(
+        (assets / "example_action_fd_agibotworld_action_chunks.json").read_text()
+    )
+    # The example's image_size (480) is not a supported output bucket; use the
+    # nearest supported square so output quality does not degrade.
+    size = 640
+    chunk_size = int(meta["action_chunk_size"])
+    image_path = assets / "example_action_fd_agibotworld_first_frame.png"
+    outputs: list[str] = []
+    for index, action in enumerate(meta["action_chunks"]):
+        inputs = {
+            "width": size,
+            "height": size,
+            "num_frames": chunk_size + 1,
+            "adjust_frames": False,
+            "fps": int(meta["fps"]),
+            "num_inference_steps": RECIPE["num_inference_steps"],
+            "guidance_scale": 1.0,
+            "seed": RECIPE["seed"],
+            "prompt": meta["prompt"],
+            "image_path": str(image_path),
+            "action_mode": "forward_dynamics",
+            "domain_name": meta["domain_name"],
+            "raw_action_dim": len(action[0]),
+            "use_system_prompt": False,
+            "use_duration_template": False,
+            "action": action,
+        }
+        chunk = await _generate(runner, inputs)
+        assert chunk.media and len(chunk.media) == 1
+        item = chunk.media[0]
+        _check_media(item, chunk_size + 1, size, size)
+        outputs.append(item["path"])
+        # Condition the next chunk on this chunk's final generated frame.
+        image_path = _last_frame_png(
+            Path(item["path"]), tmp_dir / f"fd-chunk-{index}-last.png"
+        )
+    assert len(outputs) == int(meta["num_chunks"])
+    return outputs
 
 
 @pytest.mark.asyncio
 async def test_generation_quality(tmp_path):
-    """Serve the generation stage once and validate T2I, T2V, I2V, and T2V+sound."""
+    """Serve the generation stage once and validate every generation mode:
+    T2I, T2V, I2V, T2V+sound, V2V continuation, forward/inverse dynamics."""
     devices = _devices()
     model = _resolve_model()
     assets = model / "assets"
@@ -292,6 +433,11 @@ async def test_generation_quality(tmp_path):
         "example_i2v_prompt.json",
         "example_t2vs_prompt.json",
         "example_i2v_input.jpg",
+        "example_i2v_output.mp4",
+        "example_action_fd_agibotworld_first_frame.png",
+        "example_action_fd_agibotworld_action_chunks.json",
+        "example_action_id_av_0_input.mp4",
+        "example_action_id_av_0_output.json",
     )
     missing = [name for name in required if not (assets / name).is_file()]
     assert not missing, f"Missing checkpoint assets: {missing}"
@@ -299,13 +445,19 @@ async def test_generation_quality(tmp_path):
     config = _config(model, devices, tmp_path / "media")
     async with _running(config) as runner:
         for mode in MODES:
-            inputs = _case_inputs(mode, assets)
+            if mode == "forward_dynamics":
+                await _run_forward_dynamics(runner, assets, tmp_path)
+                continue
+            inputs = _case_inputs(mode, assets, tmp_path)
             chunk = await _generate(runner, inputs)
             assert chunk.media and len(chunk.media) == 1
             item = chunk.media[0]
-            _check_media(item, inputs["num_frames"], RECIPE["width"], RECIPE["height"])
-            if mode == "t2vs":
-                _check_audio(item["path"], SOUND_DURATION)
+            if mode in ("policy", "inverse_dynamics"):
+                _check_action(item, mode, inputs["num_frames"] - 1, inputs["raw_action_dim"])
+            else:
+                _check_media(item, inputs["num_frames"], inputs["width"], inputs["height"])
+                if mode == "t2vs":
+                    _check_audio(item["path"], SOUND_DURATION)
 
 
 if __name__ == "__main__":
