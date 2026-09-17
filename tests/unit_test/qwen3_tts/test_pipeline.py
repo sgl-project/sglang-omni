@@ -2114,9 +2114,7 @@ def test_qwen3_tts_predictor_graph_is_cuda_only(
         lambda: (_ for _ in ()).throw(AssertionError("must not inspect server args")),
     )
     talker = sglang_model.Qwen3TTSTalker.__new__(sglang_model.Qwen3TTSTalker)
-    talker.model = SimpleNamespace(
-        codec_embedding=SimpleNamespace(weight=torch.empty(1)),
-    )
+    talker._predictor_device = torch.empty(1).device
 
     assert sglang_model.Qwen3TTSTalker._resolve_predictor_graph_enabled(talker) is False
 

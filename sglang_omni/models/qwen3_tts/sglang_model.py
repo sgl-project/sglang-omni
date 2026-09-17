@@ -182,6 +182,8 @@ class _PredictorDecodeGraph:
     ) -> None:
         self.batch_size = batch_size
         self.signature = signature
+        self.device = device
+        self.device_module = torch.get_device_module(device)
         self.layer0_codes = torch.zeros(batch_size, 1, dtype=torch.long, device=device)
         self.talker_hidden = torch.zeros(
             batch_size, 1, hidden_size, dtype=hidden_dtype, device=device
@@ -206,8 +208,7 @@ class _PredictorDecodeGraph:
                 "Qwen3-TTS predictor graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live}"
             )
-        device = self.layer0_codes.device
-        with torch.get_device_module(device).device(device):
+        with self.device_module.device(self.device):
             self.layer0_codes[:live].copy_(layer0_codes)
             self.talker_hidden[:live].copy_(talker_hidden)
             if semantic_positions is None:
@@ -952,6 +953,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             .expand(predictor_len, max_batch_size)
             .contiguous()
         )
+        self._predictor_device = device
+        self._predictor_device_module = torch.get_device_module(device)
         # note(ratish): slot major, so the rope kernel stores k and v as one
         # row per (batch row, slot) and the attention reads a transposed view.
         self._predictor_k_cache = torch.zeros(
@@ -1254,7 +1257,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         semantic_positions: torch.Tensor | None,
     ) -> tuple | None:
         if semantic_positions is not None:
-            if semantic_positions.device != self._predictor_k_cache.device:
+            if semantic_positions.device != self._predictor_device:
                 return None
             if (
                 semantic_positions.ndim not in (1, 2)
@@ -1310,15 +1313,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # Note: (Jiaxin Deng) one shared pool across keys; private per-graph
         # pools would retain intermediates per key and scale with diversity.
         if self._predictor_graph_pool is None:
-            device = self._predictor_k_cache.device
-            self._predictor_graph_pool = torch.get_device_module(
-                device
-            ).graph_pool_handle()
+            self._predictor_graph_pool = (
+                self._predictor_device_module.graph_pool_handle()
+            )
         return self._predictor_graph_pool
 
     def _resolve_predictor_graph_enabled(self) -> bool:
         # Device first: a device that cannot record answers without published config.
-        if current_platform.get_device_graph_backend(self.device) is None:
+        if current_platform.get_device_graph_backend(self._predictor_device) is None:
             return False
         if not predictor_graph_policy_enabled():
             return False
@@ -1386,8 +1388,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         is off for the capture because a graph finalizer reached by the
         cyclic collector while a stream is capturing destroys its pool inside
         the capture."""
-        device = self._predictor_k_cache.device
-        module = torch.get_device_module(device)
+        device = self._predictor_device
+        module = self._predictor_device_module
         backend = current_platform.get_device_graph_backend(device)
         if self._predictor_capture_stream is None:
             self._predictor_capture_stream = module.Stream(device=device)
@@ -1465,14 +1467,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return None
         if layer0_codes.dtype not in (torch.int, torch.long):
             return None
-        graph_device = self._predictor_k_cache.device
+        graph_device = self._predictor_device
         if layer0_codes.device != graph_device or talker_hidden.device != graph_device:
             return None
         if batch_size != self._sub_batch_size:
             return None
-        if torch.get_device_module(
-            self._predictor_k_cache.device
-        ).is_current_stream_capturing():
+        if self._predictor_device_module.is_current_stream_capturing():
             return None
         signature = self._predictor_graph_signature(batch_size, semantic_positions)
         if signature is None:

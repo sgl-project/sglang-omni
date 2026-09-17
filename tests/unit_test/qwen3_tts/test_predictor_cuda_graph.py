@@ -117,6 +117,8 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
     )
     talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    talker._predictor_device = device
+    talker._predictor_device_module = torch.get_device_module(device)
     talker._predictor_rope_stores_kv = False
     talker._output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
@@ -844,7 +846,7 @@ def test_both_gates_reject_another_card_of_the_same_kind() -> None:
     talker = _build_talker(torch.device("cpu"))
     talker.prepare_decode_buffers(_uniform_requests(2))
     talker._sub_batch_size = 2
-    talker._predictor_k_cache = SimpleNamespace(device=torch.device("xpu", 0))
+    talker._predictor_device = torch.device("xpu", 0)
 
     same_card = SimpleNamespace(device=torch.device("xpu", 0), ndim=1, shape=(2,))
     other_card = SimpleNamespace(device=torch.device("xpu", 1), ndim=1, shape=(2,))
@@ -894,9 +896,7 @@ def test_a_capture_that_fails_after_the_graph_exists_releases_it(
             return "pool"
 
     talker = _build_talker(torch.device("cpu"))
-    monkeypatch.setattr(
-        sglang_model_module.torch, "get_device_module", lambda device: _FakeModule()
-    )
+    talker._predictor_device_module = _FakeModule()
     monkeypatch.setattr(
         sglang_model_module.current_platform,
         "get_device_graph_backend",
@@ -1407,11 +1407,7 @@ def test_capture_state_body_failure_restores_state():
 
 def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     talker = object.__new__(Qwen3TTSTalker)
-    talker.model = SimpleNamespace(
-        codec_embedding=SimpleNamespace(
-            weight=SimpleNamespace(device=torch.device("cuda"))
-        )
-    )
+    talker._predictor_device = torch.device("cuda")
     graph = SimpleNamespace(disable_cuda_graph=False)
     parallel = SimpleNamespace(tp_size=1)
     platform = {"enabled": True, "backend": object()}
