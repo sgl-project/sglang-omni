@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from fastapi import WebSocket
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
@@ -183,7 +184,11 @@ class RealtimeSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_conversation_client_event(payload)
+        try:
+            event = parse_conversation_client_event(payload)
+        except ValidationError as exc:
+            await self.send_error("invalid_request_error", "invalid_event", str(exc))
+            return
         assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
         method_name = HANDLERS[type(event)]
         await getattr(self, method_name)(event)

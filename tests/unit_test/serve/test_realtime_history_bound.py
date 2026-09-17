@@ -174,3 +174,19 @@ async def test_invalid_bound_rejected(
     assert websocket.events[-1]["type"] == "error"
     assert websocket.events[-1]["error"]["type"] == "invalid_request_error"
     assert websocket.events[-1]["error"]["code"] == "invalid_max_history_turns"
+
+
+@pytest.mark.asyncio
+async def test_non_integer_bound_returns_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _ = _session(monkeypatch, [])
+
+    await session.dispatch(
+        {"type": "session.update", "session": {"max_history_turns": "1"}}
+    )
+
+    assert session.session_object.max_history_turns is None
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["type"] == "invalid_request_error"
+    assert websocket.events[-1]["error"]["code"] == "invalid_event"
