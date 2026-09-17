@@ -115,56 +115,6 @@ curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/in
 For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 `SGLANG_OMNI_REF` explicitly.
 
-## Method 3: Manual Configuration
-
-If you prefer not to use `install.sh`, set up the environment by hand.
-
-### Install FFmpeg 7
-
-```bash
-brew install ffmpeg@7
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. See
-[FFmpeg 7 and `DYLD_LIBRARY_PATH`](#ffmpeg-7-and-dyld_library_path) above for
-details.
-
-### Create a virtual environment and install
-
-Create one virtual environment for both repositories, then install the pinned
-SGLang tag from source with its `all_mps` dependencies before installing
-SGLang-Omni:
-
-```bash
-git clone --branch v0.5.19 https://github.com/sgl-project/sglang.git
-git clone https://github.com/sgl-project/sglang-omni.git
-uv venv -p 3.12 sglang-omni/.venv-apple
-source sglang-omni/.venv-apple/bin/activate
-cd sglang
-cp python/pyproject_other.toml python/pyproject.toml
-uv pip install -e "python[all_mps]"
-cd ../sglang-omni
-uv pip install -e ".[<model-extra>]"
-```
-
-Replace `<model-extra>` with the extra named in your model's cookbook, or omit
-it if none is required. This installs MLX through SGLang; it does not install
-or use the `mlx-audio` package.
-
-### Verify the runtime
-
-Before downloading a model, verify both Metal and FFmpeg loading:
-
-```bash
-SGLANG_USE_MLX=1 python - <<'PY'
-import mlx.core as mx
-from torchcodec.decoders import AudioDecoder
-assert mx.metal.is_available()
-print("MLX Metal and TorchCodec FFmpeg loading are available")
-PY
-```
-
 ## Common failures
 
 - Missing Homebrew or `uv` on `PATH`.
