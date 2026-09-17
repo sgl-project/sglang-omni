@@ -109,11 +109,11 @@ not inference latency benchmarks. JUnit records case outcomes and revision/GPU
 metadata. Raw media and Reasoner responses remain in pytest's temporary directory.
 
 Repeat with 1, 4, or 8 GPU IDs in separate campaigns. The tests load the example
-YAMLs and adjust their allocation: multi-GPU generation uses FSDP, one GPU uses
-layerwise transformer offload, and Reasoner uses native TP equal to the allocation.
+YAMLs and adjust their allocation: generation uses FSDP with DiT layerwise offload
+(the committed generation YAML keeps 24 of 128 layers resident for multi-GPU; a
+single GPU keeps one layer), and Reasoner uses native TP equal to the allocation.
 Memory fit is unqualified; one-GPU offload also needs sufficient host RAM.
-`COSMOS3_SUPER_NATIVE_OVERRIDES` may name a JSON file with `generation`/`reasoner`
-option mappings. Startup/request timeouts default to 1800/900 seconds, overridable
-with `COSMOS3_SUPER_STARTUP_TIMEOUT` and `COSMOS3_SUPER_REQUEST_TIMEOUT`.
-Review reports and override paths before sharing; keep private inputs and outputs
-on the GPU machine. Use different JUnit filenames to retain separate campaigns.
+Startup/request timeouts default to 1800/900 seconds, overridable with
+`COSMOS3_SUPER_STARTUP_TIMEOUT` and `COSMOS3_SUPER_REQUEST_TIMEOUT`.
+Review reports before sharing; keep private inputs and outputs on the GPU machine.
+Use different JUnit filenames to retain separate campaigns.

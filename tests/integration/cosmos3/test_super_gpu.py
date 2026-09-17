@@ -27,7 +27,18 @@ pytestmark = pytest.mark.skipif(
 def deployment(record_testsuite_property):
     import torch
 
-    model = os.environ["COSMOS3_SUPER_MODEL_PATH"]
+    model = os.environ.get("COSMOS3_SUPER_MODEL_PATH")
+    if not model:
+        # No local snapshot given: resolve the config's pinned checkpoint (this
+        # downloads it on first use), mirroring the other Super CI tests.
+        from sglang_omni.config.manager import ConfigManager
+        from sglang_omni.utils.checkpoint import resolve_checkpoint
+
+        cfg = Path(__file__).resolve().parents[3] / (
+            "examples/configs/cosmos3_super_generation.yaml"
+        )
+        pinned = ConfigManager.from_file(str(cfg)).config.model_path
+        model = str(Path(resolve_checkpoint(pinned)).resolve())
     assert Path(model).is_dir(), "Use a local Super snapshot"
     config = json.loads((Path(model) / "config.json").read_text())
     assert config["architectures"] == ["Cosmos3ForConditionalGeneration"]
@@ -36,7 +47,7 @@ def deployment(record_testsuite_property):
         config["text_config"]["num_hidden_layers"],
     ) == (5120, 64)
     devices = [
-        int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1,2,3").split(",")
+        int(v) for v in os.environ.get("COSMOS3_SUPER_GPU_IDS", "0,1").split(",")
     ]
     assert len(devices) in (1, 2, 4, 8) and len(set(devices)) == len(devices)
     assert (
@@ -44,7 +55,7 @@ def deployment(record_testsuite_property):
         and 0 <= min(devices) <= max(devices) < torch.cuda.device_count()
     )
     for name in ("CHECKPOINT_REVISION", "NATIVE_REVISION"):
-        record_testsuite_property(name, os.environ[f"COSMOS3_SUPER_{name}"])
+        record_testsuite_property(name, os.environ.get(f"COSMOS3_SUPER_{name}", "unset"))
     root = Path(__file__).resolve().parents[3]
     record_testsuite_property(
         "omni_revision",
@@ -56,9 +67,6 @@ def deployment(record_testsuite_property):
     record_testsuite_property(
         "gpu_names", str([torch.cuda.get_device_name(d) for d in devices])
     )
-    extra = os.environ.get("COSMOS3_SUPER_NATIVE_OVERRIDES")
-    if extra:
-        record_testsuite_property("native_overrides", Path(extra).read_text())
     return model, devices
 
 
@@ -78,6 +86,9 @@ def _config(kind, model, devices, output):
         overrides.update(
             use_fsdp_inference=len(devices) > 1, hsdp_shard_dim=len(devices)
         )
+        # Multi-GPU DiT layerwise offload comes from the committed generation YAML
+        # (component_residency / layerwise_resident_layers). Single GPU is not
+        # sharded, so keep just one layer resident to fit one 80GB device.
         if len(devices) == 1:
             overrides.update(
                 component_residency={"transformer": "layerwise-offload"},
@@ -87,9 +98,6 @@ def _config(kind, model, devices, output):
         overrides.update(
             tp_size=len(devices), mem_fraction_static=0.9 if len(devices) == 1 else 0.6
         )
-    extra = os.environ.get("COSMOS3_SUPER_NATIVE_OVERRIDES")
-    if extra:
-        overrides.update(json.loads(Path(extra).read_text()).get(kind, {}))
     return config
 
 
