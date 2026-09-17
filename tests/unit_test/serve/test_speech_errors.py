@@ -94,3 +94,71 @@ def test_auk_validation_reaches_http_as_bad_request(params, caplog):
     assert response.json()["error"]["type"] == "BadRequestError"
     assert "AuK" in response.json()["error"]["message"]
     assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "reference_fields, message",
+    [
+        ({"ref_text": "Reference transcript."}, "ref_text was given without"),
+        (
+            {"references": [{"text": "Reference transcript."}]},
+            "reference audio is missing",
+        ),
+    ],
+)
+def test_voxcpm2_missing_reference_reaches_http_as_bad_request(
+    stream, reference_fields, message, caplog
+):
+    from fastapi.testclient import TestClient
+
+    from sglang_omni.client.client import Client
+    from sglang_omni.client.types import ClientError
+    from sglang_omni.models.voxcpm2.hf_config import VoxCPM2RuntimeConfig
+    from sglang_omni.models.voxcpm2.request_builders import (
+        VoxCPM2PreprocessingContext,
+        build_voxcpm2_state,
+    )
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.serve import create_app
+
+    class PreprocessingClient:
+        def validate(self, request, request_id):
+            payload = StagePayload(
+                request_id=request_id,
+                request=Client._build_omni_request(request),
+                data={},
+            )
+            context = VoxCPM2PreprocessingContext(
+                config=VoxCPM2RuntimeConfig(model_path="unused"), tokenizer=None
+            )
+            try:
+                build_voxcpm2_state(payload, context)
+            except ValueError as error:
+                raise ClientError(str(error)) from error
+            raise AssertionError("invalid request reached generation")
+
+        async def speech(self, request, *, request_id, **kwargs):
+            self.validate(request, request_id)
+
+        async def generate(self, request, request_id=None):
+            self.validate(request, request_id)
+            yield  # Make this the same async iterator interface as Client.generate.
+
+        async def abort(self, request_id):
+            pass
+
+    client = TestClient(create_app(PreprocessingClient(), model_name="openbmb/VoxCPM2"))
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "Hello.",
+            "stream": stream,
+            "response_format": "pcm" if stream else "wav",
+            **reference_fields,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "BadRequestError"
+    assert message in response.json()["error"]["message"]
+    assert not any(record.exc_info for record in caplog.records)

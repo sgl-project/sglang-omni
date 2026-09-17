@@ -42,15 +42,18 @@ def test_speech_service_rejects_non_string_input() -> None:
     assert exc_info.value.param == "input"
 
 
-def test_speech_generation_uses_served_model_and_default_voice() -> None:
+@pytest.mark.parametrize("references", [{}, {"ref_audio": None}, {"references": []}])
+def test_speech_generation_uses_served_model_and_default_voice(references) -> None:
     service = SpeechRequestValidator(default_model="tts")
-    prepared = service.parse_generation_request({"input": "hello"})
+    prepared = service.parse_generation_request({"input": "hello", **references})
     generate_request = service.build_generate_request(prepared.request, validate=False)
 
     assert prepared.request.model is None
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
     assert generate_request.metadata["tts_params"]["voice"] == "default"
+    assert prepared.reference_descriptors == []
+    assert generate_request.prompt == "hello"
 
 
 @pytest.mark.parametrize(
@@ -437,6 +440,31 @@ def test_reference_audio_rejects_unsupported_sources(
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == expected_param
+
+
+@pytest.mark.parametrize(
+    "param",
+    ["ref_audio", "references.audio_path", "references.ref_audio", "references.audio"],
+)
+@pytest.mark.parametrize("value", ["", " \t\n"])
+def test_blank_reference_audio_is_rejected_before_path_resolution(
+    monkeypatch, param: str, value: str
+) -> None:
+    service = SpeechRequestValidator(default_model="openbmb/VoxCPM2")
+    path = Mock(side_effect=AssertionError("Blank audio must not resolve to a path"))
+    monkeypatch.setattr(speech_service, "Path", path)
+    if param == "ref_audio":
+        references = {"ref_audio": value}
+    else:
+        references = {"references": [{param.split(".")[1]: value}]}
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_generation_request({"input": "hello", **references})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == param
+    assert "must not be empty" in exc_info.value.message
+    path.assert_not_called()
 
 
 def test_reference_audio_accepts_valid_base64_data_url() -> None:

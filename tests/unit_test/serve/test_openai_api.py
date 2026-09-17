@@ -680,6 +680,36 @@ def test_speech_context_rejection_returns_400_without_traceback(
     assert not any(rec.exc_info for rec in caplog.records)
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("ref_audio", ["", " \t\n"])
+def test_speech_endpoint_rejects_blank_reference_audio_before_generation(
+    stream: bool, ref_audio: str
+) -> None:
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="openbmb/VoxCPM2"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "ref_audio": ref_audio,
+            "ref_text": "reference transcript",
+            "stream": stream,
+            "response_format": "pcm" if stream else "wav",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == {
+        "message": "ref_audio must not be empty",
+        "type": "BadRequestError",
+        "param": "ref_audio",
+        "code": 400,
+    }
+    assert speech_client.speech_requests == []
+    assert speech_client.generate_requests == []
+
+
 def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
     client = TestClient(create_app(SuccessfulSpeechClient(), model_name="tts"))
 

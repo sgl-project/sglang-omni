@@ -1,0 +1,22 @@
+config_cls: VoxCPM2PipelineConfig
+model_path: openbmb/VoxCPM2
+
+stages:
+  reference_encode:
+    factory:
+      max_concurrency: 8
+  tts_engine:
+    factory:
+      inference_timesteps: 10
+      cfg_value: 2.0
+      max_running_requests: 1
+    engine:
+      mem_fraction_static: 0.60
+      max_running_requests: 1
+  vocoder:
+    factory:
+      # note (Xinhao Tan): four initial patches reduced first-audio latency
+      # without increasing RTF in the single-client H100 SeedTTS comparison.
+      stream_stride: 4
+      stream_followup_stride: 4
+      max_batch_size: 1

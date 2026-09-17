@@ -57,3 +57,12 @@ def test_attach_rejects_token_row_mismatch() -> None:
 
     with pytest.raises(RuntimeError, match="extend-window tokens"):
         attach_omni_prefill_inputs(forward_batch, _payload(rows=4))
+
+
+@pytest.mark.parametrize("shape", [(3,), (4, 1)])
+def test_attach_rejects_misaligned_audio_mask(shape) -> None:
+    with pytest.raises(RuntimeError, match="audio_mask"):
+        attach_omni_prefill_inputs(
+            _forward_batch(),
+            OmniPrefillInputs(torch.zeros(4, 8), audio_mask=torch.zeros(shape)),
+        )

@@ -781,6 +781,8 @@ class SpeechRequestValidator:
     def _load_media_reference_descriptor(
         self, value: str, *, param: str
     ) -> dict[str, str]:
+        if not value.strip():
+            raise bad_request(f"{param} must not be empty", param=param)
         url = urlparse(value)
         if url.scheme and url.scheme not in {"http", "https", "data", "file"}:
             raise bad_request(
