@@ -26,8 +26,8 @@ below.
 6. Write `request_builders.py` and `payload_types.py`. Wire abort cleanup
    into every scheduler that touches shared state.
 7. List the model in [docs/basic_usage/tts.md](../basic_usage/tts.md). Add
-   `examples/configs/<name>.yaml` only when it carries meaningful non-default
-   settings; otherwise document the direct `--model-path` launch.
+   `examples/configs/<name>.yaml` only when it provides settings beyond the
+    model-owned defaults; otherwise document the direct `--model-path` launch.
 8. Add the GPU-free unit tests listed at the bottom.
 
 ## Layout
@@ -89,8 +89,8 @@ non-default settings such as hardware placement, topology, quantization,
 memory budgets, or performance tuning, add a runnable preset under
 `examples/configs/<name>.yaml` and document the corresponding
 `sgl-omni serve --config` command. If registry discovery plus the built-in
-pipeline defaults are sufficient, document `sgl-omni serve --model-path ...`
-launch. A config containing only `config_cls` and `model_path` does not add
+pipeline defaults are sufficient, document the direct `sgl-omni serve --model-path ...`
+launch instead. A config containing only `config_cls` and `model_path` does not add
 deployment-specific settings. Fun-CosyVoice3 and AuK demonstrate direct discovery
 for non-standard checkpoint layouts; Higgs TTS also uses direct `--model-path` launch.
 

@@ -5,10 +5,10 @@ Run these commands from the repository root after installing `sglang-omni`.
 ## Configuration Presets
 
 Files under `examples/configs/` are reusable presets for deployments that need
-meaningful overrides such as hardware placement, topology, quantization, memory
-budgets, or performance tuning. Not every supported model needs a preset. When
-the model registry can discover the pipeline from the checkpoint and the
-built-in defaults are sufficient, launch it with `--model-path` directly.
+settings beyond the model-owned defaults, such as hardware placement, topology,
+quantization, memory budgets, or performance tuning. Not every supported model
+needs a preset. When the model registry can discover the pipeline from the checkpoint
+and the built-in defaults are sufficient, launch it with `--model-path` directly.
 A file containing only the config class and model path does not define a
 distinct deployment preset.
 
