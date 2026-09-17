@@ -5613,6 +5613,28 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
     assert result.data["finish_reason"] == "stop"
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_result_adapter_leaves_device_codes_on_the_device() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    payload = make_payload(inputs="target")
+    data = Qwen3TTSSGLangRequestData(
+        req=SimpleNamespace(output_ids=[]),
+        output_codes=[
+            torch.tensor([1, 2], device=device),
+            torch.tensor([3, 4], device=device),
+        ],
+        ref_code=torch.tensor([[9, 9]], device=device),
+        ref_code_len=1,
+        stage_payload=payload,
+    )
+
+    result = apply_sglang_qwen3_tts_result(payload, data)
+
+    assert result.data["audio_codes"].device == device
+    assert result.data["audio_codes"].tolist() == [[9, 9], [1, 2], [3, 4]]
+
+
 def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
     """A length-capped generation must be distinguishable from natural EOS."""
     payload = make_payload(inputs="target")
