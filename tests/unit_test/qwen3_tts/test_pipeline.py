@@ -8053,7 +8053,11 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
         "record_stream",
         lambda tensor, stream: recorded.append((tensor, stream)),
     )
-    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
+    # `_adopt_prepared_tensors` gates on `tensor.device.type`, so the mock has to
+    # simulate the device rather than `is_cuda`.
+    monkeypatch.setattr(
+        torch.Tensor, "device", property(lambda tensor: torch.device("cuda"))
+    )
 
     ready = object()
     embeds = torch.zeros((3, 4))
