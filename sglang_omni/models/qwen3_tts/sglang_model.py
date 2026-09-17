@@ -23,6 +23,7 @@ from sglang.srt.layers.quantization.unquant import (
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.runtime_context import get_exec, get_parallel
 from sglang.srt.utils import add_prefix
+from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
 
 from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
@@ -1112,7 +1113,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return
 
         # note(ratish): a pageable source waits for the last step's predictor.
-        pin_memory = self._sub_temperature_tensor.is_cuda
+        pin_memory = is_pin_memory_available(self._sub_temperature_tensor.device)
         for buffer, values in (
             (self._semantic_sampling_seed_tensor, semantic_seeds),
             (self._sub_temperature_tensor, sub_temperatures),
