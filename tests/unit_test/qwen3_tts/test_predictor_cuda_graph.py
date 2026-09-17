@@ -117,10 +117,6 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
     )
     talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
-    # From the cache tensor, not the argument: torch.device("cuda") carries no
-    # index while a tensor built on it reports cuda:0, and the gates compare
-    # whole devices, so storing the argument sends every step down the eager
-    # path. __init__ reads a parameter's device, which is already indexed.
     talker._predictor_device = talker._predictor_k_cache.device
     talker._predictor_device_module = torch.get_device_module(
         talker._predictor_k_cache.device

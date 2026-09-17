@@ -283,7 +283,7 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
 
 
-def test_every_platform_records_the_qwen3_tts_code_predictor() -> None:
+def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_tts_predictor_graph() is True
     assert OmniPlatform().enable_tts_predictor_graph() is True
     assert CPUOmniPlatform().enable_tts_predictor_graph() is True
