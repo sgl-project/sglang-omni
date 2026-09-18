@@ -39,6 +39,7 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
     QwenTalkerScheduler,
     configure_talker_server_args,
 )
+from sglang_omni.proto import OmniRequest
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
@@ -1079,6 +1080,7 @@ def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
     scheduler._append_stream_chunk = lambda req_data, chunk: None
     scheduler._mark_stream_done = lambda req_data: None
     payload = SimpleNamespace(
+        request=OmniRequest(None),
         request_id="rid-topo",
         prefetched_chunks=[SimpleNamespace(data=torch.tensor([0.0]))],
         prefetched_stream_done=False,
@@ -1468,6 +1470,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
 
     chunks = [SimpleNamespace(data=torch.tensor([float(i)])) for i in range(5)]
     payload = SimpleNamespace(
+        request=OmniRequest(None),
         request_id="rid-partial-1",
         prefetched_chunks=list(chunks),
         prefetched_stream_done=False,
@@ -1511,6 +1514,7 @@ def test_process_input_requests_keeps_deferred_when_below_threshold() -> None:
         request_builder_stub=fail_if_called,
     )
     payload = SimpleNamespace(
+        request=OmniRequest(None),
         request_id="rid-stay",
         prefetched_chunks=[SimpleNamespace(data=torch.tensor([0.0]))] * 2,
         prefetched_stream_done=False,
