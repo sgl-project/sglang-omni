@@ -172,13 +172,7 @@ class ModelRunner:
         if need_alloc:
             # note (yingzhou): MUSA execute stays in inference mode, but these
             # pinned host buffers are copied into after execute returns.
-            if torch.is_inference_mode_enabled():
-                with torch.inference_mode(False):
-                    bufs = [
-                        torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
-                        for _ in range(2)
-                    ]
-            else:
+            with torch.inference_mode(False):
                 bufs = [
                     torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
                     for _ in range(2)

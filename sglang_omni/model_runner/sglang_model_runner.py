@@ -264,8 +264,8 @@ class SGLModelRunner(ModelRunner):
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
-        # Runtime context is not published yet on MUSA startup; read the
-        # constructor argument instead of get_parallel()/get_schedule().
+        # note (yingzhou): runtime context is unpublished at construction,
+        # so read server_args instead of get_parallel()/get_schedule().
         tp_size = server_args.tp_size
         self.nccl_port = port_args.nccl_port
 

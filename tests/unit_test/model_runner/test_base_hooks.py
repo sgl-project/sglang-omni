@@ -386,7 +386,7 @@ def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
     assert calls == [("req-1", 1), ("req-2", 5)]
 
 
-def test_execute_does_not_wrap_host_staging_in_inference_mode(
+def test_execute_allocates_ordinary_host_staging_under_musa_inference_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pinned host staging must stay an ordinary tensor on MUSA.

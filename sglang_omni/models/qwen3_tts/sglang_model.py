@@ -1379,7 +1379,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return captured
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def _capture_predictor_graph(
         self,
         bucket_size: int,
