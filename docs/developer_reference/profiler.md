@@ -225,9 +225,11 @@ Example: record cheap events on every request without a kernel trace:
 
 ```bash
 curl -X POST http://localhost:8000/start_request_profile \
+     -H 'Content-Type: application/json' \
      -d '{"run_id":"demo","event_dir":"/tmp/profiles/demo/events"}'
 # … run traffic …
-curl -X POST http://localhost:8000/stop_request_profile -d '{}'
+curl -X POST http://localhost:8000/stop_request_profile \
+     -H 'Content-Type: application/json' -d '{}'
 python -m sglang_omni.profiler /tmp/profiles/demo/events --format table
 ```
 
