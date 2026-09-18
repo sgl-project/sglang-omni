@@ -40,8 +40,11 @@ On first launch:
    requires these permissions to be granted through its system UI.
 2. Open **Settings → Local speech model → Download & prepare ASR**. The first run
    downloads model weights from Hugging Face. If `huggingface.co` is unreachable
-   (for example in mainland China), set **Hugging Face endpoint** to a mirror such
-   as `https://hf-mirror.com` first. Cached weights support offline ASR.
+   (for example in mainland China), enter a mirror such as `https://hf-mirror.com`
+   in **Hugging Face endpoint** before downloading. With a Simplified Chinese
+   interface, the empty field shows that mirror as an example; after a failed
+   official download, click **Use hf-mirror.com and retry** in the error banner.
+   Cached weights support offline ASR.
 3. Place the cursor in the destination input field. Press **Control + Option +
    Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
    Keep the input focused until the result is inserted.
@@ -370,8 +373,10 @@ startup failures, rerun `OmniTyper/scripts/setup.sh` and check Python 3.12,
 `ffmpeg@7`, and Hugging Face connectivity. If `huggingface.co` is blocked, set a
 mirror such as `https://hf-mirror.com` under **Settings → Local speech model →
 Hugging Face endpoint** and retry; the worker passes it to the download and to its
-ASR process. Cached weights need no network. Setup includes HTTPX's SOCKS support
-for proxy environments.
+ASR process. The mirror covers the Hub API and small files, but the mirror can
+redirect model weights to Hugging Face's Xet bridge
+(`cas-bridge.xethub.hf.co`), so that host must also be reachable. Cached weights
+need no network. Setup includes HTTPX's SOCKS support for proxy environments.
 
 ### Text processing fails
 

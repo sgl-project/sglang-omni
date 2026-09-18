@@ -60,6 +60,57 @@ struct StoreTests {
         #expect(!model.isBusy)
     }
 
+    @Test func huggingFaceEndpointPromptIsLocalizedWithoutChangingTheDefault() {
+        #expect(L10n.string("settings.hfEndpointPrompt", in: "en") == "https://huggingface.co")
+        #expect(L10n.string("settings.hfEndpointPrompt", in: "zh-Hans") == "https://hf-mirror.com")
+        #expect(Preferences().huggingFaceEndpoint.isEmpty)
+    }
+
+    @Test func recommendedMirrorComparisonIgnoresCaseAndTrailingSlash() {
+        #expect(Preferences.isRecommendedHuggingFaceMirror("https://hf-mirror.com"))
+        #expect(Preferences.isRecommendedHuggingFaceMirror(" https://hf-mirror.com/ "))
+        #expect(Preferences.isRecommendedHuggingFaceMirror("HTTPS://HF-MIRROR.COM"))
+        #expect(!Preferences.isRecommendedHuggingFaceMirror(""))
+        #expect(!Preferences.isRecommendedHuggingFaceMirror("http://hf-mirror.com"))
+        #expect(!Preferences.isRecommendedHuggingFaceMirror("https://hf-mirror.com/mirror"))
+    }
+
+    @Test @MainActor func mirrorRetryOfferAppearsOnlyForDownloadFailures() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(store: AppStore(directory: directory))
+        defer { model.shutdown() }
+        #expect(!model.canApplyHuggingFaceMirror)
+        model.recordError(WorkerFailure(message: "blocked", rawText: nil, code: "model.download"))
+        #expect(model.canApplyHuggingFaceMirror)
+        model.store.preferences.huggingFaceEndpoint = Preferences.recommendedHuggingFaceMirror
+        #expect(!model.canApplyHuggingFaceMirror)
+        model.store.preferences.huggingFaceEndpoint = "https://hf-mirror.com/"
+        #expect(!model.canApplyHuggingFaceMirror)
+        model.store.preferences.huggingFaceEndpoint = "HTTPS://HF-MIRROR.COM"
+        #expect(!model.canApplyHuggingFaceMirror)
+        model.store.preferences.huggingFaceEndpoint = "https://example.com/mirror"
+        #expect(model.canApplyHuggingFaceMirror)
+        model.showError("login failed")
+        #expect(!model.canApplyHuggingFaceMirror)
+        model.recordError(WorkerFailure(message: "blocked", rawText: nil, code: "model.download"))
+        #expect(model.canApplyHuggingFaceMirror)
+        model.dismissError()
+        model.recordError(WorkerFailure(message: "other", rawText: nil, code: nil))
+        #expect(!model.canApplyHuggingFaceMirror)
+    }
+
+    @Test @MainActor func applyHuggingFaceMirrorWritesTheRecommendedEndpoint() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(store: AppStore(directory: directory))
+        defer { model.shutdown() }
+        model.recordError(WorkerFailure(message: "blocked", rawText: nil, code: "model.download"))
+        model.applyHuggingFaceMirrorAndRetry()
+        #expect(model.store.preferences.huggingFaceEndpoint == Preferences.recommendedHuggingFaceMirror)
+        model.cancel()
+    }
+
     /// A failed insertion happens in another app, so its notice lands in a window
     /// the user is not looking at. History has to carry the reason instead.
     @Test @MainActor func insertionFailuresAreRecordedOnTheSavedEntry() throws {

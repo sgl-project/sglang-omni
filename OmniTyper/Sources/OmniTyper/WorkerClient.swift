@@ -6,6 +6,7 @@ import Foundation
 struct WorkerFailure: LocalizedError {
     let message: String
     let rawText: String?
+    let code: String?
     var errorDescription: String? { message }
 }
 
@@ -219,7 +220,9 @@ final class WorkerClient: ObservableObject {
                     let text = message["code"] as? String == "model.download"
                         ? L("error.modelDownload", description) : description
                     statusText = L("worker.processFailed"); showingReady = false
-                    finish(.failure(WorkerFailure(message: text, rawText: message["raw_text"] as? String)))
+                    finish(.failure(WorkerFailure(message: text,
+                                                  rawText: message["raw_text"] as? String,
+                                                  code: message["code"] as? String)))
                 }
             } else {
                 failAndStop(Failure("worker.incomplete"))

@@ -55,6 +55,8 @@ struct TextAPISettings: Codable, Equatable {
 }
 
 struct Preferences: Codable, Equatable {
+    static let recommendedHuggingFaceMirror = "https://hf-mirror.com"
+
     var pythonExecutable = ""
     var asrModel = "mlx-community/Qwen3-ASR-0.6B-4bit"
     // Note (Codex): Optional fields preserve decoding of libraries saved before these settings existed.
@@ -101,6 +103,18 @@ struct Preferences: Codable, Equatable {
             throw Failure("error.hfEndpoint")
         }
         return endpoint
+    }
+
+    static func isRecommendedHuggingFaceMirror(_ value: String) -> Bool {
+        let endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: endpoint),
+              let recommended = URLComponents(string: recommendedHuggingFaceMirror) else { return false }
+        var path = components.path
+        while path.hasSuffix("/") { path.removeLast() }
+        return components.scheme?.lowercased() == recommended.scheme?.lowercased()
+            && components.host?.lowercased() == recommended.host?.lowercased()
+            && components.port == recommended.port
+            && path == recommended.path
     }
 
     static func combinedInstructions(_ defaults: String, _ app: String) throws -> String {

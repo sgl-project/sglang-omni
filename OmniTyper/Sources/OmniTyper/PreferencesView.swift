@@ -57,7 +57,8 @@ struct PreferencesView: View {
                     Label(L("settings.localModel"), systemImage: "cpu").font(.headline)
                     Text("Qwen3-ASR · 0.6B · MLX 4-bit").font(.subheadline)
                     Text(L("settings.modelNote")).font(.caption).foregroundStyle(.secondary)
-                    TextField(L("settings.hfEndpoint"), text: $store.preferences.huggingFaceEndpoint)
+                    Text(L("settings.hfEndpoint"))
+                    TextField(L("settings.hfEndpointPrompt"), text: $store.preferences.huggingFaceEndpoint)
                         .textFieldStyle(.roundedBorder).accessibilityLabel(L("settings.hfEndpointLabel"))
                     Text(L("settings.hfEndpointNote")).font(.caption).foregroundStyle(.secondary)
                     HStack {
@@ -127,7 +128,7 @@ struct PreferencesView: View {
                         do {
                             if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
                             login = SMAppService.mainApp.status == .enabled
-                        } catch { model.error = L("settings.loginError", error.localizedDescription) }
+                        } catch { model.showError(L("settings.loginError", error.localizedDescription)) }
                     }))
                     HStack {
                         Button(L("settings.micSettings")) { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }

@@ -131,6 +131,7 @@ struct WorkerClientTests {
                     "A blocked download must point at the mirror setting")
             #expect(error.localizedDescription.contains("hf-mirror.com"),
                     "The endpoint that failed must stay in the message")
+            #expect((error as? WorkerFailure)?.code == "model.download")
         }
         #expect(client.isRunning, "A failed download keeps the protocol usable")
         _ = try await client.request(["op": "echo"], python: python)

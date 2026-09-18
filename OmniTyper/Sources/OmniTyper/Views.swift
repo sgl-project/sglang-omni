@@ -46,6 +46,9 @@ struct RootView: View {
                         if !store.storageError.isEmpty { message(store.storageError, error: true) }
                         if !model.error.isEmpty {
                             message(model.error, error: true)
+                            if model.canApplyHuggingFaceMirror {
+                                Button(L("settings.useHfMirror")) { model.applyHuggingFaceMirrorAndRetry() }
+                            }
                             if model.canRetry { Button(L("app.retryLast")) { model.retryLast() } }
                         }
                         if !model.notice.isEmpty { message(model.notice, error: false) }
@@ -114,7 +117,7 @@ struct RootView: View {
             Image(systemName: error ? "exclamationmark.circle" : "checkmark.circle")
                 .foregroundStyle(error ? .orange : accent)
             Text(text).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            Button { if error { model.error = "" } else { model.notice = "" } } label: { Image(systemName: "xmark") }
+            Button { if error { model.dismissError() } else { model.notice = "" } } label: { Image(systemName: "xmark") }
                 .buttonStyle(.plain).accessibilityLabel(L("app.dismiss"))
         }.padding(14).background((error ? Color.orange : accent).opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }

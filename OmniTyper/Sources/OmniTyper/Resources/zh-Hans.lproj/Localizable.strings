@@ -270,7 +270,9 @@
 "settings.modelNote" = "SGLang-Omni 在 Apple Silicon 上完成语音识别。文字处理在下方单独配置。";
 "settings.hfEndpoint" = "Hugging Face 下载地址（可选）";
 "settings.hfEndpointLabel" = "Hugging Face 下载地址";
+"settings.hfEndpointPrompt" = "https://hf-mirror.com";
 "settings.hfEndpointNote" = "留空则使用 huggingface.co；无法直连时可填镜像，例如 https://hf-mirror.com。模型缓存后可离线使用。";
+"settings.useHfMirror" = "使用 hf-mirror.com 并重试";
 "settings.prepareASR" = "下载并准备语音模型";
 "settings.unloadASR" = "卸载语音模型";
 "settings.runtime" = "运行环境位置";

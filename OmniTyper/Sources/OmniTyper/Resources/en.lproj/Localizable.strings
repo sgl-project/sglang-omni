@@ -270,7 +270,9 @@
 "settings.modelNote" = "SGLang-Omni performs speech recognition on Apple Silicon. Text processing is configured separately below.";
 "settings.hfEndpoint" = "Hugging Face endpoint (optional)";
 "settings.hfEndpointLabel" = "Hugging Face endpoint";
+"settings.hfEndpointPrompt" = "https://huggingface.co";
 "settings.hfEndpointNote" = "Leave empty for huggingface.co. Set a mirror such as https://hf-mirror.com when direct downloads fail. Cached models work offline.";
+"settings.useHfMirror" = "Use hf-mirror.com and retry";
 "settings.prepareASR" = "Download & prepare ASR";
 "settings.unloadASR" = "Unload ASR";
 "settings.runtime" = "Runtime location";
