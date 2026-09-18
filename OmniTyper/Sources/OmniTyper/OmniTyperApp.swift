@@ -6,19 +6,26 @@ import SwiftUI
 struct OmniTyperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        Settings { SettingsContent(model: delegate.model, store: delegate.model.store).frame(width: 820, height: 680) }
+        // Note (Codex): SwiftUI requires a scene; its Settings command opens the AppKit console instead.
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button(L("nav.Settings")) { delegate.openSettings() }.keyboardShortcut(",")
+                }
+            }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
-    lazy var model = AppModel()
+    private var model: AppModel!
     private var window: NSWindow!
     private var panel: RecordingPanel!
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        model = AppModel()
         let content = RootView(model: model, store: model.store)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 750),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -79,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+    }
+
+    func openSettings() {
+        model.page = .settings
+        openWindow()
     }
 
     @objc private func startFromMenu(_ sender: NSMenuItem) {
