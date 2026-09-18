@@ -1250,31 +1250,6 @@ def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     )
 
 
-def test_row_radix_token_ids_hash_rows_and_keep_eos():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-
-    end_id = 151670
-    slot_id = 151656
-    rows = torch.full((3, N_VQ + 1), 7, dtype=torch.long)
-    rows[:, 0] = torch.tensor([slot_id, end_id, slot_id])
-    rows[2, 1:] = torch.arange(N_VQ)
-    next_text = rows[:, 0].clone()
-
-    out = MossTTSLocalModelRunner.row_radix_token_ids(rows, next_text, end_id)
-    # Post-090c9cf the generated-row key is the capture-safe GPU polynomial hash
-    # (gpu_radix_row_hash), not the host blake2b; assert the spec the key must
-    # satisfy, not a specific digest. Exact hash semantics live in
-    # test_radix_hash.py / docs/design/gpu_radix_hash.md.
-    assert int(out[1]) == end_id  # stop decision keeps the raw eos id
-    assert int(out[0]) != int(out[2])  # full-row dependence: codes differ -> keys
-    assert int(out[0]) != slot_id  # no longer the constant slot id
-    # Hashed (non-eos) rows fold below the special-token band so the scheduler's
-    # vocab-boundary finish never trips on a generated frame.
-    assert int(out[0]) < 151643
-    assert int(out[2]) < 151643
-    assert all(0 <= int(v) < 151936 for v in out)
-
-
 def test_audio_history_presence_mask_excludes_prompt_rows():
     from types import SimpleNamespace
 

@@ -9,10 +9,7 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-from sglang_omni.models.moss_tts_local.radix_hash import (
-    build_rows_and_radix_token_ids,
-    gpu_radix_row_hash,
-)
+from sglang_omni.models.moss_tts_local.radix_hash import build_rows_and_radix_token_ids
 from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
 )
@@ -509,35 +506,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             result.next_token_ids = launch_buf
 
     @staticmethod
-    def row_radix_token_ids(
-        rows: torch.Tensor,
-        next_text: torch.Tensor,
-        end_id: int,
-    ) -> torch.Tensor:
-        """Radix-cache token ids for generated frames.
-
-        The scheduler appends one token id per frame to the request's KV
-        chain, and the radix tree keys on those ids. The text channel alone is
-        the same assistant-slot id for every continuing frame of every
-        request, so a re-prefill after retraction could falsely prefix-match
-        into another identical-prompt request's cached generated region. Hash
-        the full multi-channel row — the same keying used for prompt rows —
-        so a radix match implies identical audio content (a per-position id
-        clash is ~1/151643 and only matters on top of an identical full
-        prefix). The hash is folded below the special-token band because the
-        scheduler finishes any request whose generated id crosses the vocab
-        boundary (``Req._check_vocab_boundary_finish``); the stop decision
-        keeps the raw audio_end id so eos detection still fires.
-
-        Unlike the prompt path (``build_row_cache_key_ids``'s host-side
-        blake2b), this runs every decode step on a device tensor, so it uses
-        the capture-safe tensor-native polynomial hash in :mod:`radix_hash` —
-        no GPU->CPU sync. See ``docs/design/gpu_radix_hash.md``.
-        """
-        return gpu_radix_row_hash(rows, next_text, end_id)
-
-    @staticmethod
-    def advance_sampling_position(data: Any) -> int:
+    def _advance_sampling_position(data: Any) -> int:
         """RNG position for this collect, advancing the launch-side counter in
         floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
         path the two stay equal (generation_steps increments after every collect)
