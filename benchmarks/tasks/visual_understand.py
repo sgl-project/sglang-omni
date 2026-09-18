@@ -224,12 +224,17 @@ def make_mmmu_send_fn(
     model_name: str,
     api_url: str,
     *,
+    completion=None,
     max_tokens: int = 2048,
     temperature: float = 0.0,
     enable_audio: bool = False,
     audio_dir: str | None = None,
 ) -> SendFn:
     """Return a *send_fn* that sends an MMMUSample to /v1/chat/completions.
+
+    An optional async ``completion(payload)`` returns a chat-completion dict
+    instead of sending HTTP. Request construction and scoring stay identical;
+    transport failures should raise ``aiohttp.ClientError``.
 
     Uses the sglang-omni request format with a top-level ``images`` field.
     When *enable_audio* is ``False`` (default), requests text-only output.
@@ -263,9 +268,15 @@ def make_mmmu_send_fn(
 
         start_time = time.perf_counter()
         try:
-            async with session.post(api_url, json=payload) as response:
-                response.raise_for_status()
-                body = await response.json()
+            if completion is None:
+                async with session.post(api_url, json=payload) as response:
+                    response.raise_for_status()
+                    body = await response.json()
+            else:
+                body = await asyncio.wait_for(
+                    completion(payload),
+                    timeout=session.timeout.total if session else None,
+                )
 
             message = body.get("choices", [{}])[0].get("message", {})
             content = message.get("content", "")
@@ -316,9 +327,9 @@ def build_mmmu_result_records(
     results: list[RequestResult],
 ) -> list[MMMURecord]:
     """Parse responses into persisted per-sample records."""
-    assert len(samples) == len(
-        results
-    ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
+    assert len(samples) == len(results), (
+        f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
+    )
     # Fix the random seed so MC fallback choices stay deterministic across CI runs.
     random.seed(42)
 

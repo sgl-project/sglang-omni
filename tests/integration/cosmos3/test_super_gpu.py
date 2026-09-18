@@ -98,6 +98,12 @@ def _config(kind, model, devices, output):
         overrides.update(
             tp_size=len(devices), mem_fraction_static=0.9 if len(devices) == 1 else 0.6
         )
+    residency = os.environ.get("COSMOS3_SUPER_RESIDENCY", "layerwise-offload")
+    if residency not in ("resident", "layerwise-offload"):
+        raise ValueError("COSMOS3_SUPER_RESIDENCY must be resident or layerwise-offload")
+    if kind == "generation" and residency == "resident":
+        overrides["component_residency"] = {"transformer": "resident"}
+        overrides.pop("layerwise_resident_layers", None)
     return config
 
 

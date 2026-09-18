@@ -8,9 +8,9 @@ scored Omni-vs-ground-truth (no HF reference runner):
   * MMMU strict -- same 50, MC parse fallbacks counted as incorrect
   * VideoMME    -- videomme-ci-50        (video reasoner)
 
-The Super Reasoner is a single native SRT deployment. This test serves it at
-TP=2 on a 2-GPU node via examples/configs/cosmos3_super_reasoner.yaml (the
-config pins the checkpoint revision, so managed_omni_server serves that pin).
+The Super Reasoner uses the pinned Reasoner YAML and the allocation selected by
+COSMOS3_SUPER_GPU_IDS (default 0,1). SDK and HTTP run sequentially against the
+same request builders and scorers; select one with COSMOS3_SUPER_TRANSPORTS.
 
 Opt in on the GPU node, matching tests/integration/cosmos3/test_super_gpu.py:
 
@@ -22,21 +22,21 @@ The test asserts PROVISIONAL accuracy floors as a regression guard and prints a
 
 from __future__ import annotations
 
-import asyncio
 import os
-import socket
 import sys
 from pathlib import Path
 
 import pytest
 
-from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.prepare import DATASETS
 from benchmarks.eval.benchmark_omni_mmmu import MMMUEvalConfig, run_mmmu_eval
 from benchmarks.eval.benchmark_omni_videomme import VideoEvalConfig, run_video_eval
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.mmmu import print_mmmu_accuracy_summary
 from benchmarks.metrics.video import print_videomme_accuracy_summary
+from tests.integration.cosmos3.super_harness import deployment, transports
+from tests.integration.cosmos3.test_super_gpu import _config
+from tests.test_model.test_cosmos3_super_generator_ci import _devices, _resolve_model
 from tests.utils import MetricCheckCollector
 
 pytestmark = pytest.mark.skipif(
@@ -44,8 +44,6 @@ pytestmark = pytest.mark.skipif(
     reason="Set COSMOS3_SUPER_RUN_GPU=1 on the GPU node to opt in",
 )
 
-REASONER_CONFIG = "examples/configs/cosmos3_super_reasoner.yaml"
-MODEL_REPO = "nvidia/Cosmos3-Super"
 # Omni serves the model under the pipeline config's ``name:`` field, not the
 # checkpoint id. Keep this in sync with cosmos3_super_reasoner.yaml.
 SERVED_MODEL_NAME = "cosmos3-super-reasoner"
@@ -61,29 +59,6 @@ MAX_SAMPLES = 50
 MMMU_MIN_ACCURACY = 0.48
 MMMU_STRICT_MIN_ACCURACY = 0.48
 VIDEOMME_MIN_ACCURACY = 0.44
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-@pytest.fixture(scope="module")
-def cosmos3_super_reasoner_server(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> "int":
-    """Serve the Super Reasoner (TP=2) and yield its port."""
-    port = _free_port()
-    log_file = tmp_path_factory.mktemp("cosmos3_super_reasoner") / "server.log"
-    with managed_omni_server(
-        model_path=MODEL_REPO,
-        port=port,
-        host="127.0.0.1",
-        log_file=log_file,
-        server_config=REASONER_CONFIG,
-    ):
-        yield port
 
 
 def _fraction(correct: int, total: int) -> str:
@@ -112,28 +87,30 @@ def _print_accuracy_table(rows: list[tuple[str, str, str]]) -> None:
     print()
 
 
+@pytest.mark.parametrize("transport", transports())
 @pytest.mark.benchmark
-def test_reasoner_accuracy(
-    cosmos3_super_reasoner_server: int,
-    tmp_path: Path,
-) -> None:
-    """Run MMMU + VideoMME and report Omni-vs-ground-truth accuracy."""
-    port = cosmos3_super_reasoner_server
+@pytest.mark.asyncio
+async def test_reasoner_accuracy(tmp_path: Path, transport: str) -> None:
+    config = _config("reasoner", str(_resolve_model("reasoner")), _devices(), tmp_path)
+    async with deployment(config, transport, tmp_path / transport) as client:
+        await _reasoner_accuracy(client, tmp_path / transport)
+
+
+async def _reasoner_accuracy(client, tmp_path):
     checks = MetricCheckCollector("Cosmos3-Super Reasoner accuracy")
     table: list[tuple[str, str, str]] = []
 
     # --- MMMU (image) + strict variant ---
-    mmmu = asyncio.run(
-        run_mmmu_eval(
-            MMMUEvalConfig(
-                model=SERVED_MODEL_NAME,
-                port=port,
-                max_concurrency=CONCURRENCY,
-                output_dir=str(tmp_path / "mmmu"),
-                repo_id=DATASETS["mmmu-ci-50"],
-                warmup=2,
-            )
-        )
+    mmmu = await run_mmmu_eval(
+        MMMUEvalConfig(
+            model=SERVED_MODEL_NAME,
+            base_url=f"{client.transport}://cosmos3-super",
+            max_concurrency=CONCURRENCY,
+            output_dir=str(tmp_path / "mmmu"),
+            repo_id=DATASETS["mmmu-ci-50"],
+            warmup=2,
+        ),
+        completion=client.completion,
     )
     mmmu_summary = mmmu["summary"]
     print_mmmu_accuracy_summary(
@@ -146,7 +123,9 @@ def test_reasoner_accuracy(
     mmmu_total = mmmu_summary.get("total_samples", 0)
     strict_correct, strict_total = _strict_mmmu(mmmu["per_sample"])
     strict_acc = strict_correct / strict_total if strict_total else 0.0
-    table.append(("MMMU", "50 samples from CI", _fraction(mmmu_summary["correct"], mmmu_total)))
+    table.append(
+        ("MMMU", "50 samples from CI", _fraction(mmmu_summary["correct"], mmmu_total))
+    )
     table.append(
         (
             "MMMU, strict scoring",
@@ -156,24 +135,23 @@ def test_reasoner_accuracy(
     )
 
     # --- VideoMME (video) ---
-    videomme = asyncio.run(
-        run_video_eval(
-            VideoEvalConfig(
-                model=SERVED_MODEL_NAME,
-                port=port,
-                max_samples=MAX_SAMPLES,
-                max_concurrency=CONCURRENCY,
-                output_dir=str(tmp_path / "videomme"),
-                repo_id=DATASETS["videomme-ci-50"],
-                # The Cosmos3 reasoner rejects top-level video_* processing
-                # options ("Use native chat content for media and its processing
-                # options", reasoner.py); let native preprocessing use defaults.
-                timeout_s=500,
-            ),
-            task_label="Video-MME",
-            output_filename="videomme_results.json",
-            audio_output_dir_default=str(tmp_path / "videomme_audio"),
-        )
+    videomme = await run_video_eval(
+        VideoEvalConfig(
+            model=SERVED_MODEL_NAME,
+            base_url=f"{client.transport}://cosmos3-super",
+            max_samples=MAX_SAMPLES,
+            max_concurrency=CONCURRENCY,
+            output_dir=str(tmp_path / "videomme"),
+            repo_id=DATASETS["videomme-ci-50"],
+            # The Cosmos3 reasoner rejects top-level video_* processing
+            # options ("Use native chat content for media and its processing
+            # options", reasoner.py); let native preprocessing use defaults.
+            timeout_s=500,
+        ),
+        task_label="Video-MME",
+        output_filename="videomme_results.json",
+        audio_output_dir_default=str(tmp_path / "videomme_audio"),
+        completion=client.completion,
     )
     videomme_summary = videomme["summary"]
     print_videomme_accuracy_summary(
@@ -185,7 +163,11 @@ def test_reasoner_accuracy(
     )
     videomme_total = videomme_summary.get("total_samples", 0)
     table.append(
-        ("VideoMME", "50 samples from CI", _fraction(videomme_summary["correct"], videomme_total))
+        (
+            "VideoMME",
+            "50 samples from CI",
+            _fraction(videomme_summary["correct"], videomme_total),
+        )
     )
 
     _print_accuracy_table(table)

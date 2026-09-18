@@ -44,7 +44,7 @@ SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
   --host 127.0.0.1 --port 8000
 ```
 
-The SDK generation tests below bypass HTTP setup and ran on the recorded commit. They do not establish HTTP compatibility or partial-rank startup recovery. Neither config enables interleaved generation.
+The recorded SDK generation runs bypassed HTTP setup. The extended tests below now exercise both transports by default, but their HTTP results remain pending a GPU run on a compatible native runtime. Existing results do not establish HTTP compatibility or partial-rank startup recovery. Neither config enables interleaved generation.
 
 ## Reproduce the GPU checks
 
@@ -54,10 +54,10 @@ Run sequentially, without pytest-xdist:
 ```bash
 export COSMOS3_SUPER_RUN_GPU=1
 
-# Generation YAML → Omni SDK → native generator; seven modes, one shared server.
+# Generation YAML → SDK and HTTP, sequential deployments; same seven recipes.
 python -m pytest -s tests/test_model/test_cosmos3_super_generator_ci.py
 
-# Reasoner YAML → HTTP server → shared benchmark scorer.
+# Reasoner YAML → SDK and HTTP → identical prompts and shared benchmark scorer.
 python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
 python -m benchmarks.dataset.prepare --dataset videomme-ci-50
 python -m pytest -s tests/test_model/test_cosmos3_super_reasoner_ci.py
@@ -72,3 +72,57 @@ The generation CI uses bundled inputs (plus a custom T2I prompt) and 35 steps; T
 The [saved two-H100 results](https://github.com/thekevinli/sglang-benchmark-artifacts/tree/473829277ba26b35bf2f46f3584749d907b43fd2/pr-2201-cosmos3-super-adapters/2gpu) include MMMU 30/50 and VideoMME 28/50, both with zero failed requests. The Reasoner lifecycle case passed, with resource-tracker warnings about semaphore and shared-memory cleanup. Native rank failure and partial startup remain untested.
 
 Only two GPUs are qualified here. For a future four-GPU run, change `runtime_gpu_ids` to `[0, 1, 2, 3]` and generation `hsdp_shard_dim` to 4, or Reasoner native `tp_size` to 4. Keep generation TP=1 and Omni stage TP=1. To test resident FSDP, set `component_residency: {transformer: resident}` and remove `layerwise_resident_layers`. This is an unqualified alternative on any GPU count; measure memory before adopting it. Merely adding GPUs while keeping layerwise offload does not shard the transformer's weights on this runtime.
+
+## SDK/HTTP qualification campaign (GPU execution pending)
+
+The saved MMMU/VideoMME scores above were HTTP requests to `/v1/chat/completions`.
+The benchmark tests now run the same dataset request builders and scorers over
+both HTTP and the in-process Omni SDK. `COSMOS3_SUPER_TRANSPORTS=sdk` or `http`
+selects one; the default `sdk,http` runs both sequentially. No GPU jobs run unless
+`COSMOS3_SUPER_RUN_GPU=1` is explicitly set.
+
+On an otherwise idle four-H100 machine, with a native runtime satisfying the
+HTTP lifecycle prerequisite above and the benchmark dependencies installed:
+
+```bash
+export COSMOS3_SUPER_RUN_GPU=1
+export COSMOS3_SUPER_GPU_IDS=0,1,2,3
+export COSMOS3_SUPER_TRANSPORTS=sdk,http
+export SGLANG_OMNI_STARTUP_TIMEOUT=1800
+# Record the actual installed native git SHA in the artifact manifest.
+export COSMOS3_SUPER_NATIVE_REVISION="<installed-native-git-sha>"
+python -m benchmarks.dataset.prepare --dataset mmmu-ci-50
+python -m benchmarks.dataset.prepare --dataset videomme-ci-50
+python -m pytest -s --basetemp=/tmp/super-4gpu-qualification \
+  --junitxml=/tmp/super-4gpu-qualification.xml \
+  tests/test_model/test_cosmos3_super_generator_ci.py \
+  tests/test_model/test_cosmos3_super_reasoner_ci.py \
+  tests/integration/cosmos3/test_super_transports.py
+```
+
+Use a fresh `--basetemp` for each campaign: pytest clears that directory on a new
+run. Do not use pytest-xdist. The generation HTTP cases exercise image base64
+responses, multipart image/video uploads, video polling/download, and action
+JSON responses. Policy, inverse dynamics and forward dynamics also have valid-input
+smoke cases through both transports; these check execution and output structure,
+not action semantics or robotics task success.
+
+Each deployment retains its resolved YAML, revision/transport manifest,
+`memory.json` (device-wide memory samples in MiB, including startup), and generated
+outputs. Generation `requests.jsonl` records inputs and elapsed request time;
+Reasoner results retain per-sample answers, accuracy and speed metrics. HTTP
+server logs are saved alongside these files. Memory samples include other device
+users and may miss brief peaks; sampler errors are recorded explicitly and fail
+an otherwise successful campaign.
+
+The default four-GPU run retains the existing layerwise-offload recipe. For a
+separate resident-FSDP experiment, set `COSMOS3_SUPER_RESIDENCY=resident` and use a
+new artifact directory. The harness removes `layerwise_resident_layers` and sets
+transformer residency to `resident`; this experiment is not yet qualified.
+
+Passing this campaign establishes interface execution, Reasoner benchmark
+quality, and fit for the recorded workloads. Generation uses the existing
+full-step recipes and structural media checks; review the saved images/videos
+and listen to sound outputs before claiming semantic quality. It does not add an
+independent HF baseline or an automated visual-quality score. Four-H100 results,
+generation HTTP results, and SDK Reasoner accuracy remain **pending** until run.

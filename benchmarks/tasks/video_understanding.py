@@ -106,6 +106,7 @@ def make_video_send_fn(
     model_name: str,
     api_url: str,
     *,
+    completion=None,
     max_tokens: int = 256,
     temperature: float = 0.0,
     video_fps: float | None = None,
@@ -117,6 +118,11 @@ def make_video_send_fn(
     audio_output_dir: str | None = None,
     fixed_prompt: str | None = None,
 ) -> SendFn:
+    """Build video requests; optional completion(payload) replaces HTTP only.
+
+    The callback returns a chat-completion dict and raises aiohttp.ClientError
+    for transport failures. It shares the session request timeout.
+    """
     modalities = ["text", "audio"] if audio_output_dir else ["text"]
 
     async def send_fn(
@@ -156,9 +162,15 @@ def make_video_send_fn(
 
         start_time = time.perf_counter()
         try:
-            async with session.post(api_url, json=payload) as response:
-                response.raise_for_status()
-                body = await response.json()
+            if completion is None:
+                async with session.post(api_url, json=payload) as response:
+                    response.raise_for_status()
+                    body = await response.json()
+            else:
+                body = await asyncio.wait_for(
+                    completion(payload),
+                    timeout=session.timeout.total if session else None,
+                )
 
             if not _apply_chat_completion_response(
                 result,
@@ -189,9 +201,9 @@ def build_videomme_result_records(
     results: list[RequestResult],
 ) -> list[VideoMMERecord]:
     """Parse responses into persisted per-sample records."""
-    assert len(samples) == len(
-        results
-    ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
+    assert len(samples) == len(results), (
+        f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
+    )
     random.seed(42)
 
     per_sample: list[VideoMMERecord] = []

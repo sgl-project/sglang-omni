@@ -14,8 +14,8 @@ Policy (Edge-Policy-DROID) is intentionally not covered here: the checkpoint
 ships no policy example and it needs an external DROID sample, so it is left to
 the functional smoke suite (tests/integration/cosmos3/test_super_gpu.py).
 
-Generation is driven in-process through ``MultiProcessPipelineRunner`` and the
-SDK ``Client`` (the native media path), not an HTTP server.
+Generation runs through both the in-process SDK and an actual HTTP server.
+Set COSMOS3_SUPER_TRANSPORTS=sdk or http to select one transport.
 
 The generation YAML selects the validated two-GPU layerwise-offload recipe.
 
@@ -37,6 +37,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+
+from tests.integration.cosmos3.super_harness import SuperClient, deployment, transports
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("COSMOS3_SUPER_RUN_GPU") != "1",
@@ -148,7 +150,7 @@ def _devices() -> list[int]:
     return devices
 
 
-def _resolve_model() -> Path:
+def _resolve_model(kind="generation") -> Path:
     """Return a local checkpoint snapshot dir (assets/ included).
 
     Honors COSMOS3_SUPER_MODEL_PATH for an offline snapshot; otherwise resolves
@@ -164,7 +166,8 @@ def _resolve_model() -> Path:
     from sglang_omni.config.manager import ConfigManager
     from sglang_omni.utils.checkpoint import resolve_checkpoint
 
-    model_path = ConfigManager.from_file(str(GENERATION_CONFIG)).config.model_path
+    config_path = REPO_ROOT / f"examples/configs/cosmos3_super_{kind}.yaml"
+    model_path = ConfigManager.from_file(str(config_path)).config.model_path
     return Path(resolve_checkpoint(model_path)).resolve()
 
 
@@ -204,6 +207,8 @@ async def _running(config):
 
 
 async def _generate(runner, inputs: dict):
+    if isinstance(runner, SuperClient):
+        return await runner.generate(inputs)
     from sglang_omni.client import Client, GenerateRequest
 
     async def collect():
@@ -405,8 +410,9 @@ async def _run_forward_dynamics(runner, assets: Path, tmp_dir: Path) -> list[str
     return outputs
 
 
+@pytest.mark.parametrize("transport", transports())
 @pytest.mark.asyncio
-async def test_generation_quality(tmp_path):
+async def test_generation_quality(tmp_path, transport):
     """Serve the generation stage once and validate every generation mode:
     T2I, T2V, I2V, T2V+sound, V2V continuation, forward/inverse dynamics."""
     devices = _devices()
@@ -428,7 +434,7 @@ async def test_generation_quality(tmp_path):
     assert not missing, f"Missing checkpoint assets: {missing}"
 
     config = _config(model, devices, tmp_path / "media")
-    async with _running(config) as runner:
+    async with deployment(config, transport, tmp_path / transport) as runner:
         for mode in MODES:
             if mode == "forward_dynamics":
                 await _run_forward_dynamics(runner, assets, tmp_path)
