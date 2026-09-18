@@ -431,3 +431,41 @@ def test_execute_does_not_wrap_host_staging_in_inference_mode(
         "host_buf": False,
         "clone": False,
     }
+
+
+def test_execute_keeps_musa_sampling_inplace_in_inference_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MUSA graph replay leaves logits as inference tensors.
+
+    Codec suppress writes those logits in place during execute, so the
+    sampling path must stay inside inference mode on MUSA.
+    """
+    monkeypatch.setattr(current_platform, "device_type", "musa", raising=False)
+    _install_fake_forward_batch_module(monkeypatch)
+    observed: dict[str, bool] = {}
+    logits = torch.zeros(1, 8)
+    runner = _runner(
+        [],
+        custom_result=SimpleNamespace(
+            logits_output=SimpleNamespace(next_token_logits=logits),
+            next_token_ids=None,
+            can_run_cuda_graph=True,
+        ),
+    )
+    runner.sample_before_post_decode = lambda *_args, **_kwargs: True
+
+    def apply_codec_suppress_tokens(logits_output, requests) -> None:
+        del requests
+        observed["inference_mode"] = torch.is_inference_mode_enabled()
+        logits_output.next_token_logits[:, 0] = float("-inf")
+
+    def sample(logits_output, forward_batch):
+        del logits_output, forward_batch
+        return torch.tensor([3])
+
+    runner._apply_codec_suppress_tokens = apply_codec_suppress_tokens
+    runner.tp_worker.model_runner = SimpleNamespace(sample=sample)
+    runner.execute(_scheduler_output(is_prefill=False))
+    assert observed == {"inference_mode": True}
+    assert logits[0, 0] == float("-inf")
