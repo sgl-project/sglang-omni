@@ -72,6 +72,9 @@ class StagePayload:
     prefetched_stream_done: bool = field(
         default=False, init=False, repr=False, compare=False
     )
+    external_input_stream: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {

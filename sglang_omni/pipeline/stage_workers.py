@@ -98,6 +98,8 @@ class StageLaunchConfig:
     # Stream wiring
     stream_targets: list[str] = field(default_factory=list)
     stream_done_to_fn: str | None = None
+    external_input_enqueue_timeout_s: float = 1.0
+
     # GPU-resident stage names (for the transport router to pick GPU vs host transport).
     gpu_stage_names: set[str] = field(default_factory=set)
     stage_gpu_ids: dict[str, tuple[int, ...]] = field(default_factory=dict)
@@ -791,6 +793,7 @@ def _construct_stage(
         scheduler=scheduler,
         project_payload=project_payload or None,
         stream_targets=spec.stream_targets or None,
+        external_input_enqueue_timeout_s=spec.external_input_enqueue_timeout_s,
         get_stream_done_targets=get_stream_done_targets,
         gpu_stage_names=spec.gpu_stage_names or None,
         stage_gpu_ids=spec.stage_gpu_ids or None,

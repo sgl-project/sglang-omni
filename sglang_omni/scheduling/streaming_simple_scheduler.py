@@ -42,6 +42,7 @@ class StreamingSimpleScheduler:
     can_batch_stream_chunks: bool = False
     stream_chunk_batch_max: int | None = None
     stream_chunk_batch_distinct_requests: bool = False
+    supports_external_input_stream: bool = False
 
     def __init__(
         self,
@@ -53,8 +54,13 @@ class StreamingSimpleScheduler:
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
+        max_pending_messages: int = 0,
     ) -> None:
-        self.inbox: queue_mod.Queue[IncomingMessage] = queue_mod.Queue()
+        if max_pending_messages < 0:
+            raise ValueError("max_pending_messages must be >= 0")
+        self.inbox: queue_mod.Queue[IncomingMessage] = queue_mod.Queue(
+            maxsize=max_pending_messages
+        )
         self.outbox: queue_mod.Queue[OutgoingMessage] = queue_mod.Queue()
         self.requires_tp_work_fanout: bool = True
 
@@ -462,7 +468,10 @@ class StreamingSimpleScheduler:
             return
         for msg, result in zip(valid, results):
             if not self.is_aborted(msg.request_id):
-                self.emit_result(msg.request_id, result)
+                if isinstance(result, BaseException):
+                    self.emit_error(msg.request_id, result)
+                else:
+                    self.emit_result(msg.request_id, result)
                 self.record_completed_non_streaming_request_id(msg.request_id)
 
     def run_compute(self, payload: Any, loop: asyncio.AbstractEventLoop) -> Any:

@@ -49,6 +49,7 @@ translation target is English in both APIs.
 | [Qwen3-ASR](../cookbook/qwen3_asr.md) | HTTP 400 |
 | [Fun-ASR](../cookbook/fun_asr.md) | HTTP 400 |
 | [ARK-ASR](../cookbook/arkasr.md) | HTTP 400 |
+| [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) | HTTP 400 |
 | [MOSS-Transcribe-Diarize](../cookbook/moss_transcribe_diarize.md) | HTTP 400 |
 
 See each model's cookbook for its transcription workflow.

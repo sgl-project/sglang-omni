@@ -7,6 +7,11 @@ import re
 
 _BAD_REQUEST_MARKERS = (
     "Unsupported language:",
+    "Nemotron 3.5 ASR supports greedy RNN-T decoding only",
+    "Nemotron 3.5 ASR does not support a text prompt",
+    "Nemotron 3.5 ASR supports transcription only",
+    "Nemotron 3.5 ASR requires non-empty audio",
+    "Nemotron 3.5 ASR requires finite audio samples",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "Request requires more tokens than the thinker KV cache can hold",

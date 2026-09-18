@@ -275,3 +275,49 @@ async def test_probe_measures_wrapped_g711_without_the_av_fallback(
     )
 
     assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("detected_language", ["en-US", None])
+async def test_single_upload_preserves_detected_language(
+    monkeypatch, detected_language
+):
+    from sglang_omni.client.types import CompletionResult
+    from sglang_omni.serve.transcriptions import _transcribe_planned_upload
+
+    async def complete(*args, **kwargs):
+        return CompletionResult(
+            request_id="language-test", text="Hello world.", language=detected_language
+        )
+
+    monkeypatch.setattr(speech_to_text, "complete_speech_to_text_request", complete)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            client=object(),
+            model_name="nemotron",
+            audio_chunking=None,
+            architectures=None,
+        )
+    )
+    form = speech_to_text.SpeechToTextForm(
+        file=SimpleNamespace(filename="sample.wav", content_type="audio/wav"),
+        model=None,
+        language="auto" if detected_language else "en-US",
+        prompt=None,
+        response_format="verbose_json",
+        temperature=None,
+        repetition_penalty=None,
+        max_new_tokens=None,
+        stream=False,
+    )
+    response = await _transcribe_planned_upload(
+        None,
+        app,
+        form,
+        plan=None,
+        audio_bytes=b"RIFF",
+        duration_s=1.0,
+        request_id="language-test",
+        segment_timestamps=False,
+    )
+    assert json.loads(response.body)["language"] == "en-US"
