@@ -118,6 +118,9 @@ class ModelRunner:
         self._token_id_host_bufs: list[torch.Tensor] | None = None
         self._token_id_host_slot: int = 0
         self._suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
+        self._sampling_seed_cache: (
+            tuple[tuple[str, str, tuple[int, ...]], torch.Tensor] | None
+        ) = None
 
     def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
@@ -896,9 +899,20 @@ class ModelRunner:
                 seed = resolve_row_seed(seed)  # mask and cache user seed
                 sp.sampling_seed = seed
             row_seeds.append(seed)
-        sampling_info.sampling_seed = torch.tensor(
-            row_seeds, dtype=torch.long, device=sampling_info.device
-        )
+        # The sampler only reads this tensor. Reuse unchanged rows to avoid a
+        # blocking host-to-device copy on every step. Include row order and the
+        # worker device (sampling_info.device can be an unindexed "cuda").
+        cache_key = (str(self.device), str(sampling_info.device), tuple(row_seeds))
+        cached = self._sampling_seed_cache
+        if cached is None or cached[0] != cache_key:
+            seed_tensor = torch.tensor(
+                row_seeds, dtype=torch.long, device=sampling_info.device
+            )
+            # Keep one entry, never update its tensor in place: an in-flight
+            # ForwardBatch may still hold the previous entry after replacement.
+            cached = (cache_key, seed_tensor)
+            self._sampling_seed_cache = cached
+        sampling_info.sampling_seed = cached[1]
 
     @staticmethod
     def _validate_seeded_sampling_supported(sampling_info: Any) -> None:
