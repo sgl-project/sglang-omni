@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from itertools import islice
 from typing import Any, Callable
 
@@ -162,6 +163,10 @@ class _NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
+
+
+# note (luojiaxuan): a build done this soon joins the next batch, not the one after.
+_REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
 class OmniScheduler:
@@ -872,6 +877,7 @@ class OmniScheduler:
         recv_reqs, rejected = self._stage_request_build_payloads(recv_reqs)
         for payload in rejected:
             self._reject_queue_full(payload)
+        submitted_builds: list[Future] = []
         for payload in recv_reqs:
             req_id = payload.request_id
             with self._request_admission_lock:
@@ -919,6 +925,7 @@ class OmniScheduler:
                     future = request_build_executor.submit(
                         self._run_request_builder, payload, active_stage
                     )
+                    submitted_builds.append(future)
                     self._pending_request_builds[req_id] = (
                         payload,
                         pending_stream_done,
@@ -937,6 +944,8 @@ class OmniScheduler:
                 self.abort(req_id)
                 continue
             self._admit_or_defer_built_request(payload, pending_stream_done, req_data)
+        if submitted_builds:
+            wait_futures(submitted_builds, timeout=_REQUEST_BUILD_ADMISSION_WAIT_S)
         self._drain_request_build_results()
         self._drain_request_admission_results()
 

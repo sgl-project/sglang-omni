@@ -6,9 +6,11 @@ import collections
 import gc
 import importlib
 import threading
+import time
 import weakref
 from array import array
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -2054,6 +2056,89 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     assert names.count("scheduler_prefill_start") == 1
     assert names.index("scheduler_queue_enter") < names.index("scheduler_prefill_start")
     assert model_path_starts == ["req-delayed"]
+
+
+def _scheduler_with_build_pool(monkeypatch, builder) -> OmniScheduler:
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_event", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_model_path_start",
+        lambda _request_id: None,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler.max_req_len = 16
+    scheduler.max_req_input_len = 16
+    _init_sync_request_build_state(scheduler)
+    scheduler._request_build_executor = ThreadPoolExecutor(max_workers=1)
+    scheduler.request_build_max_pending = 4
+    scheduler._request_build_backlog_limit = None
+    scheduler._request_builder = builder
+    return scheduler
+
+
+def _built_request(request_id: str) -> SimpleNamespace:
+    req = SimpleNamespace(
+        rid=request_id,
+        origin_input_ids=[1, 2, 3],
+        origin_input_ids_unpadded=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=1, min_new_tokens=0),
+        output_ids=[],
+        priority=None,
+    )
+    return SimpleNamespace(req=req, enforce_request_limits=False, max_new_tokens=1)
+
+
+def test_a_fast_request_build_joins_the_waiting_queue_in_the_same_iteration(
+    monkeypatch,
+) -> None:
+    built = _built_request("req-fast")
+    scheduler = _scheduler_with_build_pool(monkeypatch, lambda payload: built)
+
+    try:
+        scheduler.process_input_requests([_new_stage_payload("req-fast")])
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler.waiting_queue == [built.req]
+    assert scheduler._pending_request_builds == {}
+
+
+def test_a_slow_request_build_does_not_hold_the_loop(monkeypatch) -> None:
+    release = threading.Event()
+    built = _built_request("req-slow")
+
+    def slow_builder(payload):
+        release.wait(timeout=5)
+        return built
+
+    scheduler = _scheduler_with_build_pool(monkeypatch, slow_builder)
+    try:
+        started = time.monotonic()
+        scheduler.process_input_requests([_new_stage_payload("req-slow")])
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert scheduler.waiting_queue == []
+        assert "req-slow" in scheduler._pending_request_builds
+
+        release.set()
+        scheduler._pending_request_builds["req-slow"][2].result(timeout=5)
+        scheduler.process_input_requests([])
+    finally:
+        release.set()
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler.waiting_queue == [built.req]
 
 
 def test_omni_scheduler_normalizes_req_token_arrays() -> None:
