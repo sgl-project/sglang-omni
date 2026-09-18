@@ -13,6 +13,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
 )
+from sglang_omni.platforms import current_platform
 
 
 class Qwen3TTSCodecStateArena:
@@ -40,6 +41,8 @@ class Qwen3TTSCodecStateArena:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
         self._decoder = decoder
         self._device = torch.device(device)
+        self._async_device = current_platform.supports_async_streams(self._device)
+        self._device_module = torch.get_device_module(self._device)
         self._dtype = dtype
         self._num_slots = int(num_slots)
         # note (luojiaxuan): one extra row past the last slot is the scratch
@@ -62,7 +65,7 @@ class Qwen3TTSCodecStateArena:
         # scatter queued on another stream when the slot is released, so the
         # release records where that stream is and the next owner waits on it
         # before touching the rows.
-        self._release_events: dict[int, torch.cuda.Event] = {}
+        self._release_events: dict[int, Any] = {}
         self._free: list[int] = list(reversed(range(self._num_slots)))
         self._retired: set[int] = set()
         self._exhausted_count = 0
@@ -98,15 +101,15 @@ class Qwen3TTSCodecStateArena:
             slot = self._free.pop()
             released = self._release_events.pop(slot, None)
         if released is not None:
-            torch.cuda.current_stream(self._device).wait_event(released)
+            self._device_module.current_stream(self._device).wait_event(released)
         self._zero_slot(slot)
         return slot
 
     def release(self, slot: int) -> None:
         released = None
-        if self._device.type == "cuda":
-            released = torch.cuda.Event()
-            released.record(torch.cuda.current_stream(self._device))
+        if self._async_device:
+            released = self._device_module.Event()
+            released.record(self._device_module.current_stream(self._device))
         with self._lock:
             if slot in self._retired:
                 return
@@ -146,7 +149,7 @@ class Qwen3TTSCodecStateArena:
     _STAGING_RING = 4
 
     def _staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if self._device.type != "cuda":
+        if not self._async_device:
             return torch.as_tensor(list(values), dtype=torch.long)
         count = len(values)
         if count == 0:

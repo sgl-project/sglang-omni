@@ -13,6 +13,7 @@ from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -2102,16 +2103,24 @@ def test_qwen3_tts_cpu_seeded_sampling_skips_npu_sampler(
     assert sampled.tolist() == [1, 1]
 
 
-def test_qwen3_tts_predictor_graph_is_cuda_only(
+def test_qwen3_tts_predictor_graph_requires_a_device_graph_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts import sglang_model
 
     monkeypatch.setattr(
+        sglang_model.current_platform,
+        "get_device_graph_backend",
+        lambda _device: None,
+    )
+    monkeypatch.setattr(
         sglang_model,
-        "get_global_server_args",
-        lambda: (_ for _ in ()).throw(AssertionError("must not inspect server args")),
+        "get_exec",
+        lambda: SimpleNamespace(graph=SimpleNamespace(disable_cuda_graph=False)),
+    )
+    monkeypatch.setattr(
+        sglang_model, "get_parallel", lambda: SimpleNamespace(tp_size=1)
     )
     talker = sglang_model.Qwen3TTSTalker.__new__(sglang_model.Qwen3TTSTalker)
     talker._predictor_device = torch.empty(1).device
@@ -2913,10 +2922,10 @@ def _force_pinned_cpu_decode(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
 ) -> list[_FakeCudaEvent]:
-    """Route a CPU scheduler through the pinned async path with CUDA stand-ins.
+    """Route a CPU scheduler through the pinned async path with device stand-ins.
 
-    Returns the list of events created through ``torch.cuda.Event`` so tests
-    can assert event reuse.
+    Returns the list of events created through the device module's ``Event``
+    so tests can assert event reuse.
     """
     created: list[_FakeCudaEvent] = []
 
@@ -2932,9 +2941,9 @@ def _force_pinned_cpu_decode(
         created.append(event)
         return event
 
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: object())
-    monkeypatch.setattr(torch.cuda, "stream", lambda stream: StreamContext())
-    monkeypatch.setattr(torch.cuda, "Event", make_event)
+    monkeypatch.setattr(torch.cpu, "current_stream", lambda device: object())
+    monkeypatch.setattr(torch.cpu, "stream", lambda stream: StreamContext())
+    monkeypatch.setattr(torch.cpu, "Event", make_event)
     monkeypatch.setattr(cuda_staging, "_allocate_pinned", _fake_allocate_pinned)
     scheduler._pinned_staging_disabled = False
     return created
@@ -3473,7 +3482,7 @@ def test_qwen3_tts_decode_plan_waits_for_the_talker_chunk_event(
             waited.append(event)
 
     worker_stream = WorkerStream()
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: worker_stream)
+    monkeypatch.setattr(torch.cpu, "current_stream", lambda device: worker_stream)
     plan = scheduler._build_decode_plan(state, is_final=True)
     assert plan is not None
     assert waited == [ready]
@@ -3623,8 +3632,8 @@ def test_qwen3_tts_pageable_fallback_syncs_with_empty_delta(
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-    monkeypatch.setattr(torch.cuda, "current_stream", lambda device: object())
-    monkeypatch.setattr(torch.cuda, "stream", lambda stream: StreamContext())
+    monkeypatch.setattr(torch.cpu, "current_stream", lambda device: object())
+    monkeypatch.setattr(torch.cpu, "stream", lambda stream: StreamContext())
 
     handle = scheduler._launch_decode_plans([plan], stream=DecodeStream())
 
@@ -3706,7 +3715,7 @@ def test_qwen3_tts_decode_launch_syncs_when_event_record_fails(
         created.append(event)
         return event
 
-    monkeypatch.setattr(torch.cuda, "Event", make_exploding_event)
+    monkeypatch.setattr(torch.cpu, "Event", make_exploding_event)
     slot = scheduler._thread_decode_slot()
     stream = _FakeDecodeStream(events)
 
@@ -4143,7 +4152,7 @@ def test_qwen3_tts_unproven_completion_retains_resources_and_disables_cuda_decod
             created.append(event)
             return event
 
-        monkeypatch.setattr(torch.cuda, "Event", make_exploding_event)
+        monkeypatch.setattr(torch.cpu, "Event", make_exploding_event)
         stream.sync_error = RuntimeError("stream dead")
         with pytest.raises(RuntimeError, match="record failed"):
             scheduler._launch_decode_plans([plan], stream=stream)
@@ -4213,7 +4222,7 @@ def test_qwen3_tts_decode_slot_reuses_event_on_cuda(
         created.append(event)
         return event
 
-    monkeypatch.setattr(torch.cuda, "Event", counting_event)
+    monkeypatch.setattr(torch.cpu, "Event", counting_event)
     slot = scheduler._thread_decode_slot()
 
     first_plan = _qwen3_tts_two_frame_plan(scheduler)

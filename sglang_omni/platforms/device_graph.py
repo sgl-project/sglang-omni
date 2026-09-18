@@ -9,7 +9,7 @@ choice belongs on the platform rather than in a per-model branch.
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Any, Iterator, Protocol
 
 import torch
@@ -95,7 +95,14 @@ class XpuDeviceGraphBackend:
             kwargs["pool"] = pool
         if stream is not None:
             kwargs["stream"] = stream
-        with torch.xpu.graph(xpu_graph=graph, **kwargs):
+        capture = torch.xpu.graph(xpu_graph=graph, **kwargs)
+        with ExitStack() as stack:
+            # The XPU generator allocates its seed and offset staging tensors on
+            # the process's first capture and refills them on every later one, so
+            # a capture under inference_mode would leave them inference tensors
+            # and a later capture under no_grad could not refill them.
+            with torch.inference_mode(False):
+                stack.enter_context(capture)
             yield graph
 
 
