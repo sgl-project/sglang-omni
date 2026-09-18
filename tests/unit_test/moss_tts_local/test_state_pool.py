@@ -7,6 +7,7 @@ The pool derives its sizing/placement from a fake model exposing a
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -511,6 +512,90 @@ def test_collect_frame_reads_generation_steps_from_pool():
 
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
     assert int(pool.sampling_steps[row]) == 5
+
+
+def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
+    monkeypatch.setattr(
+        "sglang_omni.model_runner.base.current_platform.get_device",
+        lambda gpu_id: torch.device("cpu"),
+    )
+    model = _model(max_running_requests=1)
+    model.device = torch.device("cpu")
+    model.dtype = torch.bfloat16
+    model.frame_graph_max_bs = 1
+    model.config.audio_assistant_slot_token_id = 151646
+    model.config.audio_end_token_id = 151670
+    pool = MossTTSLocalDecodeStatePool(model)
+    model._state_pool = pool
+    data = _params(seed=7)
+    data.req = SimpleNamespace(inflight_middle_chunks=0)
+    data.generation_steps = 0
+    data.output_rows = []
+    data.prompt_rows = torch.zeros((1, 13), dtype=torch.int64)
+    request = SimpleNamespace(request_id="rid", data=data)
+    positions = []
+
+    def decode_frame_graphed(hidden_states, **kwargs):
+        row = pool.row_for("rid")
+        assert int(pool.sampling_steps[row]) == data.generation_steps
+        assert int(pool.generation_steps[row]) == data.generation_steps
+        assert torch.equal(kwargs["seeds"], torch.tensor([7]))
+        positions.append(kwargs["base_positions"].clone())
+        return (
+            torch.zeros(1, dtype=torch.long),
+            torch.full((1, 12), 7, dtype=torch.long),
+            torch.ones((1, _HIDDEN), dtype=torch.bfloat16),
+        )
+
+    model.decode_frame_graphed = decode_frame_graphed
+    model._prepare_multi_modal_inputs = lambda rows: torch.zeros(
+        (rows.shape[0], _HIDDEN), dtype=model.dtype
+    )
+    output_processor = SimpleNamespace(
+        process=lambda *args, **kwargs: {"rid": SimpleNamespace(data=0, extra=None)}
+    )
+    runner = MossTTSLocalModelRunner(
+        SimpleNamespace(gpu_id=0, model_runner=SimpleNamespace(model=model)),
+        output_processor,
+    )
+    assert not runner._async_enabled
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    schedule_batch = SimpleNamespace(is_prefill_only=False)
+    scheduler_output = SimpleNamespace(requests=[request], batch_data=schedule_batch)
+    is_prefill = False
+    monkeypatch.setattr(runner, "_execution_context", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(
+        runner,
+        "_build_forward_batch",
+        lambda output: (forward_batch, schedule_batch, is_prefill),
+    )
+    runner._execution_bridge = SimpleNamespace(publish_next_tokens=lambda *a: None)
+
+    def prepare_and_forward(forward_batch, schedule_batch, requests, prefill):
+        if prefill:
+            runner._build_prefill_input_embeds(forward_batch, requests)
+        return SimpleNamespace(
+            logits_output=SimpleNamespace(hidden_states=torch.zeros(1, _HIDDEN)),
+            can_run_cuda_graph=False,
+            next_token_ids=None,
+        )
+
+    monkeypatch.setattr(runner, "_prepare_and_forward", prepare_and_forward)
+    for step in range(4):
+        is_prefill = step == 2
+        if is_prefill:
+            data.req.prefix_indices = []
+            data.req.extend_range = SimpleNamespace(
+                length=len(data.prompt_rows) + len(data.output_rows)
+            )
+        runner.execute(scheduler_output)
+        row = pool.row_for("rid")
+        assert data.generation_steps == step + 1
+        assert int(pool.generation_steps[row]) == step + 1
+        assert int(pool.sampling_steps[row]) == step + 1
+        assert len(data.output_rows) == step + 1
+
+    assert torch.equal(torch.cat(positions), torch.tensor([0, 13, 26, 39]))
 
 
 def test_pool_sampling_position_leads_unresolved_lookahead_launches():
