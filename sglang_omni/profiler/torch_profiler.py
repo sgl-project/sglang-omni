@@ -37,6 +37,31 @@ def _profiler_activities() -> list[ProfilerActivity]:
     return [ProfilerActivity.CPU, *device]
 
 
+def _export_and_compress(profiler: profile, json_path: str, rank: int) -> bool:
+    """
+    Write a chrome trace and hand compression to a background gzip.
+    Returns True if the trace is exported.
+    """
+    try:
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        profiler.export_chrome_trace(json_path)
+        logger.info("[Rank %s] Trace exported to %s", rank, json_path)
+    except Exception as e:
+        logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
+        return False
+
+    try:
+        subprocess.Popen(["gzip", "-f", json_path])
+        logger.info(
+            "[Rank %s] Triggered background compression for %s", rank, json_path
+        )
+    except Exception as compress_err:
+        logger.warning(
+            "[Rank %s] Background gzip failed to start: %s", rank, compress_err
+        )
+    return True
+
+
 class TorchProfiler(ProfilerBase):
     """
     Torch-based profiler configured for End-to-End continuous recording.
@@ -46,6 +71,7 @@ class TorchProfiler(ProfilerBase):
 
     _profiler: profile | None = None
     _trace_template: str = ""
+    _trace_exported: bool = False
 
     _active_run_id: str | None = None
     _lock = threading.Lock()
@@ -60,6 +86,7 @@ class TorchProfiler(ProfilerBase):
         Start the profiler with the given trace path template.
         """
         with cls._lock:
+            rank = cls._get_rank()
 
             # 1. Cleanup any existing profiler
             if cls._profiler is not None:
@@ -82,8 +109,6 @@ class TorchProfiler(ProfilerBase):
                 cls._active_run_id = None
                 cls._trace_template = ""
 
-            rank = cls._get_rank()
-
             # 2. Make path absolute
             trace_path_template = os.path.abspath(trace_path_template)
             cls._trace_template = trace_path_template
@@ -98,29 +123,10 @@ class TorchProfiler(ProfilerBase):
                 "[Rank %s] Starting End-to-End Torch profiler (run_id=%s)", rank, run_id
             )
 
+            cls._trace_exported = False
             # 3. Define the on_trace_ready handler
             def trace_handler(p):
-                nonlocal json_file
-
-                # A. Export JSON Trace
-                try:
-                    p.export_chrome_trace(json_file)
-                    logger.info(f"[Rank {rank}] Trace exported to {json_file}")
-
-                    try:
-                        subprocess.Popen(["gzip", "-f", json_file])
-                        logger.info(
-                            f"[Rank {rank}] Triggered background compression for {json_file}"
-                        )
-                        # Update variable to point to the eventual file
-                        json_file = f"{json_file}.gz"
-                    except Exception as compress_err:
-                        logger.warning(
-                            f"[Rank {rank}] Background gzip failed to start: {compress_err}"
-                        )
-
-                except Exception as e:
-                    logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
+                cls._trace_exported = _export_and_compress(p, json_file, rank)
 
             # No ``schedule``: record continuously between start/stop.
             # Expensive flags are env-var opt-in (default off keeps the
@@ -176,31 +182,13 @@ class TorchProfiler(ProfilerBase):
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
 
-            # No schedule → on_trace_ready isn't fired on stop, so
-            # export here.
-            try:
-                os.makedirs(os.path.dirname(json_path), exist_ok=True)
-                profiler.export_chrome_trace(json_path)
-                logger.info("[Rank %s] Trace exported to %s", rank, json_path)
-                try:
-                    subprocess.Popen(["gzip", "-f", json_path])
-                    logger.info(
-                        "[Rank %s] Triggered background compression for %s",
-                        rank,
-                        json_path,
-                    )
-                except Exception as compress_err:
-                    logger.warning(
-                        "[Rank %s] Background gzip failed: %s",
-                        rank,
-                        compress_err,
-                    )
-            except Exception as e:
-                logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
+            if not cls._trace_exported:
+                _export_and_compress(profiler, json_path, rank)
 
             cls._profiler = None
             cls._active_run_id = None
             cls._trace_template = ""
+            cls._trace_exported = False
 
             return {"trace": gz_path, "table": None}
 
@@ -219,7 +207,6 @@ class TorchProfiler(ProfilerBase):
 
 
 class TorchNPUProfiler(TorchProfiler):
-
     @classmethod
     def start(cls, trace_path_template: str, run_id: str | None = None) -> str:
         with cls._lock:
