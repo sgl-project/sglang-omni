@@ -54,19 +54,6 @@ sgl-omni serve \
 
 ### MLX
 
-This installs MLX through SGLang. It does not install or use the `mlx-audio`
-package. Before downloading a model, verify both Metal and FFmpeg loading:
-
-```bash
-SGLANG_USE_MLX=1 python - <<'PY'
-import mlx.core as mx
-from torchcodec.decoders import AudioDecoder
-
-assert mx.metal.is_available()
-print("MLX Metal and TorchCodec FFmpeg loading are available")
-PY
-```
-
 Starts a CosyVoice3 TTS service with MLX backend
 
 ```bash
