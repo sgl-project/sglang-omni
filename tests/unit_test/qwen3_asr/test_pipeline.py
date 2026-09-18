@@ -163,6 +163,7 @@ def test_qwen3_asr_default_mm_attention_backend_by_sm(
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert queried_gpu_ids == [3]
+    assert defaults["disable_radix_cache"] is True
     if expected_backend is None:
         assert "mm_attention_backend" not in defaults
     else:

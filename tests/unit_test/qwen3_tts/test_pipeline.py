@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import types
+from array import array
 from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
@@ -17,7 +18,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.managers import schedule_policy
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_policy import PrefillAdder
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.common import maybe_cache_unfinished_req
 from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
@@ -57,6 +65,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
+from sglang_omni.scheduling import omni_scheduler as scheduler_module
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.speaker_cache import (
@@ -621,6 +630,7 @@ def test_qwen3_tts_breakable_prefill_is_scoped_to_the_measured_checkpoint(
 
     # The admission-defaults path builds a bare builder with no checkpoint.
     bare = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
+    assert bare["disable_radix_cache"] is True
     assert "cuda_graph_backend_prefill" not in bare
     assert bare["max_running_requests"] == 16
 
@@ -5865,8 +5875,6 @@ def _build_qwen3_tts_sglang_request(monkeypatch: pytest.MonkeyPatch):
 def test_qwen3_tts_prompt_key_and_tail_guard_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.scheduling import omni_scheduler as scheduler_module
-
     first = _build_qwen3_tts_sglang_request(monkeypatch)
     second = _build_qwen3_tts_sglang_request(monkeypatch)
 
@@ -5890,6 +5898,7 @@ def test_qwen3_tts_prompt_key_and_tail_guard_order(
         scheduler_module._Upstream, "process_batch_result", process_result
     )
     scheduler = object.__new__(OmniScheduler)
+    scheduler.tree_cache = SimpleNamespace(is_chunk_cache=lambda: False)
     plain = SimpleNamespace(output_ids=[])
     batch = SimpleNamespace(reqs=[first.req, second.req, plain])
     scheduler.process_batch_result(batch, None)
@@ -5912,6 +5921,66 @@ def test_qwen3_tts_prompt_key_and_tail_guard_order(
     first.req.reset_for_retract()
     assert first.req.extra_key == "qwen3_tts:prompt:v1"
     assert first.req.skip_radix_cache_insert
+
+
+def test_qwen3_tts_chunked_prefill_resumes_after_retract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        schedule_policy, "is_dsa_prefill_cp_in_seq_split", lambda: False
+    )
+    monkeypatch.setattr(
+        schedule_policy, "is_prefill_context_parallel_enabled", lambda: False
+    )
+    req = Req(
+        rid="tts-retract",
+        origin_input_text="",
+        origin_input_ids=array("q", [11, 12, 13]),
+        sampling_params=SamplingParams(max_new_tokens=4),
+    )
+    req._omni_prompt_only_radix = True
+    cache = ChunkCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=SimpleNamespace(
+                req_to_token=torch.tensor([[40, 41, 42, 43]], dtype=torch.int32)
+            ),
+            token_to_kv_pool_allocator=None,
+            page_size=1,
+        )
+    )
+
+    def process_result(_, batch, __):
+        batch.reqs[0].output_ids.append(7)
+
+    monkeypatch.setattr(
+        scheduler_module._Upstream, "process_batch_result", process_result
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tree_cache = cache
+    scheduler.process_batch_result(SimpleNamespace(reqs=[req]), None)
+
+    req.reset_for_retract()
+    req.init_next_round_input(cache)
+    req.kv.req_pool_idx = 0
+
+    for start, end, expected_remaining in ((0, 2, req), (2, 4, None)):
+        adder = PrefillAdder(
+            page_size=1,
+            tree_cache=cache,
+            token_to_kv_pool_allocator=SimpleNamespace(available_size=lambda: 16),
+            running_batch=None,
+            new_token_ratio=1.0,
+            rem_input_tokens=2,
+            rem_chunk_tokens=2,
+        )
+        remaining = adder.add_chunked_req(req)
+        assert (req.extend_range.start, req.extend_range.end) == (start, end)
+        assert remaining is expected_remaining
+
+        if remaining is req:
+            maybe_cache_unfinished_req(req, cache, chunked=True)
+            assert req.prefix_indices.tolist() == [40, 41]
 
 
 def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(

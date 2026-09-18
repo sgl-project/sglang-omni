@@ -398,6 +398,7 @@ def test_moss_tts_engine_uses_text_backbone_context(
     builder.context_length = builder.resolve_context_length("model")
 
     assert builder.context_length == context_length
+    assert builder.generation_defaults(dtype="bfloat16")["disable_radix_cache"] is True
     assert (
         builder.generation_defaults(dtype="bfloat16")["max_prefill_tokens"]
         == expected_max_prefill_tokens
@@ -1474,6 +1475,7 @@ def test_moss_prompt_key_and_tail_guard_order(
         scheduler_module._Upstream, "process_batch_result", process_result
     )
     scheduler = object.__new__(OmniScheduler)
+    scheduler.tree_cache = SimpleNamespace(is_chunk_cache=lambda: False)
     plain = SimpleNamespace(output_ids=[])
     batch = SimpleNamespace(reqs=[first.req, second.req, plain])
     scheduler.process_batch_result(batch, None)
