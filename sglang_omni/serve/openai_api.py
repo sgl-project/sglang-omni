@@ -27,7 +27,11 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing, suppress
-from typing import Any, AsyncIterator
+from dataclasses import asdict
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from sglang_omni.serve.realtime.manager import RealtimeDeployment
 
 from fastapi import (
     Depends,
@@ -190,6 +194,7 @@ def create_app(
     additional_speech_languages: frozenset[str] = frozenset(),
     max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     enable_realtime: bool = False,
+    realtime_deployment: RealtimeDeployment | None = None,
     supports_realtime_audio_output: bool = False,
     realtime_transcription: RealtimeTranscriptionConfig | None = None,
     allowed_local_media_path: str | None = None,
@@ -263,7 +268,8 @@ def create_app(
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
-    app.state.realtime_enabled = enable_realtime
+    app.state.realtime_deployment = realtime_deployment
+    app.state.realtime_enabled = enable_realtime or realtime_deployment is not None
     app.state.supports_realtime_audio_output = supports_realtime_audio_output
     app.state.realtime_transcription = realtime_transcription
     app.state.speaker_sample_store = SpeakerSampleStore()
@@ -302,7 +308,7 @@ def create_app(
     _register_speech_ws(app)
     register_transcriptions(app)
     register_translations(app)
-    if enable_realtime:
+    if enable_realtime or realtime_deployment is not None:
         _register_realtime(app)
 
     return app
@@ -1214,33 +1220,65 @@ def _register_realtime(app: FastAPI) -> None:
 
     client: Client = app.state.client
     model_name: str = app.state.model_name
-    try:
-        smart_turn_model = load_smart_turn()
-    except Exception:
-        logger.warning(
-            "Smart Turn model could not be loaded; semantic VAD will fall back "
-            "to server VAD",
-            exc_info=True,
-        )
-        smart_turn_model = None
+    deployment = app.state.realtime_deployment
+    smart_turn_model = None
+    if deployment is None:
+        try:
+            smart_turn_model = load_smart_turn()
+        except Exception:
+            logger.warning("Smart Turn model could not be loaded", exc_info=True)
     manager = RealtimeSessionManager(
+        deployment=deployment,
         client=client,
         model_name=model_name,
         supports_audio_output=app.state.supports_realtime_audio_output,
         transcription_config=app.state.realtime_transcription,
         smart_turn_model=smart_turn_model,
     )
+    deployment = manager.deployment
     app.state.realtime_manager = manager
+
+    @app.get("/v1/realtime/capabilities")
+    async def realtime_capabilities():
+        if not client.health().get("running", False):
+            return JSONResponse(
+                {"error": {"code": "unavailable", "message": "instance is not ready"}},
+                status_code=503,
+            )
+        return {
+            "model": model_name,
+            **deployment.capabilities.describe(),
+            "limits": asdict(deployment.limits),
+        }
 
     @app.websocket("/v1/realtime")
     async def realtime(websocket: WebSocket) -> None:
-        await websocket.accept()
+        if len(manager.sessions) >= deployment.max_connections:
+            await websocket.send_denial_response(
+                JSONResponse(
+                    {
+                        "error": {
+                            "code": "unavailable",
+                            "message": "connection capacity exhausted",
+                        }
+                    },
+                    status_code=503,
+                )
+            )
+            return
+        if (
+            "session_id" in websocket.query_params
+            or websocket.query_params.get("model", model_name) != model_name
+        ):
+            await websocket.close(code=1008)
+            return
+        # Note (Junnan Li): Reserve shared connection capacity synchronously before upgrade yields.
         try:
             session = manager.open(
-                websocket,
-                intent=websocket.query_params.get("intent", "conversation"),
+                websocket, intent=websocket.query_params.get("intent", "conversation")
             )
         except ValueError as exc:
+            await websocket.accept()
             await websocket.send_json(
                 {
                     "type": "error",
@@ -1254,6 +1292,7 @@ def _register_realtime(app: FastAPI) -> None:
             await websocket.close(code=1008)
             return
         try:
+            await websocket.accept()
             await session.run()
         finally:
             await manager.close(session.session_id)

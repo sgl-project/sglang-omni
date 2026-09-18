@@ -32,6 +32,7 @@ from sglang_omni.client.types import (
 )
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
+from sglang_omni.proto.session import OutputChunk, SessionLimits, SessionRef, TimedChunk
 
 
 class Client:
@@ -46,6 +47,31 @@ class Client:
         self._coordinator = coordinator
         self._result_builder = result_builder or self._default_result_builder
         self._stream_builder = stream_builder or self._default_stream_builder
+
+    async def open_session(
+        self,
+        request: OmniRequest,
+        *,
+        stages: list[str],
+        limits: SessionLimits | None = None,
+        session_id: str | None = None,
+    ) -> SessionRef:
+        """Open an explicitly configured stateful pipeline route."""
+        return await self._coordinator.open_session(
+            request, stages=stages, limits=limits, session_id=session_id
+        )
+
+    async def append_session(self, ref: SessionRef, chunk: TimedChunk) -> int:
+        return await self._coordinator.append_session(ref, chunk)
+
+    def session_outputs(self, ref: SessionRef) -> AsyncIterator[OutputChunk]:
+        return self._coordinator.session_outputs(ref)
+
+    async def abort_session(self, ref: SessionRef) -> SessionRef:
+        return await self._coordinator.abort_session(ref)
+
+    async def close_session(self, ref: SessionRef) -> None:
+        return await self._coordinator.close_session(ref)
 
     # ------------------------------------------------------------------
     # Low-level generate (backward compatible)

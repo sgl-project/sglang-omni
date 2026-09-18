@@ -3536,6 +3536,8 @@ def test_route_registration_split_exposes_exact_route_sets() -> None:
 # fails and points you here.
 _WORKER_ROUTES_NOT_PROXIED = {
     "/v1/realtime",  # the router has no websocket proxy for it yet
+    # Note (Junnan Li): Discovery describes the worker owning the realtime session.
+    "/v1/realtime/capabilities",
 }
 
 
