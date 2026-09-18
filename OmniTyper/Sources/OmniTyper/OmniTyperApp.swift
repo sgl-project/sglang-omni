@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.titlebarSeparatorStyle = .line
         window.titleVisibility = .visible
         window.isMovableByWindowBackground = false
-        window.contentView = NSHostingView(rootView: content)
+        window.contentView = ConsoleHostingView(rootView: content)
         window.minSize = NSSize(width: 920, height: 660)
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -123,6 +123,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             try? png.write(to: URL(fileURLWithPath: path))
         }
         NSApp.terminate(nil)
+    }
+}
+
+final class ConsoleHostingView: NSHostingView<RootView> {
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(nil)
+        super.mouseDown(with: event)
     }
 }
 
