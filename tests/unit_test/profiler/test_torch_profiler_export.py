@@ -4,7 +4,7 @@
 1. ``start()`` read ``rank`` before assigning it, so every restart path raised
    ``NameError`` — both the idempotent same-``run_id`` return and the
    different-``run_id`` swap.
-2. The chrome trace was exported twice. 
+2. The chrome trace was exported twice.
    Raising "Trace is already saved." on every stop starting torch 2.13.0
 
 """

@@ -124,6 +124,7 @@ class TorchProfiler(ProfilerBase):
             )
 
             cls._trace_exported = False
+
             # 3. Define the on_trace_ready handler
             def trace_handler(p):
                 cls._trace_exported = _export_and_compress(p, json_file, rank)
