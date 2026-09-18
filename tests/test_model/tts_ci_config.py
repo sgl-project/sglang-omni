@@ -19,6 +19,11 @@ class TtsCiModelPreset:
     startup_timeout: int = 180
     gate_thresholds: bool = True
     num_gpus_per_worker: int = 1
+    # note (luojiaxuan): a checkpoint that serves named voices takes the text
+    # alone, so the reference fields above go unused and the reference-based
+    # similarity stage has nothing to score.
+    voice: str | None = None
+    voice_clone: bool = True
 
 
 @dataclass(frozen=True)
@@ -203,6 +208,37 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
+        ),
+    ),
+    "qwen3-tts-custom-voice": TtsCiPreset(
+        model=TtsCiModelPreset(
+            model_path="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            voice="Ryan",
+            voice_clone=False,
+            # note (luojiaxuan): same tuned point as the Base arm, so the two
+            # differ only in the checkpoint and the request shape.
+            worker_extra_args=(
+                "--tts_engine.engine.max_running_requests 64 "
+                "--tts_engine.engine.cuda_graph_max_bs 64 "
+                "--tts_engine.engine.torch_compile_max_bs 64 "
+                "--vocoder.process vocoder "
+                "--tts_engine.gpu_memory_fraction 0.85 "
+                "--vocoder.gpu_memory_fraction 0.10"
+            ),
+            startup_timeout=300,
+            gate_thresholds=False,
+        ),
+        # note (luojiaxuan): the Base arm's numbers, carried so the stages have
+        # something to print next to. This arm gates nothing until it is
+        # calibrated on the CI host, which a contract test enforces.
+        thresholds=TtsCiThresholdPreset(
+            non_stream_speed=QWEN3_TTS_VC_NON_STREAM_THRESHOLDS,
+            stream_speed=QWEN3_TTS_VC_STREAM_THRESHOLDS,
+            wer_corpus=QWEN3_TTS_VC_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
+            utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
+            calibrated=False,
         ),
     ),
     "moss": TtsCiPreset(
