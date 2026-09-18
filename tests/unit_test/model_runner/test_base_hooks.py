@@ -391,9 +391,9 @@ def test_execute_does_not_wrap_host_staging_in_inference_mode(
 ) -> None:
     """Pinned host staging must stay an ordinary tensor on MUSA.
 
-    Graph capture/replay owns inference mode. Wrapping the whole Omni execute
-    path would allocate these buffers as inference tensors, and later inplace
-    copies after execute returns would fail.
+    Execute itself stays in inference mode so graph logits can be written.
+    The host buffers still have to be allocated as ordinary tensors, because
+    later inplace copies happen after execute returns.
     """
     monkeypatch.setattr(current_platform, "device_type", "musa", raising=False)
     _install_fake_forward_batch_module(monkeypatch)
@@ -405,6 +405,7 @@ def test_execute_does_not_wrap_host_staging_in_inference_mode(
 
     monkeypatch.setattr(torch, "empty", cpu_empty)
     observed: dict[str, bool] = {}
+    host_buf_holder: dict[str, torch.Tensor] = {}
     runner = _runner(
         [],
         custom_result=SimpleNamespace(
@@ -413,21 +414,27 @@ def test_execute_does_not_wrap_host_staging_in_inference_mode(
             can_run_cuda_graph=True,
         ),
     )
+    runner._host_staging_buffers = []
+    runner._staging_slot = 0
 
     def post_decode(result, forward_batch, schedule_batch, requests) -> None:
         del result, forward_batch, schedule_batch, requests
+        observed["execute_inference_mode"] = torch.is_inference_mode_enabled()
         host_buf = runner._next_host_staging((1,), torch.long)
-        clone = host_buf[:1].detach().clone()
-        observed["inference_mode"] = torch.is_inference_mode_enabled()
+        host_buf_holder["host_buf"] = host_buf
         observed["host_buf"] = host_buf.is_inference()
-        observed["clone"] = clone.is_inference()
-        host_buf[:1].fill_(3)
-        clone.fill_(4)
 
     runner.post_decode = post_decode
     runner.execute(_scheduler_output(is_prefill=False))
+    host_buf = host_buf_holder["host_buf"]
+    clone = host_buf[:1].detach().clone()
+    host_buf[:1].fill_(3)
+    clone.fill_(4)
+    observed["clone"] = clone.is_inference()
+    observed["after_execute_inference_mode"] = torch.is_inference_mode_enabled()
     assert observed == {
-        "inference_mode": False,
+        "execute_inference_mode": True,
+        "after_execute_inference_mode": False,
         "host_buf": False,
         "clone": False,
     }
@@ -454,6 +461,9 @@ def test_execute_keeps_musa_sampling_inplace_in_inference_mode(
         ),
     )
     runner.sample_before_post_decode = lambda *_args, **_kwargs: True
+    runner._install_sampling_seeds = lambda *_args, **_kwargs: None
+    scheduler_output = _scheduler_output(is_prefill=False)
+    scheduler_output.requests[0].data.return_logprob = False
 
     def apply_codec_suppress_tokens(logits_output, requests) -> None:
         del requests
@@ -466,6 +476,6 @@ def test_execute_keeps_musa_sampling_inplace_in_inference_mode(
 
     runner._apply_codec_suppress_tokens = apply_codec_suppress_tokens
     runner.tp_worker.model_runner = SimpleNamespace(sample=sample)
-    runner.execute(_scheduler_output(is_prefill=False))
+    runner.execute(scheduler_output)
     assert observed == {"inference_mode": True}
     assert logits[0, 0] == float("-inf")
