@@ -11,6 +11,7 @@ live in each cookbook's **Apple Silicon** section.
 
 ## Prerequisites
 
+### MLX(0.32.2) fully supports
 - **macOS 14 or newer** on `arm64` (Apple Silicon). The pinned
   `torch==2.13.0`, `torchvision==0.28.0`, and `torchcodec==0.15.0` wheels are
   built for `macosx_14_0_arm64`.
