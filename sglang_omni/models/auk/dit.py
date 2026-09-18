@@ -13,6 +13,20 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
+from sglang_omni.models.auk.packed import flash_attention, gather_rope, gather_rows
+
+
+def _modulation(value, token_batch):
+    """Broadcast a per-request modulation row over padded ``[B, T, D]`` or packed rows."""
+    if token_batch is None:
+        return value[:, None]
+    elif value.shape[0] == 1:
+        # Euler evaluates the whole batch at one scalar time. Broadcasting the
+        # shared modulation avoids materializing six token-sized arrays/block.
+        return value[0]
+    else:
+        return value.index_select(0, token_batch)
+
 
 def _attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     """Additive SDPA bias ``[B, 1, 1, K]`` from a boolean key-padding mask ``[B, K]``."""
@@ -96,13 +110,17 @@ class AdaLayerNorm(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor | None = None):
+    def forward(
+        self, x: torch.Tensor, emb: torch.Tensor | None = None, token_batch=None
+    ):
         emb = self.linear(self.silu(emb))
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
             emb, 6, dim=1
         )
 
-        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = self.norm(x) * (1 + _modulation(scale_msa, token_batch)) + _modulation(
+            shift_msa, token_batch
+        )
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -115,10 +133,14 @@ class AdaLayerNormFinal(nn.Module):
         self.linear = nn.Linear(dim, dim * 2)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, emb: torch.Tensor, token_batch=None
+    ) -> torch.Tensor:
         emb = self.linear(self.silu(emb))
         scale, shift = torch.chunk(emb, 2, dim=1)
-        return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return self.norm(x) * (1 + _modulation(scale, token_batch)) + _modulation(
+            shift, token_batch
+        )
 
 
 class SwiGLU(nn.Module):
@@ -221,10 +243,18 @@ class Attention(nn.Module):
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
+        packed_layout=None,
     ):
-        if c is None:
+        if packed_layout is not None:
+            return self._forward_packed(x, c, rope, c_rope, packed_layout)
+        elif c is None:
             return self._forward_self(x, mask=mask, rope=rope, bias=bias)
+        else:
+            return self._forward_joint(
+                x, c, mask=mask, rope=rope, c_rope=c_rope, c_mask=c_mask, bias=bias
+            )
 
+    def _forward_joint(self, x, c, *, mask, rope, c_rope, c_mask, bias):
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         c_query, c_key, c_value = self.to_qkv_c(c).chunk(3, dim=-1)
@@ -258,6 +288,40 @@ class Attention(nn.Module):
         if c_mask is not None:
             c_out = c_out.masked_fill(~c_mask.unsqueeze(-1), 0.0)
         return x_out, c_out
+
+    def _forward_packed(self, x, c, rope, c_rope, layout):
+        """Attention over packed ``[tokens, D]`` rows bounded by ``layout.cu_seqlens``."""
+
+        def project(rows, linear, q_norm, k_norm, positions):
+            q, k, v = linear(rows).view(rows.shape[0], 3, self.heads, -1).unbind(1)
+            # _norm_rope and the fused kernel take [B, heads, seq, dim]; the
+            # packed rows are one sequence whose rope was gathered per row.
+            q, k = self._norm_rope(
+                q.transpose(0, 1)[None],
+                k.transpose(0, 1)[None],
+                q_norm,
+                k_norm,
+                positions,
+            )
+            return q[0].transpose(0, 1), k[0].transpose(0, 1), v
+
+        q, k, v = project(x, self.to_qkv, self.q_norm, self.k_norm, rope)
+        if c is None:
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            return self.to_out[1](self.to_out[0](out))
+        else:
+            cq, ck, cv = project(c, self.to_qkv_c, self.c_q_norm, self.c_k_norm, c_rope)
+            # Interleave the audio and text streams request by request so each
+            # request's joint sequence is contiguous for the varlen kernel.
+            q, k, v = (
+                torch.cat((a, b)).index_select(0, layout.double_order)
+                for a, b in ((q, cq), (k, ck), (v, cv))
+            )
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            out = out.index_select(0, layout.double_inverse)
+            return self.to_out[1](self.to_out[0](out[: x.shape[0]])), self.to_out_c(
+                out[x.shape[0] :]
+            )
 
     def _forward_self(
         self,
@@ -305,14 +369,23 @@ class DiTBlock(nn.Module):
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
+        packed_layout=None,
     ) -> torch.Tensor:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
-        x = x + gate_msa.unsqueeze(1) * self.attn(
-            x=norm, mask=mask, rope=rope, bias=bias
+        if packed_layout is None:
+            token_batch = None
+        else:
+            token_batch = packed_layout.single_batch
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
+            x, emb=t, token_batch=token_batch
+        )
+        x = x + _modulation(gate_msa, token_batch) * self.attn(
+            x=norm, mask=mask, rope=rope, bias=bias, packed_layout=packed_layout
         )
 
-        norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-        return x + gate_mlp.unsqueeze(1) * self.ff(norm)
+        norm = self.ff_norm(x) * (
+            1 + _modulation(scale_mlp, token_batch)
+        ) + _modulation(shift_mlp, token_batch)
+        return x + _modulation(gate_mlp, token_batch) * self.ff(norm)
 
 
 class MMDiTBlock(nn.Module):
@@ -355,12 +428,17 @@ class MMDiTBlock(nn.Module):
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
+        packed_layout=None,
     ):
+        if packed_layout is None:
+            cb = xb = None
+        else:
+            cb, xb = packed_layout.text_batch, packed_layout.audio_batch
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t
+            c, emb=t, token_batch=cb
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t
+            x, emb=t, token_batch=xb
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -370,15 +448,20 @@ class MMDiTBlock(nn.Module):
             c_rope=c_rope,
             c_mask=c_mask,
             bias=bias,
+            packed_layout=packed_layout,
         )
 
-        c = c + c_gate_msa.unsqueeze(1) * c_attn
-        norm_c = self.ff_norm_c(c) * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
-        c = c + c_gate_mlp.unsqueeze(1) * self.ff_c(norm_c)
+        c = c + _modulation(c_gate_msa, cb) * c_attn
+        norm_c = self.ff_norm_c(c) * (1 + _modulation(c_scale_mlp, cb)) + _modulation(
+            c_shift_mlp, cb
+        )
+        c = c + _modulation(c_gate_mlp, cb) * self.ff_c(norm_c)
 
-        x = x + x_gate_msa.unsqueeze(1) * x_attn
-        norm_x = self.ff_norm_x(x) * (1 + x_scale_mlp[:, None]) + x_shift_mlp[:, None]
-        x = x + x_gate_mlp.unsqueeze(1) * self.ff_x(norm_x)
+        x = x + _modulation(x_gate_msa, xb) * x_attn
+        norm_x = self.ff_norm_x(x) * (1 + _modulation(x_scale_mlp, xb)) + _modulation(
+            x_shift_mlp, xb
+        )
+        x = x + _modulation(x_gate_mlp, xb) * self.ff_x(norm_x)
         return c, x
 
 
@@ -572,10 +655,17 @@ class AuKDit(nn.Module):
         ref_mask: torch.Tensor | None = None,
         audio_positions: torch.Tensor | None = None,
         joint_positions: torch.Tensor | None = None,
+        packed_layout=None,
     ) -> torch.Tensor:
         batch = x.shape[0]
-        if time.ndim == 0:
-            time = time.repeat(batch)
+        if time.ndim != 0:
+            shared_time = False
+        elif packed_layout is None:
+            time, shared_time = time.repeat(batch), False
+        else:
+            # Euler evaluates the whole batch at one scalar time; the packed
+            # blocks broadcast that single modulation row instead of gathering.
+            time, shared_time = time.reshape(1), True
         t = self.time_embed(time)
 
         if c_mask is None:
@@ -604,7 +694,7 @@ class AuKDit(nn.Module):
 
             x = torch.cat((x_cond, x_uncond), dim=0)
             c = torch.cat((c_cond, c_uncond), dim=0)
-            t = torch.cat((t, t), dim=0)
+            t = t if shared_time else torch.cat((t, t), dim=0)
             audio_mask = (
                 torch.cat((a_mask_cond, a_mask_uncond), dim=0)
                 if a_mask_cond is not None and a_mask_uncond is not None
@@ -629,14 +719,28 @@ class AuKDit(nn.Module):
         )
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
 
-        joint_bias = single_bias = single_mask = None
-        if audio_mask is not None:
+        if packed_layout is not None:
+            x = gather_rows(x, packed_layout.audio_indices)
+            c = gather_rows(c, packed_layout.text_indices)
+            rope_audio = gather_rope(
+                rope_audio, packed_layout.audio_indices, packed_layout.batch
+            )
+            rope_text = gather_rope(
+                rope_text, packed_layout.text_indices, packed_layout.batch
+            )
+            # Packed rows carry no padding, so there is nothing to mask.
+            audio_mask = c_mask = joint_bias = single_bias = single_mask = None
+        elif audio_mask is None:
+            joint_bias = single_bias = single_mask = None
+        else:
             single_mask = torch.cat([c_mask, audio_mask], dim=1)
             if self.attn_mask_enabled:
                 joint_bias = _attention_bias(
                     torch.cat([audio_mask, c_mask], dim=1), x.dtype
                 )
                 single_bias = _attention_bias(single_mask, x.dtype)
+            else:
+                joint_bias = single_bias = None
 
         for block in self.transformer_blocks:
             c, x = block(
@@ -648,16 +752,35 @@ class AuKDit(nn.Module):
                 c_rope=rope_text,
                 c_mask=c_mask,
                 bias=joint_bias,
+                packed_layout=packed_layout,
             )
 
-        x = torch.cat([c, x], dim=1)
         rope = (
             self.rotary_embed.forward_from_seq_len(text_len + seq_len)
             if joint_positions is None
             else self.rotary_embed(joint_positions)
         )
+        if packed_layout is None:
+            x = torch.cat([c, x], dim=1)
+        else:
+            x = torch.cat([c, x], dim=0).index_select(0, packed_layout.single_order)
+            rope = gather_rope(rope, packed_layout.joint_indices, packed_layout.batch)
         for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+            x = block(
+                x,
+                t,
+                mask=single_mask,
+                rope=rope,
+                bias=single_bias,
+                packed_layout=packed_layout,
+            )
 
-        x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))
+        if packed_layout is None:
+            x = x[:, text_len + prompt_len :]
+            return self.proj_out(self.norm_out(x, t))
+        else:
+            x = x.index_select(0, packed_layout.target_rows)
+            x = self.proj_out(
+                self.norm_out(x, t, token_batch=packed_layout.target_batch)
+            )
+            return packed_layout.unpack_target(x)
