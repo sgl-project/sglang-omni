@@ -7,6 +7,7 @@ from typing import Any
 
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
+from .serial_offload import get_coordinator
 from .sglang_request_builder import cfg_uncond_rid, is_cfg_uncond_rid
 
 
@@ -61,6 +62,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
 
     def _pair_admission_limit(self, queue: list, running_batch: Any) -> int:
         """How many leading queue entries the adder may see, always whole pairs."""
+        if not get_coordinator().ar_can_admit():
+            return 0
         allocatable = int(self.get_num_allocatable_reqs(len(running_batch.reqs)))
         limit = min(len(queue), max(0, allocatable))
         limit -= limit % 2
