@@ -318,23 +318,3 @@
 "control.collapsed" = "Collapsed";
 "settings.keepModelLoaded" = "Keep the speech model loaded";
 "settings.keepModelLoadedNote" = "Preload at launch and keep the model in memory between recordings for a faster start. Turn off to release it when idle; the next recording will load it again.";
-
-"menu.about" = "About OmniTyper";
-"menu.services" = "Services";
-"menu.hide" = "Hide OmniTyper";
-"menu.hideOthers" = "Hide Others";
-"menu.showAll" = "Show All";
-"menu.edit" = "Edit";
-"menu.undo" = "Undo";
-"menu.redo" = "Redo";
-"menu.cut" = "Cut";
-"menu.copy" = "Copy";
-"menu.paste" = "Paste";
-"menu.selectAll" = "Select All";
-"menu.window" = "Window";
-"menu.minimize" = "Minimize";
-"menu.zoom" = "Zoom";
-"menu.bringAllToFront" = "Bring All to Front";
-"menu.view" = "View";
-"menu.fullScreen" = "Enter Full Screen";
-"menu.close" = "Close";
