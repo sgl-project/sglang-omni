@@ -155,6 +155,57 @@ struct WorkerClientTests {
         }
         #expect(!client.isRunning)
 
+        let store = AppStore(directory: directory.appendingPathComponent("retention-library"))
+        store.preferences.pythonExecutable = python
+        let model = AppModel(store: store)
+        defer { model.shutdown() }
+        model.setKeepModelLoaded(true)
+        #expect(model.isPreloading && model.phase == .idle)
+        model.cancel()
+        #expect(model.isPreloading, "Dismissing the popup preserves an opted-in preload")
+        for _ in 0..<200 where model.isPreloading { try await Task.sleep(nanoseconds: 10_000_000) }
+        let warm = try await model.worker.request(["op": "echo"], python: python)
+        model.phase = .recording
+        model.cancel()
+        let stillWarm = try await model.worker.request(["op": "echo"], python: python)
+        #expect(warm["worker_pid"] as? Int == stillWarm["worker_pid"] as? Int)
+        model.setKeepModelLoaded(false)
+        #expect(!model.worker.isRunning)
+        model.setKeepModelLoaded(true)
+        model.setKeepModelLoaded(false)
+        await Task.yield()
+        #expect(!model.isPreloading && !model.worker.isRunning)
+        store.preferences.style = "verbatim"
+        store.preferences.keepAudio = true
+        let recording = directory.appendingPathComponent("retained.wav")
+        try Data([1, 2, 3]).write(to: recording)
+        store.add(HistoryEntry(mode: .dictate, appName: "Test editor", rawText: "Earlier text",
+                               text: "Earlier text", duration: 1), recording: recording)
+        model.prepareModels()
+        model.retry(try #require(store.history.first))
+        for _ in 0..<200 where model.isBusy { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(model.error.isEmpty && model.resultText == "你好 café")
+        #expect(!model.worker.isRunning, "Retention off releases the model after a retry waits for preload")
+        model.setKeepModelLoaded(true)
+        for _ in 0..<200 where model.isPreloading { try await Task.sleep(nanoseconds: 10_000_000) }
+        let processing = Task { try await model.worker.request(["op": "sleep"], python: python) }
+        model.phase = .processing
+        for _ in 0..<100 where model.worker.status != "waiting" { try await Task.sleep(nanoseconds: 10_000_000) }
+        model.cancel()
+        do {
+            _ = try await processing.value
+            Issue.record("Cancelling processing must stop its outstanding worker request")
+        } catch { #expect(error is CancellationError) }
+        for _ in 0..<200 where model.isPreloading { try await Task.sleep(nanoseconds: 10_000_000) }
+        #expect(model.worker.isRunning)
+        model.shutdown()
+        #expect(!model.worker.isRunning)
+        let relaunched = AppModel(store: store)
+        #expect(relaunched.isPreloading)
+        relaunched.shutdown()
+        await Task.yield()
+        #expect(!relaunched.worker.isRunning)
+
         let log = try #require(Diagnostics.fileURL)
         #expect(log.path.hasPrefix(FileManager.default.temporaryDirectory.path),
                 "a test run must not append to the real log")

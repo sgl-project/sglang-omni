@@ -12,7 +12,7 @@ struct OmniTyperApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var model: AppModel!
     private var window: NSWindow!
-    private var panel: NSPanel!
+    private var panel: RecordingPanel!
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,11 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         model = AppModel()
         let content = RootView(model: model, store: model.store)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 750),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "OmniTyper"
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = false
+        window.titlebarSeparatorStyle = .line
+        window.titleVisibility = .visible
+        window.isMovableByWindowBackground = false
         window.contentView = NSHostingView(rootView: content)
         window.minSize = NSSize(width: 920, height: 660)
         window.isReleasedWhenClosed = false
@@ -92,17 +94,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
     private func showPanel() {
+        let needsPlacement = panel == nil
         if panel == nil {
-            panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190),
+            panel = RecordingPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190),
                             styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
             panel.level = .floating; panel.isOpaque = false; panel.backgroundColor = .clear
             panel.hasShadow = true; panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.isMovableByWindowBackground = false; panel.delegate = self
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            panel.contentView = NSHostingView(rootView: VoicePanel(model: model, recorder: model.recorder, worker: model.worker))
+            panel.contentView = VoicePanelHostingView(rootView: VoicePanel(model: model, recorder: model.recorder, worker: model.worker))
         }
-        let pointer = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
-        if let visible = screen?.visibleFrame { panel.setFrameOrigin(NSPoint(x: visible.midX - 230, y: visible.minY + 28)) }
+        if needsPlacement || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(panel.frame) }) {
+            let pointer = NSEvent.mouseLocation
+            let screen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main
+            if let visible = screen?.visibleFrame {
+                panel.setFrameOrigin(NSPoint(x: visible.midX - panel.frame.width / 2, y: visible.minY + 28))
+            }
+        }
         panel.orderFrontRegardless()
     }
 
@@ -114,5 +123,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             try? png.write(to: URL(fileURLWithPath: path))
         }
         NSApp.terminate(nil)
+    }
+}
+
+final class VoicePanelHostingView: NSHostingView<VoicePanel> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var needsPanelToBecomeKey: Bool { false }
+}
+
+final class RecordingPanel: NSPanel {
+    let windowDrag = WindowDrag()
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func sendEvent(_ event: NSEvent) {
+        if !windowDrag.handle(event, in: self) { super.sendEvent(event) }
     }
 }

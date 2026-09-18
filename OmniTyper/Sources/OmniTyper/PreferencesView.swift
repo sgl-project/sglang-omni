@@ -20,8 +20,9 @@ struct PreferencesView: View {
                     HStack {
                         Text(L("settings.shortcut")); Spacer()
                         Button(capturing ? L("settings.pressCombo") : model.shortcutLabel) { captureShortcut() }
-                            .font(.system(.body, design: .monospaced))
+                            .font(.system(.body, design: .monospaced)).disabled(model.isBusy)
                         Button(L("action.reset")) { store.preferences.shortcutKeyCode = 49; store.preferences.shortcutModifiers = 786432 }
+                            .disabled(model.isBusy)
                     }
                     Toggle(L("settings.holdToTalk"), isOn: $store.preferences.holdToTalk)
                     Text(L("settings.holdNote")).font(.caption).foregroundStyle(.secondary)
@@ -57,12 +58,17 @@ struct PreferencesView: View {
                     Label(L("settings.localModel"), systemImage: "cpu").font(.headline)
                     Text("Qwen3-ASR · 0.6B · MLX 4-bit").font(.subheadline)
                     Text(L("settings.modelNote")).font(.caption).foregroundStyle(.secondary)
+                    Toggle(L("settings.keepModelLoaded"), isOn: Binding(
+                        get: { store.preferences.retainsSpeechModel }, set: { model.setKeepModelLoaded($0) }
+                    )).disabled(model.isBusy)
+                    Text(L("settings.keepModelLoadedNote")).font(.caption).foregroundStyle(.secondary)
                     HStack {
-                        Button(L("settings.prepareASR")) { model.prepareModels() }.buttonStyle(.borderedProminent).disabled(model.isBusy)
+                        Button(L("settings.prepareASR")) { model.prepareModels() }.buttonStyle(.borderedProminent).disabled(model.isBusy || model.isPreloading)
                         Button(L("settings.unloadASR")) { model.releaseModels() }.disabled(model.isBusy)
                     }
                     DisclosureGroup(L("settings.runtime")) {
                         TextField(L("settings.python"), text: $store.preferences.pythonExecutable).textFieldStyle(.roundedBorder).padding(.top, 8)
+                            .disabled(model.isBusy || model.isPreloading)
                         Text(L("settings.runtimeNote")).font(.caption).foregroundStyle(.secondary)
                     }
                     Text(L("settings.downloadNote")).font(.caption).foregroundStyle(.secondary)
@@ -87,7 +93,7 @@ struct PreferencesView: View {
                     }
                     SecureField(L("settings.apiKey"), text: $model.textAPIKey).textFieldStyle(.roundedBorder)
                     Text(L("settings.apiKeyNote")).font(.caption).foregroundStyle(.secondary)
-                    Button(L("settings.connect")) { model.loadTextModels() }.disabled(model.isBusy)
+                    Button(L("settings.connect")) { model.loadTextModels() }.disabled(model.isBusy || model.isPreloading)
                     DisclosureGroup(L("settings.requestOptions")) {
                         TextEditor(text: $store.preferences.textSettings.optionsJSON)
                             .font(.system(.caption, design: .monospaced)).frame(height: 90)
@@ -139,9 +145,11 @@ struct PreferencesView: View {
             login = SMAppService.mainApp.status == .enabled
         }
             .onDisappear { endCapture() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in endCapture() }
     }
     private func captureShortcut() {
         endCapture(); capturing = true
+        model.beginShortcutCapture()
         captureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             let modifierChange = event.type == .flagsChanged
             let outcome = modifierChange
@@ -160,5 +168,9 @@ struct PreferencesView: View {
             return modifierChange ? event : nil
         }
     }
-    private func endCapture() { if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }; captureMonitor = nil; capturing = false; capture = ShortcutCapture() }
+    private func endCapture() {
+        if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }
+        captureMonitor = nil; capturing = false; capture = ShortcutCapture()
+        model.endShortcutCapture()
+    }
 }

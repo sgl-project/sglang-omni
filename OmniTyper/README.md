@@ -54,6 +54,12 @@ On first launch:
 Clicking **Start speaking** in OmniTyper's main window produces a result you can
 copy. Use the global shortcut from the destination app for automatic insertion.
 
+Drag the main window by its native title bar and the recording popup by its
+header. The popup remembers its position while the app runs and keeps keyboard
+focus in the destination app. Settings toggles and disclosure rows also respond
+to clicks on their labels. Notifications stay visible above the page while
+scrolling through Settings.
+
 Closing the main window keeps OmniTyper in the menu bar. **Quit** exits the app
 and shuts down its model processes. To use **Open at login**, first place the app
 at a stable location, such as `~/Applications`. Keep the repository and Python
@@ -132,6 +138,12 @@ it as a successful result.
 OmniTyper starts or reuses the ASR service before recording. Wait for **Listening**
 before speaking. Preparing the model in Settings avoids the first-load delay.
 In hold-to-talk mode, releasing the shortcut during startup cancels that attempt.
+
+Enable **Settings → Local speech model → Keep the speech model loaded** to
+preload at launch and keep the service ready between recordings, including after
+cancellation. This is opt-in and uses memory while idle. Turning it off or
+choosing **Unload ASR** releases the service; quitting always stops it. A recording
+or history retry started during preload waits for the preparation already running.
 
 Audio is streamed to `/v1/realtime?intent=transcription`, with partial transcripts
 shown in the recording panel and main window. The current upstream defaults

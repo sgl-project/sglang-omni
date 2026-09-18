@@ -312,3 +312,9 @@
 "settings.interfaceLanguage" = "Interface language";
 "settings.followSystem" = "Follow system";
 "settings.interfaceLanguageNote" = "Applies immediately. macOS permission prompts follow your system language.";
+
+"panel.dragHint" = "Drag the top area to move the window.";
+"control.expanded" = "Expanded";
+"control.collapsed" = "Collapsed";
+"settings.keepModelLoaded" = "Keep the speech model loaded";
+"settings.keepModelLoadedNote" = "Preload at launch and keep the model in memory between recordings for a faster start. Turn off to release it when idle; the next recording will load it again.";

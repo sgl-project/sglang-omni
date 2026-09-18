@@ -4,6 +4,17 @@ import Foundation
 @testable import OmniTyper
 
 struct StoreTests {
+    @Test func speechModelRetentionIsOptInAndPersists() throws {
+        let data = try JSONEncoder().encode(Preferences())
+        let original = try JSONDecoder().decode(Preferences.self, from: data)
+        #expect(!original.retainsSpeechModel)
+        var preferences = original
+        preferences.retainsSpeechModel = true
+        let restored = try JSONDecoder().decode(Preferences.self, from: JSONEncoder().encode(preferences))
+        #expect(restored.retainsSpeechModel)
+        #expect(restored.holdToTalk == original.holdToTalk)
+    }
+
     @Test @MainActor func textAPIConfigurationKeepsOldLibrariesAndKeysPrivate() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
