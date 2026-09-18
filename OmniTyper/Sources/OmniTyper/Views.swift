@@ -315,10 +315,15 @@ struct VoicePanel: View {
                     }
                     Spacer(minLength: 0)
                 }.background(WindowDragArea()).help(L("panel.dragHint"))
-                if model.phase == .recording {
-                    Button { model.finish() } label: { Image(systemName: "stop.fill").foregroundStyle(accent) }.buttonStyle(IconButtonStyle()).accessibilityLabel(L("home.finish"))
+                HStack(spacing: 0) {
+                    if model.phase == .recording {
+                        Button { model.finish() } label: { Image(systemName: "stop.fill").foregroundStyle(accent) }.accessibilityLabel(L("home.finish"))
+                    }
+                    Button { model.cancel() } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.accessibilityLabel(L("panel.cancelRecording"))
                 }
-                Button { model.cancel() } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.buttonStyle(IconButtonStyle()).accessibilityLabel(L("panel.cancelRecording"))
+                .buttonStyle(IconButtonStyle())
+                // Note (Codex): Larger hit targets extend into the original panel inset.
+                .padding(.trailing, -8)
             }
             Divider()
             Text(model.liveText.isEmpty ? (model.phase == .starting ? L("panel.waitListening") : L("panel.placeholder")) : String(model.liveText.suffix(600)))

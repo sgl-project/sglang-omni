@@ -23,7 +23,7 @@ struct WindowDraggingTests {
                                             windowNumber: panel.windowNumber, context: nil, eventNumber: 0,
                                             clickCount: 1, pressure: 1))
         }
-        for point in [NSPoint(x: 380, y: 153), NSPoint(x: 426, y: 153), NSPoint(x: 230, y: 80)] {
+        for point in [NSPoint(x: 390, y: 153), NSPoint(x: 446, y: 153), NSPoint(x: 230, y: 80)] {
             let intercepted = panel.windowDrag.handle(try event(.leftMouseDown, at: point), in: panel)
             #expect(!intercepted, "Stop, Cancel, and transcript content must not drag the window")
         }
