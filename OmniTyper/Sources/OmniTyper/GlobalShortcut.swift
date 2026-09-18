@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -97,8 +96,7 @@ final class GlobalShortcut {
     }
 
     private func installTap() {
-        // Note (Codex): Background retries must not compete with the explicit permission prompt.
-        guard tap == nil, AXIsProcessTrusted() else { return }
+        guard tap == nil else { return }
         let mask = (CGEventMask(1) << CGEventType.keyDown.rawValue)
             | (CGEventMask(1) << CGEventType.keyUp.rawValue)
             | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)

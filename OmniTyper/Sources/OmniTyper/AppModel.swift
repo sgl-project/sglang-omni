@@ -142,10 +142,6 @@ final class AppModel: ObservableObject {
     }
 
     func requestMicrophone() {
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .denied {
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
-            return
-        }
         Task { _ = await AVCaptureDevice.requestAccess(for: .audio); refreshPermissions() }
     }
 
