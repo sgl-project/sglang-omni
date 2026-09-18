@@ -1,0 +1,20 @@
+# Two-H100 80GB Reasoner recipe; see docs/cookbook/cosmos3_super.md.
+config_cls: Cosmos3ReasonerPipelineConfig
+name: cosmos3-super-reasoner
+model_path: nvidia/Cosmos3-Super@fe77b66696d645f663b8f27e942b3b43e4629e23
+
+stages:
+  reasoner:
+    gpu: 0
+    runtime_gpu_ids: [0, 1]
+    tp_size: 1
+    factory:
+      max_concurrency: 8
+      server_args_overrides:
+        # TP=2 is the tested default on a 2-GPU node; raise with runtime_gpu_ids.
+        tp_size: 2
+        # Video understanding needs headroom: a full-frame VideoMME clip is
+        # ~12k tokens at native sampling, so 8192 rejects it. 32768 fits the
+        # videomme-ci-50 set with 0 failures on the 2-GPU node.
+        context_length: 32768
+        mem_fraction_static: 0.6
