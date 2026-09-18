@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Integration tests for thinker length validation and finish_reason propagation.
 
-Starts a BF16 thinker-TP=2 Qwen3-Omni server and verifies that:
+Starts the selected Omni CI server with a short context and verifies that:
 1. overlong prompts return HTTP 400 with SGLang-aligned wording;
 2. prompt + max_tokens overflow returns HTTP 400 with SGLang-aligned wording;
 3. decode hitting max_tokens returns HTTP 200 with finish_reason="length".
@@ -14,10 +14,10 @@ import sys
 import pytest
 import requests
 
+from tests.test_model.omni_ci_config import OmniCiModelPreset
 from tests.test_model.omni_router_utils import ManagedRouterHandle
 from tests.utils import disable_proxy
 
-MODEL_NAME = "qwen3-omni"
 REQUEST_TIMEOUT = 120
 
 pytestmark = pytest.mark.benchmark
@@ -35,12 +35,13 @@ def _post_chat(
 
 
 def test_overlong_prompt_returns_400(
-    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
 ) -> None:
     resp = _post_chat(
-        qwen3_omni_bf16_tp2_server.port,
+        omni_ci_server.port,
         {
-            "model": MODEL_NAME,
+            "model": omni_ci_model.name,
             "messages": [
                 {
                     "role": "user",
@@ -59,12 +60,13 @@ def test_overlong_prompt_returns_400(
 
 
 def test_total_token_overflow_returns_400(
-    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
 ) -> None:
     resp = _post_chat(
-        qwen3_omni_bf16_tp2_server.port,
+        omni_ci_server.port,
         {
-            "model": MODEL_NAME,
+            "model": omni_ci_model.name,
             "messages": [{"role": "user", "content": "hello"}],
             "max_tokens": 200,
             "stream": False,
@@ -80,12 +82,13 @@ def test_total_token_overflow_returns_400(
 
 
 def test_length_finish_reason_is_preserved(
-    qwen3_omni_bf16_tp2_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
 ) -> None:
     resp = _post_chat(
-        qwen3_omni_bf16_tp2_server.port,
+        omni_ci_server.port,
         {
-            "model": MODEL_NAME,
+            "model": omni_ci_model.name,
             "messages": [
                 {
                     "role": "user",
