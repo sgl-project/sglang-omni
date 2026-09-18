@@ -91,6 +91,9 @@ RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} s
     && grep -q "sgl-kernel-xpu.git@${SGL_KERNEL_XPU_REF}\"" pyproject.toml \
     && pip install --no-cache-dir . --extra-index-url ${TORCH_XPU_INDEX}
 
+# --no-deps avoids installing NVIDIA Triton over the XPU Triton stack.
+RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
+
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
 COPY . /workspace/sglang-omni

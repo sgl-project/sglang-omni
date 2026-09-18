@@ -35,6 +35,22 @@ struct StoreTests {
         #expect(AppStore(directory: root).preferences.textSettings.model == "my-ollama-model")
     }
 
+    /// A failed insertion happens in another app, so its notice lands in a window
+    /// the user is not looking at. History has to carry the reason instead.
+    @Test @MainActor func insertionFailuresAreRecordedOnTheSavedEntry() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AppStore(directory: root)
+        let entry = HistoryEntry(mode: .dictate, appName: "Claude", rawText: "hi", text: "Hi.", duration: 1)
+        _ = store.add(entry, recording: nil)
+        store.note("The focused field changed.", on: entry.id)
+        #expect(store.history.first?.warning == "The focused field changed.")
+        store.note("And again.", on: entry.id)
+        #expect(store.history.first?.warning == "The focused field changed. And again.")
+        store.note("ignored", on: UUID())
+        #expect(store.history.count == 1)
+    }
+
     @Test @MainActor func renamedAppMigratesLibraryAndRuntimeWithoutOverwritingNewData() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

@@ -9,7 +9,7 @@ struct OmniTyperApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var model: AppModel!
     private var window: NSWindow!
     private var panel: NSPanel!
@@ -46,20 +46,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func setupMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "OmniTyper")
-        statusItem.button?.toolTip = "OmniTyper — local voice input"
         let menu = NSMenu()
-        menu.addItem(withTitle: "Open OmniTyper", action: #selector(openWindow), keyEquivalent: "")
+        menu.delegate = self
+        statusItem.menu = menu
+        rebuildMenu()
+    }
+
+    /// Rebuilt on open so a language change reaches the menu bar without a restart.
+    func menuNeedsUpdate(_ menu: NSMenu) { rebuildMenu() }
+
+    private func rebuildMenu() {
+        guard let menu = statusItem.menu else { return }
+        statusItem.button?.toolTip = L("menu.tooltip")
+        menu.removeAllItems()
+        menu.addItem(withTitle: L("menu.open"), action: #selector(openWindow), keyEquivalent: "")
         menu.addItem(.separator())
         for mode in VoiceMode.allCases {
             let item = NSMenuItem(title: mode.title, action: #selector(startFromMenu(_:)), keyEquivalent: "")
-            item.representedObject = mode.rawValue; item.target = self; menu.addItem(item)
+            item.representedObject = mode.rawValue; menu.addItem(item)
         }
-        menu.addItem(withTitle: "Stop recording", action: #selector(stopRecording), keyEquivalent: "")
-        menu.addItem(withTitle: "Cancel", action: #selector(cancelRecording), keyEquivalent: "")
+        menu.addItem(withTitle: L("menu.stop"), action: #selector(stopRecording), keyEquivalent: "")
+        menu.addItem(withTitle: L("action.cancel"), action: #selector(cancelRecording), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit OmniTyper", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: L("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
-        statusItem.menu = menu
     }
 
     @objc func openWindow() {

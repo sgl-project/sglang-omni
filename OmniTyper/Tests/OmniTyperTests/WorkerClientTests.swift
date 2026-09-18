@@ -58,6 +58,7 @@ struct WorkerClientTests {
         }
         try #"""
         import json, os, sys, time
+        assert sys.dont_write_bytecode, "The worker must not modify the signed app bundle"
         serial = 0
         for line in sys.stdin:
             request = json.loads(line)
@@ -154,10 +155,12 @@ struct WorkerClientTests {
         }
         #expect(!client.isRunning)
 
-        let log = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/OmniTyper/worker.log")
+        let log = try #require(Diagnostics.fileURL)
+        #expect(log.path.hasPrefix(FileManager.default.temporaryDirectory.path),
+                "a test run must not append to the real log")
         let diagnostics = try String(contentsOf: log, encoding: .utf8)
         #expect(!diagnostics.contains("PRIVATE_TRANSCRIPT_DO_NOT_LOG"))
-        #expect(diagnostics.utf8.count <= 8_192)
+        #expect(diagnostics.utf8.count <= 128 * 1024)
+        #expect(diagnostics.contains("worker.stderr"), "the worker's own events belong in the same log")
     }
 }

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-import Foundation
 import Combine
+import Foundation
 
 enum VoiceMode: String, Codable, CaseIterable, Identifiable {
     case dictate, translate, edit, ask
     var id: String { rawValue }
     var title: String {
-        switch self { case .dictate: return "Dictate"; case .translate: return "Translate"
-        case .edit: return "Voice edit"; case .ask: return "Ask" }
+        switch self { case .dictate: return L("mode.dictate.title"); case .translate: return L("mode.translate.title")
+        case .edit: return L("mode.edit.title"); case .ask: return L("mode.ask.title") }
     }
     var icon: String {
         switch self { case .dictate: return "waveform"; case .translate: return "character.bubble"
@@ -15,10 +15,10 @@ enum VoiceMode: String, Codable, CaseIterable, Identifiable {
     }
     var detail: String {
         switch self {
-        case .dictate: return "Turn your thoughts into clear writing."
-        case .translate: return "Speak naturally. Write in another language."
-        case .edit: return "Select text, then describe your changes."
-        case .ask: return "Ask a question about your selected text or an idea."
+        case .dictate: return L("mode.dictate.detail")
+        case .translate: return L("mode.translate.detail")
+        case .edit: return L("mode.edit.detail")
+        case .ask: return L("mode.ask.detail")
         }
     }
 }
@@ -36,19 +36,19 @@ struct TextAPISettings: Codable, Equatable {
               let host = components.host, !host.isEmpty,
               components.user == nil, components.password == nil, components.query == nil, components.fragment == nil,
               components.port == nil || (1...65535).contains(components.port!) else {
-            throw AppError.message("Enter an HTTP(S) API base URL without credentials, query, or fragment, such as http://127.0.0.1:11434/v1.")
+            throw Failure("error.baseURL")
         }
         guard model.unicodeScalars.count <= 256, !model.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
               !requireModel || !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AppError.message("Choose a text model in Settings → Text API, or use verbatim dictation for ASR only.")
+            throw Failure("error.model")
         }
         guard apiKey.utf8.count <= 4096, apiKey.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else {
-            throw AppError.message("Enter an API key without spaces or control characters.")
+            throw Failure("error.apiKey")
         }
         guard let data = optionsJSON.data(using: .utf8), data.count <= 8192,
               let options = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(options.keys).isDisjoint(with: ["model", "messages", "stream"]) else {
-            throw AppError.message("Request options must be a JSON object under 8 KiB, without model, messages, or stream.")
+            throw Failure("error.options")
         }
         return ["text_api_url": url, "text_model": model, "text_api_key": apiKey, "text_api_options": options]
     }
@@ -57,7 +57,7 @@ struct TextAPISettings: Codable, Equatable {
 struct Preferences: Codable, Equatable {
     var pythonExecutable = ""
     var asrModel = "mlx-community/Qwen3-ASR-0.6B-4bit"
-    // Optional so libraries saved before API configuration continue to decode.
+    // Note (Codex): Optional fields preserve decoding of libraries saved before these settings existed.
     var textAPI: TextAPISettings?
     var textSettings: TextAPISettings {
         get { textAPI ?? TextAPISettings() }
@@ -65,7 +65,7 @@ struct Preferences: Codable, Equatable {
     }
     var language = ""
     var targetLanguage = "English"
-    var style = "clean"
+    var style = "verbatim"
     var instructions = ""
     var microphoneUID = ""
     var shortcutKeyCode: UInt16 = 49
@@ -77,15 +77,18 @@ struct Preferences: Codable, Equatable {
     var historyDays = 30 // 0 = forever
     var keepAudio = false
     var appearance = "system"
-    var onboardingComplete = false
+    // Note (Jiaxin Deng): nil follows the system language and keeps older libraries decodable.
+    var uiLanguage: String?
+    // Note (Jiaxin Deng): Remember prior grants to distinguish invalidated permissions from first use.
+    var accessibilityWasTrusted: Bool?
 
     static func combinedInstructions(_ defaults: String, _ app: String) throws -> String {
         guard [defaults, app].allSatisfy({ $0.unicodeScalars.count <= 1000 && !$0.contains("\0") }) else {
-            throw AppError.message("Shorten writing preferences to 1,000 characters per field and remove any NUL characters in Writing style.")
+            throw Failure("error.instructionsField")
         }
         let combined = [defaults, app].filter { !$0.isEmpty }.joined(separator: "\n")
         guard combined.unicodeScalars.count <= 2000 else {
-            throw AppError.message("Shorten the default or app writing preferences: together they must fit within 2,000 characters, including the separating newline.")
+            throw Failure("error.instructionsCombined")
         }
         return combined
     }
@@ -143,7 +146,12 @@ private struct SavedData: Codable {
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var preferences = Preferences() { didSet { if loaded { prune(); persist() } } }
+    @Published var preferences = Preferences() {
+        didSet {
+            L10n.use(preferences.uiLanguage)
+            if loaded { prune(); persist() }
+        }
+    }
     @Published var dictionary: [DictionaryEntry] = [] { didSet { persist() } }
     @Published var rules: [AppRule] = [] { didSet { persist() } }
     @Published var history: [HistoryEntry] = [] { didSet { persist() } }
@@ -159,7 +167,7 @@ final class AppStore: ObservableObject {
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OmniTyper", isDirectory: true)
         do {
-            // Move the previous app's library once; never replace an existing library.
+            // Note (Codex): Migration must not replace an existing OmniTyper library.
             let legacy = self.directory.deletingLastPathComponent().appendingPathComponent("OpenTypeless", isDirectory: true)
             if self.directory.lastPathComponent == "OmniTyper",
                !FileManager.default.fileExists(atPath: self.directory.path),
@@ -175,13 +183,14 @@ final class AppStore: ObservableObject {
                 rules = saved.rules; history = saved.history
             }
         } catch {
-            // Preserve unreadable user data. Never overwrite it with an empty library.
+            // Note (Codex): An unreadable library must never be overwritten with defaults.
             canSave = false
-            storageError = "Could not load or migrate your library. Existing data will not be overwritten. \(error.localizedDescription)"
+            storageError = L("error.libraryLoad", error.localizedDescription)
         }
+        L10n.use(preferences.uiLanguage)
         loaded = true
         if canSave {
-            // Repair a saved interpreter path after the project/data directory rename.
+            // Note (Codex): A renamed checkout can invalidate the saved interpreter path.
             let previous = preferences.pythonExecutable
             let relocated = previous.replacingOccurrences(of: "/openTypeless/", with: "/OmniTyper/")
                 .replacingOccurrences(of: "/OpenTypeless/", with: "/OmniTyper/")
@@ -201,7 +210,7 @@ final class AppStore: ObservableObject {
             try encoded.write(to: file, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             storageError = ""
-        } catch { storageError = "Could not save your library: \(error.localizedDescription)" }
+        } catch { storageError = L("error.librarySave", error.localizedDescription) }
     }
 
     @discardableResult
@@ -222,7 +231,7 @@ final class AppStore: ObservableObject {
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
                 saved.audioFile = name
             } catch {
-                retentionError = "Audio could not be retained. The original recording is available for Retry until the next recording or quit. \(error.localizedDescription)"
+                retentionError = L("error.audioRetain", error.localizedDescription)
                 saved.warning = [saved.warning, retentionError].compactMap { $0 }.joined(separator: "\n")
             }
         }
@@ -237,6 +246,13 @@ final class AppStore: ObservableObject {
         guard let name = entry.audioFile, name == "\(entry.id.uuidString).wav" else { return nil }
         let path = audioDirectory.appendingPathComponent(name)
         return FileManager.default.fileExists(atPath: path.path) ? path : nil
+    }
+
+    // Note (Jiaxin Deng): History preserves insertion failures that occur while the app window is hidden.
+    func note(_ warning: String, on id: UUID) {
+        guard canSave, let index = history.firstIndex(where: { $0.id == id }) else { return }
+        let existing = history[index].warning ?? ""
+        history[index].warning = existing.isEmpty ? warning : existing + " " + warning
     }
 
     func delete(_ ids: Set<UUID>) {
@@ -303,7 +319,7 @@ final class AppStore: ObservableObject {
 
 enum DictionaryCSV {
     static func parse(_ text: String) throws -> [[String]] {
-        guard text.utf8.count <= 1_000_000 else { throw AppError.message("Dictionary file is larger than 1 MB.") }
+        guard text.utf8.count <= 1_000_000 else { throw Failure("error.dictionaryTooLarge") }
         var rows: [[String]] = [], row: [String] = [], field = "", quoted = false, endedQuote = false
         let chars = Array(text.replacingOccurrences(of: "\r\n", with: "\n"))
         var index = 0
@@ -319,18 +335,28 @@ enum DictionaryCSV {
                 if ch == "\n" { rows.append(row); row = [] }
             } else if ch == "\"", field.isEmpty, !endedQuote { quoted = true }
             else {
-                guard !endedQuote, ch != "\"" else { throw AppError.message("Invalid CSV quoting.") }
+                guard !endedQuote, ch != "\"" else { throw Failure("error.csvQuoting") }
                 field.append(ch)
             }
             index += 1
         }
-        guard !quoted else { throw AppError.message("Unclosed quote in dictionary CSV.") }
+        guard !quoted else { throw Failure("error.csvUnclosed") }
         if !field.isEmpty || !row.isEmpty || endedQuote { row.append(field); rows.append(row) }
         return rows
     }
 }
 
-enum AppError: LocalizedError {
-    case message(String)
-    var errorDescription: String? { if case .message(let message) = self { return message }; return nil }
+/// Stable diagnostic code with a message resolved in the current interface language.
+struct Failure: LocalizedError {
+    let code: String
+    private let arguments: [String]
+
+    init(_ code: String, _ arguments: String...) {
+        self.code = code
+        self.arguments = arguments
+    }
+
+    var errorDescription: String? {
+        arguments.isEmpty ? L(code) : String(format: L10n.string(code), arguments: arguments)
+    }
 }

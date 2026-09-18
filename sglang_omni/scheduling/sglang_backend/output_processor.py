@@ -252,8 +252,6 @@ class SGLangOutputProcessor:
         reqs = batch_data.reqs
         num_requests = len(reqs)
 
-        if len(requests) == 1:
-            return tensor[0] if tensor.ndim >= 2 else tensor
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
 
@@ -263,5 +261,8 @@ class SGLangOutputProcessor:
             start = sum(lengths[:request_index])
             end = start + lengths[request_index]
             return tensor[start:end]
+
+        if len(requests) == 1:
+            return tensor[0] if tensor.ndim >= 2 else tensor
 
         return tensor

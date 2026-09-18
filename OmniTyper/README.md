@@ -1,155 +1,385 @@
 # OmniTyper
 
-**Local voice typing, powered by SGLang-Omni.** 面向 Apple Silicon Mac 的开源语音输入应用。原生 SwiftUI / AppKit 界面，使用 **SGLang-Omni 的原生 MLX Qwen3-ASR 服务**识别语音，通过可配置的 **OpenAI 兼容 API** 完成整理、翻译、语音编辑和问答，默认连接本机 Ollama。
+**Local voice typing, powered by SGLang-Omni.**
 
-使用本地 Ollama 模型时无需云端推理 API；也可自行配置其他兼容服务。独立项目，与 Typeless 无关联，不使用其商标素材或私有代码。
+OmniTyper is an open-source voice input app for Apple Silicon Macs, built with
+SwiftUI and AppKit. It uses SGLang-Omni's native MLX Qwen3-ASR service for speech
+recognition. An optional OpenAI-compatible text API provides cleanup, translation,
+voice editing, and answers to spoken questions.
 
-## 快速开始
+Verbatim dictation runs locally without a text model. For other modes, connect
+your own Ollama instance or another compatible service. OmniTyper is an independent
+project and is not affiliated with Typeless.
 
-需要 macOS 14+、Apple Silicon、Xcode Command Line Tools（Swift 6 工具链用于测试）、Homebrew。建议至少 16 GB 内存，并为 Python 运行环境及模型预留数 GB 磁盘空间。
+## Requirements
 
-在 `sglang-omni` 根目录执行：
+- macOS 14 or later on Apple Silicon.
+- Xcode Command Line Tools; a Swift 6 toolchain is required to run the tests.
+- Homebrew, installed before running setup.
+- At least 16 GB of memory is recommended, plus several GB of free disk space for
+  the Python environment and model weights.
+- Internet access for the initial dependency and model downloads.
+
+## Quick start
+
+Run these commands from the `sglang-omni` repository root:
 
 ```bash
 bash OmniTyper/scripts/setup.sh
 open OmniTyper/dist/OmniTyper.app
 ```
 
-安装脚本复用仓库根目录的 `install.sh`：创建 `OmniTyper/.venv`，安装 SGLang `v0.5.19` 的 Apple Silicon 依赖、当前 SGLang-Omni，以及 `ffmpeg@7`。不会安装 CUDA 包或替换系统 Python。Homebrew 和 Command Line Tools 需预先安装。
+The setup script reuses the repository's [installer](../install.sh). It creates
+`OmniTyper/.venv` with Python 3.12 and installs the Apple Silicon dependencies for
+SGLang `v0.5.19`, the current SGLang-Omni checkout, and `ffmpeg@7`. It does not
+install CUDA packages or replace system Python.
 
-首次打开：
+On first launch:
 
-1. 在首页允许 **Microphone** 和 **Accessibility**。macOS 的隐私授权必须由用户在系统界面授予，应用无法自行批准。
-2. 在 **Settings → Local speech model → Download & prepare ASR** 准备识别模型。首次需要访问 Hugging Face；缓存后可离线识别。
-3. 在 **Settings → Text API** 填写 API 地址和服务端模型名；默认地址为 `http://127.0.0.1:11434/v1`。点击 **Connect & load models** 读取模型列表，也可以直接输入自己创建的模型名。
-4. 在任意支持辅助功能的文本框放好光标，按 **Control + Option + Space**，等悬浮窗显示 **Listening** 后开始说话；录音时可看到实时转写，再按一次结束。结果写入原来的位置。
-5. **Esc** 取消。设置中可以录制自己的快捷键，或切换为按住说话、松开完成。
+1. Allow **Microphone** and **Accessibility** access from the home screen. macOS
+   requires these permissions to be granted through its system UI.
+2. Open **Settings → Local speech model → Download & prepare ASR**. The first run
+   downloads model weights from Hugging Face. Cached weights support offline ASR.
+3. Place the cursor in the destination input field. Press **Control + Option +
+   Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
+   Keep the input focused until the result is inserted.
+4. Press **Esc** to cancel. To use push-to-talk, enable **Hold shortcut to talk**
+   in Settings, hold the entire shortcut while speaking, and release it to
+   finish. You can also record a custom shortcut, including a single modifier
+   key such as **Fn**: press and release it on its own while recording.
+5. The default writing style is **verbatim**, which needs no text API. Configure
+   [a text model](#text-model-api) when you want cleanup, translation, editing, or
+   answers to questions.
 
-从主窗口直接点击 Start speaking 时，结果显示在应用内供复制。跨应用写入请在目标应用中使用全局快捷键。
+Clicking **Start speaking** in OmniTyper's main window produces a result you can
+copy. Use the global shortcut from the destination app for automatic insertion.
 
-应用关闭主窗口后保留菜单栏图标；菜单中的 Quit 会退出应用并关闭其模型进程。启动登录项需要先将构建出的应用放在固定位置，建议 `~/Applications`，再开启 **Open at login**。
+Closing the main window keeps OmniTyper in the menu bar. **Quit** exits the app
+and shuts down its model processes. To use **Open at login**, first place the app
+at a stable location, such as `~/Applications`. Keep the repository and Python
+environment available; this is a source build, not a self-contained installer.
 
-从旧名 OpenTypeless 升级时，请先退出旧应用。首次启动会将旧数据目录迁移到 `~/Library/Application Support/OmniTyper`，保留设置、词典、历史和音频；已有新目录时不会覆盖它。项目目录移动后，已失效的旧 Python 路径会在新路径可执行时自动更新。应用标识现为 `org.sglang.OmniTyper`，需要为 OmniTyper 重新授予麦克风、辅助功能权限，并按需重新开启登录项。
+## Features
 
-## Ollama 与 OmniTyper 的关系
-
-- **SGLang-Omni**：负责本机 ASR，接收麦克风音频并输出转写。
-- **Ollama / 兼容 API 服务**：负责文本模型的下载、加载、配置和推理。
-- **OmniTyper**：负责录音、上下文、提示词和文字写入，只向文本 API 发送转写、写作偏好及编辑/问答所需的选中文字。
-
-先启动你自己的 Ollama 服务，并用 `ollama list` 查看已安装的模型。把模型名称原样填入 Text API 的 **Model name**；自己用 Modelfile 创建的别名也可以使用。OmniTyper 不会安装、启动、停止 Ollama，也不会替你下载或锁定文本模型。服务端可以随时修改模型实现；更换名称时只需同步更新应用设置。
-
-API 使用 `GET <Base URL>/models` 和 `POST <Base URL>/chat/completions`。Base URL 应包含服务前缀（通常为 `/v1`），不要填写完整的 `/chat/completions` 路径。依据 [Ollama 官方 OpenAI 兼容接口说明](https://docs.ollama.com/api/openai-compatibility)。没有模型列表接口的服务可跳过连接按钮，直接填模型名。
-
-**Request options (JSON)** 默认 `{}`，请求只指定 `model`、`messages` 和 `stream: false`，不覆盖温度或采样默认值。需要时可传入 `{"temperature": 0.2, "max_tokens": 2048}` 等服务端支持的字段；上下文窗口、模型权重和 Modelfile 参数由 Ollama 管理。不同服务支持的字段不同，错误会显示在应用中。
-
-本机 Ollama 通常不需要 API Key。可选 Key 仅保存在应用内存，退出或更改地址即清除，不写入历史、设置文件或日志。远程服务应使用 HTTPS；调用不跟随重定向。API 地址决定文本发送位置，本地 Ollama 也可能代理云模型，因此是否离线取决于你的模型和服务配置。
-
-不需要润色时，在 **Writing style** 选择 **verbatim**：普通 Dictate 仅使用 ASR，无需配置或运行文本 API。API 不可用时，普通听写保留未润色原文并提示；翻译、编辑和问答返回错误并保留原始转写供复制/重试，不把失败输出自动当作成功结果写入。
-
-## 已实现的使用流程
-
-| 功能 | 行为 |
+| Feature | Behavior |
 | --- | --- |
-| Dictate | 录音 → 本机 ASR → 去口头语、整理标点 → 原光标写入；支持逐字模式跳过文本 API |
-| Translate | 自动或指定语音语言，输出指定目标语言 |
-| Voice edit | 在目标应用选中文字，说明如何修改，替换原选择；不保存选中文本 |
-| Ask | 对选择的内容或一般问题提问；答案显示在应用中，不替换选择；不联网检索 |
-| 全局快捷键 | 自定义组合键、切换或按住录音、Esc 取消、非抢焦点浮动录音条 |
-| 输入设备 | 选择麦克风、实时音量、起止提示音、5 分钟录音上限 |
-| Dictionary | 识别词汇提示、指定拼写替换、CSV 导入导出、从历史纠错添加词条 |
-| Writing style | 全局及按应用设置 clean / verbatim / casual / formal / concise 风格和偏好 |
-| History | 搜索、模式过滤、原文对照、复制、纠错、导出、删除和保留期限 |
-| 音频保留 | 默认关闭；开启后可重试普通听写/翻译和导出 WAV；删除记录同步删除音频 |
-| 系统设置 | 隐私权限入口、开机启动、深色/浅色主题、模型预加载和卸载 |
+| Dictate | Local ASR with verbatim output by default; optional text cleanup before insertion. |
+| Translate | Transcribe speech and translate it into the configured target language through the text API. |
+| Voice edit | Select text in another app, speak an editing instruction, and replace the selection. The original selection is not stored in history. |
+| Ask | Ask about selected text or a general topic. The answer appears in OmniTyper without replacing the selection. No web search is performed. |
+| Shortcuts | Custom shortcuts, toggle or hold-to-talk recording, Esc to cancel, and a floating recording panel that does not take focus. |
+| Audio | Microphone selection, a live level meter, start/stop sounds, and a five-minute recording limit. |
+| Dictionary | Preferred spelling, literal replacements, CSV import/export, and entries created from history corrections. |
+| Writing style | Global and per-app preferences: `verbatim`, `clean`, `casual`, `formal`, and `concise`. |
+| History | Search, mode filters, original transcripts, copying, corrections, export, deletion, and retention settings. |
+| Audio retention | Off by default. When enabled, recordings support dictation/translation retries and WAV export. Deleting a history entry also deletes its audio. |
+| Appearance and language | Light/dark/system appearance and English/Simplified Chinese/system language. App language changes apply immediately; macOS permission dialogs follow the system language. |
 
-功能参照 [Typeless Quickstart](https://www.typeless.com/help/quickstart)、[语音编辑及问答](https://www.typeless.com/help/quickstart/ask-anything)、[历史与词典](https://www.typeless.com/help/quickstart/history-and-dictionary) 的公开交互，核对日期 2026-09-17。此版本不承诺相同的模型质量；不包含云同步、移动端键盘、跨应用被动学习、联网搜索与自动网页操作。纠错学习只发生在用户明确保存的词条上。
+OmniTyper does not include cloud sync, a mobile keyboard, passive learning across
+apps, web browsing, or automated website actions. Dictionary learning happens
+only when you explicitly save an entry. Model quality is not guaranteed to match
+other voice input products.
 
-## 模型与运行边界
+## Text model API
 
-上游基线为 `27a8293c2d1e91077a48e79926868d6dc039dd3d`。该版本已经包含 `sglang_omni/models/qwen3_asr/mlx/`、MLX scheduler/runner 及 Apple Silicon 安装支持，OmniTyper 直接复用它们，**没有重复实现 ASR 或引入 mlx-audio**。
+SGLang-Omni handles ASR. Your text API service handles text model downloads,
+configuration, loading, and inference. OmniTyper records audio, builds text
+requests, and inserts the result. It does not install, start, stop, or manage
+Ollama or its models.
+
+To connect Ollama:
+
+1. Start your Ollama service and use `ollama list` to find an installed model.
+2. In **Settings → Text API**, set the base URL to
+   `http://127.0.0.1:11434/v1`, the default value.
+3. Click **Connect & load models**, or enter the model name directly. Custom names
+   created with an Ollama Modelfile are supported.
+4. Choose a writing style other than `verbatim`, or use Translate, Voice edit, or
+   Ask to enable text processing.
+
+OmniTyper calls `GET <Base URL>/models` and `POST <Base URL>/chat/completions`.
+Include the service prefix, usually `/v1`, in the base URL; do not enter the full
+`/chat/completions` path. Services without a model-list endpoint can be used by
+entering a model name directly. See the
+[Ollama OpenAI compatibility documentation](https://docs.ollama.com/api/openai-compatibility)
+for the server-side API.
+
+**Request options (JSON)** defaults to `{}`. Requests specify `model`, `messages`,
+and `stream: false`, leaving sampling defaults to the server. You can add fields
+supported by your service, for example:
+
+```json
+{"temperature": 0.2, "max_tokens": 2048}
+```
+
+Model weights, context-window settings, and Modelfile parameters remain under your
+control in Ollama. If you rename the model, update its name in OmniTyper. Unsupported
+request options are reported as errors.
+
+Local Ollama usually needs no API key. An optional key is kept only in memory and
+cleared when the endpoint changes or the app exits. It is not written to settings,
+history, or logs. Use HTTPS for remote endpoints; requests do not follow redirects.
+A local endpoint can still route to a cloud model, so offline operation depends on
+your service configuration.
+
+If text cleanup fails during dictation, OmniTyper keeps the original transcript
+and shows a warning. Translation, editing, and question-answering failures keep
+the original transcript available for copying or retrying instead of inserting
+it as a successful result.
+
+## Live transcription
+
+OmniTyper starts or reuses the ASR service before recording. Wait for **Listening**
+before speaking. Preparing the model in Settings avoids the first-load delay.
+In hold-to-talk mode, releasing the shortcut during startup cancels that attempt.
+
+Audio is streamed to `/v1/realtime?intent=transcription`, with partial transcripts
+shown in the recording panel and main window. The current upstream defaults
+process approximately two seconds of new audio per partial update and segment
+long recordings at 30-second boundaries. Display latency also depends on inference
+time. Partial text can be revised; the client replaces revised segments rather
+than appending duplicates. Short recordings may produce only a final result.
+This uses periodic audio-window inference, not continuous token-by-token decoding.
+
+Only the final transcript is processed and inserted after recording stops. Live
+preview text is not inserted into the destination app. If streaming fails or
+falls behind, OmniTyper shows a warning and transcribes the complete WAV after
+recording ends.
+
+The realtime path does not currently pass dictionary hotwords to ASR. Dictionary
+replacements still apply to the final transcript; full-WAV transcription also
+passes supported hotword hints to the server.
+
+## Text insertion and clipboard behavior
+
+Enable **Insert text automatically at the original cursor** in Settings and start
+recording with the global shortcut from the destination input field.
+
+For accessible fields, OmniTyper checks that the app, field, contents, cursor, and
+selection still match the captured target before writing. Native fields may accept
+a direct Accessibility write; web-hosted fields use clipboard paste.
+
+Apps such as WeChat may not expose an accessible input field. In that case,
+OmniTyper checks the original foreground app and window, then sends **Command + V**.
+This fallback cannot detect cursor or conversation changes within the same window.
+Keep the intended input focused until processing finishes. Voice edit requires a
+readable selection and is unavailable when the app does not expose one.
+
+Clipboard paste temporarily replaces the clipboard, then restores its previous
+contents if no other copy has occurred. It does not permanently copy every result.
+Use **Copy** in the result or history view to keep text on the clipboard. Ask and
+retried recordings do not insert automatically.
+
+Password fields reported by Accessibility, and system secure-input mode, block
+recording and insertion. If target validation fails, the result remains available
+to copy. Some custom editors and remote desktops may not accept simulated paste.
+
+## Architecture
 
 ```text
 SwiftUI / AppKit
-  ├─ AVAudioEngine → 16 kHz 单声道 PCM16 → /v1/realtime WebSocket
-  │    └─ 悬浮窗实时转写 + 同步保存 WAV 供失败重试
-  ├─ 全局快捷键、Accessibility、条件恢复剪贴板
-  └─ 私有 stdin/stdout JSON-lines worker
-       ├─ 自主管理 SGLANG_USE_MLX=1 sgl-omni serve
-       │    └─ 原生 Qwen3-ASR MLX（实时 /v1/realtime，重试 /v1/audio/transcriptions）
-       └─ OpenAI 兼容 HTTP API → Ollama / 其他文本模型服务
-            └─ 文本整理 / 翻译 / 编辑 / 问答
+  ├─ AVAudioEngine → 16 kHz mono PCM16 → /v1/realtime WebSocket
+  │    └─ Live transcript preview + temporary WAV for recovery
+  ├─ Global shortcuts, Accessibility, conditional clipboard restoration
+  └─ Private stdin/stdout JSON-lines worker
+       ├─ Managed SGLANG_USE_MLX=1 sgl-omni serve
+       │    └─ Native Qwen3-ASR MLX
+       │         ├─ /v1/realtime
+       │         └─ /v1/audio/transcriptions for full-WAV recovery and retries
+       └─ OpenAI-compatible HTTP API → Ollama or another text model service
+            └─ Cleanup, translation, editing, and answers
 ```
 
-ASR 使用固定版本的 `mlx-community/Qwen3-ASR-0.6B-4bit`。文本模型完全由 API 服务管理，应用没有固定文本模型，也不在 worker 内加载 MLX-LM。录音期间通过原生 `/v1/realtime?intent=transcription` 持续发送音频，在悬浮窗和主窗口显示实时转写；停止录音后取得最终转写，再调用文本 API。ASR 保持加载，文本模型的生命周期由服务端决定。
+ASR uses a pinned revision of `mlx-community/Qwen3-ASR-0.6B-4bit`, configured in
+[backend/server.py](backend/server.py). It reuses SGLang-Omni's native
+[Qwen3-ASR MLX implementation](../sglang_omni/models/qwen3_asr/mlx/) and does not
+depend on `mlx-audio`. No text model is bundled or loaded through MLX-LM in the
+worker; the configured API service controls the text model's lifecycle.
 
+Code ownership:
 
-### 边说边看转写
+| File | Responsibility |
+| --- | --- |
+| `Sources/OmniTyper/AppModel.swift` | Recording sessions, cancellation, retries, and insertion orchestration |
+| `Sources/OmniTyper/AudioRecorder.swift` | Microphone capture, PCM conversion, and temporary WAV ownership |
+| `Sources/OmniTyper/GlobalShortcut.swift` | Keyboard event tap and held-key state |
+| `Sources/OmniTyper/TextInsertion.swift` | Accessibility, destination checks, and clipboard restoration |
+| `Sources/OmniTyper/ASRStream.swift` | Bounded WebSocket transport and transcript revisions |
+| `Sources/OmniTyper/WorkerClient.swift` | Worker process, JSON-lines framing, timeouts, and cancellation |
+| `Sources/OmniTyper/Store.swift` | Settings, history, dictionary, and retention |
+| `Sources/OmniTyper/Views.swift` | Main window, shared view components, and voice panel |
+| `Sources/OmniTyper/LibraryViews.swift` | History, dictionary, writing rules, and import/export |
+| `Sources/OmniTyper/PreferencesView.swift` | Settings and shortcut capture |
+| `backend/worker.py` | Private request validation and ASR/text-processing orchestration |
+| `backend/server.py` | Pinned model setup and ownership of the native ASR process group |
+| `backend/text_api.py` | Text prompts and bounded OpenAI-compatible HTTP requests |
 
-录音前会启动或复用 ASR，等悬浮窗显示 **Listening** 后再说话。首次加载较慢，可先在 Settings 点击 **Download & prepare ASR**；后续录音复用已加载服务。按住说话模式下，加载期间松开快捷键会取消本次启动。
+The ASR service stays loaded between recordings. Quitting, cancelling, or stopping
+the worker cleans up its service process group. Initial model preparation allows
+up to 30 minutes; ordinary worker requests allow up to 10 minutes. Text API
+connection and read timeouts are 10 and 180 seconds, respectively.
 
-上游目前默认每约 2 秒音频触发一次部分识别，实际显示还取决于推理耗时。部分结果可能修正前面的字词，客户端按片段替换，不重复追加。30 秒边界由上游自动分段；最终插入以服务端确认的完整转写为准。短于刷新间隔的录音可能直接得到最终结果。这是上游已有的周期性音频窗口识别，不是逐 token 的持续解码缓存。
+## Privacy and local data
 
-停止录音才会润色并插入文字，实时预览不会写入目标输入框。流式连接失败或发送积压时会提示，并在停止后通过完整 WAV 重新识别；录音与文本处理的失败重试仍可用。实时接口尚不接收词典热词提示，词典替换仍在最终转写后生效；完整 WAV 重试会使用上游支持的热词提示。
+Microphone audio is processed by the local ASR service. When a text API is used,
+OmniTyper sends the transcript, writing preferences, and selected text needed for
+Voice edit or Ask to that endpoint.
 
-worker 为应用私有进程，不对外暴露控制 API。原生 SGLang-Omni 服务绑定随机 `127.0.0.1` 端口，仅用于本机 ASR，不暴露到局域网；当前上游推理接口无身份验证，同机进程可以访问该服务。退出、取消和 worker 终止会清理所属服务进程组。首次准备模型最多等待 30 分钟，普通 worker 请求最多等待 10 分钟；文本 API 连接超时 10 秒、读取超时 180 秒，超时可以重试。
+Destination-field contents, window identity, and selection state are compared in
+memory to avoid inserting into a changed target. A field can expose an entire
+document; those validation snapshots are not saved or sent to models. Explicitly
+selected text used by Voice edit or Ask is the exception described above. The app
+does not capture screenshots, read browsing history, or collect analytics.
 
-选中文本仅在 Voice edit / Ask 所需的请求中发送到配置的文本 API。为防止写入错误位置，应用会在内存中比较目标字段的辅助功能内容、窗口和选择状态；某些编辑器的字段内容可能包含整篇文档，这些用于校验的完整字段内容不保存、不发送给模型；明确选中的编辑/问答上下文除外。不读取屏幕截图或浏览历史。辅助功能识别为密码框时拒绝录音；若无法识别目标、光标或选择发生变化，保留结果供手动复制。部分网页、自绘编辑器、远程桌面可能不暴露可靠的 Accessibility 信息，不能保证自动插入。
+The worker exposes no public control API. The ASR HTTP service binds to a random
+port on `127.0.0.1`, not the LAN. Its inference endpoints currently have no
+authentication, so other processes on the same machine can access them.
 
-历史和设置保存于：
+Settings and history are stored at:
 
 ```text
 ~/Library/Application Support/OmniTyper/library.json
 ~/Library/Application Support/OmniTyper/Audio/
 ```
 
-目录权限 `0700`，数据文件 `0600`，采用原子写入，不提供额外的磁盘加密。最多保留 1,000 条记录，支持 24 小时、7 天、30 天、1 年、永久；关闭历史会删除已有记录，关闭音频保留会删除已保留的音频。失败录音仅在当前会话暂存用于重试，退出时删除。崩溃或强制退出可能留下系统临时文件。模型下载缓存位于 Hugging Face 的标准缓存目录。应用不含分析埋点。
+Data directories use permissions `0700`, data files use `0600`, and writes are
+atomic. OmniTyper provides no additional disk encryption. History is limited to
+1,000 entries, with retention choices of 24 hours, 7 days, 30 days, one year, or
+forever. Disabling history deletes existing entries and recordings; disabling
+audio retention deletes saved audio.
 
-## 开发与构建
+Failed recordings can be retained temporarily for retries during the current
+session and are removed on normal exit. Crashes or forced termination can leave
+temporary files. Model weights use the standard Hugging Face cache.
+
+Diagnostics are available from Settings and stored at:
+
+```text
+~/Library/Logs/OmniTyper/diagnostics.log
+```
+
+The log records JSON events containing error codes, destination bundle IDs,
+insertion paths, permission status, and the app version. It excludes transcripts,
+selected text, field contents, window titles, and file paths. It is bounded to
+128 KiB, discarding older complete lines when necessary. Individual events larger
+than the log limit are omitted.
+
+## Development
+
+Run all commands from the repository root:
 
 ```bash
-# 已有 Python 运行环境，只编译应用
+# Build against an existing Python environment.
 OMNITYPER_PYTHON=/absolute/path/to/python bash OmniTyper/scripts/build.sh
 
-# 单元与集成测试（无需下载模型、无需麦克风权限）
+# Build a debug version.
+CONFIGURATION=debug bash OmniTyper/scripts/build.sh
+
+# Run unit and integration tests without model downloads or microphone access.
 bash OmniTyper/scripts/test.sh
 
-# 真实流式 ASR：合成语音按实时速度送入，验证录音结束前出现部分结果（不需要文本 API）
+# Check live ASR with synthesized speech streamed in real time; no text API needed.
 OmniTyper/.venv/bin/python OmniTyper/backend/smoke_stream.py
 
-# 真实 ASR + 文本 API：先运行服务，用它列出的模型名替换 my-model
+# Check real ASR and a running text API. Replace my-model with a server model name.
 OmniTyper/.venv/bin/python OmniTyper/backend/smoke.py --model my-model
 
-# 使用自己的 WAV 做真实识别测试
+# Use an existing WAV recording.
 OmniTyper/.venv/bin/python OmniTyper/backend/smoke.py --model my-model --audio /absolute/path/to/audio.wav
 
-# 自定义兼容服务；如需认证，可在本次命令环境中设置 OMNITYPER_API_KEY
+# Use another compatible endpoint; set OMNITYPER_API_KEY if it requires authentication.
 OmniTyper/.venv/bin/python OmniTyper/backend/smoke.py --base-url http://127.0.0.1:8080/v1 --model my-model
 ```
 
-开发模式可用 `CONFIGURATION=debug` 构建。应用 bundle 内携带 worker 源码，Info.plist 记录 Python 环境的绝对路径；当前构建是源码开发分发，不是携带全部 Python 和模型的独立安装包。迁移至另一台 Mac 时运行 setup，或者在设置里指定该机已安装的运行环境。不要移动或删除正在使用的仓库/虚拟环境。
+Automated tests cover audio conversion, streaming, worker lifecycle and request
+validation, shortcut state across repeated configuration, insertion-target
+validation, localization, byte-bounded JSON diagnostics, history, dictionary
+handling, and data migration. Real microphone behavior, physical
+shortcuts, permissions, and third-party input compatibility also require desktop
+acceptance testing.
 
-`build.sh` 默认使用 ad-hoc 签名供本地运行。公开分发需要设置 `CODE_SIGN_IDENTITY`，使用自己的 Developer ID 签名并完成 Apple notarization。这里没有上传或发布任何版本。
+Model smoke tests require cached or downloadable ASR weights and, where applicable,
+a running text API. Set `HF_HUB_OFFLINE=1` to prevent Hugging Face downloads when
+weights are cached. This does not prevent network access to the configured text API.
 
-测试覆盖改名时的数据和运行环境路径迁移、协议分帧、退出/取消、音频重采样和时长上限、CSV 格式、词典、历史保留、损坏数据保护、后端请求校验、静音和失败恢复。辅助功能权限、麦克风硬件以及各个第三方应用的插入兼容性需要在授权后的真实桌面上验收。
+The app bundle includes worker source files and records the Python executable's
+absolute path in `Info.plist`. It does not bundle Python or model weights. On
+another Mac, rerun setup or configure an existing compatible environment. Do not
+move or delete the repository or virtual environment while the app relies on it.
 
-### 本机验证记录
+Builds use ad-hoc signing by default. Set `CODE_SIGN_IDENTITY` to an appropriate
+code-signing identity for a stable designated requirement across rebuilds. Public
+distribution requires your own Developer ID signing and Apple notarization.
 
-2026-09-17，Apple M4 / 16 GB、Swift 6.4、Python 3.12.13：
+### Migrating from OpenTypeless
 
-- 15 项 Swift 测试及 16 项 Python 测试通过，覆盖实时片段修正、WebSocket 音频顺序与结束排空、断线/积压/取消、PCM 与 WAV 样本数一致、旧配置读取、API Key 不落盘、HTTP 参数透传及失败恢复。
-- 原生 MLX 流式检查在音频仍在发送时得到 6 次非空部分结果，首个在 2.573 秒，最终完整保留最后一句；这是该机器上一次合成语音测试结果，不代表所有录音的延迟。
-- 原生 ASR + 独立本地 MLX-LM HTTP 服务通过 6 项真实模型测试：语音识别、中英文整理、法语翻译、选区编辑和问答。Ollama 未安装在验证机器上，因此尚未完成 Ollama 本身的实机测试。
-- 真实麦克风、快捷键及第三方应用插入仍需系统授权后的桌面验收。
+Quit the old app before launching OmniTyper. The first launch migrates the old data
+directory to `~/Library/Application Support/OmniTyper`, preserving settings,
+dictionary entries, history, and recordings. An existing OmniTyper data directory
+is not overwritten. A stale Python path from a renamed project directory is
+updated when the replacement executable exists.
 
-缓存 ASR 权重、且文本服务使用本地缓存模型后，可为测试命令设置 `HF_HUB_OFFLINE=1`。该变量仅控制 Hugging Face 下载行为，不会禁止你配置的 API 访问网络。
+The bundle identifier is `org.sglang.OmniTyper`. Grant Microphone and Accessibility
+permissions to this app and re-enable its login item if needed.
 
-## 故障定位
+## Troubleshooting
 
-- **没有快捷键响应**：在系统设置允许 OmniTyper 的辅助功能访问，再重启应用；开发中重新签名可能需要移除旧授权后重新添加。
-- **麦克风不可用**：允许麦克风访问，确认设置中选定设备仍连接。系统默认设备会在下一次录音时读取。
-- **模型启动失败**：先运行 `scripts/setup.sh`；确认 Python 为 3.12、`ffmpeg@7` 可用，及 Hugging Face 可访问。代理环境需支持 HTTPX 的 SOCKS 依赖，setup 已包含。
-- **文本处理失败**：确认 Ollama / API 服务已启动，Base URL 包含正确的 `/v1` 前缀，模型名与服务端一致；远程服务检查 API Key 和 HTTPS。可清空自定义请求参数后重试。翻译/编辑失败不会自动写入原始识别结果，仍可复制原始转写。
-- **历史文件损坏**：应用会保留原文件并停止覆盖，显示具体路径。备份该文件后再手工修复或迁走它。
+### Shortcuts do not respond or text is not inserted
 
-许可证：[Apache-2.0](../LICENSE)。模型权重和上游依赖遵循各自许可证。
+Check Accessibility permission and the automatic-insertion setting. Start from the
+destination input field and keep it focused until processing finishes. Inspect
+`capture.failed` and `insert.failed` events in the diagnostic log. The
+`paste-window` path indicates the fallback for apps without accessible input
+fields. Switching apps or windows cancels automatic insertion.
+
+### Permissions stop working after an update
+
+With the default ad-hoc signature, macOS ties an Accessibility grant to the build's
+code hash. Rebuilding can invalidate the grant while System Settings still shows
+its switch enabled. Toggling the stale entry may not fix it.
+
+Quit OmniTyper, remove its entry from **System Settings → Privacy & Security →
+Accessibility**, or reset that app's grant:
+
+```bash
+tccutil reset Accessibility org.sglang.OmniTyper
+```
+
+Add the rebuilt app, enable access, and relaunch it. If microphone permission also
+stops working, grant it again under **Privacy & Security → Microphone**. Frequent
+local rebuilds can use a stable signing identity through `CODE_SIGN_IDENTITY`
+instead of ad-hoc signing.
+
+### Hold-to-talk closes before recording starts
+
+Keep the entire shortcut held, including its modifier keys, until you finish
+speaking. Releasing it while the model is loading cancels startup. Use **Download
+& prepare ASR** before recording to avoid waiting for the initial load. Use a
+current build containing the physical-key-state fix if the panel closes while
+all keys remain held.
+
+### Microphone or ASR is unavailable
+
+Allow microphone access and check that the selected input device is connected.
+The system-default device is resolved at the start of each recording. For model
+startup failures, rerun `OmniTyper/scripts/setup.sh` and check Python 3.12,
+`ffmpeg@7`, and Hugging Face connectivity. Setup includes HTTPX's SOCKS support for
+proxy environments.
+
+### Text processing fails
+
+Check that the configured service is running, the base URL has the correct `/v1`
+prefix, and the model name matches the server. For remote services, check the API
+key and HTTPS endpoint. Remove custom request options to rule out unsupported
+parameters. Failed translation or editing does not automatically insert the raw
+transcript; it remains available to copy.
+
+### The history file is corrupt
+
+OmniTyper preserves the original file and stops overwriting it. Back it up before
+repairing it or moving it aside, using the path reported by the app.
+
+## License
+
+[Apache-2.0](../LICENSE). Model weights and dependencies retain their respective
+licenses.

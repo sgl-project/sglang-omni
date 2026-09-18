@@ -5,16 +5,22 @@
 import base64
 import json
 import subprocess
+import sys
 import tempfile
 import time
 import wave
 from pathlib import Path
 
+# Note (Jiaxin Deng): PYTHONSAFEPATH omits the script directory needed for sibling imports.
+BACKEND_DIRECTORY = str(Path(__file__).resolve().parent)
+if BACKEND_DIRECTORY not in sys.path:
+    sys.path.insert(0, BACKEND_DIRECTORY)
+
 from server import NativeASRServer
 from websockets.sync.client import connect
 
 
-def main():
+def main() -> None:
     server = NativeASRServer()
     try:
         server.start(lambda message: print(message, flush=True))
@@ -28,10 +34,15 @@ def main():
                     "Samantha",
                     "-o",
                     str(source),
-                    "The quick brown fox jumps over the lazy dog. "
-                    "Please send the report tomorrow. We are testing live speech recognition. "
-                    "Words should appear on the screen while I am still speaking. "
-                    "The final transcript should include this last sentence.",
+                    " ".join(
+                        [
+                            "The quick brown fox jumps over the lazy dog.",
+                            "Please send the report tomorrow.",
+                            "We are testing live speech recognition.",
+                            "Words should appear on the screen while I am still speaking.",
+                            "The final transcript should include this last sentence.",
+                        ]
+                    ),
                 ],
                 check=True,
             )

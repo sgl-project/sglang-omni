@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
-// Native Qwen3-ASR sends replacement hypotheses, including revisions to earlier
-// words. Only transcription.completed is authoritative enough to insert.
+// Note (Codex): Segment hypotheses replace earlier words; only transcription.completed may be inserted.
 struct TranscriptionPreview {
     private var segments: [Int: String] = [:]
     private var finalized: Set<Int> = []
@@ -11,27 +10,27 @@ struct TranscriptionPreview {
 
     mutating func receive(_ event: [String: Any]) throws -> String? {
         if event["type"] as? String == "error" {
-            throw AppError.message("The local speech server reported a streaming error.")
+            throw Failure("asr.error.stream")
         }
         guard let type = event["type"] as? String,
               type == "transcription.segment" || type == "transcription.completed" else { return nil }
         guard let index = event["event_index"] as? Int, index >= 0,
               let value = event["text"] as? String,
               value.unicodeScalars.count <= 12_000, !value.contains("\0") else {
-            throw AppError.message("The speech server returned an invalid transcript.")
+            throw Failure("asr.error.transcript")
         }
         guard index > eventIndex else { return nil }
         eventIndex = index
         if type == "transcription.completed" { return value }
         guard let id = event["segment_id"] as? Int, (0..<300).contains(id),
               let isFinal = event["is_final"] as? Bool else {
-            throw AppError.message("The speech server returned an invalid segment.")
+            throw Failure("asr.error.segment")
         }
         guard !finalized.contains(id) else { return nil }
         segments[id] = value
         if isFinal { finalized.insert(id) }
         guard text.unicodeScalars.count <= 12_000 else {
-            throw AppError.message("Transcription is too long. Please use a shorter recording.")
+            throw Failure("asr.error.tooLong")
         }
         return nil
     }
@@ -54,7 +53,7 @@ final class ASRStream {
               let port = address.port, (1...65535).contains(port), address.user == nil,
               address.password == nil, address.path == "/v1/realtime",
               address.query == "intent=transcription", address.fragment == nil else {
-            throw AppError.message("The local speech server returned an invalid connection address.")
+            throw Failure("asr.error.address")
         }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
@@ -72,12 +71,12 @@ final class ASRStream {
         return { data in
             guard !data.isEmpty else { return }
             guard data.count <= 32_768, data.count.isMultiple(of: 2) else {
-                continuation.finish(throwing: AppError.message("Invalid streaming audio packet."))
+                continuation.finish(throwing: Failure("asr.error.packet"))
                 return
             }
             if case .dropped = continuation.yield(data) {
                 // ponytail: bounded queue; keep the WAV and retry batch ASR on a slow connection.
-                continuation.finish(throwing: AppError.message("The speech connection fell behind the microphone."))
+                continuation.finish(throwing: Failure("asr.error.behind"))
             }
         }
     }
@@ -94,7 +93,7 @@ final class ASRStream {
             while true {
                 let event = try await receive()
                 if event["type"] as? String == "error" {
-                    throw AppError.message("The speech server could not start streaming transcription.")
+                    throw Failure("asr.error.start")
                 }
                 if event["type"] as? String == "session.updated" { break }
             }
@@ -152,7 +151,7 @@ final class ASRStream {
     private func deadline(seconds: UInt64) -> Task<Void, Never> {
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            if !Task.isCancelled { self?.fail(AppError.message("Live transcription timed out.")) }
+            if !Task.isCancelled { self?.fail(Failure("asr.error.timeout")) }
         }
     }
 
@@ -166,10 +165,10 @@ final class ASRStream {
         switch try await socket.receive() {
         case .data(let bytes): data = bytes
         case .string(let string): data = Data(string.utf8)
-        @unknown default: throw AppError.message("Unsupported speech server response.")
+        @unknown default: throw Failure("asr.error.unsupported")
         }
         guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AppError.message("Invalid speech server response.")
+            throw Failure("asr.error.response")
         }
         return event
     }

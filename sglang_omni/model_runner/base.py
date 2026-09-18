@@ -838,9 +838,8 @@ class ModelRunner:
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        # Note: (Junnan Li) repetition/frequency/presence penalties are already
-        # in the SGLang sampler's state; a second pass here squares them.
         self._apply_codec_suppress_tokens(logits_output, requests)
+        self._process_sampling_logits(logits_output, requests)
         self._install_sampling_seeds(forward_batch, requests)
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
@@ -867,6 +866,9 @@ class ModelRunner:
                 requests,
             )
         return next_token_ids
+
+    def _process_sampling_logits(self, logits_output: Any, requests: list) -> None:
+        pass
 
     def _install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
         """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to

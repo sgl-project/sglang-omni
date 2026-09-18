@@ -13,7 +13,7 @@ Core features:
 - **Multi-Stage Pipeline**: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.
 - **Native SGLang Integration**: Leverages SGLang's RadixAttention, continuous batching, and CUDA Graph optimizations for the AR backbone.
 - **OpenAI-Compatible Server**: Drop-in ``/v1/audio/speech``, ``/v1/audio/transcriptions``, ``/v1/audio/translations``, and ``/v1/chat/completions`` endpoints with real-time streaming support.
-- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, Ming-Omni), and LLaDA2.0-Uni.
+- **Broad Model Support**: TTS (Higgs, Fish S2-Pro, Voxtral, Qwen3-TTS, MOSS-TTS / Local, Ming-Omni-TTS, dots.tts, ZONOS2), Music (MiniMax Music 3), ASR (Qwen3-ASR, Fun-ASR, ARK-ASR, Whisper, MOSS-Transcribe-Diarize), Omni (Qwen3-Omni, MiniCPM-o, Ming-Omni), and LLaDA2.0-Uni.
 
 Supported Models
 ----------------
@@ -73,6 +73,9 @@ Supported Models
    * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
      - Omni
      - Text, image, audio, video → text + audio
+   * - `openbmb/MiniCPM-o-4_5 <https://huggingface.co/openbmb/MiniCPM-o-4_5>`_
+     - Omni
+     - Text, image, audio, video → text + audio
    * - `inclusionAI/Ming-flash-omni-2.0 <https://huggingface.co/inclusionAI/Ming-flash-omni-2.0>`_
      - Omni
      - Streaming TTS
@@ -111,6 +114,7 @@ Supported Models
    cookbook/moss_transcribe_diarize.md
    cookbook/whisper_asr.md
    cookbook/qwen3_omni.md
+   cookbook/minicpm_o.md
    cookbook/ming_omni.md
    cookbook/nemotron_voicechat.md
    cookbook/llada2_uni.md

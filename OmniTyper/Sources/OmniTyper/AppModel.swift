@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import AppKit
 import AVFoundation
+import AppKit
 import Combine
 import SwiftUI
 
@@ -26,6 +26,8 @@ final class AppModel: ObservableObject {
     private var sessionAPIKey = ""
     @Published var microphoneAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @Published var accessibilityAllowed = false
+    // Note (Jiaxin Deng): Ad-hoc rebuilds can invalidate a grant still shown as enabled in System Settings.
+    @Published private(set) var accessibilityGrantStale = false
     var showMainWindow: (() -> Void)?
     var showVoicePanel: (() -> Void)?
     var hideVoicePanel: (() -> Void)?
@@ -59,10 +61,18 @@ final class AppModel: ObservableObject {
                 self?.textAPIKey = ""
                 self?.textModels = []
             }
-            // Published emits before storage changes; use the supplied value for shortcut settings.
-            Task { @MainActor in self?.configureShortcut(preferences) }
+            // Note (Codex): Published emits before storage changes; use its value without queuing work past shutdown.
+            self?.configureShortcut(preferences)
         }
         configureShortcut(store.preferences)
+        Diagnostics.record("app.start", [
+            "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+            "language": store.preferences.uiLanguage ?? "system",
+            "style": store.preferences.style,
+            // Note (Jiaxin Deng): Do not log the endpoint; it can identify a private host.
+            "textAPI": String(!store.preferences.textSettings.model.isEmpty),
+        ])
+        TextInsertion.enableAccessibilityInHostedApps()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -81,7 +91,9 @@ final class AppModel: ObservableObject {
         if p.shortcutModifiers & CGEventFlags.maskAlternate.rawValue != 0 { label += "⌥" }
         if p.shortcutModifiers & CGEventFlags.maskShift.rawValue != 0 { label += "⇧" }
         if p.shortcutModifiers & CGEventFlags.maskCommand.rawValue != 0 { label += "⌘" }
-        return label + ([UInt16(49): "Space", 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9"][p.shortcutKeyCode] ?? "Key \(p.shortcutKeyCode)")
+        let names: [UInt16: String] = [49: L("shortcut.space"), 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9",
+                                       54: "⌘", 55: "⌘", 56: "⇧", 60: "⇧", 58: "⌥", 61: "⌥", 59: "⌃", 62: "⌃"]
+        return label + (names[p.shortcutKeyCode] ?? L("shortcut.key", String(p.shortcutKeyCode)))
     }
 
     private func configureShortcut(_ preferences: Preferences) {
@@ -97,9 +109,22 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         let previous = accessibilityAllowed
-        accessibilityAllowed = TextInsertion.isTrusted
-        microphoneAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        if accessibilityAllowed && !previous { configureShortcut(store.preferences) }
+        let trusted = TextInsertion.isTrusted
+        let microphone = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        // Note (Jiaxin Deng): Unchanged Published assignments still redraw views on every permission poll.
+        if accessibilityAllowed != trusted || microphoneAllowed != microphone {
+            Diagnostics.record("permission", ["accessibility": String(trusted), "microphone": String(microphone)])
+        }
+        if accessibilityAllowed != trusted { accessibilityAllowed = trusted }
+        if microphoneAllowed != microphone { microphoneAllowed = microphone }
+        if trusted {
+            if store.preferences.accessibilityWasTrusted != true { store.preferences.accessibilityWasTrusted = true }
+            if accessibilityGrantStale { accessibilityGrantStale = false }
+        } else {
+            let stale = store.preferences.accessibilityWasTrusted == true
+            if accessibilityGrantStale != stale { accessibilityGrantStale = stale }
+        }
+        if trusted && !previous { configureShortcut(store.preferences) }
     }
 
     func requestMicrophone() {
@@ -116,22 +141,25 @@ final class AppModel: ObservableObject {
     }
 
     private func start() {
-        error = ""; notice = ""; target = nil; liveText = ""; liveStatus = "Loading speech model…"
+        error = ""; notice = ""; target = nil; liveText = ""; liveStatus = L("status.loadingModel")
         sessionPreferences = store.preferences
         sessionAPIKey = textAPIKey
         do {
             let captured = try TextInsertion.capture()
             if captured.bundleID != Bundle.main.bundleIdentifier { target = captured }
         } catch TextInsertionError.secureField {
-            error = "Password and secure fields cannot be used for voice typing."
+            error = L("sys.secureField")
             showMainWindow?()
             return
         } catch {
-            // Unsupported controls still allow a copyable transcript.
-            notice = "The current field is not accessible. Your result will be ready to copy."
+            // Note (Jiaxin Deng): Keep copy-only dictation available and distinguish missing permissions from opaque fields.
+            notice = accessibilityAllowed ? L("notice.fieldNotAccessible")
+                : accessibilityGrantStale ? L("home.permissions.axStale") : L("sys.axPermission")
+            Diagnostics.record("capture.failed", ["reason": Diagnostics.code(of: error),
+                                                  "accessibility": String(accessibilityAllowed)])
         }
         if mode == .edit && (target?.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
-            error = "Select the text you want to change in another app, then use the shortcut. Accessibility access is required."
+            error = L("error.editNeedsSelection")
             showMainWindow?()
             return
         }
@@ -152,15 +180,15 @@ final class AppModel: ObservableObject {
                         self.liveText = text
                     }, onFailure: { [weak self] in
                         guard let self, self.generation == token else { return }
-                        self.liveStatus = "Live preview unavailable · recording saved for transcription"
+                        self.liveStatus = L("status.livePreviewSaved")
                     })
                     speechStream = stream
                     try await stream.connect(language: sessionPreferences.language)
-                    liveStatus = "Listening · live words may change"
+                    liveStatus = L("status.listening")
                 } catch {
                     guard generation == token, !Task.isCancelled else { return }
                     speechStream?.cancel(); speechStream = nil
-                    liveStatus = "Live preview unavailable · transcription runs when you finish"
+                    liveStatus = L("status.livePreviewLater")
                 }
                 try await recorder.start(deviceUID: sessionPreferences.microphoneUID, onPCM: speechStream?.audioInput)
                 guard generation == token, !Task.isCancelled else { recorder.cancel(); return }
@@ -193,11 +221,11 @@ final class AppModel: ObservableObject {
         let rule = store.rules.first { $0.bundleID == target?.bundleID }
         let instructions = try Preferences.combinedInstructions(preferences.instructions, rule?.instructions ?? "")
         guard store.dictionary.count <= 200, store.dictionary.allSatisfy(\.isValid) else {
-            throw AppError.message("Fix or delete invalid Dictionary entries before recording. Each phrase must contain 1–120 characters without NUL, with at most 200 entries.")
+            throw Failure("error.dictionaryInvalid")
         }
         let selectedText = (mode == .edit || mode == .ask) ? (target?.selectedText ?? "") : ""
         guard selectedText.unicodeScalars.count <= 12_000, !selectedText.contains("\0") else {
-            throw AppError.message("Select at most 12,000 characters without NUL before using Voice edit or Ask.")
+            throw Failure("error.selectionTooLong")
         }
         var request: [String: Any] = [
             "op": audio == nil ? "process" : "transcribe",
@@ -230,7 +258,7 @@ final class AppModel: ObservableObject {
                 var payload = try request.get()
                 var streamingWarning = ""
                 if let stream = speechStream {
-                    liveStatus = "Finalizing transcript…"
+                    liveStatus = L("status.finalizing")
                     do {
                         let transcript = try await stream.finish()
                         payload["op"] = "process"
@@ -238,12 +266,12 @@ final class AppModel: ObservableObject {
                         payload["text"] = transcript
                     } catch {
                         guard generation == token, !Task.isCancelled else { throw CancellationError() }
-                        streamingWarning = "Live transcription was interrupted; recovered from the complete recording."
+                        streamingWarning = L("notice.streamRecovered")
                     }
                     stream.cancel(); speechStream = nil
                 }
                 try Task.checkCancellation()
-                liveStatus = payload["op"] as? String == "process" ? "Processing text…" : "Transcribing recording…"
+                liveStatus = payload["op"] as? String == "process" ? L("status.processingText") : L("status.transcribing")
                 let response = try await worker.request(payload, python: preferences.pythonExecutable)
                 guard generation == token, !Task.isCancelled else { try? FileManager.default.removeItem(at: audio); return }
                 let text = response["text"] as? String ?? ""
@@ -251,7 +279,7 @@ final class AppModel: ObservableObject {
                 let warning = [streamingWarning, response["warning"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
                 resultText = text; rawText = raw
                 if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    notice = "No speech detected. Try speaking closer to the microphone."
+                    notice = L("notice.noSpeech")
                     try? FileManager.default.removeItem(at: audio)
                 } else {
                     let entry = HistoryEntry(mode: requestMode, appName: lastApp, rawText: raw, text: text,
@@ -265,13 +293,16 @@ final class AppModel: ObservableObject {
                         do {
                             try await TextInsertion.insert(text, into: capturedTarget)
                             guard generation == token else { return }
-                            if notice.isEmpty { notice = "Inserted into \(capturedTarget.applicationName)." }
+                            if notice.isEmpty { notice = L("notice.inserted", capturedTarget.applicationName) }
                         } catch {
-                            notice = "Ready to copy. \(error.localizedDescription)"
+                            notice = L("notice.readyToCopy", error.localizedDescription)
+                            store.note(error.localizedDescription, on: entry.id)
+                            Diagnostics.record("insert.failed", ["destination": capturedTarget.bundleID,
+                                                                 "reason": Diagnostics.code(of: error)])
                             showMainWindow?()
                         }
                     } else {
-                        if notice.isEmpty { notice = requestMode == .ask ? "Your answer is ready." : "Your text is ready to copy." }
+                        if notice.isEmpty { notice = requestMode == .ask ? L("notice.answerReady") : L("notice.textReady") }
                         showMainWindow?()
                     }
                 }
@@ -284,9 +315,10 @@ final class AppModel: ObservableObject {
                 retryRecording = recording
                 target = nil; phase = .idle; hideVoicePanel?()
                 self.error = error.localizedDescription
+                Diagnostics.record("dictation.failed", ["reason": Diagnostics.code(of: error)])
                 if let raw = (error as? WorkerFailure)?.rawText, !raw.isEmpty {
                     rawText = raw; resultText = raw
-                    notice = "Text processing failed. The original transcript is ready to copy."
+                    notice = L("notice.textFailed")
                 }
                 showMainWindow?()
             }
@@ -306,7 +338,7 @@ final class AppModel: ObservableObject {
     func retry(_ entry: HistoryEntry) {
         guard phase == .idle, let audio = store.audioURL(for: entry) else { return }
         if entry.mode == .edit || entry.mode == .ask {
-            error = "Record a new request for this mode. Selected text is not retained in history."
+            error = L("error.retryNeedsRecording")
             return
         }
         do {
@@ -328,7 +360,7 @@ final class AppModel: ObservableObject {
             do {
                 _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
                 guard generation == token else { return }
-                notice = "Speech model ready. Text processing uses your configured API."
+                notice = L("notice.modelReady")
             } catch {
                 guard generation == token else { return }
                 self.error = error.localizedDescription
@@ -351,7 +383,7 @@ final class AppModel: ObservableObject {
                     let response = try await worker.request(request, python: python)
                     guard generation == token else { return }
                     textModels = response["models"] as? [String] ?? []
-                    notice = textModels.isEmpty ? "Connected, but no models were listed. Add a model in your server, or enter its name manually." : "Connected. Choose a model or enter a custom model name."
+                    notice = textModels.isEmpty ? L("notice.modelsEmpty") : L("notice.modelsListed")
                 } catch {
                     guard generation == token else { return }
                     self.error = error.localizedDescription
@@ -361,16 +393,17 @@ final class AppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
-    func releaseModels() { if phase == .idle { worker.stop(); notice = "Speech model unloaded. Your text API server is managed separately." } }
+    func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
 
     func cancel() {
         generation = UUID(); task?.cancel(); task = nil
         speechStream?.cancel(); speechStream = nil; liveText = ""; liveStatus = ""
         recorder.cancel(); worker.stop(); target = nil; phase = .idle; hideVoicePanel?()
-        notice = "Cancelled."
+        notice = L("notice.cancelled")
     }
 
     func shutdown() {
+        preferencesSubscription?.cancel(); preferencesSubscription = nil
         cancel(); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
         discardRetryRecording()
@@ -381,5 +414,5 @@ final class AppModel: ObservableObject {
         retryRecording = nil
     }
 
-    func copyResult() { TextInsertion.copy(resultText); notice = "Copied to clipboard." }
+    func copyResult() { TextInsertion.copy(resultText); notice = L("notice.copied") }
 }

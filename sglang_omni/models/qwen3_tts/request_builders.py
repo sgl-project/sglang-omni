@@ -1581,10 +1581,11 @@ def apply_sglang_qwen3_tts_result(
 
     if code_parts:
         device = code_parts[0].device
+        # note(ratish): the vocoder decodes these on this default stream.
         codes = torch.cat(
             [part.to(device=device, dtype=torch.long) for part in code_parts],
             dim=0,
-        ).cpu()
+        )
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
 

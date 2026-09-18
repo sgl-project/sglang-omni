@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audio", type=Path)
     parser.add_argument("--base-url", default="http://127.0.0.1:11434/v1")

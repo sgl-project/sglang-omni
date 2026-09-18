@@ -15,7 +15,11 @@ import time
 import urllib.error
 import urllib.request
 import wave
+from collections.abc import Callable, Sequence
 from pathlib import Path
+
+import numpy as np
+from numpy.typing import NDArray
 
 DEFAULT_MODEL = "mlx-community/Qwen3-ASR-0.6B-4bit"
 MODEL_REVISION = "313d850181767edf09f00a9c289becca70e58cd0"
@@ -42,6 +46,7 @@ def model_snapshot(model: str, revision: str) -> str:
         if all((Path(cached) / name).is_file() for name in required):
             return cached
     except LocalEntryNotFoundError:
+        # Note (Jiaxin Deng): Not cached yet, so fall through to the online download below.
         pass
     return snapshot_download(
         model,
@@ -51,13 +56,13 @@ def model_snapshot(model: str, revision: str) -> str:
 
 
 class NativeASRServer:
-    def __init__(self):
-        self.process = None
+    def __init__(self) -> None:
+        self.process: subprocess.Popen[bytes] | None = None
         self.url = ""
-        # Loopback audio must never pass through an inherited HTTP proxy.
+        # Note (Codex): Local audio must not leave loopback through inherited proxy settings.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self, progress):
+    def start(self, progress: Callable[[str], None]) -> None:
         if self.process is not None and self.process.poll() is None:
             return
         self.close()
@@ -125,6 +130,8 @@ class NativeASRServer:
                             progress("SGLang-Omni MLX speech server is ready.")
                             return
                 except (urllib.error.URLError, TimeoutError, OSError):
+                    # Note (Jiaxin Deng): Expected while the server boots, so keep polling
+                    # until the deadline passes or the process exits.
                     pass
                 if time.monotonic() >= next_progress:
                     progress("Waiting for the local speech model to finish loading…")
@@ -137,9 +144,13 @@ class NativeASRServer:
             self.close()
             raise
 
-    def transcribe(self, samples, rate: int, language: str, hotwords=()) -> str:
-        import numpy as np
-
+    def transcribe(
+        self,
+        samples: NDArray[np.float32],
+        rate: int,
+        language: str,
+        hotwords: Sequence[str] = (),
+    ) -> str:
         if self.process is None or self.process.poll() is not None:
             raise RuntimeError("The local speech server is not running.")
         audio = io.BytesIO()
@@ -155,7 +166,7 @@ class NativeASRServer:
         if language:
             fields["language"] = language
         if hotwords:
-            # Native ASR accepts vocabulary biasing; keep it short per the cookbook.
+            # Note (Codex): Keep vocabulary biasing within the native ASR prompt limit.
             fields["prompt"] = json.dumps(
                 list(hotwords)[:20], ensure_ascii=False
             ).replace("<", "\\u003c")
@@ -191,21 +202,24 @@ class NativeASRServer:
             raise RuntimeError("Local transcription returned an invalid response.")
         return result["text"].strip()
 
-    def close(self):
+    def close(self) -> None:
         process, self.process = self.process, None
         if process is None:
             return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
+            # Note (Jiaxin Deng): The group is already gone, and teardown has to stay idempotent.
             pass
         try:
             process.wait(timeout=1.5)
         except subprocess.TimeoutExpired:
+            # Note (Jiaxin Deng): Graceful exit did not finish in time, so fall through to SIGKILL.
             pass
-        # Also reap stage descendants if the launcher exited before its children.
+        # Note (Codex): Reap stage descendants even if the launcher exited first.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # Note (Jiaxin Deng): SIGTERM already reaped the group, so there is nothing to kill.
             pass
         process.wait(timeout=1)

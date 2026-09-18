@@ -172,20 +172,6 @@ def _normalize_qwen3_tts_model_type(raw: Any) -> str:
     return normalized
 
 
-def qwen3_tts_checkpoint_model_type(checkpoint_dir: str) -> str:
-    """Read ``tts_model_type`` from a resolved checkpoint.
-
-    The directory name is not a reliable signal: a Base checkpoint served from
-    a path like ``/srv/checkpoints/current`` carries no marker at all. The
-    config does, and it is the same value the request path validates against.
-    Returns ``"base"`` when the field is absent, matching that path's default.
-    """
-    if not (Path(checkpoint_dir) / "config.json").is_file():
-        return "base"
-    config = _load_qwen3_tts_checkpoint_config(checkpoint_dir)
-    return _normalize_qwen3_tts_model_type(config.get("tts_model_type"))
-
-
 def is_qwen3_tts_base_model(model_path: str) -> bool:
     qwen3_tts_parts = [
         part.replace("-", "_").casefold()

@@ -23,6 +23,7 @@ from sglang.srt.layers.quantization.unquant import (
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.runtime_context import get_exec, get_parallel
 from sglang.srt.utils import add_prefix
+from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
 
 from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
@@ -1119,27 +1120,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self._decode_prep_rids = rids
             return
 
-        device = self._sub_temperature_tensor.device
-        self._semantic_sampling_seed_tensor[:batch_size] = torch.tensor(
-            semantic_seeds,
-            device=device,
-            dtype=self._semantic_sampling_seed_tensor.dtype,
-        )
-        self._sub_temperature_tensor[:batch_size] = torch.tensor(
-            sub_temperatures, device=device, dtype=self._sub_temperature_tensor.dtype
-        )
-        self._sub_top_p_tensor[:batch_size] = torch.tensor(
-            sub_top_ps, device=device, dtype=self._sub_top_p_tensor.dtype
-        )
-        self._sub_top_k_tensor[:batch_size] = torch.tensor(
-            sub_top_ks, device=device, dtype=self._sub_top_k_tensor.dtype
-        )
-        self._sub_sampling_seed_tensor[:batch_size] = torch.tensor(
-            sub_seeds, device=device, dtype=self._sub_sampling_seed_tensor.dtype
-        )
-        self._sub_do_sample_tensor[:batch_size] = torch.tensor(
-            sub_do_samples, device=device, dtype=torch.bool
-        )
+        # note(ratish): a pageable source waits for the last step's predictor.
+        pin_memory = is_pin_memory_available(self._sub_temperature_tensor.device)
+        for buffer, values in (
+            (self._semantic_sampling_seed_tensor, semantic_seeds),
+            (self._sub_temperature_tensor, sub_temperatures),
+            (self._sub_top_p_tensor, sub_top_ps),
+            (self._sub_top_k_tensor, sub_top_ks),
+            (self._sub_sampling_seed_tensor, sub_seeds),
+            (self._sub_do_sample_tensor, sub_do_samples),
+        ):
+            buffer[:batch_size].copy_(
+                torch.tensor(values, dtype=buffer.dtype, pin_memory=pin_memory),
+                non_blocking=True,
+            )
         self._decode_prep_rids = rids
 
     @torch.no_grad()
