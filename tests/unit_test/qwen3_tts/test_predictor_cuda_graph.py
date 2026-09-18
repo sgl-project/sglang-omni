@@ -1906,6 +1906,49 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
             assert_matches_reference(replay_output)
 
 
+def predictor_replay_autograd_mode(device_type: str) -> dict[str, bool]:
+    graph = sglang_model_module._PredictorDecodeGraph(
+        1,
+        ("sampled", 8, True, False, False),
+        device=torch.device("cpu"),
+        hidden_size=4,
+        hidden_dtype=torch.float32,
+    )
+    graph.device = SimpleNamespace(type=device_type)
+    graph.device_module = SimpleNamespace(
+        device=lambda device: contextlib.nullcontext()
+    )
+    graph.result_codes = torch.zeros(1, 1, dtype=torch.long)
+    graph.summed_embeddings = torch.zeros(1, 1, 4)
+    seen: dict[str, bool] = {}
+
+    class FakeGraph:
+        def replay(self) -> None:
+            seen["inference"] = torch.is_inference_mode_enabled()
+            seen["grad"] = torch.is_grad_enabled()
+
+    graph.graph = FakeGraph()
+    graph.replay(
+        torch.zeros(1, 1, dtype=torch.long),
+        torch.zeros(1, 1, 4),
+        torch.zeros(1, dtype=torch.long),
+    )
+    return seen
+
+
+def test_predictor_replay_uses_inference_mode_on_musa():
+    """MUSA capture stores inference tensors; replay must enter the same mode."""
+    seen = predictor_replay_autograd_mode("musa")
+    assert seen["inference"] is True
+
+
+def test_predictor_replay_stays_on_no_grad_for_cuda():
+    """CUDA replay must keep the original no-grad path."""
+    seen = predictor_replay_autograd_mode("cuda")
+    assert seen["inference"] is False
+    assert seen["grad"] is False
+
+
 if __name__ == "__main__":
     import sys
 
