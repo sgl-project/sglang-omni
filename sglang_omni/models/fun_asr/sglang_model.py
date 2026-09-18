@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -544,7 +544,7 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> torch.Tensor:
         hidden_states = general_mm_embed_routine(
             input_ids=input_ids,

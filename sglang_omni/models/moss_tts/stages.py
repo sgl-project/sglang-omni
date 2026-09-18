@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -24,6 +24,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 )
 from sglang_omni.models.moss_tts.engine_builder import MossTtsEngineBuilder
 from sglang_omni.models.moss_tts.hf_loading import (
+    MossProcessorConfigSource,
     load_moss_processor_class,
     moss_transformers_processor_compat,
 )
@@ -42,6 +43,13 @@ from sglang_omni.scheduling.reference_encoder import (
 )
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import audio_fingerprint, load_audio
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.hf_loading import (
+        MossDelayReferences,
+        MossLoadedProcessor,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +85,9 @@ def _resolve_compute_dtype(
     )
 
 
-def _normalize_moss_processor_config(processor: Any) -> None:
+def _normalize_moss_processor_config(
+    processor: MossProcessorConfigSource | None,
+) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
         return
@@ -101,7 +111,7 @@ def _audio_tokenizer_model_path_from_processor_dict(
 
 def _load_moss_processor(
     model_path: str,
-) -> Any:
+) -> "MossLoadedProcessor[MossDelayReferences]":
     logger.info(f"Loading MOSS-TTS processor from {model_path} without codec")
     try:
         with moss_transformers_processor_compat():
@@ -136,7 +146,7 @@ def _load_moss_processor(
 
 
 def _resolve_audio_tokenizer_model_path(
-    processor: Any,
+    processor: MossProcessorConfigSource,
     codec_model_path: str | None,
 ) -> str:
     return str(
@@ -183,7 +193,9 @@ class _BatchedReferenceEncoder:
             self._queue.put(_MOSS_TTS_REFERENCE_ENCODE_STOP)
         self._thread.join(timeout=5.0)
 
-    def load(self, source: str | os.PathLike[str]) -> _LoadedReferenceWaveform:
+    def load(
+        self, source: str | bytes | os.PathLike[str] | os.PathLike[bytes]
+    ) -> _LoadedReferenceWaveform:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("MOSS-TTS reference encoder is closed")
@@ -302,7 +314,7 @@ class _BatchedReferenceEncoder:
 
 def _load_reference_waveform(
     audio_encoder: MossAudioEncoder,
-    source: str | os.PathLike[str],
+    source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
 ) -> _LoadedReferenceWaveform:
     """Load once through the shared resolver and key the exact codec input."""
 
@@ -354,7 +366,16 @@ class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWave
         )
         self.encoder_config_hash = hash_bytes(config.encode("utf-8"))
 
-    def normalize_input(self, raw_input: Any) -> _LoadedReferenceWaveform:
+    def normalize_input(
+        self,
+        raw_input: (
+            _LoadedReferenceWaveform
+            | str
+            | bytes
+            | os.PathLike[str]
+            | os.PathLike[bytes]
+        ),
+    ) -> _LoadedReferenceWaveform:
         if isinstance(raw_input, _LoadedReferenceWaveform):
             return raw_input
         # The service needs content identity before lookup; derive it only after
@@ -457,7 +478,8 @@ def create_preprocessing_executor(
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )
-    reference_encoder: Any = _BatchedReferenceEncoder(
+    reference_encoder: _BatchedReferenceEncoder | _MossTTSReferenceEncoder
+    reference_encoder = _BatchedReferenceEncoder(
         audio_encoder,
         n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
@@ -493,7 +515,7 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     server_args_overrides: dict[str, Any] | None = None,
-) -> Any:
+) -> "OmniScheduler":
     overrides = dict(server_args_overrides or {})
     # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so
     # the AR engine has to be told about it or it profiles against the whole GPU and the

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -24,16 +24,43 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 from .request_builders import accept_cosyvoice3_stream_token
 from .sglang_model import VOCAB_SIZE
 
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+    from queue import Queue
+
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+    from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import (
+        ARRequestData,
+        RequestOutput,
+        SchedulerOutput,
+        SchedulerRequest,
+    )
+
+    from .request_builders import CosyVoice3SGLangRequestData
+    from .sglang_model import FunCosyVoice3SGLangModel
+
 _COSYVOICE3_RAS_WINDOW_SIZE = 10
 
 
 class FunCosyVoice3ModelRunner(ModelRunner):
     """Runs Fun-CosyVoice3 AR steps and collects generated speech tokens."""
 
+    tp_worker: ModelWorker
+    model: FunCosyVoice3SGLangModel
+
     def __init__(
         self,
-        tp_worker: Any,
-        output_processor: Any,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
     ) -> None:
@@ -43,18 +70,18 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
         self._token_hop_len = hop
         self._ar_followup_flush_tokens = hop
-        self._outbox: Any | None = None
+        self._outbox: Queue[OutgoingMessage] | None = None
         self._vocoder_target = "vocoder"
         self._cosyvoice3_recent_tokens: dict[str, list[int]] = {}
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self._outbox = outbox
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> GenerationBatchResult | None:
         del schedule_batch
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
@@ -62,27 +89,27 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self._collect_tokens(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self._collect_tokens(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         """Sample the first speech token before collecting prefill output."""
         del forward_batch, schedule_batch, requests
@@ -90,15 +117,17 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def sample_before_post_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         """Sample each speech token before collecting decode output."""
         del forward_batch, schedule_batch, requests
         return True
 
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
+    def _apply_repetition_penalty(
+        self, logits_output: LogitsProcessorOutput, requests: list[SchedulerRequest]
+    ) -> None:
         """Leave repetition-penalty ownership to SGLang's forward snapshot.
 
         SGLangExecutionBridge copies SamplingBatchInfo with the
@@ -109,11 +138,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _sample_next_token_ids(
         self,
-        logits_output: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> Any:
+        logits_output: LogitsProcessorOutput,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor:
         if (
             logits_output.next_token_logits.device.type != "mps"
             or current_platform.is_float64_supported()
@@ -126,7 +155,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             )
         if len(requests) != 1:
             raise RuntimeError(
-                "Fun-CosyVoice3 Torch MPS currently requires " "max_running_requests=1"
+                "Fun-CosyVoice3 Torch MPS currently requires max_running_requests=1"
             )
 
         self._apply_repetition_penalty(logits_output, requests)
@@ -134,7 +163,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         self._install_sampling_seeds(forward_batch, requests)
         sampling_info = forward_batch.sampling_info
         installed_seeds = sampling_info.sampling_seed
-        rng_context = nullcontext()
+        rng_context: AbstractContextManager[None] = nullcontext()
         if installed_seeds is not None:
             # Note (yexiaodong): MPS cannot represent the sampler's float64
             # probabilities, so preserve filtering while sampling from a
@@ -193,10 +222,10 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _apply_ras_fallback(
         self,
-        logits_output: Any,
+        logits_output: LogitsProcessorOutput,
         next_token_ids: torch.Tensor,
-        sampling_info: Any,
-        requests: list,
+        sampling_info: SamplingBatchInfo,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         """Apply CosyVoice3's repetition-aware redraw on Torch/MPS.
 
@@ -260,7 +289,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             del recent[:-_COSYVOICE3_RAS_WINDOW_SIZE]
         return next_token_ids
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: ARRequestData | None
+    ) -> None:
         if req_data is not None:
             self._flush_code_chunks(request_id, req_data, force=True)
         recent_tokens = getattr(self, "_cosyvoice3_recent_tokens", None)
@@ -269,10 +300,10 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _collect_tokens(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         if result.next_token_ids is None:
             return
@@ -291,10 +322,10 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _queue_or_emit_code_chunk(
         self,
-        sched_req: Any,
+        sched_req: SchedulerRequest,
         token: torch.Tensor,
     ) -> None:
-        data = sched_req.data
+        data: CosyVoice3SGLangRequestData = sched_req.data
         if self._outbox is None or data.stream_metadata is None:
             return
         if not accept_cosyvoice3_stream_token(data, token):
@@ -314,7 +345,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     def _flush_code_chunks(
         self,
         request_id: str,
-        data: Any,
+        data: CosyVoice3SGLangRequestData,
         *,
         force: bool,
     ) -> None:
@@ -332,7 +363,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     def _emit_code_chunk(
         self,
         request_id: str,
-        data: Any,
+        data: CosyVoice3SGLangRequestData,
         codes: torch.Tensor,
     ) -> None:
         if self._outbox is None:
@@ -360,12 +391,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         pieces = []
         for sched_req in requests:
-            data = sched_req.data
+            data: CosyVoice3SGLangRequestData = sched_req.data
             req = data.req
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
@@ -382,7 +413,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def _forward_with_input_embeds(
         self,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         input_embeds: torch.Tensor,
     ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
@@ -420,8 +451,8 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
 
     def __init__(
         self,
-        tp_worker: Any,
-        output_processor: Any,
+        tp_worker: MlxTpModelWorker,
+        output_processor: SGLangOutputProcessor,
         *,
         token_hop_len: int = TOKEN_HOP_LEN,
     ) -> None:
@@ -431,15 +462,17 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
         self._token_hop_len = hop
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self._outbox = outbox
         self._vocoder_target = "vocoder"
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: ARRequestData | None
+    ) -> None:
         if req_data is not None:
             self._flush_code_chunks(request_id, req_data, force=True)
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         if len(batch.reqs) != 1 or batch.has_grammar:
             return False
         previous = self._last_mlx_pending
@@ -458,9 +491,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
-        outputs: dict[str, Any],
+        result: GenerationBatchResult,
+        scheduler_output: SchedulerOutput,
+        outputs: dict[str, RequestOutput],
     ) -> None:
         del outputs
         token_ids = result.next_token_ids
@@ -482,8 +515,10 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 sched_req.data.output_codes.append(token)
                 self._queue_or_emit_code_chunk(sched_req, token)
 
-    def _queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
-        data = sched_req.data
+    def _queue_or_emit_code_chunk(
+        self, sched_req: SchedulerRequest, token: torch.Tensor
+    ) -> None:
+        data: CosyVoice3SGLangRequestData = sched_req.data
         if getattr(self, "_outbox", None) is None or data.stream_metadata is None:
             return
         if not accept_cosyvoice3_stream_token(data, token):
@@ -498,7 +533,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         if data.stream_code_seen >= data.stream_code_next_flush:
             self._flush_code_chunks(sched_req.request_id, data, force=False)
 
-    def _flush_code_chunks(self, request_id: str, data: Any, *, force: bool) -> None:
+    def _flush_code_chunks(
+        self, request_id: str, data: CosyVoice3SGLangRequestData, *, force: bool
+    ) -> None:
         pending = data.stream_code_buffer
         if not pending:
             return
@@ -510,7 +547,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             )
         self._emit_code_chunk(request_id, data, payload)
 
-    def _emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
+    def _emit_code_chunk(
+        self, request_id: str, data: CosyVoice3SGLangRequestData, codes: torch.Tensor
+    ) -> None:
         outbox = getattr(self, "_outbox", None)
         if outbox is None or data.stream_metadata is None:
             return

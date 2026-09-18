@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
@@ -30,6 +30,9 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import MultimodalDataItem
 
 try:
     from flashinfer.norm import layernorm as flashinfer_layer_norm
@@ -440,7 +443,7 @@ class WhisperForConditionalGeneration(nn.Module):
                 )
         return self.model.encoder(audio_features)
 
-    def encode_audio_features(self, items: list[Any]) -> torch.Tensor:
+    def encode_audio_features(self, items: list["MultimodalDataItem"]) -> torch.Tensor:
         """Batch-encode mel features into encoder states [B, T, H]."""
         if not items:
             raise ValueError(
@@ -538,8 +541,8 @@ class WhisperForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> LogitsProcessorOutput:
         del kwargs
 
         cross_attention_states = self._batch_precomputed_encoder_states(forward_batch)

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Tuple, TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -29,6 +29,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTe
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
 from sglang.srt.utils import add_prefix
+from transformers import PretrainedConfig
 
 from sglang_omni.models.moss_tts.sampling_kernels import (
     MAX_FUSED_SAMPLE_VOCAB,
@@ -41,10 +42,15 @@ from sglang_omni.models.moss_tts_local.payload_types import (
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
+if TYPE_CHECKING:
+    from transformers import GPT2Config, Qwen3Config
+
 logger = logging.getLogger(__name__)
 
+ConfigInputT = TypeVar("ConfigInputT")
 
-def _as_qwen3_config(config: Any) -> Any:
+
+def _as_qwen3_config(config: ConfigInputT) -> Qwen3Config | ConfigInputT:
     from transformers import Qwen3Config
 
     if isinstance(config, Qwen3Config):
@@ -66,7 +72,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -158,7 +164,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return self._state_pool.row_for(rid)
 
     @staticmethod
-    def _cfg_get(config: Any, name: str, default: Any) -> Any:
+    def _cfg_get(config: "GPT2Config", name: str, default: int | float) -> Any:
         if isinstance(config, dict):
             value = config.get(name, default)
         else:
@@ -166,7 +172,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return default if value is None else value
 
     @staticmethod
-    def _normalize_config(config: Any) -> Any:
+    def _normalize_config(config: PretrainedConfig) -> PretrainedConfig:
         qwen3_config = getattr(config, "qwen3_config", None)
         if qwen3_config is None:
             qwen3_config = getattr(config, "language_config", None)
@@ -234,7 +240,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self._prepare_multi_modal_inputs(input_ids)
 
-    def _prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
+    def _prepare_multi_modal_inputs(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Sum text + per-codebook embeddings for ``[T, channels]`` rows.
 
         Pad codes (``audio_pad_code``) hit the zeroed extra row of each audio
@@ -496,7 +502,11 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self._frame_graphs: dict[
             int,
             tuple[
-                Any, dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor
+                torch.cuda.CUDAGraph,
+                dict[str, torch.Tensor],
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
             ],
         ] = {}
 
@@ -758,7 +768,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
 
-    def get_embed_and_head(self) -> tuple[list[Any], list[Any]]:
+    def get_embed_and_head(
+        self,
+    ) -> tuple[list[torch.Tensor | None], list[torch.Tensor]]:
         embed_weights = [
             getattr(layer, "weight", None) for layer in self.embedding_list
         ]

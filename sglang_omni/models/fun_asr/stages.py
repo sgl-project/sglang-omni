@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 # note(LauraGPT): Auto* loading depends on these local registrations.
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 
+if TYPE_CHECKING:
+    from sglang_omni.models.fun_asr.sglang_model import (
+        FunAsrNanoForConditionalGeneration,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
 logger = logging.getLogger(__name__)
 
 
 def _compile_fun_asr_audio_encoder(
-    model: Any, *, warmup_lfr_frames: int = 128, warmup_inference_mode: bool = True
+    model: "FunAsrNanoForConditionalGeneration",
+    *,
+    warmup_lfr_frames: int = 128,
+    warmup_inference_mode: bool = True,
 ) -> None:
     """Compile the SANM encoder and adaptor with a symbolic sequence length.
 
@@ -120,7 +129,7 @@ def create_sglang_fun_asr_executor(
     request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
-):
+) -> "OmniScheduler":
     if pre_lm_max_batch_size < 1:
         raise ValueError(
             f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
@@ -169,7 +178,7 @@ def create_sglang_fun_asr_executor(
     )
 
 
-def create_fun_asr_executor(*args, **kwargs):
+def create_fun_asr_executor(*args, **kwargs) -> "OmniScheduler":
     return create_sglang_fun_asr_executor(*args, **kwargs)
 
 

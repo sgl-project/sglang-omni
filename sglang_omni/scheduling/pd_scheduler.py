@@ -16,7 +16,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -83,7 +83,7 @@ class _PDKVLifecycle(OmniScheduler):
         result_data: dict[str, Any],
         *,
         keep_pause_on_failure: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AdminActionResult:
         def update_after_pd_drains(update_payload):
             self._drain_due_releases()
             if self._pd_holds_kv():

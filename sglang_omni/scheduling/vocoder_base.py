@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-import torch
+from typing import Generic, TypeVar
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import PipelineStateBase
@@ -12,21 +10,25 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 __all__ = ["BatchVocoderBase"]
 
+StateT = TypeVar("StateT", bound=PipelineStateBase)
+CodesT = TypeVar("CodesT")
+WaveformT = TypeVar("WaveformT")
 
-class BatchVocoderBase:
-    def prepare_item(self, payload: StagePayload) -> tuple[PipelineStateBase, Any]:
+
+class BatchVocoderBase(Generic[StateT, CodesT, WaveformT]):
+    def prepare_item(self, payload: StagePayload) -> tuple[StateT, CodesT]:
         raise NotImplementedError
 
     async def decode_batch(
-        self, items: list[tuple[PipelineStateBase, Any]]
-    ) -> list[tuple[torch.Tensor, int]]:
+        self, items: list[tuple[StateT, CodesT]]
+    ) -> list[tuple[WaveformT, int]]:
         raise NotImplementedError
 
     def store_result(
         self,
         payload: StagePayload,
-        state: PipelineStateBase,
-        wav: torch.Tensor,
+        state: StateT,
+        wav: WaveformT,
         sample_rate: int,
     ) -> StagePayload:
         raise NotImplementedError
@@ -48,7 +50,7 @@ class BatchVocoderBase:
     def build_scheduler(
         self, *, max_batch_size: int = 8, max_batch_wait_ms: int = 2
     ) -> SimpleScheduler:
-        async def _single(payload):
+        async def _single(payload: StagePayload) -> StagePayload:
             state, codes = self.prepare_item(payload)
             results = await self.decode_batch([(state, codes)])
             if len(results) != 1:

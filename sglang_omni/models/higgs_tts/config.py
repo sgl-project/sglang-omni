@@ -109,7 +109,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             }
         return {}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         stages = {stage.name: stage for stage in self.stages}
         preprocessing = stages["preprocessing"]

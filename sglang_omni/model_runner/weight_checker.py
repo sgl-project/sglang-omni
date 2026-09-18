@@ -6,10 +6,40 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from torch import Tensor
+    from torch.nn import Module
+
+    from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 
 logger = logging.getLogger(__name__)
+
+
+class SerializedTensorDigest(TypedDict):
+    name: str
+    shape: list[int]
+    dtype: str
+    sha256: str
+
+
+class RequiredWeightCheckResult(TypedDict):
+    action: str
+    tensor_count: int
+    checksums: dict[str, str]
+    tensor_metadata: dict[str, SerializedTensorDigest]
+    per_gpu_checksum: str
+    elapsed_s: float
+
+
+class WeightCheckResult(RequiredWeightCheckResult, total=False):
+    matched: bool
+    missing: list[str]
+    unexpected: list[str]
+    changed: list[str]
 
 
 @dataclass
@@ -19,7 +49,7 @@ class TensorDigest:
     dtype: str
     sha256: str
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SerializedTensorDigest:
         return {
             "name": self.name,
             "shape": list(self.shape),
@@ -31,11 +61,11 @@ class TensorDigest:
 class StrictWeightChecker:
     """Compute strict per-tensor and aggregate SHA256 digests."""
 
-    def __init__(self, model_runner: Any):
+    def __init__(self, model_runner: "SGLModelRunner") -> None:
         self._model_runner = model_runner
         self._snapshot: dict[str, TensorDigest] | None = None
 
-    def run(self, action: str) -> dict[str, Any]:
+    def run(self, action: str) -> WeightCheckResult:
         if action == "snapshot":
             return self.snapshot()
         if action == "reset_tensors":
@@ -49,18 +79,18 @@ class StrictWeightChecker:
             f"{action!r}; expected snapshot, reset_tensors, compare, or checksum"
         )
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self) -> WeightCheckResult:
         self._snapshot = self._digest_model()
         return self._summary(self._snapshot, action="snapshot")
 
-    def reset_tensors(self) -> dict[str, Any]:
+    def reset_tensors(self) -> WeightCheckResult:
         self._snapshot = self._digest_model()
         return self._summary(self._snapshot, action="reset_tensors")
 
-    def checksum(self) -> dict[str, Any]:
+    def checksum(self) -> WeightCheckResult:
         return self._summary(self._digest_model(), action="checksum")
 
-    def compare(self) -> dict[str, Any]:
+    def compare(self) -> WeightCheckResult:
         if self._snapshot is None:
             raise RuntimeError("weights_checker compare requires snapshot first")
         current = self._digest_model()
@@ -106,7 +136,7 @@ class StrictWeightChecker:
         return digests
 
     @staticmethod
-    def _iter_named_tensors(model: Any):
+    def _iter_named_tensors(model: "Module") -> Iterator[tuple[str, "Tensor"]]:
         seen: set[int] = set()
         named_parameters = getattr(model, "named_parameters", None)
         if callable(named_parameters):
@@ -131,7 +161,7 @@ class StrictWeightChecker:
         digests: dict[str, TensorDigest],
         *,
         action: str,
-    ) -> dict[str, Any]:
+    ) -> WeightCheckResult:
         started = time.time()
         tensor_sha = {name: digest.sha256 for name, digest in digests.items()}
         overall = _aggregate_checksum(tensor_sha)
@@ -147,7 +177,7 @@ class StrictWeightChecker:
         }
 
 
-def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
+def _digest_tensor(name: str, tensor: "Tensor") -> TensorDigest:
     detached = tensor.detach() if hasattr(tensor, "detach") else tensor
     contiguous = detached.contiguous() if hasattr(detached, "contiguous") else detached
     cpu = contiguous.cpu() if hasattr(contiguous, "cpu") else contiguous
@@ -161,7 +191,7 @@ def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
     return TensorDigest(name=name, shape=shape, dtype=dtype, sha256=h.hexdigest())
 
 
-def _tensor_bytes(tensor: Any) -> bytes:
+def _tensor_bytes(tensor: "Tensor") -> bytes:
     numpy = getattr(tensor, "numpy", None)
     if callable(numpy):
         try:

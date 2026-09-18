@@ -14,20 +14,27 @@ import time
 import traceback
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 import torch
-from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
 
-from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
+from sglang_omni.scheduling.pre_lm_encoder import (
+    PreLMEncoderService,
+    QueueEntry,
+    QueueSignal,
+)
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+if TYPE_CHECKING:
+    from sglang_omni.models.fun_asr.sglang_model import (
+        FunAsrNanoForConditionalGeneration,
+    )
 
 logger = logging.getLogger(__name__)
 
 _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
-_SHUTDOWN = object()
-
 _FRONTEND_CONFIG_FIELDS = (
     "feature_size",
     "sampling_rate",
@@ -46,10 +53,10 @@ class _DetachedFailure:
 
 
 def build_cache_namespace(
-    model: Any,
+    model: FunAsrNanoForConditionalGeneration,
     *,
     model_path: str,
-    feature_extractor: Any,
+    feature_extractor: object,
     mm_attention_backend: str | None,
 ) -> str:
     """Digest identifying this process's encoder pipeline for cache keying."""
@@ -73,20 +80,22 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _expected_audio_tokens(item: Any) -> int | None:
+def _expected_audio_tokens(item: object) -> int | None:
     """Audio placeholder token count for an item (rows the LM expects)."""
     num_tokens = getattr(item, "num_audio_tokens", None)
     return int(num_tokens) if num_tokens is not None else None
 
 
-class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
+class FunASRPreLMEncoderService(
+    PreLMEncoderService[MultimodalDataItem, torch.Tensor, torch.Tensor, torch.Tensor]
+):
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
 
     def __init__(
         self,
-        model: Any,
+        model: FunAsrNanoForConditionalGeneration,
         *,
         cache_namespace: str,
         cache_max_entries: int = _CACHE_MAX_ENTRIES,
@@ -134,12 +143,12 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if self._closed:
                 return
             self._closed = True
-            self._queue.put(_SHUTDOWN)
+            self._queue.put(QueueSignal.SHUTDOWN)
         self._thread.join(timeout=5)
 
     def _enqueue(
         self,
-        item: Any,
+        item: MultimodalDataItem,
         future: concurrent.futures.Future[torch.Tensor],
     ) -> None:
         with self._lifecycle_lock:
@@ -153,7 +162,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 )
             )
 
-    def encode_item(self, item: Any) -> None:
+    def encode_item(self, item: MultimodalDataItem) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
 
         On success ``item.feature`` is cleared to release the CPU fbank/LFR
@@ -229,8 +238,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             with self._lock:
                 self._failed += 1
             raise RuntimeError(
-                f"Fun-ASR pre-LM encode leader for {key} returned an invalid "
-                f"embedding"
+                f"Fun-ASR pre-LM encode leader for {key} returned an invalid embedding"
             )
         self.attach_embedding(item, embedding)
 
@@ -260,13 +268,13 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 "cache_evictions": self._cache.eviction_count,
             }
 
-    def _cache_key(self, item: Any) -> str | None:
+    def _cache_key(self, item: object) -> str | None:
         item_hash = getattr(item, "audio_fingerprint", None)
         if item_hash is None:
             return None
         return f"{self._namespace}:{item_hash}"
 
-    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def _is_valid(self, embedding: object, expected_tokens: int) -> bool:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -275,18 +283,20 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             and embedding.dtype == self._dtype
         )
 
-    def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+    def attach_embedding(
+        self, item: MultimodalDataItem, embedding: torch.Tensor
+    ) -> None:
         item.precomputed_embeddings = embedding.to(self._device, non_blocking=True)
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
     def _drain_batch(
         self,
-    ) -> tuple[list[QueueEntry[Any]], bool]:
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         first = self._queue.get()
-        if first is _SHUTDOWN:
+        if first is QueueSignal.SHUTDOWN:
             return [], True
-        batch = [cast(QueueEntry[Any], first)]
+        batch = [first]
         deadline = time.monotonic() + self._max_batch_wait_s
         shutdown = False
         while len(batch) < self._max_batch_size:
@@ -299,13 +309,15 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 )
             except queue.Empty:
                 break
-            if queued is _SHUTDOWN:
+            if queued is QueueSignal.SHUTDOWN:
                 shutdown = True
                 break
-            batch.append(cast(QueueEntry[Any], queued))
+            batch.append(queued)
         return batch, shutdown
 
-    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+    def _next_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         return self._drain_batch()
 
     @contextlib.contextmanager
@@ -317,12 +329,12 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 with torch.cuda.stream(self._stream):
                     yield
 
-    def encode_batch(self, items: list[Any]) -> torch.Tensor:
+    def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
         return self._model.get_audio_feature(items)
 
     def split_embeddings(
         self,
-        items: list[Any],
+        items: list[MultimodalDataItem],
         embedding: torch.Tensor,
     ) -> list[torch.Tensor]:
         token_counts = []
@@ -356,7 +368,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def cache_embedding(
         self,
-        item: Any,
+        item: object,
         embedding: torch.Tensor,
         host_copy: torch.Tensor | None = None,
     ) -> None:
@@ -411,7 +423,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def _handle_batch_failure(
         self,
-        batch: list[QueueEntry[Any]],
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
@@ -432,7 +444,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def _handle_item_failure(
         self,
-        _entry: QueueEntry[Any],
+        _entry: QueueEntry[MultimodalDataItem, torch.Tensor],
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
@@ -443,10 +455,14 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         self._recover_after_failure(failure.exception)
         return failure.exception
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def _retry_batch(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]], _exc: Exception
+    ) -> bool:
         return len(batch) > 1
 
-    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+    def _on_batch_start(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    ) -> None:
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -463,7 +479,7 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def _on_batch_finished(
         self,
-        batch: list[QueueEntry[Any]],
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         batch_exc: Exception | None,
         retry_recovered: int | None,
         elapsed_s: float,

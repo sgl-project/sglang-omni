@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.utils import load_hf_config
 
+if TYPE_CHECKING:
+    from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+        Qwen3OmniMoeThinkerConfig,
+    )
 
-def load_thinker_config(model_path: str) -> Any:
+
+def load_thinker_config(model_path: str) -> "Qwen3OmniMoeThinkerConfig":
     cfg = load_hf_config(model_path, trust_remote_code=True, local_files_only=True)
     return cfg.thinker_config
 

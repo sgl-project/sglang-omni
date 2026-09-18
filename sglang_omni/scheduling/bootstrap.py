@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.vendor.sglang.core import ServerArgs
 
 from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
@@ -44,7 +50,9 @@ def _describe_sglang_runtime_configuration(
     )
 
 
-def init_sglang_cuda_graphs(model_worker: Any) -> None:
+def init_sglang_cuda_graphs(
+    model_worker: "ModelWorker | MlxTpModelWorker",
+) -> None:
     """Initialize SGLang graphs with Omni's prefill-embedding capture view."""
     from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
@@ -80,7 +88,7 @@ def _hidden_capture_max_tokens() -> int:
     from sglang.srt.runtime_context import get_exec, get_model, get_schedule
 
     chunked_prefill_size = get_schedule().chunked_prefill_size
-    candidates: list[Any] = []
+    candidates: list[int | None] = []
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         candidates.append(chunked_prefill_size)
     else:
@@ -103,7 +111,7 @@ def _hidden_capture_max_tokens() -> int:
 
 
 def create_sglang_infrastructure(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int,
     *,
     tp_rank: int = 0,
@@ -114,7 +122,9 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
-    before_memory_pool: Callable[[Any], None] | None = None,
+    before_memory_pool: (
+        Callable[["ModelWorker | MlxTpModelWorker"], None] | None
+    ) = None,
     mlx_model_path: str | None = None,
     mlx_model_revision: str | None = None,
 ):
@@ -239,7 +249,7 @@ def create_sglang_infrastructure(
 # decoder/vocoder setup, and other host-side staging should stay outside CUDA
 # graph coverage because graph replay will not amortize it.
 def create_sglang_infrastructure_defer_cuda_graph(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int,
     **kwargs: Any,
 ):

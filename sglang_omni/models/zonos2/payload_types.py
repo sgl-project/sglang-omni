@@ -8,9 +8,12 @@ from the field wire metadata by :class:`DeclarativeStateBase`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
 
 ZONOS2_SAMPLE_RATE = 44100
 N_CODEBOOKS = 9
@@ -36,15 +39,17 @@ class Zonos2State(DeclarativeStateBase):
 
     # preprocessing output
     # (T, FRAME_WIDTH) rows: audio cols hold audio_pad_id, last col holds text/conditioning ids.
-    input_ids: Any | None = wire(None, codec="tensor_cpu")
+    input_ids: torch.Tensor | None = wire(None, codec="tensor_cpu")
     speaker_token_positions: list[int] = wire(default_factory=lambda: [0], codec="list")
 
     # speaker_encode output
-    speaker_emb: Any | None = wire(None, codec="tensor_cpu")  # (2048,) f32 CPU, or None
+    speaker_emb: torch.Tensor | None = wire(
+        None, codec="tensor_cpu"
+    )  # (2048,) f32 CPU, or None
     speaker_fingerprint: str | None = None  # stable hash for radix extra_key
 
     # tts_engine output
-    audio_codes: Any | None = wire(
+    audio_codes: torch.Tensor | None = wire(
         None, codec="tensor_cpu"
     )  # delayed (T, 9), pre-shear
     eos_frame: int | None = wire(None, codec="opt_int")

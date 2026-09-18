@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Typed references to data-plane buffers carried by control messages."""
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar
 
 import msgspec
+
+DataRefValueT = TypeVar("DataRefValueT")
 
 
 class TransportKind(str, Enum):
@@ -40,7 +44,7 @@ class TensorMeta(msgspec.Struct, frozen=True):
     offset: int
     size: int
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | list[int] | int]:
         return {
             "path": self.path,
             "shape": list(self.shape),
@@ -51,7 +55,7 @@ class TensorMeta(msgspec.Struct, frozen=True):
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "TensorMeta":
+    def from_dict(cls, value: dict[str, DataRefValueT]) -> "TensorMeta":
         return cls(
             path=_required(value, "path", str),
             shape=_int_tuple(value, "shape"),
@@ -69,7 +73,7 @@ class BackendRef(msgspec.Struct, frozen=True):
 
     @classmethod
     def from_relay_info(
-        cls, *, transport: TransportKind, relay_info: dict[str, Any]
+        cls, *, transport: TransportKind, relay_info: dict[str, DataRefValueT]
     ) -> "BackendRef":
         transfer_info = _required(relay_info, "transfer_info", dict)
         return cls(
@@ -86,7 +90,7 @@ class BackendRef(msgspec.Struct, frozen=True):
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "BackendRef":
+    def from_dict(cls, value: dict[str, DataRefValueT]) -> "BackendRef":
         return cls(
             transport=TransportKind(_required(value, "transport", str)),
             info=_required(value, "info", dict),
@@ -102,7 +106,7 @@ class MetadataTensorRef(msgspec.Struct, frozen=True):
         return {"path": self.path, "ref": self.ref.to_dict()}
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "MetadataTensorRef":
+    def from_dict(cls, value: dict[str, DataRefValueT]) -> "MetadataTensorRef":
         return cls(
             path=_required(value, "path", str),
             ref=DataRef.from_dict(_required(value, "ref", dict)),
@@ -156,7 +160,7 @@ class DataRef(msgspec.Struct, frozen=True):
         return value
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "DataRef":
+    def from_dict(cls, value: Mapping[str, object]) -> "DataRef":
         if _required(value, "_type", str) != "DataRef":
             raise ValueError("data_ref must have _type='DataRef'")
         version = _required(value, "version", int)
@@ -187,25 +191,29 @@ class DataRef(msgspec.Struct, frozen=True):
         )
 
 
-def _required(value: dict[str, Any], key: str, expected: type) -> Any:
+def _required(
+    value: Mapping[str, object], key: str, expected: type[DataRefValueT]
+) -> DataRefValueT:
     item = value[key]
     if type(item) is not expected:
         raise TypeError(f"{key} must be {expected.__name__}, got {type(item).__name__}")
     return item
 
 
-def _optional(value: dict[str, Any], key: str, expected: type) -> Any | None:
+def _optional(
+    value: Mapping[str, object], key: str, expected: type[DataRefValueT]
+) -> DataRefValueT | None:
     item = value.get(key)
     if item is None:
         return None
     if type(item) is not expected:
         raise TypeError(
-            f"{key} must be {expected.__name__} or None, " f"got {type(item).__name__}"
+            f"{key} must be {expected.__name__} or None, got {type(item).__name__}"
         )
     return item
 
 
-def _int_tuple(value: dict[str, Any], key: str) -> tuple[int, ...]:
+def _int_tuple(value: Mapping[str, object], key: str) -> tuple[int, ...]:
     items = _required(value, key, list)
     if not all(type(item) is int for item in items):
         raise TypeError(f"{key} must be list[int]")

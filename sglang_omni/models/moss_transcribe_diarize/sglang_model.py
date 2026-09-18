@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -203,7 +203,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
     def _get_audio_feature_uncached(
         self,
         items: List[MultimodalDataItem],
-        forward_batch: ForwardBatch,
+        forward_batch: ForwardBatch | None,
     ) -> torch.Tensor:
         merge_size = int(self.config.audio_merge_size)
         device = next(self.whisper_encoder.parameters()).device
@@ -305,7 +305,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> torch.Tensor:
         return general_mm_embed_routine(
             input_ids=input_ids,

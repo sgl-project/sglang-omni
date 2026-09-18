@@ -24,12 +24,26 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+    from sglang.srt.managers.overlap_utils import FutureMap
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
 
-def attn_forward_context(attn_backend: Any):
+    from sglang_omni.model_runner.model_worker import ModelWorker
+
+
+class SpeculativeAlgorithm(Protocol):
+    def is_none(self) -> object: ...
+
+
+def attn_forward_context(
+    attn_backend: "AttentionBackend",
+) -> contextlib.AbstractContextManager[None]:
     """Enter SGLang's ambient ForwardContext unless one is already active.
 
     Attention backends read the context that ModelRunner._forward_raw
@@ -55,9 +69,9 @@ class SGLangExecutionBridge:
         self,
         *,
         device: torch.device,
-        worker: Any,
-        spec_algorithm: Any,
-        future_map: Any,
+        worker: "ModelWorker | MlxTpModelWorker",
+        spec_algorithm: SpeculativeAlgorithm,
+        future_map: "FutureMap",
     ) -> None:
         from sglang.srt.managers.overlap_utils import RelayPayload
 
@@ -75,7 +89,7 @@ class SGLangExecutionBridge:
     @contextlib.contextmanager
     def forward_context(
         self,
-        batch: Any,
+        batch: "ScheduleBatch",
         *,
         isolate_sampling: bool = False,
     ) -> Iterator[None]:
@@ -95,7 +109,7 @@ class SGLangExecutionBridge:
 
     def publish_next_tokens(
         self,
-        batch: Any,
+        batch: "ScheduleBatch",
         next_token_ids: torch.Tensor | None,
     ) -> None:
         """Publish one forward's GPU token relay and retire live input_ids."""

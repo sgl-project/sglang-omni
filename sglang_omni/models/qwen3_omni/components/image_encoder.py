@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import types
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -15,6 +16,11 @@ from sglang_omni.models.qwen3_omni.components.vision_compat import (
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.utils import instantiate_module
+
+if TYPE_CHECKING:
+    from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+        Qwen3OmniMoeThinkerConfig,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +109,7 @@ def _unpack_visual_output(visual_out):
 def _build_visual(
     model_path: str,
     *,
-    thinker_cfg: object,
+    thinker_cfg: "Qwen3OmniMoeThinkerConfig",
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:

@@ -5,7 +5,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypedDict
+
+
+class TokenUsageDict(TypedDict):
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
+
+
+class UsageInfoDict(TokenUsageDict, total=False):
+    engine_time_s: float
 
 
 @dataclass
@@ -39,8 +49,8 @@ class UsageInfo:
             engine_time_s=data.get("engine_time_s"),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
+    def to_dict(self) -> UsageInfoDict:
+        d: UsageInfoDict = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -132,7 +142,7 @@ class GenerateChunk:
     token_ids: list[int] = field(default_factory=list)
     text: str = ""
     logprobs: list[float] | None = None
-    output_token_logprobs: list[Any] | None = None
+    output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, Any] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
@@ -204,7 +214,7 @@ class CompletionResult:
     audio: CompletionAudio | None = None
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
-    output_token_logprobs: list[Any] | None = None
+    output_token_logprobs: list[list[float | int]] | None = None
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
     language: str | None = None

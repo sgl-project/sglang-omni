@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -11,11 +11,25 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
+if TYPE_CHECKING:
+    from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2TextModel
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerRequest
+
 
 class MingThinkerModelRunner(ModelRunner):
     """Inject Ming image/audio embeddings into thinker prefill requests."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor | None
+    ) -> None:
         super().__init__(tp_worker, output_processor)
 
         self._outer_model = self.model
@@ -37,7 +51,9 @@ class MingThinkerModelRunner(ModelRunner):
         self._audio_token_id = self._token_id(hf_config, "audio_token_id")
 
     @staticmethod
-    def _get_embed_tokens(text_model: Any) -> Any:
+    def _get_embed_tokens(
+        text_model: "BailingMoeV2TextModel",
+    ) -> "VocabParallelEmbedding":
         embed_tokens = getattr(text_model, "embed_tokens", None)
         if embed_tokens is not None:
             return embed_tokens
@@ -49,15 +65,18 @@ class MingThinkerModelRunner(ModelRunner):
         return embed_tokens
 
     @staticmethod
-    def _token_id(config: Any, name: str, *, fallback: Any = None) -> int | None:
+    def _token_id(config: object, name: str, *, fallback: Any = None) -> int | None:
         value = getattr(config, name, None)
         if value is None:
             value = fallback
         return int(value) if value is not None else None
 
     def custom_prefill_forward(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
-    ):
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         """Custom prefill for multimodal inputs."""
         del requests
         if not schedule_batch.forward_mode.is_extend():
@@ -69,7 +88,7 @@ class MingThinkerModelRunner(ModelRunner):
         return self._forward_with_omni_embeds(forward_batch, input_embeds)
 
     def _inject_multimodal_embeds(
-        self, forward_batch: Any, schedule_batch: Any
+        self, forward_batch: ForwardBatch | None, schedule_batch: ScheduleBatch
     ) -> torch.Tensor | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None
@@ -160,18 +179,18 @@ class MingThinkerModelRunner(ModelRunner):
         return token_id
 
     @staticmethod
-    def _num_embed_rows(embeds: Any) -> int:
+    def _num_embed_rows(embeds: torch.Tensor) -> int:
         shape = getattr(embeds, "shape", None)
         if shape is not None and len(shape) > 0:
             return int(shape[0])
         return len(embeds)
 
     @staticmethod
-    def _request_id(req: Any) -> str:
+    def _request_id(req: object) -> str:
         return str(getattr(req, "rid", getattr(req, "request_id", "<unknown>")))
 
     def _validate_final_consumption(
-        self, req: Any, omni_inputs: dict[str, Any], consumed: dict[str, int]
+        self, req: object, omni_inputs: dict[str, Any], consumed: dict[str, int]
     ) -> None:
         req_id = self._request_id(req)
         for modality, embed_key in [
@@ -222,8 +241,8 @@ class MingThinkerModelRunner(ModelRunner):
         )
 
     def _forward_with_omni_embeds(
-        self, forward_batch: Any, input_embeds: torch.Tensor
-    ) -> Any:
+        self, forward_batch: ForwardBatch, input_embeds: torch.Tensor
+    ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
         outer = self._outer_model
 

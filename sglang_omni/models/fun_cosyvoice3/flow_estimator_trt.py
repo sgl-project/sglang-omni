@@ -7,9 +7,12 @@ import hashlib
 import logging
 import os
 import queue
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
+
+if TYPE_CHECKING:
+    from tensorrt import IBuilderConfig, ICudaEngine
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,24 @@ _DEFAULT_ONNX_CANDIDATES = (
     "flow.decoder.estimator.onnx",
     "flow.decoder.estimator.autocast_fp16.onnx",
 )
+
+
+class BuilderFlagNamespace(Protocol):
+    @property
+    def BuilderFlag(self) -> object: ...
+
+
+class ExecutableFlowEstimator(Protocol):
+    def execute(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+        /,
+    ) -> torch.Tensor: ...
 
 
 def _trt_logger():
@@ -83,7 +104,9 @@ def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
     }
 
 
-def _try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
+def _try_enable_fp16_tactics(
+    config: "IBuilderConfig", trt: BuilderFlagNamespace
+) -> bool:
     """Enable weak-typed FP16 tactics when TensorRT still exposes the flag.
 
     Note (chenyang):
@@ -125,8 +148,7 @@ def _require_cfg_pair_inputs(
         got = tuple(tensor.shape)
         if got != want:
             raise ValueError(
-                f"Flow-estimator TensorRT input {name} has shape {got}, "
-                f"expected {want}"
+                f"Flow-estimator TensorRT input {name} has shape {got}, expected {want}"
             )
     return shapes
 
@@ -209,7 +231,7 @@ def _canonicalize_device(device: str | torch.device) -> torch.device:
 class FlowEstimatorTRT:
     def __init__(
         self,
-        engine: Any,
+        engine: "ICudaEngine",
         device: str | torch.device,
         *,
         io_dtype: torch.dtype,
@@ -229,10 +251,10 @@ class FlowEstimatorTRT:
             stream = torch.cuda.Stream(device=self.device)
             self._pool.put([ctx, stream])
 
-    def acquire_estimator(self) -> tuple[list[Any], Any]:
+    def acquire_estimator(self) -> tuple[list[Any], "ICudaEngine"]:
         return self._pool.get(), self.trt_engine
 
-    def release_estimator(self, context: Any, stream: Any) -> None:
+    def release_estimator(self, context: object, stream: object) -> None:
         self._pool.put([context, stream])
 
     def execute(
@@ -301,7 +323,7 @@ def _enqueue_once(
 
 
 def _run_estimator(
-    estimator: Any,
+    estimator: FlowEstimatorTRT | ExecutableFlowEstimator,
     x: torch.Tensor,
     mask: torch.Tensor,
     mu: torch.Tensor,
@@ -431,7 +453,7 @@ class FlowEstimatorTRTModule(torch.nn.Module):
         return execute_flow_estimator(self.trt, x, mask, mu, t, spks, cond)
 
 
-def is_flow_estimator_trt(estimator: Any) -> bool:
+def is_flow_estimator_trt(estimator: object) -> bool:
     if isinstance(estimator, FlowEstimatorTRTModule):
         return True
     if isinstance(estimator, torch.nn.Module):

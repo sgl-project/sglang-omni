@@ -46,6 +46,7 @@ from sglang_omni.serve.realtime.events import (
 )
 from sglang_omni.serve.realtime.vad import (
     VAD_FRAME_SAMPLES,
+    Emit,
     StreamingVAD,
     VADConfig,
     VADEvent,
@@ -429,7 +430,7 @@ class RealtimeTranscriptionSession:
     def _absolute_buffer_end(self) -> int:
         return self.buffer_origin_samples + self.audio_buffer.num_samples
 
-    async def _handle_vad_emit(self, emit: Any) -> None:
+    async def _handle_vad_emit(self, emit: Emit) -> None:
         absolute_sample = self._absolute_vad_sample(emit.sample_offset)
         if emit.event_type == VADEvent.SPEECH_STARTED:
             if self.active_segment is None:

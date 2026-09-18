@@ -15,7 +15,7 @@ at runtime; ``num_ref_tokens`` must match the *delayed* ref-code row count
 
 from __future__ import annotations
 
-from typing import Any
+from transformers import PreTrainedTokenizerFast
 
 # Matches Higgs ``audio_token_id`` and transformers' ``IGNORE_INDEX`` convention.
 AUDIO_PLACEHOLDER_ID = -100
@@ -29,7 +29,7 @@ _REQUIRED_SPECIALS: tuple[str, ...] = (
 
 
 class HiggsTokenizerAdapter:
-    def __init__(self, tokenizer: Any) -> None:
+    def __init__(self, tokenizer: PreTrainedTokenizerFast) -> None:
         self._tok = tokenizer
         vocab = dict(tokenizer.get_added_vocab())
         missing = [t for t in _REQUIRED_SPECIALS if t not in vocab]
@@ -43,7 +43,7 @@ class HiggsTokenizerAdapter:
         self.ref_text_id: int | None = vocab.get("<|ref_text|>")
 
     @property
-    def tokenizer(self) -> Any:
+    def tokenizer(self) -> PreTrainedTokenizerFast:
         return self._tok
 
     def build_prompt(

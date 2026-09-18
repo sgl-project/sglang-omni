@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -30,7 +30,11 @@ from sglang_omni.models.ming_tts.flow_matching import (
     build_cfm_sde_random,
     build_cfm_timesteps,
 )
-from sglang_omni.models.ming_tts.hf_config import MING_TTS_TAIL_ATTN_BACKEND
+from sglang_omni.models.ming_tts.hf_config import (
+    MING_TTS_TAIL_ATTN_BACKEND,
+    BailingMMTTSConfig,
+    BailingMoeTTSConfig,
+)
 from sglang_omni.models.ming_tts.weight_loading import (
     MING_TTS_LM_HEAD_SKIP_REASON,
     MING_TTS_ROTARY_BUFFER_SKIP_REASON,
@@ -95,7 +99,7 @@ class MingTTSTailOutputs:
 
 
 class _MingTTSTailGraph:
-    def __init__(self, model: Any, batch_size: int) -> None:
+    def __init__(self, model: MingTTSSGLangModel, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
         self.graph: torch.cuda.CUDAGraph | None = None
@@ -193,7 +197,7 @@ class _MingTTSTailGraph:
 
 
 class _MingTTSTailGraphCache:
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: MingTTSSGLangModel) -> None:
         self.model = model
         self.graphs: dict[int, _MingTTSTailGraph] = {}
         self.buckets: tuple[int, ...] = ()
@@ -228,7 +232,7 @@ class MingBailingMoeAttention(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -366,7 +370,7 @@ class MingBailingMoeMLP(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
         reduce_results: bool = True,
@@ -408,7 +412,7 @@ class MingBailingMoeMLP(nn.Module):
 class MingBailingMoeGate(nn.Module):
     """Replicated BailingMoe router weight with official softmax top-k semantics."""
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: BailingMoeTTSConfig) -> None:
         super().__init__()
         self.weight = nn.Parameter(
             torch.empty(int(config.num_experts), int(config.hidden_size))
@@ -425,7 +429,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -506,7 +510,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
 class MingBailingMoeDecoderLayer(nn.Module):
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -559,7 +563,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
         )
 
     @staticmethod
-    def _is_layer_sparse(config: Any, layer_id: int) -> bool:
+    def _is_layer_sparse(config: object, layer_id: int) -> bool:
         return getattr(config, "num_experts", None) is not None and layer_id >= int(
             getattr(config, "first_k_dense_replace", 0) or 0
         )
@@ -615,7 +619,7 @@ class MingBailingMoeTextModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMoeTTSConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -646,7 +650,7 @@ class MingBailingMoeTextModel(nn.Module):
         self.norm = RMSNorm(self.hidden_size, eps=float(config.rms_norm_eps))
 
     @staticmethod
-    def _check_supported_bailing_moe_config(config: Any) -> None:
+    def _check_supported_bailing_moe_config(config: BailingMoeTTSConfig | None) -> None:
         hidden_act = getattr(config, "hidden_act", "silu")
         if hidden_act != "silu":
             raise ValueError(
@@ -749,7 +753,7 @@ class MingTTSSGLangModel(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: BailingMMTTSConfig | BailingMoeTTSConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -988,7 +992,7 @@ class MingTTSSGLangModel(nn.Module):
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
         input_embeds: Optional[torch.Tensor] = None,
-        pp_proxy_tensors: Any = None,
+        pp_proxy_tensors: object = None,
     ) -> LogitsProcessorOutput:
         del pp_proxy_tensors
 

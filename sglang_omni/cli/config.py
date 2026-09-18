@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from enum import Enum
-from typing import Annotated, Any, NamedTuple, Optional
+from typing import Annotated, NamedTuple, Optional
 
 import typer
 import yaml
@@ -39,7 +39,7 @@ _MEM_FRACTION_HELP = (
 )
 
 
-def _dump_yaml(data: Any) -> str:
+def _dump_yaml(data: object) -> str:
     return yaml.dump(
         data,
         sort_keys=False,  # preserve order

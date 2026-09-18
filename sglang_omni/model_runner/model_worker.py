@@ -7,7 +7,7 @@ from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
 
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import (
@@ -20,9 +20,14 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.server_args import ServerArgs
 
+    from sglang_omni.model_runner.weight_checker import WeightCheckResult
+
 logger = logging.getLogger(__name__)
+
+PayloadValueT = TypeVar("PayloadValueT")
 
 
 @dataclass
@@ -43,6 +48,18 @@ class _PrefillCudaGraphUsage:
     standard_eager_count: int = 0
     custom_eager_count: int = 0
     replay_buckets: Counter[int] = field(default_factory=Counter)
+
+
+class PrefillCudaGraphInfo(TypedDict):
+    backend: object
+    runner: str | None
+    backend_runner: str | None
+    capture_num_tokens: list[int] | None
+    input_embeds_slot: bool
+    replay_count: int
+    standard_eager_count: int
+    custom_eager_count: int
+    replay_buckets: dict[str, int]
 
 
 _ARCH_CONFIG_MAP: dict[str, tuple[str, str | None]] = {
@@ -309,7 +326,7 @@ class ModelWorker:
 
     def _record_prefill_cuda_graph_usage(
         self,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         *,
         can_run_graph: bool,
     ) -> None:
@@ -333,7 +350,7 @@ class ModelWorker:
         """Record a custom prefill forward that bypasses SGLang graph dispatch."""
         self._prefill_cuda_graph_usage.custom_eager_count += 1
 
-    def _prefill_cuda_graph_info(self) -> dict[str, Any]:
+    def _prefill_cuda_graph_info(self) -> PrefillCudaGraphInfo:
         from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
             PrefillCudaGraphRunner,
         )
@@ -403,7 +420,9 @@ class ModelWorker:
             )
         return bool(success), str(message)
 
-    def update_weights_from_tensor(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def update_weights_from_tensor(
+        self, payload: dict[str, PayloadValueT]
+    ) -> tuple[bool, str]:
         if payload.get("serialized_named_tensors") is not None:
             return (
                 False,
@@ -476,7 +495,7 @@ class ModelWorker:
                 )
         return bool(success), str(message)
 
-    def weights_checker(self, action: str) -> dict[str, Any]:
+    def weights_checker(self, action: str) -> WeightCheckResult:
         checker = getattr(self, "_strict_weight_checker", None)
         if checker is None:
             from sglang_omni.model_runner.weight_checker import StrictWeightChecker
@@ -488,7 +507,7 @@ class ModelWorker:
     def _call_optional_weight_method(
         self,
         method_name: str,
-        payload: dict[str, Any],
+        payload: dict[str, PayloadValueT],
     ) -> tuple[bool, str]:
         method = getattr(self.model_runner, method_name)
         recv_req = SimpleNamespace(**payload)
@@ -529,8 +548,7 @@ def _apply_model_worker_backend_common_policy(
     )
     if is_qwen3_omni_arch and cfg.ep_size != 1:
         raise ValueError(
-            "Qwen3-Omni ModelWorker does not support expert parallelism; "
-            "use ep_size=1."
+            "Qwen3-Omni ModelWorker does not support expert parallelism; use ep_size=1."
         )
 
 

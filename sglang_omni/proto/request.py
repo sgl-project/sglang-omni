@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
+
 
 class RequestState(Enum):
     """State of a request in the pipeline."""
@@ -66,7 +68,7 @@ class StagePayload:
     # Scheduler-local stream ingress state. These fields intentionally stay
     # out of to_dict(); they are rebuilt by the receiving scheduler and never
     # form part of the inter-stage wire contract.
-    prefetched_chunks: list[Any] = field(
+    prefetched_chunks: list[StreamItem] = field(
         default_factory=list, init=False, repr=False, compare=False
     )
     prefetched_stream_done: bool = field(

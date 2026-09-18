@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from sglang.srt.layers.sampler import multinomial_with_seed
@@ -19,6 +19,9 @@ from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
     seeded_gumbel_argmax,
 )
+
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
@@ -39,7 +42,7 @@ class DelaySamplingOutput(NamedTuple):
     next_delay_state: torch.Tensor
 
 
-def matches_graph_profile(data: Any) -> bool:
+def matches_graph_profile(data: object) -> bool:
     """Return whether a request matches the profile baked into the graph."""
 
     text = ChannelSampling(
@@ -107,7 +110,7 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
     :mod:`model_runner`.
     """
 
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: "PretrainedConfig") -> None:
         super().__init__()
         self.n_vq = int(config.n_vq)
         self.num_channels = self.n_vq + 1

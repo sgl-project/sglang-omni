@@ -8,10 +8,12 @@ pass, sampling, logit post-processing, and output extraction.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any, Generic, Protocol
 
 import torch
+from typing_extensions import TypeVar
 
 from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
 from sglang_omni.platforms import current_platform
@@ -21,11 +23,34 @@ from sglang_omni.sampling.seed import (
     resolve_row_seed,
 )
 from sglang_omni.scheduling.types import (
+    ARRequestData,
     ModelRunnerOutput,
     RequestOutput,
+    SchedulerOutput,
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import (
+        CaptureHiddenMode,
+        ForwardBatch,
+    )
+    from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+
+    from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+
+
+class CompletionEvent(Protocol):
+    def query(self) -> bool: ...
+
+    def synchronize(self) -> None: ...
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -42,7 +67,9 @@ def _rank_shared_unseeded_sampling_seed(request: SchedulerRequest, row_idx: int)
     return derive_sampling_seed("sglang-omni-unseeded-row", request_id)
 
 
-def resolve_deferred_prefill_inputs(schedule_batch: Any, device: torch.device) -> None:
+def resolve_deferred_prefill_inputs(
+    schedule_batch: ScheduleBatch, device: torch.device
+) -> None:
     """Materialize staged CPU prefill inputs before a direct worker forward.
 
     Scheduler-owned execution resolves staging through SGLangExecutionBridge;
@@ -81,15 +108,27 @@ class _PendingStep:
     launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: Any  # device Event, recorded after post_decode_launch publishes
+    event: CompletionEvent  # device Event, recorded after post_decode_launch publishes
     launch_buf: Any  # post_decode_launch return: device snapshot or host staging
-    scheduler_output: Any  # this step's SchedulerOutput (routing + output proc)
-    forward_batch: Any  # for resolve-time finalize sampling
-    schedule_batch: Any  # resolve-time snapshot (copy of the live batch)
-    batch_result: Any  # carries logits_output (device of next_token_ids)
+    scheduler_output: (
+        SchedulerOutput  # this step's SchedulerOutput (routing + output proc)
+    )
+    forward_batch: ForwardBatch | None  # for resolve-time finalize sampling
+    schedule_batch: ScheduleBatch  # resolve-time snapshot (copy of the live batch)
+    batch_result: (
+        GenerationBatchResult  # carries logits_output (device of next_token_ids)
+    )
 
 
-class ModelRunner:
+FinishedRequestDataT = TypeVar(
+    "FinishedRequestDataT",
+    bound=ARRequestData,
+    default=ARRequestData,
+    contravariant=True,
+)
+
+
+class ModelRunner(Generic[FinishedRequestDataT]):
     """Base AR model runner.
 
     Subclasses provide phase-specific behavior:
@@ -97,12 +136,16 @@ class ModelRunner:
       - decode hooks for single-step autoregressive decode processing
     """
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
         self.tp_worker = tp_worker
         self.output_processor = output_processor
         self.device = current_platform.get_device(tp_worker.gpu_id)
         self.model = tp_worker.model_runner.model
-        self._execution_bridge: Any | None = None
+        self._execution_bridge: SGLangExecutionBridge | None = None
 
         # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
         self._async_enabled: bool = False
@@ -117,9 +160,13 @@ class ModelRunner:
         self._async_query_miss: int = 0
         self._token_id_host_bufs: list[torch.Tensor] | None = None
         self._token_id_host_slot: int = 0
-        self._suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
+        self._suppress_tensor_cache: dict[
+            tuple[tuple[int, ...], int, str], torch.Tensor | None
+        ] = {}
 
-    def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
+    def _stage_token_ids(
+        self, result: GenerationBatchResult, ids: torch.Tensor
+    ) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
         # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
         if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
@@ -149,7 +196,7 @@ class ModelRunner:
         self,
         bufs_attr: str,
         slot_attr: str,
-        shape: Any,
+        shape: tuple[int, ...] | torch.Size,
         dtype: torch.dtype,
         *,
         realloc_on_grow: bool,
@@ -180,23 +227,25 @@ class ModelRunner:
         setattr(self, slot_attr, slot ^ 1)
         return buf
 
-    def _resolve_host_token_ids(self, result: Any) -> Any:
+    def _resolve_host_token_ids(
+        self, result: GenerationBatchResult
+    ) -> torch.Tensor | None:
         event = getattr(result, "_host_token_ids_event", None)
         if event is not None:
             event.synchronize()
             result._host_token_ids_event = None
         return getattr(result, "_host_token_ids", None)
 
-    def bind_execution_bridge(self, bridge: Any) -> None:
+    def bind_execution_bridge(self, bridge: SGLangExecutionBridge) -> None:
         """Bind the scheduler-owned SGLang execution-contract adapter."""
         self._execution_bridge = bridge
 
     def _execution_context(
         self,
-        schedule_batch: Any,
+        schedule_batch: ScheduleBatch,
         *,
         isolate_sampling: bool = False,
-    ):
+    ) -> AbstractContextManager[None]:
         if schedule_batch.forward_mode.is_extend():
             self._restore_output_penalty_history(schedule_batch)
         return self._execution_bridge.forward_context(
@@ -205,7 +254,7 @@ class ModelRunner:
         )
 
     @staticmethod
-    def _restore_output_penalty_history(schedule_batch: Any) -> None:
+    def _restore_output_penalty_history(schedule_batch: ScheduleBatch) -> None:
         """Re-seed retained output history into the prepared penalizers."""
         sampling_info = schedule_batch.sampling_info
         if sampling_info.penalizer_orchestrator is None:
@@ -294,7 +343,7 @@ class ModelRunner:
             realloc_on_grow=True,
         )
 
-    def execute(self, scheduler_output: Any) -> ModelRunnerOutput:
+    def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →
         sample → output.
 
@@ -348,7 +397,9 @@ class ModelRunner:
             scheduler_output,
         )
 
-    def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
+    def execute_launch(
+        self, scheduler_output: SchedulerOutput
+    ) -> "_PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
         ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
@@ -450,7 +501,9 @@ class ModelRunner:
             skip_rids=skip_rids,
         )
 
-    def _build_forward_batch(self, scheduler_output: Any):
+    def _build_forward_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> tuple[ForwardBatch | None, ScheduleBatch, bool] | None:
         """Build the ForwardBatch + capture-hidden mode. Returns
         ``(forward_batch, schedule_batch, is_prefill)``, or
         None when there is no batch to run."""
@@ -492,13 +545,13 @@ class ModelRunner:
 
     def _prepare_and_forward(
         self,
-        forward_batch,
-        schedule_batch,
-        requests,
-        is_prefill,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+        is_prefill: bool,
         *,
         is_lookahead: bool = False,
-    ):
+    ) -> GenerationBatchResult:
         """Prepare hook → standard forward (if not custom) → sample-before-post
         block. Returns ``batch_result``."""
         try:
@@ -545,7 +598,7 @@ class ModelRunner:
                 clear_omni_prefill_inputs(forward_batch)
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
 
-    def finalize_skip_rids(self, scheduler_output) -> set[str]:
+    def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
 
         Default empty. A model overrides this when a batch contains rows that
@@ -559,13 +612,15 @@ class ModelRunner:
         return set()
 
     def on_generation_step_advanced(
-        self, sched_req: Any, generation_steps: int
+        self, sched_req: SchedulerRequest, generation_steps: int
     ) -> None:
         """Hook after ``generation_steps`` is committed on request data."""
         return None
 
     def on_generation_steps_advanced(
-        self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
+        self,
+        advanced_steps: list[tuple[SchedulerRequest, int]],
+        forward_batch: ForwardBatch | None,
     ) -> None:
         """Batch hook after ``generation_steps`` are committed on request data."""
         del forward_batch
@@ -574,10 +629,10 @@ class ModelRunner:
 
     def _finalize(
         self,
-        batch_result,
-        forward_batch,
-        schedule_batch,
-        scheduler_output,
+        batch_result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        scheduler_output: SchedulerOutput,
         skip_rids: set[str] | None = None,
     ) -> ModelRunnerOutput:
         """Output extraction + per-request bookkeeping. Shared tail of both
@@ -621,10 +676,10 @@ class ModelRunner:
 
     def _ensure_next_token_ids(
         self,
-        batch_result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        scheduler_output: Any,
+        batch_result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        scheduler_output: SchedulerOutput,
     ) -> None:
         """Materialize this step's reporting tokens while still on its stream."""
         if schedule_batch.is_prefill_only:
@@ -644,9 +699,9 @@ class ModelRunner:
 
     def next_input_token_ids(
         self,
-        result: Any,
-        forward_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor | None:
         """Return the GPU token rail consumed by the next forward."""
         del forward_batch, requests
@@ -658,10 +713,10 @@ class ModelRunner:
 
     def _publish_next_tokens(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         if schedule_batch.is_prefill_only:
             return
@@ -675,20 +730,26 @@ class ModelRunner:
     # ------------------------------------------------------------------
 
     def before_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Mutate state before the standard or custom prefill forward."""
 
     def cleanup_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Release one-forward prefill state on success or failure."""
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -696,8 +757,11 @@ class ModelRunner:
         del is_lookahead
 
     def custom_prefill_forward(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
-    ) -> Any | None:
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         """Run a model-specific prefill forward.
 
         Return a batch result when the subclass owns the forward path for this
@@ -706,8 +770,11 @@ class ModelRunner:
         return None
 
     def custom_decode_forward(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
-    ) -> Any | None:
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         """Run a model-specific decode forward.
 
         Return a batch result when the subclass owns the forward path for this
@@ -716,16 +783,24 @@ class ModelRunner:
         return None
 
     def post_prefill(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Called after prefill forward."""
 
     def post_decode(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Called after decode forward."""
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         """Whether this batch may use one-step async-decode lookahead.
 
         The default launch samples one step before resolve appends the previous
@@ -737,7 +812,7 @@ class ModelRunner:
         for other fallbacks.
         """
 
-        def _history_free(req: Any) -> bool:
+        def _history_free(req: Req) -> bool:
             sp = req.sampling_params
             return (
                 sp.repetition_penalty == 1.0
@@ -751,13 +826,15 @@ class ModelRunner:
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
+        result: GenerationBatchResult,
+        scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
         """Called after output tokens are materialized into RequestOutput."""
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: FinishedRequestDataT
+    ) -> None:
         """Drain per-request state on any non-abort finish.
 
         Called from ``OmniScheduler.stream_output`` before the terminal payload
@@ -766,7 +843,10 @@ class ModelRunner:
         """
 
     def post_decode_launch(
-        self, result: Any, forward_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> Any:
         """Async-decode GPU half of ``post_decode``: sample now, publish
         ``result.next_token_ids``, and return the resolve payload (``launch_buf``);
@@ -792,10 +872,10 @@ class ModelRunner:
     def post_decode_resolve(
         self,
         launch_buf: Any,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Async-decode host half of ``post_decode``: read ``launch_buf`` and set
         ``result.next_token_ids``. Default (plain-LM): point it at the pinned host
@@ -808,23 +888,29 @@ class ModelRunner:
         result.next_token_ids = launch_buf[: len(requests)]
 
     def sample_before_post_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> bool:
         return False
 
     def sample_before_post_decode(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
     ) -> bool:
         return False
 
     def requested_capture_hidden_mode_prefill(
-        self, schedule_batch: Any, requests: list
-    ) -> Any | None:
+        self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode | None:
         return None
 
     def requested_capture_hidden_mode_decode(
-        self, schedule_batch: Any, requests: list
-    ) -> Any | None:
+        self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode | None:
         return None
 
     # ------------------------------------------------------------------
@@ -833,11 +919,11 @@ class ModelRunner:
 
     def _sample_next_token_ids(
         self,
-        logits_output: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> Any:
+        logits_output: LogitsProcessorOutput,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor:
         # Note: (Junnan Li) repetition/frequency/presence penalties are already
         # in the SGLang sampler's state; a second pass here squares them.
         self._apply_codec_suppress_tokens(logits_output, requests)
@@ -868,7 +954,9 @@ class ModelRunner:
             )
         return next_token_ids
 
-    def _install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
+    def _install_sampling_seeds(
+        self, forward_batch: ForwardBatch, requests: list[SchedulerRequest]
+    ) -> None:
         """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
         ``multinomial_with_seed``. No-op when no request set a seed, or when a
         subclass already installed its own (e.g. Qwen3-TTS).
@@ -901,7 +989,7 @@ class ModelRunner:
         )
 
     @staticmethod
-    def _validate_seeded_sampling_supported(sampling_info: Any) -> None:
+    def _validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:
         if sampling_info.need_min_p_sampling:
             raise ValueError(
                 "SGLang seeded sampling does not support min_p yet; set min_p=0 "
@@ -919,7 +1007,7 @@ class ModelRunner:
             )
 
     @staticmethod
-    def _enable_sampler_logprobs(forward_batch: Any, batch_size: int) -> None:
+    def _enable_sampler_logprobs(forward_batch: ForwardBatch, batch_size: int) -> None:
         forward_batch.return_logprob = True
         if forward_batch.top_logprobs_nums is None:
             forward_batch.top_logprobs_nums = [0] * batch_size
@@ -927,7 +1015,7 @@ class ModelRunner:
             forward_batch.token_ids_logprobs = [None] * batch_size
 
     def _record_rollout_logprobs(
-        self, next_token_logprobs, next_token_ids, requests
+        self, next_token_logprobs, next_token_ids, requests: list[SchedulerRequest]
     ) -> None:
         """Append each rollout request's sampled-token logprob (one per step)."""
         logprobs = sampled_logprobs_to_list(next_token_logprobs)
@@ -961,10 +1049,12 @@ class ModelRunner:
                 )
 
     @staticmethod
-    def _req_is_retracted(req: Any) -> bool:
+    def _req_is_retracted(req: Req) -> bool:
         return bool(req.is_retracted)
 
-    def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
+    def _apply_codec_suppress_tokens(
+        self, logits_output: LogitsProcessorOutput, requests: list[SchedulerRequest]
+    ) -> None:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
@@ -978,7 +1068,9 @@ class ModelRunner:
         if cache is None:
             cache = {}
             self._suppress_tensor_cache = cache
-        row_groups: dict[Any, tuple[torch.Tensor, list[int]]] = {}
+        row_groups: dict[
+            tuple[tuple[int, ...], int, str], tuple[torch.Tensor, list[int]]
+        ] = {}
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             suppress_tokens = data.suppress_tokens

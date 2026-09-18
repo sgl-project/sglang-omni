@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from numpy.typing import ArrayLike
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.preprocessing.audio import AudioMediaIO
@@ -96,7 +97,9 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     return codec
 
 
-def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
+def to_codes_TN(
+    raw: ArrayLike | torch.Tensor | None, num_codebooks: int
+) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
         return None

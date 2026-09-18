@@ -9,10 +9,26 @@ choice belongs on the platform rather than in a per-model branch.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Iterator, Protocol
+from typing import Any, Literal, Protocol, TypedDict
 
 import torch
+
+
+class CudaCaptureKwargs(TypedDict, total=False):
+    pool: torch.cuda._POOL_HANDLE
+    stream: torch.cuda.Stream
+    capture_error_mode: Literal["thread_local"]
+
+
+class XpuCaptureKwargs(TypedDict, total=False):
+    pool: torch.xpu._POOL_HANDLE
+    stream: torch.xpu.Stream
+
+
+class ReplayableGraph(Protocol):
+    def replay(self) -> None: ...
 
 
 class DeviceGraphBackend(Protocol):
@@ -24,7 +40,7 @@ class DeviceGraphBackend(Protocol):
         pool: Any | None = None,
         stream: Any | None = None,
         thread_local_errors: bool = False,
-    ) -> AbstractContextManager[Any]:
+    ) -> AbstractContextManager[ReplayableGraph]:
         """Open a capture and yield the graph it records into."""
         ...
 
@@ -36,12 +52,12 @@ class CudaDeviceGraphBackend:
     def capture(
         self,
         *,
-        pool: Any | None = None,
-        stream: Any | None = None,
+        pool: torch.cuda._POOL_HANDLE | None = None,
+        stream: torch.cuda.Stream | None = None,
         thread_local_errors: bool = False,
-    ) -> Iterator[Any]:
+    ) -> Iterator[torch.cuda.CUDAGraph]:
         graph = torch.cuda.CUDAGraph()
-        kwargs: dict[str, Any] = {}
+        kwargs: CudaCaptureKwargs = {}
         if pool is not None:
             kwargs["pool"] = pool
         if stream is not None:
@@ -59,12 +75,12 @@ class NpuDeviceGraphBackend:
     def capture(
         self,
         *,
-        pool: Any | None = None,
-        stream: Any | None = None,
+        pool: tuple[int, int] | None = None,
+        stream: torch.Stream | None = None,
         thread_local_errors: bool = False,
-    ) -> Iterator[Any]:
+    ) -> Iterator[ReplayableGraph]:
         graph = torch.npu.NPUGraph()
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, object] = {}
         if pool is not None:
             kwargs["pool"] = pool
         if stream is not None:
@@ -82,15 +98,15 @@ class XpuDeviceGraphBackend:
     def capture(
         self,
         *,
-        pool: Any | None = None,
-        stream: Any | None = None,
+        pool: torch.xpu._POOL_HANDLE | None = None,
+        stream: torch.xpu.Stream | None = None,
         thread_local_errors: bool = False,
-    ) -> Iterator[Any]:
+    ) -> Iterator[torch.xpu.XPUGraph]:
         # Note (siju): XPU's graph context declares no capture_error_mode and
         # rejects it as a TypeError, so the request is dropped, not translated.
         del thread_local_errors
         graph = torch.xpu.XPUGraph()
-        kwargs: dict[str, Any] = {}
+        kwargs: XpuCaptureKwargs = {}
         if pool is not None:
             kwargs["pool"] = pool
         if stream is not None:
@@ -103,5 +119,6 @@ __all__ = [
     "CudaDeviceGraphBackend",
     "DeviceGraphBackend",
     "NpuDeviceGraphBackend",
+    "ReplayableGraph",
     "XpuDeviceGraphBackend",
 ]

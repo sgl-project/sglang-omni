@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from numbers import Integral
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -17,18 +17,39 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import (
+        CaptureHiddenMode,
+        ForwardBatch,
+    )
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerRequest
+
 logger = logging.getLogger(__name__)
+
+CursorT = TypeVar("CursorT")
 
 
 class ThinkerModelRunner(ModelRunner):
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: ModelWorker | MlxTpModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
         super().__init__(tp_worker, output_processor)
 
         model = self.model
         self._outer_model = model.thinker
         self._text_model = self._outer_model.model
         self._embed_tokens = self._text_model.embed_tokens
-        self._th_host_bufs = None
+        self._th_host_bufs: list[torch.Tensor] | None = None
         self._th_slot = 0
 
         thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
@@ -36,7 +57,12 @@ class ThinkerModelRunner(ModelRunner):
         self._video_token_id = thinker_cfg.video_token_id
         self._audio_token_id = thinker_cfg.audio_token_id
 
-    def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
+    def custom_prefill_forward(
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         if not schedule_batch.forward_mode.is_extend():
             return None
 
@@ -58,14 +84,16 @@ class ThinkerModelRunner(ModelRunner):
     # forward hooks; both SGLang hooks must return NULL because LAST can disable
     # CUDA-graph replay.
     def requested_capture_hidden_mode_prefill(
-        self, schedule_batch: Any, requests: list
-    ):
+        self, schedule_batch: object, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
         return CaptureHiddenMode.NULL
 
-    def requested_capture_hidden_mode_decode(self, schedule_batch: Any, requests: list):
+    def requested_capture_hidden_mode_decode(
+        self, schedule_batch: object, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
@@ -76,7 +104,9 @@ class ThinkerModelRunner(ModelRunner):
     # ------------------------------------------------------------------
 
     def _req_mm_token_positions(
-        self, req: Any, pad_values: dict
+        self,
+        req: "Req",
+        pad_values: dict,
     ) -> dict[str, torch.Tensor]:
         """Prompt-absolute placeholder positions per modality, as CPU int64
         tensors so the merge never reads placement off a GPU mask."""
@@ -100,11 +130,11 @@ class ThinkerModelRunner(ModelRunner):
     @staticmethod
     def _plan_modality_chunk(
         positions: torch.Tensor,
-        consumed: dict[str, Any],
+        consumed: dict[str, CursorT],
         modality: str,
         prefix: int,
         length: int,
-    ) -> tuple[torch.Tensor, Any, int]:
+    ) -> tuple[torch.Tensor, CursorT | int, int]:
         """Plan the embed slice for positions in ``[prefix, prefix + length)``.
 
         The caller owns cursor advancement; this helper never mutates ``consumed``.
@@ -118,7 +148,9 @@ class ThinkerModelRunner(ModelRunner):
         )
 
     @staticmethod
-    def _ensure_consumed_cursor(req: Any) -> dict[str, Any]:
+    def _ensure_consumed_cursor(
+        req: "Req",
+    ) -> dict[str, Any]:
         consumed = req._omni_consumed
         if consumed is None:
             consumed = {}
@@ -132,7 +164,7 @@ class ThinkerModelRunner(ModelRunner):
 
     @staticmethod
     def _validate_modality_cursor(
-        modality: str, offset: Any, row_count: int, live_count: int
+        modality: str, offset: object, row_count: int, live_count: int
     ) -> int:
         if not isinstance(offset, Integral) or isinstance(offset, bool):
             raise TypeError(
@@ -175,8 +207,8 @@ class ThinkerModelRunner(ModelRunner):
         return cached_count
 
     def _inject_multimodal_embeds(
-        self, forward_batch: Any, schedule_batch: Any
-    ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
+        self, forward_batch: ForwardBatch | None, schedule_batch: ScheduleBatch
+    ) -> tuple[torch.Tensor, list[torch.Tensor] | None, torch.Tensor | None] | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None
 
@@ -360,11 +392,11 @@ class ThinkerModelRunner(ModelRunner):
 
     def _forward_with_omni_embeds(
         self,
-        forward_batch,
-        input_embeds,
-        deepstack_visual_embeds=None,
-        visual_pos_masks=None,
-    ):
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor,
+        deepstack_visual_embeds: list[torch.Tensor] | None = None,
+        visual_pos_masks: torch.Tensor | None = None,
+    ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
         outer = self._outer_model
 
@@ -408,7 +440,7 @@ class ThinkerModelRunner(ModelRunner):
             logits_output=logits_output, can_run_cuda_graph=False
         )
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         """Reject batches whose state would diverge under one-step lookahead.
 
         Audio can overwrite hidden-state capture before resolve; stateful or
@@ -459,13 +491,23 @@ class ThinkerModelRunner(ModelRunner):
         self._th_slot ^= 1
         return buf
 
-    def _sample_lookahead(self, logits_output, forward_batch, requests):
+    def _sample_lookahead(
+        self,
+        logits_output: LogitsProcessorOutput,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor:
         # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
         # those batches to sync); only static suppress tokens are lag-safe.
         self._apply_codec_suppress_tokens(logits_output, requests)
         return self.tp_worker.model_runner.sample(logits_output, forward_batch)
 
-    def post_decode_launch(self, result, forward_batch, requests):
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
         n = len(requests)
         if n == 0:
             return None
@@ -481,8 +523,13 @@ class ThinkerModelRunner(ModelRunner):
         return host_buf
 
     def post_decode_resolve(
-        self, launch_buf, result, forward_batch, schedule_batch, requests
-    ):
+        self,
+        launch_buf: torch.Tensor | None,
+        result: GenerationBatchResult | None,
+        forward_batch: object,
+        schedule_batch: object,
+        requests: list[SchedulerRequest],
+    ) -> None:
         del forward_batch, schedule_batch
         if len(requests) == 0 or launch_buf is None:
             return

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -34,6 +35,14 @@ from sglang_omni.scheduling.token_text_streaming import (
 from sglang_omni.scheduling.types import DeferredAdmission
 
 from .audio_lengths import arkasr_num_audio_tokens
+
+if TYPE_CHECKING:
+    from types import SimpleNamespace
+
+    from transformers import PreTrainedTokenizerBase, WhisperFeatureExtractor
+
+    from sglang_omni.models.arkasr.encoder_service import ArkasrPreLMEncoderService
+    from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +65,9 @@ class ArkASRRequestData(SGLangARRequestData):
 
 
 def _decode_token_ids(
-    tokenizer: Any, token_ids: list[int], skip_special_tokens: bool
+    tokenizer: "PreTrainedTokenizerBase",
+    token_ids: list[int],
+    skip_special_tokens: bool,
 ) -> str:
     try:
         return tokenizer.decode(
@@ -68,7 +79,9 @@ def _decode_token_ids(
         return tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
 
-def _build_suppressed_token_ids(tokenizer: Any) -> list[int]:
+def _build_suppressed_token_ids(
+    tokenizer: "PreTrainedTokenizerBase",
+) -> list[int]:
     """All special / ``<...>`` added marker token ids except EOS.
 
     The checkpoint ships no ``bad_words_ids`` in its generation config, so plain
@@ -94,15 +107,15 @@ def _build_suppressed_token_ids(tokenizer: Any) -> list[int]:
 
 def make_arkasr_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     max_new_tokens: int,
-    feature_extractor: Any = None,
+    feature_extractor: "WhisperFeatureExtractor | None" = None,
     merge_factor: int = 4,
     audio_token_id: int = 151663,
-    audio_encoder_service: Any = None,
+    audio_encoder_service: "ArkasrPreLMEncoderService | None" = None,
 ) -> tuple[
     Callable[[StagePayload], ArkASRRequestData | DeferredAdmission],
-    Callable[[Any], StagePayload],
+    Callable[[ArkASRRequestData], StagePayload],
 ]:
     if feature_extractor is None:
         raise ValueError("ARK-ASR processor is missing a feature_extractor")
@@ -262,10 +275,13 @@ def make_arkasr_scheduler_adapters(
 
 
 def make_arkasr_stream_output_builder(
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     eos_token_id: int | None = None,
     min_emit_interval_s: float = 0.0,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, SGLangARRequestData, "RequestOutput | SimpleNamespace"],
+    list[OutgoingMessage],
+]:
     tokenizer_eos = getattr(tokenizer, "eos_token_id", None)
     resolved_eos = (
         eos_token_id

@@ -10,15 +10,20 @@ out, giving graph replay a stable index for padded batch slots.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+from sglang_omni.scheduling.types import SchedulerRequest
+
+if TYPE_CHECKING:
+    from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
 
 
 class Zonos2DecodeStatePool:
     """Fixed-capacity pool of per-request decode state on the model's device."""
 
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: "Zonos2SGLangModel") -> None:
         weight = model._decode_input_embedding.weight
         self.device = weight.device
         self.dim = int(weight.shape[1])
@@ -112,7 +117,7 @@ class Zonos2DecodeStatePool:
     def row_for(self, rid: str) -> int:
         return self._rid_to_row[rid]
 
-    def prepare_active_rows(self, requests: list) -> torch.Tensor:
+    def prepare_active_rows(self, requests: list[SchedulerRequest]) -> torch.Tensor:
         """Acquire (idempotent) a row per request and return the row-index tensor
         aligned to ``requests`` order, for a single batched gather/scatter.
 

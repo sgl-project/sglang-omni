@@ -9,10 +9,10 @@ import logging
 import queue
 import threading
 from array import array
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager
 from functools import wraps
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Generic, Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
@@ -21,13 +21,23 @@ from sglang_omni.comm import KVBufferRegion, KVPageDestination, KVPool
 from sglang_omni.proto import KVTransferPrepareMessage, StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import Req
+    from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
+    from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
+
 logger = logging.getLogger(__name__)
 
 CONTINUATION_VERSION = 1
 _TRANSFER_TOMBSTONE_LIMIT = 10000
+Params = ParamSpec("Params")
+ResultT = TypeVar("ResultT")
+RequestT = TypeVar("RequestT")
 
 
-def serialize_kv_allocator(allocator: Any, *, lock: Any | None = None):
+def serialize_kv_allocator(
+    allocator: object, *, lock: AbstractContextManager[object] | None = None
+) -> AbstractContextManager[object]:
     """Synchronize the existing allocator, including calls through other holders.
 
     Wrap bound methods in place so concrete types and existing aliases survive.
@@ -39,9 +49,11 @@ def serialize_kv_allocator(allocator: Any, *, lock: Any | None = None):
     if lock is None:
         lock = threading.RLock()
 
-    def synchronized(method):
+    def synchronized(
+        method: Callable[Params, ResultT],
+    ) -> Callable[Params, ResultT | None]:
         @wraps(method)
-        def call(*args, **kwargs):
+        def call(*args: Params.args, **kwargs: Params.kwargs) -> ResultT | None:
             with lock:
                 return method(*args, **kwargs)
 
@@ -75,7 +87,9 @@ class DecodeContinuation:
     mm_audio_tokens: int = 0
     mm_video_tokens: int = 0
     return_logprob: bool = False
-    output_token_logprobs: list[Any] = dataclasses.field(default_factory=list)
+    output_token_logprobs: list[list[float | int]] = dataclasses.field(
+        default_factory=list
+    )
     top_logprobs_num: int = 0
     token_ids_logprob: list[int] | None = None
     logprob_start_len: int = -1
@@ -144,12 +158,14 @@ class DecodeAdmission:
     replica_bindings: dict[str, int] = dataclasses.field(default_factory=dict)
 
 
-StateBuilder = Callable[[Any], tuple[dict[str, Any], dict[str, Any] | None, list[int]]]
-StateRestorer = Callable[[Any, SGLangARRequestData, dict[str, Any] | None], None]
+StateBuilder = Callable[
+    ["Req"], tuple[dict[str, Any], dict[str, Any] | None, list[int]]
+]
+StateRestorer = Callable[["Req", SGLangARRequestData, dict[str, Any] | None], None]
 
 
 def continuation_from_req(
-    req: Any,
+    req: Req,
     transfer_id: str,
     state_builder: StateBuilder,
 ) -> DecodeContinuation:
@@ -217,9 +233,9 @@ def req_from_continuation(
     continuation: DecodeContinuation,
     allocation: ReservedKV,
     *,
-    req_to_token_pool: Any,
+    req_to_token_pool: ReqToTokenPool,
     state_restorer: StateRestorer,
-) -> Any:
+) -> Req:
     """Install a transferred request as SGLang's existing PREBUILT input."""
 
     from sglang.srt.managers.schedule_batch import Req
@@ -304,7 +320,7 @@ def req_from_continuation(
     return req
 
 
-def _sampling_params_to_dict(params: Any) -> dict[str, Any]:
+def _sampling_params_to_dict(params: object) -> dict[str, Any]:
     allowed = inspect.signature(type(params)).parameters
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
@@ -318,7 +334,7 @@ def _sampling_params_to_dict(params: Any) -> dict[str, Any]:
 
 
 @contextmanager
-def defer_first_token_finish(reqs: list[Any]):
+def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
     """Let normal Prefill accounting run while Decode owns stop decisions."""
 
     saved = []
@@ -347,7 +363,7 @@ def defer_first_token_finish(reqs: list[Any]):
             ) = values
 
 
-def build_kv_pool(token_to_kv_pool: Any, *, pool_id: str) -> KVPool:
+def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
     getter = getattr(token_to_kv_pool, "_pd_registerable_tensors", None)
     if callable(getter):
         tensors = tuple(getter())
@@ -381,7 +397,9 @@ def build_kv_pool(token_to_kv_pool: Any, *, pool_id: str) -> KVPool:
     )
 
 
-def request_page_indices(req_to_token_pool: Any, req: Any) -> tuple[int, ...]:
+def request_page_indices(
+    req_to_token_pool: ReqToTokenPool, req: Req
+) -> tuple[int, ...]:
     if req.kv.req_pool_idx is None:
         raise RuntimeError(f"request {req.rid!r} has no KV mapping")
     seq_len = len(req.origin_input_ids)
@@ -402,10 +420,10 @@ class DecodeKVReceiver:
         self,
         *,
         pool_id: str,
-        allocator: Any,
+        allocator: BaseTokenToKVPoolAllocator,
         admissions: queue.SimpleQueue[DecodeAdmission],
         resume_schema: str,
-        lifecycle_lock: Any | None = None,
+        lifecycle_lock: AbstractContextManager[object] | None = None,
     ) -> None:
         self.pool_id = pool_id
         self._allocator = allocator
@@ -518,7 +536,7 @@ class DecodeKVReceiver:
             return bool(self._reservations)
 
     @contextmanager
-    def suspend_reservations(self):
+    def suspend_reservations(self) -> Generator[None, None, None]:
         """Reject new reservations while a destructive scheduler operation runs."""
 
         with self._lock:
@@ -538,11 +556,13 @@ class DecodeKVReceiver:
             self._closed = True
 
 
-class SGLangKVLease:
+class SGLangKVLease(Generic[RequestT]):
     """Keep source pages owned until the receiver ACKs the copy."""
 
-    def __init__(self, req: Any, due_releases: queue.SimpleQueue) -> None:
-        self._req = req
+    def __init__(
+        self, req: RequestT | None, due_releases: queue.SimpleQueue[RequestT]
+    ) -> None:
+        self._req: RequestT | None = req
         self._due_releases = due_releases
         self._lock = threading.Lock()
 

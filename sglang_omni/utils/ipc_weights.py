@@ -47,13 +47,16 @@ import stat
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Protocol, TypeVar
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+IdentityValueT = TypeVar("IdentityValueT")
 
 ENV_WEIGHT_SHARE = "SGLANG_OMNI_WEIGHT_SHARE"
 ENV_WEIGHT_SHARE_TIMEOUT_S = "SGLANG_OMNI_WEIGHT_SHARE_TIMEOUT_S"
@@ -82,7 +85,9 @@ class WeightShareConfig:
     run_id: str | None = None
 
 
-def get_weight_share_config(environ=None) -> WeightShareConfig | None:
+def get_weight_share_config(
+    environ: Mapping[str, str] | None = None,
+) -> WeightShareConfig | None:
     """Parse SGLANG_OMNI_WEIGHT_SHARE; None when unset or empty (off)."""
     env = os.environ if environ is None else environ
     raw = (env.get(ENV_WEIGHT_SHARE) or "").strip()
@@ -143,7 +148,7 @@ def prepare_weight_share_process_compat() -> None:
     # reducer for anything that is not a CUDA tensor.
     patched = reductions.reduce_tensor
 
-    def reduce_tensor(tensor, *args, **kwargs):
+    def reduce_tensor(tensor: torch.Tensor, *args, **kwargs):
         if tensor.device.type != "cuda":
             return original(tensor, *args, **kwargs)
         return patched(tensor, *args, **kwargs)
@@ -199,6 +204,14 @@ def _claim_namespace(file_path: str, run_id: str | None) -> None:
     _LEASE_FDS.append(fd)
 
 
+class WeightTensorSerializer(Protocol):
+    """Serializer contract for the named tensors in a weight-share handle."""
+
+    def serialize(self, obj: dict[str, torch.Tensor]) -> bytes: ...
+
+    def deserialize(self, data: bytes) -> dict[str, torch.Tensor]: ...
+
+
 class _SglangIpcSerializer:
     """CUDA-IPC (de)serialization via sglang's RLHF weight-update machinery.
 
@@ -208,7 +221,7 @@ class _SglangIpcSerializer:
     """
 
     @staticmethod
-    def serialize(obj: Any) -> bytes:
+    def serialize(obj: dict[str, torch.Tensor]) -> bytes:
         from sglang.srt.utils.common import MultiprocessingSerializer
         from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 
@@ -216,7 +229,7 @@ class _SglangIpcSerializer:
         return MultiprocessingSerializer.serialize(obj)
 
     @staticmethod
-    def deserialize(data: bytes) -> Any:
+    def deserialize(data: bytes) -> dict[str, torch.Tensor]:
         from sglang.srt.utils.common import MultiprocessingSerializer
         from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 
@@ -351,7 +364,7 @@ SUPPORTED_WEIGHT_SHARE_ARCHITECTURES = frozenset(WEIGHT_SHARE_POLICIES)
 _FS_TRUST_ENFORCED = os.name == "posix"
 
 
-def validate_weight_share_architecture(architectures: Any) -> WeightSharePolicy:
+def validate_weight_share_architecture(architectures: object) -> WeightSharePolicy:
     """Fail fast unless the architecture is audited; return its share policy."""
     # Note (Jiaxin Deng): no normalizing away malformed entries; a config that
     # lists anything besides one nonblank architecture string must fail here.
@@ -577,7 +590,7 @@ def export_weights(
     model: torch.nn.Module,
     file_path: str,
     *,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     alias_predicate: Callable[[torch.Tensor], bool] | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
@@ -714,7 +727,7 @@ _REQUIRED_PAYLOAD_FIELDS: dict[str, type | tuple[type, ...]] = {
 }
 
 
-def _safe_unpickle(fh: Any, file_path: str) -> Any:
+def _safe_unpickle(fh: BinaryIO, file_path: str) -> object:
     try:
         return pickle.load(fh)
     except WeightShareError:
@@ -725,7 +738,7 @@ def _safe_unpickle(fh: Any, file_path: str) -> Any:
         ) from exc
 
 
-def _validate_payload_schema(payload: Any, file_path: str) -> None:
+def _validate_payload_schema(payload: object, file_path: str) -> None:
     if not isinstance(payload, dict):
         raise WeightShareError(
             f"weight-share handle {file_path} is not a payload dict "
@@ -804,7 +817,7 @@ def attach_weights(
     *,
     timeout_s: float = DEFAULT_ATTACH_TIMEOUT_S,
     poll_interval_s: float = 0.5,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
@@ -840,7 +853,7 @@ def _attach_and_check(
     *,
     timeout_s: float,
     poll_interval_s: float,
-    serializer: Any | None,
+    serializer: WeightTensorSerializer | None,
     validate_secure: bool,
     model_path: str | None,
     model_revision: str | None,
@@ -860,7 +873,7 @@ def _attach_and_check(
 
 
 def _check_model_identity(
-    payload: dict[str, Any],
+    payload: dict[str, IdentityValueT],
     model_path: str | None,
     model_revision: str | None,
     file_path: str,
@@ -926,7 +939,7 @@ def _alias_from_payload(
     model: torch.nn.Module,
     payload: dict[str, Any],
     file_path: str,
-    serializer: Any,
+    serializer: WeightTensorSerializer,
     private_names: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[int, tuple[int, ...], torch.dtype]]:
     """Alias every model parameter/buffer onto the payload's shared storage."""
@@ -1143,7 +1156,7 @@ def leader_export(
     model: torch.nn.Module,
     dir_path: str,
     *,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,
@@ -1168,7 +1181,7 @@ def follower_attach(
     dir_path: str,
     *,
     timeout_s: float = DEFAULT_ATTACH_TIMEOUT_S,
-    serializer: Any | None = None,
+    serializer: WeightTensorSerializer | None = None,
     validate_secure: bool = True,
     model_path: str | None = None,
     model_revision: str | None = None,

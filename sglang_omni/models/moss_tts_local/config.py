@@ -224,7 +224,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         }
         return {**derived, **self.env_defaults}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         resolve_vocoder_cuda_graph(self.vocoder_cuda_graph)
         if self.ref_audio_cache_max_items < 1:

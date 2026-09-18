@@ -8,7 +8,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -19,6 +19,24 @@ from .chunking import ChunkWindow, chunk_windows
 from .constants import AR_CHUNK_FRAMES, AR_CHUNK_HOP_FRAMES
 from .rvq_decoder import sample_topk_seeded
 from .sglang_model import apply_cfg, depth_decode, embed_audio_frames, select_c0_logits
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import (
+        CaptureHiddenMode,
+        ForwardBatch,
+    )
+    from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.minimax_music3.sglang_request_builder import (
+        MiniMaxMusic3SGLangRequestData,
+    )
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerRequest
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +80,7 @@ class _HiddenFrameBuffer:
 
 
 @dataclass
-class _ARState:
+class MiniMaxMusic3ARState:
     """Per-request AR state owned by the runner for one generation."""
 
     sampling_seed: int
@@ -78,17 +96,22 @@ class _ARState:
     generated_frames: int = 0
     finish_reason: str = "length"
     started_s: float = 0.0
-    pending_chunks: list[tuple[torch.Tensor, dict[str, Any]]] = field(
+    pending_chunks: list[tuple[torch.Tensor, dict[str, str | int | bool]]] = field(
         default_factory=list
     )
 
 
-class MiniMaxMusic3ModelRunner(ModelRunner):
+class MiniMaxMusic3ModelRunner(ModelRunner["MiniMaxMusic3SGLangRequestData"]):
     """Own c0 sampling, RVQ depth decode and FM8 chunk streaming."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
+    model: "Qwen3ForCausalLM"
+    tp_worker: ModelWorker
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._request_data: dict[str, Any] = {}
+        self._request_data: dict[str, MiniMaxMusic3SGLangRequestData] = {}
         self._dump_dir = os.environ.get(_HIDDEN_DUMP_DIR_ENV) or None
         self._forced_codes_dir = os.environ.get(_FORCED_CODES_DIR_ENV) or None
         if self._forced_codes_dir is not None:
@@ -97,16 +120,16 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             )
 
     def requested_capture_hidden_mode_prefill(
-        self, schedule_batch: Any, requests: list
-    ) -> Any:
+        self, schedule_batch: ScheduleBatch | None, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
         return CaptureHiddenMode.LAST
 
     def requested_capture_hidden_mode_decode(
-        self, schedule_batch: Any, requests: list
-    ) -> Any:
+        self, schedule_batch: ScheduleBatch | None, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
@@ -115,16 +138,19 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         return CaptureHiddenMode.LAST
 
     def before_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
         if not requests:
             return
         device = forward_batch.input_ids.device
         embed_tokens = self.model.get_input_embeddings()
-        rows = []
+        rows: list[torch.Tensor] = []
         for request in requests:
-            data = request.data
+            data: MiniMaxMusic3SGLangRequestData = request.data
             if not data.is_cfg_uncond:
                 self._start_request(request.request_id, data, device)
             prompt_ids = data.prompt_token_ids.to(device=device)
@@ -140,7 +166,11 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         forward_batch.input_embeds = torch.cat(rows, dim=0)
 
     def post_prefill(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: object,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
         if bool(getattr(schedule_batch, "is_prefill_only", False)) or not requests:
@@ -149,9 +179,9 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -170,15 +200,21 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         buffer[: embeds.shape[0]].copy_(embeds)
 
     def post_decode(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch, schedule_batch
         if not requests:
             return
         self._advance(result, requests, emit=True)
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
-        ar_state = req_data.ar_state
+    def on_request_finished(
+        self, request_id: str, req_data: "MiniMaxMusic3SGLangRequestData"
+    ) -> None:
+        ar_state: MiniMaxMusic3ARState | None = req_data.ar_state
         self._request_data.pop(request_id, None)
         if ar_state is None:
             return
@@ -204,7 +240,13 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         if data is not None:
             data.ar_state = None
 
-    def _advance(self, result: Any, requests: list, *, emit: bool) -> None:
+    def _advance(
+        self,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
+        *,
+        emit: bool,
+    ) -> None:
         """Sample one frame per row and queue whatever windows it completes."""
         model = self.model
         logits_output = result.logits_output
@@ -288,11 +330,16 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             self._emit_ready_window(cond_requests[index].request_id, ar_state)
         result.next_token_ids = model.c0_logit_ids[sampled.repeat_interleave(2)]
 
-    def _start_request(self, request_id: str, data: Any, device: torch.device) -> None:
+    def _start_request(
+        self,
+        request_id: str,
+        data: MiniMaxMusic3SGLangRequestData,
+        device: torch.device,
+    ) -> None:
         del device
         state = data.minimax_state
         decode_limit = int(state.max_audio_frames)
-        data.ar_state = _ARState(
+        data.ar_state = MiniMaxMusic3ARState(
             sampling_seed=derive_sampling_seed(_SAMPLING_NAMESPACE, state.seed),
             seed=state.seed,
             decode_limit=decode_limit,
@@ -306,7 +353,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
 
     @staticmethod
     def _record_reference_ranks(
-        ar_states: list[_ARState],
+        ar_states: list[MiniMaxMusic3ARState],
         c0_logits: torch.Tensor,
         forced: torch.Tensor,
         depth_ranks: torch.Tensor,
@@ -338,12 +385,12 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         return torch.load(path, weights_only=True)
 
     def _forced_codes_for(
-        self, ar_states: list[_ARState], device: torch.device
+        self, ar_states: list[MiniMaxMusic3ARState], device: torch.device
     ) -> torch.Tensor | None:
         """Stack this step's reference codes, one row per request."""
         if self._forced_codes_dir is None:
             return None
-        rows = []
+        rows: list[torch.Tensor] = []
         for ar_state in ar_states:
             trajectory = ar_state.forced_codes
             if trajectory is None or ar_state.forced_step >= trajectory.shape[0]:
@@ -356,15 +403,15 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         return torch.stack(rows).to(device=device)
 
     @staticmethod
-    def _ar_state(request: Any) -> _ARState:
-        ar_state = request.data.ar_state
+    def _ar_state(request: SchedulerRequest) -> MiniMaxMusic3ARState:
+        ar_state: MiniMaxMusic3ARState | None = request.data.ar_state
         if ar_state is None:
             raise RuntimeError(
                 f"MiniMax Music 3 request {request.request_id} has no AR state"
             )
         return ar_state
 
-    def _log_progress(self, request_id: str, ar_state: _ARState) -> None:
+    def _log_progress(self, request_id: str, ar_state: MiniMaxMusic3ARState) -> None:
         interval = max(
             1, min(250, max(1, ar_state.decode_limit // _PROGRESS_LOG_DIVISOR))
         )
@@ -374,7 +421,9 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             f"MiniMax Music 3 AR progress request={request_id} frames={ar_state.generated_frames}/{ar_state.decode_limit} elapsed={time.perf_counter() - ar_state.started_s:.1f}s"
         )
 
-    def _emit_ready_window(self, request_id: str, ar_state: _ARState) -> None:
+    def _emit_ready_window(
+        self, request_id: str, ar_state: MiniMaxMusic3ARState
+    ) -> None:
         """Emit the next window once one frame of lookahead proves it is not
         the final one; the tail is flushed in on_request_finished."""
         start = ar_state.emitted_windows * AR_CHUNK_HOP_FRAMES
@@ -396,7 +445,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
     def _emit_window(
         self,
         request_id: str,
-        ar_state: _ARState,
+        ar_state: MiniMaxMusic3ARState,
         window: ChunkWindow,
         *,
         is_final: bool,
@@ -425,7 +474,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             f"MiniMax Music 3 AR emitted request={request_id} chunk={window.index} frames={window.length} frame_range=[{window.start},{window.end}) final={is_final}"
         )
 
-    def _dump_reference_ranks(self, ar_state: _ARState) -> None:
+    def _dump_reference_ranks(self, ar_state: MiniMaxMusic3ARState) -> None:
         if self._dump_dir is None or not ar_state.reference_ranks:
             return
         os.makedirs(self._dump_dir, exist_ok=True)

@@ -9,7 +9,8 @@ import logging
 import os
 import shutil
 import tempfile
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.models.zonos2.hf_config import (
     Zonos2Config,
@@ -21,6 +22,20 @@ from sglang_omni.models.zonos2.streaming_contract import (
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner
+    from sglang_omni.models.zonos2.request_builders import Zonos2SGLangRequestData
+    from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +127,8 @@ def _cuda_graph_buckets(max_bs: int) -> list[int]:
 
 
 class Zonos2EngineBuilder(TtsEngineBuilder):
+    model: Zonos2SGLangModel | None
+
     model_name = "ZONOS2"
     model_arch_override = "Zonos2SGLangModel"
 
@@ -152,8 +169,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         _register_zonos2_autoconfig()
         _install_tuned_moe_configs()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
-        defaults: dict[str, Any] = {
+    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
+        defaults: dict[str, str | int | float] = {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,
             "disable_cuda_graph": False,
@@ -176,7 +193,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         self._cuda_graph_bs = _cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
         overrides["cuda_graph_bs"] = self._cuda_graph_bs
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         # note (Chenchen Hong): per-frame feedback/EOS state has no rollback, so a
         # non-final chunked-prefill chunk would queue a spurious frame; disable
         # chunking (mirrors the Qwen3-Omni talker).
@@ -189,16 +206,18 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self.model = model_worker.model_runner.model
 
-    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+    def post_cuda_graph_setup(
+        self, model: Zonos2SGLangModel | None, server_args: object
+    ) -> None:
         del server_args
         # Opt-in tail CUDA graph: capture the per-frame head+sample+embed+hash
         # tail (otherwise eager in the runner), one graph per decode bucket with
@@ -210,7 +229,11 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
 
             model.capture_tail_graphs(self._cuda_graph_bs, TTSSamplingParams())
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> Zonos2ModelRunner:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner
 
         return Zonos2ModelRunner(
@@ -223,19 +246,22 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             stream_emit_first_chunk_frames=self.stream_emit_first_chunk_frames,
         )
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: Zonos2SGLangModel | None) -> tuple[
+        Callable[[StagePayload], Zonos2SGLangRequestData],
+        Callable[[Zonos2SGLangRequestData], StagePayload],
+    ]:
         from sglang_omni.models.zonos2.request_builders import (
             make_zonos2_scheduler_adapters,
         )
 
         return make_zonos2_scheduler_adapters(model=model)
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         assert self.model is not None
         return self.model.reset_request
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> dict[str, bool]:
         return {"enable_async_decode": self.async_decode}
 
-    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 SPECIAL_TOKEN_IDS: dict[str, int] = {
     "<|im_start|>": 151644,
@@ -98,7 +101,7 @@ def build_prompt(caption: str, lyrics: str) -> str:
     )
 
 
-def validate_tokenizer_ids(tokenizer: Any) -> None:
+def validate_tokenizer_ids(tokenizer: "PreTrainedTokenizerBase") -> None:
     """Fail fast when a tokenizer is not the supported music tokenizer."""
 
     for token, expected in SPECIAL_TOKEN_IDS.items():

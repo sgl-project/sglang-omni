@@ -134,7 +134,7 @@ class ConfigPatch:
     def create(
         cls,
         path: str | ConfigPath,
-        value: Any,
+        value: object,
         source: ConfigSource,
         *,
         root: type[BaseModel] = PipelineConfig,

@@ -16,7 +16,7 @@ import logging
 import queue as _queue_mod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from transformers import AutoTokenizer
 
@@ -27,6 +27,11 @@ from sglang_omni.models.qwen3_omni.payload_types import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+
+    from sglang_omni.pipeline.stage.stream_queue import StreamItem
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +64,11 @@ class StreamingDetokenizeScheduler:
 
     def __init__(
         self,
-        tokenizer: Any,
+        tokenizer: "PreTrainedTokenizerBase",
         eos_token_id: int | None,
         *,
         stage_name: str = "decode",
-    ):
+    ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self._tokenizer = tokenizer
@@ -122,7 +127,7 @@ class StreamingDetokenizeScheduler:
             self._state[request_id] = s
         return s
 
-    def _on_stream_chunk(self, request_id: str, item: Any) -> None:
+    def _on_stream_chunk(self, request_id: str, item: "StreamItem") -> None:
         data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
         s = self._ensure_state(request_id)

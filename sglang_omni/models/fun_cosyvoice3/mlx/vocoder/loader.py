@@ -26,7 +26,7 @@ _MLX_DTYPES = {
 }
 
 
-def _normalize_dtype_name(value: Any) -> str:
+def _normalize_dtype_name(value: object) -> str:
     name = str(value).lower().removeprefix("torch.").removeprefix("mlx.core.")
     if name not in _MLX_DTYPES:
         raise ValueError(
@@ -272,7 +272,7 @@ class FunCosyVoice3MlxVocoder:
         prompt_token: Any,
         prompt_feat: Any,
         embedding: Any,
-    ) -> np.ndarray:
+    ) -> np.ndarray[tuple[int, ...], np.dtype[np.float32]]:
         """Decode one request and return a contiguous float32 NumPy waveform."""
         waveform = np.asarray(
             self.decode_mx(

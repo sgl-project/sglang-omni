@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from array import array
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -23,6 +23,10 @@ from sglang_omni.models.llada2_uni.payload_types import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
+
+if TYPE_CHECKING:
+    from sglang.srt.dllm.config import DllmConfig
+    from transformers import PreTrainedTokenizerBase
 
 
 def build_encoder_request(
@@ -104,9 +108,9 @@ def build_dllm_thinker_request(
     state: LLaDA2UniPipelineState,
     *,
     params: dict[str, Any],
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     vocab_size: int,
-    dllm_config: Any,
+    dllm_config: "DllmConfig",
     request_id: str | None = None,
 ) -> SGLangDLLMRequestData:
     """Build SGLangDLLMRequestData for the LLaDA2-Uni thinker."""
@@ -184,9 +188,9 @@ def apply_dllm_thinker_result(
 
 def make_dllm_thinker_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     vocab_size: int,
-    dllm_config: Any,
+    dllm_config: "DllmConfig",
     stage_name: str = THINKER_STAGE,
 ):
     """Build StagePayload <-> scheduler adapters for the dLLM thinker."""

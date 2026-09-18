@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.models.moss_tts.hf_loading import (
     MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
@@ -14,6 +14,22 @@ from sglang_omni.models.moss_tts.hf_loading import (
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+    from sglang_omni.models.moss_tts_local.request_builders import (
+        MossTTSLocalSGLangRequestData,
+    )
+    from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
 
 
 class MossTtsLocalEngineBuilder(TtsEngineBuilder):
@@ -26,7 +42,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self,
         checkpoint_dir: str,
         *,
-        server_args_overrides: Mapping[str, Any] | None = None,
+        server_args_overrides: Mapping[str, object] | None = None,
     ) -> int:
         return resolve_moss_tts_context_length(
             checkpoint_dir,
@@ -56,14 +72,14 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             applied_codec_mem_reserve=0.0,
         )
         self.profile_total_gpu_memory_fraction: float | None = None
-        self.model: Any | None = None
+        self.model: MossTTSLocalSGLangModel | None = None
 
     def generation_defaults(
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
-        defaults: dict[str, Any] = {
+    ) -> dict[str, str | int | float]:
+        defaults: dict[str, str | int | float] = {
             "max_running_requests": 16,
             "dtype": dtype,
             "disable_cuda_graph": False,
@@ -107,7 +123,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             )
             self.profile_total_gpu_memory_fraction = None
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs) -> None:
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
@@ -124,7 +140,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             f"{self.profile_total_gpu_memory_fraction}"
         )
 
-    def infra_kwargs(self) -> dict[str, Any]:
+    def infra_kwargs(self) -> dict[str, float | None]:
         return {
             "total_gpu_memory_fraction": self.profile_total_gpu_memory_fraction,
         }
@@ -132,37 +148,49 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self.model = model_worker.model_runner.model
 
-    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+    def post_cuda_graph_setup(
+        self, model: MossTTSLocalSGLangModel, server_args: ServerArgs
+    ) -> None:
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_bs,
         )
+
+        batch_sizes = get_decode_cuda_graph_bs(server_args)
+        assert batch_sizes is not None
 
         # note (luojiaxuan): Also graph the per-frame local-transformer decode
         # (1 + n_vq micro-steps and 13 seeded sampling passes per frame):
         # eager it is kernel-launch-bound at ~22 ms/frame independent of batch
         # size.
-        model.init_frame_decode_graphs(list(get_decode_cuda_graph_bs(server_args)))
+        model.init_frame_decode_graphs(list(batch_sizes))
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> MossTTSLocalModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.moss_tts_local.model_runner"
         )
 
         return model_runner_mod.MossTTSLocalModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: MossTTSLocalSGLangModel | None) -> tuple[
+        Callable[[StagePayload], MossTTSLocalSGLangRequestData],
+        Callable[[MossTTSLocalSGLangRequestData], StagePayload],
+    ]:
         return request_builders.make_moss_tts_local_scheduler_adapters(model=model)
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         assert self.model is not None
         model = self.model
 
@@ -172,7 +200,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
 
         return abort_request
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(self) -> dict[str, int | float]:
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
@@ -180,5 +208,5 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
-    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

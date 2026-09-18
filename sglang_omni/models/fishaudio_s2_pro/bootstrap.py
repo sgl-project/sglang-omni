@@ -5,15 +5,23 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
+
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
+        FishQwen3AudioDecoder,
+    )
+    from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 
 logger = logging.getLogger(__name__)
 
 
 def _rematerialize_audio_decoder_buffers(
-    audio_decoder: torch.nn.Module, device: Any
+    audio_decoder: "FishQwen3AudioDecoder", device: str | torch.device | int | None
 ) -> None:
     """Recompute the audio decoder's non-persistent computed buffers.
 
@@ -91,7 +99,7 @@ def load_audio_decoder(
     checkpoint_dir: str,
     *,
     device: str,
-) -> tuple[torch.nn.Module, int, int, Any]:
+) -> "tuple[FishQwen3AudioDecoder, int, int, PreTrainedTokenizerFast]":
     """Load the Fish audio decoder and return it with metadata + tokenizer."""
     from transformers import PreTrainedTokenizerFast
 
@@ -145,8 +153,8 @@ def load_audio_decoder(
 
 def bootstrap_text_model_for_decode(
     *,
-    text_model: Any,
-    audio_decoder: torch.nn.Module,
+    text_model: "S2ProSGLangTextModel",
+    audio_decoder: "FishQwen3AudioDecoder",
     semantic_begin_id: int,
     semantic_end_id: int,
     im_end_token_id: int,

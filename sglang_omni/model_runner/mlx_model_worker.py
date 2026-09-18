@@ -4,23 +4,65 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING
+
+from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxLaunch, MlxTpModelWorker
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.model_runner.model_worker import ModelWorkerConfig
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import (
+        ModelRunnerOutput,
+        SchedulerOutput,
+        SchedulerRequest,
+    )
+
+
+MlxModelRunnerOptions = TypedDict(
+    "MlxModelRunnerOptions",
+    {
+        "model_path": str,
+        "trust_remote_code": bool,
+        "disable_radix_cache": bool,
+        "pool_size": NotRequired[int | None],
+        "mem_fraction_static": float,
+        "quantization": str | None,
+        "revision": str | None,
+        "enable_sampling": bool,
+        "sampling_rng_seed": int,
+        "deterministic_seeding": bool,
+    },
+)
 
 
 @dataclass(slots=True)
 class _MlxSchedulerPendingStep:
-    launch: Any
-    reqs: list[Any]
-    scheduler_output: Any
-    schedule_batch: Any
+    launch: MlxLaunch
+    reqs: list[Req]
+    scheduler_output: SchedulerOutput
+    schedule_batch: ScheduleBatch
 
 
 class MlxSchedulerModelRunner(ModelRunner):
     """Bridge Omni's decode lookahead to SGLang's lazy MLX worker API."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    tp_worker: MlxTpModelWorker
+
+    def __init__(
+        self,
+        tp_worker: MlxTpModelWorker,
+        output_processor: SGLangOutputProcessor | None,
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         import mlx.core as mx
 
@@ -37,7 +79,7 @@ class MlxSchedulerModelRunner(ModelRunner):
 
         return mx.stream(self._mlx_thread_stream)
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         if len(batch.reqs) != 1:
             return False
         previous = self._last_mlx_pending
@@ -50,7 +92,9 @@ class MlxSchedulerModelRunner(ModelRunner):
                 return False
         return super().lookahead_eligible(batch)
 
-    def _build_forward_batch(self, scheduler_output: Any):
+    def _build_forward_batch(
+        self, scheduler_output: SchedulerOutput
+    ) -> tuple[None, ScheduleBatch, bool] | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
@@ -61,10 +105,10 @@ class MlxSchedulerModelRunner(ModelRunner):
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
         with self._mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
@@ -74,10 +118,10 @@ class MlxSchedulerModelRunner(ModelRunner):
 
     def custom_decode_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del requests
         with self._mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
@@ -85,7 +129,9 @@ class MlxSchedulerModelRunner(ModelRunner):
                 forward_batch=forward_batch,
             )
 
-    def execute_launch(self, scheduler_output: Any):
+    def execute_launch(
+        self, scheduler_output: SchedulerOutput
+    ) -> _MlxSchedulerPendingStep | None:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
@@ -134,7 +180,9 @@ class MlxSchedulerModelRunner(ModelRunner):
         self._last_mlx_pending = pending
         return pending
 
-    def execute_resolve(self, pending: _MlxSchedulerPendingStep | None):
+    def execute_resolve(
+        self, pending: _MlxSchedulerPendingStep | None
+    ) -> ModelRunnerOutput | None:
         if pending is None:
             return None
 
@@ -184,8 +232,8 @@ class MlxSchedulerModelRunner(ModelRunner):
 
 def create_mlx_model_worker(
     *,
-    config: Any,
-    server_args: Any,
+    config: ModelWorkerConfig,
+    server_args: ServerArgs,
     gpu_id: int,
     tp_rank: int = 0,
 ):
@@ -205,7 +253,7 @@ def create_mlx_model_worker(
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
     else:
         raise NotImplementedError(
-            "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
+            f"Omni's MLX worker does not support model architecture {model_arch!r}"
         )
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
@@ -228,7 +276,7 @@ def create_mlx_model_worker(
         def tp_rank(self) -> int:
             return self.ps.tp_rank
 
-        def _init_model_runner(self):
+        def _init_model_runner(self) -> None:
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
             if model_arch == "FunCosyVoice3SGLangModel":
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
@@ -244,7 +292,7 @@ def create_mlx_model_worker(
                 raise RuntimeError(
                     "Fun-CosyVoice3 MLX worker requires its model bundle path"
                 )
-            init_kwargs = {
+            init_kwargs: MlxModelRunnerOptions = {
                 "model_path": mlx_model_path,
                 "trust_remote_code": get_model().trust_remote_code,
                 "disable_radix_cache": get_memory().disable_radix_cache,

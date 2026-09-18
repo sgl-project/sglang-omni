@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -31,7 +34,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     suppress_bootstrap_silence: bool = wire(False, codec="bool")
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
     seed: int | None = None
-    audio_codes: Any | None = wire(None, codec="tensor_list")
+    audio_codes: torch.Tensor | list[list[int]] | None = wire(None, codec="tensor_list")
     finish_reason: str | None = None
     ref_code_len: int = wire(0, emit="truthy", codec="int")
     audio_samples: Any | None = wire(None, codec="tensor_list")
@@ -39,9 +42,9 @@ class Qwen3TTSState(DeclarativeStateBase):
     # engine process; the AR request builder consumes and clears them. tensor_cpu
     # keeps them on the relay in their own dtype instead of widening bf16 to fp32
     # and base64 into the control-plane message.
-    prepared_prompt_embeds: Any | None = wire(None, codec="tensor_cpu")
-    prepared_text_tail: Any | None = wire(None, codec="tensor_cpu")
-    prepared_ref_code: Any | None = wire(None, codec="tensor_cpu")
-    prepared_pad_embed: Any | None = wire(None, codec="tensor_cpu")
+    prepared_prompt_embeds: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    prepared_text_tail: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    prepared_ref_code: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    prepared_pad_embed: torch.Tensor | None = wire(None, codec="tensor_cpu")
     prepared_input_ids: list[int] | None = None
     prepared_gen_kwargs: dict[str, Any] | None = None

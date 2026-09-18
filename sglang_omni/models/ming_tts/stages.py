@@ -40,11 +40,16 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import torch
+    from transformers import PretrainedConfig
 
     from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
         AudioVAE,
     )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
+    from sglang_omni.models.ming_tts.streaming_vocoder import (
+        MingTTSStreamingVocoderScheduler,
+    )
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 
 def _resolve_audio_vae_dtype(dtype: str | torch.dtype) -> torch.dtype:
@@ -130,7 +135,7 @@ def create_sglang_tts_engine_executor(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-) -> Any:
+) -> "OmniScheduler":
     from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 
     user_overrides = dict(server_args_overrides or {})
@@ -156,7 +161,7 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> Any:
+def create_tts_engine_executor(*args, **kwargs) -> "OmniScheduler":
     return create_sglang_tts_engine_executor(*args, **kwargs)
 
 
@@ -232,7 +237,7 @@ def create_audio_decode_executor(
     max_batch_wait_ms: int = MING_TTS_AUDIO_DECODE_MAX_BATCH_WAIT_MS,
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
-) -> Any:
+) -> "MingTTSStreamingVocoderScheduler":
     validate_ming_tts_audio_decode_cadence_config(
         initial_chunk_patches=initial_chunk_patches,
         steady_chunk_patches=steady_chunk_patches,
@@ -443,14 +448,14 @@ def create_audio_decode_executor(
     return scheduler
 
 
-def _load_ming_tts_config(model_path: str) -> Any:
+def _load_ming_tts_config(model_path: str) -> "PretrainedConfig":
     register_ming_tts_hf_config()
     from transformers import AutoConfig
 
     return AutoConfig.from_pretrained(model_path, trust_remote_code=False)
 
 
-def _resolve_context_length(config: Any) -> int:
+def _resolve_context_length(config: "PretrainedConfig") -> int:
     llm_config = config.llm_config
     value = getattr(llm_config, "max_position_embeddings", None)
     if value is None:

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -14,6 +14,19 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.models.ming_tts.engine_io import MingTTSLatentPatch
 from sglang_omni.models.ming_tts.sglang_model import MingTTSTailInputs
+
+if TYPE_CHECKING:
+    from sglang.srt.distributed.parallel_state import GroupCoordinator
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSSGLangModel
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
 
 @dataclass
@@ -77,7 +90,11 @@ class _MingTTSRequestState:
 class MingTTSModelRunner(ModelRunner):
     """Runs Ming-Omni-TTS AR steps and samples continuous acoustic latents."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    model: MingTTSSGLangModel
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor | None
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         self._tp_rank = int(tp_worker.tp_rank)
         self._tp_size = int(get_parallel().tp_size)
@@ -88,20 +105,20 @@ class MingTTSModelRunner(ModelRunner):
 
     def before_prefill(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch, schedule_batch
         for sched_req in requests:
             self._materialize_request_state(sched_req)
 
-    def _materialize_request_state(self, sched_req: Any) -> None:
+    def _materialize_request_state(self, sched_req: SchedulerRequest) -> None:
         request_id = sched_req.request_id
         if request_id in self._request_states:
             return
 
-        data = sched_req.data
+        data: MingTTSSGLangRequestData = sched_req.data
         state = data.state
         weight = self.model._decode_input_embedding.weight
         device = weight.device
@@ -165,9 +182,9 @@ class MingTTSModelRunner(ModelRunner):
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> GenerationBatchResult:
         del schedule_batch
         input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
@@ -175,15 +192,15 @@ class MingTTSModelRunner(ModelRunner):
 
     def _build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        batch_parts = []
+        batch_parts: list[torch.Tensor] = []
         dtype = self.model._decode_input_embedding.weight.dtype
         device = forward_batch.input_ids.device
         input_embedding = self.model.get_input_embeddings()
         for sched_req in requests:
-            data = sched_req.data
+            data: MingTTSSGLangRequestData = sched_req.data
             request_state = self._request_states[sched_req.request_id]
             req = data.req
             prefix_len = len(req.prefix_indices)
@@ -191,7 +208,7 @@ class MingTTSModelRunner(ModelRunner):
             end = prefix_len + extend_len
             prompt_ids = data.input_ids
             prompt_len = int(prompt_ids.shape[0])
-            request_parts = []
+            request_parts: list[torch.Tensor] = []
 
             prompt_start = min(prefix_len, prompt_len)
             prompt_stop = min(end, prompt_len)
@@ -223,7 +240,7 @@ class MingTTSModelRunner(ModelRunner):
 
     def _forward_with_input_embeds(
         self,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         input_embeds: torch.Tensor,
     ) -> GenerationBatchResult:
         model_runner = self.tp_worker.model_runner
@@ -245,9 +262,9 @@ class MingTTSModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -258,7 +275,7 @@ class MingTTSModelRunner(ModelRunner):
         if batch_size == 0:
             return
 
-        rows = []
+        rows: list[torch.Tensor] = []
         weight = self.model._decode_input_embedding.weight
         for sched_req in requests:
             rows.append(
@@ -275,10 +292,10 @@ class MingTTSModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
@@ -286,14 +303,14 @@ class MingTTSModelRunner(ModelRunner):
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self._collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
 
-    def finalize_skip_rids(self, scheduler_output: Any) -> set[str]:
+    def finalize_skip_rids(self, scheduler_output: SchedulerOutput | None) -> set[str]:
         batch = getattr(scheduler_output, "batch_data", None)
         if bool(getattr(batch, "is_prefill_only", False)):
             return {sched_req.request_id for sched_req in scheduler_output.requests}
@@ -301,10 +318,10 @@ class MingTTSModelRunner(ModelRunner):
 
     def _collect_ming_tts_step(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
         if not requests:
@@ -342,11 +359,11 @@ class MingTTSModelRunner(ModelRunner):
     def _run_entry_tail_step(
         self,
         hidden_states: torch.Tensor,
-        requests: list[Any],
+        requests: list[SchedulerRequest],
         step_update: MingTTSTPStepUpdate,
     ) -> None:
         device = hidden_states.device
-        next_ids = []
+        next_ids: list[int] = []
 
         request_states = [self._request_states[req.request_id] for req in requests]
         steps = [int(req.data.generation_steps) for req in requests]
@@ -394,7 +411,7 @@ class MingTTSModelRunner(ModelRunner):
         decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
         stop_list, length_list = decision_rows
         for row_idx, request_state in enumerate(request_states):
-            data = requests[row_idx].data
+            data: MingTTSSGLangRequestData = requests[row_idx].data
             step = steps[row_idx]
             sampled_row = sampled[row_idx : row_idx + 1]
             sampled_chunk = sampled_row.squeeze(0).detach()
@@ -433,7 +450,7 @@ class MingTTSModelRunner(ModelRunner):
             if not (stop or length):
                 continue
             request_state = request_states[row_idx]
-            data = requests[row_idx].data
+            data: MingTTSSGLangRequestData = requests[row_idx].data
             data.stop_step = request_state.stop_step
             if data.is_streaming:
                 continue
@@ -466,7 +483,7 @@ class MingTTSModelRunner(ModelRunner):
     def _apply_follower_step_update(
         self,
         step_update: MingTTSTPStepUpdate,
-        requests: list[Any],
+        requests: list[SchedulerRequest],
     ) -> None:
         feedback_list, tail_failure_list = step_update.control_tensor[1:].cpu().tolist()
         if tail_failure_list[0]:
@@ -505,7 +522,7 @@ class MingTTSModelRunner(ModelRunner):
             dist_group = getattr(tp_group, "group", None)
         dist.broadcast(tensor, src=src_rank, group=dist_group)
 
-    def _get_tp_group(self) -> Any:
+    def _get_tp_group(self) -> "GroupCoordinator | None":
         getter = getattr(self.tp_worker, "get_tp_group", None)
         if callable(getter):
             return getter()

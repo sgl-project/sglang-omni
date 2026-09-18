@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+from torch.utils.hooks import RemovableHandle
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class StaticAuxHiddenCapture:
         self,
         *,
         buffers: list[torch.Tensor],
-        hook_handles: list[Any],
+        hook_handles: list[RemovableHandle],
         max_tokens: int,
     ) -> None:
         self.buffers = tuple(buffers)
@@ -133,7 +134,7 @@ def install_hidden_capture_hooks(
         )
         buffers.append(getattr(text_model, name))
 
-    hook_handles: list[Any] = []
+    hook_handles: list[RemovableHandle] = []
     capture = StaticAuxHiddenCapture(
         buffers=buffers,
         hook_handles=hook_handles,

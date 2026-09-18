@@ -115,7 +115,9 @@ class MingImageEncoder(nn.Module):
         # request time.
 
     @staticmethod
-    def _vision_dict(vision_cfg: Any) -> dict:
+    def _vision_dict(
+        vision_cfg: Any,
+    ) -> dict:
         """Convert VisionConfig dataclass to plain dict for PretrainedConfig."""
         if hasattr(vision_cfg, "__dataclass_fields__"):
             from dataclasses import asdict
@@ -231,7 +233,7 @@ class MingImageEncoder(nn.Module):
         image_grid_thw: torch.Tensor | None = None,
         pixel_values_videos: torch.Tensor | None = None,
         video_grid_thw: torch.Tensor | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> dict[str, torch.Tensor]:
         """Encode images and/or videos and return embeddings.
 

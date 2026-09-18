@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 
-def _mapping_get(value: Any, key: str, default: Any = None) -> Any:
+def _mapping_get(value: object, key: str, default: object = None) -> object:
     if isinstance(value, Mapping):
         return value.get(key, default)
     return getattr(value, key, default)
 
 
-def _count_ids(ids: Any) -> int:
+def _count_ids(ids: object) -> int:
     if ids is None:
         return 0
     if hasattr(ids, "numel"):
@@ -25,8 +24,8 @@ def _count_ids(ids: Any) -> int:
 
 
 def build_text_usage(
-    state: Any,
-    thinker_out: Mapping[str, Any] | None = None,
+    state: object,
+    thinker_out: Mapping[str, object] | None = None,
 ) -> dict[str, int]:
     """Build OpenAI-style token usage for Ming thinker text generation."""
 

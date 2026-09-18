@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from fastapi.responses import JSONResponse
 
@@ -32,7 +31,7 @@ def openai_error_payload(
     error_type: str,
     param: str | None = None,
     code: int | str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, dict[str, str | int | None]]:
     """Build an OpenAI-style error envelope."""
 
     return {
@@ -76,9 +75,9 @@ def speech_error_response(error: SpeechAPIError) -> JSONResponse:
     )
 
 
-def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, Any]:
+def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, str | int]:
     """Build the public error event used by speech WebSocket transports."""
-    payload: dict[str, Any] = {
+    payload: dict[str, str | int] = {
         "type": "error",
         "message": error.message,
         "error_type": error.error_type,

@@ -15,8 +15,9 @@ import logging
 import queue as _queue_mod
 import threading
 import time
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class SimpleScheduler:
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
         batch_wait_when_idle: bool = True,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
@@ -144,7 +145,9 @@ class SimpleScheduler:
 
     @staticmethod
     def _emit_result(
-        request_id: str, result: Any, outbox: _queue_mod.Queue[OutgoingMessage]
+        request_id: str,
+        result: object,
+        outbox: _queue_mod.Queue[OutgoingMessage],
     ) -> None:
         outbox.put(
             OutgoingMessage(
@@ -207,10 +210,10 @@ class SimpleScheduler:
             self._emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
-    async def _await_result(result: Awaitable[Any]) -> Any:
+    async def _await_result(result: Awaitable[object]) -> object:
         return await result
 
-    def _run_compute_in_thread(self, payload: Any) -> Any:
+    def _run_compute_in_thread(self, payload: object) -> object:
         result = self._fn(payload)
         if inspect.isawaitable(result):
             result = asyncio.run(self._await_result(result))

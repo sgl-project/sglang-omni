@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from numpy.typing import ArrayLike
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -24,8 +29,12 @@ class FunCosyVoice3State(DeclarativeStateBase):
     speed: float = wire(1.0, codec="float")
     seed: int | None = None
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
-    flow_embedding: Any | None = wire(None, codec="tensor_list")
-    flow_prompt_speech_token: Any | None = wire(None, codec="tensor_list")
-    flow_prompt_speech_feat: Any | None = wire(None, codec="tensor_list")
-    audio_codes: Any | None = wire(None, codec="tensor_list")
+    flow_embedding: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
+    flow_prompt_speech_token: ArrayLike | torch.Tensor | None = wire(
+        None, codec="tensor_list"
+    )
+    flow_prompt_speech_feat: ArrayLike | torch.Tensor | None = wire(
+        None, codec="tensor_list"
+    )
+    audio_codes: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
     audio_samples: Any | None = wire(None, codec="tensor_list")

@@ -6,7 +6,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
+        AudioVAE,
+    )
 
 OWNER_AR_MODEL = "ar_model"
 OWNER_TTS_HEADS = "tts_heads"
@@ -329,7 +334,7 @@ def scan_ming_tts_weights(
 
 def load_ming_tts_audio_vae_weights(
     model_path: str | Path,
-    audio_vae: Any,
+    audio_vae: "AudioVAE",
     *,
     local_files_only: bool = False,
 ) -> MingTTSWeightReport:

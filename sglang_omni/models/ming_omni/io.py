@@ -18,7 +18,7 @@ class PromptInputs(TypedDict):
 class PreprocessingData(TypedDict, total=False):
     """Preprocessing outputs stored on StagePayload.data."""
 
-    raw_inputs: Any
+    raw_inputs: object
     prompt: PromptInputs
     mm_inputs: dict[str, Any]
     encoder_inputs: dict[str, dict[str, Any]]
@@ -42,7 +42,7 @@ class MingOmniPipelineState:
     process boundaries.
     """
 
-    raw_inputs: Any | None = None
+    raw_inputs: object | None = None
     prompt: PromptInputs | None = None
     mm_inputs: dict[str, Any] = field(default_factory=dict)
     encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -53,7 +53,7 @@ class MingOmniPipelineState:
     stream_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "MingOmniPipelineState":
+    def from_dict(cls, data: object) -> "MingOmniPipelineState":
         if not isinstance(data, dict):
             data = {}
         mm_inputs = data.get("mm_inputs")
@@ -76,7 +76,7 @@ class MingOmniPipelineState:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
+        data: dict[str, object] = {}
         if self.raw_inputs is not None:
             data["raw_inputs"] = self.raw_inputs
         if self.prompt is not None:

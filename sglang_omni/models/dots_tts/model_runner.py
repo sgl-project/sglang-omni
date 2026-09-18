@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
@@ -13,35 +13,58 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.dots_tts.flow_head import DotsFlowStep
 from sglang_omni.models.dots_tts.request_builders import DotsFlowResume
 
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import (
+        CaptureHiddenMode,
+        ForwardBatch,
+    )
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+    from sglang_omni.models.dots_tts.sglang_model import DotsTTSSGLangModel
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerRequest
+
 
 @dataclass
 class _DotsFlowLaunchBuf:
     """Acoustic-tail launch payload; finish is applied in _resolve_flow_finish."""
 
-    data_rows: list[Any]
+    data_rows: list[DotsTTSSGLangRequestData]
     steps: list[DotsFlowStep]
     batched: bool
 
 
-class DotsTTSModelRunner(ModelRunner):
+class DotsTTSModelRunner(ModelRunner["DotsTTSSGLangRequestData"]):
     """Use the shared SGLang forward path and own only latent recurrence."""
 
-    def __init__(self, tp_worker: Any, output_processor: Any) -> None:
+    model: DotsTTSSGLangModel
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._request_data: dict[str, Any] = {}
+        self._request_data: dict[str, DotsTTSSGLangRequestData] = {}
 
     def before_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
         if not requests:
             return
         self._release_retracted_flow_states()
-        rows = []
-        materialized = []
+        rows: list[torch.Tensor] = []
+        materialized: list[tuple[str, DotsTTSSGLangRequestData]] = []
         try:
             for request in requests:
-                data = request.data
+                data: DotsTTSSGLangRequestData = request.data
                 schedule = data.generation_schedule
                 if schedule is None or data.span_positions is None:
                     raise RuntimeError(
@@ -107,16 +130,16 @@ class DotsTTSModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
         del schedule_batch, is_lookahead
         if not requests:
             return
-        rows = []
+        rows: list[torch.Tensor] = []
         for request in requests:
             queue = request.data.pending_feedback_queue
             if not queue:
@@ -138,16 +161,16 @@ class DotsTTSModelRunner(ModelRunner):
             )
 
     def requested_capture_hidden_mode_prefill(
-        self, schedule_batch: Any, requests: list
-    ) -> Any:
+        self, schedule_batch: ScheduleBatch | None, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
         return CaptureHiddenMode.FULL
 
     def requested_capture_hidden_mode_decode(
-        self, schedule_batch: Any, requests: list
-    ) -> Any:
+        self, schedule_batch: ScheduleBatch | None, requests: list[SchedulerRequest]
+    ) -> CaptureHiddenMode:
         del schedule_batch, requests
         from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
 
@@ -160,7 +183,11 @@ class DotsTTSModelRunner(ModelRunner):
         return CaptureHiddenMode.LAST
 
     def post_prefill(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
@@ -175,9 +202,9 @@ class DotsTTSModelRunner(ModelRunner):
                 f"dots.tts expected rank-2/3 prefill hidden, got {hidden.ndim}"
             )
         offset = 0
-        last_hidden = []
+        last_hidden: list[torch.Tensor] = []
         for request in requests:
-            data = request.data
+            data: DotsTTSSGLangRequestData = request.data
             length = int(data.req.extend_range.length)
             request_hidden = hidden[offset : offset + length].unsqueeze(0)
             if request_hidden.size(1) != length:
@@ -204,7 +231,11 @@ class DotsTTSModelRunner(ModelRunner):
         self._resolve_flow_finish(launch_buf)
 
     def post_decode(
-        self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         launch_buf = self.post_decode_launch(result, forward_batch, requests)
         self.post_decode_resolve(
@@ -212,7 +243,10 @@ class DotsTTSModelRunner(ModelRunner):
         )
 
     def post_decode_launch(
-        self, result: Any, forward_batch: Any, requests: list
+        self,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
     ) -> _DotsFlowLaunchBuf | None:
         del forward_batch
         if not requests:
@@ -229,23 +263,25 @@ class DotsTTSModelRunner(ModelRunner):
     def post_decode_resolve(
         self,
         launch_buf: _DotsFlowLaunchBuf | None,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del result, forward_batch, schedule_batch, requests
         self._resolve_flow_finish(launch_buf)
 
     def _launch_flow_batch(
         self,
-        result: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        requests: list[SchedulerRequest],
         hidden: torch.Tensor,
         *,
         append_hidden: bool,
     ) -> _DotsFlowLaunchBuf:
-        data_rows = [request.data for request in requests]
+        data_rows: list[DotsTTSSGLangRequestData] = [
+            request.data for request in requests
+        ]
         steps = self.model.flow.decode_batch(
             [data.flow_state for data in data_rows],
             hidden_states=hidden,
@@ -255,7 +291,7 @@ class DotsTTSModelRunner(ModelRunner):
             eos_thresholds=[data.state.eos_threshold for data in data_rows],
             append_hidden=append_hidden,
         )
-        next_token_ids = []
+        next_token_ids: list[int] = []
         for data, step in zip(data_rows, steps, strict=True):
             data.pending_feedback_queue.append(step.feedback_embedding.detach())
             decoded_latent = step.latent_patch.detach()
@@ -292,7 +328,7 @@ class DotsTTSModelRunner(ModelRunner):
                 data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
 
     @staticmethod
-    def _hidden_states(result: Any) -> torch.Tensor:
+    def _hidden_states(result: object) -> torch.Tensor:
         logits_output = getattr(result, "logits_output", None)
         hidden = getattr(logits_output, "hidden_states", None)
         if hidden is None:
@@ -301,7 +337,9 @@ class DotsTTSModelRunner(ModelRunner):
             raise RuntimeError("dots.tts SGLang forward did not return hidden states")
         return hidden
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(
+        self, request_id: str, req_data: "DotsTTSSGLangRequestData"
+    ) -> None:
         self._request_data.pop(request_id, None)
         self._clear_request_data(req_data)
 
@@ -319,7 +357,7 @@ class DotsTTSModelRunner(ModelRunner):
             ):
                 self._suspend_request_data(req_data)
 
-    def _suspend_request_data(self, req_data: Any) -> None:
+    def _suspend_request_data(self, req_data: DotsTTSSGLangRequestData) -> None:
         flow_state = req_data.flow_state
         assert flow_state is not None and not isinstance(flow_state, DotsFlowResume)
         req_data.flow_state = DotsFlowResume(
@@ -327,7 +365,7 @@ class DotsTTSModelRunner(ModelRunner):
         )
         req_data.pending_feedback_queue.clear()
 
-    def _clear_request_data(self, req_data: Any) -> None:
+    def _clear_request_data(self, req_data: DotsTTSSGLangRequestData) -> None:
         flow_state = req_data.flow_state
         if flow_state is not None and not isinstance(flow_state, DotsFlowResume):
             self.model.flow.release_request(flow_state)

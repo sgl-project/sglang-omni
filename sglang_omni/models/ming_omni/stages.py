@@ -7,12 +7,14 @@ Ming's config remains usable in lightweight environments.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
 
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
+
+EncoderInputT = TypeVar("EncoderInputT")
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
@@ -101,13 +103,13 @@ def _payload_with_state(
 
 
 def _project_encoder_input_metadata(
-    encoder_inputs: dict[str, dict[str, Any]],
+    encoder_inputs: dict[str, EncoderInputT],
 ) -> dict[str, dict[str, Any]]:
     projected: dict[str, dict[str, Any]] = {}
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, object] = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             metadata["cache_key"] = cache_key
@@ -118,7 +120,7 @@ def _project_encoder_input_metadata(
     return projected
 
 
-def _project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
+def _project_prompt_for_usage(prompt: object) -> dict[str, Any] | None:
     if not isinstance(prompt, dict):
         return None
     input_ids = prompt.get("input_ids")
@@ -127,7 +129,7 @@ def _project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
     return {"input_ids": _copy_mutable_containers(input_ids)}
 
 
-def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
+def _slim_thinker_out(thinker_out: object) -> dict[str, Any] | None:
     if not isinstance(thinker_out, dict):
         return None
 
@@ -140,7 +142,7 @@ def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
     return projected
 
 
-def _copy_mutable_containers(value: Any) -> Any:
+def _copy_mutable_containers(value: object) -> Any:
     if isinstance(value, dict):
         return {key: _copy_mutable_containers(item) for key, item in value.items()}
     if isinstance(value, list):

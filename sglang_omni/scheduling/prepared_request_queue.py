@@ -11,17 +11,17 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
 CtxT = TypeVar("CtxT")
 PrepT = TypeVar("PrepT")
 
 
 @dataclass(frozen=True)
-class QueueSnapshot:
+class QueueSnapshot(Generic[CtxT]):
     # note (Yue Yin): read-only copy for introspection/tests -- so nothing outside
     # the queue can mutate the sets or hold the lock and bypass the transitions.
-    context: Any
+    context: CtxT | None
     prepared: frozenset[str]
     inflight: frozenset[str]
     aborted: frozenset[str]
@@ -41,7 +41,7 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
         self._aborted: set[str] = set()
         self._lock = threading.Lock()
 
-    def snapshot(self) -> QueueSnapshot:
+    def snapshot(self) -> QueueSnapshot[CtxT]:
         """Read-only view of the current state."""
         with self._lock:
             return QueueSnapshot(

@@ -23,21 +23,28 @@ import time
 import traceback
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 import torch
-from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
 from sglang.srt.utils import create_device_stream, device_stream_context
 
-from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
+from sglang_omni.scheduling.pre_lm_encoder import (
+    PreLMEncoderService,
+    QueueEntry,
+    QueueSignal,
+)
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_asr.sglang_model import (
+        Qwen3ASRForConditionalGeneration,
+    )
 
 logger = logging.getLogger(__name__)
 
 _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
-_SHUTDOWN = object()
-
 # note (luojiaxuan): WhisperFeatureExtractor identity fields; a change to any
 # of these changes the mel features and therefore the embedding.
 _FRONTEND_CONFIG_FIELDS = (
@@ -58,10 +65,10 @@ class _DetachedFailure:
 
 
 def build_cache_namespace(
-    model: Any,
+    model: Qwen3ASRForConditionalGeneration,
     *,
     model_path: str,
-    feature_extractor: Any,
+    feature_extractor: object,
     mm_attention_backend: str | None,
 ) -> str:
     """Digest identifying this process's encoder pipeline for cache keying."""
@@ -86,13 +93,13 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _expected_audio_tokens(item: Any) -> int | None:
+def _expected_audio_tokens(item: object) -> int | None:
     """Audio placeholder token count for an item (rows the LM expects)."""
     num_tokens = getattr(item, "num_audio_tokens", None)
     return int(num_tokens) if num_tokens is not None else None
 
 
-def _text_hidden_size(model: Any) -> int:
+def _text_hidden_size(model: Qwen3ASRForConditionalGeneration) -> int:
     config = model.config
     thinker_config = getattr(config, "thinker_config", None)
     text_config = getattr(thinker_config or config, "text_config", None)
@@ -102,14 +109,16 @@ def _text_hidden_size(model: Any) -> int:
     return int(hidden_size)
 
 
-class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Tensor]):
+class Qwen3ASRPreLMEncoderService(
+    PreLMEncoderService[MultimodalDataItem, torch.Tensor, torch.Tensor, torch.Tensor]
+):
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
 
     def __init__(
         self,
-        model: Any,
+        model: Qwen3ASRForConditionalGeneration,
         *,
         cache_namespace: str,
         cache_max_entries: int = _CACHE_MAX_ENTRIES,
@@ -159,12 +168,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             if self._closed:
                 return
             self._closed = True
-            self._queue.put(_SHUTDOWN)
+            self._queue.put(QueueSignal.SHUTDOWN)
         self._thread.join(timeout=5)
 
     def _enqueue(
         self,
-        item: Any,
+        item: MultimodalDataItem,
         future: concurrent.futures.Future[torch.Tensor],
     ) -> None:
         with self._lifecycle_lock:
@@ -178,7 +187,9 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 )
             )
 
-    def submit_item(self, item: Any) -> concurrent.futures.Future[torch.Tensor]:
+    def submit_item(
+        self, item: MultimodalDataItem
+    ) -> concurrent.futures.Future[torch.Tensor]:
         """Queue the item for LM-ready encoding and return its future."""
         expected_tokens = _expected_audio_tokens(item)
         if expected_tokens is None:
@@ -259,7 +270,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         follower_of.add_done_callback(attach_follower)
         return self._count_failed(completion)
 
-    def encode_item(self, item: Any) -> None:
+    def encode_item(self, item: MultimodalDataItem) -> None:
         """Block until the item holds the LM-ready embedding.
 
         On success the CPU mel tensor is cleared. Raises on encode failure;
@@ -341,7 +352,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 "cache_evictions": self._cache.eviction_count,
             }
 
-    def _cache_key(self, item: Any) -> str | None:
+    def _cache_key(self, item: object) -> str | None:
         return self._cache_key_from_fingerprint(
             getattr(item, "audio_fingerprint", None)
         )
@@ -351,7 +362,9 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             return None
         return f"{self._namespace}:{audio_fingerprint}"
 
-    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def _is_valid(
+        self, embedding: object, expected_tokens: int
+    ) -> TypeGuard[torch.Tensor]:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -360,7 +373,9 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             and embedding.dtype == self._dtype
         )
 
-    def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
+    def attach_embedding(
+        self, item: MultimodalDataItem, embedding: torch.Tensor
+    ) -> None:
         embedding = embedding.to(self._device, non_blocking=True)
         if self._stream is not None:
             # note (luojiaxuan): the batch path allocates on the private
@@ -375,16 +390,16 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def _drain_batch(
         self,
-    ) -> tuple[list[QueueEntry[Any]], bool]:
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         # note (luojiaxuan): the default window is 0 (greedy drain): items
         # that queued while the previous batch encoded are taken instantly,
         # so batches still form under load, and an idle-arrival request never
         # pays a batching wait -- at concurrency 1 a window is pure latency
         # (same reasoning as the MOSS-TD encoder service).
         first = self._queue.get()
-        if first is _SHUTDOWN:
+        if first is QueueSignal.SHUTDOWN:
             return [], True
-        batch = [cast(QueueEntry[Any], first)]
+        batch = [first]
         deadline = time.monotonic() + self._max_batch_wait_s
         shutdown = False
         while len(batch) < self._max_batch_size:
@@ -397,13 +412,15 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 )
             except queue.Empty:
                 break
-            if queued is _SHUTDOWN:
+            if queued is QueueSignal.SHUTDOWN:
                 shutdown = True
                 break
-            batch.append(cast(QueueEntry[Any], queued))
+            batch.append(queued)
         return batch, shutdown
 
-    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+    def _next_batch(
+        self,
+    ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         return self._drain_batch()
 
     @contextlib.contextmanager
@@ -415,12 +432,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 with device_stream_context(self._stream):
                     yield
 
-    def encode_batch(self, items: list[Any]) -> torch.Tensor:
+    def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
         return self._model.get_audio_feature(items)
 
     def split_embeddings(
         self,
-        items: list[Any],
+        items: list[MultimodalDataItem],
         embedding: torch.Tensor,
     ) -> list[torch.Tensor]:
         token_counts = []
@@ -457,7 +474,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def cache_embedding(
         self,
-        item: Any,
+        item: object,
         embedding: torch.Tensor,
         host_copy: torch.Tensor | None = None,
     ) -> None:
@@ -466,12 +483,14 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         if key is not None:
             self._cache.put(key, embedding)
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def _retry_batch(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]], _exc: Exception
+    ) -> bool:
         return len(batch) > 1
 
     def _handle_batch_failure(
         self,
-        batch: list[QueueEntry[Any]],
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
@@ -492,7 +511,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def _handle_item_failure(
         self,
-        _entry: QueueEntry[Any],
+        _entry: QueueEntry[MultimodalDataItem, torch.Tensor],
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
@@ -545,7 +564,9 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 "Qwen3-ASR device cache cleanup failed after OOM", exc_info=True
             )
 
-    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+    def _on_batch_start(
+        self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
+    ) -> None:
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -562,7 +583,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def _on_batch_finished(
         self,
-        batch: list[QueueEntry[Any]],
+        batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         batch_exc: Exception | None,
         retry_recovered: int | None,
         elapsed_s: float,

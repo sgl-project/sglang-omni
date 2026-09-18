@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from transformers import MistralConfig
 
 
 @dataclass
@@ -87,7 +90,7 @@ class VoxtralModelConfig:
             model_path=model_path,
         )
 
-    def to_hf_mistral_config(self) -> Any:
+    def to_hf_mistral_config(self) -> "MistralConfig":
         """Build a HuggingFace MistralConfig for loading transformers.MistralModel."""
         from transformers import MistralConfig
 

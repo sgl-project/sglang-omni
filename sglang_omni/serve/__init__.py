@@ -2,16 +2,20 @@
 """HTTP serving utilities."""
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sglang_omni.serve.launcher import launch_server
+    from sglang_omni.serve.openai_api import create_app
 
 _EXPORTS = {
     "create_app": ("sglang_omni.serve.openai_api", "create_app"),
     "launch_server": ("sglang_omni.serve.launcher", "launch_server"),
 }
-__all__ = list(_EXPORTS)
+__all__ = ["create_app", "launch_server"]
 
 
-def __getattr__(name: str) -> Any:
+def __getattr__(name: str) -> object:
     try:
         module_name, attr_name = _EXPORTS[name]
     except KeyError as exc:

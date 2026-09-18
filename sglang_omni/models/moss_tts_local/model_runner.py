@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -17,6 +17,27 @@ from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJourn
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
+if TYPE_CHECKING:
+    from queue import Queue
+
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.moss_tts_local.request_builders import (
+        MossTTSLocalSGLangRequestData,
+    )
+    from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import (
+        ARRequestData,
+        SchedulerOutput,
+        SchedulerRequest,
+    )
+
 
 class MossTTSLocalModelRunner(ModelRunner):
     """Drives the per-frame local-transformer decode and feedback embeddings.
@@ -29,21 +50,25 @@ class MossTTSLocalModelRunner(ModelRunner):
     CUDA-graph-replayable (decode input_ids are row indices).
     """
 
-    _outbox: Any | None = None
+    model: MossTTSLocalSGLangModel
+
+    _outbox: Queue[OutgoingMessage] | None = None
     _vocoder_target = "vocoder"
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._outbox: Any | None = None
+        self._outbox: Queue[OutgoingMessage] | None = None
         self._vocoder_target = "vocoder"
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self._outbox = outbox
 
     def _flush_stream_rows(
         self,
         request_id: str,
-        data: Any,
+        data: MossTTSLocalSGLangRequestData,
         *,
         force: bool,
     ) -> None:
@@ -70,7 +95,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         )
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(self, request_id: str, req_data: ARRequestData) -> None:
         # post_process_outputs only force-flushes on the audio end token; any
         # other stop (max_new_tokens, scheduler stop) would strand up to
         # MOSS_STREAM_TRANSPORT_BATCH_FRAMES - 1 frames, and the terminal
@@ -79,9 +104,9 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
         forward_batch.input_embeds = self._build_prefill_input_embeds(
@@ -91,9 +116,9 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -103,10 +128,10 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         try:
             is_prefill_only = schedule_batch.is_prefill_only
@@ -118,14 +143,14 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self._collect_frame(result, forward_batch, schedule_batch, requests)
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
         """Route to sync when the batch cannot take the graphed frame-decode
         path: any request with ``audio_repetition_penalty != 1`` (its eager
         rep-history gather lags one frame under lookahead and would diverge from
@@ -159,12 +184,12 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def _build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         pieces = []
         for sched_req in requests:
-            data = sched_req.data
+            data: MossTTSLocalSGLangRequestData = sched_req.data
             req = data.req
             rows = data.prompt_rows
             if rows is None:
@@ -214,8 +239,8 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def _write_decode_input_embedding(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
         batch_size = len(requests)
         if batch_size == 0:
@@ -249,10 +274,10 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def _collect_frame(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         if not requests:
             return
@@ -262,7 +287,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
         result.next_token_ids = next_token_ids
 
-    def _run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
+    def _run_frame_decode(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> tuple[torch.Tensor, int]:
         """GPU half shared by sync ``_collect_frame`` and async
         ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
         ``next_token_ids``; the caller does, because the async path keeps a
@@ -456,7 +486,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         # publish next_token_ids; an all-chunked batch just attaches no journal.
         return rows, end_id
 
-    def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
+    def post_decode_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
         """Async-decode GPU half of ``post_decode``: run the frame micro-decode
         (``_run_frame_decode``) and publish the device-computed radix ids, no
         host sync. Returns a private device snapshot of those ids for resolve:
@@ -474,11 +509,11 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def post_decode_resolve(
         self,
-        launch_buf: Any,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        launch_buf: torch.Tensor | None,
+        result: GenerationBatchResult | None,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         """Async-decode host half: restore the launch-time ``next_token_ids``
         snapshot (a pointer swap) so the shared ``_finalize`` tail reads the real
@@ -518,7 +553,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return gpu_radix_row_hash(rows, next_text, end_id)
 
     @staticmethod
-    def _advance_sampling_position(data: Any) -> int:
+    def _advance_sampling_position(data: MossTTSLocalSGLangRequestData) -> int:
         """RNG position for this collect, advancing the launch-side counter in
         floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
         path the two stay equal (generation_steps increments after every collect)
@@ -551,7 +586,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         logits.copy_(torch.where(active, penalized, logits))
 
     @staticmethod
-    def _is_chunked_request(sched_req: Any) -> bool:
+    def _is_chunked_request(sched_req: SchedulerRequest) -> bool:
         try:
             req = sched_req.data.req
         except AttributeError:
@@ -564,7 +599,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             return False
         return int(middle_chunks) > 0
 
-    def finalize_skip_rids(self, scheduler_output) -> set[str]:
+    def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Non-final chunked-prefill rows must not advance ``generation_steps``.
 
         Their micro-decode still runs (as today), but the spurious step would
@@ -580,7 +615,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         }
 
     def on_generation_step_advanced(
-        self, sched_req: Any, generation_steps: int
+        self, sched_req: SchedulerRequest, generation_steps: int
     ) -> None:
         try:
             pool = self.model._state_pool
@@ -590,7 +625,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             pool.commit_generation_step(sched_req.request_id, generation_steps)
 
     def on_generation_steps_advanced(
-        self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
+        self,
+        advanced_steps: list[tuple[SchedulerRequest, int]],
+        forward_batch: ForwardBatch | None,
     ) -> None:
         try:
             pool = self.model._state_pool
@@ -624,8 +661,8 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
+        result: GenerationBatchResult,
+        scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
         # The per-step journal is the single source of truth for output

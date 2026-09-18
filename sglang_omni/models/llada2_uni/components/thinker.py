@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -522,9 +522,9 @@ class LLaDA2MoeModelLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: PretrainedConfig,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         self.config = config
 

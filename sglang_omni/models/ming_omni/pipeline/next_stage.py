@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.proto import StagePayload
 
@@ -19,7 +17,7 @@ SEGMENTER_STAGE = "segmenter"
 TALKER_STREAM_STAGE = "talker_stream"
 
 
-def preprocessing_next(request_id: str, output: Any) -> list[str]:
+def preprocessing_next(request_id: str, output: object) -> list[str]:
     """Route from preprocessing to encoder stages then aggregate."""
     del request_id
     if not isinstance(output, StagePayload):
@@ -34,37 +32,37 @@ def preprocessing_next(request_id: str, output: Any) -> list[str]:
     return stages
 
 
-def encoder_next(request_id: str, output: Any) -> str:
+def encoder_next(request_id: str, output: object) -> str:
     """Audio encoder always routes to aggregate."""
     del request_id, output
     return AGGREGATE_STAGE
 
 
-def aggregate_next(request_id: str, output: Any) -> str:
+def aggregate_next(request_id: str, output: object) -> str:
     """Aggregate always routes to thinker."""
     del request_id, output
     return THINKER_STAGE
 
 
-def thinker_next(request_id: str, output: Any) -> str:
+def thinker_next(request_id: str, output: object) -> str:
     """Text-only: thinker routes to decode."""
     del request_id, output
     return DECODE_STAGE
 
 
-def thinker_next_speech(request_id: str, output: Any) -> list[str]:
+def thinker_next_speech(request_id: str, output: object) -> list[str]:
     """Speech pipeline: thinker fan-out to decode and talker."""
     del request_id, output
     return [DECODE_STAGE, TALKER_STAGE]
 
 
-def decode_next(request_id: str, output: Any) -> None:
+def decode_next(request_id: str, output: object) -> None:
     """Decode is terminal."""
     del request_id, output
     return None
 
 
-def talker_next(request_id: str, output: Any) -> None:
+def talker_next(request_id: str, output: object) -> None:
     """Talker is terminal."""
     del request_id, output
     return None

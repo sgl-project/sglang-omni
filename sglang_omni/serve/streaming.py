@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from typing import Any
 
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
@@ -36,7 +34,7 @@ class ClosableStreamingResponse(StreamingResponse):
                 logger.warning("Failed to close streaming response body", exc_info=True)
 
 
-async def close_async_iterator_if_supported(stream: AsyncIterator[Any]) -> None:
+async def close_async_iterator_if_supported(stream: object) -> None:
     try:
         close = stream.aclose
     except AttributeError:

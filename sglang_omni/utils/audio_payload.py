@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TypeVar
 
 import numpy as np
 import torch
+from numpy.typing import ArrayLike
+
+ReferenceValueT = TypeVar("ReferenceValueT")
 
 
-def audio_data_uri_from_reference(reference: dict[str, Any]) -> str | None:
+def audio_data_uri_from_reference(reference: dict[str, ReferenceValueT]) -> str | None:
     data = reference.get("data")
     if data is None:
         return None
@@ -18,13 +21,13 @@ def audio_data_uri_from_reference(reference: dict[str, Any]) -> str | None:
 
 
 def audio_waveform_payload(
-    audio: Any,
+    audio: ArrayLike | torch.Tensor,
     *,
     sample_rate: int | None = None,
     modality: str | None = None,
     source_hint: str = "audio",
     keep_channels: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, bytes | list[int] | str | int]:
     """Serialize a waveform into the relay payload format.
 
     With ``keep_channels`` a rank-2 ``[channels, samples]`` waveform keeps its
@@ -42,7 +45,7 @@ def audio_waveform_payload(
             f"Unsupported {source_hint} audio output type: {type(audio)}"
         ) from exc
     array = np.ascontiguousarray(array)
-    payload: dict[str, Any] = {
+    payload: dict[str, bytes | list[int] | str | int] = {
         "audio_waveform": array.tobytes(),
         "audio_waveform_shape": list(array.shape),
         "audio_waveform_dtype": "float32",

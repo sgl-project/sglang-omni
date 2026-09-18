@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 
@@ -22,7 +21,7 @@ _LENGTH_BUCKET_FRAMES = 32
 logger = logging.getLogger(__name__)
 
 
-class DotsTTSBatchVocoder(BatchVocoderBase):
+class DotsTTSBatchVocoder(BatchVocoderBase[DotsTTSState, torch.Tensor, torch.Tensor]):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
         self._logged_batch = False
@@ -114,15 +113,18 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
         wav: torch.Tensor,
         sample_rate: int,
     ) -> StagePayload:
-        payload.data = audio_waveform_payload(
-            wav,
-            sample_rate=sample_rate,
-            modality="audio",
-            source_hint="dots.tts",
+        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
+            audio_waveform_payload(
+                wav,
+                sample_rate=sample_rate,
+                modality="audio",
+                source_hint="dots.tts",
+            )
         )
         usage = build_usage(state)
         if usage is not None:
-            payload.data["usage"] = usage
+            data["usage"] = usage
+        payload.data = data
         return payload
 
     async def decode_payload(self, payload: StagePayload) -> StagePayload:
@@ -272,10 +274,10 @@ class DotsTTSStreamingVocoder(
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: _DotsStreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | dict[str, int | float]]:
         del request_id, state
         tts_state = load_dots_tts_state(payload)
-        result: dict[str, Any] = {
+        result: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": self.codec.sample_rate,
         }

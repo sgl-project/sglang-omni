@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import collections
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -15,6 +16,9 @@ from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
+if TYPE_CHECKING:
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+
 
 @dataclass
 class VoxtralSGLangRequestData(SGLangARRequestData):
@@ -22,7 +26,9 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
     voice_embedding: torch.Tensor | None = None
     audio_token_id: int = 24
     output_codes: list[torch.Tensor] = field(default_factory=list)
-    pending_feedback_queue: Any = field(default_factory=collections.deque)
+    pending_feedback_queue: collections.deque[torch.Tensor] | list[torch.Tensor] = (
+        field(default_factory=collections.deque)
+    )
 
 
 def _voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | None:
@@ -35,7 +41,7 @@ def _voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | 
 def build_sglang_voxtral_request(
     payload: StagePayload,
     *,
-    model: Any,
+    model: "VoxtralSGLangTTSModel",
     voice_embeddings: dict[str, torch.Tensor],
 ) -> VoxtralSGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
@@ -101,9 +107,12 @@ def apply_sglang_voxtral_result(
 
 def make_voxtral_scheduler_adapters(
     *,
-    model: Any,
+    model: "VoxtralSGLangTTSModel | None",
     voice_embeddings: dict[str, torch.Tensor],
-):
+) -> tuple[
+    Callable[[StagePayload], VoxtralSGLangRequestData],
+    Callable[[VoxtralSGLangRequestData], StagePayload],
+]:
     def request_builder(payload: StagePayload) -> VoxtralSGLangRequestData:
         return build_sglang_voxtral_request(
             payload,

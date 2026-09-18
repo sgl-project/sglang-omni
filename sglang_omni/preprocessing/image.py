@@ -5,14 +5,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from PIL import Image, UnidentifiedImageError
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
+
+if TYPE_CHECKING:
+    from .resource_connector import MultiModalResourceConnector
+
+ImageInputT = TypeVar("ImageInputT")
 
 
 def load_image_path(path: str | Path) -> Image.Image:
@@ -57,7 +63,7 @@ class ImageMediaIO(MediaIO[Image.Image]):
             raise ValueError(f"Failed to identify image: {e}") from e
 
 
-def compute_image_cache_key(images: Any) -> str | None:
+def compute_image_cache_key(images: object) -> str | None:
     """Compute cache key from raw image inputs (paths, URLs, PIL Images).
 
     This should be called BEFORE ensure_image_list() to capture original
@@ -70,7 +76,7 @@ async def ensure_image_list_async(
     images: Any,
     *,
     image_mode: str = "RGB",
-    media_connector: Any | None = None,
+    media_connector: MultiModalResourceConnector | None = None,
 ) -> list[Any]:
     """Asynchronously normalize image inputs into a list.
 
@@ -94,7 +100,7 @@ async def ensure_image_list_async(
         media_connector = get_global_resource_connector()
 
     # Collect coroutines for URL items
-    coroutines: list[asyncio.Task[Any] | None] = []
+    coroutines: list[asyncio.Task[Image.Image]] = []
     url_indices: list[int] = []
     normalized: list[Any] = []
 
@@ -126,7 +132,9 @@ async def ensure_image_list_async(
     return normalized
 
 
-def build_image_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
+def build_image_mm_inputs(
+    hf_inputs: Mapping[str, ImageInputT],
+) -> dict[str, ImageInputT | None]:
     """Extract standard image tensors from HF processor outputs."""
     return {
         "pixel_values": hf_inputs.get("pixel_values"),

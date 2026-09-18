@@ -25,9 +25,9 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing, suppress
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, TypeVar
 
 from fastapi import (
     Depends,
@@ -47,9 +47,11 @@ from sglang_omni.client import (
     Client,
     ClientError,
     CompletionResult,
+    GenerateChunk,
     GenerateRequest,
     Message,
     SamplingParams,
+    SpeechResult,
 )
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
@@ -68,6 +70,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
@@ -131,6 +134,10 @@ from sglang_omni.serve.translations import register_translations
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
+
+ValueT = TypeVar("ValueT")
+ModelInfoT = TypeVar("ModelInfoT", bound=Mapping[str, object])
+TaskResultT = TypeVar("TaskResultT")
 
 
 class _RequestBodyTooLarge(Exception):
@@ -378,7 +385,7 @@ async def _read_voice_upload(audio_sample: UploadFile) -> bytes:
     return audio_bytes
 
 
-def _is_voice_upload_scope(scope: dict[str, Any]) -> bool:
+def _is_voice_upload_scope(scope: dict[str, ValueT]) -> bool:
     return (
         scope.get("type") == "http"
         and scope.get("method") == "POST"
@@ -597,13 +604,13 @@ def _request_payload(req: AdminRequestBase) -> dict[str, Any]:
     return req.model_dump(exclude={"stages", "timeout_s"}, exclude_none=True)
 
 
-def _admin_response(result: dict[str, Any]) -> JSONResponse:
+def _admin_response(result: dict[str, ValueT] | AdminResponse) -> JSONResponse:
     if not result.get("success", False):
         raise HTTPException(status_code=400, detail=result)
     return JSONResponse(content=result)
 
 
-def _model_info_response(result: dict[str, Any]) -> JSONResponse:
+def _model_info_response(result: dict[str, Any] | AdminResponse) -> JSONResponse:
     if not result.get("success", False):
         raise HTTPException(status_code=400, detail=result)
 
@@ -626,7 +633,9 @@ def _model_info_response(result: dict[str, Any]) -> JSONResponse:
     return JSONResponse(content=payload)
 
 
-def _extract_model_info_stage_data(result: dict[str, Any]) -> list[dict[str, Any]]:
+def _extract_model_info_stage_data(
+    result: dict[str, Any] | AdminResponse,
+) -> list[dict[str, Any]]:
     infos: list[dict[str, Any]] = []
     for item in result.get("results", []) or []:
         if not isinstance(item, dict):
@@ -644,17 +653,17 @@ def _extract_model_info_stage_data(result: dict[str, Any]) -> list[dict[str, Any
 
 
 def _common_model_info_value(
-    result: dict[str, Any],
-    stage_infos: list[dict[str, Any]],
+    result: object,
+    stage_infos: list[ModelInfoT],
     key: str,
     *,
     mixed_status_code: int | None = None,
-) -> Any:
+) -> object:
     values = [info[key] for info in stage_infos if info.get(key) is not None]
     if not values:
         return None
 
-    unique: dict[str, Any] = {}
+    unique: dict[str, object] = {}
     for value in values:
         unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
     if len(unique) == 1:
@@ -748,7 +757,7 @@ async def _chat_non_stream(
     requested_modalities = req.modalities or ["text"]
 
     # Build message content
-    message: dict[str, Any] = {"role": "assistant"}
+    message: dict[str, str | dict[str, str | None]] = {"role": "assistant"}
 
     if "text" in requested_modalities and result.text:
         message["content"] = result.text
@@ -908,7 +917,7 @@ async def _chat_stream(
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
-def _explicit_generation_params(request: Any) -> list[str]:
+def _explicit_generation_params(request: object) -> list[str]:
     fields_set = getattr(request, "model_fields_set", set())
     return sorted(
         field
@@ -997,7 +1006,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         _explicit_generation_params(req),
     )
 
-    extra_params: dict[str, Any] = {}
+    extra_params: dict[str, int | float] = {}
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1105,7 +1114,7 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
             for name, params in req.stage_sampling.items()
         }
 
-    extra_params: dict[str, Any] = {
+    extra_params: dict[str, bool] = {
         "return_logprob": req.return_logprob,
         "return_omni_rollout": req.return_omni_rollout,
         "return_routed_experts": req.return_routed_experts,
@@ -1413,7 +1422,7 @@ async def _create_speech_batch_with_disconnect_watch(
     speech_service: SpeechRequestValidator,
     batch: CreateSpeechBatchRequest,
     request_id: str,
-) -> Any:
+) -> SpeechBatchResponse:
     batch_task = asyncio.create_task(
         speech_service.create_speech_batch(
             client,
@@ -1452,7 +1461,7 @@ def _register_speech_ws(app: FastAPI) -> None:
 
 
 def _speech_pcm_chunk_bytes(
-    chunk: Any,
+    chunk: GenerateChunk,
     *,
     emitted_samples: int,
     speed: float,
@@ -1489,7 +1498,7 @@ async def _speech_audio_response(
     stream_completed = False
     stream_closed = False
     disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
-    next_chunk_task: asyncio.Task[Any] | None = None
+    next_chunk_task: asyncio.Task[GenerateChunk] | None = None
 
     try:
         while True:
@@ -1541,7 +1550,7 @@ async def _speech_audio_response(
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
 
-    async def _body():
+    async def _body() -> AsyncIterator[bytes]:
         nonlocal emitted_samples
         active_request = True
         try:
@@ -1590,7 +1599,7 @@ async def _await_speech_response(
     request_id: str,
     response_format: str,
     speed: float,
-):
+) -> SpeechResult:
     speech_task = asyncio.create_task(
         client.speech(
             gen_req,
@@ -1625,7 +1634,7 @@ async def _await_speech_response(
             await _cancel_task_bounded(disconnect_task)
 
 
-async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+async def _cancel_task_bounded(task: asyncio.Task[TaskResultT]) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
     if done:
@@ -1634,7 +1643,7 @@ async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
         task.add_done_callback(_discard_cancelled_task_result)
 
 
-def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+def _discard_cancelled_task_result(task: asyncio.Task[TaskResultT]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -1651,7 +1660,7 @@ async def _wait_for_request_disconnect(request: Request) -> None:
 async def _abort_and_close_speech_stream(
     client: Client,
     request_id: str,
-    stream: AsyncIterator[Any],
+    stream: AsyncIterator[object],
 ) -> None:
     try:
         await client.abort(request_id)

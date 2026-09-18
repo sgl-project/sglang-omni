@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from copy import copy
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Iterable, Optional, Tuple, TypeVar
 
 import torch
 from sglang.srt.distributed import get_pp_group, get_tensor_model_parallel_world_size
@@ -42,17 +42,22 @@ from sglang_omni.models.moss_tts.sampling_cuda_graph import (
 )
 from sglang_omni.platforms import current_platform
 
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig, Qwen3Config
+
 logger = logging.getLogger(__name__)
 
+ConfigInputT = TypeVar("ConfigInputT")
 
-class ChannelLogitsList(list):
+
+class ChannelLogitsList(list[torch.Tensor | None]):
     """Per-channel logits; ``fused_audio`` carries the [B, n_vq, vocab] fp32
     tensor the audio entries are views of, so consumers can skip re-stacking."""
 
     fused_audio: torch.Tensor | None = None
 
 
-def _as_qwen3_config(config: Any) -> Any:
+def _as_qwen3_config(config: ConfigInputT) -> Qwen3Config | ConfigInputT:
     from transformers import Qwen3Config
 
     if isinstance(config, Qwen3Config):
@@ -66,6 +71,8 @@ def _as_qwen3_config(config: Any) -> Any:
 
 class MossTTSDelaySGLangModel(torch.nn.Module):
     """MOSS-TTS Delay AR backbone with one text channel and N RVQ channels."""
+
+    _text_control_token_ids: torch.Tensor
 
     packed_modules_mapping = {
         "qkv_proj": ["q_proj", "k_proj", "v_proj"],
@@ -83,7 +90,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: "PretrainedConfig",
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
     ) -> None:
@@ -173,7 +180,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         self._decode_input_embedding.weight.requires_grad_(False)
 
     @staticmethod
-    def _normalize_config(config: Any) -> Any:
+    def _normalize_config(config: "PretrainedConfig") -> "PretrainedConfig":
         language_config = _as_qwen3_config(getattr(config, "language_config", None))
         config.language_config = language_config
         config.hidden_size = int(
@@ -238,7 +245,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self._prepare_multi_modal_inputs(input_ids)
 
-    def _prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
+    def _prepare_multi_modal_inputs(self, input_ids: torch.Tensor) -> torch.Tensor:
         if input_ids.dim() == 1:
             channels = int(self.config.channels)
             total_tokens = int(input_ids.shape[0])
@@ -288,7 +295,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         omni_prefill_rids: list[str] | None = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
         input_embeds_are_projected: bool = False,
-    ) -> LogitsProcessorOutput:
+    ) -> LogitsProcessorOutput | PPProxyTensors:
         del omni_prefill_rids
         del input_embeds_are_projected
         if input_embeds is None:
@@ -332,7 +339,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         )
 
     @staticmethod
-    def _make_logits_processor(config: Any, channel: int) -> LogitsProcessor:
+    def _make_logits_processor(
+        config: "PretrainedConfig", channel: int
+    ) -> LogitsProcessor:
         """Per-channel LogitsProcessor sized to that channel's own vocab.
 
         sglang's ``_get_logits`` slices the head output to ``config.vocab_size``
@@ -408,7 +417,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             and self.pp_group.is_last_rank
         )
 
-    def _fused_audio_heads_eligible(self, weights: list[Any]) -> bool:
+    def _fused_audio_heads_eligible(self, weights: list[torch.Tensor | None]) -> bool:
         # Note (Jiaxin Deng): the fused path bypasses LogitsProcessor, so it is
         # gated to the plain configuration it reproduces: TP1, unquantized
         # same-shape ParallelLMHead weights, one audio vocab, no softcapping.
@@ -569,7 +578,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         forward_batch: ForwardBatch,
         *,
         is_audio: bool = False,
-    ) -> list[torch.Tensor]:
+    ) -> ChannelLogitsList:
         if self._fused_audio_heads_ready():
             logits_metadata = LogitsMetadata.from_forward_batch(forward_batch)
             logits_metadata.next_token_logits_buffer = None
@@ -598,7 +607,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         return self._text_control_token_ids
 
     @staticmethod
-    def is_sampling_cuda_graph_compatible(data: Any) -> bool:
+    def is_sampling_cuda_graph_compatible(data: object) -> bool:
         """Return whether one request uses the captured sampling profile."""
 
         return matches_graph_profile(data)
@@ -816,7 +825,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
 
-    def get_embed_and_head(self) -> tuple[list[Any], list[Any]]:
+    def get_embed_and_head(
+        self,
+    ) -> tuple[list[torch.Tensor | None], list[torch.Tensor | None]]:
         embed_weights = [
             getattr(layer, "weight", None) for layer in self.embedding_list
         ]

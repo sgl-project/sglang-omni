@@ -3,17 +3,27 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
+import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingPrefill
+    from sglang.srt.hardware_backend.mlx.sampling import MlxLogprobSpec
+    from sglang.srt.managers.schedule_batch import MultimodalDataItem, Req
 
 
 class AudioMlxModelRunner:
     model_name = "Audio ASR"
 
     @classmethod
-    def _audio_item(cls, req: Any) -> Any:
+    def _audio_item(
+        cls,
+        req: "Req",
+    ) -> "MultimodalDataItem":
         mm_inputs = req.multimodal_inputs
         if mm_inputs is None:
             raise ValueError(f"{cls.model_name} MLX prefill requires multimodal inputs")
@@ -25,14 +35,20 @@ class AudioMlxModelRunner:
         return mm_inputs.mm_items[0]
 
     @staticmethod
-    def _to_numpy(tensor: Any) -> Any:
+    def _to_numpy(
+        tensor: torch.Tensor,
+    ) -> np.ndarray[tuple[int, ...], np.dtype[np.generic]]:
         tensor = tensor.detach().cpu()
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.float()
         return tensor.numpy()
 
     @classmethod
-    def _normalize_audio_token_ids(cls, req: Any, token_ids: list[int]) -> list[int]:
+    def _normalize_audio_token_ids(
+        cls,
+        req: "Req",
+        token_ids: list[int],
+    ) -> list[int]:
         item = cls._audio_item(req)
         mm_inputs = req.multimodal_inputs
         if mm_inputs.audio_token_id is None or item.pad_value is None:
@@ -47,7 +63,9 @@ class AudioMlxModelRunner:
         ]
 
     def _audio_prefill_inputs(
-        self, req: Any, token_ids: list[int]
+        self,
+        req: "Req",
+        token_ids: list[int],
     ) -> tuple[mx.array, mx.array]:
         item = self._audio_item(req)
         if item.feature is None or item.feature_attention_mask is None:
@@ -92,11 +110,11 @@ class AudioMlxModelRunner:
         prefix_slot_ids: list[int],
         new_slot_ids: list[int],
         req_pool_idx: int,
-        req: Any | None = None,
+        req: "Req | None" = None,
         needs_logits: bool = True,
         logit_edit_row: mx.array | None = None,
-        logprob_spec: Any = None,
-    ):
+        logprob_spec: "MlxLogprobSpec | None" = None,
+    ) -> MlxPendingPrefill:
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingPrefill
 
         if req is None:
@@ -139,8 +157,14 @@ class AudioMlxModelRunner:
         self,
         req_ids: list[str],
         edit_rows: mx.array | None = None,
-        logprob_spec: Any = None,
-        logits_hook: Any = None,
+        logprob_spec: "MlxLogprobSpec | None" = None,
+        logits_hook: (
+            Callable[
+                [np.ndarray[tuple[int, ...], np.dtype[np.float32]]],
+                np.ndarray[tuple[int, ...], np.dtype[np.float32]],
+            ]
+            | None
+        ) = None,
     ):
         if (
             len(req_ids) != 1

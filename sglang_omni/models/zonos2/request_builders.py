@@ -10,8 +10,9 @@ from __future__ import annotations
 import base64
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 import torch
 
@@ -36,6 +37,11 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 
+if TYPE_CHECKING:
+    from sglang_omni.models.zonos2.sglang_model import Zonos2SGLangModel
+
+RefAudioT = TypeVar("RefAudioT")
+
 _DATA_URI_RE = re.compile(r"^data:[^;,]*;base64,(?P<data>.+)$", re.DOTALL)
 
 _SAMPLING_FIELDS = (
@@ -47,7 +53,7 @@ _SAMPLING_FIELDS = (
 )
 
 
-def ref_audio_to_encoder_input(ref_audio: Any) -> Any:
+def ref_audio_to_encoder_input(ref_audio: RefAudioT) -> RefAudioT | bytes:
     """Decode a base64 data-URI reference to raw bytes; pass paths/arrays through."""
     if isinstance(ref_audio, str):
         m = _DATA_URI_RE.match(ref_audio)
@@ -81,7 +87,7 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
             "ZONOS2 does not support seed because sampling uses the shared device RNG"
         )
 
-    gen: dict[str, Any] = {}
+    gen: dict[str, int | float] = {}
     raw_max = params.get("max_new_tokens")
     if raw_max is not None and not isinstance(raw_max, bool):
         gen["max_tokens"] = int(raw_max)
@@ -137,12 +143,14 @@ class Zonos2SGLangRequestData(SGLangARRequestData):
     _stream_emit_idx: int = 0
 
 
-def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
+def build_zonos2_stream_metadata(
+    payload: StagePayload, *, n_codebooks: int
+) -> dict[str, Literal["audio_codes", True] | int] | None:
     """Per-frame stream-chunk metadata, or None when the request is not streaming."""
     params = payload.request.params
     if not isinstance(params, dict) or not params.get("stream"):
         return None
-    metadata = {
+    metadata: dict[str, Literal["audio_codes", True] | int] = {
         "stream": True,
         "modality": "audio_codes",
         "n_codebooks": int(n_codebooks),
@@ -171,7 +179,7 @@ def _marker_row(cfg, tok: int) -> torch.Tensor:
 
 
 def build_sglang_zonos2_request(
-    payload: StagePayload, *, model: Any
+    payload: StagePayload, *, model: "Zonos2SGLangModel"
 ) -> Zonos2SGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -255,7 +263,10 @@ def apply_sglang_zonos2_result(
     )
 
 
-def make_zonos2_scheduler_adapters(*, model: Any):
+def make_zonos2_scheduler_adapters(*, model: "Zonos2SGLangModel | None") -> tuple[
+    Callable[[StagePayload], Zonos2SGLangRequestData],
+    Callable[[Zonos2SGLangRequestData], StagePayload],
+]:
     def request_builder(payload: StagePayload) -> Zonos2SGLangRequestData:
         return build_sglang_zonos2_request(payload, model=model)
 

@@ -12,7 +12,7 @@ import asyncio
 import logging
 import multiprocessing
 import socket
-from typing import Any
+from typing import Any, TypedDict, TypeVar
 
 from sglang_omni.config.placement import (
     StagePlacementPlan,
@@ -46,6 +46,16 @@ from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
+
+
+FactoryKwargValueT = TypeVar("FactoryKwargValueT")
+TypedKwargValueT = TypeVar("TypedKwargValueT")
+
+
+class StageByteBudgets(TypedDict):
+    kv_cache_bytes: int | None
+    total_reserve_bytes: int | None
+    enforce_total_reserve: bool
 
 
 def resolve_coordinator_max_in_flight(
@@ -296,7 +306,7 @@ def _resolve_same_process_targets(
     return same_process_targets
 
 
-def _stage_byte_budget_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
+def _stage_byte_budget_kwargs(stage_cfg: StageConfig) -> StageByteBudgets:
     """Spec fields carrying the stage's byte budgets to the worker process."""
 
     return {
@@ -314,8 +324,8 @@ def _build_single_stage_spec(
     config: PipelineConfig,
     gpu_id: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, Any],
-    typed_kwargs: dict[str, Any],
+    base_factory_kwargs: dict[str, FactoryKwargValueT],
+    typed_kwargs: dict[str, TypedKwargValueT],
     stage_kwargs: dict[str, Any],
 ) -> StageLaunchConfig:
     comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
@@ -346,8 +356,8 @@ def _build_tp_stage_specs(
     gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, Any],
-    typed_kwargs: dict[str, Any],
+    base_factory_kwargs: dict[str, FactoryKwargValueT],
+    typed_kwargs: dict[str, TypedKwargValueT],
     stage_kwargs: dict[str, Any],
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
@@ -359,7 +369,9 @@ def _build_tp_stage_specs(
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
-        factory_kwargs = dict(base_factory_kwargs)
+        factory_kwargs: dict[str, FactoryKwargValueT | int | None] = dict(
+            base_factory_kwargs
+        )
         factory_kwargs["tp_rank"] = tp_rank
         factory_kwargs["tp_size"] = stage_cfg.tp_size
         factory_kwargs["nccl_port"] = nccl_port
@@ -422,7 +434,7 @@ def _resolve_comm_config(
     stage_cfg: StageConfig,
     *,
     gpu_id: int | None,
-) -> dict[str, Any]:
+) -> dict[str, int | str | None]:
     """Build stage-local communication options from placement."""
     comm_config = build_comm_config(stage_cfg)
     if stage_cfg.gpu is not None:
@@ -433,7 +445,7 @@ def _resolve_comm_config(
 class _NcclPortAllocator:
     """Allocate unique NCCL ports for per-stage TP groups."""
 
-    def __init__(self, base_port: int = 29500):
+    def __init__(self, base_port: int = 29500) -> None:
         self._next = base_port
 
     def allocate(self) -> int:
@@ -481,8 +493,7 @@ def _wave_stage_names(wave: list[StageGroup]) -> list[str]:
 
 
 class MultiProcessPipelineRunner:
-
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineConfig) -> None:
         self._config = config
         self._coordinator: Coordinator | None = None
         self._ipc_runtime_dir: IpcRuntimeDir | None = None

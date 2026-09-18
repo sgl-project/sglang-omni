@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 import torch
 
@@ -21,7 +21,7 @@ class CompletedResult:
     error: BaseException | None = None
 
 
-def is_done_signal(item: Any) -> bool:
+def is_done_signal(item: object) -> bool:
     if item is None:
         return True
     return isinstance(item, StreamSignal) and item.is_done and item.error is None

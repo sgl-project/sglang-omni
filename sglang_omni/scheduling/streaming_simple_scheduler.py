@@ -18,9 +18,13 @@ import logging
 import queue as queue_mod
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Coroutine, Sequence
+from typing import Callable
+
+from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -30,8 +34,10 @@ ABORTED_REQUEST_ID_RETAINED = 5000
 COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT = 10000
 COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED = 5000
 
+StreamingInputT = TypeVar("StreamingInputT", default=StagePayload)
 
-class StreamingSimpleScheduler:
+
+class StreamingSimpleScheduler(Generic[StreamingInputT]):
     """Scheduler base for simple stages with streaming input.
 
     Subclasses implement the streaming hooks. Non-streaming requests use
@@ -45,12 +51,18 @@ class StreamingSimpleScheduler:
 
     def __init__(
         self,
-        compute_fn: Callable[[Any], Any] | None,
+        compute_fn: Callable[[StreamingInputT], object] | None,
         *,
-        batch_compute_fn: Callable[[list[Any]], list[Any]] | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StreamingInputT]],
+                Sequence[object] | Coroutine[object, None, Sequence[object]],
+            ]
+            | None
+        ) = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StreamingInputT], int] | None = None,
         max_batch_cost: int | None = None,
         abort_callback: Callable[[str], None] | None = None,
     ) -> None:
@@ -71,19 +83,26 @@ class StreamingSimpleScheduler:
         self.running = False
         self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
         self.pending_done: set[str] = set()
-        self.stream_payloads: dict[str, Any] = {}
+        self.stream_payloads: dict[str, StreamingInputT] = {}
         self.aborted_request_ids: set[str] = set()
         self.completed_non_streaming_request_ids: set[str] = set()
         self.state_lock = threading.RLock()
         self.abort_lock = threading.Lock()
 
-    def is_streaming_payload(self, payload: Any) -> bool:
+    def is_streaming_payload(
+        self,
+        payload: StreamingInputT,
+    ) -> bool:
         return False
 
-    def validate_non_streaming_payload(self, payload: Any) -> None:
+    def validate_non_streaming_payload(self, payload: StreamingInputT) -> None:
         del payload
 
-    def on_streaming_new_request(self, request_id: str, payload: Any) -> None:
+    def on_streaming_new_request(
+        self,
+        request_id: str,
+        payload: StreamingInputT,
+    ) -> None:
         del request_id, payload
 
     def on_stream_chunk(
@@ -465,7 +484,11 @@ class StreamingSimpleScheduler:
                 self.emit_result(msg.request_id, result)
                 self.record_completed_non_streaming_request_id(msg.request_id)
 
-    def run_compute(self, payload: Any, loop: asyncio.AbstractEventLoop) -> Any:
+    def run_compute(
+        self,
+        payload: StreamingInputT,
+        loop: asyncio.AbstractEventLoop,
+    ) -> object:
         if self.compute_fn is None:
             raise RuntimeError(
                 f"{self.__class__.__name__} does not support non-streaming compute"
@@ -475,7 +498,7 @@ class StreamingSimpleScheduler:
             result = loop.run_until_complete(result)
         return result
 
-    def validate_stream_chunk_item(self, request_id: str, item: Any) -> StreamItem:
+    def validate_stream_chunk_item(self, request_id: str, item: object) -> StreamItem:
         if not isinstance(item, StreamItem):
             raise TypeError(
                 f"{self.__class__.__name__} expected StreamItem for "
@@ -483,7 +506,11 @@ class StreamingSimpleScheduler:
             )
         return item
 
-    def handle_streaming_new_request(self, request_id: str, payload: Any) -> None:
+    def handle_streaming_new_request(
+        self,
+        request_id: str,
+        payload: StreamingInputT,
+    ) -> None:
         with self.abort_lock:
             self.aborted_request_ids.discard(request_id)
         with self.state_lock:
@@ -494,7 +521,7 @@ class StreamingSimpleScheduler:
                 self.pending_done.discard(request_id)
                 self.handle_stream_done(request_id)
 
-    def handle_stream_chunk(self, request_id: str, item: Any) -> None:
+    def handle_stream_chunk(self, request_id: str, item: object) -> None:
         item = self.validate_stream_chunk_item(request_id, item)
         with self.state_lock:
             for out in self.on_stream_chunk(request_id, item):
@@ -546,7 +573,7 @@ class StreamingSimpleScheduler:
             if not self.is_aborted(request_id):
                 self.clear_request_state(request_id)
 
-    def emit_result(self, request_id: str, result: Any) -> None:
+    def emit_result(self, request_id: str, result: object) -> None:
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,

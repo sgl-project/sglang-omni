@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.pipeline_state import wire
+
+if TYPE_CHECKING:
+    import torch
 
 MING_TTS_SAMPLE_RATE = 44100
 MING_TTS_DEFAULT_MAX_DECODE_STEPS = 200
@@ -42,10 +45,10 @@ class MingTTSState(DeclarativeStateBase):
     spk_injection_positions: list[int] | None = wire(None, codec="list")
     prompt_latent_start_position: int | None = wire(None, codec="opt_int")
     prompt_latent_token_count: int = wire(0, emit="truthy", codec="int")
-    spk_emb: Any | None = wire(None, codec="typed_tensor")
-    prompt_latent: Any | None = wire(None, codec="typed_tensor")
+    spk_emb: torch.Tensor | None = wire(None, codec="typed_tensor")
+    prompt_latent: torch.Tensor | None = wire(None, codec="typed_tensor")
 
-    generated_latents: Any | None = wire(None, codec="typed_tensor")
+    generated_latents: torch.Tensor | None = wire(None, codec="typed_tensor")
     stop_step: int | None = wire(None, codec="opt_int")
     finish_reason: str | None = None
 

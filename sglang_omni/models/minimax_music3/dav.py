@@ -27,11 +27,11 @@ class Snake1d(nn.Module):
         return snake(x, self.alpha)
 
 
-def _wn_conv(*args: Any, **kwargs: Any) -> nn.Module:
+def _wn_conv(*args: Any, **kwargs: Any) -> nn.Conv1d:
     return nn.utils.weight_norm(nn.Conv1d(*args, **kwargs))
 
 
-def _wn_conv_transpose(*args: Any, **kwargs: Any) -> nn.Module:
+def _wn_conv_transpose(*args: Any, **kwargs: Any) -> nn.ConvTranspose1d:
     return nn.utils.weight_norm(nn.ConvTranspose1d(*args, **kwargs))
 
 

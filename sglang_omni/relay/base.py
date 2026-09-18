@@ -120,7 +120,10 @@ class Relay(ABC):
 
     @abstractmethod
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str = None,
     ) -> RelayOperation:
         """
         Asynchronously retrieves data into dest_tensor using provided metadata.

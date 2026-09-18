@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from types import MethodType
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from torch import nn
@@ -15,13 +15,16 @@ from .constants import AR_CFG_SCALE, AR_CFG_TOP_K
 from .prompt import AUDIO_CODE_OFFSET, SPECIAL_TOKEN_IDS
 from .rvq_decoder import RVQDepthDecoder, sample_topk_seeded
 
+if TYPE_CHECKING:
+    from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+
 logger = logging.getLogger(__name__)
 
 _AUDIO_EMBEDDING_KEY = "model.audio_extra_embedding.weight"
 _C0_VOCAB_SIZE = 16384
 
 
-def attach_minimax_modules(model: Any, checkpoint_root: str) -> None:
+def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> None:
     """Install the MiniMax audio modules on a loaded Qwen3 backbone."""
 
     paths = resolve_checkpoint(checkpoint_root)
@@ -79,7 +82,7 @@ def attach_minimax_modules(model: Any, checkpoint_root: str) -> None:
     )
 
 
-def embed_audio_frames(model: Any, codes: torch.Tensor) -> torch.Tensor:
+def embed_audio_frames(model: "Qwen3ForCausalLM", codes: torch.Tensor) -> torch.Tensor:
     """Compose one conditioning embedding per row from all eight codebooks.
 
     Args:
@@ -114,7 +117,7 @@ def apply_cfg(cond: torch.Tensor, uncond: torch.Tensor) -> torch.Tensor:
     return guided.masked_fill(cond < threshold, -float("inf"))
 
 
-def select_c0_logits(model: Any, logits: torch.Tensor) -> torch.Tensor:
+def select_c0_logits(model: "Qwen3ForCausalLM", logits: torch.Tensor) -> torch.Tensor:
     """Narrow backbone logits to the only ids c0 sampling can ever return.
 
     Returns [rows, 1 + 16384] in vocabulary order: <|audio_end|> first,
@@ -124,7 +127,7 @@ def select_c0_logits(model: Any, logits: torch.Tensor) -> torch.Tensor:
     return logits.index_select(1, model.c0_logit_ids).float()
 
 
-def enable_rvq_depth_cuda_graph(model: Any, buckets: list[int]) -> None:
+def enable_rvq_depth_cuda_graph(model: "Qwen3ForCausalLM", buckets: list[int]) -> None:
     """Capture the RVQ depth pass so it stops paying per-launch dispatch."""
     from .rvq_cuda_graph import RVQDepthCudaGraphRunner
 
@@ -142,7 +145,7 @@ def enable_rvq_depth_cuda_graph(model: Any, buckets: list[int]) -> None:
 
 
 def depth_decode(
-    model: Any,
+    model: "Qwen3ForCausalLM",
     hidden: torch.Tensor,
     c0: torch.Tensor,
     seeds: torch.Tensor,
@@ -167,7 +170,7 @@ def depth_decode(
 
 
 def _depth_decode_eager(
-    model: Any,
+    model: "Qwen3ForCausalLM",
     hidden: torch.Tensor,
     c0: torch.Tensor,
     seeds: torch.Tensor,
@@ -244,7 +247,7 @@ def _forward_prepare_unfused_qk_norm(self, positions, hidden_states):
     return q, k, v
 
 
-def _use_unfused_qk_norm(model: Any) -> None:
+def _use_unfused_qk_norm(model: "Qwen3ForCausalLM") -> None:
     """Keep QK norm, but off flashinfer's fused in-place kernel."""
     for layer in model.model.layers:
         attention = getattr(layer, "self_attn", None)
@@ -259,7 +262,7 @@ def _use_unfused_qk_norm(model: Any) -> None:
         )
 
 
-def enable_graph_feedback(model: Any, max_batch_size: int) -> None:
+def enable_graph_feedback(model: "Qwen3ForCausalLM", max_batch_size: int) -> None:
     """Route decode conditioning through a fixed-address buffer."""
     if max_batch_size <= 0:
         raise ValueError("MiniMax Music 3 graph feedback buffer needs a positive size")
@@ -271,7 +274,7 @@ def enable_graph_feedback(model: Any, max_batch_size: int) -> None:
     )
 
 
-def _route_forward_batch_input_embeds(model: Any) -> None:
+def _route_forward_batch_input_embeds(model: "Qwen3ForCausalLM") -> None:
     """Feed decode conditioning that SGLang would otherwise drop."""
     backbone_forward = model.forward
 

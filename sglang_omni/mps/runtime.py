@@ -14,7 +14,9 @@ import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol, TypeVar
+
+from typing_extensions import TypeVarTuple, Unpack
 
 from sglang_omni.mps.decision import (
     MPS_MODES,
@@ -35,6 +37,9 @@ from sglang_omni.mps.manager import (
 from sglang_omni.mps.state import MpsGpuPaths
 
 logger = logging.getLogger(__name__)
+
+ArgsT = TypeVarTuple("ArgsT")
+ResultT = TypeVar("ResultT")
 
 
 class _MpsDeviceInfo(Protocol):
@@ -139,7 +144,7 @@ def _resolve_physical_plans(
                 "mps=on could not resolve the physical GPU mapping: " + detail
             )
         logger.warning(
-            "MPS auto: physical GPU mapping is incomplete (%s); running " "without MPS",
+            "MPS auto: physical GPU mapping is incomplete (%s); running without MPS",
             detail,
         )
         return {}
@@ -500,7 +505,9 @@ class MpsPipelineRuntime:
             raise error_type(details)
 
     @staticmethod
-    async def _run_blocking(call: Callable[..., Any], *args: Any) -> Any:
+    async def _run_blocking(
+        call: Callable[[Unpack[ArgsT]], ResultT], *args: Unpack[ArgsT]
+    ) -> ResultT:
         """Finish an ownership-changing call before propagating cancellation."""
 
         task = asyncio.create_task(asyncio.to_thread(call, *args))

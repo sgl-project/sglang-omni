@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Mapping
 
 import torch
 
@@ -29,6 +29,11 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
+        MossVocoderCudaGraphRunner,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +65,14 @@ class _CodecStreamSession:
         self._free_stream_slots = list(range(self._stream_slots))
         self._stream_slots_in_use: set[int] = set()
         self._closed = False
-        self._cg_runner: Any | None = None
+        self._cg_runner: MossVocoderCudaGraphRunner | None = None
         # Capture is attempted at most once per session; a low-VRAM skip must not re-probe per step.
         self.warmup_attempted = False
         # Per-T graph-vs-eager step counts for capture-hit-rate reporting (host-side, no GPU sync).
-        self._cg_graph_t: Counter = Counter()
-        self._cg_eager_t: Counter = Counter()
+        self._cg_graph_t: Counter[int] = Counter()
+        self._cg_eager_t: Counter[int] = Counter()
         self._cg_total_steps = 0
-        self._compact_batch_sizes: Counter = Counter()
+        self._compact_batch_sizes: Counter[int] = Counter()
 
     def warmup_cuda_graph(
         self, frames: list[int], *, min_free_gb: float = 3.0
@@ -422,7 +427,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         self,
         request_id: str,
         state: _LocalStreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -434,7 +439,7 @@ class MossTTSLocalStreamingVocoderScheduler(
             )
             self._latch_thresholds(request_id, state, params)
             return
-        metadata: Mapping[str, Any] = source
+        metadata: Mapping[str, object] = source
         n_vq = metadata.get("n_vq")
         if n_vq is not None:
             n_vq = int(n_vq)
@@ -510,7 +515,9 @@ class MossTTSLocalStreamingVocoderScheduler(
             return None
         return torch.cat(audio_parts, dim=-1)
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform.detach().to("cpu", torch.float32),
@@ -528,9 +535,9 @@ class MossTTSLocalStreamingVocoderScheduler(
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: _LocalStreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | dict[str, int | float]]:
         del request_id, state
-        final_data: dict[str, Any] = {
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
@@ -690,7 +697,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         self,
         request_id: str,
         state: _LocalStreamState,
-        params: Mapping[str, Any] | None,
+        params: Mapping[str, object] | None,
     ) -> None:
         state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
             params,

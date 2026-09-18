@@ -7,13 +7,18 @@ import gc
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from safetensors import safe_open
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
 from sglang_omni.model_runner.audio_torch_mps import AudioTorchMpsModelRunner
+
+if TYPE_CHECKING:
+    from sglang_omni.models.qwen3_asr.sglang_model import (
+        Qwen3ASRForConditionalGeneration,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +89,9 @@ def _load_language_weights(
     rotary.original_inv_freq = inv_freq.clone()
 
 
-def install_torch_mps_language_model(model: Any, model_path: str) -> None:
+def install_torch_mps_language_model(
+    model: "Qwen3ASRForConditionalGeneration", model_path: str
+) -> None:
     """Replace SGLang's Torch-native LM with the pinned HF Torch implementation."""
     checkpoint = _resolve_model_path(model_path)
     old_parameter = next(model.language_model.parameters())

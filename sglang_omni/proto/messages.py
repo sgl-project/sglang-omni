@@ -2,16 +2,51 @@
 """Control plane messages."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, TypeAlias, TypedDict, TypeVar
 
 import msgspec
 
-from sglang_omni.proto.admin import AdminOperation, AdminResult
+from sglang_omni.proto.admin import AdminOperation, AdminResult, SerializedAdminResult
 from sglang_omni.proto.kv_transfer import (
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+
+MessageValueT = TypeVar("MessageValueT")
+
+
+class DirectCudaIpcTensor(TypedDict):
+    path: str
+    tensor_bytes: bytes
+
+
+class DirectCudaIpcPayloadRef(TypedDict):
+    _type: Literal["TorchCudaIpcPayload"]
+    version: Literal[1]
+    header: bytes
+    tensors: list[DirectCudaIpcTensor]
+
+
+class DirectCudaIpcStreamChunkOptionalFields(TypedDict, total=False):
+    metadata: dict[str, object]
+
+
+class DirectCudaIpcStreamChunkRef(DirectCudaIpcStreamChunkOptionalFields):
+    _type: Literal["TorchCudaIpcStreamChunk"]
+    version: Literal[1]
+    tensor_bytes: bytes
+
+
+class InlineStreamChunkRef(TypedDict):
+    _type: Literal["InlineStreamChunk"]
+    version: Literal[1]
+    payload: bytes
+
+
+StageDataRef: TypeAlias = (
+    DirectCudaIpcPayloadRef | DirectCudaIpcStreamChunkRef | InlineStreamChunkRef
+)
 
 
 @dataclass
@@ -21,7 +56,7 @@ class DataReadyMessage:
     request_id: str
     from_stage: str
     to_stage: str
-    data_ref: dict[str, Any] | None
+    data_ref: dict[str, Any] | StageDataRef | None
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
@@ -65,7 +100,7 @@ class DataReadyMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "DataReadyMessage":
         request_id = _require_str(d.get("request_id"), "request_id")
         from_stage = _require_str(d.get("from_stage"), "from_stage")
         to_stage = _require_str(d.get("to_stage"), "to_stage")
@@ -113,7 +148,7 @@ class DataAckMessage(msgspec.Struct):
     success: bool = True
     error: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | bool]:
         _require_str(self.request_id, "request_id")
         _require_str(self.from_stage, "from_stage")
         _require_str(self.to_stage, "to_stage")
@@ -125,7 +160,7 @@ class DataAckMessage(msgspec.Struct):
                 raise ValueError("successful data ack must not carry error")
         else:
             _require_str(self.error, "error")
-        d: dict[str, Any] = {
+        d: dict[str, str | bool] = {
             "type": "data_ack",
             "request_id": self.request_id,
             "from_stage": self.from_stage,
@@ -138,7 +173,7 @@ class DataAckMessage(msgspec.Struct):
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DataAckMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "DataAckMessage":
         success = d.get("success")
         if not isinstance(success, bool):
             raise TypeError("data_ack success must be bool")
@@ -168,7 +203,7 @@ class AbortMessage:
         return {"type": "abort", "request_id": self.request_id}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AbortMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "AbortMessage":
         return cls(request_id=d["request_id"])
 
 
@@ -193,7 +228,7 @@ class CompleteMessage:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "CompleteMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "CompleteMessage":
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
@@ -230,7 +265,7 @@ class StreamMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "StreamMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "StreamMessage":
         return cls(
             request_id=d["request_id"],
             from_stage=d["from_stage"],
@@ -260,7 +295,7 @@ class SubmitMessage:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "SubmitMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "SubmitMessage":
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
@@ -275,11 +310,11 @@ class SubmitMessage:
 class ShutdownMessage:
     """Signal graceful shutdown to a stage."""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str]:
         return {"type": "shutdown"}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ShutdownMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "ShutdownMessage":
         return cls()
 
 
@@ -302,7 +337,7 @@ class ProfilerStartMessage:
         }
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStartMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "ProfilerStartMessage":
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
@@ -321,7 +356,7 @@ class ProfilerStopMessage:
         return {"type": "profiler_stop", "run_id": self.run_id}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ProfilerStopMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "ProfilerStopMessage":
         return cls(run_id=d.get("run_id"))
 
 
@@ -335,7 +370,7 @@ class AdminMessage:
         return {"type": "admin", "operation": self.operation.to_dict()}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AdminMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "AdminMessage":
         return cls(operation=AdminOperation.from_dict(d["operation"]))
 
 
@@ -345,16 +380,16 @@ class AdminResultMessage:
 
     result: AdminResult
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | SerializedAdminResult]:
         return {"type": "admin_result", "result": self.result.to_dict()}
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "AdminResultMessage":
+    def from_dict(cls, d: dict[str, MessageValueT]) -> "AdminResultMessage":
         return cls(result=AdminResult.from_dict(d["result"]))
 
 
 def parse_message(
-    d: dict[str, Any],
+    d: dict[str, MessageValueT],
 ) -> (
     AdminMessage
     | AdminResultMessage
@@ -402,19 +437,19 @@ def parse_message(
         raise ValueError(f"Unknown message type: {msg_type}")
 
 
-def _require_str(value: Any, name: str) -> str:
+def _require_str(value: object, name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise TypeError(f"{name} must be a non-empty str")
     return value
 
 
-def _require_bool(value: Any, name: str) -> bool:
+def _require_bool(value: object, name: str) -> bool:
     if type(value) is not bool:
         raise TypeError(f"{name} must be bool")
     return value
 
 
-def _require_non_negative_int(value: Any, name: str) -> int:
+def _require_non_negative_int(value: object, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
     return value

@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -28,6 +28,12 @@ from sglang_omni.scheduling.reference_encoder import (
     TensorReferenceEncodeHook,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+if TYPE_CHECKING:
+    from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
+        DAC,
+    )
+    from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +62,9 @@ def _configure_preprocessing_threads(worker_count: int) -> int:
     return intraop_threads
 
 
-def _warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
+def _warmup_s2pro_codebook_decoder(
+    model: "S2ProSGLangTextModel", *, max_batch_size: int
+) -> None:
     """Materialize Fast AR compile variants before serving real requests."""
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
@@ -93,7 +101,9 @@ def _warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
             torch.cuda.synchronize(embedding_weight.device)
 
 
-def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
+def _compile_s2pro_codebook_decoder(
+    model: "S2ProSGLangTextModel", *, max_batch_size: int
+) -> None:
     """Compile and warm Fast AR layers, falling back to eager on warmup failure."""
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
@@ -139,14 +149,14 @@ def _compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     )
 
 
-def _resolve_s2pro_model_buffer_bs(model: Any) -> int:
+def _resolve_s2pro_model_buffer_bs(model: "S2ProSGLangTextModel") -> int:
     return min(
         int(model.vq_decode_max_batch_size),
         int(model._audio_decoder.kv_cache_max_batch_size),
     )
 
 
-def _load_codec(checkpoint_dir: str, device: str):
+def _load_codec(checkpoint_dir: str, device: str) -> "DAC":
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
 
@@ -199,13 +209,13 @@ class _FishReferenceEncodeHook(TensorReferenceEncodeHook[_FishReferenceInput]):
     storage_dtype = torch.long
     output_dtype = torch.long
 
-    def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
+    def __init__(self, *, codec: "DAC", checkpoint_id: str) -> None:
         self._codec = codec
         self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
         self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
 
-    def normalize_input(self, raw_input: Any) -> _FishReferenceInput:
+    def normalize_input(self, raw_input: object) -> _FishReferenceInput:
         if not isinstance(raw_input, dict):
             raise TypeError("FishAudio reference input must be a dict")
         if raw_input.get("audio_path") is not None:

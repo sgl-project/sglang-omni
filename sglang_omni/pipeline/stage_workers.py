@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,9 +11,12 @@ import os
 import queue
 import sys
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
+from multiprocessing.queues import Queue
+from multiprocessing.synchronize import Event
 from typing import Any, Literal, Sequence
 
 from sglang_omni.config.runtime import (
@@ -24,8 +28,14 @@ from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
+from sglang_omni.pipeline.tp_control import (
+    TPFollowerControlPlane,
+    TPLeaderFanout,
+    TPWorkQueueMessage,
+)
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.proto import AbortMessage, AdminResultMessage
+from sglang_omni.scheduling.messages import StageScheduler
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -114,12 +124,14 @@ class StageLaunchConfig:
     replica_topology: dict[str, list[str]] = field(default_factory=dict)
 
     # TP internal control (leader -> followers)
-    follower_work_queues: list[Any] = field(default_factory=list)
-    follower_abort_queues: list[Any] = field(default_factory=list)
-    follower_admin_result_queues: list[Any] = field(default_factory=list)
-    internal_work_queue: Any | None = None
-    internal_abort_queue: Any | None = None
-    internal_admin_result_queue: Any | None = None
+    follower_work_queues: list[Queue[TPWorkQueueMessage]] = field(default_factory=list)
+    follower_abort_queues: list[Queue[AbortMessage]] = field(default_factory=list)
+    follower_admin_result_queues: list[Queue[AdminResultMessage]] = field(
+        default_factory=list
+    )
+    internal_work_queue: Queue[TPWorkQueueMessage] | None = None
+    internal_abort_queue: Queue[AbortMessage] | None = None
+    internal_admin_result_queue: Queue[AdminResultMessage] | None = None
 
     @property
     def owns_external_io(self) -> bool:
@@ -169,7 +181,7 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 def _patched_spawn_env(
     spec: StageWorkerProcessSpec,
     extra_env: Mapping[str, str] | None = None,
-):
+) -> Generator[None, None, None]:
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
@@ -217,16 +229,16 @@ class StageGroup:
         self,
         group_name: str,
         process_specs: Sequence[StageWorkerProcessSpec],
-    ):
+    ) -> None:
         if not process_specs:
             raise ValueError(
                 f"StageGroup requires at least one process spec (group={group_name})"
             )
         self.group_name = group_name
         self.process_specs = list(process_specs)
-        self._processes: list[multiprocessing.Process] = []
-        self._ready_events: list[multiprocessing.Event] = []
-        self._startup_error_channels: list[object] = []
+        self._processes: list[BaseProcess] = []
+        self._ready_events: list[Event] = []
+        self._startup_error_channels: list[Queue[str]] = []
         self._process_start_attempts: set[str] = set()
 
     @property
@@ -262,7 +274,7 @@ class StageGroup:
         }
 
     @property
-    def processes(self) -> list[multiprocessing.Process]:
+    def processes(self) -> list[BaseProcess]:
         return list(self._processes)
 
     def process_start_attempts(self) -> set[str]:
@@ -360,7 +372,7 @@ class StageGroup:
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
-                    f"{process_spec.process_name} " f"(pid={p.pid}, exit={p.exitcode})"
+                    f"{process_spec.process_name} (pid={p.pid}, exit={p.exitcode})"
                 )
         return ", ".join(parts) if parts else "(none)"
 
@@ -405,8 +417,8 @@ class StageGroup:
 
 def stage_process_main(
     spec: StageWorkerProcessSpec,
-    ready_event: multiprocessing.Event,
-    startup_error_channel: Any | None = None,
+    ready_event: Event,
+    startup_error_channel: Queue[str] | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
     # note (Dayuxiaoshui): a spawned process starts with fresh logging, and
@@ -455,7 +467,7 @@ def stage_process_main(
 
 def _run_process(
     spec: StageWorkerProcessSpec,
-    ready_event: multiprocessing.Event,
+    ready_event: Event,
     log: logging.Logger,
 ) -> None:
     """Construct and drive all stages owned by one OS process.
@@ -475,8 +487,8 @@ def _run_process(
     local_dispatcher = LocalStageDispatcher()
     stages: list[Stage] = []
 
-    async def _start_and_run():
-        tasks: list[asyncio.Task] = []
+    async def _start_and_run() -> None:
+        tasks: list[asyncio.Task[None]] = []
         try:
             for stage in stages:
                 await stage.start()
@@ -651,7 +663,7 @@ def _construct_stage(
             f"unsupported target value {targets!r}"
         )
 
-    def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
+    def _wait_source_list(sources: str | Iterable[str] | None) -> list[str] | None:
         if sources is None:
             return None
         if isinstance(sources, str):
@@ -857,7 +869,7 @@ def _construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
-) -> Any:
+) -> StageScheduler:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
     from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
@@ -879,7 +891,7 @@ def _construct_scheduler(
         stage_name=spec.stage_name,
     )
 
-    def _invoke() -> Any:
+    def _invoke() -> StageScheduler:
         if kv_cache_bytes is None:
             return factory(**factory_args)
         with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):

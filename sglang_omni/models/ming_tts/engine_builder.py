@@ -4,16 +4,34 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.server_args import ServerArgs
+    from transformers import PretrainedConfig
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
+    from sglang_omni.models.ming_tts.sglang_model import MingTTSSGLangModel
+    from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
-def _is_truthy(value: Any) -> bool:
+def _is_truthy(value: object) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -58,9 +76,9 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         self.tp_rank = tp_rank
         self.tp_size = tp_size
         self.nccl_port = nccl_port
-        self.config: Any = None
-        self.tokenizer: Any = None
-        self._model_runner: Any = None
+        self.config: PretrainedConfig | None = None
+        self.tokenizer: MingTTSTokenizerBundle | None = None
+        self._model_runner: MingTTSModelRunner | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
@@ -100,7 +118,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             context_length = ming_stages._resolve_context_length(self.config)
         self.context_length = int(context_length)
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
         return {
             "max_running_requests": 8,
             "dtype": dtype,
@@ -144,7 +162,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Ming-Omni-TTS torch.compile is not currently supported")
 
-    def infra_kwargs(self) -> dict[str, Any]:
+    def infra_kwargs(self) -> dict[str, int | float | None]:
         return {
             "tp_rank": self.tp_rank,
             "nccl_port": self.nccl_port,
@@ -154,11 +172,11 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs,
     ) -> None:
         from sglang.srt.runtime_context import get_exec, get_memory
 
@@ -184,10 +202,12 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             self.nccl_port,
         )
 
-    def get_model_buffer_bs(self, model: Any) -> int | None:
+    def get_model_buffer_bs(self, model: MingTTSSGLangModel) -> int | None:
         return int(model._decode_input_embedding.num_embeddings)
 
-    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+    def post_cuda_graph_setup(
+        self, model: MingTTSSGLangModel | None, server_args: object
+    ) -> None:
         del server_args
         # Note (yzxiao): Only the acoustic owner captures tail graphs because
         # follower ranks run the backbone graph without latent sampling.
@@ -197,13 +217,20 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             list(self._model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
         )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor | None,
+    ) -> MingTTSModelRunner:
         from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
         self._model_runner = MingTTSModelRunner(model_worker, output_proc)
         return self._model_runner
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: MingTTSSGLangModel | None) -> tuple[
+        Callable[[StagePayload], MingTTSSGLangRequestData],
+        Callable[[MingTTSSGLangRequestData], StagePayload],
+    ]:
         from sglang_omni.models.ming_tts.engine_io import (
             make_ming_tts_scheduler_adapters,
         )
@@ -215,12 +242,17 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             owns_acoustic_result=self.tp_rank == 0,
         )
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> dict[
+        str,
+        Callable[[str, MingTTSSGLangRequestData, object], list[OutgoingMessage]],
+    ]:
         if self.tp_rank != 0:
             return {}
         from sglang_omni.models.ming_tts.engine_io import build_ming_tts_stream_output
 
         return {"stream_output_builder": build_ming_tts_stream_output}
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         return self._model_runner.reset_request

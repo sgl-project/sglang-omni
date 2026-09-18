@@ -76,7 +76,7 @@ def build_turn_detector(
 
 
 def _optional_float(
-    value: Any,
+    value: int | float | str | None,
     default: float,
     *,
     minimum: float | None = None,
@@ -94,7 +94,9 @@ def _optional_float(
     return result
 
 
-def _optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
+def _optional_int(
+    value: int | float | str | None, default: int, *, minimum: int | None = None
+) -> int:
     if value is None:
         return default
     result = int(value)

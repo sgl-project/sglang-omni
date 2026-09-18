@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from queue import Queue
+from typing import Any, Literal, Protocol
 
 
 @dataclass
@@ -21,3 +22,19 @@ class OutgoingMessage:
     data: Any = None
     target: str | None = None
     metadata: dict[str, Any] | None = None
+
+
+class StageScheduler(Protocol):
+    """Scheduler lifecycle and message queues consumed by a pipeline stage."""
+
+    @property
+    def inbox(self) -> Queue[IncomingMessage]: ...
+
+    @property
+    def outbox(self) -> Queue[OutgoingMessage]: ...
+
+    def start(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def abort(self, request_id: str) -> None: ...

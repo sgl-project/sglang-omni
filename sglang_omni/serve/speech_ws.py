@@ -8,8 +8,8 @@ import json
 import logging
 import uuid
 from collections import deque
-from collections.abc import Awaitable
-from typing import Any
+from collections.abc import Awaitable, Generator, Mapping, MutableMapping
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -38,6 +38,12 @@ from sglang_omni.serve.speech_service import (
     PreparedSpeechRequest,
     SpeechRequestValidator,
 )
+from sglang_omni.utils.json import JsonValue
+
+if TYPE_CHECKING:
+    from sglang_omni.serve.speech_voices import UploadedVoiceReference
+
+PayloadValue = TypeVar("PayloadValue")
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +65,15 @@ def new_speech_ws_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
-async def _cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
+class CancellableAwaitable(Protocol):
+    def done(self) -> bool: ...
+
+    def cancel(self) -> bool: ...
+
+    def __await__(self) -> Generator[object, None, object]: ...
+
+
+async def _cancel_tasks(*tasks: CancellableAwaitable) -> None:
     for task in tasks:
         if not task.done():
             task.cancel()
@@ -87,7 +101,7 @@ class SpeechWebSocketSession:
         self.committed_sentence_count = 0
         self.segment_index = 0
         self.active_request_id: str | None = None
-        self.buffered_receive_messages: deque[dict[str, Any]] = deque()
+        self.buffered_receive_messages: deque[MutableMapping[str, Any]] = deque()
         self.buffered_receive_message_bytes = 0
         self.config_prepared_request: PreparedSpeechRequest | None = None
 
@@ -176,7 +190,7 @@ class SpeechWebSocketSession:
                     )
                 )
 
-    async def _handle_input_text(self, payload: dict[str, Any]) -> None:
+    async def _handle_input_text(self, payload: dict[str, PayloadValue]) -> None:
         text = payload.get("text")
         if not isinstance(text, str):
             await self._send_error(bad_request("input.text text must be a string"))
@@ -230,9 +244,11 @@ class SpeechWebSocketSession:
 
     async def _parse_config(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, PayloadValue],
     ) -> SpeechStreamSessionConfig:
-        raw_config = payload.get("session")
+        raw_config: PayloadValue | dict[str, PayloadValue] | None = payload.get(
+            "session"
+        )
         if raw_config is None:
             raw_config = {key: value for key, value in payload.items() if key != "type"}
         if not isinstance(raw_config, dict):
@@ -447,7 +463,7 @@ class SpeechWebSocketSession:
             return []
         return self.config_prepared_request.reference_descriptors
 
-    def _config_uploaded_voice(self) -> Any:
+    def _config_uploaded_voice(self) -> UploadedVoiceReference | None:
         if self.config_prepared_request is None:
             return None
         return self.config_prepared_request.uploaded_voice
@@ -470,7 +486,7 @@ class SpeechWebSocketSession:
         self.buffer = self.buffer[start:]
         return segments
 
-    def _parse_message(self, raw: str) -> dict[str, Any]:
+    def _parse_message(self, raw: str) -> dict[str, JsonValue]:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("speech WebSocket messages must be JSON objects")
@@ -558,7 +574,7 @@ class SpeechWebSocketSession:
         return raw
 
     @staticmethod
-    def _receive_message_size(message: dict[str, Any]) -> int:
+    def _receive_message_size(message: Mapping[str, PayloadValue]) -> int:
         text = message.get("text")
         if isinstance(text, str):
             return len(text.encode("utf-8"))
@@ -574,7 +590,7 @@ class SpeechWebSocketSession:
                 f"{message_kind} WebSocket message exceeds {max_bytes} bytes"
             )
 
-    async def _send_json(self, payload: dict[str, Any]) -> None:
+    async def _send_json(self, payload: dict[str, PayloadValue]) -> None:
         if not self._can_send():
             return
         await self.websocket.send_text(json.dumps(payload))
@@ -654,7 +670,7 @@ def _speech_error_from_exception(exc: Exception) -> SpeechAPIError:
     return bad_request(str(exc))
 
 
-def _validate_raw_session_fields(payload: dict[str, Any]) -> None:
+def _validate_raw_session_fields(payload: dict[str, PayloadValue]) -> None:
     if "stream_audio" in payload and payload["stream_audio"] is not None:
         if not isinstance(payload["stream_audio"], bool):
             raise bad_request(

@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
 
 REPLICA_SEPARATOR = "@r"
+
+ConfigValueT = TypeVar("ConfigValueT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +179,7 @@ class EngineArgs(BaseModel):
     def _parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.quantization is not None and not self.quantization.strip():
             raise ValueError("engine.quantization must not be empty")
         if self.kv_cache_bytes is not None and self.mem_fraction_static is not None:
@@ -247,7 +249,7 @@ class FactoryArgs(BaseModel):
     enable_partial_start: bool | None = None
     partial_start_min_chunks: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.prefill_coalesce_requests == 1:
             logger.warning(
                 "prefill_coalesce_requests=1 disables coalescing: the "
@@ -284,7 +286,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices", mode="before")
     @classmethod
-    def _parse_replica_devices(cls, value: Any) -> Any:
+    def _parse_replica_devices(cls, value: object) -> object:
         if value is None:
             return None
         if isinstance(value, int):
@@ -312,7 +314,7 @@ class ProcessConfig(BaseModel):
             raise ValueError("processes.replica_devices GPU ids must be >= 0")
         return value
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if self.num_replicas < 1:
             raise ValueError("processes.num_replicas must be >= 1")
 
@@ -422,7 +424,7 @@ class StageConfig(BaseModel):
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
                 f"Stage {self.name!r}: TP placement requires a list of "
@@ -539,7 +541,7 @@ class AudioChunkingConfig(BaseModel):
     # Note (Jeffro): How many long uploads the HTTP process admits at once.
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         if (
             self.max_total_audio_s is not None
             and self.max_total_audio_s < self.max_audio_clip_s
@@ -667,11 +669,11 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _materialize_stage_types(cls, data: Any) -> Any:
+    def _materialize_stage_types(cls, data: object) -> object:
         """Validate stage documents against their declared per-stage types."""
         if not isinstance(data, dict) or not isinstance(data.get("stages"), list):
             return data
-        stages: list[Any] = []
+        stages: list[object] = []
         for stage in data["stages"]:
             stage_cls = (
                 cls.stage_config_types.get(stage.get("name"))
@@ -683,7 +685,7 @@ class PipelineConfig(BaseModel):
             )
         return {**data, "stages": stages}
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         self._validate_general()
         self._validate_processes()
 
@@ -993,5 +995,5 @@ class PipelineConfig(BaseModel):
             )
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> PipelineConfig:
+    def from_dict(data: dict[str, ConfigValueT]) -> PipelineConfig:
         return PipelineConfig(**data)

@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, TypeGuard
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 import torch
 
@@ -16,7 +19,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_
 from sglang_omni.proto import StagePayload
 
 
-def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | None:
+def _as_tensor(value: object, dtype: torch.dtype | None = None) -> torch.Tensor | None:
     if value is None:
         return None
     if isinstance(value, torch.Tensor):
@@ -27,7 +30,7 @@ def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | N
         return None
 
 
-def _non_empty(tensor: torch.Tensor | None) -> bool:
+def _non_empty(tensor: torch.Tensor | None) -> TypeGuard[torch.Tensor]:
     return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
 
 
@@ -40,7 +43,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     """
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = MingOmniPipelineState.from_dict(base.data)
-    encoder_outs: dict[str, Any] = {}
+    encoder_outs: dict[str, object] = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
 
@@ -63,7 +66,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
 def build_thinker_inputs(
     state: MingOmniPipelineState,
-    encoder_outs: dict[str, Any],
+    encoder_outs: object,
 ) -> dict[str, Any]:
     """Build model_inputs dict for the Ming thinker from encoder outputs.
 
@@ -97,7 +100,7 @@ def build_thinker_inputs(
         else None
     )
 
-    thinker_model_inputs: dict[str, Any] = {}
+    thinker_model_inputs: dict[str, torch.Tensor] = {}
 
     if _non_empty(audio_embeds):
         # Flatten: [B, T', H] -> [T', H] (remove batch dim for SGLang injection)
@@ -136,7 +139,9 @@ def build_thinker_inputs(
         if media_cache_keys:
             return {"media_cache_keys": media_cache_keys}
         return {}
-    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    result: dict[str, Mapping[str, torch.Tensor | str]] = {
+        "model_inputs": thinker_model_inputs
+    }
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
     return result
@@ -146,7 +151,7 @@ def decode_events(
     *,
     thinker_out: ThinkerOutput,
     state: MingOmniPipelineState,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     eos_token_id: int | None,
     step: int,
 ) -> Iterable[MingOmniEvent]:

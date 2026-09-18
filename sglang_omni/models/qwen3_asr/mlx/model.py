@@ -4,7 +4,16 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -13,8 +22,25 @@ from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attenti
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
+if TYPE_CHECKING:
+    from mlx_lm.models.cache import KVCache
 
-def _rope_safe(rope, x: mx.array, offset: int) -> mx.array:
+MlxQuantizedTensor: TypeAlias = tuple[mx.array, mx.array, mx.array]
+
+
+class MlxAttentionCache(Protocol):
+    @property
+    def offset(self) -> int | mx.array: ...
+
+    def update_and_fetch(
+        self, keys: mx.array, values: mx.array, /
+    ) -> tuple[mx.array, mx.array] | tuple[MlxQuantizedTensor, MlxQuantizedTensor]: ...
+
+
+MlxCacheT = TypeVar("MlxCacheT", bound=MlxAttentionCache | None)
+
+
+def _rope_safe(rope, x: mx.array, offset: int | mx.array) -> mx.array:
     """Apply RoPE, working around an mx.fast.rope bug.
 
     For a 4D tensor (B, heads, L, dim) with L == 1 and B > 1, mx.fast.rope
@@ -359,7 +385,7 @@ class TextAttention(nn.Module):
         self,
         hidden_states: mx.array,
         mask: Optional[Union[str, mx.array]] = None,
-        cache: Optional[Any] = None,
+        cache: MlxAttentionCache | None = None,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
 
@@ -442,7 +468,7 @@ class TextDecoderLayer(nn.Module):
         self,
         hidden_states: mx.array,
         mask: Optional[Union[str, mx.array]] = None,
-        cache: Optional[Any] = None,
+        cache: MlxAttentionCache | None = None,
     ) -> mx.array:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -475,19 +501,20 @@ class TextModel(nn.Module):
         self,
         input_ids: Optional[mx.array] = None,
         inputs_embeds: Optional[mx.array] = None,
-        cache: Optional[List[Any]] = None,
+        cache: list[MlxCacheT] | None = None,
     ) -> mx.array:
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
 
-        if cache is None:
-            cache = [None] * len(self.layers)
-        mask = create_attention_mask(hidden_states, cache[0])
+        layer_caches = cache
+        if layer_caches is None:
+            layer_caches = [None] * len(self.layers)
+        mask = create_attention_mask(hidden_states, layer_caches[0])
 
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
+            hidden_states = layer(hidden_states, mask=mask, cache=layer_caches[i])
 
         return self.norm(hidden_states)
 
@@ -549,7 +576,7 @@ class Qwen3ASRModel(nn.Module):
     def _forward_last_logits(
         self,
         inputs_embeds: mx.array,
-        cache: Optional[List[Any]] = None,
+        cache: list[MlxCacheT] | None = None,
     ) -> mx.array:
         hidden_states = self.model(inputs_embeds=inputs_embeds, cache=cache)[:, -1:, :]
 
@@ -564,7 +591,7 @@ class Qwen3ASRModel(nn.Module):
         self,
         input_ids: mx.array,
         input_embeddings: Optional[mx.array] = None,
-        cache: Optional[List[Any]] = None,
+        cache: list[MlxCacheT] | None = None,
     ) -> mx.array:
         if input_embeddings is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
@@ -580,7 +607,7 @@ class Qwen3ASRModel(nn.Module):
 
         return logits
 
-    def make_cache(self) -> List[Any]:
+    def make_cache(self) -> "list[KVCache]":
         """Create KV cache for generation."""
         from mlx_lm.models.cache import KVCache
 

@@ -33,7 +33,7 @@ provenance and conflict detection stay per value.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping
 from typing import Any
 
 import yaml
@@ -48,6 +48,7 @@ from sglang_omni.config.patch import (
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError, SegmentKind
 from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.utils.json import JsonValue
 
 __all__ = [
     "dump_user_config",
@@ -69,7 +70,7 @@ class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
     """
 
     def construct_mapping(self, node, deep=False):  # type: ignore[override]
-        seen: set[Any] = set()
+        seen: set[Hashable] = set()
         for key_node, _value_node in node.value:
             key = self.construct_object(key_node, deep=deep)
             if isinstance(key, (dict, list, set)):
@@ -111,7 +112,7 @@ _STAGES_LIST_GUIDANCE = (
 
 
 def patches_from_dotted_cli(
-    extra_args: Mapping[str, Any] | Iterable[tuple[str, Any]],
+    extra_args: Mapping[str, object] | Iterable[tuple[str, object]],
     config: PipelineConfig,
     *,
     origin: str = "extra CLI args",
@@ -187,7 +188,7 @@ def patches_from_model_path_flag(
 
 
 def patches_from_shared_block(
-    shared_block: Any,
+    shared_block: object,
     config_cls: type[PipelineConfig],
     stage_names: Iterable[str],
     *,
@@ -243,7 +244,7 @@ def patches_from_shared_block(
 
 
 def _select_stages(
-    select: Any,
+    select: object,
     config_cls: type[PipelineConfig],
     stage_names: list[str],
     *,
@@ -303,7 +304,7 @@ def _select_stages(
 
 
 def patches_from_stages_mapping(
-    stages_block: Any,
+    stages_block: object,
     config_cls: type[PipelineConfig],
     known_names: Iterable[str],
     *,
@@ -391,7 +392,7 @@ def sources_from_config_file(
 
     if "config_cls" not in data:
         raise ValueError(
-            f"Config file {file_path!r} must name its pipeline class in " "config_cls"
+            f"Config file {file_path!r} must name its pipeline class in config_cls"
         )
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config_cls_by_name(data["config_cls"])
     stages_block = data.pop("stages", None)
@@ -453,7 +454,7 @@ def sources_from_config_file(
     return config, patches
 
 
-def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
+def dump_user_config(config: PipelineConfig) -> dict[str, JsonValue]:
     """Dump a config in the shape a config file is written in.
 
     The internal stage list becomes the user-facing ``stages:`` mapping: the
@@ -465,7 +466,7 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
     """
     data = config.model_dump(mode="json")
     data.pop("entry_stage", None)
-    stages: dict[str, Any] = {}
+    stages: dict[str, dict[str, JsonValue]] = {}
     for stage in data.get("stages", []):
         body = dict(stage)
         body.pop("name", None)

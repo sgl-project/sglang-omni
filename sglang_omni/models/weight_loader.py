@@ -6,11 +6,14 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import TypeVar
 
 import torch
 import torch.nn as nn
 from huggingface_hub import snapshot_download
 from transformers.utils.hub import cached_file
+
+ModuleT = TypeVar("ModuleT", bound=nn.Module)
 
 
 def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
@@ -213,7 +216,7 @@ def load_weights_by_prefix(
 
 
 def load_module(
-    module: nn.Module,
+    module: ModuleT,
     model_path: str,
     *,
     prefix: str | tuple[str, ...] | list[str],
@@ -221,7 +224,7 @@ def load_module(
     device: str | torch.device | None = None,
     strict: bool = True,
     local_files_only: bool = False,
-) -> nn.Module:
+) -> ModuleT:
     """Load weights into module by prefix, optionally move to device."""
     state_dict = load_weights_by_prefix(
         model_path,

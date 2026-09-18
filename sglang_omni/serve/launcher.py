@@ -32,8 +32,9 @@ import signal
 import socket
 import threading
 import time
+from collections.abc import Generator
 from contextlib import contextmanager, suppress
-from typing import Any
+from typing import Any, TypedDict
 
 import uvicorn
 from fastapi import APIRouter, HTTPException
@@ -59,6 +60,53 @@ logger = logging.getLogger(__name__)
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 
+class StageRuntimeLog(TypedDict):
+    gpu: int | list[int] | None
+    total_gpu_memory_fraction: float | None
+    kv_cache_bytes: int | None
+    total_reserve_bytes: int | None
+    mem_fraction_static: float | None
+
+
+class GpuDeviceLog(TypedDict):
+    device_id: int | str | None
+    name: str
+    total_memory: str
+
+
+class ProcessGroupLog(TypedDict):
+    stages: list[str]
+    gpu: int | None
+
+
+class GpuPlacementLog(TypedDict):
+    hardware: GpuDeviceLog
+    stages: list[str]
+    total_gpu_memory_fraction: float
+    missing_fraction_stages: list[str]
+    total_kv_cache_bytes: int
+    total_reserve_bytes: int
+
+
+class PlacementLog(TypedDict):
+    topology: str
+    pipeline: str | None
+    process_groups: dict[str, ProcessGroupLog]
+    tp_process_groups: dict[str, list[str]]
+    stage_runtime: dict[str, StageRuntimeLog]
+    gpus: dict[int, GpuPlacementLog]
+
+
+class ModelCapabilitiesLog(TypedDict):
+    architecture: str
+    reference_audio: bool
+    batch_vocoder: bool
+    streaming_vocoder: bool
+    cuda_graph: bool
+    torch_compile: bool
+    breakable_prefill_cuda_graph: bool
+
+
 class _PipelineUvicornServer(uvicorn.Server):
     """Keep Uvicorn's graceful handling without re-raising process signals.
 
@@ -69,7 +117,7 @@ class _PipelineUvicornServer(uvicorn.Server):
     """
 
     @contextmanager
-    def capture_signals(self):
+    def capture_signals(self) -> Generator[None, None, None]:
         if threading.current_thread() is not threading.main_thread():
             yield
             return
@@ -124,10 +172,12 @@ def _default_template(profiler_dir: str, run_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
+def _stage_runtime_log_summary(
+    pipeline_config: PipelineConfig,
+) -> dict[str, StageRuntimeLog]:
     """Build stage placement and runtime budget fields for startup logs."""
 
-    summary: dict[str, Any] = {}
+    summary: dict[str, StageRuntimeLog] = {}
     for stage in pipeline_config.stages:
         fraction = stage.gpu_memory_fraction
         kv_cache_bytes = (
@@ -148,7 +198,7 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
     return summary
 
 
-def _format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
+def _format_gpu_device_info(info: GpuDeviceInfo) -> GpuDeviceLog:
     return {
         "device_id": info.device_id,
         "name": info.name or "unknown",
@@ -164,7 +214,7 @@ def _placement_log_summary(
     placement_plan,
     process_plan,
     pipeline_config: PipelineConfig,
-) -> dict[str, Any]:
+) -> PlacementLog:
     """Build the resolved startup placement summary.
 
     The summary includes topology, stage placement, stage budgets, per-GPU
@@ -203,7 +253,7 @@ def _placement_log_summary(
 
 def _model_capabilities_log_summary(
     pipeline_config: PipelineConfig,
-) -> dict[str, Any] | None:
+) -> ModelCapabilitiesLog | None:
     architecture = getattr(type(pipeline_config), "architecture", None)
     if architecture is None:
         return None

@@ -41,7 +41,7 @@ from sglang_omni.proto import (
     KVTransferReadyMessage,
     StagePayload,
 )
-from sglang_omni.relay.base import Relay
+from sglang_omni.relay.base import Relay, RelayOperation
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class _InboundKVTransfer:
 
 
 class _PendingTransfer(msgspec.Struct):
-    ops: list[Any]
+    ops: list[RelayOperation]
     ack: asyncio.Future[None]
     task: asyncio.Task[bool] | None = None
     lease: KVPageLease | None = None
@@ -75,7 +75,7 @@ class _PendingTransfer(msgspec.Struct):
 
 class _PayloadSendJob(msgspec.Struct, frozen=True):
     relay: Relay
-    control_plane: Any
+    control_plane: stage_io.StageMessageSender
     request_id: str
     payload: StagePayload
     transport: TransportKind
@@ -89,7 +89,7 @@ class _PayloadSendJob(msgspec.Struct, frozen=True):
 
 class _StreamSendJob(msgspec.Struct, frozen=True):
     relay: Relay
-    control_plane: Any
+    control_plane: stage_io.StageMessageSender
     request_id: str
     data: torch.Tensor
     target_stage: str
@@ -132,7 +132,7 @@ class CommEngine:
         self._send_queues: dict[
             str, asyncio.Queue[_PayloadSendJob | _StreamSendJob]
         ] = {}
-        self._send_workers: dict[str, asyncio.Task] = {}
+        self._send_workers: dict[str, asyncio.Task[None]] = {}
         self._pending: dict[str, _PendingTransfer] = {}
         self._stream_send_sequence = count()
         # Failed pending KV transfers stay pinned until this dying process exits.
@@ -145,7 +145,7 @@ class CommEngine:
         self._aborted_kv_requests: set[str] = set()
         self._rank_recv_socket: PullSocket | None = None
         self._rank_send_sockets: dict[str, PushSocket] = {}
-        self._rank_control_task: asyncio.Task | None = None
+        self._rank_control_task: asyncio.Task[None] | None = None
         self._rank_receive_tasks: set[asyncio.Task[None]] = set()
         self._task_done_callback = task_done_callback
         self._closed = False
@@ -190,7 +190,7 @@ class CommEngine:
         transport: TransportKind,
         from_stage: str,
         to_stage: str,
-    ) -> tuple[DataRef, Any]:
+    ) -> tuple[DataRef, RelayOperation]:
         return await stage_io.write_payload(
             relay,
             request_id,
@@ -204,7 +204,7 @@ class CommEngine:
         self,
         *,
         relay: Relay,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         payload: StagePayload,
         transport: TransportKind,
@@ -301,7 +301,7 @@ class CommEngine:
         self,
         *,
         relay: Relay,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         data: torch.Tensor,
         target_stage: str,
@@ -1008,16 +1008,16 @@ class CommEngine:
     async def _publish_data_ready(
         self,
         *,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         from_stage: str,
         to_stage: str,
         target_endpoint: str,
         data_ref: DataRef,
-        ops: list[Any],
+        ops: list[RelayOperation],
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task[bool]:
         """Publish a relay object and arm its existing ACK lifecycle."""
 
         object_id = data_ref.object_id
@@ -1036,7 +1036,7 @@ class CommEngine:
     async def _publish_registered_data_ready(
         self,
         *,
-        control_plane: Any,
+        control_plane: stage_io.StageMessageSender,
         request_id: str,
         from_stage: str,
         to_stage: str,
@@ -1044,7 +1044,7 @@ class CommEngine:
         data_ref: DataRef,
         chunk_id: int | None = None,
         replica_bindings: dict[str, int] | None = None,
-    ) -> asyncio.Task:
+    ) -> asyncio.Task[bool]:
         object_id = data_ref.object_id
         try:
             await control_plane.send_to_stage(
@@ -1067,7 +1067,7 @@ class CommEngine:
     def _register_pending(
         self,
         object_id: str,
-        ops: list[Any],
+        ops: list[RelayOperation],
         *,
         lease: KVPageLease | None = None,
         retain_pending_on_failure: bool = False,

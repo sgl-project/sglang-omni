@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
@@ -14,6 +15,19 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
 from sglang_omni.vendor.sglang.utils import is_flashinfer_available
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.server_args import ServerArgs
+    from transformers import PreTrainedTokenizerFast
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.fishaudio_s2_pro.model_runner import FishS2ProModelRunner
+    from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
+    from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 
 _VALIDATED_AUTO_ATTENTION_BACKENDS = {
     89: "flashinfer",
@@ -65,8 +79,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
-        self.adapter: Any | None = None
-        self.tokenizer: Any | None = None
+        self.adapter: S2ProTokenizerAdapter | None = None
+        self.tokenizer: PreTrainedTokenizerFast | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -78,7 +92,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | float]:
         del dtype
         if current_platform.is_npu():
             # NPU graph decode avoids the ascend backend's eager concurrent-
@@ -117,8 +131,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             overrides["cuda_graph_bs"] = [1, 2, 4, 8, 16]
             overrides["cuda_graph_max_bs"] = 16
 
-    def customize_server_args(self, server_args: Any) -> None:
-        updates: dict[str, Any] = {"disable_overlap_schedule": True}
+    def customize_server_args(self, server_args: ServerArgs | None) -> None:
+        updates: dict[str, bool] = {"disable_overlap_schedule": True}
         override_server_args(
             server_args,
             "sglang_omni.fishaudio_s2_pro.runtime_defaults",
@@ -128,11 +142,11 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: object,
     ) -> None:
         del gpu_id
         from sglang.srt.runtime_context import get_schedule
@@ -162,10 +176,12 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             ras_window=self.ras_window,
         )
 
-    def get_model_buffer_bs(self, model: Any) -> int | None:
+    def get_model_buffer_bs(self, model: S2ProSGLangTextModel) -> int:
         return fish_stages._resolve_s2pro_model_buffer_bs(model)
 
-    def compile_model(self, model: Any, server_args: Any) -> None:
+    def compile_model(
+        self, model: S2ProSGLangTextModel | None, server_args: ServerArgs | None
+    ) -> None:
         from sglang.srt.runtime_context import get_exec
 
         if bool(get_exec().graph.enable_torch_compile):
@@ -179,14 +195,21 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
                 enable_torch_compile=False,
             )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> FishS2ProModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fishaudio_s2_pro.model_runner"
         )
 
         return model_runner_mod.FishS2ProModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: object) -> tuple[
+        Callable[[StagePayload], request_builders.S2ProSGLangRequestData],
+        Callable[[request_builders.S2ProSGLangRequestData], StagePayload],
+    ]:
         del model
         request_builder, result_adapter, self._stream_output_builder = (
             request_builders.make_tts_scheduler_adapters(
@@ -198,5 +221,13 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         )
         return request_builder, result_adapter
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> dict[
+        str,
+        Callable[
+            [str, request_builders.S2ProSGLangRequestData, object],
+            list[OutgoingMessage],
+        ],
+    ]:
         return {"stream_output_builder": self._stream_output_builder}

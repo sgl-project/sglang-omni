@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import torch
 
@@ -19,6 +19,9 @@ from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
     resolve_initial_codec_chunk_frames,
 )
+
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.vocoder import MossTTSVocoder
 
 
 @dataclass
@@ -49,7 +52,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
 
     def __init__(
         self,
-        vocoder: Any,
+        vocoder: MossTTSVocoder,
         *,
         stream_stride: int = 8,
         stream_followup_stride: int = 8,
@@ -106,7 +109,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         self,
         request_id: str,
         state: _MossStreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -135,7 +138,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
             self._latch_initial_chunk_frames(state, params)
             return
 
-        metadata: Mapping[str, Any] = source
+        metadata: Mapping[str, object] = source
         self._latch_contract_values(
             request_id,
             state,
@@ -360,7 +363,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
     def _latch_initial_chunk_frames(
         self,
         state: _MossStreamState,
-        values: Mapping[str, Any] | None,
+        values: Mapping[str, object] | None,
     ) -> None:
         self._require_contract(state, "<stream>")
         steady_frames = self._stream_followup_stride
@@ -375,9 +378,9 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         request_id: str,
         state: _MossStreamState,
         *,
-        n_vq: Any,
-        audio_pad_code: Any,
-        sample_rate: Any,
+        n_vq: object,
+        audio_pad_code: object,
+        sample_rate: object,
         source: str,
     ) -> None:
         try:
@@ -418,7 +421,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
 
     @staticmethod
     def _resolve_samples_per_frame(
-        audio_vocoder: Any,
+        audio_vocoder: object,
         sample_rate: int,
     ) -> int | None:
         config = getattr(getattr(audio_vocoder, "model", None), "config", None)

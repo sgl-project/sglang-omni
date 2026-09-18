@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -11,11 +11,15 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 
+if TYPE_CHECKING:
+    from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+    from sglang.srt.model_executor.model_runner import ModelRunner
+
 
 class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
     """Preserve encoder-decoder metadata omitted by SGLang's generic runner."""
 
-    def __init__(self, model_runner: Any) -> None:
+    def __init__(self, model_runner: "ModelRunner") -> None:
         decoder = model_runner.model.model.decoder
         self_attention_layers = [layer.self_attn.attn for layer in decoder.layers]
         cross_attention_layers = [layer.encoder_attn.attn for layer in decoder.layers]
@@ -25,7 +29,9 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         model_runner.mha_companion_layers = [None] * len(model_runner.attention_layers)
         super().__init__(model_runner)
 
-    def capture_prepare(self, num_tokens: int) -> tuple[ForwardBatch, Any]:
+    def capture_prepare(
+        self, num_tokens: int
+    ) -> "tuple[ForwardBatch, AttentionBackend]":
         forward_batch, attn_backend = super().capture_prepare(num_tokens)
         encoder_lens_cpu = [1] * forward_batch.batch_size
         forward_batch.encoder_lens = torch.tensor(
@@ -41,7 +47,7 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
     def load_batch(
         self,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> ForwardBatch:
         static_forward_batch = super().load_batch(forward_batch, **kwargs)
         static_forward_batch.encoder_lens_cpu = forward_batch.encoder_lens_cpu

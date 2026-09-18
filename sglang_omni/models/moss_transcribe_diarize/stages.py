@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from types import ModuleType
 from typing import Any
 
 from transformers import AutoConfig, GenerationConfig
@@ -27,14 +28,16 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
     import transformers.utils.hub as hub_utils
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    patched: list[tuple[Any, Any]] = []
+    patched: list[tuple[Any, Callable[..., list[str]]]] = []
 
-    def patch_list_repo_templates(module: Any) -> None:
+    def patch_list_repo_templates(
+        module: ModuleType,
+    ) -> None:
         original = getattr(module, "list_repo_templates", None)
         if original is None:
             return
 
-        def wrapped(*args: Any, **kwargs: Any) -> Any:
+        def wrapped(*args: object, **kwargs: object) -> list[str]:
             try:
                 return original(*args, **kwargs)
             except RepositoryNotFoundError as exc:

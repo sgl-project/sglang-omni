@@ -9,7 +9,7 @@ import os
 import re
 import tempfile
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -21,6 +21,10 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+
+if TYPE_CHECKING:
+    from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,7 @@ def _import_mistral_common_for_voxtral():
 
 def _validate_voxtral_speech_params(
     *,
-    inputs: Any,
+    inputs: object,
     params: dict[str, Any],
     tts_params: dict[str, Any],
 ) -> None:
@@ -81,7 +85,7 @@ def _validate_voxtral_speech_params(
         )
 
 
-def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
+def _ensure_non_empty_audio_codes(audio_codes: object) -> None:
     if audio_codes is None:
         raise ValueError("Voxtral TTS generated no audio codes")
     if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
@@ -173,7 +177,7 @@ def create_generation_executor(
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
-) -> Any:
+) -> "OmniScheduler":
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
     from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (
@@ -241,7 +245,9 @@ def _load_voxtral_voice_embeddings(
 # ---- Vocoder ----
 
 
-def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
+def _load_audio_tokenizer(
+    checkpoint_dir: str, audio_config: dict, device: str
+) -> "VoxtralTTSAudioTokenizer":
     """Load the VoxtralTTSAudioTokenizer (decoder) from checkpoint."""
     import glob
 
@@ -293,13 +299,13 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
     return tokenizer
 
 
-class _VoxtralTTSVocoder(BatchVocoderBase):
+class _VoxtralTTSVocoder(BatchVocoderBase[VoxtralTTSState, torch.Tensor, torch.Tensor]):
     """Decode audio codes with repeated initial frames as warmup context."""
 
     _N_WARMUP = 2
     _FADE_IN_MS = 10
 
-    def __init__(self, audio_tokenizer: Any) -> None:
+    def __init__(self, audio_tokenizer: "VoxtralTTSAudioTokenizer") -> None:
         self._audio_tokenizer = audio_tokenizer
 
     def prepare_item(

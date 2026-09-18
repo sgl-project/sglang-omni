@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.moss_tts import request_builders
 from sglang_omni.models.moss_tts.hf_loading import (
@@ -13,6 +13,20 @@ from sglang_omni.models.moss_tts.hf_loading import (
     resolve_moss_tts_context_length,
 )
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
+    from sglang_omni.models.moss_tts.request_builders import MossTTSSGLangRequestData
+    from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import RequestOutput
 
 
 class MossTtsEngineBuilder(TtsEngineBuilder):
@@ -26,7 +40,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         super().__init__()
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
 
-    def infra_kwargs(self) -> dict[str, Any]:
+    def infra_kwargs(self) -> dict[str, float]:
         # Note (Jiaxin Deng): without this the declared stage budget stops at the
         # placement validator and KV sizing profiles against whatever the card happens
         # to have free, so capacity would depend on which process loaded first. Emitted
@@ -39,7 +53,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         self,
         checkpoint_dir: str,
         *,
-        server_args_overrides: Mapping[str, Any] | None = None,
+        server_args_overrides: Mapping[str, object] | None = None,
     ) -> int:
         return resolve_moss_tts_context_length(
             checkpoint_dir,
@@ -50,7 +64,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int]:
         return {
             "max_running_requests": 16,
             "dtype": dtype,
@@ -65,16 +79,18 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
         self._model_runner = model_worker.model_runner
 
-    def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
+    def post_cuda_graph_setup(
+        self, model: MossTTSDelaySGLangModel, server_args: object
+    ) -> None:
         del server_args
         graph_runner = self._model_runner.decode_cuda_graph_runner
         model.init_sampling_graphs(
@@ -82,21 +98,36 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
             disable_padding=graph_runner.disable_padding,
         )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> MossTTSModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.moss_tts.model_runner"
         )
 
         return model_runner_mod.MossTTSModelRunner(model_worker, output_proc)
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: MossTTSDelaySGLangModel | None) -> tuple[
+        Callable[[StagePayload], MossTTSSGLangRequestData],
+        Callable[[MossTTSSGLangRequestData], StagePayload],
+    ]:
         self._stream_output_builder = (
             request_builders.make_moss_tts_stream_output_builder()
         )
         return request_builders.make_moss_tts_scheduler_adapters(model=model)
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> dict[
+        str,
+        Callable[
+            [str, MossTTSSGLangRequestData, RequestOutput | None],
+            list[OutgoingMessage],
+        ],
+    ]:
         return {"stream_output_builder": self._stream_output_builder}
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_moss_tts_request

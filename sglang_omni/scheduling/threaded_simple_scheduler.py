@@ -10,7 +10,7 @@ import queue as _queue_mod
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Callable
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -20,7 +20,7 @@ _ABORTED_REQUEST_ID_LIMIT = 10000
 _ABORTED_REQUEST_ID_RETAINED = 5000
 
 
-class _CountingInbox(_queue_mod.Queue):
+class _CountingInbox(_queue_mod.Queue[IncomingMessage]):
     """Track queued and claimed ``new_request`` ids."""
 
     def _init(self, maxsize: int) -> None:
@@ -190,7 +190,7 @@ class ThreadedSimpleScheduler:
                     return
             time.sleep(0.001)
 
-    def _run_one(self, payload: Any) -> Any:
+    def _run_one(self, payload: object) -> object:
         result = self._fn(payload)
         if inspect.isawaitable(result):
             result = asyncio.run(result)

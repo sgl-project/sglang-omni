@@ -49,13 +49,13 @@ class Connection:
 class NixlOperation(RelayOperation):
     """Base class for async operations."""
 
-    def __init__(self, connection: Connection, metadata: Any = None):
+    def __init__(self, connection: Connection, metadata: dict[str, Any] | None = None):
         self._conn = connection
         self._metadata = metadata
         self._completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> dict[str, Any] | None:
         return self._metadata
 
 
@@ -69,7 +69,7 @@ class PutOperation(NixlOperation):
     def __init__(
         self,
         connection: Connection,
-        metadata: Any,
+        metadata: dict[str, Any],
         expected_notification: bytes,
         on_completion_cb: Callable[[], None],
     ):
@@ -268,7 +268,10 @@ class NixlRelay(Relay):
             raise e
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str = None,
     ) -> GetOperation:
         """
         Asynchronously get tensor. Returns a GetOperation.

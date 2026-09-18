@@ -185,7 +185,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         ),
     ]
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         # TODO (chenyang): Indeed, TRT and Torch compile conflicts are pretty
         # common in this repo, so we should make this into config level, not in each model.
         super().model_post_init(__context)

@@ -6,8 +6,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any, Callable
+from typing import Any, TypedDict, TypeVar
 from urllib.parse import quote, unquote
 
 import httpx
@@ -22,6 +23,7 @@ from sglang_omni.http.admin_auth import (
     resolve_admin_api_key,
 )
 from sglang_omni.http.favicon import register_favicon
+from sglang_omni.utils.json import JsonValue
 from sglang_omni_router.python.config import (
     MIN_CONNECTIONS_PER_WORKER,
     RouterConfig,
@@ -56,6 +58,18 @@ _ADMIN_UPDATE_PATHS = {
     "/destroy_weights_update_group",
 }
 _ADMIN_UPDATE_LOCK_TIMEOUT_S = 300.0
+ModelInfoValue = TypeVar("ModelInfoValue")
+
+
+class AdminWorkerResultOptional(TypedDict, total=False):
+    error: str
+    status_code: int
+    body: JsonValue
+
+
+class AdminWorkerResult(AdminWorkerResultOptional):
+    worker: str
+    success: bool
 
 
 def recover_worker_pool_from_journal(
@@ -168,7 +182,7 @@ def create_app(
     )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.router_config = config
         app.state.workers = workers
         app.state.http_client = client
@@ -270,7 +284,9 @@ def register_health_routes(
         )
 
 
-def _registry_lock_or_reject(app: FastAPI):
+def _registry_lock_or_reject(
+    app: FastAPI,
+) -> tuple[asyncio.Lock | None, JSONResponse | None]:
     """The admin update lock, or a 409 when an update owns or is next in line.
 
     Note (Jiaxin Deng): the caller must acquire the returned lock with no await
@@ -435,8 +451,8 @@ def register_admin_routes(
         if not payload:
             return _error_response(400, "at least one worker field is required")
 
-        requested_is_dead: bool | None = None
-        requested_disabled: bool | None = None
+        requested_is_dead = None
+        requested_disabled = None
 
         if "is_dead" in payload:
             requested_is_dead = payload["is_dead"]
@@ -484,7 +500,7 @@ def register_admin_routes(
 
     async def _apply_worker_update(
         worker_id: str,
-        payload: dict,
+        payload: dict[str, JsonValue],
         requested_is_dead: bool | None,
         requested_disabled: bool | None,
         request: Request,
@@ -661,8 +677,7 @@ def register_admin_routes(
             if lock is not None:
                 lock.release()
         logger.warning(
-            f"weight_update_journal_resolved readable={readable} "
-            f"worker_ids={journaled}"
+            f"weight_update_journal_resolved readable={readable} worker_ids={journaled}"
         )
         return JSONResponse(
             {
@@ -984,7 +999,7 @@ async def _broadcast_admin_request_locked(
     # Note (Jiaxin Deng): `results` drives the journal/restore logic. None =
     # crashed after the broadcast started (fail closed); [] = aborted before
     # anything was sent; list = completed (restore only if all succeeded).
-    results: list[dict[str, Any]] | None = None
+    results: list[AdminWorkerResult] | None = None
     journal_error: str | None = None
     journal = getattr(app.state, "update_journal", None)
     if disable_targets and journal is not None:
@@ -1088,7 +1103,7 @@ def _restore_admin_disabled_state(
 
 
 def _model_info_broadcast_response(
-    results: list[dict[str, Any]],
+    results: list[AdminWorkerResult],
     *,
     success: bool,
 ) -> JSONResponse:
@@ -1124,8 +1139,10 @@ def _model_info_broadcast_response(
     return JSONResponse(payload)
 
 
-def _extract_worker_model_infos(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    infos: list[dict[str, Any]] = []
+def _extract_worker_model_infos(
+    results: list[AdminWorkerResult],
+) -> list[dict[str, JsonValue]]:
+    infos: list[dict[str, JsonValue]] = []
     for result in results:
         body = result.get("body")
         if not isinstance(body, dict):
@@ -1155,16 +1172,16 @@ def _extract_worker_model_infos(results: list[dict[str, Any]]) -> list[dict[str,
 
 
 def _common_worker_model_info_value(
-    worker_infos: list[dict[str, Any]],
+    worker_infos: list[dict[str, ModelInfoValue]],
     key: str,
     *,
     mixed_status_code: int | None = None,
-    results: list[dict[str, Any]] | None = None,
-) -> Any:
+    results: list[AdminWorkerResult] | None = None,
+) -> ModelInfoValue | None:
     values = [info[key] for info in worker_infos if info.get(key) is not None]
     if not values:
         return None
-    unique: dict[str, Any] = {}
+    unique: dict[str, ModelInfoValue] = {}
     for value in values:
         unique.setdefault(json.dumps(value, sort_keys=True, default=str), value)
     if len(unique) == 1:
@@ -1189,7 +1206,7 @@ async def _send_admin_to_worker(
     path: str,
     body: bytes,
     headers: dict[str, str],
-) -> dict[str, Any]:
+) -> AdminWorkerResult:
     upstream_url = f"{worker.url}{path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
@@ -1220,7 +1237,7 @@ async def _send_admin_to_worker(
     }
 
 
-def _decode_response_payload(response: httpx.Response) -> Any:
+def _decode_response_payload(response: httpx.Response) -> JsonValue:
     try:
         return response.json()
     except Exception:
@@ -1237,7 +1254,7 @@ def _find_worker(workers: list[Worker], worker_id: str) -> Worker | None:
 
 async def _read_json_object(
     request: Request,
-) -> tuple[dict[str, Any], JSONResponse | None]:
+) -> tuple[dict[str, JsonValue], JSONResponse | None]:
     body = await request.body()
     if not body:
         return {}, None
@@ -1250,7 +1267,7 @@ async def _read_json_object(
     return payload, None
 
 
-def _string_or_none(value: Any) -> str | None:
+def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
@@ -1277,7 +1294,7 @@ async def _merge_models(
 
     request_headers = filter_request_headers(request)
     query = request.url.query
-    cards_by_id: dict[str, dict[str, Any]] = {}
+    cards_by_id: dict[str, dict[str, JsonValue]] = {}
     errors: dict[str, str] = {}
 
     worker_results = await asyncio.gather(
@@ -1328,10 +1345,10 @@ async def _fetch_worker_models(
     worker: Worker,
     client: httpx.AsyncClient,
     request_headers: dict[str, str],
-    query: bytes,
+    query: str,
     *,
     timeout_secs: int,
-) -> tuple[Worker, list[Any] | None, str | None]:
+) -> tuple[Worker, list[JsonValue] | None, str | None]:
     url = f"{worker.url}/v1/models" if not query else f"{worker.url}/v1/models?{query}"
     try:
         response = await client.get(

@@ -15,9 +15,10 @@ import os
 import queue as _queue_mod
 import threading
 import time
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 import numpy as np
 import torch
@@ -28,10 +29,32 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
+if TYPE_CHECKING:
+    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
+        AudioVAE,
+    )
+    from sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker import (
+        MingOmniTalker,
+    )
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_VOICE = "DB30"
 DEFAULT_SAMPLE_RATE = 44100
+
+
+class AudioChunkPayloadRequired(TypedDict):
+    modality: str
+    audio_waveform: bytes
+    audio_waveform_shape: list[int]
+    audio_waveform_dtype: str
+    sample_rate: int
+    stage_name: str
+    segment_id: int
+
+
+class AudioChunkPayload(AudioChunkPayloadRequired, total=False):
+    talker_first_audio_ms: float
 
 
 @dataclass
@@ -62,8 +85,8 @@ class MingStreamingTalkerScheduler:
         *,
         device: str = "cuda",
         voice: str = DEFAULT_VOICE,
-        talker: Any | None = None,
-        audio_detokenizer: Any | None = None,
+        talker: "MingOmniTalker | None" = None,
+        audio_detokenizer: "AudioVAE | None" = None,
         sample_rate: int | None = None,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
@@ -237,7 +260,11 @@ class MingStreamingTalkerScheduler:
 
     def _build_generation_iterator(
         self, text: str, abort_event: threading.Event
-    ) -> Any:
+    ) -> Generator[
+        tuple[torch.Tensor, str | None, tuple[int, int] | None, float | None],
+        None,
+        None,
+    ]:
         if hasattr(self._talker, "omni_audio_generation"):
             return self._talker.omni_audio_generation(
                 tts_text=text,
@@ -261,12 +288,12 @@ class MingStreamingTalkerScheduler:
         self,
         request_id: str,
         state: _RequestState,
-        waveform: Any,
+        waveform: torch.Tensor,
         *,
         segment_id: int,
     ) -> None:
         audio_bytes, shape, dtype = self._serialize_waveform(waveform)
-        payload: dict[str, Any] = {
+        payload: AudioChunkPayload = {
             "modality": "audio",
             "audio_waveform": audio_bytes,
             "audio_waveform_shape": shape,
@@ -321,13 +348,17 @@ class MingStreamingTalkerScheduler:
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
-    def _extract_waveform(item: Any) -> Any | None:
+    def _extract_waveform(
+        item: tuple[torch.Tensor, str | None, tuple[int, int] | None, float | None],
+    ) -> torch.Tensor | None:
         if isinstance(item, tuple):
             return item[0] if item else None
         return item
 
     @staticmethod
-    def _waveform_numel(waveform: Any) -> int:
+    def _waveform_numel(
+        waveform: torch.Tensor,
+    ) -> int:
         if isinstance(waveform, torch.Tensor):
             return int(waveform.numel())
         if isinstance(waveform, np.ndarray):
@@ -337,7 +368,9 @@ class MingStreamingTalkerScheduler:
         return int(np.asarray(waveform).size)
 
     @staticmethod
-    def _serialize_waveform(waveform: Any) -> tuple[bytes, list[int], str]:
+    def _serialize_waveform(
+        waveform: torch.Tensor,
+    ) -> tuple[bytes, list[int], str]:
         if isinstance(waveform, torch.Tensor):
             array = waveform.detach().cpu().float().numpy()
         elif isinstance(waveform, np.ndarray):
@@ -362,7 +395,7 @@ class MingStreamingTalkerScheduler:
         return self._sample_rate
 
     @staticmethod
-    def _sample_rate_from(owner: Any) -> int | None:
+    def _sample_rate_from(owner: object) -> int | None:
         if owner is None:
             return None
         config = getattr(owner, "config", None)

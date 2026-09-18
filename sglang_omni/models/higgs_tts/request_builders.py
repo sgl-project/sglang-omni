@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -27,6 +27,14 @@ from sglang_omni.scheduling.streaming_vocoder import (
     INITIAL_CODEC_CHUNK_FRAMES_PARAM,
     resolve_initial_codec_chunk_frames,
 )
+
+
+class HiggsSamplingOptions(TypedDict, total=False):
+    max_new_tokens: int
+    temperature: float
+    top_p: float
+    top_k: int
+    sampling_seed: int
 
 
 @dataclass
@@ -84,7 +92,7 @@ def build_sglang_higgs_request(
     input_ids_list = list(state.prompt_token_ids)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
 
-    sp_kwargs: dict[str, Any] = {
+    sp_kwargs: HiggsSamplingOptions = {
         "max_new_tokens": int(state.max_new_tokens),
         "temperature": float(state.temperature),
     }
@@ -137,7 +145,7 @@ def build_higgs_stream_metadata(
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     initial_chunk_frames: int = DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
-) -> dict[str, Any] | None:
+) -> dict[str, str | int | bool] | None:
     params = payload.request.params
     if not isinstance(params, dict):
         raise TypeError(
@@ -153,7 +161,7 @@ def build_higgs_stream_metadata(
             f"Invalid Higgs stream codec contract: "
             f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
         )
-    metadata: dict[str, Any] = {
+    metadata: dict[str, str | int | bool] = {
         "modality": "audio_codes",
         "stream": True,
         "num_codebooks": num_codebooks,

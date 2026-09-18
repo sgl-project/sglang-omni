@@ -11,6 +11,7 @@ the delay/flush tail until ``stream_done``.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -204,14 +205,20 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         self,
         *,
         device: str = "cuda",
-        compute_fn: Any = None,
-        batch_compute_fn: Any = None,
+        compute_fn: Callable[[StagePayload], object] | None = None,
+        batch_compute_fn: (
+            Callable[
+                [list[StagePayload]],
+                list[StagePayload] | Coroutine[object, None, list[StagePayload]],
+            ]
+            | None
+        ) = None,
         steady_chunk_frames: int = _STREAM_STEADY_CHUNK_FRAMES,
         initial_chunk_frames: int = _STREAM_INITIAL_CHUNK_FRAMES,
         overlap_frames: int = _STREAM_OLA_OVERLAP_FRAMES,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
-        request_cost_fn: Any = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
     ) -> None:
         if steady_chunk_frames <= 0:
@@ -368,7 +375,9 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         pcm = decode_to_pcm(codes, zstate.eos_frame, device=self._device)
         return pcm if pcm.numel() > 0 else None
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         del request_id
         return audio_waveform_payload(
             waveform.detach().to("cpu", torch.float32),
@@ -379,10 +388,10 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: _Zonos2StreamState
-    ) -> dict[str, Any]:
+    ) -> dict[str, str | int | dict[str, int | float]]:
         del request_id, state
         zstate = Zonos2State.from_dict(payload.data)
-        final_data: dict[str, Any] = {
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": int(zstate.sample_rate),
         }

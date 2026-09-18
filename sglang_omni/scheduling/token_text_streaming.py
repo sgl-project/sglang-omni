@@ -5,29 +5,39 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 from sglang_omni.scheduling.messages import OutgoingMessage
 
+if TYPE_CHECKING:
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+    from sglang_omni.scheduling.types import RequestOutput
+
+MetadataValueT = TypeVar("MetadataValueT")
+
 DecodeFn = Callable[[list[int]], str]
-BuildMessageDataFn = Callable[[str], Any]
-BuildMessageMetadataFn = Callable[[int | None], dict[str, Any] | None]
+BuildMessageDataFn = Callable[[str], object]
+BuildMessageMetadataFn = Callable[[int | None], dict[str, MetadataValueT] | None]
 
 
 def make_token_text_stream_output_builder(
     *,
     decode_fn: DecodeFn,
     build_message_data: BuildMessageDataFn,
-    build_message_metadata: BuildMessageMetadataFn,
+    build_message_metadata: BuildMessageMetadataFn[MetadataValueT],
     pending_ids_attr: str,
     last_emit_attr: str,
     eos_token_id: int | None,
     min_emit_interval_s: float = 0.0,
     allow_terminal_flush: bool = False,
     emit_trailing_replacement_on_terminal: bool = False,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, SGLangARRequestData, RequestOutput | SimpleNamespace], list[OutgoingMessage]
+]:
     def _build_stream_output(
-        request_id: str, req_data: Any, req_output: Any
+        request_id: str,
+        req_data: SGLangARRequestData,
+        req_output: RequestOutput | SimpleNamespace,
     ) -> list[OutgoingMessage]:
         req = req_data.req
         if req is None:
@@ -114,7 +124,7 @@ def make_token_text_stream_output_builder(
     if allow_terminal_flush:
 
         def _flush_stream_output(
-            request_id: str, req_data: Any
+            request_id: str, req_data: SGLangARRequestData
         ) -> list[OutgoingMessage]:
             return _build_stream_output(
                 request_id,

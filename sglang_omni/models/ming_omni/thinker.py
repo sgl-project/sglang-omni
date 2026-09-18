@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
@@ -53,6 +53,9 @@ from sglang_omni.vendor.sglang.layers import (
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
 from sglang_omni.vendor.sglang.utils import add_prefix, make_layers
+
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
 
 logger = logging.getLogger(__name__)
 
@@ -791,9 +794,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
 
     def __init__(
         self,
-        config: Any,
+        config: "PretrainedConfig",
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+    ) -> None:
         super().__init__()
         # Keep the original HF config reference so SGLang runtime can read
         # patched attributes (audio_token_id, etc.) from the same object.
@@ -846,7 +849,9 @@ class BailingMoeV2ForCausalLM(nn.Module):
         self._patch_token_ids(config, llm_cfg)
 
     @staticmethod
-    def _patch_token_ids(config: Any, llm_cfg: Any) -> None:
+    def _patch_token_ids(
+        config: "PretrainedConfig", llm_cfg: "PretrainedConfig | None"
+    ) -> None:
         """Set image/video/audio token IDs on the HF config."""
         if not hasattr(config, "image_token_id"):
             config.image_token_id = getattr(llm_cfg, "image_patch_token", None)

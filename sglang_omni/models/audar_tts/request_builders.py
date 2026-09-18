@@ -57,7 +57,7 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
 
 def build_generation_kwargs(
     params: dict[str, Any], *, tts_params: dict[str, Any]
-) -> dict[str, Any]:
+) -> dict[str, int | float]:
     generation = dict(_DEFAULT_GENERATION)
     explicit = tts_params.get("explicit_generation_params")
     explicit_fields = (
@@ -86,7 +86,7 @@ def build_generation_kwargs(
     return generation
 
 
-def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
+def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]]:
     if isinstance(inputs, str):
         return inputs, []
     if not isinstance(inputs, dict):
@@ -101,7 +101,7 @@ def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
     ]
 
 
-def _reference_from_value(value: Any) -> dict[str, Any]:
+def _reference_from_value(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     if isinstance(value, str) and value.startswith("data:"):

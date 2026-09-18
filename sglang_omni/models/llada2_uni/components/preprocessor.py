@@ -222,7 +222,7 @@ class LLaDA2Preprocessor:
             img_result = self._image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
-            image_enc_inputs: dict[str, Any] = {
+            image_enc_inputs: dict[str, torch.Tensor | str] = {
                 "pixel_values": pixel_values,
                 "image_grid_thw": image_grid_thw,
             }
@@ -288,9 +288,9 @@ class LLaDA2Preprocessor:
     @staticmethod
     def _extract_raw_images(
         messages: list[dict[str, Any]],
-    ) -> tuple[list[Any], list[tuple[int, int]]]:
+    ) -> tuple[list[object], list[tuple[int, int]]]:
         """Return (images, image_counts_per_msg) with per-message image counts."""
-        raw_images: list[Any] = []
+        raw_images: list[object] = []
         image_counts_per_msg: list[tuple[int, int]] = []
         for msg_idx, msg in enumerate(messages):
             msg_count = 0
@@ -316,7 +316,7 @@ class LLaDA2Preprocessor:
         return raw_images, image_counts_per_msg
 
     @staticmethod
-    def _validate_messages(messages: list[dict[str, Any]]) -> None:
+    def _validate_messages(messages: object) -> None:
         if not isinstance(messages, list):
             raise ValueError("Preprocessing expects a list of chat messages")
         for message in messages:

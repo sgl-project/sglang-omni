@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 import torch
 
@@ -26,7 +29,7 @@ def _cast_tensor(
     return value.to(dtype=dtype) if dtype is not None else value
 
 
-def _non_empty(value: Any) -> bool:
+def _non_empty(value: object) -> bool:
     if isinstance(value, torch.Tensor):
         return value.numel() > 0
     return False
@@ -36,7 +39,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     """Aggregate preprocessing + encoder outputs into thinker inputs."""
     base = payloads.get("preprocessing") or next(iter(payloads.values()))
     state = Qwen3OmniPipelineState.from_dict(base.data)
-    encoder_outs: dict[str, Any] = {}
+    encoder_outs: dict[str, object] = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
 
@@ -112,7 +115,7 @@ def build_thinker_inputs(
         dtype=torch.float,
     )
 
-    thinker_model_inputs: dict[str, Any] = {}
+    thinker_model_inputs: dict[str, object] = {}
     has_image = _non_empty(image_embeds)
     has_video = _non_empty(video_embeds)
     if has_image:
@@ -162,7 +165,7 @@ def build_thinker_inputs(
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"
 
-    result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
+    result: dict[str, Mapping[str, object]] = {"model_inputs": thinker_model_inputs}
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
     return result
@@ -226,7 +229,7 @@ def decode_events(
     *,
     thinker_out: ThinkerOutput,
     state: Qwen3OmniPipelineState,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     eos_token_id: int | None,
     step: int,
 ) -> Iterable[Qwen3OmniEvent]:

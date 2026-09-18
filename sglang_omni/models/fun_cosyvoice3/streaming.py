@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -186,7 +186,9 @@ def as_flow_embedding(value: Any | None) -> torch.Tensor:
     return embedding
 
 
-def build_cosyvoice3_stream_metadata(payload: StagePayload) -> dict[str, Any] | None:
+def build_cosyvoice3_stream_metadata(
+    payload: StagePayload,
+) -> dict[str, Literal["audio_codes", True]] | None:
     """Static per-chunk metadata, or None when the request is not streaming."""
     params = payload.request.params
     if not isinstance(params, dict):

@@ -243,7 +243,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 continue
             if batch:
                 try:
-                    results: list[Any] = self._encode_batch([item for item, _ in batch])
+                    results: list[ArtifactT | BaseException] = self._encode_batch(
+                        [item for item, _ in batch]
+                    )
                 except BaseException as exc:  # never let the worker die silently
                     logger.exception("reference encode batch worker: encode failed")
                     results = [exc] * len(batch)
@@ -275,7 +277,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                     RuntimeError("reference encode service is shutting down")
                 )
 
-    def _encode_batch(self, items: list[InputT]) -> list[Any]:
+    def _encode_batch(self, items: list[InputT]) -> list[ArtifactT | BaseException]:
         """Encode a drained batch, falling back to per-item encodes on failure."""
         try:
             artifacts = self._hook.encode_batch(items)
@@ -293,7 +295,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 "%s batched reference encode failed; retrying per item",
                 self._log_prefix or "reference encode",
             )
-        results: list[Any] = []
+        results: list[ArtifactT | BaseException] = []
         for item in items:
             try:
                 results.append(self._hook.encode_one(item))

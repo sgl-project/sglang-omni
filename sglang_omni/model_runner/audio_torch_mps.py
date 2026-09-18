@@ -3,11 +3,24 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from transformers.cache_utils import Cache
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerRequest
+
+RequestT = TypeVar("RequestT")
 
 
 class AudioTorchMpsModelRunner(ModelRunner):
@@ -15,22 +28,24 @@ class AudioTorchMpsModelRunner(ModelRunner):
 
     model_name = "Audio ASR"
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._past_key_values: dict[str, Any] = {}
+        self._past_key_values: dict[str, Cache | None] = {}
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: object) -> bool:
         del batch
         return False
 
-    def _one_request(self, requests: list[Any]) -> Any:
+    def _one_request(self, requests: list[RequestT]) -> RequestT:
         if len(requests) != 1:
             raise RuntimeError(
                 f"{self.model_name} Torch MPS currently requires max_running_requests=1"
             )
         return requests[0]
 
-    def _next_token_result(self, next_token_ids: torch.Tensor) -> Any:
+    def _next_token_result(self, next_token_ids: torch.Tensor) -> GenerationBatchResult:
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         return GenerationBatchResult(
@@ -42,10 +57,10 @@ class AudioTorchMpsModelRunner(ModelRunner):
     @torch.inference_mode()
     def custom_prefill_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: object,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del forward_batch
         scheduler_request = self._one_request(requests)
         req = scheduler_request.data.req
@@ -132,10 +147,10 @@ class AudioTorchMpsModelRunner(ModelRunner):
     @torch.inference_mode()
     def custom_decode_forward(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list[Any],
-    ) -> Any:
+        forward_batch: object,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
         del forward_batch
         scheduler_request = self._one_request(requests)
         request_id = scheduler_request.request_id
@@ -159,7 +174,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
         self._past_key_values[request_id] = output.past_key_values
         return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
-    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+    def on_request_finished(self, request_id: str, req_data: object) -> None:
         del req_data
         self._past_key_values.pop(request_id, None)
 

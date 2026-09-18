@@ -14,7 +14,8 @@ import asyncio
 import logging
 import queue as queue_mod
 from dataclasses import dataclass
-from typing import Any
+from multiprocessing.queues import Queue
+from typing import Generic, TypeVar
 
 from sglang_omni.proto import (
     AbortMessage,
@@ -23,19 +24,29 @@ from sglang_omni.proto import (
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
+    StagePayload,
 )
 
 logger = logging.getLogger(__name__)
 
 _WORK_POLL_SECONDS = 0.1
+WorkPayloadT = TypeVar("WorkPayloadT")
+QueueMessageT = TypeVar("QueueMessageT")
+
+TPControlMessage = (
+    ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | AdminMessage
+)
 
 
 @dataclass
-class TPWorkMessage:
+class TPWorkMessage(Generic[WorkPayloadT]):
     """Payload replicated from the TP leader to follower schedulers."""
 
     request_id: str
-    data: Any
+    data: WorkPayloadT
+
+
+TPWorkQueueMessage = TPControlMessage | TPWorkMessage[StagePayload]
 
 
 class TPLeaderFanout:
@@ -45,9 +56,9 @@ class TPLeaderFanout:
         self,
         stage_name: str,
         *,
-        follower_work_queues: list[Any],
-        follower_abort_queues: list[Any],
-        follower_admin_result_queues: list[Any] | None = None,
+        follower_work_queues: list[Queue[TPWorkQueueMessage]],
+        follower_abort_queues: list[Queue[AbortMessage]],
+        follower_admin_result_queues: list[Queue[AdminResultMessage]] | None = None,
     ) -> None:
         self.stage_name = stage_name
         self._follower_work_queues = list(follower_work_queues)
@@ -56,14 +67,12 @@ class TPLeaderFanout:
 
     async def fanout_control(
         self,
-        msg: (
-            ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | AdminMessage
-        ),
+        msg: TPControlMessage,
     ) -> None:
         for q in self._follower_work_queues:
             q.put_nowait(msg)
 
-    def fanout_work(self, payload: Any) -> None:
+    def fanout_work(self, payload: StagePayload) -> None:
         msg = TPWorkMessage(request_id=getattr(payload, "request_id", ""), data=payload)
         for q in self._follower_work_queues:
             q.put_nowait(msg)
@@ -119,9 +128,9 @@ class TPFollowerControlPlane:
         *,
         stage_name: str,
         recv_endpoint: str = "",
-        work_queue: Any,
-        abort_queue: Any,
-        admin_result_queue: Any | None = None,
+        work_queue: Queue[TPWorkQueueMessage],
+        abort_queue: Queue[AbortMessage],
+        admin_result_queue: Queue[AdminResultMessage] | None = None,
     ) -> None:
         self.stage_name = stage_name
         self.recv_endpoint = recv_endpoint
@@ -140,7 +149,7 @@ class TPFollowerControlPlane:
         | ShutdownMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
-        | TPWorkMessage
+        | TPWorkMessage[StagePayload]
     ):
         msg = await self._recv_from_queue(self._work_queue)
         if isinstance(
@@ -169,7 +178,7 @@ class TPFollowerControlPlane:
             )
         self._admin_result_queue.put_nowait(msg)
 
-    async def _recv_from_queue(self, q: Any) -> Any:
+    async def _recv_from_queue(self, q: Queue[QueueMessageT]) -> QueueMessageT:
         loop = asyncio.get_running_loop()
         while True:
             if self._closed:

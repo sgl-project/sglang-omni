@@ -19,6 +19,7 @@ import pybase64
 import torch
 import torchaudio
 import xxhash
+from numpy.typing import NDArray
 
 from sglang_omni.platforms import current_platform
 
@@ -165,8 +166,8 @@ def is_sun_au(data: bytes) -> bool:
 
 
 def _resample_with_scipy(
-    audio_np: np.ndarray, sample_rate: int, target_sample_rate: int
-) -> np.ndarray:
+    audio_np: NDArray[np.float32], sample_rate: int, target_sample_rate: int
+) -> NDArray[np.float32]:
     import scipy.signal
 
     orig_freq = int(sample_rate)
@@ -182,7 +183,7 @@ def _try_fast_wav_decode(
     data: bytes,
     target_sample_rate: int,
     resample_kwargs: Mapping[str, Any] | None = None,
-) -> np.ndarray | None:
+) -> NDArray[np.float32] | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
     from sglang_omni.preprocessing.audio import _parse_wav_bytes
@@ -268,13 +269,13 @@ def decode_audio_data_uri(value: str) -> bytes | None:
 
 
 def load_audio(
-    source: Any,
+    source: str | bytes | bytearray | memoryview,
     source_name: str = "audio",
     target_sample_rate: int = 16000,
     mono: bool = True,
     trim_top_db: float | None = None,
     resample_kwargs: Mapping[str, Any] | None = None,
-) -> np.ndarray:
+) -> NDArray[np.float32]:
     if isinstance(source, memoryview):
         source = source.tobytes()
     if isinstance(source, bytearray):
@@ -344,7 +345,7 @@ def load_audio(
     return audio.cpu().numpy()
 
 
-def audio_fingerprint(audio: np.ndarray) -> str:
+def audio_fingerprint(audio: NDArray[np.generic]) -> str:
     contiguous = np.ascontiguousarray(audio, dtype=np.float32)
     return xxhash.xxh3_128_hexdigest(contiguous)
 

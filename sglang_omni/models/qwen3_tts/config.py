@@ -163,7 +163,7 @@ def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
         return json.load(handle)
 
 
-def _normalize_qwen3_tts_model_type(raw: Any) -> str:
+def _normalize_qwen3_tts_model_type(raw: object) -> str:
     normalized = str(raw or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"

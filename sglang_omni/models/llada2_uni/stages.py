@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import torch
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 
@@ -40,7 +43,7 @@ def create_image_encoder_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: Any = None,
+    dtype: "str | torch.dtype | None" = None,
 ):
     import torch
 

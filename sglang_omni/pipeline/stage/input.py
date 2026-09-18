@@ -18,7 +18,7 @@ class InputHandler(ABC):
 
     @abstractmethod
     def receive(
-        self, request_id: str, from_stage: str, data: Any
+        self, request_id: str, from_stage: str, data: "StagePayload"
     ) -> StagePayload | None:
         """Receive data from a stage.
         Returns merged payload if ready, None if still waiting.
@@ -32,7 +32,9 @@ class InputHandler(ABC):
 class DirectInput(InputHandler):
     """Direct pass-through. Single input, no aggregation."""
 
-    def receive(self, request_id: str, from_stage: str, data: Any) -> StagePayload:
+    def receive(
+        self, request_id: str, from_stage: str, data: "StagePayload"
+    ) -> StagePayload:
         return data
 
     def cancel(self, request_id: str) -> None:
@@ -55,7 +57,7 @@ class AggregatedInput(InputHandler):
         self._expected_sources: dict[str, set[str]] = {}
 
     def receive(
-        self, request_id: str, from_stage: str, data: Any
+        self, request_id: str, from_stage: str, data: "StagePayload"
     ) -> StagePayload | None:
         if from_stage not in self._sources:
             logger.warning(

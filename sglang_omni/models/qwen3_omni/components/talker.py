@@ -491,7 +491,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
             self.layers[idx].self_attn.use_fused_qk_norm_rope = False
             self.layers[idx].self_attn.compatible_with_fused_qk_norm_rope = False
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> nn.Embedding:
         return self.codec_embedding
 
     def forward(
@@ -1015,7 +1015,7 @@ class Qwen3OmniTalker(nn.Module):
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
 
-    def get_input_embeddings(self):
+    def get_input_embeddings(self) -> nn.Embedding:
         return self.model.get_input_embeddings()
 
     @property

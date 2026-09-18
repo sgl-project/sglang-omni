@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
+from numpy.typing import NDArray
 
 from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int, load_audio
 from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
@@ -59,7 +60,7 @@ def resolve_audio_source(payload: StagePayload) -> Any:
 class PreparedAudio:
     """Decoded waveform plus the derived per-request audio metadata."""
 
-    waveform: np.ndarray
+    waveform: NDArray[np.float32]
     sample_rate: int
     duration_s: float
     fingerprint: str

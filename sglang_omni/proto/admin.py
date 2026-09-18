@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 ADMIN_MODEL_INFO = "model_info"
 ADMIN_PAUSE_GENERATION = "pause_generation"
@@ -15,6 +15,26 @@ ADMIN_UPDATE_WEIGHTS_FROM_DISTRIBUTED = "update_weights_from_distributed"
 ADMIN_INIT_WEIGHTS_UPDATE_GROUP = "init_weights_update_group"
 ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP = "destroy_weights_update_group"
 ADMIN_WEIGHTS_CHECKER = "weights_checker"
+
+
+class SerializedAdminResult(TypedDict):
+    op_id: str
+    stage: str
+    action: str
+    success: bool
+    message: str
+    data: dict[str, Any]
+    error: object
+    rank: object
+    role: object
+
+
+class AdminResponse(TypedDict):
+    op_id: str
+    action: str
+    success: bool
+    message: str
+    results: list[SerializedAdminResult]
 
 
 @dataclass
@@ -62,7 +82,7 @@ class AdminResult:
     rank: int | None = None
     role: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> SerializedAdminResult:
         return {
             "op_id": self.op_id,
             "stage": self.stage,

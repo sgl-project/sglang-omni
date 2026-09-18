@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -284,7 +284,7 @@ class MingTTSPipelineConfig(PipelineConfig):
         ),
     ]
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         stages = _validate_ming_tts_pipeline_contract(self)
         preprocessing = stages[PREPROCESSING_STAGE]

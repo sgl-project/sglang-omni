@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
 
 
 def moss_tts_local_special_token_defaults(
@@ -44,4 +47,4 @@ class MossTTSLocalState(DeclarativeStateBase):
     instructions: str | None = None
     token_count: int | None = wire(None, codec="opt_int")
     generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
-    audio_codes: Any | None = wire(None, codec="tensor_cpu")
+    audio_codes: torch.Tensor | None = wire(None, codec="tensor_cpu")

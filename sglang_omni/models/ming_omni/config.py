@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -316,7 +316,7 @@ class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=_ming_text_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         _validate_ming_stage_tp_support(self.stages)
 
@@ -333,7 +333,7 @@ class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=_ming_speech_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         _validate_ming_stage_tp_support(self.stages)
         self._validate_talker_gpu_not_in_thinker_tp_range()
@@ -361,7 +361,7 @@ class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     )
     stages: list[StageConfig] = Field(default_factory=_ming_streaming_speech_stages)
 
-    def model_post_init(self, __context: Any = None) -> None:
+    def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         _validate_ming_stage_tp_support(self.stages)
         self._validate_talker_stream_gpu_not_in_thinker_tp_range()

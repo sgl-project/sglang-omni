@@ -29,7 +29,7 @@ _UNSUPPORTED_TTS_PARAMS = {
 }
 
 
-def _as_non_empty_string(value: Any, field: str) -> str:
+def _as_non_empty_string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"MiniMax Music 3 {field} must be a non-empty string")
     return value
@@ -42,7 +42,7 @@ def _explicit_params(tts_params: dict[str, Any]) -> set[str]:
     return set()
 
 
-def _parse_seed(value: Any) -> int:
+def _parse_seed(value: object) -> int:
     if value is None:
         return 0
     if isinstance(value, bool) or not isinstance(value, int):
@@ -53,7 +53,7 @@ def _parse_seed(value: Any) -> int:
     return seed
 
 
-def _parse_max_frames(value: Any) -> int:
+def _parse_max_frames(value: object) -> int:
     if value is None:
         return DEFAULT_MAX_AUDIO_FRAMES
     if isinstance(value, bool) or not isinstance(value, int):

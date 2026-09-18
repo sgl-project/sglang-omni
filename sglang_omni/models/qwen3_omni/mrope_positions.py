@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
+
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
 
 
 def linear_mrope_positions(
@@ -31,7 +34,7 @@ def linear_mrope_positions(
 def talker_can_use_linear_mrope(
     input_ids: torch.Tensor,
     model_inputs: dict[str, Any],
-    thinker_config: Any,
+    thinker_config: "PretrainedConfig",
 ) -> bool:
     """True when linear arange+delta0 matches full mm MRoPE."""
     # Note (guozhihao): talker uses MRotaryEmbedding; decode is

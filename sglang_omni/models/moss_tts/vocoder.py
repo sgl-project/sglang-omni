@@ -8,12 +8,13 @@ import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from itertools import accumulate
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.moss_tts.audio_tokenizer import (
+    MossAudioTokenizerVocoder,
     MossAudioTokenizerVocoderDecoder,
     MossAudioVocoder,
 )
@@ -29,17 +30,22 @@ from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
+if TYPE_CHECKING:
+    from sglang_omni.models.moss_tts.hf_loading import MossProcessorConfigSource
+
 logger = logging.getLogger(__name__)
 
 
-def _codec_device(codec: Any, fallback: str) -> torch.device:
+def _codec_device(
+    codec: MossAudioTokenizerVocoder | None, fallback: str
+) -> torch.device:
     try:
         return next(codec.parameters()).device
     except (AttributeError, StopIteration):
         return torch.device(fallback)
 
 
-def _module_dtype(module: Any) -> torch.dtype | None:
+def _module_dtype(module: torch.nn.Module | None) -> torch.dtype | None:
     try:
         return next(
             parameter.dtype
@@ -216,10 +222,10 @@ def decode_codes_batch(
     return decoded
 
 
-class MossTTSVocoder(BatchVocoderBase):
+class MossTTSVocoder(BatchVocoderBase[MossTTSState, torch.Tensor, torch.Tensor]):
     def __init__(
         self,
-        processor: Any,
+        processor: "MossProcessorConfigSource | None",
         audio_vocoder: MossAudioVocoder,
         device: str,
         *,

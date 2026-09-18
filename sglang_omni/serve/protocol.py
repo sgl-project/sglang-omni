@@ -23,7 +23,7 @@ class ChatMessage(BaseModel):
     """A single message in a chat conversation."""
 
     role: str
-    content: Any = None
+    content: object = None
     name: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     tool_call_id: str | None = None
@@ -375,34 +375,34 @@ class SpeechBatchItem(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    model: Any = None
-    input: Any = None
-    voice: Any = Field(
+    model: object = None
+    input: object = None
+    voice: object = Field(
         default=None,
         validation_alias=AliasChoices("voice", "speaker"),
     )
-    response_format: Any = None
-    speed: Any = None
-    stream: Any = None
-    task_type: Any = None
-    language: Any = None
-    instructions: Any = None
-    ref_audio: Any = None
-    ref_text: Any = None
-    references: Any = None
-    x_vector_only_mode: Any = None
-    stream_codec_output: Any = None
-    suppress_bootstrap_silence: Any = None
-    token_count: Any = None
-    duration_tokens: Any = None
-    max_new_tokens: Any = None
-    initial_codec_chunk_frames: Any = None
-    temperature: Any = None
-    top_p: Any = None
-    top_k: Any = None
-    repetition_penalty: Any = None
-    seed: Any = None
-    stage_params: Any = None
+    response_format: object = None
+    speed: object = None
+    stream: object = None
+    task_type: object = None
+    language: object = None
+    instructions: object = None
+    ref_audio: object = None
+    ref_text: object = None
+    references: object = None
+    x_vector_only_mode: object = None
+    stream_codec_output: object = None
+    suppress_bootstrap_silence: object = None
+    token_count: object = None
+    duration_tokens: object = None
+    max_new_tokens: object = None
+    initial_codec_chunk_frames: object = None
+    temperature: object = None
+    top_p: object = None
+    top_k: object = None
+    repetition_penalty: object = None
+    seed: object = None
+    stage_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):

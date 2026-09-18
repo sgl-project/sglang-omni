@@ -21,6 +21,7 @@ from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 if TYPE_CHECKING:
     from sglang_omni.models.dots_tts.flow_head import DotsFlowState
+    from sglang_omni.scheduling.types import RequestOutput
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ def build_sglang_dots_tts_request(
 def build_stream_output(
     request_id: str,
     data: DotsTTSSGLangRequestData,
-    req_output: Any,
+    req_output: "RequestOutput",
 ) -> Iterator[OutgoingMessage]:
     del req_output
     latent = data.latest_latent_patch

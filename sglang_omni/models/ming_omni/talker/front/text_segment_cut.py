@@ -1,5 +1,11 @@
 import re
 import string
+from typing import TypedDict
+
+
+class TextSegments(TypedDict):
+    fragments: list[str]
+    positions: dict[int, tuple[int, int]]
 
 
 def is_chinese(text):
@@ -113,7 +119,9 @@ def calibrate_positions(fragments, positions, original_text):
     return calibrated_positions
 
 
-def cut_text_by_semantic_length(text, max_semantic_length=50, min_tail_length=5):
+def cut_text_by_semantic_length(
+    text, max_semantic_length=50, min_tail_length=5
+) -> TextSegments:
     if not has_valid_content(text):
         return {"fragments": [], "positions": {}}
 

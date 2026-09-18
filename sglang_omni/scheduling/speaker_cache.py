@@ -51,7 +51,7 @@ class SpeakerArtifactCache:
             self._hit_count += 1
             return value
 
-    def put(self, key: SpeakerCacheKey, value: Any) -> None:
+    def put(self, key: SpeakerCacheKey, value: object) -> None:
         with self._lock:
             self._cache.put(_encode_key(key), value)
 
@@ -80,7 +80,7 @@ class SpeakerArtifactCache:
             }
 
 
-def estimate_cache_bytes(value: Any) -> int:
+def estimate_cache_bytes(value: object) -> int:
     """Estimate memory held by common artifact containers."""
 
     if value is None:

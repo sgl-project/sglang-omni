@@ -4,14 +4,32 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
+    from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
+    from sglang_omni.models.dots_tts.sglang_model import DotsTTSSGLangModel
+    from sglang_omni.models.dots_tts.tail import DotsTtsAcousticTail
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import RequestOutput
+
 
 logger = logging.getLogger(__name__)
 
 
-class DotsTTSEngineBuilder(TtsEngineBuilder):
+class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     model_name = "dots.tts"
     context_length = 2048
 
@@ -32,8 +50,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         self.max_running_requests = int(max_running_requests)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
-        self._model_runner: Any | None = None
-        self._acoustic_tail: Any | None = None
+        self._model_runner: DotsTTSModelRunner | None = None
+        self._acoustic_tail: DotsTtsAcousticTail | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -41,7 +59,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
 
         register_dots_tts_hf_config()
 
-    def customize_server_args(self, server_args: Any) -> None:
+    def customize_server_args(self, server_args: ServerArgs | None) -> None:
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
@@ -54,7 +72,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
 
             _configure_optimized_kernels()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
         return {
             "disable_cuda_graph": True,
             "disable_overlap_schedule": True,
@@ -91,11 +109,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def setup_model(
         self,
         *,
-        model_worker: Any,
+        model_worker: ModelWorker | MlxTpModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
-        server_args: Any,
+        server_args: ServerArgs | None,
     ) -> None:
         del checkpoint_dir, device, gpu_id
         from sglang.srt.runtime_context import get_exec, get_schedule
@@ -153,19 +171,26 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             ),
         )
 
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker | MlxTpModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> DotsTTSModelRunner:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
         self._model_runner = DotsTTSModelRunner(model_worker, output_proc)
         return self._model_runner
 
-    def make_adapters(self, model: Any) -> tuple[Any, Any]:
+    def make_adapters(self, model: DotsTTSSGLangModel | None) -> tuple[
+        Callable[[StagePayload], DotsTTSSGLangRequestData],
+        Callable[[DotsTTSSGLangRequestData], StagePayload],
+    ]:
         from sglang_omni.models.dots_tts.request_builders import (
             apply_latent_result,
             build_sglang_dots_tts_request,
         )
 
-        def _build_request(payload: Any) -> Any:
+        def _build_request(payload: StagePayload) -> DotsTTSSGLangRequestData:
             data = build_sglang_dots_tts_request(payload)
             model.flow.validate_request(
                 num_steps=data.state.num_steps,
@@ -177,16 +202,24 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
 
         return _build_request, apply_latent_result
 
-    def make_abort_callback(self) -> Any | None:
+    def make_abort_callback(self) -> Callable[[str], None]:
         assert self._model_runner is not None
         return self._model_runner.reset_request
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
         if self._acoustic_tail is None:
             return {}
         return {"shutdown_callback": self._acoustic_tail.log_graph_counters}
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> dict[
+        str,
+        Callable[
+            [str, DotsTTSSGLangRequestData, RequestOutput], Iterator[OutgoingMessage]
+        ]
+        | bool,
+    ]:
         from sglang_omni.models.dots_tts.request_builders import build_stream_output
 
         return {

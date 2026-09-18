@@ -7,13 +7,24 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 from einops import rearrange
 from torch import nn
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+
+if TYPE_CHECKING:
+    from dots_tts.modules.backbone.dit_inference import DiTSolver, DiTSolverState
+    from dots_tts.modules.backbone.encoder_inference import (
+        SemanticEncoderDecodeState,
+        SemanticEncoderInference,
+    )
+
+    from sglang_omni.models.dots_tts.tail import DotsTtsAcousticTail
+
+ConfigValue = TypeVar("ConfigValue")
 
 
 @dataclass
@@ -25,8 +36,8 @@ class DotsFlowState:
     g_cond: torch.Tensor | None
     rng_state: torch.Tensor | None = None
     fm_seq_len: int = 0
-    patch_encoder_state: Any = None
-    dit_state: Any = None
+    patch_encoder_state: SemanticEncoderDecodeState | None = None
+    dit_state: DiTSolverState | None = None
     prompt_patches: torch.Tensor | None = None
     drop_regenerated_prompt_patch: bool = False
     suppress_first_eos_check: bool = False
@@ -50,7 +61,7 @@ class DotsTTSFlowHead(nn.Module):
 
     def __init__(
         self,
-        config_dict: dict[str, Any],
+        config_dict: dict[str, ConfigValue],
         *,
         llm_hidden_size: int,
         latent_stats_path: str,
@@ -105,9 +116,9 @@ class DotsTTSFlowHead(nn.Module):
             nn.Linear(int(llm_hidden_size), 2),
         )
         self.io = IOHelper(Path(latent_stats_path))
-        self._patch_inference: Any = None
-        self._dit_solver: Any = None
-        self._tail: Any = None
+        self._patch_inference: SemanticEncoderInference | None = None
+        self._dit_solver: DiTSolver | None = None
+        self._tail: DotsTtsAcousticTail | None = None
         self._batched_nfe: int | None = None
         self._eos_pinned: torch.Tensor | None = None
         self._eos_event: torch.cuda.Event | None = None
@@ -126,7 +137,7 @@ class DotsTTSFlowHead(nn.Module):
             f"dots.tts supports at most {self._LENGTH_BUCKETS[-1]} audio patches"
         )
 
-    def _patch_encoder_inference(self):
+    def _patch_encoder_inference(self) -> SemanticEncoderInference:
         if self._patch_inference is None:
             import_dots_tts()
             from dots_tts.modules.backbone.encoder_inference import (
@@ -136,7 +147,7 @@ class DotsTTSFlowHead(nn.Module):
             self._patch_inference = SemanticEncoderInference(self.patch_encoder)
         return self._patch_inference
 
-    def _solver(self):
+    def _solver(self) -> DiTSolver:
         if self._dit_solver is None:
             import_dots_tts()
             from dots_tts.modules.backbone.dit_inference import (
@@ -157,7 +168,7 @@ class DotsTTSFlowHead(nn.Module):
         return self._tail is not None
 
     @property
-    def batched_tail(self) -> Any | None:
+    def batched_tail(self) -> DotsTtsAcousticTail | None:
         return self._tail
 
     def init_batched_tail(

@@ -36,12 +36,12 @@ def shm_create_from_tensor(tensor: torch.Tensor) -> _shm.SharedMemory:
 class ShmOperation(RelayOperation):
     """Base class implementation for SHM operations."""
 
-    def __init__(self, metadata: Any):
+    def __init__(self, metadata: dict[str, Any]):
         self._metadata = metadata
         self._completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> dict[str, Any]:
         return self._metadata
 
 
@@ -50,7 +50,7 @@ class ShmPutOperation(ShmOperation):
 
     def __init__(
         self,
-        metadata: Any,
+        metadata: dict[str, Any],
         shm_obj: _shm.SharedMemory,
         *,
         shm_name: str,
@@ -101,7 +101,7 @@ class ShmPutOperation(ShmOperation):
 class ShmGetOperation(ShmOperation):
     """Receiver-side copy from SHM to destination tensor."""
 
-    def __init__(self, metadata: Any, dest_tensor: torch.Tensor):
+    def __init__(self, metadata: dict[str, Any], dest_tensor: torch.Tensor):
         super().__init__(metadata)
         self._transfer_info = metadata["transfer_info"]
         self._dest_tensor = dest_tensor
@@ -191,7 +191,10 @@ class ShmRelay(Relay):
             raise
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str = None,
     ) -> RelayOperation:
         # Note: metadata validation is implicit here based on usage in test
         return ShmGetOperation(metadata=metadata, dest_tensor=dest_tensor)

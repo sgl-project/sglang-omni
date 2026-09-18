@@ -10,13 +10,14 @@ custom weight loaders.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 if TYPE_CHECKING:
     import torch
 
 # A weight preprocessor maps `(target_name, loaded_weight) -> loaded_weight`.
 WeightPreprocessor = Callable[[str, "torch.Tensor"], "torch.Tensor"]
+QuantValueT = TypeVar("QuantValueT")
 
 
 _QUANT_METADATA_KEYS: tuple[str, ...] = ("quantization_config", "compression_config")
@@ -42,7 +43,7 @@ __all__ = [
 ]
 
 
-def _to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
+def _to_mutable_dict(quant_config: object, metadata_key: str) -> dict[str, Any]:
     """Normalize a quantization metadata value to a mutable dict."""
     if isinstance(quant_config, dict):
         return quant_config
@@ -58,18 +59,18 @@ def _to_mutable_dict(quant_config: Any, metadata_key: str) -> dict[str, Any]:
     )
 
 
-def _read_metadata(node: Any, key: str) -> Any:
+def _read_metadata(node: object, key: str) -> object:
     """Read `key` off an object- or dict-shaped config node, or `None`."""
     if isinstance(node, dict):
         return node.get(key)
     return getattr(node, key, None)
 
 
-def resolve_quant_config(config: Any) -> dict[str, Any] | None:
+def resolve_quant_config(config: object) -> dict[str, Any] | None:
     """Extract a `quantization_config` dict from a root or sub-model config."""
     visited: set[int] = set()
 
-    def _search(node: Any) -> dict[str, Any] | None:
+    def _search(node: object) -> dict[str, Any] | None:
         if node is None or id(node) in visited:
             return None
         visited.add(id(node))
@@ -88,7 +89,7 @@ def resolve_quant_config(config: Any) -> dict[str, Any] | None:
     return _search(config)
 
 
-def quant_method_name(quant_dict: dict[str, Any] | None) -> str | None:
+def quant_method_name(quant_dict: dict[str, QuantValueT] | None) -> str | None:
     """Return the checkpoint's normalized quantization method name, or `None`."""
     if not quant_dict:
         return None
@@ -98,7 +99,7 @@ def quant_method_name(quant_dict: dict[str, Any] | None) -> str | None:
     return str(method).lower().replace("_", "-")
 
 
-def is_fp8_block_quant(quant_dict: dict[str, Any] | None) -> bool:
+def is_fp8_block_quant(quant_dict: dict[str, QuantValueT] | None) -> bool:
     """True when the checkpoint is native block-FP8."""
     if not quant_dict:
         return False
@@ -136,7 +137,7 @@ def _identity_preprocessor(
 
 
 def get_weight_preprocessor(
-    config: Any = None,
+    config: object = None,
     *,
     fp8_scale_inverted: bool = False,
 ) -> WeightPreprocessor:
@@ -148,7 +149,9 @@ def get_weight_preprocessor(
     return _identity_preprocessor
 
 
-def needs_quant_config_normalization(quant_dict: dict[str, Any] | None) -> bool:
+def needs_quant_config_normalization(
+    quant_dict: dict[str, QuantValueT] | None,
+) -> bool:
     """True when the checkpoint's method uses stage-local per-block quant names."""
     method = quant_method_name(quant_dict)
     return method == "auto-round"
@@ -177,7 +180,7 @@ def _normalize_extra_config_keys(
         return False
 
     escaped_prefix = stage_prefix.replace(".", r"\.")
-    normalized_extra: dict[str, Any] = {}
+    normalized_extra: dict[str, object] = {}
     changed = False
     for key, value in extra_config.items():
         normalized_key = _strip_stage_prefix(key, stage_prefix, escaped_prefix)
@@ -221,14 +224,14 @@ def _normalize_block_name_to_quantize(
 
 
 def _load_writable_quant_config(
-    hf_config: Any,
-) -> tuple[Any, str, dict[str, Any], bool] | None:
+    hf_config: object,
+) -> tuple[object, str, dict[str, Any], bool] | None:
     """Return `(owner, metadata_key, quant_config, needs_writeback)` for the
     quant metadata discovered on `hf_config` or a nested stage sub-config,
     or `None` if none is found."""
     visited: set[int] = set()
 
-    def _search(node: Any) -> tuple[Any, str, dict[str, Any], bool] | None:
+    def _search(node: object) -> tuple[object, str, dict[str, Any], bool] | None:
         if node is None or id(node) in visited:
             return None
         visited.add(id(node))
@@ -253,7 +256,7 @@ def _load_writable_quant_config(
     return _search(hf_config)
 
 
-def _resolve_stage_prefix(hf_config: Any) -> str | None:
+def _resolve_stage_prefix(hf_config: object) -> str | None:
     """Return the checkpoint prefix for the active stage architecture."""
     architectures = getattr(hf_config, "architectures", None) or []
     if not architectures:
@@ -261,7 +264,7 @@ def _resolve_stage_prefix(hf_config: Any) -> str | None:
     return _STAGE_PREFIX_BY_ARCH.get(architectures[0])
 
 
-def normalize_quant_config(model_config: Any) -> None:
+def normalize_quant_config(model_config: object) -> None:
     """Strip the active stage's checkpoint prefix from the quant config"""
     hf_config = getattr(model_config, "hf_config", None)
     if hf_config is None:

@@ -26,7 +26,7 @@ class LLaDA2UniPipelineState:
     engine_outputs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Any) -> "LLaDA2UniPipelineState":
+    def from_dict(cls, data: object) -> "LLaDA2UniPipelineState":
         if not isinstance(data, dict):
             data = {}
         encoder_inputs = data.get("encoder_inputs")

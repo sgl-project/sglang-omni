@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,11 @@ import torch.nn.functional as F
 
 from sglang_omni.models.ming_omni.components.common import load_ming_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
+
+if TYPE_CHECKING:
+    from whisper.model import AudioEncoder
+
+    from sglang_omni.models.ming_omni.hf_config import WhisperEncoderConfig
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +103,9 @@ class MingAudioEncoder(nn.Module):
         self.to(device=self._device, dtype=self._dtype)
         self.eval()
 
-    def _build_whisper_encoder(self, whisper_cfg: Any) -> nn.Module:
+    def _build_whisper_encoder(
+        self, whisper_cfg: "WhisperEncoderConfig"
+    ) -> "AudioEncoder":
         """Build a WhisperAudioEncoder from config."""
         try:
             from whisper.model import AudioEncoder

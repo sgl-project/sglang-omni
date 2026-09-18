@@ -7,9 +7,12 @@ Carried between stages via :class:`sglang_omni.proto.StagePayload.data`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
+
+if TYPE_CHECKING:
+    import torch
 
 
 @dataclass
@@ -25,7 +28,7 @@ class HiggsTtsState(DeclarativeStateBase):
     reference_codes_delayed: list[list[int]] | None = None
     target_text: str | None = None
     reference_text: str | None = None
-    reference_waveform: Any | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
+    reference_waveform: torch.Tensor | None = None  # mono 24 kHz [1, 1, L] torch.Tensor
     reference_code_cache_key: str | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None

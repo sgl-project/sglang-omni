@@ -11,14 +11,19 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, TypeVar
-from urllib.parse import urlparse
+from typing import TYPE_CHECKING, Any, TypeVar
+from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
 import httpx
 import numpy.typing as npt
 
 from .base import MediaIO
+
+if TYPE_CHECKING:
+    import numpy as np
+    import torch
+    from PIL import Image
 
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
@@ -31,7 +36,7 @@ atexit.register(global_thread_pool.shutdown)
 class ResourceHTTPConnection:
     """Manages persistent HTTP clients for connection pooling."""
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0) -> None:
         self._client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
         self._timeout = timeout
@@ -54,7 +59,7 @@ class ResourceHTTPConnection:
             )
         return self._async_client
 
-    async def close(self):
+    async def close(self) -> None:
         if self._async_client:
             await self._async_client.aclose()
         if self._client:
@@ -254,7 +259,7 @@ class MultiModalResourceConnector:
         self.allow_remote_media_without_domains = allow_remote_media_without_domains
         self.reject_unsafe_remote_addresses = reject_unsafe_remote_addresses
 
-    def _assert_url_allowed(self, url_spec: Any) -> None:
+    def _assert_url_allowed(self, url_spec: ParseResult) -> None:
         """Check whether a remote media URL is allowed to be fetched."""
         hostname = url_spec.hostname
         if not hostname:
@@ -285,10 +290,10 @@ class MultiModalResourceConnector:
         """Validate URL policy without loading the resource."""
         self._assert_url_allowed(urlparse(url))
 
-    async def _assert_url_allowed_async(self, url_spec: Any) -> None:
+    async def _assert_url_allowed_async(self, url_spec: ParseResult) -> None:
         await asyncio.to_thread(self._assert_url_allowed, url_spec)
 
-    def _load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def _load_data_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a data URL (base64 encoded)."""
         path = url_spec.path or ""
         if "," not in path:
@@ -299,7 +304,7 @@ class MultiModalResourceConnector:
         media_type = spec.split(";")[0].lstrip("/")
         return media_io.load_base64(media_type, data)
 
-    def _load_file_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def _load_file_url(self, url_spec: ParseResult, media_io: MediaIO[_M]) -> _M:
         """Load media from a file URL."""
         if not self.allowed_local_media_path:
             raise RuntimeError("Local file loading is disabled.")
@@ -490,7 +495,7 @@ class MultiModalResourceConnector:
         *,
         target_sr: int = 16000,
         timeout: float = 30.0,
-    ) -> tuple[npt.NDArray, float]:
+    ) -> tuple[npt.NDArray[np.float32], float]:
         """Asynchronously fetch audio from a URL.
 
         Args:
@@ -515,7 +520,7 @@ class MultiModalResourceConnector:
         *,
         image_mode: str = "RGB",
         timeout: float = 30.0,
-    ) -> Any:
+    ) -> Image.Image:
         """Asynchronously load image from a URL.
 
         Args:
@@ -547,7 +552,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
-    ) -> tuple[Any, float, Any | None]:
+    ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
         Args:

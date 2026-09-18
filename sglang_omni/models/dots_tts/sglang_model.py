@@ -5,15 +5,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from torch import nn
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 from sglang_omni.models.weight_loader import default_weight_loader
+
+if TYPE_CHECKING:
+    from transformers import PretrainedConfig
 
 
 class DotsTTSSGLangModel(nn.Module):
@@ -23,7 +28,12 @@ class DotsTTSSGLangModel(nn.Module):
     # __new__) resolve the graph-feedback probe to "disabled".
     _graph_feedback_buffer: torch.Tensor | None = None
 
-    def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: "PretrainedConfig",
+        quant_config: QuantizationConfig | None = None,
+        prefix: str = "",
+    ) -> None:
         super().__init__()
         self.config = config
         llm_config = getattr(config, "llm_config", None)
@@ -109,9 +119,9 @@ class DotsTTSSGLangModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         positions: torch.Tensor,
-        forward_batch: Any,
+        forward_batch: ForwardBatch,
         input_embeds: torch.Tensor | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> LogitsProcessorOutput:
         del kwargs
         if (

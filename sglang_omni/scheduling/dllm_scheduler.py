@@ -12,7 +12,8 @@ import queue as _queue_mod
 import threading
 import time
 from array import array
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
@@ -23,6 +24,19 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+
+if TYPE_CHECKING:
+    from sglang.srt.configs.model_config import ModelConfig
+    from sglang.srt.dllm.config import DllmConfig
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+    from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+    from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.sglang_backend.request_data import SGLangDLLMRequestData
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +50,17 @@ class DllmScheduler:
 
     def __init__(
         self,
-        tp_worker: Any,
-        tree_cache: Any,
-        req_to_token_pool: Any,
-        token_to_kv_pool_allocator: Any,
-        server_args: Any,
-        model_config: Any,
-        dllm_config: Any,
+        tp_worker: ModelWorker,
+        tree_cache: BasePrefixCache,
+        req_to_token_pool: ReqToTokenPool,
+        token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
+        server_args: ServerArgs,
+        model_config: ModelConfig,
+        dllm_config: DllmConfig,
         *,
-        request_builder: Callable,
-        result_adapter: Callable,
-    ):
+        request_builder: Callable[[StagePayload], SGLangDLLMRequestData],
+        result_adapter: Callable[[SGLangDLLMRequestData], StagePayload],
+    ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
@@ -67,7 +81,7 @@ class DllmScheduler:
         self._running = False
         self._abort_lock = threading.Lock()
         self._aborted_request_ids: set[str] = set()
-        self._rid_to_req_data: dict[str, Any] = {}
+        self._rid_to_req_data: dict[str, SGLangDLLMRequestData] = {}
         self._waiting_queue: list[Req] = []
         self._staging_queue: list[Req] = []
 
@@ -218,7 +232,9 @@ class DllmScheduler:
         new_batch.prepare_for_extend()
         return new_batch
 
-    def _apply_results(self, batch: Any, batch_result: Any) -> None:
+    def _apply_results(
+        self, batch: ScheduleBatch, batch_result: GenerationBatchResult
+    ) -> None:
         next_token_ids = batch_result.next_token_ids
         if next_token_ids is None:
             return
@@ -335,7 +351,7 @@ class DllmScheduler:
                     )
                 )
 
-    def _post_step(self, batch: Any) -> None:
+    def _post_step(self, batch: ScheduleBatch) -> None:
         exclude = set()
         for req in batch.reqs:
             if req.finished():

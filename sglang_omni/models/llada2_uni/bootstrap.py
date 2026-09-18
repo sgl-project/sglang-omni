@@ -3,18 +3,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
+if TYPE_CHECKING:
+    from sglang.srt.server_args import ServerArgs
+
+    from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+
 
 def create_dllm_thinker_scheduler(
-    server_args: Any,
+    server_args: "ServerArgs",
     gpu_id: int = 0,
     *,
     tp_rank: int = 0,
     nccl_port: int | None = None,
-):
+) -> "DllmScheduler":
     """Create an DllmScheduler for the LLaDA2-Uni thinker.
 
     Returns a ``DllmScheduler`` with ``dllm_config`` set, ready to be

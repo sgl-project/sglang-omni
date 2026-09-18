@@ -12,6 +12,8 @@ from sglang_omni.models.ming_omni.io import MingOmniPipelineState, ThinkerOutput
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 
 if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
 
 
@@ -95,7 +97,7 @@ def build_sglang_thinker_request(
     state: MingOmniPipelineState,
     *,
     params: dict[str, Any],
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     vocab_size: int,
     request_id: str | None = None,
 ) -> "SGLangARRequestData":

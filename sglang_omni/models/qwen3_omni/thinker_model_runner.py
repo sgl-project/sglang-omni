@@ -6,7 +6,7 @@ from __future__ import annotations
 from array import array
 from dataclasses import dataclass
 from numbers import Integral
-from typing import Any
+from typing import TYPE_CHECKING, TypeGuard, TypeVar
 
 import torch
 
@@ -16,6 +16,13 @@ from sglang_omni.model_runner.prefill_inputs import (
     get_omni_prefill_inputs,
 )
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.scheduling.types import SchedulerRequest
 
 _PREFILL_AUDIO_INPUT_KEYS = frozenset(
     {
@@ -28,6 +35,7 @@ _PREFILL_AUDIO_INPUT_KEYS = frozenset(
 
 _SIDECAR = "sidecar"
 _UNSUPPORTED = "unsupported"
+PadValueT = TypeVar("PadValueT")
 
 
 @dataclass(frozen=True)
@@ -46,7 +54,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
     """
 
     @staticmethod
-    def _origin_num_tokens(value: Any) -> int | None:
+    def _origin_num_tokens(value: object) -> int | None:
         if isinstance(value, torch.Tensor):
             return int(value.numel()) if value.ndim == 1 else None
         if isinstance(value, (array, list, tuple)):
@@ -54,7 +62,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return None
 
     @staticmethod
-    def _valid_positions(value: Any) -> bool:
+    def _valid_positions(value: object) -> TypeGuard[torch.Tensor]:
         if not (
             isinstance(value, torch.Tensor)
             and value.ndim == 1
@@ -69,7 +77,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return bool(torch.all(value[1:] > value[:-1]))
 
     @staticmethod
-    def _cpu_int_sequence(value: Any) -> list[int] | None:
+    def _cpu_int_sequence(value: object) -> list[int] | None:
         if isinstance(value, torch.Tensor):
             if value.ndim != 1 or value.device.type != "cpu":
                 return None
@@ -83,7 +91,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return [int(item) for item in value]
 
     def _mm_positions(
-        self, req: Any, pad_values: dict[str, Any]
+        self, req: "Req", pad_values: dict[str, PadValueT]
     ) -> dict[str, torch.Tensor] | None:
         try:
             positions = self._req_mm_token_positions(req, pad_values)
@@ -110,7 +118,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
 
     @classmethod
     def _batch_chunk_spans(
-        cls, forward_batch: Any, expected_batch_size: int
+        cls, forward_batch: object, expected_batch_size: int
     ) -> list[tuple[int, int]] | None:
         extend_lens = cls._cpu_int_sequence(
             getattr(forward_batch, "extend_seq_lens_cpu", None)
@@ -135,8 +143,8 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
 
     def _audio_inputs_are_supported(
         self,
-        req: Any,
-        model_inputs: Any,
+        req: "Req",
+        model_inputs: object,
         chunk_span: tuple[int, int],
     ) -> bool:
         if not isinstance(model_inputs, dict) or not model_inputs:
@@ -223,7 +231,10 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         )
 
     def _classify_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list[Any]
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> _PrefillDisposition:
         if len(requests) != getattr(forward_batch, "batch_size", None):
             return _PrefillDisposition(_UNSUPPORTED)
@@ -267,11 +278,14 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
 
         return _PrefillDisposition(_SIDECAR, has_audio=has_audio)
 
-    def _text_input_embeds(self, forward_batch: Any) -> torch.Tensor:
+    def _text_input_embeds(self, forward_batch: ForwardBatch) -> torch.Tensor:
         return self._embed_tokens(forward_batch.input_ids)
 
     def before_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list[Any]
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         disposition = self._classify_prefill(forward_batch, schedule_batch, requests)
         if disposition.kind != _SIDECAR:
@@ -302,8 +316,11 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         )
 
     def custom_prefill_forward(
-        self, forward_batch: Any, schedule_batch: Any, requests: list[Any]
-    ) -> Any | None:
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
         if get_omni_prefill_inputs(forward_batch) is not None:
             return None
 

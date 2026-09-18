@@ -265,13 +265,15 @@ class MooncakeConnection:
 class MooncakeOperation(RelayOperation):
     """Base class for Mooncake async operations."""
 
-    def __init__(self, connection: MooncakeConnection, metadata: Any = None):
+    def __init__(
+        self, connection: MooncakeConnection, metadata: dict[str, Any] | None = None
+    ):
         self._conn = connection
         self._metadata = metadata
         self._completed = False
 
     @property
-    def metadata(self) -> Any:
+    def metadata(self) -> dict[str, Any] | None:
         return self._metadata
 
 
@@ -285,7 +287,7 @@ class PutOperation(MooncakeOperation):
     def __init__(
         self,
         connection: MooncakeConnection,
-        metadata: Any,
+        metadata: dict[str, Any],
         transfer_id: str,
         tensor_ref: torch.Tensor,
         on_completion_cb: Callable[[], None],
@@ -569,7 +571,10 @@ class MooncakeRelay(Relay):
             raise e
 
     async def get_async(
-        self, metadata: Any, dest_tensor: torch.Tensor, request_id: str = None
+        self,
+        metadata: dict[str, Any],
+        dest_tensor: torch.Tensor,
+        request_id: str = None,
     ) -> GetOperation:
         """
         Asynchronously receive tensor via Mooncake using memory pool.

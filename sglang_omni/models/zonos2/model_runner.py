@@ -10,7 +10,8 @@ stays CUDA-graph-replayable (decode input_ids are row indices). No frame loop.
 
 from __future__ import annotations
 
-from typing import Any
+from queue import Queue
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -21,13 +22,20 @@ from sglang_omni.models.zonos2.sampler import sample_tts
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+
+if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
 
 
 class Zonos2ModelRunner(ModelRunner):
     def __init__(
         self,
-        tp_worker: Any,
-        output_processor: Any,
+        tp_worker: "ModelWorker | MlxTpModelWorker",
+        output_processor: SGLangOutputProcessor,
         *,
         compile_sampler: bool = False,
         frame_graph: bool = False,
@@ -36,9 +44,9 @@ class Zonos2ModelRunner(ModelRunner):
         stream_emit_first_chunk_frames: int = (
             DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
         ),
-    ):
+    ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._outbox: Any | None = None
+        self._outbox: Queue[OutgoingMessage] | None = None
         # Streaming emission granularity: coalesce this many newly sampled frame
         # rows into a single [k, 9] outbox message instead of one put() per row.
         # The per-frame puts (~16/step at c=16) run on the resolve host loop and
@@ -58,7 +66,7 @@ class Zonos2ModelRunner(ModelRunner):
         # Side stream for the lagged resolve D2H: gated by a launch event so the
         # copy waits only for codes(N), not the next forward queued on the main
         # stream -> the host resolve overlaps forward(N+1).
-        self._copy_stream: Any | None = None
+        self._copy_stream: torch.cuda.Stream | None = None
         # Per-request sampler (preserves the ZH-CER fix): per-request
         # temperature/top_k/top_p/min_p/repetition_penalty, no requests[0]
         # broadcast. Opt-in torch.compile fuses its elementwise launches.
@@ -73,7 +81,7 @@ class Zonos2ModelRunner(ModelRunner):
         # forward); also gates disable_overlap_schedule in sglang_stages.
         self._async_decode = async_decode
 
-    def set_stream_outbox(self, outbox: Any) -> None:
+    def set_stream_outbox(self, outbox: Queue[OutgoingMessage] | None) -> None:
         self._outbox = outbox
 
     # ---- FeedbackAR hooks: model-specific bodies live in callbacks.py ----

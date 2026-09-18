@@ -9,9 +9,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
-
-_STOP = object()
+from sglang_omni.scheduling.pre_lm_encoder import (
+    PreLMEncoderService,
+    QueueEntry,
+    QueueSignal,
+)
 
 
 class _Service(PreLMEncoderService[int, list[int], int]):
@@ -31,21 +33,23 @@ class _Service(PreLMEncoderService[int, list[int], int]):
 
     def close(self) -> None:
         if self._thread.is_alive():
-            self._queue.put(_STOP)
+            self._queue.put(QueueSignal.SHUTDOWN)
             self._thread.join(timeout=2)
 
-    def _next_batch(self) -> tuple[list[QueueEntry[int]], bool]:
+    def _next_batch(self) -> tuple[list[QueueEntry[int, int]], bool]:
         first = self._queue.get()
-        if first is _STOP:
+        if first is QueueSignal.SHUTDOWN:
             return [], True
         if self.drain_gate is not None:
             assert self.drain_gate.wait(timeout=2)
         batch = [first]
         while True:
             try:
-                batch.append(self._queue.get_nowait())
+                queued = self._queue.get_nowait()
             except queue.Empty:
                 break
+            assert isinstance(queued, QueueEntry)
+            batch.append(queued)
         return batch, False
 
     @contextlib.contextmanager

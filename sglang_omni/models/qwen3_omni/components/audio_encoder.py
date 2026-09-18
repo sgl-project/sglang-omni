@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from types import MethodType
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -17,6 +18,11 @@ from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.utils import instantiate_module
 
+if TYPE_CHECKING:
+    from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
+        Qwen3OmniMoeThinkerConfig,
+    )
+
 logger = logging.getLogger(__name__)
 
 AUDIO_TOWER_PREFIX = ("thinker.audio_tower.", "audio_tower.")
@@ -26,7 +32,7 @@ AUDIO_TOWER_CLASS = hf_modeling.Qwen3OmniMoeAudioEncoder
 def _build_audio_tower(
     model_path: str,
     *,
-    thinker_cfg: object,
+    thinker_cfg: "Qwen3OmniMoeThinkerConfig",
     torch_dtype: torch.dtype | None,
     device: str,
 ) -> nn.Module:

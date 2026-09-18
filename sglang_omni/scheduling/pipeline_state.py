@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Iterable
+from dataclasses import _MISSING_TYPE as MissingType
 from dataclasses import MISSING, dataclass, field
-from typing import Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from sglang_omni.proto import StagePayload
 
+if TYPE_CHECKING:
+    import torch
+
 StateT = TypeVar("StateT", bound="PipelineStateBase")
+FieldT = TypeVar("FieldT")
+ValueT = TypeVar("ValueT")
 
 __all__ = [
     "DeclarativeStateBase",
@@ -40,11 +47,11 @@ class PipelineStateBase:
         raise NotImplementedError(f"{type(self).__name__} must implement to_dict()")
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PipelineStateBase":
+    def from_dict(cls: type[StateT], data: dict[str, ValueT]) -> StateT:
         raise NotImplementedError(f"{cls.__name__} must implement from_dict()")
 
     @staticmethod
-    def serialize_value(value: Any) -> Any:
+    def serialize_value(value: ValueT | torch.Tensor) -> ValueT | torch.Tensor:
         try:
             import torch
         except ImportError:
@@ -62,7 +69,7 @@ class PipelineStateBase:
             data["engine_time_s"] = float(self.engine_time_s)
 
 
-def _tensor_to_list(value: Any) -> Any:
+def _tensor_to_list(value: object) -> object:
     try:
         import torch
     except ImportError:
@@ -72,7 +79,10 @@ def _tensor_to_list(value: Any) -> Any:
     return value
 
 
-def _tensor_from_list(value: Any, _default: Any = None) -> Any:
+def _tensor_from_list(
+    value: Any,
+    _default: object = None,
+) -> torch.Tensor | None:
     if value is None:
         return None
     import torch
@@ -82,11 +92,17 @@ def _tensor_from_list(value: Any, _default: Any = None) -> Any:
     return torch.tensor(value)
 
 
-def _tensor_items_to_lists(value: Any) -> Any:
+class IndexableItems(Protocol):
+    def __getitem__(self, index: int, /) -> object: ...
+
+
+def _tensor_items_to_lists(value: Iterable[object] | IndexableItems) -> list[object]:
     return [_tensor_to_list(item) for item in value]
 
 
-def _tensor_items_from_lists(value: Any, _default: Any = None) -> Any:
+def _tensor_items_from_lists(
+    value: Iterable[object] | IndexableItems | None, _default: object = None
+) -> list[torch.Tensor | None] | None:
     if value is None:
         return None
     return [_tensor_from_list(item) for item in value]
@@ -137,9 +153,9 @@ def _validate_emit_mode(emit: str | None) -> None:
 
 
 def wire(
-    default: Any = MISSING,
+    default: object = MISSING,
     *,
-    default_factory: Any = MISSING,
+    default_factory: Callable[[], object] | MissingType = MISSING,
     emit: str | None = None,
     codec: str = "raw",
 ) -> Any:
@@ -158,11 +174,11 @@ def wire(
     return field(default=default, metadata=metadata)
 
 
-def _spec_of(f: dataclasses.Field) -> _WireSpec:
+def _spec_of(f: dataclasses.Field[FieldT]) -> _WireSpec:
     return f.metadata.get("wire", _DEFAULT_SPEC)
 
 
-def _default_of(f: dataclasses.Field) -> Any:
+def _default_of(f: dataclasses.Field[FieldT]) -> FieldT | None:
     if f.default is not MISSING:
         return f.default
     if f.default_factory is not MISSING:  # type: ignore[misc]
@@ -170,7 +186,7 @@ def _default_of(f: dataclasses.Field) -> Any:
     return None
 
 
-def _emit_kind(f: dataclasses.Field, spec: _WireSpec) -> str:
+def _emit_kind(f: dataclasses.Field[FieldT], spec: _WireSpec) -> str:
     _validate_emit_mode(spec.emit)
     if spec.emit is not None:
         return spec.emit
@@ -179,7 +195,7 @@ def _emit_kind(f: dataclasses.Field, spec: _WireSpec) -> str:
     return "always"
 
 
-def _has_complete_typed_tensor_payload(data: dict[str, Any], name: str) -> bool:
+def _has_complete_typed_tensor_payload(data: dict[str, ValueT], name: str) -> bool:
     required = {f"{name}_bytes", f"{name}_shape"}
     keys = (*required, f"{name}_dtype")
     specified = {key for key in keys if key in data}
@@ -225,7 +241,7 @@ class DeclarativeStateBase(PipelineStateBase):
     def _encode_field(
         self,
         data: dict[str, Any],
-        f: dataclasses.Field,
+        f: dataclasses.Field[FieldT],
         spec: _WireSpec,
         emit: str,
     ) -> None:
@@ -244,7 +260,7 @@ class DeclarativeStateBase(PipelineStateBase):
         data[f.name] = encode(value)
 
     @classmethod
-    def from_dict(cls: type[StateT], data: Any) -> StateT:
+    def from_dict(cls: type[StateT], data: object) -> StateT:
         if not isinstance(data, dict):
             data = {}
         kwargs: dict[str, Any] = {}
@@ -291,10 +307,10 @@ def store_state(payload: StagePayload, state: PipelineStateBase) -> StagePayload
     return payload
 
 
-def build_usage(state: PipelineStateBase) -> dict[str, Any] | None:
+def build_usage(state: PipelineStateBase) -> dict[str, int | float] | None:
     if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
         return None
-    usage: dict[str, Any] = {
+    usage: dict[str, int | float] = {
         "prompt_tokens": int(state.prompt_tokens),
         "completion_tokens": int(state.completion_tokens),
         "total_tokens": int(state.prompt_tokens + state.completion_tokens),

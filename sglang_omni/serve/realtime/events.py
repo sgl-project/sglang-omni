@@ -7,9 +7,11 @@ Reference: https://developers.openai.com/api/docs/guides/realtime
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+EventValueT = TypeVar("EventValueT")
 
 
 # Forward compatibility for future event types.
@@ -215,7 +217,7 @@ class ConversationItemTruncate(ClientEvent):
     audio_end_ms: int = Field(ge=0)
 
 
-def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
+def make_event(event_type: str, **fields: object) -> dict[str, Any]:
     """Construct a server event dict. event_id is filled in by the
     session loop so handlers don't have to."""
     payload: dict[str, Any] = {"type": event_type}
@@ -244,7 +246,7 @@ _TRANSCRIPTION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
 
 
 def _parse(
-    raw: dict[str, Any], table: dict[str, type[ClientEvent]]
+    raw: dict[str, EventValueT], table: dict[str, type[ClientEvent]]
 ) -> ClientEvent | None:
     event_type = raw.get("type")
     if not isinstance(event_type, str):
@@ -255,11 +257,13 @@ def _parse(
     return cls.model_validate(raw)
 
 
-def parse_conversation_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+def parse_conversation_client_event(raw: dict[str, EventValueT]) -> ClientEvent | None:
     """Parse one client event of a conversation session, return None if not part of its protocol."""
     return _parse(raw, _CONVERSATION_CLIENT_EVENT_TYPES)
 
 
-def parse_transcription_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+def parse_transcription_client_event(
+    raw: dict[str, EventValueT],
+) -> ClientEvent | None:
     """Parse one client event of a transcription session, return None if not part of its protocol."""
     return _parse(raw, _TRANSCRIPTION_CLIENT_EVENT_TYPES)

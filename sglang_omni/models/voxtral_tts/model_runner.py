@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -11,18 +11,35 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.scheduling.types import RequestOutput
 
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
+    from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+    from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+
 
 class VoxtralTTSModelRunner(ModelRunner):
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    model: VoxtralSGLangTTSModel
+
+    def __init__(
+        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         self._pending_audio_codes: torch.Tensor | None = None
         self._pending_audio_embeds: torch.Tensor | None = None
 
     def before_prefill(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
         forward_batch.input_embeds = self._build_prefill_input_embeds(
@@ -31,9 +48,9 @@ class VoxtralTTSModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -41,12 +58,14 @@ class VoxtralTTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         self._write_decode_input_embed_buffer(requests)
 
-    def _write_decode_input_embed_buffer(self, requests: list) -> None:
+    def _write_decode_input_embed_buffer(
+        self, requests: list[SchedulerRequest]
+    ) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
         buffer = self.model._decode_input_embed_buffer
-        rows = []
+        rows: list[torch.Tensor] = []
         for sched_req in requests:
             queue = sched_req.data.pending_feedback_queue
             if not queue:
@@ -61,34 +80,34 @@ class VoxtralTTSModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
         self._collect_audio_step(result, schedule_batch, requests)
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch
         self._collect_audio_step(result, schedule_batch, requests)
 
     def _build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         input_ids = forward_batch.input_ids
         input_embeds = self.model.get_input_embeddings()(input_ids)
         offset = 0
         for sched_req in requests:
-            data = sched_req.data
+            data: VoxtralSGLangRequestData = sched_req.data
             req = data.req
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
@@ -120,9 +139,9 @@ class VoxtralTTSModelRunner(ModelRunner):
 
     def _collect_audio_step(
         self,
-        result: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del requests
         hidden = result.logits_output.hidden_states
@@ -139,8 +158,8 @@ class VoxtralTTSModelRunner(ModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
+        result: GenerationBatchResult,
+        scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result

@@ -6,17 +6,18 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TypedDict, TypeVar
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
+from typing_extensions import Unpack
 
 from sglang_omni.models.moss_tts.attention import (
     AUTO_ATTENTION_BACKEND,
@@ -28,6 +29,7 @@ from sglang_omni.models.moss_tts.attention import (
     MossPackedRopeCache,
     PositionIdsCache,
     StreamingExecutionContext,
+    _LocalCausalFlashPlan,
     merge_attention_backend_resolutions,
     pack_padded_sequence,
     pack_padded_sequence_from_host_lengths,
@@ -45,8 +47,11 @@ from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
     resolve_model_path,
 )
+from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
+
+MossAudioPathT = TypeVar("MossAudioPathT", bound=str | PathLike[str])
 
 DEFAULT_MOSS_TTS_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
 DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
@@ -84,7 +89,7 @@ def resolve_moss_audio_attention_backend(
 
 # Note (Zhang Yiyang): Prefer the runtime model value, then the canonical config
 # field, and finally the legacy config alias for checkpoint compatibility.
-def resolve_moss_audio_sample_rate(model: Any, config: Any) -> int:
+def resolve_moss_audio_sample_rate(model: object, config: object) -> int:
     for value in (
         getattr(model, "sampling_rate", None),
         getattr(config, "sampling_rate", None),
@@ -110,7 +115,7 @@ class _MossAudioTokenizerV1FeedForward(nn.Module):
         self,
         linear1: nn.Module,
         linear2: nn.Module,
-        activation: Any,
+        activation: Callable[[torch.Tensor], torch.Tensor],
     ) -> None:
         super().__init__()
         self.linear1 = linear1
@@ -135,6 +140,16 @@ def _feed_forward(module: nn.Module) -> nn.Module:
         module.linear2,
         module.activation,
     )
+
+
+class AttentionKwargs(TypedDict, total=False):
+    cu_seqlens: torch.Tensor | None
+    max_seqlen: int | None
+    position_ids: torch.Tensor | None
+    local_flash_plan: _LocalCausalFlashPlan | None
+
+    input_lengths: torch.Tensor | None
+    execution_context: StreamingExecutionContext | None
 
 
 class MossAudioTokenizerTransformerLayer(nn.Module):
@@ -302,7 +317,9 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
             packed_rope_cache=packed_rope_cache,
         )
 
-    def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, **kwargs: Unpack[AttentionKwargs]
+    ) -> torch.Tensor:
         residual = x
         x = self.norm1(x)
         x = residual.to(x) + self.layer_scale_1(self.self_attn(x, **kwargs))
@@ -416,7 +433,11 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
             for layer in self.layers
         )
 
-    def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
         execution_context = kwargs.pop("execution_context", None)
         state = self._streaming_state
         if state is None and execution_context is not None:
@@ -548,7 +569,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         *,
         input_lengths_cpu: Sequence[int] | None = None,
         execution_context: StreamingExecutionContext | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if execution_context is not None and not self.is_streaming:
             raise RuntimeError(
@@ -758,8 +779,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
                     frame_rate *= stage.patch_size
         else:
             raise ValueError(
-                "MOSS-Audio-Tokenizer vocoder decoder requires config or "
-                "source_decoder"
+                "MOSS-Audio-Tokenizer vocoder decoder requires config or source_decoder"
             )
         stages = list(stages)
         if not stages:
@@ -1085,7 +1105,10 @@ class _PatchedPretransform(nn.Module):
         return x, input_lengths * self.patch_size
 
 
-def _weight_normalized_conv1d(*args: Any, **kwargs: Any) -> nn.Module:
+def _weight_normalized_conv1d(
+    *args: Any,
+    **kwargs: Any,
+) -> nn.Module:
     return nn.utils.parametrizations.weight_norm(nn.Conv1d(*args, **kwargs))
 
 
@@ -1251,8 +1274,7 @@ class _ResidualLFQ(nn.Module):
         with torch.autocast(device_type=codes.device.type, enabled=False):
             if codes.ndim != 3:
                 raise ValueError(
-                    "MOSS quantizer codes must be [N, B, T], got "
-                    f"{tuple(codes.shape)}"
+                    f"MOSS quantizer codes must be [N, B, T], got {tuple(codes.shape)}"
                 )
             count, batch_size, frames = map(int, codes.shape)
             if not 0 < count <= self.num_quantizers:
@@ -1545,7 +1567,7 @@ class MossAudioEncoder:
 
     def encode_paths(
         self,
-        paths: list[str | PathLike[str]],
+        paths: list[MossAudioPathT],
         *,
         num_quantizers: int,
     ) -> list[torch.Tensor]:
@@ -1558,7 +1580,7 @@ class MossAudioEncoder:
 
     def load_paths(
         self,
-        paths: list[str | PathLike[str]],
+        paths: list[MossAudioPathT],
     ) -> list[tuple[torch.Tensor, int]]:
         import torchaudio
 
@@ -1685,7 +1707,7 @@ def _normalize_moss_audio_tokenizer_v1_transformer_state_dict(
     return normalized
 
 
-def _load_moss_audio_config(model_path: str) -> tuple[Path, dict[str, Any]]:
+def _load_moss_audio_config(model_path: str) -> tuple[Path, dict[str, JsonValue]]:
     resolved_path = resolve_model_path(str(model_path))
     config_path = resolved_path / "config.json"
     with config_path.open(encoding="utf-8") as config_file:

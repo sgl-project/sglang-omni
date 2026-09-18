@@ -21,7 +21,7 @@ import math
 import time
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -48,6 +48,14 @@ from .audio_lengths import (
     qwen3_asr_num_audio_tokens,
 )
 from .languages import resolve_language
+
+if TYPE_CHECKING:
+    from types import SimpleNamespace
+
+    from transformers import PreTrainedTokenizerBase, WhisperFeatureExtractor
+
+    from sglang_omni.models.qwen3_asr.encoder_service import Qwen3ASRPreLMEncoderService
+    from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +88,9 @@ class Qwen3ASRRequestData(SGLangARRequestData):
 
 
 def _decode_token_ids(
-    tokenizer: Any, token_ids: list[int], skip_special_tokens: bool
+    tokenizer: "PreTrainedTokenizerBase",
+    token_ids: list[int],
+    skip_special_tokens: bool,
 ) -> str:
     try:
         return tokenizer.decode(
@@ -102,7 +112,7 @@ def _find_subsequence(values: list[int], pattern: list[int]) -> int | None:
     return None
 
 
-def _encode_literal(tokenizer: Any, text: str) -> list[int]:
+def _encode_literal(tokenizer: "PreTrainedTokenizerBase", text: str) -> list[int]:
     if hasattr(tokenizer, "encode"):
         return list(tokenizer.encode(text, add_special_tokens=False))
     encoded = tokenizer(text, add_special_tokens=False)
@@ -114,7 +124,7 @@ def _encode_literal(tokenizer: Any, text: str) -> list[int]:
 
 
 def _retained_streaming_prefix(
-    tokenizer: Any, text: str, rollback_tokens: int
+    tokenizer: "PreTrainedTokenizerBase", text: str, rollback_tokens: int
 ) -> tuple[list[int], str]:
     token_ids = _encode_literal(tokenizer, text)
     retained = token_ids[: max(len(token_ids) - rollback_tokens, 0)]
@@ -134,16 +144,16 @@ def _retained_streaming_prefix(
 
 def make_qwen3_asr_scheduler_adapters(
     *,
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     max_new_tokens: int,
-    feature_extractor: Any = None,
+    feature_extractor: "WhisperFeatureExtractor | None" = None,
     context_length: int | None = None,
-    audio_encoder_service: Any = None,
+    audio_encoder_service: Qwen3ASRPreLMEncoderService | None = None,
     should_wait_for_encode: Callable[[], bool] | None = None,
     greedy_only: bool = False,
 ) -> tuple[
     Callable[[StagePayload], Qwen3ASRRequestData | DeferredAdmission],
-    Callable[[Any], StagePayload],
+    Callable[[Qwen3ASRRequestData], StagePayload],
 ]:
     if feature_extractor is None:
         raise ValueError("Qwen3-ASR processor is missing a feature_extractor")
@@ -464,8 +474,7 @@ def make_qwen3_asr_scheduler_adapters(
         if logger.isEnabledFor(logging.DEBUG):
             raw = _decode_token_ids(tokenizer, output_ids, skip_special_tokens=False)
             logger.debug(
-                f"[qwen3-asr] n_out={len(output_ids)} "
-                f"ids={output_ids[:40]} raw={raw!r}"
+                f"[qwen3-asr] n_out={len(output_ids)} ids={output_ids[:40]} raw={raw!r}"
             )
         asr_text_idx = _find_subsequence(output_ids, asr_text_token_ids)
         detected_language = None
@@ -517,10 +526,12 @@ def make_qwen3_asr_scheduler_adapters(
 
 
 def make_qwen3_asr_stream_output_builder(
-    tokenizer: Any,
+    tokenizer: "PreTrainedTokenizerBase",
     eos_token_id: int | None = None,
     min_emit_interval_s: float = 0.0,
-) -> Callable[[str, Any, Any], list[OutgoingMessage]]:
+) -> Callable[
+    [str, Qwen3ASRRequestData, RequestOutput | SimpleNamespace], list[OutgoingMessage]
+]:
     tokenizer_eos = tokenizer.eos_token_id
     resolved_eos = (
         eos_token_id
@@ -553,7 +564,9 @@ def make_qwen3_asr_stream_output_builder(
     )
 
     def _build_stream_output(
-        request_id: str, req_data: Any, req_output: Any
+        request_id: str,
+        req_data: Qwen3ASRRequestData,
+        req_output: RequestOutput | SimpleNamespace,
     ) -> list[OutgoingMessage]:
         req = req_data.req
         if req is None or req.inflight_middle_chunks > 0:
@@ -603,7 +616,9 @@ def make_qwen3_asr_stream_output_builder(
             req._qwen3_asr_stream_marker_match_len = matched
         return []
 
-    def _flush_stream_output(request_id: str, req_data: Any) -> list[OutgoingMessage]:
+    def _flush_stream_output(
+        request_id: str, req_data: Qwen3ASRRequestData
+    ) -> list[OutgoingMessage]:
         return token_stream_builder.flush(request_id, req_data)  # type: ignore[attr-defined]
 
     _build_stream_output.flush = _flush_stream_output  # type: ignore[attr-defined]

@@ -285,7 +285,7 @@ class PackedDiT:
 
 
 def solve_flow_euler_packed(
-    estimator: Any,
+    estimator: PackedDiT,
     noise: torch.Tensor,
     time_span: torch.Tensor,
     mu: torch.Tensor,

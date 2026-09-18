@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import onnxruntime
 import torch
 import torchaudio
 import torchaudio.functional as F
+from numpy.typing import ArrayLike
 
 from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts.payload_types import (
@@ -43,7 +42,7 @@ class MingSpeakerEmbeddingExtractor:
         )
         self.target_sr = int(target_sr)
 
-    def __call__(self, waveform: Any) -> Any:
+    def __call__(self, waveform: ArrayLike | torch.Tensor) -> torch.Tensor:
         if not isinstance(waveform, torch.Tensor):
             waveform = torch.as_tensor(waveform)
         feat = cached_fbank(
@@ -68,11 +67,10 @@ class _MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
         self._encoder = encoder
         self.model_id = str(model_identity)
         self.encoder_config_hash = (
-            f"sr{encoder.sample_rate}:patch{encoder.patch_size}:"
-            f"dtype{encoder.dtype}"
+            f"sr{encoder.sample_rate}:patch{encoder.patch_size}:dtype{encoder.dtype}"
         )
 
-    def normalize_input(self, raw_input: Any) -> str:
+    def normalize_input(self, raw_input: object) -> str:
         return str(raw_input)
 
     def input_key(self, item: str) -> str | None:
@@ -203,7 +201,7 @@ class MingTTSReferenceEncoder:
 
         return store_ming_tts_state(payload, state)
 
-    def _load_reference_waveform(self, path: str) -> tuple[Any, Any]:
+    def _load_reference_waveform(self, path: str) -> tuple[torch.Tensor, torch.Tensor]:
         waveform, sample_rate = torchaudio.load(path)
         if waveform.ndim != 2 or int(waveform.shape[0]) != 1:
             raise ValueError(
@@ -225,7 +223,7 @@ class MingTTSReferenceEncoder:
             )
         return waveform, speaker_waveform
 
-    def _pad_waveform(self, waveform: Any) -> Any:
+    def _pad_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
         pad_align = int(1 / 12.5 * self.patch_size * self.sample_rate)
         new_len = (int(waveform.shape[-1]) + pad_align - 1) // pad_align * pad_align
         if new_len == int(waveform.shape[-1]):
@@ -239,7 +237,7 @@ class MingTTSReferenceEncoder:
         padded[:, : int(waveform.shape[-1])] = waveform
         return padded
 
-    def _prepare_audio_vae_waveform(self, waveform: Any) -> Any:
+    def _prepare_audio_vae_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
         if not isinstance(waveform, torch.Tensor):
             waveform = torch.as_tensor(waveform)
         # Note (yzxiao): The official monolithic path reaches AudioVAE encode

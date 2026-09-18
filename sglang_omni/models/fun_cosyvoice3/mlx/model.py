@@ -11,11 +11,14 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.qwen2 import ModelArgs, Qwen2Model
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +152,7 @@ def _load_converted_backbone(
         if bits not in (2, 3, 4, 6, 8):
             raise ValueError(f"unsupported MLX quantization bits: {bits}")
 
-        def quantize_layers(path: str, module: Any) -> bool:
+        def quantize_layers(path: str, module: nn.Module) -> bool:
             return (
                 isinstance(module, nn.Linear)
                 and "layers" in path
@@ -187,7 +190,7 @@ def _quantize_loaded_backbone(
             f"{sorted(_MLX_QUANTIZATION_PRESETS)}, got {quantization!r}"
         ) from exc
 
-    def quantize_layers(path: str, module: Any) -> bool:
+    def quantize_layers(path: str, module: nn.Module) -> bool:
         return (
             isinstance(module, nn.Linear)
             and "layers" in path
@@ -202,15 +205,16 @@ def _quantize_loaded_backbone(
     )
 
 
-def _to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
+def _to_mlx_float(tensor: "torch.Tensor", dtype: mx.Dtype) -> mx.array:
     import numpy as np
 
     # Note (yexiaodong): NumPy has no bfloat16 representation for this export.
     import torch
 
+    value = tensor
     if isinstance(tensor, torch.Tensor):
-        tensor = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
-    return mx.array(np.asarray(tensor, dtype=np.float32)).astype(dtype)
+        value = tensor.detach().to(device="cpu", dtype=torch.float32).numpy()
+    return mx.array(np.asarray(value, dtype=np.float32)).astype(dtype)
 
 
 def _load_raw_backbone(

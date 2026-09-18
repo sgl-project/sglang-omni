@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import torch
 from transformers import PreTrainedTokenizerFast
@@ -33,6 +33,12 @@ class Reference:
     audio_bytes: bytes
     text: str
     vq_codes: torch.Tensor | None = None
+
+
+class S2ProPrompt(TypedDict):
+    input_ids: torch.Tensor
+    vq_mask_tokens: torch.Tensor
+    vq_parts: list[torch.Tensor]
 
 
 class _InferencePromptEncoder:
@@ -61,7 +67,7 @@ class _InferencePromptEncoder:
         self._vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))
         self._vq_parts.append(codes)
 
-    def finish(self) -> dict[str, Any]:
+    def finish(self) -> S2ProPrompt:
         return {
             "input_ids": torch.cat(self._token_segments, dim=0),
             "vq_mask_tokens": torch.cat(self._vq_mask_segments, dim=0),
@@ -94,8 +100,8 @@ class S2ProTokenizerAdapter:
         *,
         num_codebooks: int = 10,
         speaker: int | str = 0,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
+        **kwargs: object,
+    ) -> S2ProPrompt:
         """Build an S2-Pro inference prompt using Qwen3 chat format."""
         if references:
             for index, ref in enumerate(references):

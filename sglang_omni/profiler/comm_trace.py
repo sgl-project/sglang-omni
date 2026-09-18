@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import time
-from typing import Any
 
 logger = logging.getLogger("sglang_omni.comm_trace")
 
@@ -25,9 +24,9 @@ def elapsed_ms(start_ns: int) -> float:
     return (time.perf_counter_ns() - start_ns) / 1_000_000.0
 
 
-def emit(event: str, **fields: Any) -> None:
+def emit(event: str, **fields: object) -> None:
     if not enabled():
         return
-    record = {"event": event, "ts_ns": time.time_ns()}
+    record: dict[str, object] = {"event": event, "ts_ns": time.time_ns()}
     record.update(fields)
     logger.info("COMM_TRACE %s", json.dumps(record, sort_keys=True, default=str))

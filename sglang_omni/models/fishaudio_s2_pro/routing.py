@@ -3,23 +3,21 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 PREPROCESSING_STAGE = "preprocessing"
 TTS_ENGINE_STAGE = "tts_engine"
 VOCODER_STAGE = "vocoder"
 
 
-def preprocessing_next(request_id: str, output: Any) -> str | None:
+def preprocessing_next(request_id: str, output: object) -> str | None:
     del request_id, output
     return TTS_ENGINE_STAGE
 
 
-def tts_engine_next(request_id: str, output: Any) -> str | None:
+def tts_engine_next(request_id: str, output: object) -> str | None:
     del request_id, output
     return VOCODER_STAGE
 
 
-def vocoder_next(request_id: str, output: Any) -> str | None:
+def vocoder_next(request_id: str, output: object) -> str | None:
     del request_id, output
     return None

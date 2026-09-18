@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -14,11 +14,17 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.types import RequestOutput
 
 from .constants import MAX_PROMPT_TOKENS
 from .payload_types import MiniMaxMusic3State
 from .prompt import AUDIO_CODE_OFFSET, SPECIAL_TOKEN_IDS
 from .request_builders import build_ttm_state
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+
+    from sglang_omni.models.minimax_music3.model_runner import MiniMaxMusic3ARState
 
 _C0_VOCAB_SIZE = 16384
 _CFG_UNCOND_RID_SUFFIX = "-cfg"
@@ -41,12 +47,12 @@ class MiniMaxMusic3SGLangRequestData(SGLangARRequestData):
     is_cfg_uncond: bool = False
     prompt_token_ids: torch.Tensor | None = None
     prompt_tokens: int = 0
-    ar_state: Any = None
+    ar_state: "MiniMaxMusic3ARState | None" = None
     engine_start_s: float = 0.0
 
 
 def build_sglang_minimax_request(
-    payload: StagePayload, tokenizer: Any
+    payload: StagePayload, tokenizer: "PreTrainedTokenizerBase"
 ) -> MiniMaxMusic3SGLangRequestData:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -132,7 +138,7 @@ def build_sglang_minimax_request(
 
 
 def build_stream_output(
-    request_id: str, data: MiniMaxMusic3SGLangRequestData, req_output: Any
+    request_id: str, data: MiniMaxMusic3SGLangRequestData, req_output: RequestOutput
 ) -> Iterator[OutgoingMessage]:
     del req_output
     yield from _drain_pending_chunks(request_id, data)

@@ -15,7 +15,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping
+from typing import Literal, Mapping
 
 import torch
 
@@ -87,7 +87,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
         sample_rate: int = SAMPLE_RATE,
-        request_cost_fn: Callable[[Any], int] | None = None,
+        request_cost_fn: Callable[[StagePayload], int] | None = None,
         max_batch_cost: int | None = None,
         token_hop_len: int = TOKEN_HOP_LEN,
         token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
@@ -159,7 +159,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
         request_id: str,
         state: CosyVoice3StreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -180,7 +180,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
                     embedding=pipeline_state.flow_embedding,
                 )
         else:
-            metadata: Mapping[str, Any] = source
+            metadata: Mapping[str, object] = source
             if any(
                 key in metadata
                 for key in (
@@ -204,9 +204,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
         request_id: str,
         state: CosyVoice3StreamState,
         *,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> None:
         token = as_flow_prompt_token(prompt_token)
         feat = as_flow_prompt_feat(prompt_feat)
@@ -462,8 +462,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
         request_id: str,
         payload: StagePayload,
         state: CosyVoice3StreamState,
-    ) -> dict[str, Any]:
-        final_data: dict[str, Any] = {
+    ) -> dict[str, str | int | dict[str, int | float]]:
+        final_data: dict[str, str | int | dict[str, int | float]] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
         }
@@ -475,7 +475,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
             final_data["usage"] = usage
             return final_data
 
-    def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
+    def stream_payload(
+        self, request_id: str, waveform: torch.Tensor
+    ) -> dict[str, bytes | list[int] | str | int]:
         return audio_waveform_payload(
             waveform,
             sample_rate=self.sample_rate,
