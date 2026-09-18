@@ -138,6 +138,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             and torch.device(self.device).type == "mps"
         )
 
+    def _uses_npu(self) -> bool:
+        return current_platform.is_npu()
+
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
@@ -181,7 +184,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": self.enable_torch_compile,
+            "enable_torch_compile": (
+                self.enable_torch_compile and not self._uses_npu()
+            ),
             "torch_compile_max_bs": self.torch_compile_max_bs,
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 4096,
@@ -305,9 +310,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
 
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
-        if use_mlx() or self._uses_torch_mps():
-            # Note (yexiaodong): Typed pipeline engine defaults are merged after
-            # the backend profile and otherwise re-enable Torch compilation.
+        if use_mlx() or self._uses_torch_mps() or self._uses_npu():
+            # Typed pipeline engine defaults are merged after the backend
+            # profile and otherwise re-enable Torch compilation. These
+            # backends select their own execution profile.
             overrides["enable_torch_compile"] = False
 
     def customize_server_args(self, server_args: Any) -> None:

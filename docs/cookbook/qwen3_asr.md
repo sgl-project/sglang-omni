@@ -159,6 +159,24 @@ This profile uses BF16, allows up to 16 running requests, and sets
 [RTX 5090 benchmark report](https://github.com/sgl-project/sglang-omni/issues/1212)
 for results measured on an earlier release.
 
+On Ascend NPU, Qwen3-ASR runs in graph-only mode. Torch compilation is
+disabled by the engine profile even when the typed pipeline default asks for
+it; encoder graph capture, breakable prefill graphs, and decode graphs remain
+enabled. To serve live PCM transcription on NPU, enable the realtime endpoint:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-1.7B \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --enable-realtime \
+  --port 8000
+```
+
+The NPU profile keeps `disable_cuda_graph=false`,
+`cuda_graph_backend_prefill=breakable`, and `enable_torch_compile=false`.
+Setting `--asr.engine.enable_torch_compile true` does not override this
+platform constraint.
+
 For example, force synchronous decode when comparing modes:
 
 ```bash

@@ -104,7 +104,10 @@ def _fake_server_args_builder(
 
 
 def _make_engine_builder(
-    *, mm_attention_backend: str | None = None, context_length: int = 1636
+    *,
+    mm_attention_backend: str | None = None,
+    context_length: int = 1636,
+    enable_torch_compile: bool = False,
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
         max_running_requests=64,
@@ -113,7 +116,7 @@ def _make_engine_builder(
         async_decode_min_batch_size=2,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
-        enable_torch_compile=False,
+        enable_torch_compile=enable_torch_compile,
         torch_compile_max_bs=1,
         mm_attention_backend=mm_attention_backend,
         request_build_max_workers=8,
@@ -289,6 +292,31 @@ def test_qwen3_asr_mlx_profile_overrides_typed_torch_compile_default(
 
     assert defaults["enable_torch_compile"] is False
     assert overrides["enable_torch_compile"] is False
+
+
+def test_qwen3_asr_npu_forces_graph_only_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: True)
+    builder = _make_engine_builder(
+        enable_torch_compile=True,
+        mm_attention_backend="ascend_attn",
+    )
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    assert defaults["disable_cuda_graph"] is False
+    assert defaults["enable_torch_compile"] is False
+    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+
+    overrides = build_generation_batch_overrides(
+        server_args_overrides={"enable_torch_compile": True},
+        **defaults,
+    )
+    builder.adjust_overrides(overrides)
+
+    assert overrides["disable_cuda_graph"] is False
+    assert overrides["enable_torch_compile"] is False
+    assert overrides["cuda_graph_backend_prefill"] == "breakable"
 
 
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
