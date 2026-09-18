@@ -91,6 +91,7 @@ dependencies = [
     "dots.tts==0.2.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
     # Ming-Omni
     "diffusers==0.37.0",      # Omni's own Ming-Omni pin; not an sglang core dependency
+    "torchdiffeq>=0.2.4",     # LLaDA2-Uni image decoder sampling
     "x-transformers",          # Ming talker rotary embeddings
     # note (yexiaodong): ZONOS2 text normalization pulls Pynini/OpenFst, which
     # has no usable Apple arm64 wheel and is unrelated to the Qwen3-ASR path.

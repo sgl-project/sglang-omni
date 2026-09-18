@@ -66,12 +66,12 @@ def _resolve_physical_plans(
     potential_clients = [
         fact
         for fact in process_facts
-        if fact.placement_gpu_ids and not fact.contains_tp
+        if fact.placement_gpu_ids and not (fact.contains_tp or fact.contains_sp)
     ]
     if not potential_clients:
         if mode == "on":
             raise MpsDecisionError(
-                "mps=on but no process is eligible for MPS (TP and CPU-only "
+                "mps=on but no process is eligible for MPS (TP, SP and CPU-only "
                 "processes cannot attach)"
             )
         return {}

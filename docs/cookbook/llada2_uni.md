@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) accepts text and image input and supports text output, text-to-image generation, and image editing.
 
 ## Highlights
 
@@ -20,13 +20,59 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+The default `omni` pipeline runs preprocessing, image encoding, and the
+DLLM thinker, then routes to text and image decoders. The image decoder
+uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
+LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
+The `text` variant retains the four-stage text-output pipeline.
+
+The CFG thinker currently uses synchronous eager execution. An explicit
+CUDA graph request is rejected until CFG graph metadata is supported.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
 ```
+
+## Image Generation and Editing
+
+Send non-streaming requests with `modalities: ["image"]`. Add `"text"`
+when the thinking-mode text should also be returned. `dllm_steps` controls
+VQ token generation; `decoder_steps` controls diffusion sampling.
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+request = {
+    "model": "inclusionAI/LLaDA2.0-Uni",
+    "messages": [{"role": "user", "content": "A sailboat on a calm lake."}],
+    "modalities": ["image"],
+    "stream": False,
+    "image_generation": {
+        "mode": "normal",
+        "decode_mode": "decoder-turbo",
+        "decoder_steps": 8,
+        "dllm_steps": 8,
+        "cfg_scale": 4.0,
+        "seed": 42,
+    },
+}
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions", json=request, timeout=600
+)
+response.raise_for_status()
+image = response.json()["choices"][0]["message"]["image"]
+Path("generated.png").write_bytes(base64.b64decode(image["data"]))
+```
+
+For editing, use an instruction such as `"Change the background to a beach."`
+and include one source `image_url` content item alongside the text in the user
+message. Set `cfg_text_scale` and `cfg_image_scale` in `image_generation` to
+control editing guidance. Omitting those values retains task-specific defaults.
+`mode: "thinking"` enables the two-phase t2i path; the thinker generates a
+description before its image VQ phase.
 
 ## Text Input
 

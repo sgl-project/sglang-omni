@@ -53,10 +53,10 @@ def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
 def stage_process_name(stage: "StageConfig") -> str:
     """Process Name that owns *stage*.
 
-    Non-TP stages declare it explicitly. A TP stage owns its process outright,
+    Single-rank stages declare it explicitly. A TP/SP stage owns its process outright,
     so it falls back to the stage name when no process is declared.
     """
-    if stage.tp_size > 1:
+    if stage.parallel_size > 1:
         return stage.process or stage.name
     if not stage.process:
         raise ValueError(f"Stage {stage.name!r} must declare process")
@@ -72,6 +72,12 @@ PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
         "gpu_id",
         "total_gpu_memory_fraction",
         "process_total_gpu_memory_fraction",
+        "sp_rank",
+        "sp_size",
+        "stage_role",
+        "tp_rank",
+        "tp_size",
+        "nccl_port",
     }
 )
 
@@ -348,6 +354,9 @@ class StageConfig(BaseModel):
     writes on stages that would silently ignore them.
     """
 
+    supports_sequence_parallel: ClassVar[bool] = False
+    """Model-owned opt-in; SP uses stage fanout, not SGLang TP/KV rank wiring."""
+
     # --- Identity ---
     name: str
 
@@ -363,6 +372,7 @@ class StageConfig(BaseModel):
     # --- GPU / parallelism / process placement (parent-process consumers) ---
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
+    sp_size: int = Field(default=1, ge=1)
     process: str | None = None
     gpu_memory_fraction: float | None = Field(
         default=None,
@@ -422,21 +432,37 @@ class StageConfig(BaseModel):
     # --- Communication pool tuning ---
     comm: CommConfig | None = None
 
+    @property
+    def parallel_size(self) -> int:
+        return max(self.tp_size, self.sp_size)
+
+    @property
+    def parallel_kind(self) -> str:
+        return "sp" if self.sp_size > 1 else "tp"
+
     def model_post_init(self, __context: Any = None) -> None:
-        if isinstance(self.gpu, int) and self.tp_size > 1:
+        if self.tp_size > 1 and self.sp_size > 1:
+            raise ValueError(f"Stage {self.name!r}: TP and SP are mutually exclusive")
+        if self.sp_size > 1 and not type(self).supports_sequence_parallel:
             raise ValueError(
-                f"Stage {self.name!r}: TP placement requires a list of "
-                f"{self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
+                f"Stage {self.name!r} does not support sequence parallelism"
+            )
+        size = self.parallel_size
+        kind = self.parallel_kind
+        if isinstance(self.gpu, int) and size > 1:
+            raise ValueError(
+                f"Stage {self.name!r}: {kind.upper()} placement requires a list of "
+                f"{size} unique GPU ids, got scalar gpu={self.gpu}"
             )
         if isinstance(self.gpu, list):
-            if len(self.gpu) != self.tp_size:
+            if len(self.gpu) != size:
                 raise ValueError(
                     f"Stage {self.name!r}: gpu has {len(self.gpu)} entries "
-                    f"but tp_size={self.tp_size}"
+                    f"but {kind}_size={size}"
                 )
             if len(set(self.gpu)) != len(self.gpu):
                 raise ValueError(
-                    f"Stage {self.name!r}: TP placement requires unique GPU "
+                    f"Stage {self.name!r}: {kind.upper()} placement requires unique GPU "
                     f"ids, got {list(self.gpu)}"
                 )
         if self.process is not None:
@@ -471,17 +497,17 @@ class StageConfig(BaseModel):
 
         gpu = self.gpu
         if gpu is None:
-            if self.tp_size > 1:
+            if size > 1:
                 raise ValueError(
-                    f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
+                    f"Stage {self.name!r}: gpu is required when {kind}_size={size}"
                 )
             return
 
         gpu_ids = [gpu] if isinstance(gpu, int) else gpu
-        if len(gpu_ids) != self.tp_size:
+        if len(gpu_ids) != size:
             raise ValueError(
                 f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries "
-                f"but tp_size={self.tp_size}"
+                f"but {kind}_size={size}"
             )
         if any(gpu_id < 0 for gpu_id in gpu_ids):
             raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
@@ -947,7 +973,7 @@ class PipelineConfig(BaseModel):
                 )
 
         missing_process = [
-            s.name for s in self.stages if s.tp_size == 1 and not s.process
+            s.name for s in self.stages if s.parallel_size == 1 and not s.process
         ]
         if missing_process:
             raise ValueError(
@@ -972,16 +998,17 @@ class PipelineConfig(BaseModel):
                     f"Process name {process_name!r} uses the '@r<N>' suffix "
                     "reserved for replica instances"
                 )
-            tp_stages = [stage.name for stage in stages if stage.tp_size > 1]
+            tp_stages = [stage.name for stage in stages if stage.parallel_size > 1]
+            kind = "TP/SP" if any(stage.sp_size > 1 for stage in stages) else "TP"
             if len(tp_stages) > 1:
                 raise ValueError(
-                    f"Process name {process_name!r} is claimed by multiple TP "
+                    f"Process name {process_name!r} is claimed by multiple {kind} "
                     f"stages: {tp_stages}"
                 )
             if tp_stages and len(stages) > 1:
                 others = [s.name for s in stages if s.name not in tp_stages]
                 raise ValueError(
-                    f"Process {process_name!r} holds TP stage {tp_stages[0]!r} "
+                    f"Process {process_name!r} holds {kind} stage {tp_stages[0]!r} "
                     f"and cannot be shared with {others}"
                 )
 

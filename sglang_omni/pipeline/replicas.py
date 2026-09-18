@@ -197,7 +197,7 @@ def _replica_stage_gpu(
     """
     if devices is None or stage_cfg.gpu is None:
         return stage_cfg.gpu
-    if stage_cfg.tp_size == 1:
+    if stage_cfg.parallel_size == 1:
         return devices[0]
     return list(devices)
 

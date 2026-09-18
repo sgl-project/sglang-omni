@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Internal TP control helpers.
+"""Stage fanout shared by TP and SP (legacy TP names remain source-compatible).
 
 These helpers sit above the per-rank SGLang worker layer and below the
 pipeline stage abstraction. They mirror stage-control messages and, for
@@ -11,8 +11,10 @@ collectives in TP-parallel forward passes do not deadlock.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import queue as queue_mod
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,14 +34,93 @@ _WORK_POLL_SECONDS = 0.1
 
 @dataclass
 class TPWorkMessage:
-    """Payload replicated from the TP leader to follower schedulers."""
+    """Payload replicated from a stage leader to follower schedulers."""
 
     request_id: str
     data: Any
+    dispatch_id: int | None = None
+
+
+@dataclass(frozen=True)
+class ParallelAbortMessage:
+    request_id: str
+    dispatch_id: int
+
+    def __post_init__(self) -> None:
+        if not self.request_id or self.dispatch_id < 1:
+            raise ValueError(
+                "Parallel abort requires a request id and positive dispatch id"
+            )
+
+
+class RequestDispatchTracker:
+    """Correlate terminals and cross-queue aborts, including sequential RID reuse.
+
+    Terminals for one RID must remain FIFO. Completed ranges compress late-abort
+    tombstones without forgetting old dispatches or retaining every request ID.
+    """
+
+    def __init__(self) -> None:
+        self._active: dict[str, deque[int]] = {}
+        self._aborted: set[tuple[str, int]] = set()
+        self._watermark = 0
+        self._completed: list[tuple[int, int]] = []
+
+    def is_completed(self, dispatch_id: int) -> bool:
+        if dispatch_id < 1:
+            raise ValueError("Dispatch id must be positive")
+        if dispatch_id <= self._watermark:
+            return True
+        index = bisect.bisect_right(self._completed, (dispatch_id, float("inf"))) - 1
+        return index >= 0 and dispatch_id <= self._completed[index][1]
+
+    def register_work(self, request_id: str, dispatch_id: int) -> bool:
+        if self.is_completed(dispatch_id):
+            return False
+        active = self._active.setdefault(request_id, deque())
+        if dispatch_id in active:
+            return False
+        if active and dispatch_id < active[-1]:
+            raise RuntimeError("Out-of-order parallel work dispatch")
+        active.append(dispatch_id)
+        return True
+
+    def current(self, request_id: str) -> int | None:
+        active = self._active.get(request_id)
+        return active[-1] if active else None
+
+    def record_abort(self, request_id: str, dispatch_id: int) -> bool:
+        key = (request_id, dispatch_id)
+        if self.is_completed(dispatch_id) or key in self._aborted:
+            return False
+        self._aborted.add(key)
+        return True
+
+    def finish_terminal(self, request_id: str) -> int | None:
+        active = self._active.get(request_id)
+        if not active:
+            return None
+        dispatch_id = active.popleft()
+        if not active:
+            del self._active[request_id]
+        self._aborted.discard((request_id, dispatch_id))
+        ranges = self._completed
+        index = bisect.bisect_left(ranges, (dispatch_id, dispatch_id))
+        start = end = dispatch_id
+        if index and ranges[index - 1][1] + 1 >= start:
+            index -= 1
+            start, previous_end = ranges.pop(index)
+            end = max(end, previous_end)
+        while index < len(ranges) and ranges[index][0] <= end + 1:
+            end = max(end, ranges.pop(index)[1])
+        ranges.insert(index, (start, end))
+        if ranges[0][0] == self._watermark + 1:
+            _, self._watermark = ranges.pop(0)
+        return dispatch_id
 
 
 class TPLeaderFanout:
-    """Broadcast leader-owned stage events to TP followers."""
+    """Broadcast leader-owned stage events to TP or SP followers."""
 
     def __init__(
         self,
@@ -53,6 +134,7 @@ class TPLeaderFanout:
         self._follower_work_queues = list(follower_work_queues)
         self._follower_abort_queues = list(follower_abort_queues)
         self._follower_admin_result_queues = list(follower_admin_result_queues or [])
+        self._next_dispatch_id = 1
 
     async def fanout_control(
         self,
@@ -63,12 +145,19 @@ class TPLeaderFanout:
         for q in self._follower_work_queues:
             q.put_nowait(msg)
 
-    def fanout_work(self, payload: Any) -> None:
-        msg = TPWorkMessage(request_id=getattr(payload, "request_id", ""), data=payload)
+    def fanout_work(self, payload: Any, *, track_dispatch: bool = False) -> int | None:
+        dispatch_id = None
+        if track_dispatch:
+            dispatch_id = self._next_dispatch_id
+            self._next_dispatch_id += 1
+        msg = TPWorkMessage(
+            request_id=payload.request_id, data=payload, dispatch_id=dispatch_id
+        )
         for q in self._follower_work_queues:
             q.put_nowait(msg)
+        return dispatch_id
 
-    async def fanout_abort(self, msg: AbortMessage) -> None:
+    async def fanout_abort(self, msg: AbortMessage | ParallelAbortMessage) -> None:
         for q in self._follower_abort_queues:
             q.put_nowait(msg)
 
@@ -99,8 +188,7 @@ class TPLeaderFanout:
                 )
             if msg.result.op_id != op_id:
                 raise ValueError(
-                    "Unexpected TP follower admin op id: "
-                    f"{msg.result.op_id} != {op_id}"
+                    f"Unexpected TP follower admin op id: {msg.result.op_id} != {op_id}"
                 )
             results.append(msg)
         return results
@@ -156,9 +244,9 @@ class TPFollowerControlPlane:
             return msg
         raise ValueError(f"Unexpected TP follower work message: {type(msg)}")
 
-    async def recv_abort(self) -> AbortMessage:
+    async def recv_abort(self) -> AbortMessage | ParallelAbortMessage:
         msg = await self._recv_from_queue(self._abort_queue)
-        if isinstance(msg, AbortMessage):
+        if isinstance(msg, (AbortMessage, ParallelAbortMessage)):
             return msg
         raise ValueError(f"Unexpected TP follower abort message: {type(msg)}")
 

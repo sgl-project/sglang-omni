@@ -183,9 +183,9 @@ def _collect_candidate_groups(
     for process in logical_process_plan.processes:
         if not process.is_replicated:
             continue
-        if process.is_tensor_parallel:
+        if process.parallel_size > 1:
             logger.info(
-                "Weight sharing skips tensor-parallel process %r: CUDA IPC "
+                "Weight sharing skips parallel process %r: CUDA IPC "
                 "handles are not rank qualified",
                 process.name,
             )

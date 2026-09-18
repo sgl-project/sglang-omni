@@ -1418,6 +1418,43 @@ def test_stage_local_object_requires_registered_target() -> None:
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize("replicated", [False, True])
+def test_stage_self_route_preserves_reentered_request_state(replicated: bool) -> None:
+    async def _run() -> None:
+        dispatcher = LocalStageDispatcher()
+        scheduler = FakeScheduler()
+        name = "thinker@r1" if replicated else "thinker"
+        stage = make_stage(
+            name=name,
+            get_next=lambda request_id, output: "thinker",
+            endpoints={name: "inproc://thinker"},
+            scheduler=scheduler,
+            same_process_targets={name},
+            local_dispatcher=dispatcher,
+            replica_topology=(
+                {"thinker": ["thinker@r0", "thinker@r1"]} if replicated else None
+            ),
+        )
+        dispatcher.register(stage)
+        stage._active_requests.add("req-reentry")
+        if replicated:
+            stage._record_replica_bindings("req-reentry", {"thinker": 1})
+
+        await stage._route_result(
+            "req-reentry",
+            make_stage_payload(request_id="req-reentry", data={"phase": 2}),
+        )
+
+        queued = scheduler.inbox.get_nowait()
+        assert queued.request_id == "req-reentry"
+        assert queued.data.data == {"phase": 2}
+        assert "req-reentry" in stage._active_requests
+        if replicated:
+            assert stage._replica_bindings["req-reentry"] == {"thinker": 1}
+
+    asyncio.run(_run())
+
+
 def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:
     async def _run() -> None:
         dispatcher = LocalStageDispatcher()
