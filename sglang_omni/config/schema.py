@@ -685,6 +685,7 @@ class PipelineConfig(BaseModel):
 
     def model_post_init(self, __context: Any = None) -> None:
         self._validate_general()
+        self._release_tp_stages_from_shared_processes()
         self._validate_processes()
 
         native = type(self).max_native_clip_s
@@ -954,6 +955,28 @@ class PipelineConfig(BaseModel):
                 "Non-TP stages must declare process; "
                 f"missing process for {missing_process}"
             )
+
+    def _release_tp_stages_from_shared_processes(self) -> None:
+        """Drop a TP stage's ``process`` when non-TP stages share that name.
+
+        Model defaults put the single-GPU layout under one process name, and
+        a dotted override such as ``--thinker.tp_size 2`` raises tp_size
+        without touching it. TP ranks always own their OS processes, so the
+        shared name cannot mean colocation any more; without ``process`` the
+        stage falls back to its own name as the rank-process prefix.
+        """
+        shared = {s.process for s in self.stages if s.tp_size == 1 and s.process}
+        for stage in self.stages:
+            if stage.tp_size > 1 and stage.process in shared:
+                logger.info(
+                    "Stage %r runs tp_size=%d and leaves process %r; its ranks "
+                    "run as %s_tp<rank>",
+                    stage.name,
+                    stage.tp_size,
+                    stage.process,
+                    stage.name,
+                )
+                stage.process = None
 
     def _validate_processes(self) -> None:
         """Check Process Names and the sparse ``processes`` replica policy.
