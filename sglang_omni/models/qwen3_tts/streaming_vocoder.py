@@ -8,7 +8,7 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Mapping
@@ -522,6 +522,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         async_decode: bool | None = None,
         initial_max_batch_size: int = 32,
         initial_batch_wait_ms: int = 2,
+        adaptive_initial_batch_wait: bool = True,
         followup_max_batch_size: int = 8,
         followup_batch_wait_ms: int = 1,
         followup_worker_count: int = 2,
@@ -750,6 +751,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._chunk_ramp_configured = ramp_in_effect
         self._initial_max_batch_size = int(initial_max_batch_size)
         self._initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
+        self._adaptive_initial_batch_wait = bool(adaptive_initial_batch_wait)
         self._followup_max_batch_size = int(followup_max_batch_size)
         self._followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self._default_initial_chunk_frames = int(initial_chunk_frames)
@@ -780,7 +782,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             num_quantizers=num_quantizers,
             codec_state_slots=int(codec_state_slots),
             enabled=incremental_codec_cuda_graph,
-            compile_steady=bool(incremental_codec_compile),
+            compile_kernels=bool(incremental_codec_compile),
             # note (luojiaxuan): with no reference prefix a bootstrap decode is
             # exactly the first chunk, plus one frame when bootstrap silence
             # suppression bumps it, so those two widths are the COLD graphs a
@@ -919,7 +921,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         num_quantizers: int,
         codec_state_slots: int,
         enabled: bool,
-        compile_steady: bool,
+        compile_kernels: bool,
         cold_frames: Sequence[int],
         window_frames: Sequence[int],
         min_free_gb: float,
@@ -945,16 +947,19 @@ class Qwen3TTSStreamingVocoderScheduler(
                 codec_state_slots,
             ),
         )
+        cold_widths = tuple(sorted({int(frames) for frames in cold_frames}))
         initial = Qwen3TTSIncrementalCodecCudaGraphRunner(
             self._incremental_decoder,
             device=self._device,
             dtype=dtype,
             num_quantizers=num_quantizers,
             mode="cold",
-            fresh_frames=tuple(sorted({int(frames) for frames in cold_frames})),
+            fresh_frames=cold_widths,
             batch_sizes=graph_batch_sizes,
             min_free_gb=min_free_gb,
             enabled=graph_enabled,
+            # note (luojiaxuan): every stream's first chunk replays one of these widths.
+            compile_fresh_frames=cold_widths if compile_kernels else (),
             arena=self._codec_arena,
             stream_priority=graph_priority,
         )
@@ -974,7 +979,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 # note(ratish): the warm runners compile the steady stride; a
                 # window of that width shares it, every other width stays eager.
                 compile_fresh_frames=(
-                    (self._stream_followup_stride,) if compile_steady else ()
+                    (self._stream_followup_stride,) if compile_kernels else ()
                 ),
                 arena=self._codec_arena,
                 stream_priority=graph_priority,
@@ -1019,7 +1024,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
                 compile_fresh_frames=(
-                    (self._stream_followup_stride,) if compile_steady else ()
+                    (self._stream_followup_stride,) if compile_kernels else ()
                 ),
                 arena=self._codec_arena,
                 stream_priority=graph_priority,
@@ -2247,6 +2252,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         *,
         max_batch_size: int,
         batch_wait_s: float,
+        wait_for_more: Callable[[], bool] | None = None,
     ) -> list[tuple[str, _Qwen3TTSStreamState]] | None:
         queued = work_queue.get()
         if queued is None or self._async_stop.is_set():
@@ -2257,6 +2263,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+            # note (luojiaxuan): nothing else is coming, so the wait only adds latency.
+            if wait_for_more is not None and not wait_for_more():
+                remaining = 0.0
             try:
                 next_queued = work_queue.get(timeout=remaining)
             except queue.Empty:
@@ -2332,10 +2341,23 @@ class Qwen3TTSStreamingVocoderScheduler(
                 self._initial_queue,
                 max_batch_size=self._initial_max_batch_size,
                 batch_wait_s=self._initial_batch_wait_s,
+                wait_for_more=(
+                    self._initial_siblings_pending
+                    if self._adaptive_initial_batch_wait
+                    else None
+                ),
             )
             if batch is None:
                 return
             self._run_initial_batch(batch)
+
+    def _initial_siblings_pending(self) -> bool:
+        # note (luojiaxuan): a stream still waiting for codes may land in this window.
+        with self.state_lock:
+            return any(
+                not state.decoded_chunks and not state.initial_pending
+                for state in self.stream_states.values()
+            )
 
     def _run_initial_batch(
         self,

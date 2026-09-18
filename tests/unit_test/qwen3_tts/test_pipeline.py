@@ -2473,6 +2473,9 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
         0
     ]._compile_fresh_frames == frozenset({8})
     assert compiled._initial_incremental_decode_graphs._compile_fresh_frames == (
+        frozenset({1, 2})
+    )
+    assert scheduler._initial_incremental_decode_graphs._compile_fresh_frames == (
         frozenset()
     )
 
@@ -8163,3 +8166,46 @@ def test_qwen3_tts_scheduler_adopts_prepared_tensors_after_the_preprocessing_eve
     assert waited == [ready]
     assert [stream for _, stream in recorded] == [scheduler_stream] * 4
     assert any(tensor is embeds for tensor, _ in recorded)
+
+
+def test_qwen3_tts_adaptive_initial_wait_keys_on_opened_streams() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    dequeued = _Qwen3TTSStreamState()
+    dequeued.initial_pending = True
+    scheduler.stream_states["a"] = dequeued
+
+    assert scheduler._adaptive_initial_batch_wait is True
+    assert scheduler._initial_siblings_pending() is False
+
+    opened = _Qwen3TTSStreamState()
+    scheduler.stream_states["b"] = opened
+
+    assert scheduler._initial_siblings_pending() is True
+
+    opened.decoded_chunks = 1
+
+    assert scheduler._initial_siblings_pending() is False
+
+
+def test_qwen3_tts_collect_async_batch_drains_the_queue_without_waiting() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    work: Queue = Queue()
+    work.put(("a", _Qwen3TTSStreamState()))
+    work.put(("b", _Qwen3TTSStreamState()))
+    started = time.monotonic()
+
+    batch = scheduler._collect_async_batch(
+        work,
+        max_batch_size=8,
+        batch_wait_s=0.5,
+        wait_for_more=lambda: False,
+    )
+
+    assert [request_id for request_id, _ in batch] == ["a", "b"]
+    assert time.monotonic() - started < 0.25
