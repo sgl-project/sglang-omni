@@ -48,8 +48,10 @@ is not on the decode hot path and never enters a capture region.
 ## Capture-safety argument
 
 The Triton kernels compute the hash entirely on device, without host readback
-or synchronization. Warm up the kernels before CUDA-graph capture. The Torch
-fallback remains capture-safe on CUDA.
+or synchronization. In serving, hashing runs after frame decoding, whether
+frame decoding uses CUDA graph replay or eager execution. Hashing itself is
+not currently captured. Tests verify capture and replay after explicit kernel
+warmup. The Torch fallback remains capture-safe on CUDA.
 
 ### No int64 overflow
 
