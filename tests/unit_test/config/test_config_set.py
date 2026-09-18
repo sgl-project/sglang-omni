@@ -275,6 +275,18 @@ class TestStageDefaults:
             "stages.thinker.engine.mem_fraction_static"
         ]
 
+    def test_the_false_engine_selector_matches_non_engine_stages_only(
+        self, pipeline_config
+    ):
+        patches = patches_from_shared_block(
+            [{"select": {"engine": False}, "factory": {"max_seq_len": 4096}}],
+            type(pipeline_config),
+            ["preprocessing", "thinker"],
+        )
+        assert [patch.path.raw for patch in patches.ordered()] == [
+            "stages.preprocessing.factory.max_seq_len"
+        ]
+
     def test_exclude_removes_matched_stages(self, pipeline_config):
         patches = patches_from_shared_block(
             [
@@ -346,6 +358,23 @@ class TestStageDefaults:
                     {
                         "select": {"capability": "sglang"},
                         "engine": {"mem_fraction_static": 0.5},
+                    }
+                ],
+                type(pipeline_config),
+                ["preprocessing", "thinker"],
+            )
+
+    @pytest.mark.parametrize("exclude", [False, 0, "", None])
+    def test_a_falsy_non_list_exclusion_is_refused(
+        self, pipeline_config, exclude
+    ) -> None:
+        """A mistyped exclusion must not silently select every stage."""
+        with pytest.raises(ValueError, match="exclude must be a list"):
+            patches_from_shared_block(
+                [
+                    {
+                        "select": {"exclude": exclude},
+                        "factory": {"max_seq_len": 4096},
                     }
                 ],
                 type(pipeline_config),
