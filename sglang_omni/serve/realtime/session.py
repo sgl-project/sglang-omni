@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextvars
 import dataclasses
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from fastapi import WebSocket
 from starlette.websockets import WebSocketState
@@ -17,6 +19,7 @@ from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
     ResponseCancel,
+    SessionConfig,
     SessionObject,
     SessionUpdate,
     TurnDetection,
@@ -24,6 +27,23 @@ from sglang_omni.serve.realtime.events import (
     make_event,
     parse_conversation_client_event,
 )
+from sglang_omni.serve.realtime.output import (
+    AudioDelta,
+    AudioFinished,
+    ContextLimitError,
+    InputCommitted,
+    OutputEvent,
+    ResponseFinished,
+    ResponseStarted,
+    SpeechBoundary,
+    TextDelta,
+    TextFinished,
+    TranscriptionDelta,
+    TranscriptionFailure,
+    TranscriptionFinished,
+    TurnFailure,
+)
+from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
 from sglang_omni.serve.realtime.vad import (
@@ -46,14 +66,6 @@ _TRANSCRIPTION_PROMPT = (
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
 
-HANDLERS: dict[type, str] = {
-    SessionUpdate: "handle_session_update",
-    InputAudioBufferAppend: "handle_audio_append",
-    InputAudioBufferClear: "handle_audio_clear",
-    ResponseCancel: "handle_response_cancel",
-    ConversationItemTruncate: "handle_conversation_item_truncate",
-}
-
 _UNSET = object()
 
 
@@ -74,31 +86,43 @@ class ResponseOutput:
     text: str
 
 
-class RealtimeSession:
-    """Owns one WebSocket and one OpenAI-Realtime audio-in session.
+class TurnConfigurationError(ValueError):
+    def __init__(self, type_: str, code: str, message: str):
+        self.type, self.code = type_, code
+        super().__init__(message)
 
-    Per turn (VAD ``speech_stopped`` → auto-commit):
-      1. ``run_response`` consumes the audio + prior conversation, streams
-         ``response.*`` events to the client. User sees their reply fast.
-      2. ``run_transcription`` re-consumes the audio with a verbatim-transcribe
-         prompt, streams ``conversation.item.input_audio_transcription.*`` for
-         history/UI/log.
-      3. The transcript and completed assistant response are appended to
-         ``self.conversation``. Cancelled assistant output is omitted, and a
-         client truncate event removes completed output interrupted in playback.
-    """
+
+class TurnBasedSession:
+    """Run VAD, response generation and history updates through a typed output sink."""
 
     def __init__(
         self,
-        websocket: WebSocket,
         *,
+        emit: Callable[[OutputEvent], Awaitable[None]],
+        enable_vad: bool = True,
+        on_input_committed: Callable[[int, int], None] | None = None,
+        max_queued_turns: int = 0,
+        server_cancel: Callable[[], Awaitable[None]] | None = None,
+        max_queued_audio_bytes: int | None = None,
+        capture_turn_context: bool = False,
+        prepare_turn_context: Callable[[], None] | None = None,
+        strict_cleanup: bool = False,
+        max_text_chars: int | None = None,
         client: Client,
         model_name: str,
         session_id: str | None = None,
         supports_audio_output: bool = False,
         smart_turn_model: SemanticEOUModel | None = None,
     ) -> None:
-        self.websocket = websocket
+        self.strict_cleanup = strict_cleanup
+        self.max_text_chars = max_text_chars
+        self.prepare_turn_context = prepare_turn_context
+        self.capture_turn_context = capture_turn_context
+        self.server_cancel = server_cancel
+        self.max_queued_audio_bytes = max_queued_audio_bytes
+        self.queued_audio_bytes = 0
+        self.on_input_committed = on_input_committed
+        self.emit = emit
         self.client = client
         self.model_name = model_name
         self.session_id = session_id or new_id("sess")
@@ -143,44 +167,24 @@ class RealtimeSession:
         self.speech_idle.set()
         # VAD may emit speech_stopped while engine is still busy on an
         # earlier utterance — serialize via FIFO.
-        self.response_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self.response_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
+            maxsize=max_queued_turns
+        )
         self.queue_drainer: asyncio.Task | None = None
+        self.queue_idle = asyncio.Event()
+        self.queue_idle.set()
 
-        self.vad: TurnDetector = StreamingVAD(VADConfig())
+        self.vad: TurnDetector | None = (
+            StreamingVAD(VADConfig()) if enable_vad else None
+        )
         self.vad_origin_samples = 0
         self.buffer_origin_samples = 0
         self.utterance_start_byte: int | None = None
         self.utterance_item_id: str | None = None
 
-    async def run(self) -> None:
-        """Drive the WebSocket loop; ``websocket.disconnect`` arrives in-band."""
-        await self.send(
-            make_event(
-                "session.created",
-                session=self.session_object.model_dump(exclude_none=True),
-            )
-        )
-
-        while not self.closed:
-            message = await self.websocket.receive()
-            if message["type"] == "websocket.disconnect":
-                break
-            if message["type"] != "websocket.receive":
-                continue
-            raw = message["text"]
-            payload = json.loads(raw)
-            assert isinstance(payload, dict), "Top-level payload must be a JSON object"
-            await self.dispatch(payload)
-
-    async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_conversation_client_event(payload)
-        assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
-        method_name = HANDLERS[type(event)]
-        await getattr(self, method_name)(event)
-
-    async def handle_session_update(self, event: SessionUpdate) -> None:
+    async def prepare_update(self, config: SessionConfig):
         # Validate a candidate first so a rejected update never lands in live state.
-        update = event.session.model_dump(
+        update = config.model_dump(
             exclude_none=True,
             exclude_unset=True,
             mode="json",
@@ -196,43 +200,42 @@ class RealtimeSession:
                 )
             candidate = SessionObject.model_validate(current | update)
         except ValueError as exc:
-            await self.send_error(
+            raise TurnConfigurationError(
                 "invalid_request_error",
                 "invalid_turn_detection",
                 str(exc),
             )
-            return
 
         modalities = set(candidate.modalities)
         if modalities not in ({"text"}, {"text", "audio"}):
-            await self.send_error(
+            raise TurnConfigurationError(
                 "invalid_request_error",
                 "unsupported_modality",
                 "modalities must be ['text'] or ['text', 'audio'].",
             )
-            return
         audio_requested = "audio" in modalities
         if audio_requested and not self.supports_audio_output:
-            await self.send_error(
+            raise TurnConfigurationError(
                 "invalid_request_error",
                 "unsupported_modality",
                 "Audio output is unavailable for this pipeline.",
             )
-            return
         assert candidate.input_audio_format == "pcm16", "Only pcm16 is supported"
         if "output_audio_format" in update and candidate.output_audio_format != "pcm16":
-            await self.send_error(
+            raise TurnConfigurationError(
                 "invalid_request_error",
                 "unsupported_audio_format",
                 "Only PCM16 output audio is supported.",
             )
-            return
 
         replacement_vad: TurnDetector | None = None
         turn_detection_changed = (
             turn_detection_update is not _UNSET
             and self._detector_config(candidate.turn_detection)
             != self._detector_config(self.session_object.turn_detection)
+        )
+        turn_detection_changed = turn_detection_changed or (
+            self.vad is None and candidate.turn_detection is not None
         )
         if turn_detection_changed:
             try:
@@ -248,17 +251,16 @@ class RealtimeSession:
                 candidate.turn_detection = TurnDetection.model_validate(
                     build.effective_config
                 )
-                if self._detector_config(
+                if self.vad is None or self._detector_config(
                     candidate.turn_detection
                 ) != self._detector_config(self.session_object.turn_detection):
                     replacement_vad = build.detector
             except ValueError as exc:
-                await self.send_error(
+                raise TurnConfigurationError(
                     "invalid_request_error",
                     "invalid_turn_detection",
                     str(exc),
                 )
-                return
             except Exception as exc:
                 asyncio.get_running_loop().call_exception_handler(
                     {
@@ -266,13 +268,15 @@ class RealtimeSession:
                         "exception": exc,
                     }
                 )
-                await self.send_error(
+                raise TurnConfigurationError(
                     "server_error",
                     "turn_detection_initialization_failed",
                     "The requested turn detector could not be initialized.",
                 )
-                return
 
+        return candidate, replacement_vad
+
+    def apply_update(self, candidate, replacement_vad) -> bool:
         had_pending_audio = (
             not self.audio_buffer.is_empty() or self.utterance_item_id is not None
         )
@@ -281,14 +285,7 @@ class RealtimeSession:
             self.speech_idle.set()
             self.vad = replacement_vad
         self.session_object = candidate
-        if replacement_vad is not None and had_pending_audio:
-            await self.send(make_event("input_audio_buffer.cleared"))
-        await self.send(
-            make_event(
-                "session.updated",
-                session=self.session_object.model_dump(exclude_none=True),
-            )
-        )
+        return replacement_vad is not None and had_pending_audio
 
     @staticmethod
     def _detector_config(value: TurnDetection | None) -> dict[str, Any]:
@@ -377,13 +374,6 @@ class RealtimeSession:
             merged.pop("silence_duration_ms", None)
         return merged
 
-    async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        decoded_len = self.audio_buffer.append_b64(event.audio)
-        new_bytes = self.audio_buffer.tail(decoded_len)
-        emits = await asyncio.to_thread(self.vad.process, new_bytes)
-        for emit in emits:
-            await self.handle_vad_emit(emit)
-
     def absolute_sample(self, sample_offset: int) -> int:
         return self.vad_origin_samples + sample_offset
 
@@ -398,12 +388,8 @@ class RealtimeSession:
             vad_byte = self.sample_offset_to_buffer_byte(emit.sample_offset)
             self.utterance_start_byte = min(vad_byte, self.audio_buffer.num_bytes)
             self.utterance_item_id = new_id("item")
-            await self.send(
-                make_event(
-                    "input_audio_buffer.speech_started",
-                    audio_start_ms=timestamp_ms,
-                    item_id=self.utterance_item_id,
-                )
+            await self.emit_output(
+                SpeechBoundary(True, self.utterance_item_id, timestamp_ms)
             )
             turn_detection = self.session_object.turn_detection
             interrupt_response = (
@@ -414,13 +400,14 @@ class RealtimeSession:
                 and "audio" in self.session_object.modalities
             )
             if response_has_audio and interrupt_response:
-                await self.cancel_active_response("turn_detected")
+                if self.server_cancel is not None:
+                    await self.server_cancel()
+                else:
+                    await self.cancel_active_response("turn_detected")
         elif emit.event_type == VADEvent.SPEECH_STOPPED:
-            await self.send(
-                make_event(
-                    "input_audio_buffer.speech_stopped",
-                    audio_end_ms=timestamp_ms,
-                    item_id=self.utterance_item_id or new_id("item"),
+            await self.emit_output(
+                SpeechBoundary(
+                    False, self.utterance_item_id or new_id("item"), timestamp_ms
                 )
             )
             try:
@@ -435,9 +422,16 @@ class RealtimeSession:
         self.audio_buffer.clear()
         self.utterance_start_byte = None
         self.utterance_item_id = None
-        self.vad.reset()
+        if self.vad is not None:
+            self.vad.reset()
 
-    def consume_committed_prefix(self, end_byte: int) -> None:
+    def consume_committed_prefix(
+        self, end_byte: int, *, discarded_prefix_bytes: int = 0
+    ) -> None:
+        if self.on_input_committed is not None:
+            total = min(end_byte, self.audio_buffer.num_bytes) // 2
+            discarded = min(discarded_prefix_bytes // 2, total)
+            self.on_input_committed(total - discarded, discarded)
         self.audio_buffer.drop_prefix(end_byte)
         self.buffer_origin_samples += end_byte // 2
         self.utterance_start_byte = None
@@ -457,66 +451,32 @@ class RealtimeSession:
             start_byte=start_byte, end_byte=end_byte
         )
         item_id = self.utterance_item_id or new_id("item")
-        self.consume_committed_prefix(end_byte)
+        if (
+            self.max_queued_audio_bytes is not None
+            and self.queued_audio_bytes + len(payload) > self.max_queued_audio_bytes
+        ):
+            raise RuntimeError("queued turn audio byte limit")
+        if self.response_queue.full():
+            raise RuntimeError("turn queue context limit")
+        self.consume_committed_prefix(end_byte, discarded_prefix_bytes=start_byte)
 
-        await self.send(make_event("input_audio_buffer.committed", item_id=item_id))
-        await self.response_queue.put((item_id, payload))
+        await self.emit_output(InputCommitted(item_id))
+        self.queued_audio_bytes += len(payload)
+        entry = (
+            (item_id, payload, contextvars.copy_context())
+            if self.capture_turn_context
+            else (item_id, payload)
+        )
+        self.queue_idle.clear()
+        await self.response_queue.put(entry)
         if self.queue_drainer is None or self.queue_drainer.done():
             self.queue_drainer = asyncio.create_task(self.drain_queue())
-
-    async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
-        self.drop_buffer_and_reset_vad()
-        self.speech_idle.set()
-        await self.send(make_event("input_audio_buffer.cleared"))
-
-    async def handle_response_cancel(self, event: ResponseCancel) -> None:
-        await self.cancel_active_response("client_cancelled")
 
     def _remember_cancelled_assistant_item(self, item_id: str) -> None:
         self.cancelled_assistant_item_ids[item_id] = None
         if len(self.cancelled_assistant_item_ids) > _MAX_CANCELLED_ASSISTANT_ITEM_IDS:
             oldest_item_id = next(iter(self.cancelled_assistant_item_ids))
             del self.cancelled_assistant_item_ids[oldest_item_id]
-
-    async def handle_conversation_item_truncate(
-        self, event: ConversationItemTruncate
-    ) -> None:
-        if event.content_index != 0:
-            await self.send_error(
-                "invalid_request_error",
-                "invalid_content_index",
-                "content_index must be 0.",
-            )
-            return
-
-        if event.item_id in self.pending_assistant_item_ids:
-            self.truncated_assistant_item_ids.add(event.item_id)
-        elif event.item_id not in self.cancelled_assistant_item_ids:
-            item_index = next(
-                (
-                    index
-                    for index, item in enumerate(self.conversation)
-                    if item.item_id == event.item_id and item.role == "assistant"
-                ),
-                None,
-            )
-            if item_index is None:
-                await self.send_error(
-                    "invalid_request_error",
-                    "item_not_found",
-                    f"Assistant item {event.item_id!r} was not found.",
-                )
-                return
-            del self.conversation[item_index]
-
-        await self.send(
-            make_event(
-                "conversation.item.truncated",
-                item_id=event.item_id,
-                content_index=event.content_index,
-                audio_end_ms=event.audio_end_ms,
-            )
-        )
 
     async def cancel_active_response(self, reason: str) -> None:
         async with self.response_state_lock:
@@ -562,18 +522,40 @@ class RealtimeSession:
 
     async def drain_queue(self) -> None:
         while not self.closed:
-            item_id, payload = await self.response_queue.get()
+            entry = await self.response_queue.get()
+            item_id, payload = entry[:2]
             await self.speech_idle.wait()
             if self.closed:
                 break
             self.response_start_pending = True
             try:
-                self.active_task = asyncio.create_task(self.run_turn(item_id, payload))
-                await asyncio.gather(self.active_task, return_exceptions=True)
+
+                def create():
+                    if self.prepare_turn_context is not None:
+                        self.prepare_turn_context()
+                    return asyncio.create_task(self.run_turn(item_id, payload))
+
+                self.queue_idle.clear()
+                self.active_task = entry[2].run(create) if len(entry) == 3 else create()
+                results = await asyncio.gather(self.active_task, return_exceptions=True)
+                if self.capture_turn_context and isinstance(results[0], Exception):
+                    exc = results[0]
+                    code = (
+                        exc.code
+                        if isinstance(exc, (TurnConfigurationError, ContextLimitError))
+                        else "internal"
+                    )
+                    await self.emit_output(TurnFailure("server_error", code, str(exc)))
             finally:
+                self.queued_audio_bytes -= len(payload)
                 self.active_task = None
                 self.response_start_pending = False
                 self.pending_response_cancel_reason = None
+                if self.response_queue.empty():
+                    self.queue_idle.set()
+        # Note (Junnan Li): The loop also exits on close before any entry runs; a
+        # unit waiting for the drain must not block on a queue nobody drains.
+        self.queue_idle.set()
 
     async def run_turn(self, item_id: str, audio_payload: str) -> None:
         """Pass 1: response (user-facing, streams fast).
@@ -597,8 +579,9 @@ class RealtimeSession:
             await asyncio.shield(abort_task)
         try:
             transcript = await self.run_transcription(item_id, audio_payload)
+            retained = []
             if transcript:
-                self.conversation.append(
+                retained.append(
                     ConversationItem(role="user", text=transcript, item_id=item_id)
                 )
             if (
@@ -606,13 +589,15 @@ class RealtimeSession:
                 and response_output.text
                 and response_output.item_id not in self.truncated_assistant_item_ids
             ):
-                self.conversation.append(
+                retained.append(
                     ConversationItem(
                         role="assistant",
                         text=response_output.text,
                         item_id=response_output.item_id,
                     )
                 )
+            self._check_history_budget(retained)
+            self.conversation.extend(retained)
         finally:
             if response_output is not None:
                 self.pending_assistant_item_ids.discard(response_output.item_id)
@@ -651,27 +636,12 @@ class RealtimeSession:
             if response_done:
                 return
             if not text_done:
-                await self.send(
-                    make_event(
-                        "response.text.done",
-                        response_id=response_id,
-                        item_id=resp_item_id,
-                        output_index=0,
-                        content_index=0,
-                        text=response_text,
-                    )
+                await self.emit_output(
+                    TextFinished(response_id, resp_item_id, response_text)
                 )
                 text_done = True
             if include_audio and saw_audio and not audio_done:
-                await self.send(
-                    make_event(
-                        "response.audio.done",
-                        response_id=response_id,
-                        item_id=resp_item_id,
-                        output_index=0,
-                        content_index=1,
-                    )
-                )
+                await self.emit_output(AudioFinished(response_id, resp_item_id))
                 audio_done = True
             if error is not None:
                 await self.send_error(*error)
@@ -703,17 +673,7 @@ class RealtimeSession:
                 return cancelled
 
         try:
-            await self.send(
-                make_event(
-                    "response.created",
-                    response={
-                        "id": response_id,
-                        "object": "realtime.response",
-                        "status": "in_progress",
-                        "output": [],
-                    },
-                )
-            )
+            await self.emit_output(ResponseStarted(response_id))
 
             async with self.response_state_lock:
                 self.response_start_pending = False
@@ -741,28 +701,22 @@ class RealtimeSession:
                     continue
 
                 if chunk.text and (chunk.modality == "text" or not text_acc):
+                    if (
+                        self.max_text_chars is not None
+                        and sum(map(len, text_acc)) + len(chunk.text)
+                        > self.max_text_chars
+                    ):
+                        raise ContextLimitError("turn text context limit")
                     text_acc.append(chunk.text)
-                    await self.send(
-                        make_event(
-                            "response.text.delta",
-                            response_id=response_id,
-                            item_id=resp_item_id,
-                            output_index=0,
-                            content_index=0,
-                            delta=chunk.text,
-                        )
+                    await self.emit_output(
+                        TextDelta(response_id, resp_item_id, chunk.text)
                     )
 
                 if wants_audio and chunk.modality == "audio" and chunk.audio_b64:
                     saw_audio = True
-                    await self.send(
-                        make_event(
-                            "response.audio.delta",
-                            response_id=response_id,
-                            item_id=resp_item_id,
-                            output_index=0,
-                            content_index=1,
-                            delta=chunk.audio_b64,
+                    await self.emit_output(
+                        AudioDelta(
+                            response_id, resp_item_id, base64.b64decode(chunk.audio_b64)
                         )
                     )
 
@@ -777,15 +731,8 @@ class RealtimeSession:
                     and chunk.finish_reason is not None
                     and not text_done
                 ):
-                    await self.send(
-                        make_event(
-                            "response.text.done",
-                            response_id=response_id,
-                            item_id=resp_item_id,
-                            output_index=0,
-                            content_index=0,
-                            text="".join(text_acc),
-                        )
+                    await self.emit_output(
+                        TextFinished(response_id, resp_item_id, "".join(text_acc))
                     )
                     text_done = True
                 elif (
@@ -795,15 +742,7 @@ class RealtimeSession:
                     and saw_audio
                     and not audio_done
                 ):
-                    await self.send(
-                        make_event(
-                            "response.audio.done",
-                            response_id=response_id,
-                            item_id=resp_item_id,
-                            output_index=0,
-                            content_index=1,
-                        )
-                    )
+                    await self.emit_output(AudioFinished(response_id, resp_item_id))
                     audio_done = True
 
             response_text = "".join(text_acc)
@@ -850,6 +789,9 @@ class RealtimeSession:
                 )
             raise
         except Exception as exc:
+            if self.strict_cleanup and isinstance(exc, ContextLimitError):
+                await self.send_error("server_error", exc.code, str(exc))
+                raise
             response_text = "".join(text_acc)
             cancelled = await claim_terminal()
             if not cancelled:
@@ -907,28 +849,15 @@ class RealtimeSession:
         reason: str,
         usage: dict[str, Any] | None,
     ) -> None:
-        content: list[dict[str, Any]] = [{"type": "text", "text": response_text}]
-        if include_audio:
-            content.append({"type": "audio", "transcript": response_text})
-        await self.send(
-            make_event(
-                "response.done",
-                response={
-                    "id": response_id,
-                    "object": "realtime.response",
-                    "status": status,
-                    "status_details": {"reason": reason},
-                    "output": [
-                        {
-                            "id": item_id,
-                            "object": "realtime.item",
-                            "type": "message",
-                            "role": "assistant",
-                            "content": content,
-                        }
-                    ],
-                    "usage": usage,
-                },
+        await self.emit_output(
+            ResponseFinished(
+                response_id,
+                item_id,
+                response_text,
+                include_audio,
+                status,
+                reason,
+                usage,
             )
         )
 
@@ -942,28 +871,28 @@ class RealtimeSession:
                 request_id=request_id,
             ):
                 if chunk.modality == "text" and chunk.text:
+                    if (
+                        self.max_text_chars is not None
+                        and sum(map(len, text_acc)) + len(chunk.text)
+                        > self.max_text_chars
+                    ):
+                        raise ContextLimitError("turn text context limit")
                     text_acc.append(chunk.text)
-                    await self.send(
-                        make_event(
-                            "conversation.item.input_audio_transcription.delta",
-                            item_id=item_id,
-                            content_index=0,
-                            delta=chunk.text,
-                        )
-                    )
+                    await self.emit_output(TranscriptionDelta(item_id, chunk.text))
                 if chunk.finish_reason is not None:
                     break
 
             transcript = "".join(text_acc)
-            await self.send(
-                make_event(
-                    "conversation.item.input_audio_transcription.completed",
-                    item_id=item_id,
-                    content_index=0,
-                    transcript=transcript,
-                )
-            )
+            await self.emit_output(TranscriptionFinished(item_id, transcript))
             return transcript
+        except Exception as exc:
+            code = (
+                exc.code
+                if isinstance(exc, (TurnConfigurationError, ContextLimitError))
+                else "transcription_failed"
+            )
+            await self.emit_output(TranscriptionFailure(item_id, code, str(exc)))
+            raise
         finally:
             self.active_request_id = None
 
@@ -975,6 +904,16 @@ class RealtimeSession:
             max_new_tokens=max_tokens if isinstance(max_tokens, int) else None,
         )
 
+    def _check_history_budget(
+        self, additional: list[ConversationItem] | None = None
+    ) -> None:
+        if self.max_text_chars is None:
+            return
+        total = sum(len(item.text) for item in self.conversation)
+        total += sum(len(item.text) for item in additional or ())
+        if total > self.max_text_chars:
+            raise ContextLimitError("turn history context limit")
+
     def build_response_request(self, audio_payload: str) -> GenerateRequest:
         """Response pass: session instructions + conversation history + current audio.
 
@@ -983,6 +922,9 @@ class RealtimeSession:
         once any prior conversation exists, falling back to greeting on every
         turn.
         """
+        # Note (Junnan Li): Queued turns arrive after earlier turns changed history;
+        # input admission cannot cover this request.
+        self._check_history_budget()
         messages: list[Message] = [
             Message(
                 role="system",
@@ -1020,21 +962,18 @@ class RealtimeSession:
             metadata={"audios": [audio_payload]},
         )
 
-    async def send(self, event: dict[str, Any]) -> None:
-        if self.closed:
-            return
-        if self.websocket.application_state != WebSocketState.CONNECTED:
-            return
-        event.setdefault("event_id", new_id("evt"))
-        await self.websocket.send_text(json.dumps(event))
+    async def append_audio(self, pcm: bytes) -> None:
+        self.audio_buffer.append_bytes(pcm)
+        if self.vad is not None:
+            for event in await asyncio.to_thread(self.vad.process, pcm):
+                await self.handle_vad_emit(event)
+
+    async def emit_output(self, event: OutputEvent) -> None:
+        if not self.closed:
+            await self.emit(event)
 
     async def send_error(self, type_: str, code: str, message: str) -> None:
-        await self.send(
-            make_event(
-                "error",
-                error={"type": type_, "code": code, "message": message},
-            )
-        )
+        await self.emit_output(TurnFailure(type_, code, message))
 
     async def _cancel_and_abort(
         self, task: asyncio.Task | None, request_id: str | None
@@ -1052,6 +991,8 @@ class RealtimeSession:
             if request_id is not None:
                 await self.client.abort(request_id)
         except Exception as exc:
+            if self.strict_cleanup:
+                raise
             asyncio.get_running_loop().call_exception_handler(
                 {
                     "message": "Realtime response abort failed",
@@ -1064,11 +1005,139 @@ class RealtimeSession:
 
     async def teardown(self) -> None:
         self.closed = True
+        self.queue_idle.set()
         self.turn_cancel_requested = True
         abort_task = self.active_response_abort_task
         await self._cancel_and_abort(self.active_task, self.active_request_id)
         if abort_task is not None:
             await asyncio.gather(abort_task, return_exceptions=True)
         await self._cancel_and_abort(self.queue_drainer, None)
+
+
+class RealtimeSession(TurnBasedSession):
+
+    def __init__(self, websocket: WebSocket, **kwargs: Any) -> None:
+        self.websocket = websocket
+        super().__init__(emit=self.emit_output, **kwargs)
+
+    async def emit_output(self, event: OutputEvent) -> None:
+        await self.send(project_output(event, legacy=True))
+
+    async def send(self, event: Any) -> None:
+        if not isinstance(event, dict):
+            await self.emit_output(event)
+            return
+        if self.closed or self.websocket.application_state != WebSocketState.CONNECTED:
+            return
+        event.setdefault("event_id", new_id("evt"))
+        await self.websocket.send_text(json.dumps(event))
+
+    async def teardown(self) -> None:
+        await super().teardown()
         if self.websocket.client_state == WebSocketState.CONNECTED:
             await self.websocket.close()
+
+    async def run(self) -> None:
+        await self.send(
+            make_event(
+                "session.created",
+                session=self.session_object.model_dump(exclude_none=True),
+            )
+        )
+
+        while not self.closed:
+            message = await self.websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            if message["type"] != "websocket.receive":
+                continue
+            raw = message["text"]
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError("Top-level payload must be a JSON object")
+            await self.dispatch(payload)
+
+    async def dispatch(self, payload: dict[str, Any]) -> None:
+        event = parse_conversation_client_event(payload)
+        if event is None:
+            raise ValueError(f"Unsupported event type: {payload.get('type')!r}")
+        await HANDLERS[type(event)](self, event)
+
+    async def handle_session_update(self, event: SessionUpdate) -> None:
+        try:
+            candidate, replacement = await self.prepare_update(event.session)
+        except TurnConfigurationError as exc:
+            await self.send_error(exc.type, exc.code, str(exc))
+            return
+        if self.apply_update(candidate, replacement):
+            await self.send(make_event("input_audio_buffer.cleared"))
+        await self.send(
+            make_event(
+                "session.updated",
+                session=self.session_object.model_dump(exclude_none=True),
+            )
+        )
+
+    async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
+        decoded_len = self.audio_buffer.append_b64(event.audio)
+        new_bytes = self.audio_buffer.tail(decoded_len)
+        emits = await asyncio.to_thread(self.vad.process, new_bytes)
+        for emit in emits:
+            await self.handle_vad_emit(emit)
+
+    async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
+        self.drop_buffer_and_reset_vad()
+        self.speech_idle.set()
+        await self.send(make_event("input_audio_buffer.cleared"))
+
+    async def handle_response_cancel(self, event: ResponseCancel) -> None:
+        await self.cancel_active_response("client_cancelled")
+
+    async def handle_conversation_item_truncate(
+        self, event: ConversationItemTruncate
+    ) -> None:
+        if event.content_index != 0:
+            await self.send_error(
+                "invalid_request_error",
+                "invalid_content_index",
+                "content_index must be 0.",
+            )
+            return
+
+        if event.item_id in self.pending_assistant_item_ids:
+            self.truncated_assistant_item_ids.add(event.item_id)
+        elif event.item_id not in self.cancelled_assistant_item_ids:
+            item_index = next(
+                (
+                    index
+                    for index, item in enumerate(self.conversation)
+                    if item.item_id == event.item_id and item.role == "assistant"
+                ),
+                None,
+            )
+            if item_index is None:
+                await self.send_error(
+                    "invalid_request_error",
+                    "item_not_found",
+                    f"Assistant item {event.item_id!r} was not found.",
+                )
+                return
+            del self.conversation[item_index]
+
+        await self.send(
+            make_event(
+                "conversation.item.truncated",
+                item_id=event.item_id,
+                content_index=event.content_index,
+                audio_end_ms=event.audio_end_ms,
+            )
+        )
+
+
+HANDLERS: dict[type, Callable[..., Awaitable[None]]] = {
+    SessionUpdate: RealtimeSession.handle_session_update,
+    InputAudioBufferAppend: RealtimeSession.handle_audio_append,
+    InputAudioBufferClear: RealtimeSession.handle_audio_clear,
+    ResponseCancel: RealtimeSession.handle_response_cancel,
+    ConversationItemTruncate: RealtimeSession.handle_conversation_item_truncate,
+}
