@@ -172,6 +172,17 @@ struct WorkerClientTests {
         model.setKeepModelLoaded(false)
         #expect(!model.worker.isRunning)
         model.setKeepModelLoaded(true)
+        let cancelledPreload = try #require(model.preloadTask)
+        model.setKeepModelLoaded(false)
+        model.setKeepModelLoaded(true)
+        let replacementPreload = try #require(model.preloadTask)
+        do {
+            _ = try await cancelledPreload.value
+            Issue.record("Disabling retention must cancel its pending preload")
+        } catch { #expect(error is CancellationError) }
+        #expect(model.isPreloading, "A cancelled preload must not clear its replacement")
+        _ = try await replacementPreload.value
+        #expect(model.worker.isRunning && model.error.isEmpty)
         model.setKeepModelLoaded(false)
         await Task.yield()
         #expect(!model.isPreloading && !model.worker.isRunning)

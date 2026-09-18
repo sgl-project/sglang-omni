@@ -11,29 +11,26 @@ extension AppModel {
 
     func prepareModels() {
         guard phase == .idle, preloadTask == nil else { return }
-        isPreloading = true
         error = ""; notice = ""
         let preferences = store.preferences
-        let token = UUID(); preloadGeneration = token
         preloadTask = Task {
             defer {
-                if preloadGeneration == token { preloadTask = nil; isPreloading = false }
+                if !Task.isCancelled { preloadTask = nil }
             }
             do {
                 let response = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel],
                                                         python: preferences.pythonExecutable)
-                if preloadGeneration == token && phase == .idle { notice = L("notice.modelReady") }
+                if !Task.isCancelled && phase == .idle { notice = L("notice.modelReady") }
                 return response
             } catch {
-                if preloadGeneration == token && phase == .idle { self.error = error.localizedDescription }
+                if !Task.isCancelled && phase == .idle { self.error = error.localizedDescription }
                 throw error
             }
         }
     }
 
     func stopModelWorker() {
-        preloadGeneration = UUID()
-        preloadTask?.cancel(); preloadTask = nil; isPreloading = false
+        preloadTask?.cancel(); preloadTask = nil
         worker.stop()
     }
 

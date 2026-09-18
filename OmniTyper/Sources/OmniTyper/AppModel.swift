@@ -33,9 +33,8 @@ final class AppModel: ObservableObject {
     var hideVoicePanel: (() -> Void)?
     private var target: InsertionTarget?
     var task: Task<Void, Never>?
-    var preloadTask: Task<[String: Any], Error>?
-    var preloadGeneration = UUID()
-    @Published var isPreloading = false
+    @Published var preloadTask: Task<[String: Any], Error>?
+    var isPreloading: Bool { preloadTask != nil }
     private var capturingShortcut = false
     private var isShutDown = false
     private var speechStream: ASRStream?
@@ -277,6 +276,7 @@ final class AppModel: ObservableObject {
         task = Task {
             do {
                 if let preloadTask { _ = try await preloadTask.value }
+                try Task.checkCancellation()
                 var payload = try request.get()
                 var streamingWarning = ""
                 if let stream = speechStream {
