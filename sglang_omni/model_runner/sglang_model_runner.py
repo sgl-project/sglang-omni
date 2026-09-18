@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
+import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
@@ -17,6 +18,7 @@ from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -345,10 +347,6 @@ class SGLModelRunner(ModelRunner):
 
     def forward(self, *args, **kwargs):
         """Keep MUSA graph-buffer writes in the same mode as graph capture."""
-        import torch
-
-        from sglang_omni.platforms import current_platform
-
         if current_platform.device_type == "musa":
             with torch.inference_mode():
                 return super().forward(*args, **kwargs)
@@ -482,13 +480,9 @@ class SGLModelRunner(ModelRunner):
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         _install_prefill_runner_dispatch()
 
-        import torch
-
-        from sglang_omni.platforms import current_platform
-
-        # MUSA capture_begin rejects inplace updates to inference tensors when
-        # the caller enters graph capture under no_grad. Keep CUDA unchanged;
-        # the MUSA bridge requires capture and warmup to share inference mode.
+        # note (yingzhou): MUSA capture_begin rejects inplace updates to
+        # inference tensors when capture starts under no_grad. CUDA stays on
+        # the original path; MUSA capture and warmup share inference mode.
         capture_mode = (
             torch.inference_mode()
             if current_platform.device_type == "musa"

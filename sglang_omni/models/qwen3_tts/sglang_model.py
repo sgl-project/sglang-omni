@@ -1379,7 +1379,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return captured
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _capture_predictor_graph(
         self,
         bucket_size: int,
@@ -1393,6 +1393,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         device = self._predictor_device
         module = self._predictor_device_module
         backend = current_platform.get_device_graph_backend(device)
+        # note (yingzhou): CUDA stays on the original no-grad path. MUSA graph
+        # capture rejects inplace updates to inference tensors from warmup.
         capture_mode = (
             torch.inference_mode() if device.type == "musa" else nullcontext()
         )
