@@ -27,6 +27,11 @@ struct WindowDraggingTests {
             let intercepted = panel.windowDrag.handle(try event(.leftMouseDown, at: point), in: panel)
             #expect(!intercepted, "Stop, Cancel, and transcript content must not drag the window")
         }
+        for point in [NSPoint(x: 30, y: 185), NSPoint(x: 230, y: 185), NSPoint(x: 430, y: 185)] {
+            let started = panel.windowDrag.handle(try event(.leftMouseDown, at: point), in: panel)
+            let ended = panel.windowDrag.handle(try event(.leftMouseUp, at: point), in: panel)
+            #expect(started && ended, "The top inset must drag across the full popup header")
+        }
         let origin = panel.frame.origin
         let started = panel.windowDrag.handle(try event(.leftMouseDown, at: NSPoint(x: 100, y: 153)), in: panel)
         let moved = panel.windowDrag.handle(try event(.leftMouseDragged, at: NSPoint(x: 140, y: 173)), in: panel)

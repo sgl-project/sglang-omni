@@ -55,10 +55,11 @@ Clicking **Start speaking** in OmniTyper's main window produces a result you can
 copy. Use the global shortcut from the destination app for automatic insertion.
 
 Drag the main window by its native title bar and the recording popup by its
-header. The popup remembers its position while the app runs and keeps keyboard
+header, including the top padding. The popup remembers its position while the app runs and keeps keyboard
 focus in the destination app. Settings toggles and disclosure rows also respond
 to clicks on their labels. Click unused space to dismiss the active text field.
 Notifications stay visible above the page while scrolling through Settings.
+Open Settings from the console or with **⌘,**; both use the same preferences.
 
 Closing the main window keeps OmniTyper in the menu bar. **Quit** exits the app
 and shuts down its model processes. To use **Open at login**, first place the app

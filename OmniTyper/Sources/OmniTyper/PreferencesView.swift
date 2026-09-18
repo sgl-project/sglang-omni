@@ -3,6 +3,31 @@ import AppKit
 import ServiceManagement
 import SwiftUI
 
+struct SettingsContent: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: AppStore
+
+    var body: some View {
+        ScrollView {
+            PreferencesView(model: model, store: store).padding(32)
+        }
+        .simultaneousGesture(TapGesture().onEnded {
+            guard let event = NSApp.currentEvent, let window = event.window,
+                  let editor = window.firstResponder as? NSTextView else { return }
+            let point = editor.convert(event.locationInWindow, from: nil)
+            if !editor.visibleRect.contains(point) { window.makeFirstResponder(nil) }
+        })
+        .overlay(alignment: .topTrailing) {
+            ConsoleNotifications(model: model, store: store).frame(maxWidth: 520).padding(16)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .tint(accent)
+        .toggleStyle(FullRowToggleStyle())
+        .disclosureGroupStyle(FullRowDisclosureStyle(language: store.preferences.uiLanguage))
+        .preferredColorScheme(store.preferences.appearance == "light" ? .light : store.preferences.appearance == "dark" ? .dark : nil)
+    }
+}
+
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: AppStore

@@ -53,7 +53,7 @@ struct RootView: View {
                     }.padding(32).frame(maxWidth: 940, alignment: .leading).frame(maxWidth: .infinity)
                 }
                 .overlay(alignment: .topTrailing) {
-                    notificationLayer.frame(maxWidth: 520).padding(16)
+                    ConsoleNotifications(model: model, store: store).frame(maxWidth: 520).padding(16)
                 }
             }
         }
@@ -106,8 +106,13 @@ struct RootView: View {
             }.padding(18)
         }.frame(width: 218).background(cardBackground.opacity(0.48))
     }
+}
 
-    private var notificationLayer: some View {
+struct ConsoleNotifications: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var store: AppStore
+
+    var body: some View {
         VStack(spacing: 10) {
             if !store.storageError.isEmpty {
                 message(store.storageError, error: true) { store.storageError = "" }
@@ -331,7 +336,9 @@ struct VoicePanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Text(model.phase == .recording ? model.liveStatus : L("panel.insertNote"))
                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-        }.padding(18).frame(width: 460, height: 190).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+        }.padding(18).frame(width: 460, height: 190)
+            .background(alignment: .top) { WindowDragArea().frame(height: 18) }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.2), lineWidth: 1).allowsHitTesting(false))
     }
 }

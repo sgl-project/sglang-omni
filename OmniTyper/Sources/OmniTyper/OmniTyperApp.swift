@@ -5,19 +5,20 @@ import SwiftUI
 @main
 struct OmniTyperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    var body: some Scene { Settings { EmptyView() } }
+    var body: some Scene {
+        Settings { SettingsContent(model: delegate.model, store: delegate.model.store).frame(width: 820, height: 680) }
+    }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
-    private var model: AppModel!
+    lazy var model = AppModel()
     private var window: NSWindow!
     private var panel: RecordingPanel!
     private var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        model = AppModel()
         let content = RootView(model: model, store: model.store)
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 750),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
