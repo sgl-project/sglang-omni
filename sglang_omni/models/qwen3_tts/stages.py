@@ -11,6 +11,10 @@ from collections.abc import Sequence
 from typing import Any
 
 import torch
+from sglang.srt.arg_groups.overrides import (
+    is_attention_backend_not_set,
+    register_model_override,
+)
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -141,6 +145,26 @@ def _register_qwen3_tts_hf_config() -> None:
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
     except ValueError:
         pass
+
+
+@register_model_override("Qwen3TTSForConditionalGeneration")
+def _qwen3_tts_overrides(server_args: Any, hf_config: Any) -> dict[str, Any]:
+    """Let the active platform pick Qwen3-TTS's attention backend."""
+    del hf_config
+    # The platform is detected from the host, not from --device.
+    if server_args.device != current_platform.device_type:
+        return {}
+    backend = current_platform.get_qwen3_tts_attention_backend()
+    if backend is None:
+        return {}
+    if not is_attention_backend_not_set(server_args):
+        return {}
+    logger.warning(
+        "Use %s as attention backend on %s for Qwen3-TTS model",
+        backend,
+        current_platform.device_type,
+    )
+    return {"attention_backend": backend}
 
 
 def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:

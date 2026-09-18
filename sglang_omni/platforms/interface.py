@@ -126,6 +126,10 @@ class OmniPlatform(DeviceMixin):
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
+    def get_qwen3_tts_attention_backend(self) -> str | None:
+        """SGLang attention backend for Qwen3-TTS, or None to keep its default."""
+        return None
+
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""
         return True
