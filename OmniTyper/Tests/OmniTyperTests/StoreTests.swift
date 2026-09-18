@@ -35,6 +35,31 @@ struct StoreTests {
         #expect(AppStore(directory: root).preferences.textSettings.model == "my-ollama-model")
     }
 
+    @Test func huggingFaceEndpointValidationKeepsOldLibrariesAndOfficialDefault() throws {
+        var old = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Preferences())) as? [String: Any])
+        old.removeValue(forKey: "hfEndpoint")
+        let restored = try JSONDecoder().decode(Preferences.self, from: JSONSerialization.data(withJSONObject: old))
+        #expect(restored.huggingFaceEndpoint.isEmpty)
+        #expect(try Preferences.validatedHuggingFaceEndpoint("  ") == "")
+        #expect(try Preferences.validatedHuggingFaceEndpoint(" https://hf-mirror.com ") == "https://hf-mirror.com")
+        for invalid in ["file:///tmp/mirror", "https://user:secret@hf-mirror.com",
+                        "https://hf-mirror.com?token=x", "https://hf-mirror.com#fragment",
+                        "https://hf mirror.com", "https://hf-mirror.com:99999"] {
+            #expect(throws: (any Error).self) { try Preferences.validatedHuggingFaceEndpoint(invalid) }
+        }
+    }
+
+    @Test @MainActor func prepareModelsRejectsAnInvalidEndpointBeforeStarting() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(store: AppStore(directory: directory))
+        defer { model.shutdown() }
+        model.store.preferences.hfEndpoint = "file:///tmp/mirror"
+        model.prepareModels()
+        #expect(!model.error.isEmpty)
+        #expect(!model.isBusy)
+    }
+
     /// A failed insertion happens in another app, so its notice lands in a window
     /// the user is not looking at. History has to carry the reason instead.
     @Test @MainActor func insertionFailuresAreRecordedOnTheSavedEntry() throws {

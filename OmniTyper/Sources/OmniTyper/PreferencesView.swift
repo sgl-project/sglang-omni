@@ -57,6 +57,9 @@ struct PreferencesView: View {
                     Label(L("settings.localModel"), systemImage: "cpu").font(.headline)
                     Text("Qwen3-ASR · 0.6B · MLX 4-bit").font(.subheadline)
                     Text(L("settings.modelNote")).font(.caption).foregroundStyle(.secondary)
+                    TextField(L("settings.hfEndpoint"), text: $store.preferences.huggingFaceEndpoint)
+                        .textFieldStyle(.roundedBorder).accessibilityLabel(L("settings.hfEndpointLabel"))
+                    Text(L("settings.hfEndpointNote")).font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button(L("settings.prepareASR")) { model.prepareModels() }.buttonStyle(.borderedProminent).disabled(model.isBusy)
                         Button(L("settings.unloadASR")) { model.releaseModels() }.disabled(model.isBusy)

@@ -166,13 +166,13 @@ final class AppModel: ObservableObject {
         lastApp = target?.applicationName ?? "OmniTyper"
         do { _ = try payload(audio: nil) }
         catch { self.error = error.localizedDescription; showMainWindow?(); return }
+        let prepare = preparePayload(sessionPreferences)
         phase = .starting
         showVoicePanel?()
         let token = UUID(); generation = token
         task = Task { [self] in
             do {
-                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
-                                                        python: sessionPreferences.pythonExecutable)
+                let response = try await worker.request(prepare, python: sessionPreferences.pythonExecutable)
                 guard generation == token, !Task.isCancelled else { return }
                 do {
                     let stream = try ASRStream(url: response["realtime_url"] as? String ?? "", onPartial: { [weak self] text in
@@ -216,6 +216,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func preparePayload(_ preferences: Preferences) -> [String: Any] {
+        var request: [String: Any] = ["op": "prepare", "asr_model": preferences.asrModel]
+        // Note (Codex): A mistyped mirror blocks the explicit download action, not dictation.
+        if let endpoint = try? Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint),
+           !endpoint.isEmpty {
+            request["hf_endpoint"] = endpoint
+        }
+        return request
+    }
+
     private func payload(audio: URL?, text: String? = nil) throws -> [String: Any] {
         let preferences = sessionPreferences
         let rule = store.rules.first { $0.bundleID == target?.bundleID }
@@ -236,6 +246,10 @@ final class AppModel: ObservableObject {
             "dictionary": store.dictionary.map { ["spoken": $0.spoken, "written": $0.written] },
             "selected_text": selectedText, "app_name": lastApp
         ]
+        if let endpoint = try? Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint),
+           !endpoint.isEmpty {
+            request["hf_endpoint"] = endpoint
+        }
         if mode != .dictate || (rule?.style ?? preferences.style) != "verbatim" {
             request.merge(try preferences.textSettings.payload(apiKey: sessionAPIKey)) { _, new in new }
         }
@@ -353,12 +367,15 @@ final class AppModel: ObservableObject {
 
     func prepareModels() {
         guard phase == .idle else { return }
-        phase = .preparing; error = ""; notice = ""
         let preferences = store.preferences
+        do { _ = try Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint) }
+        catch { self.error = error.localizedDescription; return }
+        let request = preparePayload(preferences)
+        phase = .preparing; error = ""; notice = ""
         let token = UUID(); generation = token
         task = Task {
             do {
-                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
+                _ = try await worker.request(request, python: preferences.pythonExecutable)
                 guard generation == token else { return }
                 notice = L("notice.modelReady")
             } catch {

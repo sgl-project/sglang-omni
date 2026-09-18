@@ -44,6 +44,14 @@ class WorkerTests(unittest.TestCase):
             request(language=42),
             request(text="a" * 12001),
             request(asr_model="untrusted/model"),
+            request(hf_endpoint="file:///tmp/mirror"),
+            request(hf_endpoint="https://user:password@hf-mirror.com"),
+            request(hf_endpoint="https://hf-mirror.com?token=x"),
+            request(hf_endpoint="https://hf-mirror.com#fragment"),
+            request(hf_endpoint="https://hf mirror.com"),
+            request(hf_endpoint="https://hf-mirror.com:99999"),
+            request(hf_endpoint=42),
+            request(hf_endpoint="x" * 2049),
             request(text_model=123),
             request(text_api_options=[]),
             request(text_api_options={"model": "override"}),
@@ -66,6 +74,13 @@ class WorkerTests(unittest.TestCase):
         )
         self.assertEqual(normalized["language"], "Chinese")
         self.assertEqual(normalized["target_language"], "English")
+        self.assertEqual(worker.validate_request(request())["hf_endpoint"], "")
+        self.assertEqual(
+            worker.validate_request(request(hf_endpoint="https://hf-mirror.com/"))[
+                "hf_endpoint"
+            ],
+            "https://hf-mirror.com",
+        )
 
     def test_dictionary_is_literal_longest_first_and_non_cascading(self):
         entries = [
@@ -294,6 +309,42 @@ class WorkerTests(unittest.TestCase):
             instance.handle(request(text_model=""))["warning"],
         )
 
+    def test_prepare_passes_the_hugging_face_endpoint_to_the_server(self):
+        instance = worker.Worker()
+        instance.asr = Mock(url="http://127.0.0.1:12345")
+        instance.handle(
+            request(op="prepare", text_model="", hf_endpoint="https://hf-mirror.com")
+        )
+        self.assertEqual(
+            instance.asr.start.call_args.kwargs["endpoint"], "https://hf-mirror.com"
+        )
+        instance.asr.start.reset_mock()
+        instance.handle(request(op="prepare", text_model=""))
+        self.assertEqual(instance.asr.start.call_args.kwargs["endpoint"], "")
+
+    def test_model_download_failure_keeps_its_code_for_the_app(self):
+        instance = worker.Worker()
+        instance.asr.start = Mock(
+            side_effect=server.ModelDownloadError(
+                "Could not download mlx-community/Qwen3-ASR-0.6B-4bit from "
+                "https://hf-mirror.com: connection refused"
+            )
+        )
+        source = io.BytesIO(
+            json.dumps(
+                request(
+                    op="prepare", text_model="", hf_endpoint="https://hf-mirror.com"
+                )
+            ).encode()
+        )
+        output = io.StringIO()
+        with patch("sys.stderr", io.StringIO()):
+            worker.serve(source, output, instance)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "model.download")
+        self.assertIn("hf-mirror.com", result["error"])
+
     def test_protocol_recovers_after_invalid_json_and_oversized_line(self):
         data = b"not-json\n" + b"x" * (worker.MAX_LINE_BYTES + 20) + b"\n"
         data += json.dumps(request(style="verbatim")).encode() + b"\n"
@@ -476,6 +527,53 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(launch.call_args.kwargs["env"]["SGLANG_OMNI_ADMIN_KEY"])
         self.assertTrue(launch.call_args.kwargs["start_new_session"])
         self.assertEqual(instance.http.open.call_args.args[0], instance.url + "/health")
+
+    def test_native_server_applies_the_endpoint_to_download_and_child(self):
+        instance = server.NativeASRServer()
+        health = Mock()
+        health.__enter__ = Mock(return_value=types.SimpleNamespace(status=200))
+        health.__exit__ = Mock(return_value=False)
+        instance.http = Mock()
+        instance.http.open.return_value = health
+        process = Mock(pid=123456)
+        process.poll.return_value = None
+        with (
+            patch.dict(server.os.environ, {}, clear=False),
+            patch.object(server.subprocess, "Popen", return_value=process) as launch,
+            patch.object(
+                server, "model_snapshot", return_value="/cached/pinned-model"
+            ) as snapshot,
+        ):
+            instance.start(Mock(), endpoint="https://hf-mirror.com")
+        snapshot.assert_called_once_with(
+            server.DEFAULT_MODEL, server.MODEL_REVISION, "https://hf-mirror.com"
+        )
+        self.assertEqual(
+            launch.call_args.kwargs["env"]["HF_ENDPOINT"], "https://hf-mirror.com"
+        )
+        self.assertEqual(server.os.environ["HF_ENDPOINT"], "https://hf-mirror.com")
+
+    def test_model_snapshot_wraps_online_download_failure_with_the_endpoint(self):
+        def fake_download(
+            model,
+            revision=None,
+            local_files_only=False,
+            allow_patterns=None,
+            endpoint=None,
+        ):
+            if local_files_only:
+                return "/nonexistent/pinned"
+            self.assertEqual(endpoint, "https://hf-mirror.com")
+            raise OSError("connection refused")
+
+        with patch("huggingface_hub.snapshot_download", side_effect=fake_download):
+            with self.assertRaises(server.ModelDownloadError) as caught:
+                server.model_snapshot(
+                    server.DEFAULT_MODEL, server.MODEL_REVISION, "https://hf-mirror.com"
+                )
+        self.assertEqual(caught.exception.code, "model.download")
+        self.assertIn("https://hf-mirror.com", str(caught.exception))
+        self.assertIn("connection refused", str(caught.exception))
 
 
 if __name__ == "__main__":

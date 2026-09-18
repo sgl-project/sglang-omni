@@ -63,6 +63,12 @@ struct Preferences: Codable, Equatable {
         get { textAPI ?? TextAPISettings() }
         set { textAPI = newValue }
     }
+    // Note (Codex): Optional so libraries saved before the mirror setting still decode.
+    var hfEndpoint: String?
+    var huggingFaceEndpoint: String {
+        get { hfEndpoint ?? "" }
+        set { hfEndpoint = newValue }
+    }
     var language = ""
     var targetLanguage = "English"
     var style = "verbatim"
@@ -81,6 +87,21 @@ struct Preferences: Codable, Equatable {
     var uiLanguage: String?
     // Note (Jiaxin Deng): Remember prior grants to distinguish invalidated permissions from first use.
     var accessibilityWasTrusted: Bool?
+
+    static func validatedHuggingFaceEndpoint(_ value: String) throws -> String {
+        let endpoint = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if endpoint.isEmpty { return "" }
+        guard endpoint.unicodeScalars.count <= 2048,
+              !endpoint.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }),
+              let components = URLComponents(string: endpoint), ["http", "https"].contains(components.scheme ?? ""),
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.port == nil || (1...65535).contains(components.port!) else {
+            throw Failure("error.hfEndpoint")
+        }
+        return endpoint
+    }
 
     static func combinedInstructions(_ defaults: String, _ app: String) throws -> String {
         guard [defaults, app].allSatisfy({ $0.unicodeScalars.count <= 1000 && !$0.contains("\0") }) else {

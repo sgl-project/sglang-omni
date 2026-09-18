@@ -13,6 +13,7 @@ import signal
 import stat
 import sys
 import time
+import urllib.parse
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -34,7 +35,7 @@ if BACKEND_DIRECTORY not in sys.path:
     sys.path.insert(0, BACKEND_DIRECTORY)
 
 import text_api
-from server import DEFAULT_MODEL, NativeASRServer
+from server import DEFAULT_MODEL, ModelDownloadError, NativeASRServer
 
 import sglang_omni
 
@@ -55,6 +56,7 @@ FIELDS = {
     "op",
     "audio_path",
     "asr_model",
+    "hf_endpoint",
     "text_model",
     "text_api_url",
     "text_api_key",
@@ -84,6 +86,7 @@ def validate_request(value: object) -> dict[str, Any]:
         "op": 16,
         "audio_path": 4096,
         "asr_model": 256,
+        "hf_endpoint": 2048,
         "text_model": 256,
         "text_api_url": 2048,
         "text_api_key": 4096,
@@ -108,6 +111,7 @@ def validate_request(value: object) -> dict[str, Any]:
         raise ValueError("op must be prepare, transcribe, process, or models.")
     defaults = {
         "asr_model": DEFAULT_MODEL,
+        "hf_endpoint": "",
         "text_model": "",
         "text_api_url": DEFAULT_TEXT_API,
         "text_api_key": "",
@@ -122,6 +126,28 @@ def validate_request(value: object) -> dict[str, Any]:
     }
     for field, default in defaults.items():
         request.setdefault(field, default)
+    endpoint = request["hf_endpoint"]
+    if endpoint:
+        if any(character.isspace() or ord(character) < 32 for character in endpoint):
+            raise ValueError("hf_endpoint must be an HTTP(S) URL without spaces.")
+        parsed = urllib.parse.urlsplit(endpoint)
+        try:
+            # Note (Codex): urlsplit validates the port only when the attribute is read.
+            parsed.port
+        except ValueError as exc:
+            raise ValueError("hf_endpoint has an invalid port.") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "hf_endpoint must be an HTTP(S) URL without credentials, query, or fragment."
+            )
+        request["hf_endpoint"] = endpoint.rstrip("/")
     if request["asr_model"] != DEFAULT_MODEL:
         raise ValueError(f"Supported ASR model: {DEFAULT_MODEL}.")
     options = request.setdefault("text_api_options", {})
@@ -219,12 +245,14 @@ def apply_dictionary(text: str, dictionary: list[dict[str, str]]) -> str:
 class Worker:
     def __init__(self) -> None:
         self.asr = NativeASRServer()
+        self.endpoint = ""
 
     def handle(
         self, value: object, progress: Callable[[str], None] = lambda message: None
     ) -> dict[str, Any]:
         started = time.monotonic()
         request = validate_request(value)
+        self.endpoint = request["hf_endpoint"]
         if request["op"] == "models":
             progress("Connecting to the text API…")
             response = text_api.api_request(request, "/models")
@@ -243,7 +271,7 @@ class Worker:
             )[:200]
             return {"id": request["id"], "ok": True, "models": models}
         if request["op"] == "prepare":
-            self.asr.start(progress)
+            self.asr.start(progress, endpoint=self.endpoint)
             return {
                 "id": request["id"],
                 "ok": True,
@@ -256,7 +284,7 @@ class Worker:
             if is_silent(samples):
                 raw = ""
             else:
-                self.asr.start(progress)
+                self.asr.start(progress, endpoint=self.endpoint)
                 progress("Transcribing locally…")
                 raw = self.asr.transcribe(
                     samples,
@@ -330,7 +358,10 @@ def serve(source: BinaryIO, output: TextIO, worker: Worker) -> None:
             emit(result)
         except Exception as exc:
             logger.warning("Worker request failed: %s", type(exc).__name__)
-            emit({"id": request_id, "ok": False, "error": str(exc)[:2000]})
+            error = {"id": request_id, "ok": False, "error": str(exc)[:2000]}
+            if isinstance(exc, ModelDownloadError):
+                error["code"] = exc.code
+            emit(error)
 
 
 def main() -> None:

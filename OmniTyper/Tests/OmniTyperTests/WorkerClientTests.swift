@@ -78,6 +78,10 @@ struct WorkerClientTests {
             if op == 'failure':
                 print(json.dumps(dict(id=request['id'], ok=False, error='Model unavailable')), flush=True)
                 continue
+            if op == 'download_failure':
+                print(json.dumps(dict(id=request['id'], ok=False, code='model.download',
+                                      error='Could not download mlx-community/Qwen3-ASR-0.6B-4bit from https://hf-mirror.com: connection refused')), flush=True)
+                continue
             os.write(2, b'PRIVATE_TRANSCRIPT_DO_NOT_LOG\n')
             progress = json.dumps(dict(id=request['id'], event='progress', message='loading')).encode() + b'\n'
             final = json.dumps(dict(id=request['id'], ok=True, text='你好 café',
@@ -117,6 +121,18 @@ struct WorkerClientTests {
             Issue.record("Worker error responses must fail the request")
         } catch { #expect(error.localizedDescription == "Model unavailable") }
         #expect(client.isRunning, "An ordinary model failure keeps the protocol usable")
+        _ = try await client.request(["op": "echo"], python: python)
+
+        do {
+            _ = try await client.request(["op": "download_failure"], python: python)
+            Issue.record("A coded download failure must fail the request")
+        } catch {
+            #expect(error.localizedDescription.contains("huggingface.co"),
+                    "A blocked download must point at the mirror setting")
+            #expect(error.localizedDescription.contains("hf-mirror.com"),
+                    "The endpoint that failed must stay in the message")
+        }
+        #expect(client.isRunning, "A failed download keeps the protocol usable")
         _ = try await client.request(["op": "echo"], python: python)
 
         for operation in ["invalid", "oversized", "crash"] {

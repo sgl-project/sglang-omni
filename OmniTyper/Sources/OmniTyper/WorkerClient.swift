@@ -214,10 +214,12 @@ final class WorkerClient: ObservableObject {
                     statusText = L("worker.ready"); showingReady = true
                     finish(.success(message))
                 } else {
-                    let description = message["error"] as? String ?? L("worker.failed")
+                    let description = String((message["error"] as? String ?? L("worker.failed")).prefix(2_000))
+                    // Note (Codex): A blocked download needs the mirror setting, not just the transport error.
+                    let text = message["code"] as? String == "model.download"
+                        ? L("error.modelDownload", description) : description
                     statusText = L("worker.processFailed"); showingReady = false
-                    finish(.failure(WorkerFailure(message: String(description.prefix(2_000)),
-                                                  rawText: message["raw_text"] as? String)))
+                    finish(.failure(WorkerFailure(message: text, rawText: message["raw_text"] as? String)))
                 }
             } else {
                 failAndStop(Failure("worker.incomplete"))
