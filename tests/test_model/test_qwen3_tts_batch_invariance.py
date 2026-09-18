@@ -280,7 +280,7 @@ def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
     """Match batch-one and batch-eight on the checkpoints that graph prefill.
 
     CustomVoice rejects ref_audio, so the Base tests above cannot cover it, yet
-    it is the family that takes the breakable prefill graph by default. Padded
+    it is the family that takes the full prefill graph by default. Padded
     graph buckets are the failure mode this guards: a bucket that changes the
     numerics shows up as a batch-one/batch-eight mismatch.
     """
@@ -304,7 +304,7 @@ def test_qwen3_tts_custom_voice_deterministic_batch_invariance(
         # default that fails eligibility degrades to eager with a warning. Pin
         # that the graphs actually captured and replayed.
         info = _tts_engine_prefill_graph_info(server.base_url)
-        assert info["backend"] == "breakable", info
+        assert info["backend"] == "full", info
         assert info["replay_count"] > 0, info
 
     with _qwen3_tts_server(
