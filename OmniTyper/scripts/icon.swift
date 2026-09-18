@@ -13,8 +13,8 @@ for size in [16, 32, 128, 256, 512] {
         NSColor(calibratedRed: 0.13, green: 0.46, blue: 0.36, alpha: 1).setFill()
         NSBezierPath(roundedRect: NSRect(x: p * 0.07, y: p * 0.07, width: p * 0.86, height: p * 0.86), xRadius: p * 0.20, yRadius: p * 0.20).fill()
         NSColor.white.setFill()
-        for (index, height) in [0.20, 0.40, 0.57, 0.35, 0.18].enumerated() {
-            let rect = NSRect(x: p * (0.255 + Double(index) * 0.105), y: p * (1 - height) / 2, width: p * 0.068, height: p * height)
+        for (index, height) in [CGFloat(0.20), 0.40, 0.57, 0.35, 0.18].enumerated() {
+            let rect = NSRect(x: p * (0.255 + CGFloat(index) * 0.105), y: p * (1 - height) / 2, width: p * 0.068, height: p * height)
             NSBezierPath(roundedRect: rect, xRadius: p * 0.034, yRadius: p * 0.034).fill()
         }
         NSGraphicsContext.restoreGraphicsState()
