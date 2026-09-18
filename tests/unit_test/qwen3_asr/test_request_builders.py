@@ -528,6 +528,30 @@ def test_qwen3_asr_request_builder_preserves_sampling_mode(
     assert data.req.sampling_params.top_k == expected_top_k
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_repetition_penalty"),
+    [
+        ({}, 1.0),
+        ({"repetition_penalty": 1.2}, 1.2),
+    ],
+)
+def test_qwen3_asr_request_builder_preserves_repetition_penalty(
+    monkeypatch,
+    params: dict[str, float],
+    expected_repetition_penalty: float,
+) -> None:
+    request_builder = _budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-asr-repetition-penalty",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.req.sampling_params.repetition_penalty == expected_repetition_penalty
+
+
 def test_qwen3_asr_mlx_rejects_non_greedy_sampling(monkeypatch) -> None:
     feature_extractor = lambda *args, **kwargs: SimpleNamespace(
         input_features=torch.zeros((1, 128, 3000)),

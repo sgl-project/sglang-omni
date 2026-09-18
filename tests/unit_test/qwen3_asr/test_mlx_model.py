@@ -280,6 +280,7 @@ def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     runner.disable_radix_cache = True
     runner._acquire_cache = runner.model.make_cache
     req = SimpleNamespace(
+        sampling_params=SimpleNamespace(repetition_penalty=1.3),
         multimodal_inputs=SimpleNamespace(
             audio_token_id=10,
             mm_items=[
@@ -289,7 +290,7 @@ def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
                     pad_value=999,
                 )
             ],
-        )
+        ),
     )
     token_ids = [1, 999, 999, 999, 999, 2]
     pending = runner.prefill_start(
@@ -303,3 +304,48 @@ def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     assert pending.full_token_ids == ids[0].tolist()
     assert pending.req_id == "audio"
     assert pending.cache[0].offset == len(token_ids)
+    assert runner._qwen3_asr_prompt_lengths == {"audio": len(token_ids)}
+    assert runner._qwen3_asr_repetition_penalties == {"audio": 1.3}
+
+
+def test_qwen3_asr_mlx_applies_repetition_penalty_to_generated_tokens() -> None:
+    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner._qwen3_asr_prompt_lengths = {"req": 2}
+    runner._qwen3_asr_repetition_penalties = {"req": 2.0}
+    runner._req_token_ids = {"req": [4, 5, 1, 2]}
+    logits = mx.array([[8.0, 6.0, -3.0, 4.0, 2.0, 1.0]])
+
+    constrained = runner._apply_audio_decode_constraints(logits, ["req"])
+
+    assert constrained.tolist() == [[8.0, 3.0, -6.0, 4.0, 2.0, 1.0]]
+
+
+def test_qwen3_asr_mlx_penalizes_pending_chained_token() -> None:
+    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner._qwen3_asr_prompt_lengths = {"req": 1}
+    runner._qwen3_asr_repetition_penalties = {"req": 2.0}
+    runner._req_token_ids = {"req": [4, 1]}
+    logits = mx.array([[8.0, 6.0, 5.0]])
+
+    constrained = runner._apply_audio_decode_constraints(
+        logits,
+        ["req"],
+        pending_tokens=mx.array([2], dtype=mx.int32),
+    )
+
+    assert constrained.tolist() == [[8.0, 3.0, 2.5]]
+
+
+def test_qwen3_asr_mlx_penalty_changes_greedy_decode_selection() -> None:
+    runner = object.__new__(make_qwen3_asr_mlx_runner_class())
+    runner._qwen3_asr_prompt_lengths = {"req": 1}
+    runner._qwen3_asr_repetition_penalties = {"req": 2.0}
+    runner._req_token_ids = {"req": [4, 1]}
+    runner._req_caches = {"req": [object()]}
+    runner._decode_with_native_cache = lambda caches, inputs: mx.array(
+        [[1.0, 10.0, 9.0]]
+    )
+
+    pending = runner.decode_batch_start(["req"])
+
+    assert pending.lazy_tokens.item() == 2
