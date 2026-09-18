@@ -72,6 +72,9 @@ from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
 from sglang_omni.serve.openai_errors import (
+    http_status_from_error as _http_status_from_error,
+)
+from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
 from sglang_omni.serve.protocol import (
@@ -693,15 +696,17 @@ def _register_chat_completions(app: FastAPI) -> None:
 
         if req.stream:
             return _ClosableStreamingResponse(
-                _chat_stream(
-                    client,
-                    gen_req,
-                    request_id,
-                    response_id,
-                    created,
-                    model,
-                    req,
-                    audio_format,
+                _chat_stream_errors(
+                    _chat_stream(
+                        client,
+                        gen_req,
+                        request_id,
+                        response_id,
+                        created,
+                        model,
+                        req,
+                        audio_format,
+                    )
                 ),
                 media_type="text/event-stream",
             )
@@ -787,6 +792,27 @@ async def _chat_non_stream(
     )
 
     return JSONResponse(content=response.model_dump())
+
+
+async def _chat_stream_errors(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Report errors after streaming headers while closing the owned iterator."""
+    async with aclosing(stream):
+        try:
+            async for frame in stream:
+                yield frame
+        except Exception as exc:
+            status = _http_status_from_error(exc)
+            if status >= 500:
+                logger.exception("Error generating chat stream")
+            error = {
+                "error": {
+                    "message": str(exc),
+                    "type": "invalid_request_error" if status < 500 else "server_error",
+                    "code": status,
+                }
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+            yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 async def _chat_stream(
@@ -997,7 +1023,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         _explicit_generation_params(req),
     )
 
-    extra_params: dict[str, Any] = {}
+    extra_params: dict[str, Any] = dict(req.model_extra or {})
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1204,7 +1230,9 @@ def _build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text, audio=audio, media=result.media, meta_info=meta_info
+    )
 
 
 def _register_realtime(app: FastAPI) -> None:
