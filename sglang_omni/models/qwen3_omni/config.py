@@ -191,6 +191,8 @@ def _decode_stage(*, process: str) -> StageConfig:
 
 
 def _talker_stage_env() -> dict[str, str]:
+    # Note (jeffro): FlashInfer CUTLASS fused finalize uses BF16 atomic-add;
+    # accumulation order is not fixed and can flip Talker codec tokens.
     env = {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}
     if current_platform.is_rocm():
         # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below

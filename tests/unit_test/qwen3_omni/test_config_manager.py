@@ -302,7 +302,7 @@ def test_qwen3_omni_talker_stage_env_defaults(
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """The Talker pins the order-fixed MoE finalize; ROCm also avoids aiter greedy."""
+    """Talker disables fused atomic MoE finalize; ROCm also disables aiter greedy."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (
