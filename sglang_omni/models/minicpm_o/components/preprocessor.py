@@ -119,6 +119,7 @@ class MiniCPMOPreprocessor:
         raw_images = None
         raw_audios = None
         raw_videos = None
+        use_audio_in_video = False
         video_params: dict[str, Any] = {}
         if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
             messages, raw_audios = self.speech_to_text_inputs(payload, inputs)
@@ -127,6 +128,7 @@ class MiniCPMOPreprocessor:
             raw_images = inputs.get("images")
             raw_audios = inputs.get("audio") or inputs.get("audios")
             raw_videos = inputs.get("videos") or inputs.get("video")
+            use_audio_in_video = bool(inputs.get("use_audio_in_video", False))
             video_params = {
                 key: inputs.get(key)
                 for key in (
@@ -148,6 +150,7 @@ class MiniCPMOPreprocessor:
                 raw_images=raw_images,
                 raw_audios=raw_audios,
                 raw_videos=raw_videos,
+                use_audio_in_video=use_audio_in_video,
                 video_params=video_params,
             )
 
@@ -242,6 +245,7 @@ class MiniCPMOPreprocessor:
         raw_images: Any,
         raw_audios: Any,
         raw_videos: Any,
+        use_audio_in_video: bool,
         video_params: dict[str, Any],
     ) -> StagePayload:
         video_kwargs = {
@@ -257,7 +261,7 @@ class MiniCPMOPreprocessor:
             videos, _, video_audios = await ensure_video_list_async(
                 raw_videos,
                 **video_kwargs,
-                extract_audio=True,
+                extract_audio=use_audio_in_video,
                 audio_target_sr=16000,
             )
         else:

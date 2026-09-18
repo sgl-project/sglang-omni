@@ -6,9 +6,10 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoConfig, PretrainedConfig
+from transformers import PretrainedConfig
 from transformers.activations import ACT2FN
 
+from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
     resolve_dtype,
@@ -205,7 +206,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
         model_dir = str(resolve_model_path(model_path))
-        config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+        config = MiniCPMOConfig.from_pretrained(model_dir)
         self.device = torch.device(device)
         self.dtype = torch_dtype
 
