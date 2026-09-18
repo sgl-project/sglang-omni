@@ -318,3 +318,23 @@
 "control.collapsed" = "已收起";
 "settings.keepModelLoaded" = "在后台保持语音模型加载";
 "settings.keepModelLoadedNote" = "启动应用时预加载，录音之间保留在内存中，下次可更快开始。关闭后会在空闲时释放，下次录音需重新加载。";
+
+"menu.about" = "关于 OmniTyper";
+"menu.services" = "服务";
+"menu.hide" = "隐藏 OmniTyper";
+"menu.hideOthers" = "隐藏其他";
+"menu.showAll" = "全部显示";
+"menu.edit" = "编辑";
+"menu.undo" = "撤销";
+"menu.redo" = "重做";
+"menu.cut" = "剪切";
+"menu.copy" = "拷贝";
+"menu.paste" = "粘贴";
+"menu.selectAll" = "全选";
+"menu.window" = "窗口";
+"menu.minimize" = "最小化";
+"menu.zoom" = "缩放";
+"menu.bringAllToFront" = "全部前置";
+"menu.view" = "显示";
+"menu.fullScreen" = "进入全屏幕";
+"menu.close" = "关闭";
