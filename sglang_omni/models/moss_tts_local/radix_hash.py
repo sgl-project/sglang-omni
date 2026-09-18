@@ -75,13 +75,21 @@ def gpu_radix_row_hash(
     end_id: int,
     *,
     hash_space: int = RADIX_HASH_SPACE,
+    hash_offset: int = 0,
 ) -> torch.Tensor:
     """Capture-safe radix token ids for a batch of generated frames.
 
     ``rows`` is ``[B, C]`` int64 (text channel + RVQ codes); ``next_text`` is
     ``[B]`` (the text-channel id, ``end_id`` for a stop frame). Continuing
-    frames get a key in ``[0, hash_space)``; EOS rows keep the raw ``end_id``
-    so the existing eos detection still fires. device/dtype follow ``rows``.
+    frames get a key in ``[hash_offset, hash_space)``; EOS rows keep the raw
+    ``end_id`` so the existing eos detection still fires. device/dtype follow
+    ``rows``.
     """
-    folded = torch.remainder(poly_row_hash(rows), hash_space)
+    if not 0 <= hash_offset < hash_space:
+        raise ValueError(
+            f"hash_offset must be in [0, hash_space), got "
+            f"hash_offset={hash_offset}, hash_space={hash_space}"
+        )
+    folded = torch.remainder(poly_row_hash(rows), hash_space - hash_offset)
+    folded = folded + hash_offset
     return torch.where(next_text == end_id, next_text.to(torch.int64), folded)
