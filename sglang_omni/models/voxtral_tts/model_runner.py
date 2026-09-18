@@ -92,6 +92,28 @@ class VoxtralTTSModelRunner(ModelRunner):
             req = data.req
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
+            # Replay the fused (all-codebook) embeds for already-generated frames
+            # on a retraction re-prefill. get_input_embeddings() above gave those
+            # positions a semantic-only embedding, silently dropping the acoustic
+            # codebooks that were fed during decode; overwrite them with the exact
+            # stored fused embeds so the re-prefill matches the original decode.
+            gen = data.generated_input_embeds
+            if gen:
+                prompt_len = int(len(data.input_ids)) if data.input_ids is not None else 0
+                local_lo = max(0, prompt_len - prefix_len)
+                if local_lo < req_len:
+                    emb_lo = max(0, prefix_len - prompt_len)
+                    emb_hi = prefix_len + req_len - prompt_len
+                    if not (0 <= emb_lo <= emb_hi <= len(gen)):
+                        raise RuntimeError(
+                            "voxtral re-prefill needs generated embeds "
+                            f"[{emb_lo}:{emb_hi}] of {len(gen)} "
+                            f"(prefix={prefix_len}, req_len={req_len}, prompt={prompt_len})"
+                        )
+                    stacked = torch.stack(gen[emb_lo:emb_hi], dim=0).to(
+                        device=input_embeds.device, dtype=input_embeds.dtype
+                    )
+                    input_embeds[offset + local_lo : offset + req_len] = stacked
             full_ids = data.input_ids
             current_ids = full_ids[prefix_len : prefix_len + req_len]
             audio_positions = (current_ids == int(data.audio_token_id)).nonzero(
@@ -156,7 +178,9 @@ class VoxtralTTSModelRunner(ModelRunner):
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == eos_id:
                 continue
+            fused = embeds[row_idx, 0].detach().clone()
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
-            sched_req.data.pending_feedback_queue.append(
-                embeds[row_idx, 0].detach().clone()
-            )
+            sched_req.data.pending_feedback_queue.append(fused)
+            # Persist the same fused embed so a retraction re-prefill can replay
+            # it (pending_feedback_queue is popped during decode and lost).
+            sched_req.data.generated_input_embeds.append(fused)
