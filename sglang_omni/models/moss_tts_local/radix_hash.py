@@ -130,7 +130,6 @@ if triton is not None:
         stop_stride,
         code_row_stride,
         code_col_stride,
-        row_stride,
         slot_id,
         end_id,
         hash_space,
@@ -146,7 +145,8 @@ if triton is not None:
             other=1,
         ).to(tl.int64)
         text = tl.where(stop == 0, slot_id, end_id).to(tl.int64)
-        tl.store(rows_ptr + row * row_stride, text, mask=row_mask)
+        row_start = rows_ptr + row * (num_channels + 1)
+        tl.store(row_start, text, mask=row_mask)
         acc = text % MOD
         acc = tl.where(acc < 0, acc + MOD, acc)
 
@@ -161,7 +161,7 @@ if triton is not None:
             value = raw % MOD
             value = tl.where(value < 0, value + MOD, value)
             acc = (acc * BASE + value) % MOD
-            tl.store(rows_ptr + row * row_stride + channel + 1, raw, mask=row_mask)
+            tl.store(row_start + channel + 1, raw, mask=row_mask)
 
         folded = acc % hash_space
         output = tl.where(text == end_id, text, folded)
@@ -291,7 +291,6 @@ def build_rows_and_radix_token_ids(
                 stop_choice.stride(0),
                 codes.stride(0),
                 codes.stride(1),
-                rows.stride(0),
                 slot_id,
                 end_id,
                 hash_space,
