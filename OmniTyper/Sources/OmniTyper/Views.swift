@@ -27,13 +27,14 @@ enum Page: String, CaseIterable {
 struct RootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: AppStore
+    @ViewState private var page: Page = .home
     var body: some View {
         HStack(spacing: 0) {
             sidebar
             Divider()
             VStack(spacing: 0) {
                 HStack {
-                    Text(model.page.title).font(.system(size: 14, weight: .semibold))
+                    Text(page.title).font(.system(size: 14, weight: .semibold))
                     Spacer()
                     Label(L("app.badge"), systemImage: "lock.shield")
                         .font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(accent)
@@ -42,7 +43,7 @@ struct RootView: View {
                 Divider().opacity(0.5)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
-                        switch model.page {
+                        switch page {
                         case .home: HomeView(model: model, store: store)
                         case .history: HistoryView(model: model, store: store)
                         case .dictionary: DictionaryView(store: store)
@@ -61,7 +62,7 @@ struct RootView: View {
         .toggleStyle(FullRowToggleStyle())
         .disclosureGroupStyle(FullRowDisclosureStyle(language: store.preferences.uiLanguage))
         .preferredColorScheme(store.preferences.appearance == "light" ? .light : store.preferences.appearance == "dark" ? .dark : nil)
-        .onChange(of: model.resultText) { _, _ in model.page = .home }
+        .onChange(of: model.resultText) { _, _ in page = .home }
     }
 
     private var sidebar: some View {
@@ -77,17 +78,17 @@ struct RootView: View {
             }.padding(.top, 20).padding(.horizontal, 18)
             VStack(spacing: 6) {
                 ForEach(Page.allCases, id: \.self) { item in
-                    Button { model.page = item } label: {
+                    Button { page = item } label: {
                         HStack(spacing: 12) {
                             Image(systemName: item.icon).frame(width: 20)
-                            Text(item.title).font(.system(size: 13, weight: model.page == item ? .semibold : .regular))
+                            Text(item.title).font(.system(size: 13, weight: page == item ? .semibold : .regular))
                             Spacer()
                             if item == .history && !store.history.isEmpty {
                                 Text("\(store.history.count)").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                             }
                         }.padding(.horizontal, 14).padding(.vertical, 12)
-                            .background(model.page == item ? accent.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 10))
-                            .foregroundStyle(model.page == item ? accent : .primary)
+                            .background(page == item ? accent.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            .foregroundStyle(page == item ? accent : .primary)
                             .contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }

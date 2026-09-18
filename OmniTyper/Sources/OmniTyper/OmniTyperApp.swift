@@ -3,17 +3,31 @@ import AppKit
 import SwiftUI
 
 @main
+enum OmniTyperLauncher {
+    @MainActor static func main() {
+        if #available(macOS 15.0, *) {
+            OmniTyperApp.main()
+        } else {
+            LegacyOmniTyperApp.main()
+        }
+    }
+}
+
+@available(macOS 15.0, *)
 struct OmniTyperApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        // Note (Codex): SwiftUI requires a scene; its Settings command opens the AppKit console instead.
+        // Note (Codex): AppKit owns the console; this placeholder must only open on explicit request.
         Settings { EmptyView() }
-            .commands {
-                CommandGroup(replacing: .appSettings) {
-                    Button(L("nav.Settings")) { delegate.openSettings() }.keyboardShortcut(",")
-                }
-            }
+            .defaultLaunchBehavior(.suppressed)
+            .restorationBehavior(.disabled)
     }
+}
+
+// Note (Codex): Scene launch control requires macOS 15; retain the existing lifecycle on macOS 14.
+struct LegacyOmniTyperApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    var body: some Scene { Settings { EmptyView() } }
 }
 
 @MainActor
@@ -88,11 +102,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         window.makeKeyAndOrderFront(nil)
     }
 
-    func openSettings() {
-        model.page = .settings
-        openWindow()
-    }
-
     @objc private func startFromMenu(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let mode = VoiceMode(rawValue: raw) else { return }
         model.toggle(mode)
@@ -103,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func windowWillClose(_ notification: Notification) { NSApp.setActivationPolicy(.accessory) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { openWindow(); return true }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { openWindow(); return false }
     func applicationWillTerminate(_ notification: Notification) { model.shutdown() }
 
     private func showPanel() {

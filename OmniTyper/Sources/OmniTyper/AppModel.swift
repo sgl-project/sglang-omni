@@ -11,7 +11,6 @@ final class AppModel: ObservableObject {
     let recorder = AudioRecorder()
     let worker = WorkerClient()
     private let shortcut = GlobalShortcut()
-    @Published var page: Page = .home
     @Published var phase: Phase = .idle
     @Published var mode: VoiceMode = .dictate
     @Published var resultText = ""

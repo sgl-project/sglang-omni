@@ -59,7 +59,8 @@ header, including the top padding. The popup remembers its position while the ap
 focus in the destination app. Settings toggles and disclosure rows also respond
 to clicks on their labels. Click unused space to dismiss the active text field.
 Notifications stay visible above the page while scrolling through Settings.
-**⌘,** opens the Settings page in the existing console.
+On macOS 15 and later, the native Settings placeholder no longer opens automatically
+at launch or restores with the app. The console sidebar contains the actual settings.
 
 Closing the main window keeps OmniTyper in the menu bar. **Quit** exits the app
 and shuts down its model processes. To use **Open at login**, first place the app
