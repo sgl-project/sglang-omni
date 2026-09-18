@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import inspect
-import threading
+import sys
+import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
     NpuDeviceGraphBackend,
     XpuDeviceGraphBackend,
+    get_npu_graph_update_stream,
 )
 
 
@@ -111,99 +113,30 @@ def test_npu_backend_records_into_an_npu_graph(
     assert module.calls == [expected]
 
 
-def test_npu_backend_enables_and_applies_host_input_updates(monkeypatch) -> None:
-    module = _recording_module("NPUGraph")
-    monkeypatch.setattr(torch, "npu", module, raising=False)
-    backend = NpuDeviceGraphBackend()
+def test_npu_graph_update_stream_is_shared(monkeypatch) -> None:
+    class GraphDispatchMode:
+        update_stream = None
 
-    with backend.capture(allow_host_input_update=True) as graph:
-        pass
+        def __new__(cls):
+            if cls.update_stream is None:
+                cls.update_stream = object()
+            return super().__new__(cls)
 
-    updates = [{"actual_seq_lengths": [3, 8]}]
-    device = SimpleNamespace(type="npu", index=3)
-    backend.replay(graph, host_input_updates=updates, device=device)
+    graphs = types.ModuleType("torch_npu.npu.graphs")
+    graphs._GraphDispatchMode = GraphDispatchMode
+    npu = types.ModuleType("torch_npu.npu")
+    npu.__path__ = []
+    torch_npu = types.ModuleType("torch_npu")
+    torch_npu.__path__ = []
+    monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
+    monkeypatch.setitem(sys.modules, "torch_npu.npu", npu)
+    monkeypatch.setitem(sys.modules, "torch_npu.npu.graphs", graphs)
 
-    assert module.calls == [{"npu_graph": graph, "auto_dispatch_capture": True}]
-    assert graph.updates == [{"cpu_update_input": updates}]
-    assert graph.replays == 1
+    first = get_npu_graph_update_stream()
+    second = get_npu_graph_update_stream()
 
-
-def test_npu_backend_pairs_host_update_with_replay(monkeypatch) -> None:
-    update_started = threading.Event()
-    replay_started = threading.Event()
-    devices = []
-
-    class Graph:
-        def update(self, **kwargs):
-            update_started.set()
-            assert replay_started.wait(timeout=1)
-
-        def replay(self):
-            assert update_started.wait(timeout=1)
-            replay_started.set()
-
-    monkeypatch.setattr(
-        torch,
-        "npu",
-        SimpleNamespace(set_device=devices.append),
-        raising=False,
-    )
-    device = SimpleNamespace(type="npu", index=2)
-
-    NpuDeviceGraphBackend().replay(
-        Graph(), host_input_updates=[{"value": [1]}], device=device
-    )
-
-    assert devices == [device]
-
-
-def test_npu_backend_propagates_host_update_failure(monkeypatch) -> None:
-    class Graph:
-        def update(self, **kwargs):
-            raise ValueError("bad host input")
-
-        def replay(self):
-            pass
-
-    monkeypatch.setattr(
-        torch,
-        "npu",
-        SimpleNamespace(set_device=lambda device: None),
-        raising=False,
-    )
-
-    with pytest.raises(RuntimeError, match="host input update failed") as exc_info:
-        NpuDeviceGraphBackend().replay(
-            Graph(),
-            host_input_updates=[{"value": [1]}],
-            device=SimpleNamespace(type="npu", index=0),
-        )
-
-    assert isinstance(exc_info.value.__cause__, ValueError)
-
-
-@pytest.mark.parametrize(
-    ("backend", "module_name", "graph_attr"),
-    [
-        (CudaDeviceGraphBackend(), "cuda", "CUDAGraph"),
-        (XpuDeviceGraphBackend(), "xpu", "XPUGraph"),
-    ],
-)
-def test_non_npu_backends_reject_host_input_updates(
-    monkeypatch, backend, module_name, graph_attr
-) -> None:
-    module = _recording_module(graph_attr)
-    monkeypatch.setattr(torch, module_name, module)
-
-    with (
-        pytest.raises(ValueError, match="do not support host input updates"),
-        backend.capture(allow_host_input_update=True),
-    ):
-        pass
-
-    graph = getattr(module, graph_attr)()
-    with pytest.raises(ValueError, match="do not support host input updates"):
-        backend.replay(graph, host_input_updates=[{"value": [1]}])
+    assert first is GraphDispatchMode.update_stream
+    assert second is first
 
 
 def test_cuda_graph_context_declares_the_expected_keywords() -> None:

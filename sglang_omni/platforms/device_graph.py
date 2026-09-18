@@ -9,7 +9,6 @@ choice belongs on the platform rather than in a per-model branch.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Any, Protocol
@@ -26,7 +25,6 @@ class DeviceGraphBackend(Protocol):
         pool: Any | None = None,
         stream: Any | None = None,
         thread_local_errors: bool = False,
-        allow_host_input_update: bool = False,
     ) -> AbstractContextManager[Any]:
         """Open a capture and yield the graph it records into."""
         ...
@@ -34,11 +32,8 @@ class DeviceGraphBackend(Protocol):
     def replay(
         self,
         graph: Any,
-        *,
-        host_input_updates: list[dict[str, Any]] | None = None,
-        device: torch.device | None = None,
     ) -> None:
-        """Replay a graph, applying backend-supported host input updates first."""
+        """Replay a recorded graph."""
         ...
 
 
@@ -52,10 +47,7 @@ class CudaDeviceGraphBackend:
         pool: Any | None = None,
         stream: Any | None = None,
         thread_local_errors: bool = False,
-        allow_host_input_update: bool = False,
     ) -> Iterator[Any]:
-        if allow_host_input_update:
-            raise ValueError("CUDA graphs do not support host input updates")
         graph = torch.cuda.CUDAGraph()
         kwargs: dict[str, Any] = {}
         if pool is not None:
@@ -70,13 +62,7 @@ class CudaDeviceGraphBackend:
     def replay(
         self,
         graph: Any,
-        *,
-        host_input_updates: list[dict[str, Any]] | None = None,
-        device: torch.device | None = None,
     ) -> None:
-        del device
-        if host_input_updates is not None:
-            raise ValueError("CUDA graphs do not support host input updates")
         graph.replay()
 
 
@@ -90,7 +76,6 @@ class NpuDeviceGraphBackend:
         pool: Any | None = None,
         stream: Any | None = None,
         thread_local_errors: bool = False,
-        allow_host_input_update: bool = False,
     ) -> Iterator[Any]:
         graph = torch.npu.NPUGraph()
         kwargs: dict[str, Any] = {}
@@ -100,46 +85,28 @@ class NpuDeviceGraphBackend:
             kwargs["stream"] = stream
         if thread_local_errors:
             kwargs["capture_error_mode"] = "thread_local"
-        if allow_host_input_update:
-            kwargs["auto_dispatch_capture"] = True
         with torch.npu.graph(npu_graph=graph, **kwargs):
             yield graph
 
     def replay(
         self,
         graph: Any,
-        *,
-        host_input_updates: list[dict[str, Any]] | None = None,
-        device: torch.device | None = None,
     ) -> None:
-        if host_input_updates is None:
-            graph.replay()
-            return
-        if device is None:
-            raise ValueError("NPU host input updates require the graph device")
+        graph.replay()
 
-        update_error: list[BaseException] = []
 
-        def update() -> None:
-            try:
-                # Device selection is thread-local in torch_npu.
-                torch.npu.set_device(device)
-                graph.update(cpu_update_input=host_input_updates)
-            except BaseException as exc:  # noqa: BLE001
-                update_error.append(exc)
+def get_npu_graph_update_stream() -> Any:
+    """Return torch_npu's process-wide NPUGraph update stream.
 
-        # torch_npu pairs update and replay concurrently; completing update first
-        # can block waiting for replay to consume the new host parameters.
-        update_thread = threading.Thread(target=update)
-        update_thread.start()
-        try:
-            graph.replay()
-        finally:
-            update_thread.join()
-        if update_error:
-            raise RuntimeError("NPU graph host input update failed") from update_error[
-                0
-            ]
+    NPUGraph.update() records into one class-level stream shared by every
+    decoder graph in the process. A model-owned updatable graph must join that
+    same stream instead of creating a second graph-task update owner.
+    """
+    from torch_npu.npu.graphs import _GraphDispatchMode
+
+    if _GraphDispatchMode.update_stream is None:
+        _GraphDispatchMode()
+    return _GraphDispatchMode.update_stream
 
 
 class XpuDeviceGraphBackend:
@@ -152,13 +119,10 @@ class XpuDeviceGraphBackend:
         pool: Any | None = None,
         stream: Any | None = None,
         thread_local_errors: bool = False,
-        allow_host_input_update: bool = False,
     ) -> Iterator[Any]:
         # Note (siju): XPU's graph context declares no capture_error_mode and
         # rejects it as a TypeError, so the request is dropped, not translated.
         del thread_local_errors
-        if allow_host_input_update:
-            raise ValueError("XPU graphs do not support host input updates")
         graph = torch.xpu.XPUGraph()
         kwargs: dict[str, Any] = {}
         if pool is not None:
@@ -171,13 +135,7 @@ class XpuDeviceGraphBackend:
     def replay(
         self,
         graph: Any,
-        *,
-        host_input_updates: list[dict[str, Any]] | None = None,
-        device: torch.device | None = None,
     ) -> None:
-        del device
-        if host_input_updates is not None:
-            raise ValueError("XPU graphs do not support host input updates")
         graph.replay()
 
 
@@ -185,5 +143,6 @@ __all__ = [
     "CudaDeviceGraphBackend",
     "DeviceGraphBackend",
     "NpuDeviceGraphBackend",
+    "get_npu_graph_update_stream",
     "XpuDeviceGraphBackend",
 ]
