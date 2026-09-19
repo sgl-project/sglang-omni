@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import fcntl
 import os
-import shutil
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -45,7 +43,7 @@ class FakeControlClient:
         self.terminated: list[MpsClientRef] = []
         self.terminate_error: str | None = None
 
-    def start_daemon(self, pipe_dir, log_dir, gpu_uuid):
+    def start_daemon(self, pipe_dir, log_dir, gpu_uuid, *, static_partitioning=False):
         del log_dir, gpu_uuid
         if self.start_fails:
             raise MpsControlError("spawn failed")
@@ -56,6 +54,9 @@ class FakeControlClient:
         (Path(pipe_dir) / "nvidia-cuda-mps-control.pid").write_text(
             str(self.daemon_pid)
         )
+
+    def static_partitioning_enabled(self, pipe_dir):
+        return False
 
     def read_daemon_identity(self, pipe_dir):
         if self.identity_error is not None:
@@ -128,13 +129,6 @@ def daemon_pid_file(paths: MpsGpuPaths) -> Path:
 
 def owner_marker(manager: MpsManager, pid: int | None = None) -> Path:
     return manager.paths.owners_dir / str(os.getpid() if pid is None else pid)
-
-
-@pytest.fixture
-def short_root():
-    root = Path(tempfile.mkdtemp(prefix="mps-", dir="/tmp"))
-    yield root
-    shutil.rmtree(root, ignore_errors=True)
 
 
 def make_manager(root, client, gpu_uuid=GPU_UUID):
@@ -336,7 +330,7 @@ def test_preexec_daemon_failure_removes_unstarted_state(short_root):
     client = FakeControlClient()
     manager = make_manager(short_root, client)
 
-    def cannot_execute(pipe_dir, log_dir, gpu_uuid):
+    def cannot_execute(pipe_dir, log_dir, gpu_uuid, *, static_partitioning=False):
         del pipe_dir, log_dir, gpu_uuid
         raise MpsDaemonNotStartedError("control binary was not executed")
 

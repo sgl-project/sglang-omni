@@ -143,6 +143,8 @@ class StageWorkerProcessSpec:
     # note (Dayuxiaoshui): root logger level for the spawned process. The
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
+    logical_process_name: str | None = None
+    sm_cap: int | None = None
 
 
 def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -424,6 +426,10 @@ def stage_process_main(
             _prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         prepare_weight_share_process_compat()
+        if spec.sm_cap is not None:
+            from sglang_omni.mps.numerics import validate_sm_partition
+
+            validate_sm_partition(spec.sm_cap)
         _run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
         _destroy_torch_distributed_process_group(log)

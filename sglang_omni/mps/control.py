@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from sglang_omni.mps.manager import (
@@ -13,6 +14,8 @@ from sglang_omni.mps.manager import (
     MpsClientRef,
     MpsControlError,
     MpsDaemonNotStartedError,
+    MpsGpuPartitions,
+    MpsSmPartition,
 )
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
@@ -33,6 +36,30 @@ def _parse_pid_list(output: str, command: str) -> list[int]:
             f"unexpected output from {_CONTROL_BINARY} {command!r}: {output!r}"
         )
     return [int(token) for token in tokens]
+
+
+def _parse_lspart(output: str) -> tuple[MpsGpuPartitions, ...]:
+    devices: list[MpsGpuPartitions] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if not fields or fields in (
+            ["GPU", "Partition", "free", "used", "free", "used", "clients"],
+            ["chunks", "chunks", "SM", "SM"],
+        ):
+            continue
+        gpu_prefix, second, third, fourth, fifth = fields
+        if fifth in {"Yes", "No"}:
+            partition = MpsSmPartition(second, int(third), int(fourth), fifth == "Yes")
+            devices[-1] = replace(
+                devices[-1], partitions=(*devices[-1].partitions, partition)
+            )
+        else:
+            devices.append(
+                MpsGpuPartitions(
+                    gpu_prefix, int(second), int(third), int(fourth), int(fifth)
+                )
+            )
+    return tuple(devices)
 
 
 class SubprocessMpsControlClient:
@@ -62,15 +89,25 @@ class SubprocessMpsControlClient:
             )
         return result.stdout
 
-    def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None:
+    def start_daemon(
+        self,
+        pipe_dir: Path,
+        log_dir: Path,
+        gpu_uuid: str,
+        *,
+        static_partitioning: bool = False,
+    ) -> None:
         env = self._control_env(pipe_dir)
         env["CUDA_MPS_LOG_DIRECTORY"] = str(log_dir)
         # UUID visibility, not ordinal: an ordinal-scoped daemon remaps the
         # client-side ordinals used by examples/mps_dp.
         env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+        args = [_CONTROL_BINARY, "-d"]
+        if static_partitioning:
+            args.append("-S")
         try:
             subprocess.run(
-                [_CONTROL_BINARY, "-d"],
+                args,
                 check=True,
                 capture_output=True,
                 timeout=_QUERY_TIMEOUT_SECONDS,
@@ -82,6 +119,35 @@ class SubprocessMpsControlClient:
             ) from exc
         except subprocess.SubprocessError as exc:
             raise MpsControlError(f"failed to start {_CONTROL_BINARY}: {exc}") from exc
+
+    def static_partitioning_enabled(self, pipe_dir: Path) -> bool:
+        pid = self.read_daemon_identity(pipe_dir)
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        return b"-S" in args or b"--static-partitioning" in args
+
+    def create_partition(self, pipe_dir: Path, gpu_uuid: str, chunks: int) -> str:
+        command = f"sm_partition add {gpu_uuid} {chunks}"
+        output = self._query(pipe_dir, command).strip()
+        if output.startswith("Partition ") and output.endswith(" created"):
+            # Note (Jiaxin Deng): partition IDs are base64 and may contain
+            # multiple slashes; only the first slash separates the GPU UUID.
+            return output[len("Partition ") : -len(" created")].split("/", 1)[1]
+        raise MpsControlError(f"unexpected output from {command!r}: {output!r}")
+
+    def list_partitions(self, pipe_dir: Path) -> tuple[MpsGpuPartitions, ...]:
+        return _parse_lspart(self._query(pipe_dir, "lspart"))
+
+    def remove_partition(
+        self, pipe_dir: Path, gpu_uuid: str, partition_id: str
+    ) -> None:
+        command = f"sm_partition rm {gpu_uuid} {partition_id}"
+        output = self._query(pipe_dir, command).strip()
+        if any(
+            partition.partition_id == partition_id
+            for device in self.list_partitions(pipe_dir)
+            for partition in device.partitions
+        ):
+            raise MpsControlError(f"{command!r} did not remove partition: {output!r}")
 
     def read_daemon_identity(self, pipe_dir: Path) -> int:
         """Read and prove the native control-daemon identity for ``pipe_dir``."""
