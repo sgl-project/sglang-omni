@@ -8,7 +8,6 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -188,6 +187,16 @@ class RaggedRowAttention:
 
 
 PackedRowAttention = RowAttention | RaggedRowAttention
+RopeScale = torch.Tensor | float
+
+
+@dataclass(frozen=True, kw_only=True)
+class PreparedPackedPlan:
+    rows: PackedRows
+    attention: PackedRowAttention
+    rope_freqs: torch.Tensor
+    rope_scale: RopeScale
+    rope_inverse_scale: RopeScale
 
 
 class PackedDiT:
@@ -210,19 +219,42 @@ class PackedDiT:
     def chunk_size(self) -> int:
         return int(self.dit.static_chunk_size)
 
-    def row_attention(
-        self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
-    ) -> PackedRowAttention:
-        attention = self.dit.transformer_blocks[0].attn
-        chunk_size = self.chunk_size if streaming else None
+    def prepare_full_context_plan(
+        self, rows: PackedRows, *, dtype: torch.dtype
+    ) -> PreparedPackedPlan:
+        return self._prepare_plan(rows, chunk_size=None, dtype=dtype)
+
+    def prepare_chunk_causal_plan(
+        self, rows: PackedRows, *, dtype: torch.dtype
+    ) -> PreparedPackedPlan:
+        return self._prepare_plan(rows, chunk_size=self.chunk_size, dtype=dtype)
+
+    def _prepare_plan(
+        self, rows: PackedRows, *, chunk_size: int | None, dtype: torch.dtype
+    ) -> PreparedPackedPlan:
+        attention_module = self.dit.transformer_blocks[0].attn
         if self.is_ragged and dtype in FA3_DTYPES:
-            return RaggedRowAttention(
+            attention = RaggedRowAttention(
                 rows,
                 chunk_size=chunk_size,
-                heads=attention.heads,
-                head_dim=attention.inner_dim // attention.heads,
+                heads=attention_module.heads,
+                head_dim=attention_module.inner_dim // attention_module.heads,
             )
-        return RowAttention(rows, chunk_size=chunk_size, heads=attention.heads)
+        else:
+            attention = RowAttention(
+                rows, chunk_size=chunk_size, heads=attention_module.heads
+            )
+        rope_freqs, rope_scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+        rope_freqs = rope_freqs[:, rows.positions]
+        if isinstance(rope_scale, torch.Tensor):
+            rope_scale = rope_scale[:, rows.positions]
+        return PreparedPackedPlan(
+            rows=rows,
+            attention=attention,
+            rope_freqs=rope_freqs,
+            rope_scale=rope_scale,
+            rope_inverse_scale=rope_scale**-1.0,
+        )
 
     def forward(
         self,
@@ -230,62 +262,50 @@ class PackedDiT:
         mu: torch.Tensor,
         spks: torch.Tensor,
         cond: torch.Tensor,
-        t: torch.Tensor,
-        rows: PackedRows,
-        attention: PackedRowAttention,
+        time_embedding: torch.Tensor,
+        plan: PreparedPackedPlan,
     ) -> torch.Tensor:
-        """x, mu, cond, spks: (1, total, channels); t: (1,). Returns
-        (1, total, out_channels)."""
+        """x, mu, cond, spks: (1, total, channels); time_embedding: (1, dim).
+        Returns (1, total, out_channels)."""
         dit = self.dit
-        t = dit.time_embed(t)
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
-        h = self._conv_pos_embed(h, rows) + h
-        rope = self._rope(rows)
+        h = self._conv_pos_embed(h, plan.rows) + h
         residual = h
         for block in dit.transformer_blocks:
-            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
-            h = h + gate_msa.unsqueeze(1) * self._attend(
-                block.attn, norm, rope, attention
+            norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(
+                h, emb=time_embedding
             )
+            h = h + gate_msa.unsqueeze(1) * self._attend(block.attn, norm, plan)
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
-        h = dit.norm_out(h, t)
+        h = dit.norm_out(h, time_embedding)
         return dit.proj_out(h)
 
     def _conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
         padded = scatter_rows(h, rows, rows.width)
         return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
 
-    def _rope(self, rows: PackedRows) -> tuple[torch.Tensor, Any]:
-        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
-        freqs = freqs[:, rows.positions]
-        if isinstance(scale, torch.Tensor):
-            scale = scale[:, rows.positions]
-        return freqs, scale
-
     @staticmethod
     def _attend(
         attn: torch.nn.Module,
         x: torch.Tensor,
-        rope: tuple[torch.Tensor, Any],
-        attention: PackedRowAttention,
+        plan: PreparedPackedPlan,
     ) -> torch.Tensor:
         from x_transformers.x_transformers import apply_rotary_pos_emb
 
-        freqs, scale = rope
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
-        query = apply_rotary_pos_emb(query, freqs, scale)
-        key = apply_rotary_pos_emb(key, freqs, scale**-1.0)
-        out = attention(query, key, value).to(query.dtype)
+        query = apply_rotary_pos_emb(query, plan.rope_freqs, plan.rope_scale)
+        key = apply_rotary_pos_emb(key, plan.rope_freqs, plan.rope_inverse_scale)
+        out = plan.attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
 
 
 def solve_flow_euler_packed(
-    estimator: Any,
+    estimator: PackedDiT,
     noise: torch.Tensor,
     time_span: torch.Tensor,
     mu: torch.Tensor,
@@ -300,26 +320,26 @@ def solve_flow_euler_packed(
     conditional rows and their unconditional twins share one DiT call."""
     total = noise.shape[1]
     twin_rows = pack_rows(rows.lengths * 2, noise.device)
-    attention = estimator.row_attention(
-        twin_rows, streaming=streaming, dtype=spks.dtype
-    )
+    if streaming:
+        plan = estimator.prepare_chunk_causal_plan(twin_rows, dtype=spks.dtype)
+    else:
+        plan = estimator.prepare_full_context_plan(twin_rows, dtype=spks.dtype)
     mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=1)
     cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=1)
     spks_cfg = torch.cat((spks, torch.zeros_like(spks)), dim=0)
     spks_cfg = spks_cfg[twin_rows.row_ids].unsqueeze(0)
-    flow_time = torch.zeros(1, device=noise.device, dtype=spks.dtype)
+    time_embeddings = estimator.dit.time_embed(time_span[:-1])
     x = noise
     t, dt = time_span[0], time_span[1] - time_span[0]
     for step in range(1, len(time_span)):
-        flow_time[:] = t
+        time_embedding = time_embeddings[step - 1 : step]
         vector_field = estimator.forward(
             torch.cat((x, x), dim=1),
             mu_cfg,
             spks_cfg,
             cond_cfg,
-            flow_time,
-            twin_rows,
-            attention,
+            time_embedding,
+            plan,
         )
         conditional = vector_field[:, :total]
         unconditional = vector_field[:, total:]

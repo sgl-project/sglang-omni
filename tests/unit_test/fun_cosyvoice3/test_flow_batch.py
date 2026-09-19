@@ -49,10 +49,15 @@ class _RecordingPackedEstimator:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def row_attention(
-        self, rows: PackedRows, *, streaming: bool, dtype: torch.dtype
+    def prepare_full_context_plan(
+        self, rows: PackedRows, *, dtype: torch.dtype
     ) -> SimpleNamespace:
-        return SimpleNamespace(rows=rows, streaming=streaming, dtype=dtype)
+        return SimpleNamespace(rows=rows, streaming=False, dtype=dtype)
+
+    def prepare_chunk_causal_plan(
+        self, rows: PackedRows, *, dtype: torch.dtype
+    ) -> SimpleNamespace:
+        return SimpleNamespace(rows=rows, streaming=True, dtype=dtype)
 
     def forward(
         self,
@@ -61,17 +66,16 @@ class _RecordingPackedEstimator:
         spks: torch.Tensor,
         cond: torch.Tensor,
         t: torch.Tensor,
-        rows: PackedRows,
-        attention: SimpleNamespace,
+        plan: SimpleNamespace,
     ) -> torch.Tensor:
         self.calls.append(
             {
-                "lengths": rows.lengths,
+                "lengths": plan.rows.lengths,
                 "t": t.detach().clone(),
-                "streaming": attention.streaming,
+                "streaming": plan.streaming,
             }
         )
-        positions = rows.positions.to(x.dtype).view(1, -1, 1)
+        positions = plan.rows.positions.to(x.dtype).view(1, -1, 1)
         return 0.1 * x + mu + spks + cond + 0.01 * positions
 
 
