@@ -89,8 +89,6 @@ def test_engine_factory_resolves_native_config_before_server_args(
     snapshot: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Only the backend boundary is substituted: its config lookup still runs
-    # through real AutoConfig, before model loading or a CUDA context exists.
     mapping = dict(CONFIG_MAPPING._extra_content)
     mapping.pop("minicpmo", None)
     monkeypatch.setattr(CONFIG_MAPPING, "_extra_content", mapping)

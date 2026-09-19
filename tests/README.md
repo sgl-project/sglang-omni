@@ -439,11 +439,13 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   TP2 and speech CUDA-graph assertions remain Qwen-only, as does the PCM stage.
   `SGLANG_OMNI_TEST_MINICPMO_MODEL` can point to an offline checkpoint including
   its `assets/token2wav` files and default reference audio.
-  MiniCPM's memory fractions are initial launch settings, pending GPU validation.
-  Its raw references in `omni_ci_config.py` are explicitly uncalibrated:
-  benchmarks collect results and check request completeness, but cannot pass
-  until independent calibration replaces the placeholders. Calibration runs
-  must omit `-x` so later quality metrics are collected after this expected gate.
+  MiniCPM's raw references in `omni_ci_config.py` are calibrated on H100 DP2
+  with the Rust router. Benchmarks enforce request completeness and the
+  model-specific accuracy, speed, WER, speaker similarity, and UTMOS gates.
+  Calibration establishes a baseline; ordinary CI must still pass for the
+  revision being qualified. For an uncalibrated preset, metrics are collected
+  before the explicit calibration gate. Calibration runs must omit `-x` so
+  later quality metrics are collected after that expected gate.
 
 ## `unit_test/`
 

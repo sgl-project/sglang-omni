@@ -235,7 +235,6 @@ def test_workflow_passes_selected_model_and_keeps_pcm_qwen_only() -> None:
 
 @pytest.fixture
 def slash_handler(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    # note (wenyao): The Actions-only GitHub SDK is mocked at the API boundary.
     monkeypatch.setitem(
         sys.modules, "github", SimpleNamespace(Auth=Mock(), Github=Mock())
     )

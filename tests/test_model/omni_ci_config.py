@@ -44,7 +44,6 @@ class OmniCiModelPreset:
     thresholds: dict[str, OmniCiThresholdPreset]
 
 
-# note (wenyao): Qwen references are unchanged from the existing CI stages.
 # TTS speed comes from #1021; its similarity floor stays disabled pending #483.
 QWEN3_OMNI_TTS_P95 = {
     16: {
