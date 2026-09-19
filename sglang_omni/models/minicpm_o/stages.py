@@ -121,7 +121,8 @@ def create_audio_encoder_executor(
 def create_sglang_talker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -130,6 +131,8 @@ def create_sglang_talker_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
@@ -221,11 +224,11 @@ def vocode_code2wav_payloads(
 def create_code2wav_executor(
     model_path: str,
     *,
-    max_batch_size: int,
-    max_batch_wait_ms: float,
-    batch_wait_when_idle: bool,
     device: str | None = None,
     gpu_id: int | None = None,
+    max_batch_size: int = 8,
+    max_batch_wait_ms: float = 0.0,
+    batch_wait_when_idle: bool = False,
     dtype: str | None = None,
     max_batch_cost: int | None = None,
 ) -> SimpleScheduler:
@@ -257,7 +260,8 @@ def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
 def create_sglang_thinker_executor_from_config(
     model_path: str,
     *,
-    gpu_id: int = 0,
+    device: str | None = None,
+    gpu_id: int | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
@@ -269,6 +273,8 @@ def create_sglang_thinker_executor_from_config(
     speech_enabled: bool = False,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the MiniCPM-o thinker."""
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
