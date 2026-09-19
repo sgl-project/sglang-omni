@@ -14,8 +14,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+
+FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
@@ -30,7 +32,7 @@ class MiniCPMOCode2Wav(nn.Module):
         model_path: str,
         *,
         device: str = "cuda",
-        float16: bool = False,
+        dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
     ) -> None:
@@ -49,9 +51,19 @@ class MiniCPMOCode2Wav(nn.Module):
                 f"token2wav assets not found at {asset_dir}; copy the "
                 "checkpoint's assets/token2wav directory next to the weights"
             )
+        if dtype is None:
+            torch_dtype = torch.float32
+        elif isinstance(dtype, torch.dtype):
+            torch_dtype = dtype
+        else:
+            torch_dtype = resolve_dtype(dtype)
+        if torch_dtype not in FLOW_DTYPES:
+            raise ValueError(
+                f"Code2Wav dtype must be float32, float16, or bfloat16, got {dtype}"
+            )
         with self.device_context:
             self.token2wav = Token2Wav(
-                Path(asset_dir), device=dev, float16=float16, n_timesteps=n_timesteps
+                Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
             )
 
         if prompt_wav is None:
@@ -156,7 +168,11 @@ class MiniCPMOCode2Wav(nn.Module):
         ).contiguous()
         speaker_embedding = speaker_embedding.expand(batch_size, -1).contiguous()
         prompt_mels = prompt_mels.expand(batch_size, -1, -1).contiguous()
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=token2wav.float16):
+        with torch.amp.autocast(
+            "cuda",
+            dtype=token2wav.dtype,
+            enabled=token2wav.dtype != torch.float32,
+        ):
             mel = token2wav.flow.inference(
                 speech_tokens,
                 speech_tokens_lens,

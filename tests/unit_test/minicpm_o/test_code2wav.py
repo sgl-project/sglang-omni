@@ -80,7 +80,7 @@ def test_native_vocoder_with_checkpoint() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0", float16=False)
+    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
     tokens = [1498, 1734, 3732, 3726, 3645]
     output = model(codec_tokens=torch.tensor(tokens))
     waveform = output["waveform"]
@@ -97,7 +97,7 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0", float16=False)
+    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
     batched = model.vocode_many([tokens_a, tokens_b], None)
@@ -189,7 +189,7 @@ def test_vocode_many_slices_waveforms_to_token_lengths() -> None:
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
-        float16=False,
+        dtype=torch.float32,
         n_timesteps=10,
         flow=FakeFlow(),
         hift=FakeHiFT(),
