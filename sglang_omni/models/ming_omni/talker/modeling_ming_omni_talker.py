@@ -16,6 +16,7 @@ import threading
 import uuid
 from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from queue import Queue
 from threading import Lock
 from typing import Any, Iterable, Optional, Tuple
@@ -36,10 +37,13 @@ from .front.toolkit import tokenize_mixed_text_iterator
 from .talker_module.aggregator import Aggregator
 from .talker_module.cfm import CFM, get_epss_timesteps
 from .talker_module.dit import DiT
+from .talker_module.execution import TalkerExecutionConfig
+from .talker_module.modules import PackedQKVLinear
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_DONE = object()
+_MAX_CACHE_LEN = 512
 
 # ---------- Optional: onnxruntime for speaker embedding ----------
 try:
@@ -144,7 +148,12 @@ class CFMGraphExecutor:
             if abort_event is not None and abort_event.is_set():
                 raise asyncio.CancelledError()
             self._initialize_graph(
-                input_tensor, his_lat, randn_tensor, sde_rnd, abort_event
+                input_tensor,
+                his_lat,
+                randn_tensor,
+                t,
+                (cfg_strength, sigma, temperature),
+                sde_rnd,
             )
 
         self.last_hidden_state_placeholder.copy_(input_tensor)
@@ -174,20 +183,16 @@ class CFMGraphExecutor:
         return gen_lat, inputs_embeds, stop_out
 
     def _initialize_graph(
-        self, input_tensor, his_lat, randn_tensor, sde_rnd, abort_event=None
+        self, input_tensor, his_lat, randn_tensor, timesteps, sde_args, sde_rnd
     ):
-        self.last_hidden_state_placeholder = torch.empty_like(input_tensor)
-        self.his_lat_placeholder = torch.empty_like(his_lat)
-        self.randn_like_placeholder = torch.empty_like(randn_tensor)
-        self.t_placeholder = get_epss_timesteps(
-            self.config.steps,
-            device=input_tensor.device,
-            dtype=input_tensor.dtype,
+        self.last_hidden_state_placeholder = input_tensor.clone()
+        self.his_lat_placeholder = his_lat.clone()
+        self.randn_like_placeholder = randn_tensor.clone()
+        self.t_placeholder = timesteps.clone()
+        self.sde_args_placeholder = torch.tensor(
+            sde_args, device=input_tensor.device, dtype=input_tensor.dtype
         )
-        self.sde_args_placeholder = torch.empty(
-            3, device=input_tensor.device, dtype=input_tensor.dtype
-        )
-        self.sde_rnd_placeholder = torch.empty_like(sde_rnd)
+        self.sde_rnd_placeholder = sde_rnd.clone()
 
         # (wenyao) Aborting CFM.sample during graph capture corrupts the
         # partial graph. Pass abort_event=None during capture; the caller
@@ -198,23 +203,22 @@ class CFMGraphExecutor:
                 f"device graphs are unavailable for {input_tensor.device}"
             )
         try:
+            if current_platform.is_cuda():
+                runtime = TalkerDeviceRuntime(input_tensor.device)
+                runtime.synchronize()
+                with runtime.create_stream_context(runtime.create_stream()):
+                    # Note(yzxiao): The full eager tail initializes JIT kernels
+                    # before capture, using the same static inputs and precision.
+                    for _ in range(2):
+                        self._compute_tail()
+                    runtime.synchronize()
             with graph_backend.capture(thread_local_errors=True) as graph:
                 self.graph = graph
-                self.gen_lat_placeholder = self.cfm.sample(
-                    self.last_hidden_state_placeholder,
-                    self.his_lat_placeholder,
-                    self.randn_like_placeholder,
-                    self.t_placeholder,
-                    self.sde_args_placeholder,
-                    self.sde_rnd_placeholder,
-                    abort_event=None,
-                )
-                self.inputs_embeds_placeholder = self.aggregator(
-                    self.gen_lat_placeholder
-                )
-                self.stop_out_placeholder = self.stop_head(
-                    self.last_hidden_state_placeholder[:, -1, :]
-                ).softmax(dim=-1)
+                (
+                    self.gen_lat_placeholder,
+                    self.inputs_embeds_placeholder,
+                    self.stop_out_placeholder,
+                ) = self._compute_tail()
         except BaseException:
             self.graph = None
             self.gen_lat_placeholder = None
@@ -223,6 +227,22 @@ class CFMGraphExecutor:
             raise
 
         self.initialized = True
+
+    def _compute_tail(self):
+        gen_lat = self.cfm.sample(
+            self.last_hidden_state_placeholder,
+            self.his_lat_placeholder,
+            self.randn_like_placeholder,
+            self.t_placeholder,
+            self.sde_args_placeholder,
+            self.sde_rnd_placeholder,
+            abort_event=None,
+        )
+        inputs_embeds = self.aggregator(gen_lat)
+        stop_out = self.stop_head(self.last_hidden_state_placeholder[:, -1, :]).softmax(
+            dim=-1
+        )
+        return gen_lat, inputs_embeds, stop_out
 
 
 class CFMGraphExecutorPool:
@@ -278,7 +298,13 @@ class MingOmniTalker(nn.Module):
     - spk_head: nn.Linear(192, 896)
     """
 
-    def __init__(self, config: MingOmniTalkerConfig):
+    def __init__(
+        self,
+        config: MingOmniTalkerConfig,
+        *,
+        dit_execution_config: TalkerExecutionConfig | None = None,
+        aggregator_execution_config: TalkerExecutionConfig | None = None,
+    ):
         super().__init__()
         self.config = config
 
@@ -289,11 +315,16 @@ class MingOmniTalker(nn.Module):
 
         self.latent_dim = config.latent_dim
         self.cfm = CFM(
-            DiT(llm_cond_dim=self.model.config.hidden_size, **config.flowmodel),
+            DiT(
+                llm_cond_dim=self.model.config.hidden_size,
+                execution_config=dit_execution_config,
+                **config.flowmodel,
+            ),
             steps=config.steps,
         )
         self.aggregator = Aggregator(
             llm_input_dim=self.model.config.hidden_size,
+            execution_config=aggregator_execution_config,
             **config.aggregator,
         )
 
@@ -336,6 +367,57 @@ class MingOmniTalker(nn.Module):
         for _ in range(self.max_conc):
             self.model_graph_pool.put((None, None, None, None, None))
 
+    @classmethod
+    def from_pretrained(
+        cls, model_path: str, *, device: str | torch.device
+    ) -> MingOmniTalker:
+        from sglang_omni.models.weight_loader import load_weights_by_prefix
+
+        device = torch.device(device)
+        config = MingOmniTalkerConfig.from_pretrained_dir(model_path)
+        if device.type == "npu":
+            config.use_torch_attention()
+
+        dit_execution_config = None
+        aggregator_execution_config = None
+        use_cuda_kernels = device.type == "cuda" and current_platform.is_cuda()
+        if use_cuda_kernels:
+            from sglang_omni.vendor.sglang.layers import RMSNorm
+
+            rope_kernel = current_platform.get_joint_rope_inplace_kernel()
+            if rope_kernel is None:
+                raise RuntimeError(
+                    "Ming-Omni CUDA talker requires a joint in-place RoPE "
+                    f"kernel, but {type(current_platform).__name__} does not "
+                    "provide one."
+                )
+            norm_layer = partial(RMSNorm, cast_x_before_out_mul=True)
+            # Note(yzxiao): CFG doubles the DiT batch. Reference patches become
+            # Aggregator batch rows and cannot exceed the talker cache capacity.
+            dit_execution_config = TalkerExecutionConfig(
+                rope_kernel=rope_kernel,
+                rope_seq_len=1 + config.history_patch_size + config.patch_size,
+                rope_max_batch_size=2,
+                norm_layer=norm_layer,
+                qkv_layer=PackedQKVLinear,
+            )
+            aggregator_execution_config = TalkerExecutionConfig(
+                rope_kernel=rope_kernel,
+                rope_seq_len=1 + config.patch_size,
+                rope_max_batch_size=_MAX_CACHE_LEN,
+                norm_layer=norm_layer,
+                qkv_layer=PackedQKVLinear,
+            )
+        model = cls(
+            config,
+            dit_execution_config=dit_execution_config,
+            aggregator_execution_config=aggregator_execution_config,
+        )
+        weights = load_weights_by_prefix(model_path, prefix="")
+        model.load_weights(weights.items())
+        model.to(device=device, dtype=torch.bfloat16).eval()
+        return model
+
     # ---- External dependency setters ----
 
     def set_tokenizer(self, tokenizer) -> None:
@@ -353,34 +435,47 @@ class MingOmniTalker(nn.Module):
     # ---- Weight loading ----
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
-        """Stream weights into model parameters.
+        from sglang_omni.models.weight_loader import default_weight_loader
 
-        Weight mapping (checkpoint -> model):
-        - model.* -> self.model.* (Qwen2 backbone, direct match)
-        - cfm.model.* -> self.cfm.model.* (DiT, direct match)
-        - aggregator.* -> self.aggregator.* (Aggregator, direct match)
-        - stop_head.* -> self.stop_head.* (direct match)
-        - spk_head.* -> self.spk_head.* (direct match)
-
-        No weight name remapping needed — checkpoint names match nn.Module names.
-        """
         params_dict = dict(self.named_parameters())
-        loaded = set()
-        for name, loaded_weight in weights:
-            if name not in params_dict:
-                logger.warning("Unexpected weight: %s", name)
-                continue
-            param = params_dict[name]
-            if param.numel() == 1 and loaded_weight.numel() == 1:
-                param.data.fill_(loaded_weight.item())
-            else:
-                assert (
-                    param.size() == loaded_weight.size()
-                ), f"Shape mismatch for {name}: param={param.size()}, weight={loaded_weight.size()}"
-                param.data.copy_(loaded_weight)
-            loaded.add(name)
+        stacked_params_mapping = (
+            (".to_qkv.", ".to_q.", "q"),
+            (".to_qkv.", ".to_k.", "k"),
+            (".to_qkv.", ".to_v.", "v"),
+        )
 
-        missing = set(params_dict.keys()) - loaded
+        loaded = set()
+        loaded_shards: dict[str, set[str]] = {}
+        for name, loaded_weight in weights:
+            for param_name, weight_name, shard_id in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                target_name = name.replace(weight_name, param_name)
+                if target_name not in params_dict:
+                    continue
+                param = params_dict[target_name]
+                param.weight_loader(param, loaded_weight, shard_id)
+                loaded.add(target_name)
+                loaded_shards.setdefault(target_name, set()).add(shard_id)
+                break
+            else:
+                if name not in params_dict:
+                    logger.warning("Unexpected weight: %s", name)
+                    continue
+                default_weight_loader(params_dict[name], loaded_weight)
+                loaded.add(name)
+                if ".to_qkv." in name:
+                    loaded_shards[name] = {"q", "k", "v"}
+
+        packed_params = {name for name in params_dict if ".to_qkv." in name}
+        missing_shards = {
+            name: sorted({"q", "k", "v"} - loaded_shards.get(name, set()))
+            for name in packed_params
+            if loaded_shards.get(name, set()) != {"q", "k", "v"}
+        }
+        if missing_shards:
+            raise ValueError(f"Missing packed QKV shards: {missing_shards}")
+        missing = params_dict.keys() - loaded
         if missing:
             logger.warning(
                 "Missing weights (%d): %s", len(missing), sorted(missing)[:20]
@@ -495,8 +590,6 @@ class MingOmniTalker(nn.Module):
             else:
                 his_lat[:, start_index:, :] = prompt_wav_lat
 
-        max_cache_len = 512
-
         (
             past_key_values,
             inputs_embeds_placeholder,
@@ -510,7 +603,7 @@ class MingOmniTalker(nn.Module):
                 past_key_values = StaticCache(
                     config=self.model.config,
                     max_batch_size=1,
-                    max_cache_len=max_cache_len,
+                    max_cache_len=_MAX_CACHE_LEN,
                     device=self.model.device,
                     dtype=target_dtype,
                 )
@@ -532,7 +625,7 @@ class MingOmniTalker(nn.Module):
                 (attention_mask == 0), 1
             )
 
-            cache_max_decode_steps = (max_cache_len - prefill_len) // self.patch_size
+            cache_max_decode_steps = (_MAX_CACHE_LEN - prefill_len) // self.patch_size
             if max_decode_steps is None:
                 effective_max_decode_steps = cache_max_decode_steps
             else:
