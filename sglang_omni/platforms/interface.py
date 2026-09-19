@@ -143,6 +143,12 @@ class OmniPlatform(DeviceMixin):
 
         return sdpa_kernel(list(backends))
 
+    def moe_router_logits_dtype(self, gate_dtype: "torch.dtype") -> "torch.dtype":
+        """The dtype this platform's fused top-k router takes gate logits in."""
+        import torch
+
+        return torch.float32
+
     def get_torch_profiler(self) -> TorchProfiler:
         from sglang_omni.profiler.torch_profiler import TorchProfiler
 

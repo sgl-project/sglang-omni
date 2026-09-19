@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import logging
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
@@ -179,18 +181,249 @@ def test_ming_tts_audio_decode_factory_binds_the_placed_gpu(
     assert vae_loads[0]["device"] == torch.device("cuda", 3)
 
 
-def test_ming_tts_audio_decode_factory_rejects_a_device_it_cannot_serve(
+def _patch_xpu_device_module(
     monkeypatch: pytest.MonkeyPatch,
+    **members: Any,
 ) -> None:
-    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
-        monkeypatch
-    )
+    """Route torch.get_device_module("xpu") to a fake module, other devices unchanged."""
+    import torch
+
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+    members.setdefault("device", lambda _device: nullcontext())
+    members.setdefault(
+        "current_stream",
+        lambda _device: SimpleNamespace(synchronize=lambda: None),
+    )
+    fake_module = SimpleNamespace(
+        is_available=lambda: True,
+        device_count=lambda: 4,
+        **members,
+    )
+    real_get_device_module = torch.get_device_module
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: (
+            fake_module
+            if torch.device(device).type == "xpu"
+            else real_get_device_module(device)
+        ),
+    )
 
-    with pytest.raises(ValueError, match="CUDA"):
-        stages.create_audio_decode_executor("unused", device="xpu", gpu_id=1)
+
+def test_ming_tts_audio_decode_factory_serves_a_non_cuda_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-CUDA accelerator is not refused: the factory asks the device's own module."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    import torch
+
+    _patch_xpu_device_module(monkeypatch)
+    vae_loads: list[dict] = []
+    monkeypatch.setattr(
+        stages,
+        "_load_ming_tts_audio_vae",
+        lambda *args, **kwargs: vae_loads.append(kwargs) or object(),
+    )
+
+    stages.create_audio_decode_executor("unused", device="xpu", gpu_id=1)
+
+    assert vae_loads[0]["device"] == torch.device("xpu", 1)
+
+
+def test_ming_tts_audio_decode_factory_rejects_a_device_it_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unservable is availability and visibility now, not vendor."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    import torch
+
+    with pytest.raises(ValueError, match="requires an available accelerator"):
+        stages.create_audio_decode_executor("unused", device="cpu", gpu_id=1)
+
+    with pytest.raises(ValueError, match="is not visible"):
+        stages.create_audio_decode_executor("unused", gpu_id=5)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(ValueError, match="requires an available accelerator"):
+        stages.create_audio_decode_executor("unused", gpu_id=0)
+
+
+def test_ming_tts_audio_decode_factory_rejects_an_accelerator_without_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Available and visible is not enough: mps has no device context and no stream."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    import torch
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
+    monkeypatch.setattr(
+        stages,
+        "_resolve_checkpoint",
+        lambda path: pytest.fail(f"unexpected checkpoint resolution for {path}"),
+    )
+    streamless = SimpleNamespace(
+        __name__="torch.mps",
+        is_available=lambda: True,
+        device_count=lambda: 1,
+        synchronize=lambda: None,
+    )
+    real_get_device_module = torch.get_device_module
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: (
+            streamless
+            if torch.device(device).type == "mps"
+            else real_get_device_module(device)
+        ),
+    )
+
+    with pytest.raises(ValueError, match="has no torch.mps.device"):
+        stages.create_audio_decode_executor("unused", device="mps", gpu_id=0)
+
+
+def _patch_accelerator_off_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    stages: Any,
+    *,
+    total_memory_bytes: int | None = None,
+    **members: Any,
+) -> None:
+    """An xpu device whose accounting must never reach the NVML-mapped helpers.
+
+    Both of those resolve their argument through CUDA_VISIBLE_DEVICES, so on a
+    host with NVML alongside xpu they would answer for an unrelated CUDA card.
+    """
+
+    def fail_if_called(logical_gpu_id: int) -> None:
+        raise AssertionError(
+            f"NVML was asked about logical gpu {logical_gpu_id} off CUDA"
+        )
+
+    monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", fail_if_called)
+    monkeypatch.setattr(stages, "get_gpu_device_info", fail_if_called)
+    if total_memory_bytes is not None:
+        members["get_device_properties"] = lambda _device: SimpleNamespace(
+            total_memory=total_memory_bytes
+        )
+    _patch_xpu_device_module(monkeypatch, **members)
+
+
+def test_ming_tts_audio_decode_factory_enforces_the_budget_without_nvml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No NVML is not no budget: the accelerator's own allocator carries the check."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    _patch_accelerator_off_cuda(
+        monkeypatch,
+        stages,
+        total_memory_bytes=8 << 30,
+        memory_reserved=lambda _device: 6 << 30,
+    )
+
+    with pytest.raises(RuntimeError, match="exceeds its cumulative budget"):
+        stages.create_audio_decode_executor(
+            "unused",
+            device="xpu",
+            gpu_id=1,
+            process_total_gpu_memory_fraction=0.5,
+        )
+
+
+def test_ming_tts_audio_decode_factory_records_where_the_bytes_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Allocator bytes under-report the driver context, so the log names the source."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    _patch_accelerator_off_cuda(
+        monkeypatch,
+        stages,
+        total_memory_bytes=8 << 30,
+        memory_reserved=lambda _device: 1 << 30,
+    )
+
+    with caplog.at_level(logging.INFO, logger=stages.__name__):
+        stages.create_audio_decode_executor(
+            "unused",
+            device="xpu",
+            gpu_id=1,
+            process_total_gpu_memory_fraction=0.5,
+        )
+
+    assert "memory_source=torch_allocator memory_verification=verified" in caplog.text
+
+
+def test_ming_tts_audio_decode_factory_warns_when_nothing_can_account(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A backend with neither NVML nor a caching allocator still degrades loudly."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    _patch_accelerator_off_cuda(monkeypatch, stages, total_memory_bytes=8 << 30)
+
+    with caplog.at_level(logging.WARNING, logger=stages.__name__):
+        stages.create_audio_decode_executor(
+            "unused",
+            device="xpu",
+            gpu_id=1,
+            process_total_gpu_memory_fraction=0.5,
+        )
+
+    assert "memory_verification=unavailable memory_source=unavailable" in caplog.text
+
+
+def test_ming_tts_audio_decode_factory_keeps_nvml_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """CUDA keeps NVML, which counts the driver context the allocator cannot see."""
+    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+        monkeypatch
+    )
+    monkeypatch.setattr(
+        stages,
+        "get_gpu_device_info",
+        lambda _: SimpleNamespace(total_memory_bytes=100),
+    )
+    monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", lambda _: 7)
+    import torch
+
+    monkeypatch.setattr(
+        torch.cuda,
+        "memory_reserved",
+        lambda _device: (_ for _ in ()).throw(
+            AssertionError("the allocator answered for a device NVML already had")
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger=stages.__name__):
+        stages.create_audio_decode_executor(
+            "unused",
+            process_total_gpu_memory_fraction=0.5,
+        )
+
+    assert (
+        "device_total_bytes=100 process_budget_bytes=50 memory_source=nvml"
+        in caplog.text
+    )
 
 
 @pytest.mark.parametrize(

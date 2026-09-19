@@ -66,6 +66,10 @@ dependencies = [
     "av>=16.1.0",
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
+
+    # --- Ming-Omni-TTS ------------------------------------------------------
+    "diffusers==0.37.0",
+    "x-transformers",
 ]
 
 [project.optional-dependencies]

@@ -23,6 +23,7 @@ from sglang_omni.models.ming_tts.audio_decode import (
     _CapturedAudioVAEGraph,
     _MingAudioStreamingRunner,
     decode_ming_tts_audio_payload,
+    missing_streaming_device_api,
 )
 from sglang_omni.models.ming_tts.payload_types import MingTTSState
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -284,6 +285,7 @@ def _make_scripted_runner(
     stream = _ScriptedCudaStream()
     runner = _MingAudioStreamingRunner.__new__(_MingAudioStreamingRunner)
     runner._transition = transition
+    runner._device_module = torch.cuda
     runner._cuda_graph_required_at_startup = True
     runner._startup_prepared = True
     runner._captured_graph = _CapturedAudioVAEGraph(
@@ -873,3 +875,154 @@ def test_ming_tts_full_payload_decodes_once(keep_latents: bool) -> None:
     }
     audio = np.frombuffer(result.data["audio_waveform"], dtype=np.float32)
     np.testing.assert_array_equal(audio, waveform.numpy())
+
+
+def test_fixed_streaming_rejects_a_cpu_bf16_decoder_by_naming_both_paths() -> None:
+    """CPU is the FP32 verification path; BF16 there is neither serving nor that."""
+    audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="accelerator BF16 decoder"):
+        _AudioVAEFixedStreamingTransition(
+            audio_vae.decoder,
+            capacity=1,
+            max_step_latents=4,
+        )
+
+
+def test_fixed_streaming_rejects_an_accelerator_it_cannot_stream_through() -> None:
+    """A device type torch has no module for is refused where the contract is."""
+    audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(device="meta", dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="has no torch.meta"):
+        _AudioVAEFixedStreamingTransition(
+            audio_vae.decoder,
+            capacity=1,
+            max_step_latents=4,
+        )
+
+
+def test_the_streaming_device_api_gate_names_what_mps_lacks() -> None:
+    """torch.mps ships on every build, so the gap it has is checkable off a Mac."""
+    assert missing_streaming_device_api(torch.device("cpu")) is None
+    assert missing_streaming_device_api(torch.device("mps", 0)) == "torch.mps.device"
+
+
+def _accelerator_device() -> torch.device | None:
+    from sglang_omni import platforms
+
+    device_type = platforms.current_platform.device_type
+    if device_type == "cpu":
+        return None
+    module = torch.get_device_module(device_type)
+    if not module.is_available():
+        return None
+    return torch.device(device_type, 0)
+
+
+_ACCELERATOR_DEVICE = _accelerator_device()
+requires_accelerator = pytest.mark.skipif(
+    _ACCELERATOR_DEVICE is None, reason="requires cuda or xpu"
+)
+
+
+@pytest.mark.accelerator
+@requires_accelerator
+def test_fixed_streaming_serves_on_whatever_accelerator_this_host_has() -> None:
+    """Serving admits any accelerator in BF16, not CUDA alone."""
+    device = _ACCELERATOR_DEVICE
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(4)
+        audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(device=device, dtype=torch.bfloat16)
+
+    transition = _AudioVAEFixedStreamingTransition(
+        audio_vae.decoder,
+        capacity=1,
+        max_step_latents=4,
+    )
+
+    assert transition.device == device
+    assert transition.input_dtype is torch.bfloat16
+    assert missing_streaming_device_api(device) is None
+
+
+@pytest.mark.accelerator
+@requires_accelerator
+def test_the_streaming_graph_captures_and_replays_on_this_accelerator() -> None:
+    """The capture reaches the device module, so it needs a real accelerator."""
+    device = _ACCELERATOR_DEVICE
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(5)
+        audio_vae = _make_tiny_audio_vae()
+    audio_vae.decoder.to(device=device, dtype=torch.bfloat16)
+    transition = _AudioVAEFixedStreamingTransition(
+        audio_vae.decoder,
+        capacity=1,
+        max_step_latents=4,
+    )
+    runner = _MingAudioStreamingRunner(transition, cuda_graph_required=True)
+
+    try:
+        runner.prepare_cuda_graph()
+
+        assert runner.is_ready
+        assert runner._captured_graph is not None
+        (waveform,) = runner.run(
+            slot_ids=(0,),
+            patch_groups=((torch.ones((4, 4), dtype=torch.float32),),),
+            terminal_flags=(True,),
+        )
+        assert waveform.device.type == "cpu"
+        assert waveform.dtype is torch.float32
+        assert torch.isfinite(waveform).all()
+    finally:
+        runner.close()
+
+
+def _cpu_streaming_transition() -> _AudioVAEFixedStreamingTransition:
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(6)
+        audio_vae = _make_tiny_audio_vae()
+    transition = _AudioVAEFixedStreamingTransition(
+        audio_vae.decoder,
+        capacity=1,
+        max_step_latents=4,
+    )
+    assert transition.device.type == "cpu"
+    assert transition.input_dtype is torch.float32
+    return transition
+
+
+def test_the_eager_runner_serves_the_cpu_verification_path() -> None:
+    """torch.cpu has no device context and no stream to wait on; neither is entered."""
+    runner = _MingAudioStreamingRunner(
+        _cpu_streaming_transition(),
+        cuda_graph_required=False,
+    )
+    try:
+        assert runner._device_module is None
+        (waveform,) = runner.run(
+            slot_ids=(0,),
+            patch_groups=((torch.ones((4, 4), dtype=torch.float32),),),
+            terminal_flags=(True,),
+        )
+        assert waveform.device.type == "cpu"
+        assert waveform.dtype is torch.float32
+        assert torch.isfinite(waveform).all()
+    finally:
+        runner.close()
+
+
+def test_the_streaming_graph_refuses_the_cpu_verification_path() -> None:
+    """Asking CPU for a graph names the reason instead of failing inside torch.cpu."""
+    runner = _MingAudioStreamingRunner(
+        _cpu_streaming_transition(),
+        cuda_graph_required=True,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="requires an accelerator"):
+            runner.prepare_cuda_graph()
+    finally:
+        runner.close()

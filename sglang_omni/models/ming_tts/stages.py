@@ -217,6 +217,49 @@ def create_reference_encode_executor(
     return SimpleScheduler(_encode, max_concurrency=max_concurrency)
 
 
+def _device_total_memory_bytes(device: torch.device) -> int | None:
+    """Total memory on ``device``, read from the device the tensors land on.
+
+    get_gpu_device_info() resolves its argument through CUDA_VISIBLE_DEVICES and
+    NVML, which describe CUDA cards, so it is asked about CUDA only; every other
+    accelerator answers for itself.
+    """
+    import torch
+
+    if device.type == "cuda":
+        return get_gpu_device_info(device.index).total_memory_bytes
+
+    try:
+        properties = torch.get_device_module(device).get_device_properties(device)
+    except Exception as exc:
+        logger.debug("Ming-Omni-TTS %s total memory is unavailable: %s", device, exc)
+        return None
+    total_memory = getattr(properties, "total_memory", None)
+    return None if total_memory is None else int(total_memory)
+
+
+def _process_memory_bytes(device: torch.device) -> tuple[int | None, str]:
+    """Process-scoped memory in use on ``device``, and where the number came from.
+
+    NVML sees every byte the process holds, driver context included, but it maps
+    ids through CUDA_VISIBLE_DEVICES, so asking it about an xpu index would answer
+    for an unrelated card. Off CUDA, and on a CUDA host without NVML, the device's
+    own caching allocator answers instead; it counts allocator reservations only,
+    so it reads low.
+    """
+    import torch
+
+    if device.type == "cuda":
+        nvml_bytes = get_process_gpu_memory_bytes(device.index)
+        if nvml_bytes is not None:
+            return nvml_bytes, "nvml"
+
+    memory_reserved = getattr(torch.get_device_module(device), "memory_reserved", None)
+    if memory_reserved is None:
+        return None, "unavailable"
+    return int(memory_reserved(device)), "torch_allocator"
+
+
 def create_audio_decode_executor(
     model_path: str,
     *,
@@ -247,7 +290,10 @@ def create_audio_decode_executor(
 
     import torch
 
-    from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
+    from sglang_omni.models.ming_tts.audio_decode import (
+        MingAudioDecoder,
+        missing_streaming_device_api,
+    )
     from sglang_omni.models.ming_tts.streaming_vocoder import (
         MingTTSStreamingVocoderScheduler,
     )
@@ -292,14 +338,22 @@ def create_audio_decode_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     resolved_device = resolve_concrete_device(device, gpu_id)
-    if resolved_device.type != "cuda" or not torch.cuda.is_available():
+    device_module = torch.get_device_module(resolved_device)
+    if resolved_device.type == "cpu" or not device_module.is_available():
         raise ValueError(
-            "Ming-Omni-TTS fixed AudioVAE serving requires an available CUDA device"
+            "Ming-Omni-TTS fixed AudioVAE serving requires an available "
+            f"accelerator, got {resolved_device}"
         )
     logical_gpu_id = resolved_device.index
-    if logical_gpu_id >= torch.cuda.device_count():
+    if logical_gpu_id >= device_module.device_count():
         raise ValueError(
             f"Ming-Omni-TTS audio decode GPU {logical_gpu_id} is not visible"
+        )
+    unsupported_api = missing_streaming_device_api(resolved_device)
+    if unsupported_api is not None:
+        raise ValueError(
+            "Ming-Omni-TTS fixed AudioVAE serving streams through the device "
+            f"module, and {resolved_device} has no {unsupported_api}"
         )
 
     resolved_dtype = _resolve_audio_vae_dtype(dtype)
@@ -309,8 +363,8 @@ def create_audio_decode_executor(
             f"got {resolved_dtype}"
         )
 
-    device_info = get_gpu_device_info(logical_gpu_id)
-    pre_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+    device_total_bytes = _device_total_memory_bytes(resolved_device)
+    pre_process_bytes, memory_source = _process_memory_bytes(resolved_device)
 
     checkpoint_dir = _resolve_checkpoint(model_path)
     config = _load_ming_tts_config(checkpoint_dir)
@@ -372,7 +426,7 @@ def create_audio_decode_executor(
         raise
     try:
         scheduler.warmup_now()
-        post_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+        post_process_bytes, memory_source = _process_memory_bytes(resolved_device)
         process_delta_bytes = (
             post_process_bytes - pre_process_bytes
             if pre_process_bytes is not None and post_process_bytes is not None
@@ -381,20 +435,19 @@ def create_audio_decode_executor(
         process_budget_bytes = None
         if process_fraction is None:
             memory_verification = "not_requested"
-        elif post_process_bytes is None or device_info.total_memory_bytes is None:
+        elif post_process_bytes is None or device_total_bytes is None:
             memory_verification = "unavailable"
             logger.warning(
                 "ming_tts_audio_decode_memory stage=audio_decode "
-                "memory_verification=unavailable process_post_bytes=%s "
-                "device_total_bytes=%s process_fraction=%s",
+                "memory_verification=unavailable memory_source=%s "
+                "process_post_bytes=%s device_total_bytes=%s process_fraction=%s",
+                memory_source,
                 post_process_bytes,
-                device_info.total_memory_bytes,
+                device_total_bytes,
                 process_fraction,
             )
         else:
-            process_budget_bytes = int(
-                device_info.total_memory_bytes * process_fraction
-            )
+            process_budget_bytes = int(device_total_bytes * process_fraction)
             if post_process_bytes > process_budget_bytes:
                 raise RuntimeError(
                     "Ming-Omni-TTS audio decode process GPU memory exceeds its "
@@ -413,8 +466,8 @@ def create_audio_decode_executor(
             "audio_patch_size=%d max_step_latents=%d latent_dim=%d "
             "component_fraction=%s process_fraction=%s "
             "process_pre_bytes=%s process_post_bytes=%s "
-            "audio_factory_process_delta_bytes=%s process_budget_bytes=%s "
-            "memory_verification=%s",
+            "audio_factory_process_delta_bytes=%s device_total_bytes=%s "
+            "process_budget_bytes=%s memory_source=%s memory_verification=%s",
             resolved_device,
             str(resolved_dtype).removeprefix("torch."),
             MING_TTS_AUDIO_VAE_ATTN_IMPLEMENTATION,
@@ -431,7 +484,9 @@ def create_audio_decode_executor(
             pre_process_bytes,
             post_process_bytes,
             process_delta_bytes,
+            device_total_bytes,
             process_budget_bytes,
+            memory_source,
             memory_verification,
         )
     except Exception:

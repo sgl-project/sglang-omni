@@ -538,6 +538,31 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
     assert seen["gpu_id"] == 1
 
 
+def test_ming_tts_engine_stage_forwards_none_to_the_shared_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract as Qwen3-ASR: hand None down, and do not drop gpu_id."""
+    from sglang_omni.models.ming_tts import stages
+    from sglang_omni.scheduling import engine_factory
+
+    seen: dict[str, object] = {}
+
+    def spy_build(self, model_path, **kwargs):
+        del self, model_path
+        seen.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        engine_factory.SGLangGenerationEngineBuilder, "build", spy_build
+    )
+
+    stages.create_sglang_tts_engine_executor("unused", device=None, gpu_id=1)
+
+    assert "device" in seen, "the factory did not route through the shared builder"
+    assert seen["device"] is None
+    assert seen["gpu_id"] == 1
+
+
 # note (lennox): this topology's own placement policy rejects process replicas
 # (models/qwen3_omni/placement.py).
 _REPLICA_REJECTED_TOPOLOGIES = {

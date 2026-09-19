@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 
 class XPUOmniPlatform(OmniPlatform):
@@ -48,6 +49,11 @@ class XPUOmniPlatform(OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+        from sgl_kernel.jit.rope import apply_rope_inplace
+
+        return apply_rope_inplace
+
     def enable_talker_graph(self) -> bool:
         return True
 
@@ -72,6 +78,9 @@ class XPUOmniPlatform(OmniPlatform):
         from torch.nn.attention import SDPBackend
 
         return (SDPBackend.FLASH_ATTENTION, SDPBackend.MATH)
+
+    def moe_router_logits_dtype(self, gate_dtype: "torch.dtype") -> "torch.dtype":
+        return gate_dtype
 
     def apply_model_worker_backend_policy(
         self,

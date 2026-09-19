@@ -47,7 +47,6 @@ class _VendorSRTPlatform(SRTPlatform, _VendorDeviceMixin):
         OmniPlatform,
         CPUOmniPlatform,
         ROCMOmniPlatform,
-        XPUOmniPlatform,
         platforms.NPUOmniPlatform,
         platforms.MUSAOmniPlatform,
         platforms.AppleOmniPlatform,
@@ -93,6 +92,45 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
 
     with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
         CUDAOmniPlatform().get_joint_rope_inplace_kernel()
+
+    assert raised.value is error
+
+
+def test_xpu_joint_rope_getter_returns_the_sycl_kernel_without_calling_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XPU answers the capability itself, so Ming-TTS is not gated off the card."""
+    module_name = "sgl_kernel.jit.rope"
+    rope_module = ModuleType(module_name)
+    kernel = Mock(side_effect=AssertionError("Getter must not execute the kernel"))
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, module_name, rope_module)
+    cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
+    monkeypatch.setattr(
+        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", cuda_provider
+    )
+
+    assert XPUOmniPlatform().get_joint_rope_inplace_kernel() is kernel
+    kernel.assert_not_called()
+    cuda_provider.assert_not_called()
+
+
+def test_xpu_joint_rope_getter_propagates_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build without the SYCL kernel is a loud failure, not a silent None."""
+    original_import = builtins.__import__
+    error = ImportError("XPU joint RoPE provider is unavailable")
+
+    def import_without_rope(name, *args, **kwargs):
+        if name == "sgl_kernel.jit.rope":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_rope)
+
+    with pytest.raises(ImportError, match="XPU joint RoPE provider") as raised:
+        XPUOmniPlatform().get_joint_rope_inplace_kernel()
 
     assert raised.value is error
 
@@ -332,6 +370,17 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
 
 
+def test_xpu_declines_the_fp32_widening_of_moe_router_logits() -> None:
+    """The gate computed in the model dtype, so XPU keeps it and stays lossless."""
+    xpu = xpu_platform.XPUOmniPlatform()
+
+    assert xpu.moe_router_logits_dtype(torch.bfloat16) is torch.bfloat16
+    assert xpu.moe_router_logits_dtype(torch.float16) is torch.float16
+    assert xpu.moe_router_logits_dtype(torch.float32) is torch.float32
+    for platform in (OmniPlatform(), CPUOmniPlatform(), CUDAOmniPlatform()):
+        assert platform.moe_router_logits_dtype(torch.bfloat16) is torch.float32
+
+
 def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
     from torch.nn.attention import SDPBackend
 
@@ -382,3 +431,20 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
 
     assert calls == [list(platform.get_graph_capture_sdpa_backends())]
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
+
+
+def test_entering_the_pin_actually_narrows_sdpa_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flags prove the narrowing, where recording the call only proves intent."""
+    from torch.nn.attention import SDPBackend
+
+    platform = xpu_platform.XPUOmniPlatform()
+    monkeypatch.setattr(
+        platform, "get_graph_capture_sdpa_backends", lambda: (SDPBackend.MATH,)
+    )
+
+    with platform.graph_capture_attention():
+        assert torch.backends.cuda.math_sdp_enabled() is True
+        assert torch.backends.cuda.flash_sdp_enabled() is False
+        assert torch.backends.cuda.mem_efficient_sdp_enabled() is False
