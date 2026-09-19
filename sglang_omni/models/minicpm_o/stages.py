@@ -22,9 +22,9 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
-# measured on A800 SeedTTS replay, c16/n50
-CODE2WAV_MAX_BATCH_SIZE = 4
-CODE2WAV_MAX_BATCH_WAIT_MS = 10.0
+# A800 c16/n50 preferred 4; H200 still gains at 8, regresses at 16 on wide pads
+CODE2WAV_MAX_BATCH_SIZE = 8
+CODE2WAV_MAX_BATCH_WAIT_MS = 0.0
 CODE2WAV_BATCH_WAIT_WHEN_IDLE = False
 
 

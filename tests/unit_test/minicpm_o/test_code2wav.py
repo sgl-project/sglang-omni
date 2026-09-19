@@ -169,8 +169,8 @@ def test_invalid_reference_does_not_silently_use_default() -> None:
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
     code2wav = next(stage for stage in config.stages if stage.name == "code2wav")
-    assert code2wav.factory.max_batch_size == 4
-    assert code2wav.factory.max_batch_wait_ms == 10.0
+    assert code2wav.factory.max_batch_size == 8
+    assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
 
 
