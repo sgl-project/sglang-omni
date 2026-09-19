@@ -21,6 +21,8 @@ class MpsProcessFact:
     placement_gpu_ids: tuple[int, ...]
     explicit_cuda_gpu_ids: tuple[int, ...]
     contains_tp: bool
+    logical_process_name: str | None = None
+    sm_cap: int | None = None
 
 
 def process_gpu_ids(process_spec) -> set[int]:
@@ -79,6 +81,7 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
     placement_by_process: dict[str, set[int]] = {}
     explicit_by_process: dict[str, set[int]] = {}
     contains_tp: dict[str, bool] = {}
+    policies = {spec.process_name: spec for spec in process_specs}
 
     for process_spec in process_specs:
         name = process_spec.process_name
@@ -105,6 +108,8 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             placement_gpu_ids=tuple(sorted(placement_by_process[name])),
             explicit_cuda_gpu_ids=tuple(sorted(explicit_by_process[name])),
             contains_tp=contains_tp[name],
+            logical_process_name=getattr(policies[name], "logical_process_name", None),
+            sm_cap=getattr(policies[name], "sm_cap", None),
         )
         for name in process_order
     )

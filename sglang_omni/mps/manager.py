@@ -56,6 +56,26 @@ class MpsClientRef:
     client_pid: int
 
 
+@dataclass(frozen=True)
+class MpsSmPartition:
+    partition_id: str
+    chunks: int
+    sm_count: int
+    has_clients: bool
+
+
+@dataclass(frozen=True)
+class MpsGpuPartitions:
+    """One lspart device group; gpu_prefix is display text, not an identity."""
+
+    gpu_prefix: str
+    free_chunks: int
+    used_chunks: int
+    free_sm: int
+    used_sm: int
+    partitions: tuple[MpsSmPartition, ...] = ()
+
+
 @dataclass
 class MpsLease:
     """All authority and runtime-local evidence owned by one acquisition."""
@@ -64,12 +84,31 @@ class MpsLease:
     owner_fd: int
     client_tokens: dict[str, str]
     attachment_verified: bool = False
+    partitions: dict[str, str] = field(default_factory=dict)
+    partition_creation_pending: bool = False
 
 
 class MpsControlClient(Protocol):
     """Strict domain I/O used by :class:`MpsManager`."""
 
-    def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None: ...
+    def start_daemon(
+        self,
+        pipe_dir: Path,
+        log_dir: Path,
+        gpu_uuid: str,
+        *,
+        static_partitioning: bool = False,
+    ) -> None: ...
+
+    def static_partitioning_enabled(self, pipe_dir: Path) -> bool: ...
+
+    def create_partition(self, pipe_dir: Path, gpu_uuid: str, chunks: int) -> str: ...
+
+    def remove_partition(
+        self, pipe_dir: Path, gpu_uuid: str, partition_id: str
+    ) -> None: ...
+
+    def list_partitions(self, pipe_dir: Path) -> tuple[MpsGpuPartitions, ...]: ...
 
     def read_daemon_identity(self, pipe_dir: Path) -> int: ...
 
@@ -105,12 +144,18 @@ class MpsManager:
     verify_timeout: float = 30.0
     drain_timeout: float = 60.0
     stop_timeout: float = 10.0
+    static_partitioning: bool = False
 
     @property
     def _owner_file(self) -> Path:
         return self.paths.owners_dir / str(os.getpid())
 
-    def acquire(self, client_tokens: Mapping[str, str]) -> MpsLease:
+    def acquire(
+        self,
+        client_tokens: Mapping[str, str],
+        *,
+        sm_caps: Mapping[str, int] | None = None,
+    ) -> MpsLease:
         """Create or join the daemon and return the sole cleanup token."""
 
         tokens = dict(client_tokens)
@@ -122,8 +167,20 @@ class MpsManager:
         try:
             with state_root_lock(self.paths.state_root, f".lock-{self.gpu_uuid}"):
                 if not self.paths.state_dir.exists():
-                    return self._create_locked(tokens)
-                return self._join_locked(tokens)
+                    lease = self._create_locked(tokens)
+                else:
+                    lease = self._join_locked(tokens)
+                prepared = False
+                try:
+                    if sm_caps:
+                        self._allocate_partitions_locked(lease, sm_caps)
+                    prepared = True
+                    return lease
+                finally:
+                    if not prepared:
+                        cleanup_error = self._rollback_create(lease)
+                        if cleanup_error is not None:
+                            raise cleanup_error
         except MpsError:
             raise
         except Exception as exc:
@@ -141,7 +198,10 @@ class MpsManager:
         startup_error: BaseException | None = None
         try:
             self.client.start_daemon(
-                self.paths.pipe_dir, self.paths.log_dir, self.gpu_uuid
+                self.paths.pipe_dir,
+                self.paths.log_dir,
+                self.gpu_uuid,
+                static_partitioning=self.static_partitioning,
             )
         except MpsDaemonNotStartedError as exc:
             try:
@@ -192,6 +252,15 @@ class MpsManager:
 
     def _join_locked(self, client_tokens: dict[str, str]) -> MpsLease:
         state = self._inspect_existing_state()
+        if state.daemon_pid is not None:
+            static = self.client.static_partitioning_enabled(self.paths.pipe_dir)
+            if static != self.static_partitioning:
+                state.errors.append(
+                    f"static partitioning mode mismatch: daemon={static}, "
+                    f"requested={self.static_partitioning}. All clients of a "
+                    "static daemon require partitions; stop the existing "
+                    "workloads and clean up before changing mode"
+                )
         if (
             not state.errors
             and state.daemon_pid is not None
@@ -381,7 +450,7 @@ class MpsManager:
 
     def _rollback_create(self, lease: MpsLease) -> MpsError | None:
         try:
-            self._release_locked(lease)
+            self._release_locked(lease, clients_could_have_attached=False)
             return None
         except BaseException as exc:
             if lease.owner_fd >= 0:
@@ -396,6 +465,71 @@ class MpsManager:
                 dirty_error,
             )
             return dirty_error
+
+    def _partition_snapshot(self) -> MpsGpuPartitions:
+        devices = self.client.list_partitions(self.paths.pipe_dir)
+        # Note (Jiaxin Deng): lspart truncates UUIDs; the daemon's one-GPU
+        # visibility, not that prefix, identifies this device.
+        return devices[0]
+
+    def _read_partition(self, partition_id: str) -> MpsSmPartition:
+        return next(
+            partition
+            for partition in self._partition_snapshot().partitions
+            if partition.partition_id == partition_id
+        )
+
+    def _remove_partition(self, lease: MpsLease, process_name: str) -> None:
+        self.client.remove_partition(
+            self.paths.pipe_dir, self.gpu_uuid, lease.partitions[process_name]
+        )
+        del lease.partitions[process_name]
+
+    def _create_partition(
+        self, lease: MpsLease, process_name: str, chunks: int
+    ) -> None:
+        # Note (Jiaxin Deng): a query timeout can kill the control client after
+        # the daemon allocates a partition. Without its ID, retain the owner.
+        lease.partition_creation_pending = True
+        partition_id = self.client.create_partition(
+            self.paths.pipe_dir, self.gpu_uuid, chunks
+        )
+        lease.partitions[process_name] = partition_id
+        lease.partition_creation_pending = False
+
+    def _allocate_partitions_locked(
+        self, lease: MpsLease, sm_caps: Mapping[str, int]
+    ) -> None:
+        device = self._partition_snapshot()
+        if device.free_chunks < 1:
+            raise MpsError(
+                f"GPU {self.gpu_uuid}: requested {sum(sm_caps.values())} SM, "
+                "available 0 SM; no free chunks for static partitioning"
+            )
+        self._create_partition(lease, "", 1)
+        try:
+            probe = self._read_partition(lease.partitions[""])
+            chunk_size = probe.sm_count
+        finally:
+            self._remove_partition(lease, "")
+
+        available = device.free_chunks * chunk_size
+        total = (device.free_chunks + device.used_chunks) * chunk_size
+        legal = list(range(chunk_size, total + 1, chunk_size))
+        for name, cap in sm_caps.items():
+            if cap <= 0 or cap % chunk_size:
+                raise MpsError(
+                    f"Process {name!r}: sm_cap={cap} must be positive multiples of "
+                    f"{chunk_size} SM on {self.gpu_uuid}; legal values: {legal}"
+                )
+        requested = sum(sm_caps.values())
+        if requested > available:
+            raise MpsError(
+                f"GPU {self.gpu_uuid}: requested {requested} SM, available {available} SM "
+                f"({total} SM allocatable in total); static partitions cannot be oversubscribed"
+            )
+        for name, cap in sm_caps.items():
+            self._create_partition(lease, name, cap // chunk_size)
 
     def env_for_stage(self) -> dict[str, str]:
         return {
@@ -536,6 +670,10 @@ class MpsManager:
         *,
         clients_could_have_attached: bool = True,
     ) -> None:
+        if lease.partition_creation_pending:
+            raise MpsError(
+                "MPS partition creation outcome is uncertain; preserving owner and daemon for inspection"
+            )
         if clients_could_have_attached:
             self._wait_for_owned_clients_to_detach(lease)
 
@@ -566,6 +704,9 @@ class MpsManager:
         remaining_owner_pids = {
             pid for pid, path in self._owner_files().items() if path != self._owner_file
         }
+
+        for process_name in list(lease.partitions):
+            self._remove_partition(lease, process_name)
 
         if remaining_owner_pids:
             if (

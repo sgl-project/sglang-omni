@@ -271,7 +271,7 @@ class PlacementConfig(BaseModel):
 # and references, and logical-process compilation checks derived topology once
 # before workers start. Runtime only consumes the compiled plans.
 class ProcessConfig(BaseModel):
-    """Replica policy for one logical process.
+    """Replica and SM partition policy for one logical process.
 
     Keyed by Process Name in ``PipelineConfig.processes``. Member stages come
     from ``StageConfig.process``, so this never repeats them.
@@ -281,6 +281,7 @@ class ProcessConfig(BaseModel):
 
     num_replicas: int = 1
     replica_devices: list[int] | None = None
+    sm_cap: int | None = Field(default=None, gt=0)
 
     @field_validator("replica_devices", mode="before")
     @classmethod
@@ -991,6 +992,10 @@ class PipelineConfig(BaseModel):
                 f"processes references unknown process name(s): {unknown}. "
                 f"Declared process names: {sorted(members)}"
             )
+        if self.mps == "off" and any(
+            process.sm_cap is not None for process in self.processes.values()
+        ):
+            raise ValueError("sm_cap requires MPS; set mps=on or mps=auto")
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> PipelineConfig:
