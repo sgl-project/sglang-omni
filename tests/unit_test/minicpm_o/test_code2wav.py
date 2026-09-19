@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import inspect
 import os
 import subprocess
 import sys
@@ -26,13 +25,7 @@ from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
     project_talker_to_code2wav,
 )
-from sglang_omni.models.minicpm_o.stages import (
-    CODE2WAV_BATCH_WAIT_WHEN_IDLE,
-    CODE2WAV_MAX_BATCH_SIZE,
-    CODE2WAV_MAX_BATCH_WAIT_MS,
-    create_code2wav_executor,
-    vocode_code2wav_payloads,
-)
+from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -172,18 +165,6 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.max_batch_size == 8
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
-
-
-def test_code2wav_factory_defaults_enable_batching() -> None:
-    signature = inspect.signature(create_code2wav_executor)
-    assert signature.parameters["max_batch_size"].default == CODE2WAV_MAX_BATCH_SIZE
-    assert (
-        signature.parameters["max_batch_wait_ms"].default == CODE2WAV_MAX_BATCH_WAIT_MS
-    )
-    assert (
-        signature.parameters["batch_wait_when_idle"].default
-        is CODE2WAV_BATCH_WAIT_WHEN_IDLE
-    )
 
 
 def test_vocode_many_slices_waveforms_to_token_lengths() -> None:

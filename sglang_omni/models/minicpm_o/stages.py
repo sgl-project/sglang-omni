@@ -22,11 +22,6 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
-# A800 c16/n50 preferred 4; H200 still gains at 8, regresses at 16 on wide pads
-CODE2WAV_MAX_BATCH_SIZE = 8
-CODE2WAV_MAX_BATCH_WAIT_MS = 0.0
-CODE2WAV_BATCH_WAIT_WHEN_IDLE = False
-
 
 def create_preprocessing_executor(
     model_path: str,
@@ -251,12 +246,12 @@ def vocode_code2wav_payloads(
 def create_code2wav_executor(
     model_path: str,
     *,
+    max_batch_size: int,
+    max_batch_wait_ms: float,
+    batch_wait_when_idle: bool,
     device: str | None = None,
     gpu_id: int | None = None,
     float16: bool = False,
-    max_batch_size: int = CODE2WAV_MAX_BATCH_SIZE,
-    max_batch_wait_ms: float = CODE2WAV_MAX_BATCH_WAIT_MS,
-    batch_wait_when_idle: bool = CODE2WAV_BATCH_WAIT_WHEN_IDLE,
     max_batch_cost: int | None = None,
 ) -> SimpleScheduler:
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState

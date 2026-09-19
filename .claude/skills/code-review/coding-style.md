@@ -178,6 +178,14 @@ speculative generality.
 - Do not ship a YAML file that is "documentation only" and never loaded.
 - Define a constant used by only one module in that module; do not create a
   cross-file import solely for it.
+- Parameters flow top-down. A default owned by pipeline or stage config
+  (FactoryArgs, StageConfig, CLI) is written once at that layer and passed
+  down. Do not re-declare the same value as a lower-layer module constant or
+  factory default. The factory takes the knobs as required parameters and
+  forwards them; it does not invent a second copy of the policy.
+  Wrong: `CODE2WAV_MAX_BATCH_SIZE = 8` in stages.py plus
+  `FactoryArgs(max_batch_size=8)` in config.py. Right: only the config
+  FactoryArgs; `create_code2wav_executor(..., max_batch_size: int, ...)`.
 
 ## IMPORTS
 
