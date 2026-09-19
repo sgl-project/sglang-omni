@@ -187,4 +187,8 @@ class MiniCPMOCode2Wav(nn.Module):
                     .reshape(-1)[: token_lens[batch_idx] * samples_per_token]
                     .numpy()
                 )
-        return [output for output in outputs if output is not None]
+        resolved_outputs: list[np.ndarray] = []
+        for output in outputs:
+            assert output is not None
+            resolved_outputs.append(output)
+        return resolved_outputs
