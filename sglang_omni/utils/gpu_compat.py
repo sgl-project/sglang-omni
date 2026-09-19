@@ -7,6 +7,7 @@ import importlib
 import logging
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
+from pathlib import Path
 
 from sglang_omni.utils.gpu_memory import (
     _get_device_handle,
@@ -19,6 +20,9 @@ from sglang_omni.utils.gpu_memory import (
 logger = logging.getLogger(__name__)
 
 _FLASHINFER_USE_CUDA_NORM = "FLASHINFER_USE_CUDA_NORM"
+_DEFAULT_TORCHINDUCTOR_CACHE_DIR = (
+    Path.home() / ".cache" / "sglang-omni" / "torchinductor"
+)
 
 _GPU_ARCHITECTURES = {
     89: "ada",
@@ -155,6 +159,20 @@ def get_gpu_compat_env_defaults(
     return {_FLASHINFER_USE_CUDA_NORM: "1"}
 
 
+def apply_torch_compile_cache_env(
+    env: MutableMapping[str, str] | None = None,
+) -> str:
+    """Pin TORCHINDUCTOR_CACHE_DIR so the first compile is reused on later starts."""
+    target_env = os.environ if env is None else env
+    if "TORCHINDUCTOR_CACHE_DIR" not in target_env:
+        target_env["TORCHINDUCTOR_CACHE_DIR"] = str(_DEFAULT_TORCHINDUCTOR_CACHE_DIR)
+        logger.info(
+            "Torch compile cache directory: %s",
+            target_env["TORCHINDUCTOR_CACHE_DIR"],
+        )
+    return target_env["TORCHINDUCTOR_CACHE_DIR"]
+
+
 def apply_gpu_compat_env_defaults(
     env: MutableMapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -164,6 +182,7 @@ def apply_gpu_compat_env_defaults(
     for key, value in overrides.items():
         target_env[key] = value
         logger.info(f"Applied GPU compatibility env override: {key}={value}")
+    apply_torch_compile_cache_env(target_env)
     return overrides
 
 
