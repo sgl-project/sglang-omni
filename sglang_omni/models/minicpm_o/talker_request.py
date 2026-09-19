@@ -49,7 +49,11 @@ def build_talker_request(
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
     start = tts_bos_indices[-1] + 1
-    end = tts_eos_indices[-1] if tts_eos_indices else len(full_sequence)
+    # Only an end marker inside the current segment may close the span: a
+    # history turn's <|tts_eos|> sits before the last <|tts_bos|>, and slicing
+    # at it would drop the truncated current speech (end < start → empty).
+    segment_eos = [i for i in tts_eos_indices if i >= start]
+    end = segment_eos[0] if segment_eos else len(full_sequence)
 
     # note (MayDomine): the first captured hidden state is the last prompt position.
     hidden_base = prompt_len - 1
