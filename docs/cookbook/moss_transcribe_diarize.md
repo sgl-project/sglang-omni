@@ -96,6 +96,66 @@ Unlike TTS where the same reference voice is reused across many prompts (high hi
 
 ## Model Usage
 
+### Apple Silicon (MLX and Torch MPS)
+
+On a macOS `arm64` checkout, install the Apple runtime and expose FFmpeg 7 to
+TorchCodec:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Select native MLX and start the server:
+
+```bash
+export SGLANG_USE_MLX=1
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --port 8000
+```
+
+To use Torch MPS instead, select it before starting the same server command:
+
+```bash
+export SGLANG_USE_MLX=0
+```
+
+The initial Apple profile is a draft that uses BF16 checkpoint weights, one
+active request, greedy decoding (`temperature=0`, `repetition_penalty=1`), and disables radix reuse,
+scheduler-level split/chunked prefill, async decode, and CUDA-only encoder
+services. Quantized checkpoints are not supported yet. The Apple runners
+microbatch the 30-second encoder windows and feed the resulting embeddings to
+the decoder in bounded chunks. Torch MPS bounds the context and token pool to
+32768 tokens by default. To apply the same bound to MLX, add:
+
+```bash
+--asr.engine.context_length 32768
+```
+
+Both backends have been validated with short-form audio and the five-sample
+SeedTTS EN mini set on a 24 GB Apple Silicon machine. Long-context smoke tests
+with a one-token output budget completed 90 minutes on MLX and 30 minutes on
+Torch MPS; the Torch MPS 30-minute prefill took about 9.8 minutes, so MLX is the
+practical long-form backend on this hardware. Full-output accuracy was also
+validated with ground truth: three original 50--67 second Meanwhile samples
+reached 0.0651 corpus WER on MLX; a dense 603-second fixture made by repeating
+one of those samples reached 0.0662 WER on MLX, and its 134-second two-repeat
+variant reached 0.0656 WER on Torch MPS. Qualify diverse full-output
+30/60/90-minute audio on a higher-memory machine before making a production
+accuracy or latency claim at those durations.
+
+Send the same OpenAI-compatible request, explicitly retaining greedy decoding:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  -F file=@tests/data/query_to_cars.wav \
+  -F response_format=verbose_json \
+  -F temperature=0
+```
+
 ### Launching Commands
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
@@ -152,9 +212,7 @@ resp.raise_for_status()
 payload = resp.json()
 print(payload["text"])
 for segment in payload.get("segments", []):
-    print(
-        f"[{segment['start']:.2f}-{segment['end']:.2f}] {segment['text']}"
-    )
+    print(f"[{segment['start']:.2f}-{segment['end']:.2f}] {segment['text']}")
 ```
 
 When a request omits `max_new_tokens`, the server sizes the output budget from the audio duration in both directions: `max(512, 10 tokens per audio second)` with the stock config, so a 60 minute recording gets a 36000 token budget without any client changes, while a 6 second clip is bounded at 512 tokens instead of inheriting the old fixed 5120 default — this keeps greedy decoding from looping for thousands of tokens on short non-speech audio (#975) without truncating dense, timestamped multi-speaker transcripts. A zero-duration input uses a tighter 128-token fallback because it has no legitimate transcript to preserve. Neither bound exceeds an operator-pinned smaller default. The form also accepts `repetition_penalty` (0 < x <= 2, default 1.0 = off) to damp repetition loops on noisy audio without touching the greedy default. Operators can pin a fixed `max_new_tokens` in the stage config, which disables duration scaling for requests that omit the field. An explicit `max_new_tokens` in the request always wins over both defaults. The scheduler clamps the final value to the context remaining after the audio prompt, so large explicit values are safe to send. Set the field explicitly when you want a hard cap or a larger budget than the default, as in this example with a clip from the repo that has two speakers:
