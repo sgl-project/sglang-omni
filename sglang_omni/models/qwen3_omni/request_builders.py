@@ -900,36 +900,6 @@ def apply_thinker_result(
 
 
 def make_thinker_stream_output_builder():
-    def _normalize_chunk_hidden(hidden: torch.Tensor | None) -> torch.Tensor | None:
-        if hidden is None:
-            return None
-        if hidden.ndim == 1:
-            return hidden
-        if hidden.ndim == 2:
-            return hidden[0]
-        return None
-
-    def _split_dual_layer_hidden(
-        hidden: dict[str | int, torch.Tensor] | torch.Tensor,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-        if isinstance(hidden, torch.Tensor):
-            return _normalize_chunk_hidden(hidden), None
-
-        embed = hidden.get("embed")
-        if embed is None and 0 in hidden:
-            embed = hidden[0]
-        if embed is None and "0" in hidden:
-            embed = hidden["0"]
-
-        layer_hidden = None
-        for key, value in hidden.items():
-            if key in ("embed", 0, "0"):
-                continue
-            if isinstance(value, torch.Tensor):
-                layer_hidden = value
-                break
-        return _normalize_chunk_hidden(embed), _normalize_chunk_hidden(layer_hidden)
-
     def _build_stream_output(
         request_id: str, req_data: Any, req_output: Any
     ) -> list[OutgoingMessage]:
@@ -968,21 +938,20 @@ def make_thinker_stream_output_builder():
         if not should_generate_audio_output(stage_payload):
             return messages
 
-        # Speech mode: also stream hidden states to the talker for codec gen.
-        extra = req_output.extra
-        if isinstance(extra, dict) and "hidden_states" in extra:
-            embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
-            hidden = embed if embed is not None else layer_hidden
-            if hidden is not None:
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        data=hidden,
-                        target="talker_ar",
-                        metadata={"token_id": token_id},
-                    )
-                )
+        # Speech mode: the talker rebuilds this assistant row from token_id
+        # through its own text embedding, so the event carries the token only.
+        # Unlike the decode event above, this one is not gated on API streaming:
+        # the talker needs every token either way.
+        messages.append(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                # Wrap int; stream transport only accepts tensors.
+                data=torch.tensor([token_id], dtype=torch.long),
+                target="talker_ar",
+                metadata={"token_id": token_id},
+            )
+        )
 
         return messages
 
