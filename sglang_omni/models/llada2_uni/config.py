@@ -51,7 +51,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
             name=THINKER_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
-            factory=FactoryArgs(max_seq_len=8192),
+            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
             gpu=0,
             next=DECODE_STAGE,
         ),
