@@ -92,7 +92,7 @@
 "error.dictionaryInvalid" = "Fix or delete invalid Dictionary entries before recording. Each phrase must contain 1–120 characters without NUL, with at most 200 entries.";
 "error.selectionTooLong" = "Select at most 12,000 characters without NUL before using Voice edit or Ask.";
 "error.editNeedsSelection" = "Select the text you want to change in another app, then use the shortcut. Accessibility access is required.";
-"notice.fieldNotAccessible" = "The current field is not accessible. Your result will be ready to copy.";
+"notice.fieldNotAccessible" = "The current field is not accessible, so text will not be inserted automatically.";
 "notice.streamRecovered" = "Live transcription was interrupted; recovered from the complete recording.";
 "notice.noSpeech" = "No speech detected. Try speaking closer to the microphone.";
 "notice.answerReady" = "Your answer is ready.";

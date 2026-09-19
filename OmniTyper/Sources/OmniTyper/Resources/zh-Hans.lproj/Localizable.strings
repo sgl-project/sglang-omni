@@ -92,7 +92,7 @@
 "error.dictionaryInvalid" = "录音前请修正或删除无效的词典条目。每条词组需为 1–120 个字符且不含 NUL，最多 200 条。";
 "error.selectionTooLong" = "使用语音编辑或提问前，选中的文本不得超过 12,000 个字符且不能包含 NUL。";
 "error.editNeedsSelection" = "请先在其他应用中选中要修改的文字，再按快捷键。需要辅助功能权限。";
-"notice.fieldNotAccessible" = "当前输入框不可访问，结果将可供复制。";
+"notice.fieldNotAccessible" = "当前输入框不可访问，本次不会自动插入文字。";
 "notice.streamRecovered" = "实时转写中断，已从完整录音恢复。";
 "notice.noSpeech" = "未检测到语音，请靠近麦克风再试。";
 "notice.answerReady" = "答案已就绪。";
