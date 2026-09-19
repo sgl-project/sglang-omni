@@ -8,6 +8,10 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.voxtral_tts.acoustic_transformer import AudioSpecialTokens
 from sglang_omni.scheduling.types import RequestOutput
 
@@ -25,8 +29,14 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self._build_prefill_input_embeds(
+                    forward_batch,
+                    requests,
+                )
+            ),
         )
 
     def before_decode(
