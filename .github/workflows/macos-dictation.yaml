@@ -1,0 +1,52 @@
+name: macOS Dictation Example
+
+on:
+  pull_request:
+    paths:
+      - 'examples/macos_dictation/**'
+      - '.github/workflows/macos-dictation.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-dictation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  client:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the application and verify deployment target
+        run: |
+          bash examples/macos_dictation/build_client.sh
+          bash examples/macos_dictation/build_compatibility_test.sh
+      - name: Run deterministic regressions
+        run: bash examples/macos_dictation/verify_all_test.sh
+      - name: Check result-window dismissal and explicit reopening
+        run: bash examples/macos_dictation/result_window_feedback_test.sh
+      - name: Check capture failure at stop without microphone access
+        run: bash examples/macos_dictation/capture_stop_test.sh
+      - name: Check voice correction without models or input events
+        run: |
+          bash examples/macos_dictation/correction_test.sh
+          bash examples/macos_dictation/revision_target_test.sh
+          bash examples/macos_dictation/correction_integration_test.sh
+          bash examples/macos_dictation/correction_feedback_test.sh
+          bash examples/macos_dictation/ollama_correction_test.sh
+          bash examples/macos_dictation/correction_plan_test.sh
+          bash examples/macos_dictation/correction_instruction_echo_test.sh
+          bash examples/macos_dictation/spelling_correction_test.sh
+          bash examples/macos_dictation/background_correction_test.sh
+          bash examples/macos_dictation/revision_confirmation_test.sh
+          bash examples/macos_dictation/revision_anchor_compatibility_test.sh
+          bash examples/macos_dictation/revision_selection_delay_test.sh
+      - name: Check installation and startup helpers without downloads
+        run: bash examples/macos_dictation/local_setup_test.sh
+      - name: Check warmup and backend lifecycles without models
+        run: bash examples/macos_dictation/lifecycle_test.sh
+      - name: Run package core tests
+        run: swift test --package-path examples/macos_dictation --arch arm64

@@ -2,6 +2,13 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
+## macOS Dictation
+
+[macOS dictation](macos_dictation/README.md) is an Apple Silicon menu-bar example
+using SGLang-Omni ASR over HTTP, optional local Ollama copyediting, and one-shot
+paste into the current editor. It includes configurable hotkeys, independent
+model settings, and deterministic regressions. It does not change the Omni runtime.
+
 ## Unified Launcher
 
 `run_omni.py` keeps model and topology choices in reusable presets. Use
