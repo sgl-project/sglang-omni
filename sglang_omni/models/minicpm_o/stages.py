@@ -198,13 +198,20 @@ def create_code2wav_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     float16: bool = False,
+    max_batch_size: int = 1,
+    max_batch_wait_ms: float = 0.0,
+    batch_wait_when_idle: bool = True,
+    max_batch_cost: int | None = None,
 ) -> SimpleScheduler:
+    from collections import defaultdict
+
     from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
     from sglang_omni.models.minicpm_o.routing import (
         TALKER_STAGE,
         code2wav_reference_audio,
     )
+    from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.audio_payload import audio_waveform_payload
     from sglang_omni.utils.device import resolve_concrete_device
@@ -215,6 +222,24 @@ def create_code2wav_executor(
         float16=float16,
     )
 
+    def _reference_key(reference: str | bytes) -> str:
+        if isinstance(reference, bytes):
+            return f"bytes:{hash_bytes(reference)}"
+        return reference_path_cache_key(reference) or str(reference)
+
+    def _payload_with_waveform(
+        payload: StagePayload, waveform, sample_rate: int
+    ) -> StagePayload:
+        payload.data = dict(
+            audio_waveform_payload(
+                waveform,
+                sample_rate=sample_rate,
+                modality="audio",
+                source_hint="MiniCPM-o",
+            )
+        )
+        return payload
+
     def _vocode(payload: StagePayload) -> StagePayload:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
@@ -222,17 +247,51 @@ def create_code2wav_executor(
             codec_tokens=talker_out["codec_tokens"],
             prompt_wav=code2wav_reference_audio(payload),
         )
-        payload.data = dict(
-            audio_waveform_payload(
-                out["waveform"],
-                sample_rate=int(out["sample_rate"]),
-                modality="audio",
-                source_hint="MiniCPM-o",
-            )
-        )
-        return payload
+        return _payload_with_waveform(payload, out["waveform"], int(out["sample_rate"]))
 
-    return SimpleScheduler(_vocode)
+    def _codec_token_cost(payload: StagePayload) -> int:
+        state = MiniCPMOPipelineState.from_dict(payload.data)
+        talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
+        return int(talker_out["codec_tokens"].numel())
+
+    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        parsed = []
+        groups: dict[str, list[int]] = defaultdict(list)
+        for idx, payload in enumerate(payloads):
+            state = MiniCPMOPipelineState.from_dict(payload.data)
+            talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
+            codec_tokens = talker_out["codec_tokens"].reshape(-1).tolist()
+            reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
+            parsed.append((payload, codec_tokens, reference))
+            groups[_reference_key(reference)].append(idx)
+
+        logger.info(
+            "minicpm_code2wav_batch size=%d groups=%d max_codec_tokens=%d",
+            len(payloads),
+            len(groups),
+            max((len(item[1]) for item in parsed), default=0),
+        )
+        results: list[StagePayload | None] = [None] * len(payloads)
+        for group_indices in groups.values():
+            reference = parsed[group_indices[0]][2]
+            token_batches = [parsed[idx][1] for idx in group_indices]
+            waveforms = model.vocode_many(token_batches, reference)
+            for idx, waveform in zip(group_indices, waveforms):
+                results[idx] = _payload_with_waveform(
+                    parsed[idx][0], waveform, model.sample_rate
+                )
+        return [result for result in results if result is not None]
+
+    batch_fn = _vocode_batch if int(max_batch_size) > 1 else None
+    return SimpleScheduler(
+        _vocode,
+        batch_compute_fn=batch_fn,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
+        request_cost_fn=_codec_token_cost,
+        max_batch_cost=max_batch_cost,
+    )
 
 
 def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
