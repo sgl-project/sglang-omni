@@ -12,6 +12,7 @@ final class GlobalShortcut {
     private var hold = false
     private(set) var pressed = false
     private var capturedKey = false
+    private var generation = UUID()
     private var onStart: (() -> Void)?
     private var onStop: (() -> Void)?
     private var onCancel: (() -> Void)?
@@ -83,7 +84,8 @@ final class GlobalShortcut {
     func stop() {
         monitorTask?.cancel()
         monitorTask = nil
-        release()
+        generation = UUID()
+        pressed = false
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
@@ -116,7 +118,7 @@ final class GlobalShortcut {
 
     func receive(_ type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            release()
+            if pressed { pressed = false; deliver(onCancel) }
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
         }
@@ -165,7 +167,11 @@ final class GlobalShortcut {
 
     private func deliver(_ callback: (() -> Void)?) {
         guard let callback else { return }
+        let token = generation
         // Note (Codex): Defer UI and permission work to avoid blocking the event tap.
-        DispatchQueue.main.async { callback() }
+        DispatchQueue.main.async { [weak self] in
+            guard self?.generation == token else { return }
+            callback()
+        }
     }
 }

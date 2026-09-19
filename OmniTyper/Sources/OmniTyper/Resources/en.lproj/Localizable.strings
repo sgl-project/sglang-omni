@@ -91,7 +91,7 @@
 "status.transcribing" = "Transcribing recording…";
 "error.dictionaryInvalid" = "Fix or delete invalid Dictionary entries before recording. Each phrase must contain 1–120 characters without NUL, with at most 200 entries.";
 "error.selectionTooLong" = "Select at most 12,000 characters without NUL before using Voice edit or Ask.";
-"error.editNeedsSelection" = "Select the text you want to change in another app, then use the shortcut. Accessibility access is required.";
+"error.editNeedsSelection" = "Select text to revise, or focus a nonempty text box to edit all its text. The field must be accessible.";
 "notice.fieldNotAccessible" = "The current field is not accessible. Your result will be ready to copy.";
 "notice.streamRecovered" = "Live transcription was interrupted; recovered from the complete recording.";
 "notice.noSpeech" = "No speech detected. Try speaking closer to the microphone.";
@@ -136,7 +136,7 @@
 "home.title" = "Say it. Make it yours.";
 "home.subtitle" = "Speak in any app. Let your Mac take care of the words.";
 "home.permissions.title" = "Make yourself at home";
-"home.permissions.axStale" = "Accessibility was granted before and has stopped applying. An update changes this build's signature, which invalidates the grant while System Settings still shows it enabled. Remove OmniTyper under Privacy & Security > Accessibility, or run tccutil reset Accessibility org.sglang.OmniTyper, then grant it again and restart OmniTyper.";
+"home.permissions.axStale" = "Accessibility was previously granted, but macOS currently reports it unavailable. In Privacy & Security, check that access is enabled for OmniTyper. If it is already enabled, restart the app first. If access remains unavailable, remove and add this app again. A changed signing identity is one possible cause, but this permission check cannot identify the cause.";
 "home.permissions.body" = "Two macOS permissions connect your voice to wherever you write.";
 "home.permissions.mic" = "Hear you only while recording";
 "home.permissions.ax" = "Use the shortcut and insert at your cursor";
@@ -166,8 +166,26 @@
 "panel.waitListening" = "Wait for Listening before speaking.";
 "panel.placeholder" = "Your words will appear here…";
 "panel.insertNote" = "Text is inserted only after you finish.";
+"panel.presentation.simple" = "Simple mode";
+"panel.presentation.edit" = "Edit mode";
+"panel.dragHint" = "Drag the top area to move the window.";
+"panel.reviewTitle" = "Review your text";
+"panel.reviewNote" = "Keep composing: choose a mode, place the caret or select text, then record again. Copy or insert when ready.";
+"panel.result" = "Recognized text";
+"panel.copyOnly" = "Copy to use in another app";
+"panel.done" = "Close";
+"panel.insert" = "Insert";
 "panel.listening" = "Listening · %@";
 "panel.elapsed" = "%d:%02d · Esc to cancel";
+"panel.ready" = "Ready to record";
+"panel.needsAttention" = "Recording needs attention";
+"panel.chooseMode" = "Choose a mode below · Esc to close";
+"panel.textAPIRequired" = "This mode or writing style uses your text model API.";
+"panel.speechOnly" = "Verbatim dictation · local speech recognition only";
+"panel.useVerbatim" = "Use verbatim dictation";
+"panel.textAPISettings" = "Text API settings";
+"control.expanded" = "Expanded";
+"control.collapsed" = "Collapsed";
 "history.title" = "A thought worth keeping.";
 "history.subtitle" = "Search, copy, and revisit the words you have captured.";
 "history.search" = "Search your history";
@@ -268,6 +286,8 @@
 "settings.modelNote" = "SGLang-Omni performs speech recognition on Apple Silicon. Text processing is configured separately below.";
 "settings.prepareASR" = "Download & prepare ASR";
 "settings.unloadASR" = "Unload ASR";
+"settings.keepModelLoaded" = "Keep the speech model loaded";
+"settings.keepModelLoadedNote" = "Preload at launch and keep the model in memory between recordings for a faster start. Turn off to release it when idle; the next recording will load it again.";
 "settings.runtime" = "Runtime location";
 "settings.python" = "Python executable";
 "settings.runtimeNote" = "Set up the runtime with OmniTyper/scripts/setup.sh before preparing models.";
@@ -312,3 +332,31 @@
 "settings.interfaceLanguage" = "Interface language";
 "settings.followSystem" = "Follow system";
 "settings.interfaceLanguageNote" = "Applies immediately. macOS permission prompts follow your system language.";
+"home.selectHint" = "Hold: ← → voice mode · ↑ Edit / ↓ Simple · Release to start";
+"settings.simpleShortcutNote" = "Hold the shortcut: move left or right to choose a voice mode, up to expand the editor, or down for the simple bar. Release to record. Press again or click Finish to stop; Esc cancels.";
+"panel.editingAllText" = "No selection — editing all text in this box.";
+"panel.allText" = "Editing all text";
+"panel.draftChanged" = "The draft changed. The new result was kept separately; copy it where you want.";
+"panel.copyNewResult" = "Copy new result";
+"panel.replaceSelection" = "Replace selection";
+"panel.editorPreview" = "Edit window";
+"panel.editorPlaceholder" = "Your transcript appears here. Review it, edit it, or keep composing with your voice.";
+
+"panel.fold" = "Fold editor and copy text";
+
+"panel.clear" = "Clear";
+
+"panel.reselect" = "Drag to change mode or expand the editor";
+"panel.textTools" = "Text tools";
+"panel.askTitle" = "Ask a question";
+"panel.singleQuestion" = "One question · one answer";
+"panel.pause" = "Pause";
+"panel.resume" = "Resume";
+"panel.pauseHint" = "Pause to process your speech. Resume to record more.";
+"panel.voicePaused" = "Microphone paused · resume when ready";
+"panel.question" = "Question";
+"panel.answer" = "Answer";
+"panel.questionPlaceholder" = "Speak your question, then pause.";
+"panel.answerPlaceholder" = "The answer will appear here.";
+"panel.askComplete" = "Turn complete · refresh to ask a new question";
+"panel.newQuestion" = "Clear and start a new question";

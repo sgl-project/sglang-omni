@@ -22,6 +22,8 @@ struct InsertionTarget {
     let window: AXUIElement?
     let windowTitle: String?
     let document: String?
+    var replacementRange: CFRange?
+    var editingText: String { replacementRange == nil ? selectedText : value ?? "" }
 
     func validate(against current: InsertionTarget) throws {
         guard application.processIdentifier == current.application.processIdentifier else {
@@ -114,10 +116,31 @@ enum TextInsertion {
                                document: window.flatMap { attribute($0, kAXDocumentAttribute) as? String })
     }
 
-    static func insert(_ text: String, into target: InsertionTarget) async throws {
+    static func insert(_ text: String, into target: InsertionTarget, restoringFocus: Bool = false) async throws {
         guard !text.isEmpty else { return }
         try Task.checkCancellation()
+        if restoringFocus {
+            guard !target.application.isTerminated, target.application.activate(options: []) else {
+                throw Failure("sys.destChanged")
+            }
+            // Note (Codex): Let the review panel relinquish focus before checking the original field and selection.
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
         try validate(target)
+        var target = target
+        if var range = target.replacementRange {
+            guard let element = target.element, let value = target.value,
+                  range.location == 0, range.length == (value as NSString).length,
+                  let selection = AXValueCreate(.cfRange, &range),
+                  AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, selection) == .success else {
+                throw Failure("sys.replaceFailed")
+            }
+            // Note (Codex): Verify the full-field selection before writing; the initial caret snapshot was checked above.
+            target = InsertionTarget(applicationName: target.applicationName, bundleID: target.bundleID,
+                                     selectedText: value, application: target.application, element: element, range: range,
+                                     value: value, window: target.window, windowTitle: target.windowTitle, document: target.document)
+            try validate(target)
+        }
         var settable = DarwinBoolean(false)
         // Note (Jiaxin Deng): Chromium can report successful AXSelectedText writes without applying them.
         if let element = target.element, target.range != nil, !isWebHosted(element),
