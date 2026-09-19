@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
+import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
@@ -17,6 +18,7 @@ from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -262,7 +264,9 @@ class SGLModelRunner(ModelRunner):
         self._register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
-        tp_size = get_parallel().tp_size
+        # note (yingzhou): runtime context is unpublished at construction,
+        # so read server_args instead of get_parallel()/get_schedule().
+        tp_size = server_args.tp_size
         self.nccl_port = port_args.nccl_port
 
         # model_config is already fully configured by ModelWorker._init_model_config()
@@ -270,11 +274,11 @@ class SGLModelRunner(ModelRunner):
 
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
-                get_parallel().enable_dp_attention,
+                server_args.enable_dp_attention,
                 tp_rank,
                 tp_size,
-                get_parallel().dp_size,
-                get_parallel().attn_cp_size,
+                server_args.dp_size,
+                server_args.attn_cp_size,
             )
         )
         ps = ParallelState(
@@ -283,25 +287,25 @@ class SGLModelRunner(ModelRunner):
             pp_rank=pp_rank,
             pp_size=pp_size,
             dp_rank=None,
-            dp_size=get_parallel().dp_size,
+            dp_size=server_args.dp_size,
             attn_tp_rank=attn_tp_rank,
             attn_tp_size=attn_tp_size,
             attn_cp_rank=0,
-            attn_cp_size=get_parallel().attn_cp_size,
-            attn_dcp_rank=tp_rank % get_parallel().dcp_size,
-            attn_dcp_size=get_parallel().dcp_size,
+            attn_cp_size=server_args.attn_cp_size,
+            attn_dcp_rank=tp_rank % server_args.dcp_size,
+            attn_dcp_size=server_args.dcp_size,
             attn_dp_rank=attn_dp_rank,
             attn_dp_size=attn_dp_size,
             moe_ep_rank=moe_ep_rank,
             moe_ep_size=moe_ep_size,
             moe_dp_rank=None,
-            moe_dp_size=get_parallel().moe_dp_size,
+            moe_dp_size=server_args.moe_dp_size,
             gpu_id=gpu_id,
         )
 
         super().__init__(
             model_config=model_config,
-            mem_fraction_static=get_schedule().mem_fraction_static,
+            mem_fraction_static=server_args.mem_fraction_static,
             gpu_id=gpu_id,
             ps=ps,
             nccl_port=nccl_port,
@@ -340,6 +344,13 @@ class SGLModelRunner(ModelRunner):
                 prefill_inputs.input_embeds_are_projected
             )
         return kwargs
+
+    def forward(self, *args, **kwargs):
+        """Keep MUSA graph-buffer writes in the same mode as graph capture."""
+        if current_platform.device_type == "musa":
+            with torch.inference_mode():
+                return super().forward(*args, **kwargs)
+        return super().forward(*args, **kwargs)
 
     def _resolve_draft_load_format(self) -> str | None:
         """A weight-share follower builds its module tree with dummy weights.
@@ -469,9 +480,15 @@ class SGLModelRunner(ModelRunner):
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         _install_prefill_runner_dispatch()
 
-        from sglang_omni.platforms import current_platform
-
-        with contextlib.ExitStack() as pins:
+        # note (yingzhou): MUSA capture_begin rejects inplace updates to
+        # inference tensors when capture starts under no_grad. CUDA stays on
+        # the original path; MUSA capture and warmup share inference mode.
+        capture_mode = (
+            torch.inference_mode()
+            if current_platform.device_type == "musa"
+            else contextlib.nullcontext()
+        )
+        with capture_mode, contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
