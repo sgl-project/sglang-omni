@@ -14,6 +14,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
 from sglang_omni.models.higgs_tts.rollout_trace import build_omni_rollout_trace
+from sglang_omni.models.higgs_tts.utils import to_cpu_code_rows
 from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_INITIAL_CHUNK_FRAMES,
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
@@ -33,7 +34,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
 class HiggsSGLangRequestData(SGLangARRequestData):
     """Per-request state for the Higgs TTS scheduler."""
 
-    reference_codes_delayed: list[list[int]] | None = None
+    reference_codes_delayed: torch.Tensor | None = None
     num_codebooks: int = 8
     codebook_size: int = 1026
     output_codes: list[torch.Tensor] = field(default_factory=list)
@@ -58,7 +59,29 @@ def _perf_counter() -> float:
     return time.perf_counter()
 
 
-def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
+def _normalize_reference_codes(codes: Any) -> torch.Tensor | None:
+    """Validate the decoded payload's ref codes at the engine boundary.
+
+    Not detached-and-copied: the tensor rides the relay's transfer buffer and is
+    read many times over the request's prefill, so aliasing it is the point.
+    """
+    if codes is None:
+        return None
+    if not isinstance(codes, torch.Tensor):
+        raise TypeError(
+            f"Higgs reference codes must be a torch.Tensor, got {type(codes).__name__}"
+        )
+    tensor = codes.detach()
+    if tensor.numel() == 0:
+        return None
+    if tensor.ndim != 2:
+        raise ValueError(
+            f"Higgs reference codes must have shape [T, N], got {tuple(tensor.shape)}"
+        )
+    return tensor
+
+
+def _ref_audio_fingerprint(codes: torch.Tensor | None) -> str | None:
     """Stable hash of the full N-codebook ref-audio sequence.
 
     Returned as a short hex string used as ``Req.extra_key``. ``None`` for
@@ -66,15 +89,14 @@ def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
     Each codec value packs into 2 bytes (range 0..1025) so the hash is
     sensitive to every codebook, not just cb0.
     """
-    if not codes:
+    if codes is None or codes.numel() == 0:
         return None
-    buf = bytearray(2 * sum(len(row) for row in codes))
+    buf = bytearray(2 * codes.numel())
     i = 0
-    for row in codes:
-        for c in row:
-            buf[i] = c & 0xFF
-            buf[i + 1] = (c >> 8) & 0xFF
-            i += 2
+    for c in codes.reshape(-1).tolist():
+        buf[i] = c & 0xFF
+        buf[i + 1] = (c >> 8) & 0xFF
+        i += 2
     return hashlib.blake2b(bytes(buf), digest_size=16).hexdigest()
 
 
@@ -83,6 +105,7 @@ def build_sglang_higgs_request(
 ) -> HiggsSGLangRequestData:
     input_ids_list = list(state.prompt_token_ids)
     input_ids = torch.tensor(input_ids_list, dtype=torch.long)
+    reference_codes = _normalize_reference_codes(state.reference_codes_delayed)
 
     sp_kwargs: dict[str, Any] = {
         "max_new_tokens": int(state.max_new_tokens),
@@ -109,7 +132,7 @@ def build_sglang_higgs_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=_ref_audio_fingerprint(reference_codes),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None
@@ -118,7 +141,7 @@ def build_sglang_higgs_request(
     return HiggsSGLangRequestData(
         input_ids=input_ids,
         req=req,
-        reference_codes_delayed=state.reference_codes_delayed,
+        reference_codes_delayed=reference_codes,
         num_codebooks=int(state.num_codebooks),
         codebook_size=int(state.codebook_size),
         max_new_tokens=int(state.max_new_tokens),
@@ -172,12 +195,13 @@ def build_higgs_stream_metadata(
 def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> None:
     num_codebooks = int(data.num_codebooks)
     if data.output_code_buffer is not None and data.output_code_count > 0:
-        codes = data.output_code_buffer[: data.output_code_count].to(torch.long)
-        state.output_codes_delayed = codes.tolist()
+        # Owned copy: the engine reuses output_code_buffer for the next request.
+        codes = to_cpu_code_rows(data.output_code_buffer[: data.output_code_count])
+        state.output_codes_delayed = codes
         state.completion_tokens = int(codes.shape[0])
     elif data.output_codes:
-        codes = torch.stack(data.output_codes, dim=0).to(torch.long)
-        state.output_codes_delayed = codes.tolist()
+        codes = to_cpu_code_rows(torch.stack(data.output_codes, dim=0))
+        state.output_codes_delayed = codes
         state.completion_tokens = int(codes.shape[0])
     else:
         codes = torch.empty((0, num_codebooks), dtype=torch.long)
