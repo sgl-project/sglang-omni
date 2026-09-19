@@ -119,6 +119,10 @@ def test_minicpm_stages_launch_two_single_gpu_workers(
     if audio_output:
         talker = next(stage for stage in resolved.stages if stage.name == "talker")
         assert talker.engine.mem_fraction_static == 0.15
+        code2wav = next(stage for stage in resolved.stages if stage.name == "code2wav")
+        assert code2wav.factory.max_batch_size == 4
+        assert code2wav.factory.max_batch_wait_ms == 10.0
+        assert code2wav.factory.batch_wait_when_idle is False
 
 
 @pytest.mark.parametrize("streaming", [True, False])
