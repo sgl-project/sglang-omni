@@ -84,7 +84,12 @@ speculative generality.
   preferred; if the repo uses `Optional`, match it.
 - Either `requires-python >= 3.10` (native `X | Y`) or `from __future__ import annotations`.
   Don't use `Optional` to work around forward refs — use quoted annotations
-  (`"ModelConfig"`). Type-only imports are covered in IMPORTS.
+  (`"ModelConfig"`).
+- Do not use `if TYPE_CHECKING:`. It hides imports from runtime and from
+  pre-commit. Import the name at module level, or write the concrete type in
+  the annotation (`tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]`
+  instead of a gated alias). If an import is circular, move the shared type
+  into a third module.
 - Closed value sets → `Literal[...]` or `Enum`, not bare strings in comparisons.
 - No mutable function defaults: `def f(x=[])`/`= {}` are bugs. Use a `None` sentinel.
 - Use concrete types, including model and decoder types, rather than `any`/`Any`
@@ -180,8 +185,8 @@ speculative generality.
 - Manage import paths consistently at the project level. Don’t patch sys.path ad hoc in individual files.
 - Prefer module-level imports; allow function-local imports for optional
   dependencies, necessary initialization ordering, or documented
-  circular-dependency breaks. Put type-only cycle-breaking imports under
-  `if TYPE_CHECKING:` with quoted annotations.
+  circular-dependency breaks. Do not use `if TYPE_CHECKING:` to keep an
+  import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit

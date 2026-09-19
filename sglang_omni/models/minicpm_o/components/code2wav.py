@@ -8,7 +8,6 @@ import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -17,9 +16,6 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
-
-if TYPE_CHECKING:
-    from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
 
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
@@ -93,7 +89,9 @@ class MiniCPMOCode2Wav(nn.Module):
             raise ValueError("No speaker-reference audio supplied or default available")
         return self.default_prompt_wav
 
-    def speaker_prompt(self, prompt_wav: str | bytes | None) -> SpeakerPrompt:
+    def speaker_prompt(
+        self, prompt_wav: str | bytes | None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         token2wav = self.token2wav
         prompt_wav = self.resolve_prompt_wav(prompt_wav)
         prompt_key = (
