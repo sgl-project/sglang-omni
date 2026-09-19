@@ -26,6 +26,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.utils.cpu import effective_cpu_count
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -880,10 +881,31 @@ def _construct_scheduler(
     )
 
     def _invoke() -> Any:
+        import torch
+
         if kv_cache_bytes is None:
-            return factory(**factory_args)
-        with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
-            return factory(**factory_args)
+            scheduler = factory(**factory_args)
+        else:
+            with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
+                scheduler = factory(**factory_args)
+        log.info(
+            "Stage %s CPU settings: available=%d affinity=%s OMP_NUM_THREADS=%s "
+            "MKL_NUM_THREADS=%s TOKENIZERS_PARALLELISM=%s torch_threads=%d "
+            "max_concurrency=%s",
+            spec.stage_name,
+            effective_cpu_count(),
+            (
+                sorted(os.sched_getaffinity(0))
+                if hasattr(os, "sched_getaffinity")
+                else None
+            ),
+            os.environ.get("OMP_NUM_THREADS"),
+            os.environ.get("MKL_NUM_THREADS"),
+            os.environ.get("TOKENIZERS_PARALLELISM"),
+            torch.get_num_threads(),
+            getattr(scheduler, "_max_concurrency", None),
+        )
+        return scheduler
 
     if gpu_id is None:
         return _invoke()

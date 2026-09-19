@@ -860,6 +860,20 @@ def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     assert aborts == [("req-follower", False)]
 
 
+def test_runtime_graph_stats_only_use_decode_replay_signal():
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.runtime_stats = Mock()
+    for decode in (True, False):
+        batch = SimpleNamespace(
+            reqs=[object(), object()],
+            forward_mode=SimpleNamespace(is_decode=lambda: decode),
+        )
+        scheduler._record_runtime_batch(batch, SimpleNamespace(can_run_cuda_graph=True))
+        scheduler.runtime_stats.record_batch.assert_called_with(
+            "decode" if decode else "prefill", 2, graph=True if decode else None
+        )
+
+
 def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     """OmniScheduler overrides upstream run_batch, so it must count forwards
     itself; otherwise forward_ct stays 0 and the SGLANG_TEST_RETRACT_INTERVAL

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
     _serial_threshold_graph_keys,
@@ -96,15 +97,20 @@ def test_coalesce_disabled_emits_one_message_per_frame() -> None:
 )
 def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type):
     config = pipeline_type(model_path="dummy")
-    factory = next(
-        stage.factory for stage in config.stages if stage.name == "talker_ar"
-    )
-    runner = _runner(_fake_model(1, 4, 2), coalesce=factory.codec_coalesce_frames)
-    runner._codec_coalesce_early_frames = factory.codec_coalesce_early_frames
-    runner._codec_coalesce_first_frames = factory.codec_coalesce_first_frames
+    factory = resolve_stage_factory_args(config.stage_named("talker_ar"), config)
+    runner = _runner(_fake_model(1, 4, 2), coalesce=factory["codec_coalesce_frames"])
+    runner._codec_coalesce_early_frames = factory["codec_coalesce_early_frames"]
+    runner._codec_coalesce_first_frames = factory["codec_coalesce_first_frames"]
     requests, batch = _requests(1), _sched_batch(1)
     model = FakeCode2WavModel()
-    scheduler = Code2WavScheduler(model, device="cpu", enable_output_overlap=False)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        enable_output_overlap=False,
+        initial_codec_chunk_frames=config.stage_named(
+            "code2wav"
+        ).factory.initial_codec_chunk_frames,
+    )
     state = scheduler.create_stream_state("r0")
     decode_steps = []
     for step in range(1, 46):
@@ -116,9 +122,9 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
                 scheduler.decode_delta("r0", state, is_final=False)
                 decode_steps.append(step)
 
-    assert [shape[-1] for shape in model.calls] == [10, 20, 30, 35]
-    assert decode_steps == [10, 21, 31, 41]
-    captured_frames = {key.frames for key in _serial_threshold_graph_keys(10, 25)}
+    assert [shape[-1] for shape in model.calls] == [4, 14, 24, 34, 35]
+    assert decode_steps == [4, 14, 25, 35, 45]
+    captured_frames = {key.frames for key in _serial_threshold_graph_keys(10, 25, 4)}
     assert all(shape[-1] in captured_frames for shape in model.calls)
 
 
@@ -142,7 +148,7 @@ def test_early_frames_preserve_code2wav_window_cadence() -> None:
     assert ready_at == {2: 2, 12: 12, 22: 23, 32: 33}
 
 
-@pytest.mark.parametrize("early_frames", [10, 12])
+@pytest.mark.parametrize("early_frames", [10, 12, 14])
 @pytest.mark.parametrize("steps", [9, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33])
 @pytest.mark.parametrize("finish_reason", ["length", "stop"])
 def test_early_frames_preserve_order_and_final_tail(early_frames, steps, finish_reason):

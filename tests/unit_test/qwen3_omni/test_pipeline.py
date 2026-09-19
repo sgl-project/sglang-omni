@@ -163,11 +163,7 @@ def test_qwen_pipeline_config_and_state_contracts() -> None:
     assert _stage(speech_config, "code2wav").can_accept_stream_before_payload
     assert text_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
     assert speech_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
-    assert colocated_config.env_defaults == {
-        "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0",
-        "OMP_NUM_THREADS": "8",
-        "TOKENIZERS_PARALLELISM": "false",
-    }
+    assert colocated_config.env_defaults == {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
 
     assert "talker_ar" in preprocessing.project_payload
     assert _stage(speech_config, "thinker").next == "decode"
