@@ -328,3 +328,65 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
     assert torch.equal(
         result, torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.float32)
     )
+
+
+@pytest.mark.parametrize("prefix,length", [(0, 6), (3, 2), (4, 2), (5, 1)])
+def test_cosyvoice3_prefill_replays_speech_history(prefix: int, length: int) -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.model = torch.nn.Module()
+    runner.model.speech_embedding = torch.nn.Embedding.from_pretrained(
+        torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    )
+    request = SimpleNamespace(
+        data=SimpleNamespace(
+            req=SimpleNamespace(
+                output_ids=[1, 2],
+                prefix_indices=list(range(prefix)),
+                extend_range=SimpleNamespace(length=length),
+            ),
+            prompt_input_embeds=torch.arange(8, dtype=torch.float32).reshape(4, 2) + 10,
+        )
+    )
+    batch = SimpleNamespace(input_ids=torch.zeros(length, dtype=torch.long))
+
+    result = runner._build_prefill_input_embeds(batch, [request])
+
+    expected = torch.tensor(
+        [[10, 11], [12, 13], [14, 15], [16, 17], [2, 3], [4, 5]], dtype=torch.float32
+    )
+    torch.testing.assert_close(
+        result, expected[prefix : prefix + length], rtol=0, atol=0
+    )
+
+
+def test_cosyvoice3_prefill_batches_fresh_and_retracted_requests() -> None:
+    runner = object.__new__(FunCosyVoice3ModelRunner)
+    runner.model = torch.nn.Module()
+    runner.model.speech_embedding = torch.nn.Embedding.from_pretrained(
+        torch.arange(6, dtype=torch.bfloat16).reshape(3, 2), freeze=False
+    )
+    requests = [
+        SimpleNamespace(
+            data=SimpleNamespace(
+                req=SimpleNamespace(
+                    output_ids=output_ids,
+                    prefix_indices=[],
+                    extend_range=SimpleNamespace(length=2 + len(output_ids)),
+                ),
+                prompt_input_embeds=torch.tensor(
+                    [[10, 11], [12, 13]], dtype=torch.float32
+                ),
+            )
+        )
+        for output_ids in ([1, 2], [])
+    ]
+    batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
+
+    with torch.enable_grad():
+        result = runner._build_prefill_input_embeds(batch, requests)
+
+    expected = torch.tensor(
+        [[10, 11], [12, 13], [2, 3], [4, 5], [10, 11], [12, 13]], dtype=torch.bfloat16
+    )
+    torch.testing.assert_close(result, expected, rtol=0, atol=0)
+    assert not result.requires_grad

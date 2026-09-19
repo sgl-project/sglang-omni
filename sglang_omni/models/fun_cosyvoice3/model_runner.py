@@ -358,12 +358,16 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             )
         )
 
+    @torch.no_grad()
     def _build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
+        device = forward_batch.input_ids.device
+        dtype = next(self.model.parameters()).dtype
         pieces = []
+        has_generated_inputs = False
         for sched_req in requests:
             data = sched_req.data
             req = data.req
@@ -374,11 +378,34 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 raise RuntimeError(
                     "Fun-CosyVoice3 prefill requires prompt_input_embeds"
                 )
-            pieces.append(prompt_embeds[prefix_len : prefix_len + req_len])
-        return torch.cat(pieces, dim=0).to(
-            device=forward_batch.input_ids.device,
-            dtype=next(self.model.parameters()).dtype,
-        )
+            end = prefix_len + req_len
+            prompt_len = int(prompt_embeds.shape[0])
+            current = prompt_embeds[prefix_len:end]
+            pieces.append(current)
+            rows = int(current.shape[0])
+            if end > prompt_len:
+                # Retraction retains output_ids in the scheduler's fill sequence.
+                # Prompt IDs are cache keys; only generated IDs are speech tokens.
+                start = max(prefix_len, prompt_len) - prompt_len
+                speech_ids = torch.tensor(
+                    req.output_ids[start : end - prompt_len],
+                    device=device,
+                    dtype=torch.long,
+                )
+                generated = self.model.speech_embedding(speech_ids)
+                pieces.append(generated)
+                rows += int(generated.shape[0])
+                has_generated_inputs = True
+            if rows != req_len:
+                raise RuntimeError(
+                    f"Fun-CosyVoice3 prefill row mismatch for {req.rid}: have "
+                    f"{rows} rows, need {req_len} "
+                    f"(prefix={prefix_len}, prompt={prompt_len}, "
+                    f"generated={len(req.output_ids)})"
+                )
+        if has_generated_inputs:
+            pieces = [piece.to(device=device, dtype=dtype) for piece in pieces]
+        return torch.cat(pieces, dim=0).to(device=device, dtype=dtype)
 
     def _forward_with_input_embeds(
         self,
