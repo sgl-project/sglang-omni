@@ -29,6 +29,7 @@ import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 from sglang.srt.utils import create_device_stream, device_stream_context
 
+from sglang_omni.models.qwen3_asr.encoder_errors import EncoderGraphUnrecoverableError
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -522,6 +523,13 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
+        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
+            # Let the base worker fail current/queued futures and stop. An
+            # incomplete graph handshake is not safe for OOM cleanup or retry.
+            logger.error(
+                "Terminal encoder graph failure:\n%s", failure.formatted_traceback
+            )
+            raise failure.exception
         if len(batch) == 1:
             logger.error(
                 "Qwen3-ASR audio encode failed:\n%s",
@@ -543,6 +551,11 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self._detach_failure(exc)
+        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
+            logger.error(
+                "Terminal encoder graph failure:\n%s", failure.formatted_traceback
+            )
+            raise failure.exception
         logger.error(
             "Qwen3-ASR per-item audio encode retry failed:\n%s",
             failure.formatted_traceback,
@@ -561,8 +574,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc.__traceback__ = None
         exc.__cause__ = None
         exc.__context__ = None
-        if isinstance(exc, torch.OutOfMemoryError):
-            detached: Exception = torch.OutOfMemoryError(message)
+        if isinstance(exc, EncoderGraphUnrecoverableError):
+            detached: Exception = EncoderGraphUnrecoverableError(message)
+        elif isinstance(exc, torch.OutOfMemoryError):
+            detached = torch.OutOfMemoryError(message)
         elif isinstance(exc, ValueError):
             detached = ValueError(message)
         else:

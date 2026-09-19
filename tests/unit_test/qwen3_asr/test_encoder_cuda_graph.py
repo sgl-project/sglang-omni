@@ -16,6 +16,7 @@ from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     build_buckets,
     window_lens_from_token_counts,
 )
+from sglang_omni.models.qwen3_asr.encoder_errors import EncoderGraphUnrecoverableError
 from sglang_omni.platforms import current_platform
 
 
@@ -96,6 +97,7 @@ def _npu_runner():
     r._failed = set()
     r._graphs = {}
     r._capture_failed = False
+    r._submission_failed = False
     r._device = runner_device
     r._graph_backend = Backend()
     r._device_module = DeviceModule()
@@ -287,6 +289,60 @@ def test_npu_graph_update_task_rebinds_fia_lengths_on_runner_stream():
         },
     )
     assert calls[2:] == [("end", "update-stream"), ("event", "update-stream")]
+
+
+@pytest.mark.parametrize("failure", ["replay", "begin", "operation", "end", "signal"])
+def test_npu_submission_failure_is_terminal(failure):
+    calls = []
+    runner = _npu_runner()
+    runner._plan = lambda total, windows: (8, [8 - total])
+
+    def call(name):
+        calls.append(name)
+        if name == failure:
+            raise torch.OutOfMemoryError("injected submission failure")
+
+    runner._device_module.graph_task_update_begin = lambda *args: call("begin")
+    runner._device_module.graph_task_update_end = lambda *args: call("end")
+    runner._npu_update_stream.wait_stream = lambda stream: call("wait")
+    task = _NpuGraphUpdateTask(
+        operation=lambda **kwargs: call("operation"),
+        kwargs={},
+        handle=object(),
+        event=SimpleNamespace(record=lambda stream: call("signal")),
+    )
+    runner._graphs[8] = SimpleNamespace(
+        hidden_states=torch.zeros(8, 2),
+        graph=SimpleNamespace(replay=lambda: call("replay")),
+        output=torch.ones(8, 2),
+        npu_update_tasks=(task,),
+    )
+    with pytest.raises(EncoderGraphUnrecoverableError, match="restart"):
+        runner.run(torch.ones(3, 2), [3])
+    expected = ["wait", "replay", "begin", "operation", "end", "signal"]
+    assert calls == expected[: expected.index(failure) + 1]
+    before_retry = list(calls)
+    with pytest.raises(EncoderGraphUnrecoverableError, match="previously failed"):
+        runner.run(torch.ones(3, 2), [3])
+    assert calls == before_retry
+
+
+def test_npu_attention_capture_restores_partial_setup():
+    runner = _npu_runner()
+    original = torch.nn.Identity()
+    attention = torch.nn.Module()
+    attention.qkv_backend_name = "ascend_attn"
+    attention.qkv_backend = original
+    runner._tower = SimpleNamespace(
+        layers=[
+            SimpleNamespace(self_attn=attention),
+            SimpleNamespace(self_attn=SimpleNamespace(qkv_backend_name="unsupported")),
+        ]
+    )
+    with pytest.raises(RuntimeError, match="ascend_attn"):
+        with runner._capture_npu_attention_tasks(_NpuGraphCaptureState(tasks=[])):
+            pytest.fail("capture body must not run after partial setup fails")
+    assert attention.qkv_backend is original
 
 
 def test_npu_attention_backend_captures_one_explicit_fia_task(

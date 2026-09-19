@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 from sglang.srt.layers.attention.vision import VisionAttentionMetadata
 
+from sglang_omni.models.qwen3_asr.encoder_errors import EncoderGraphUnrecoverableError
 from sglang_omni.platforms import current_platform
 
 if TYPE_CHECKING:
@@ -231,6 +232,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._failed: set[int] = set()
         self._graph_pool: Any | None = None
         self._capture_failed = False
+        self._submission_failed = False
         # Keep encoder task updates on a stream owned by this runner and device.
         self._npu_update_stream = (
             self._device_module.Stream(device=self._device) if self._is_npu else None
@@ -309,18 +311,18 @@ class Qwen3ASREncoderLayerStackGraphRunner:
     ) -> Iterator[None]:
         """Temporarily route each Qwen3-ASR FIA call through task-group capture."""
         replacements: list[tuple[Any, torch.nn.Module]] = []
-        for layer in self._tower.layers:
-            attention = layer.self_attn
-            if attention.qkv_backend_name != "ascend_attn":
-                raise RuntimeError(
-                    "NPU encoder graph capture requires the ascend_attn backend"
-                )
-            original = attention.qkv_backend
-            replacements.append((attention, original))
-            attention.qkv_backend = _NpuUpdatableAttentionBackend(
-                state, self._device_module
-            )
         try:
+            for layer in self._tower.layers:
+                attention = layer.self_attn
+                if attention.qkv_backend_name != "ascend_attn":
+                    raise RuntimeError(
+                        "NPU encoder graph capture requires the ascend_attn backend"
+                    )
+                original = attention.qkv_backend
+                replacements.append((attention, original))
+                attention.qkv_backend = _NpuUpdatableAttentionBackend(
+                    state, self._device_module
+                )
             yield
         finally:
             for attention, original in replacements:
@@ -433,8 +435,13 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self, hidden_states: torch.Tensor, window_lens: list[int]
     ) -> torch.Tensor | None:
         """Replay the recorded graph for a batch of hidden states."""
+        if self._is_npu and self._submission_failed:
+            raise EncoderGraphUnrecoverableError(
+                "NPU encoder graph submission previously failed; restart the "
+                "encoder process before retrying"
+            )
         if self._is_npu and self._capture_failed:
-            raise RuntimeError(
+            raise EncoderGraphUnrecoverableError(
                 "NPU encoder graph capture previously failed; restart the "
                 "encoder process with encoder graphs disabled before retrying"
             )
@@ -464,7 +471,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 if not self._is_npu:
                     raise
                 self._capture_failed = True
-                raise RuntimeError(
+                raise EncoderGraphUnrecoverableError(
                     "NPU encoder graph capture failed; restart the encoder "
                     "process with encoder graphs disabled before retrying"
                 ) from exc
@@ -481,15 +488,22 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                     cu[1:] - cu[:-1], non_blocking=True
                 )
         if self._is_npu:
-            from sglang.srt.hardware_backend.npu.graph_runner.npu_graph_submission import (
-                npu_graph_submission,
-            )
-
-            with npu_graph_submission(
-                self._device_module, self._npu_update_stream, source="encoder"
-            ):
+            # This runner is owned by the single encoder worker. Its update
+            # stream is private, so no decoder submission lock is required.
+            # Insert the dependency before replay: replay awaits these updates.
+            self._npu_update_stream.wait_stream(self._device_module.current_stream())
+            try:
                 self._graph_backend.replay(entry.graph)
                 self._update_npu_attention_tasks(entry, cumulative_window_lens)
+            except Exception as exc:
+                # Replay may already be waiting for a signal that was not
+                # recorded. Retrying or synchronizing that stream can hang;
+                # do not signal an incomplete update to force progress.
+                self._submission_failed = True
+                raise EncoderGraphUnrecoverableError(
+                    "NPU encoder graph submission failed; restart the encoder "
+                    "process before retrying"
+                ) from exc
         else:
             self._graph_backend.replay(entry.graph)
         out = entry.output
