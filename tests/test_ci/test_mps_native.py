@@ -54,31 +54,31 @@ pytestmark = [
 
 def _serve(port: int, mps: str) -> subprocess.Popen:
     env = {**os.environ, "SGLANG_OMNI_MPS_STATE_ROOT": str(STATE_ROOT)}
-    log = open(f"/tmp/mps-native-ci-{port}.log", "ab")
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "sglang_omni.cli",
-            "serve",
-            "--model-path",
-            MODEL,
-            "--mps",
-            mps,
-            "--mem-fraction-static",
-            "0.45",
-            # DP replicas budget KV explicitly; the second serve profiles a
-            # shrunken free pool (see the KV sizing note in mps_dp.md).
-            "--tts_engine.engine.max_total_tokens",
-            "20000",
-            "--port",
-            str(port),
-        ],
-        env=env,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    with open(f"/tmp/mps-native-ci-{port}.log", "ab") as log:
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "sglang_omni.cli",
+                "serve",
+                "--model-path",
+                MODEL,
+                "--mps",
+                mps,
+                "--mem-fraction-static",
+                "0.45",
+                # DP replicas budget KV explicitly; the second serve profiles a
+                # shrunken free pool (see the KV sizing note in mps_dp.md).
+                "--tts_engine.engine.max_total_tokens",
+                "20000",
+                "--port",
+                str(port),
+            ],
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
 
 
 def _wait_healthy(port: int, proc: subprocess.Popen) -> None:

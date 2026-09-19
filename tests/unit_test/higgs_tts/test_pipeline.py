@@ -1669,8 +1669,7 @@ class _FakeHiggsStreamingCodec:
 
 class _FakeUnevenHiggsStreamingCodec:
     class _Model:
-        class config:
-            hop_length = 5
+        config = SimpleNamespace(hop_length=5)
 
     def __init__(self, tail_samples: int = 3) -> None:
         self.model = self._Model()
@@ -2107,8 +2106,7 @@ def _make_fake_codec(call_log: list[tuple[int, int]]):
     from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 
     class FakeModel:
-        class config:
-            hop_length = 320
+        config = SimpleNamespace(hop_length=320)
 
         def decode(self, codes_BNT):
             B, N, T = codes_BNT.shape

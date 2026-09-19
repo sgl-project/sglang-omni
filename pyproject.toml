@@ -154,7 +154,6 @@ markers = [
 ]
 
 [tool.ruff.lint]
-exclude = ["tests/**"]
 select = [
     "B006",     # Mutable argument defaults
     "B009",     # Constant-name getattr without a default
