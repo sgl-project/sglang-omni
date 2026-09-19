@@ -207,6 +207,64 @@ def test_cached_transfer_failure_rejects_admission(monkeypatch) -> None:
     assert service._model.encode_calls == 0
 
 
+def test_cached_transfer_enters_owned_stream_before_copy(monkeypatch) -> None:
+    service = _make_service()
+    target = _item(7, 3, with_feature=False)
+    source = torch.ones((3, _HIDDEN_SIZE))
+    reached, release = threading.Event(), threading.Event()
+    active = threading.local()
+    calls = []
+    consumer_stream = object()
+
+    def synchronize():
+        assert getattr(active, "stream", None) is None
+        calls.append("synchronize")
+        reached.set()
+        assert release.wait(timeout=3)
+
+    owned_stream = SimpleNamespace(device=torch.device("cpu"), synchronize=synchronize)
+    service._stream = owned_stream
+
+    @contextlib.contextmanager
+    def stream_context(stream):
+        assert stream is owned_stream
+        active.stream = stream
+        calls.append("enter")
+        try:
+            yield
+        finally:
+            active.stream = None
+            calls.append("exit")
+
+    module = SimpleNamespace(stream=stream_context, default_stream=lambda _: consumer_stream)
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: module)
+    original_to = torch.Tensor.to
+
+    def copy(tensor, *args, **kwargs):
+        if tensor is source:
+            assert active.stream is owned_stream
+            assert kwargs["non_blocking"] is True
+            calls.append("copy")
+        return original_to(tensor, *args, **kwargs)
+
+    def record_stream(tensor, stream):
+        assert active.stream is owned_stream
+        assert stream is consumer_stream
+        calls.append("record_lifetime")
+
+    monkeypatch.setattr(torch.Tensor, "to", copy)
+    monkeypatch.setattr(torch.Tensor, "record_stream", record_stream)
+    future = service.submit_cached_embedding(target, source)
+    try:
+        assert reached.wait(timeout=2)
+        assert not future.done()
+        assert calls == ["enter", "copy", "record_lifetime", "exit", "synchronize"]
+    finally:
+        release.set()
+    assert future.result(timeout=2) is target.precomputed_embeddings
+    assert service._model.encode_calls == 0
+
+
 def test_cached_transfer_is_rejected_after_close() -> None:
     service = _make_service()
     service.close()
