@@ -72,7 +72,7 @@ def create_encoder_executor(encoder: nn.Module, *, stage_name: str) -> SimpleSch
         cache_device="cpu",
     )
 
-    def encode(payload: StagePayload) -> StagePayload:
+    def _encode_stage(payload: StagePayload) -> StagePayload:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         request = build_encoder_request(state, stage_name=stage_name)
         cached = (
@@ -90,7 +90,7 @@ def create_encoder_executor(encoder: nn.Module, *, stage_name: str) -> SimpleSch
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(encode)
+    return SimpleScheduler(_encode_stage)
 
 
 def create_image_encoder_executor(
