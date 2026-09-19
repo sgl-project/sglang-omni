@@ -456,21 +456,30 @@ def sources_from_config_file(
 def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
     """Dump a config in the shape a config file is written in.
 
-    The internal stage list becomes the user-facing ``stages:`` mapping: the
-    key carries the name (so ``name`` leaves the body), and a non-engine
-    stage's ``engine: null`` placeholder is dropped because writing below it
-    is a path error. ``entry_stage`` is dropped too -- it belongs to the
-    model's config class, not to a config file. The result round-trips
-    through :func:`sources_from_config_file` back to an equal config.
+    The internal stage list becomes the user-facing ``stages:`` mapping.
+    Model-owned topology fields and unsupported policy blocks are omitted;
+    the loader restores topology from the named config class. A non-engine
+    stage's ``engine: null`` placeholder is also omitted.
     """
     data = config.model_dump(mode="json")
     data.pop("entry_stage", None)
+    # Note (Jiaxin Deng): chunkless models retain an internal default block, but
+    # reject that block as user input. Do not export an unreadable config.
+    if not type(config).allow_audio_chunking:
+        data.pop("audio_chunking", None)
     stages: dict[str, Any] = {}
     for stage in data.get("stages", []):
         body = dict(stage)
         body.pop("name", None)
         if body.get("engine") is None:
             body.pop("engine", None)
+        body = {
+            key: value
+            for key, value in body.items()
+            if ConfigPath.parse(
+                f"stages.{stage['name']}.{key}", type(config)
+            ).is_public()
+        }
         stages[stage["name"]] = body
     data["stages"] = stages
     return data
