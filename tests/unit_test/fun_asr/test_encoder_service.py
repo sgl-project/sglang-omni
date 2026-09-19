@@ -766,3 +766,29 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         text_config=SimpleNamespace(hidden_size=_HIDDEN_SIZE), marker="other"
     )
     assert namespace != build_cache_namespace(changed_config, **base)
+
+
+def test_synchronize_batch_waits_on_the_encode_stream(monkeypatch) -> None:
+    service = _make_service()
+    service._stream = None
+    service._device = torch.device("xpu", 3)
+    recorded: list[object] = []
+
+    class _Event:
+        def record(self, stream) -> None:  # noqa: ANN001 - torch's own signature
+            recorded.append(stream)
+
+        def synchronize(self) -> None:
+            recorded.append("waited")
+
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            Event=_Event, current_stream=lambda dev: f"stream-of-{dev}"
+        ),
+    )
+
+    service.synchronize_batch()
+
+    assert recorded == ["stream-of-xpu:3", "waited"]
