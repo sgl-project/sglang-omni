@@ -303,6 +303,30 @@ def test_flow_batch_reuses_same_noise_prefix_per_request() -> None:
     torch.testing.assert_close(pair_noise[:1], single_noise)
 
 
+def test_buffered_flow_inference_uses_packed_estimator() -> None:
+    items = [
+        _input([1], prompt_token=[2], prompt_value=0.5),
+        _input([3, 4], prompt_token=[5, 6], prompt_value=1.5),
+    ]
+    batched_flow = _FakeFlow(max_frames=128)
+    packed_flow = _packed(batched_flow)
+    packed = pack_flow_inputs(batched_flow, items)
+
+    assert packed_flow.cuda_graph_runner is None
+    batched = packed_flow.inference(items)
+
+    calls = batched_flow.packed_estimator.calls
+    expected_twin_lengths = packed.total_mel_lengths * 2
+    assert calls
+    assert all(call["streaming"] is False for call in calls)
+    assert all(call["lengths"] == expected_twin_lengths for call in calls)
+    assert [tuple(mel.shape) for mel in batched] == [(1, 4, 2), (1, 4, 4)]
+
+    serial = [_packed(_FakeFlow(max_frames=128)).inference([item])[0] for item in items]
+    for actual, expected in zip(batched, serial, strict=True):
+        torch.testing.assert_close(actual, expected)
+
+
 def test_flow_batch_matches_serial_reference_for_mixed_lengths() -> None:
     items = [
         _input([1, 0], prompt_token=[2], prompt_value=0.5),
