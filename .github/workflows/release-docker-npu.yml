@@ -1,0 +1,175 @@
+name: Release Docker Images (NPU)
+
+on:
+  push:
+    tags: ['v[0-9]+.*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after registry credentials and permissions are configured
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Additional tag prefix (the hardware suffix is appended)
+        type: string
+        default: ''
+      publish:
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-npu-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preprocess:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      publish: ${{ steps.publication.outputs.publish }}
+    steps:
+      # Reuse the standard Docker Hub secrets used by SGLang's lmsysorg releases.
+      - name: Validate publication settings
+        id: publication
+        env:
+          REQUESTED: ${{ github.event_name != 'pull_request' && (inputs.publish || github.event_name == 'push') }}
+          REPOSITORY: ${{ github.repository }}
+          PUBLISH_ENABLED: ${{ vars.NPU_DOCKER_PUBLISH_ENABLED }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ "$REQUESTED" == true ]]; then
+            [[ "$REPOSITORY" == sgl-project/sglang-omni ]] || { echo 'Publication is restricted to the upstream repository.' >&2; exit 1; }
+            [[ "$PUBLISH_ENABLED" == true ]] || { echo 'Set NPU_DOCKER_PUBLISH_ENABLED=true to publish.' >&2; exit 1; }
+            [[ -n "$HUB_USERNAME" && -n "$HUB_TOKEN" ]] || { echo 'Configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets.' >&2; exit 1; }
+          fi
+          echo "publish=$REQUESTED" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check NPU configuration and installer without hardware
+        run: |
+          python -m pip install pytest==8.3.5 packaging==25.0
+          python scripts/npu/config.py --check
+          python -m pytest tests/unit_test/npu/test_npu_config.py tests/unit_test/npu/test_npu_install_script.py -q
+      - name: Read shared NPU configuration
+        id: config
+        run: |
+          matrix=$(python scripts/npu/config.py --matrix)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build_arm64:
+    needs: preprocess
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    outputs:
+      digest_a3: ${{ steps.digest.outputs.digest_a3 }}
+      digest_910b: ${{ steps.digest.outputs.digest_910b }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.preprocess.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          docker-images: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: lmsysorg/sglang-omni
+          flavor: latest=false
+          tags: |
+            type=ref,event=tag,suffix=-cann${{ matrix.cann }}-${{ matrix.device }}
+            type=sha,suffix=-cann${{ matrix.cann }}-${{ matrix.device }}
+            type=raw,value=${{ inputs.image_tag }}-cann${{ matrix.cann }}-${{ matrix.device }},enable=${{ inputs.image_tag != '' }}
+      - name: Log into Docker Hub
+        if: needs.preprocess.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build ARM64 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/npu.Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            SGLANG_IMAGE=${{ matrix.base_image }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=lmsysorg/sglang-omni,push-by-digest=true,name-canonical=true,push=${{ needs.preprocess.outputs.publish }}
+          provenance: false
+          cache-from: type=gha,scope=npu-${{ matrix.device }}
+          cache-to: type=gha,mode=max,scope=npu-${{ matrix.device }}
+      - name: Export image digest
+        id: digest
+        if: needs.preprocess.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          DEVICE: ${{ matrix.device }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest_${DEVICE}=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: [preprocess, build_arm64]
+    if: needs.preprocess.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.preprocess.outputs.matrix) }}
+    steps:
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: lmsysorg/sglang-omni
+          flavor: latest=false
+          tags: |
+            type=ref,event=tag,suffix=-cann${{ matrix.cann }}-${{ matrix.device }}
+            type=sha,suffix=-cann${{ matrix.cann }}-${{ matrix.device }}
+            type=raw,value=${{ inputs.image_tag }}-cann${{ matrix.cann }}-${{ matrix.device }},enable=${{ inputs.image_tag != '' }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Log into Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish image tags
+        env:
+          IMAGE: lmsysorg/sglang-omni
+          DEVICE: ${{ matrix.device }}
+          DIGEST: ${{ needs.build_arm64.outputs[format('digest_{0}', matrix.device)] }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ -n "$TAGS" ]]
+          mapfile -t tags <<< "$TAGS"
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+          # A3 and 910B are separate hardware images, not a multi-arch image.
+          docker buildx imagetools create --prefer-index=false \
+            "${tag_args[@]}" "$IMAGE@$DIGEST"
+          {
+            echo "### NPU image: $DEVICE"
+            echo "Image: $IMAGE@$DIGEST"
+            printf 'Published: %s\n' "${tags[@]}"
+          } >> "$GITHUB_STEP_SUMMARY"

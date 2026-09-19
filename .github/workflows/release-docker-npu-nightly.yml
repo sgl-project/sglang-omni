@@ -1,0 +1,30 @@
+name: Release Docker Images Nightly (NPU)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - docker/npu.Dockerfile
+      - scripts/npu/requirements.txt
+      - pyproject_npu.toml
+      - scripts/npu/config.py
+      - scripts/npu/install_npu.sh
+      - tests/unit_test/npu/test_npu_config.py
+      - tests/unit_test/npu/test_npu_install_script.py
+      - .github/workflows/release-docker-npu.yml
+      - .github/workflows/release-docker-npu-nightly.yml
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * *' # 22:00 Beijing time
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name != 'schedule' || vars.NPU_DOCKER_PUBLISH_ENABLED == 'true'
+    uses: ./.github/workflows/release-docker-npu.yml
+    with:
+      image_tag: main
+      publish: ${{ github.event_name != 'pull_request' }}
+    secrets: inherit
