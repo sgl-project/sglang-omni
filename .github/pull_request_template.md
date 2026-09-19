@@ -39,3 +39,9 @@ model, and
 `/tag-and-rerun-ci whisper-asr` to select an ASR CI model. One selector from
 each family can be combined, for example `/tag-and-rerun-ci moss fun-asr`.
 Draft PRs are skipped even if labeled.
+
+To run the Intel XPU lane on its own, without occupying the CUDA runners, use
+`/tag-and-rerun-xpu-ci`. It adds the `run-xpu-ci` label and restarts only the
+XPU CI workflow; `run-ci` is left as-is, so it neither starts nor stops the
+CUDA lanes. Note that `xpu` is not a selector of `/tag-and-rerun-ci`: that
+command always opts into every lane, so it is refused there.

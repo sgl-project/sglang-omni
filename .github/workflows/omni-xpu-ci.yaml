@@ -70,7 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      xpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.xpu }}
+      xpu: ${{ steps.decide.outputs.xpu }}
+      # Left on the paths filter: /tag-and-rerun-xpu-ci forces the lane to run,
+      # but a PR that changes no image input should still pull the prebuilt
+      # image rather than rebuild it.
       image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.image }}
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +92,44 @@ jobs:
             image:
               - 'docker/xpu.Dockerfile'
               - 'pyproject_xpu.toml'
+
+      - name: Read run-xpu-ci label
+        if: ${{ github.event_name == 'pull_request' }}
+        id: xpu_label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            // Live read, not github.event: /tag-and-rerun-xpu-ci adds the label
+            // and then reruns this workflow, which replays the original payload.
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const names = pr.data.labels.map((label) => label.name);
+            core.setOutput("requested", names.includes("run-xpu-ci") ? "true" : "false");
+
+      - name: Decide whether to run the XPU lane
+        id: decide
+        env:
+          # workflow_dispatch on main lets dorny/paths-filter inspect only the
+          # tip commit, so a manual run against a non-XPU tip would skip the
+          # heavy job. Force `true` on manual dispatch.
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          # An explicit /tag-and-rerun-xpu-ci means "run it", so it also
+          # overrides the paths filter -- otherwise the command would silently
+          # no-op on a PR that touches no XPU path.
+          LABEL_REQUESTED: ${{ steps.xpu_label.outputs.requested }}
+          PATHS_MATCHED: ${{ steps.filter.outputs.xpu }}
+        run: |
+          if [[ "${MANUAL}" == "true" || "${LABEL_REQUESTED}" == "true" ]]; then
+            echo "xpu=true" >> "${GITHUB_OUTPUT}"
+            echo "Forced: manual=${MANUAL} run-xpu-ci label=${LABEL_REQUESTED}"
+            exit 0
+          fi
+          echo "xpu=${PATHS_MATCHED}" >> "${GITHUB_OUTPUT}"
+          echo "XPU-relevant paths changed: ${PATHS_MATCHED}"
 
   preflight:
     name: xpu-ci-gate
@@ -127,11 +168,16 @@ jobs:
           echo "PR is draft. Blocking XPU CI."
           exit 1
 
-      - name: Require run-ci label
+      - name: Require run-ci or run-xpu-ci label
         if: ${{ github.event_name == 'pull_request' }}
+        env:
+          # `run-xpu-ci` opts into this lane alone (via /tag-and-rerun-xpu-ci);
+          # `run-ci` opts into every lane including this one. Either suffices.
+          HAS_RUN_CI: ${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}
+          HAS_RUN_XPU_CI: ${{ contains(fromJson(steps.pr.outputs.labels), 'run-xpu-ci') }}
         run: |
-          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
-            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into XPU CI."
+          if [[ "${HAS_RUN_CI}" == "false" && "${HAS_RUN_XPU_CI}" == "false" ]]; then
+            echo "Missing required label 'run-ci' or 'run-xpu-ci'. Use /tag-and-rerun-ci to opt into all CI, or /tag-and-rerun-xpu-ci for the XPU lane only."
             exit 1
           fi
 

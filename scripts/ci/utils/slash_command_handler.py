@@ -17,6 +17,21 @@ ASR_MODEL_LABELS = {
     "qwen3-asr": "run-qwen3-asr",
     "whisper-asr": "run-whisper-asr",
 }
+# run-ci opts a PR into every lane, so it cannot express "XPU only". The XPU
+# workflow accepts this second label instead, and no CUDA lane looks at it.
+XPU_CI_LABEL = "run-xpu-ci"
+# Resolved by filename rather than by the workflow's display name, which is a
+# yaml field a rename would silently break the lookup on.
+XPU_CI_WORKFLOW_FILE = "omni-xpu-ci.yaml"
+# xpu reads like a selector of /tag-and-rerun-ci, but that command always tags
+# run-ci and occupies the CUDA runners, so accepting it would do the opposite
+# of what the author asked for.
+XPU_SELECTOR_TOKENS = {"xpu", "xpu-ci", "run-xpu-ci"}
+XPU_SELECTOR_HINT = (
+    "Did you mean /tag-and-rerun-xpu-ci? xpu is not a selector of this command, "
+    "which always opts into every CI lane."
+)
+ACTIVE_RUN_STATUSES = {"queued", "in_progress", "waiting", "pending", "requested"}
 
 
 def get_env_var(name):
@@ -55,6 +70,11 @@ def load_permissions(user_login):
 
 
 def parse_model_targets(tokens):
+    # Checked here so both /tag-run-ci-label and /tag-and-rerun-ci refuse it:
+    # either would tag run-ci and start every CUDA lane.
+    if XPU_SELECTOR_TOKENS & {token.lower() for token in tokens[1:]}:
+        return None, None, XPU_SELECTOR_HINT
+
     tts_targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
     if len(set(tts_targets)) > 1:
         allowed = ", ".join(sorted(TTS_MODEL_LABELS))
@@ -171,6 +191,124 @@ def cancel_and_rerun_workflow(gh_repo, run):
     return True
 
 
+def find_latest_pull_request_run(gh_repo, head_sha, workflow_file):
+    """
+    Returns the most recent pull_request run of workflow_file for head_sha,
+    or None if the workflow has never run against that commit.
+    """
+    try:
+        workflow_id = gh_repo.get_workflow(workflow_file).id
+    except GithubException as e:
+        print(f"Cannot resolve workflow {workflow_file}: {e}")
+        return None
+
+    candidates = [
+        run
+        for run in gh_repo.get_workflow_runs(head_sha=head_sha)
+        if run.workflow_id == workflow_id and run.event == "pull_request"
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda run: (run.created_at, run.id))
+
+
+def rerun_workflow_run(gh_repo, run):
+    """
+    Full-reruns a single workflow run regardless of its conclusion, cancelling
+    it first if it is still active. Returns True if a rerun was triggered.
+    """
+    if run.status in ACTIVE_RUN_STATUSES:
+        return cancel_and_rerun_workflow(gh_repo, run)
+
+    if run.status != "completed":
+        print(f"Cannot rerun workflow {run.id}: unexpected status {run.status}.")
+        return False
+    if run.conclusion == "action_required":
+        print(f"Cannot rerun workflow {run.id}: GitHub approval is required.")
+        return False
+
+    print(f"Processing full workflow rerun: {run.name} (ID: {run.id})")
+    try:
+        rerun_started = run.rerun()
+    except GithubException as e:
+        print(f"Failed to rerun workflow {run.id}: {e}")
+        return False
+    if not rerun_started:
+        print(f"Failed to rerun workflow {run.id}.")
+        return False
+    print(f"Triggered full rerun for workflow {run.name} (ID: {run.id}).")
+    return True
+
+
+def ensure_label_exists(gh_repo, label_name):
+    """
+    Creates label_name if the repository does not have it yet.
+
+    The GitHub docs do not state whether adding an unknown label to an issue
+    creates it, and run-xpu-ci is new, so do not depend on either answer.
+    """
+    try:
+        gh_repo.get_label(label_name)
+        return True
+    except GithubException:
+        pass
+
+    try:
+        gh_repo.create_label(name=label_name, color="1d76db")
+        print(f"Created missing label: {label_name}.")
+        return True
+    except GithubException as e:
+        print(f"Failed to create label {label_name}: {e}")
+        return False
+
+
+def handle_tag_and_rerun_xpu_ci(gh_repo, pr, comment, user_perms):
+    """
+    Handles /tag-and-rerun-xpu-ci: runs the XPU lane and nothing else.
+
+    The label alone is not enough to start the lane: one added by GITHUB_TOKEN
+    does not cascade-trigger pull_request.labeled, so rerun the existing run,
+    which re-reads live labels and passes its gate.
+
+    run-ci is deliberately left alone if already present, so this command never
+    silently disables the CUDA lanes for later pushes.
+
+    Returns True if a rerun was triggered, False otherwise.
+    """
+    if not user_perms.get("can_tag_run_ci_label", False):
+        # Tagging rather than rerun permission: this puts PR code on a
+        # self-hosted Intel runner, which the PR-author escape hatch in main()
+        # must not grant.
+        print("Permission denied: can_tag_run_ci_label is false.")
+        return False
+
+    if not ensure_label_exists(gh_repo, XPU_CI_LABEL):
+        return False
+
+    print(f"Permission granted. Adding label: {XPU_CI_LABEL}.")
+    pr.add_to_labels(XPU_CI_LABEL)
+
+    print("Waiting 5 seconds for label to propagate...")
+    time.sleep(5)
+
+    head_sha = pr.head.sha
+    run = find_latest_pull_request_run(gh_repo, head_sha, XPU_CI_WORKFLOW_FILE)
+    if run is None:
+        print(
+            f"No {XPU_CI_WORKFLOW_FILE} pull_request run exists for the current "
+            f"PR head {head_sha}. The label is applied; push a commit to start "
+            "the lane."
+        )
+        return False
+
+    if not rerun_workflow_run(gh_repo, run):
+        return False
+
+    comment.create_reaction("+1")
+    print("XPU CI restarted and comment reacted.")
+    return True
+
+
 def handle_rerun_failed_ci(
     gh_repo,
     pr,
@@ -217,7 +355,7 @@ def handle_rerun_failed_ci(
         )
         if force_full_rerun:
             force_rerun_target_found = True
-        if run.status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+        if run.status in ACTIVE_RUN_STATUSES:
             if not force_full_rerun:
                 print(
                     f"Skipping latest workflow because it is still {run.status}: "
@@ -347,7 +485,21 @@ def main():
     elif first_line.startswith("/rerun-failed-ci"):
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
+    # Dispatched before /tag-and-rerun-ci: the two names are one suffix apart,
+    # so keep the more specific one first in case a later rename makes one a
+    # prefix of the other.
+    elif first_line.startswith("/tag-and-rerun-xpu-ci"):
+        print("Processing command: /tag-and-rerun-xpu-ci")
+        if not handle_tag_and_rerun_xpu_ci(repo, pr, comment, user_perms):
+            comment.create_reaction("confused")
+
     elif first_line.startswith("/tag-and-rerun-ci"):
+        # /tag-and-rerun-ci-xpu does prefix-match this command, and tagging
+        # run-ci would occupy the CUDA runners instead of the XPU one.
+        if tokens[0].lower().startswith("/tag-and-rerun-ci-xpu"):
+            print(XPU_SELECTOR_HINT)
+            comment.create_reaction("confused")
+            return
         tts_model_target, asr_model_target, parse_error = parse_model_targets(tokens)
         if parse_error:
             print(parse_error)
