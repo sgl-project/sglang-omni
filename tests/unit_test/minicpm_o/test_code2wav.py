@@ -100,9 +100,9 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
-    batched = model.vocode_many([tokens_a, tokens_b], None)
-    single_a = model.vocode(tokens_a, None)
-    single_b = model.vocode(tokens_b, None)
+    batched = model.vocode([tokens_a, tokens_b], None)
+    single_a = model.vocode([tokens_a], None)[0]
+    single_b = model.vocode([tokens_b], None)[0]
     assert (
         batched[0].shape == single_a.shape == (len(tokens_a) * SAMPLES_PER_CODEC_TOKEN,)
     )
@@ -167,7 +167,7 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.batch_wait_when_idle is False
 
 
-def test_vocode_many_slices_waveforms_to_token_lengths() -> None:
+def test_vocode_slices_waveforms_to_token_lengths() -> None:
     class FakeFlow:
         up_rate = 2
 
@@ -200,18 +200,18 @@ def test_vocode_many_slices_waveforms_to_token_lengths() -> None:
         torch.zeros(1, 4),
         torch.zeros(1, 1, 80),
     )
-    waveforms = model.vocode_many([[1, 2], [3, 4, 5]], b"ref")
+    waveforms = model.vocode([[1, 2], [3, 4, 5]], b"ref")
     assert [wave.shape for wave in waveforms] == [
         (2 * SAMPLES_PER_CODEC_TOKEN,),
         (3 * SAMPLES_PER_CODEC_TOKEN,),
     ]
 
 
-def test_vocode_many_rejects_empty_sequences() -> None:
+def test_vocode_rejects_empty_sequences() -> None:
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
-    assert model.vocode_many([], b"ref") == []
+    assert model.vocode([], b"ref") == []
     with pytest.raises(ValueError, match="non-empty"):
-        model.vocode_many([[1], []], b"ref")
+        model.vocode([[1], []], b"ref")
 
 
 def _fake_code2wav_model() -> MagicMock:
@@ -220,7 +220,7 @@ def _fake_code2wav_model() -> MagicMock:
     fake.resolve_prompt_wav.side_effect = lambda reference: (
         b"default" if reference is None else reference
     )
-    fake.vocode_many.side_effect = lambda sequences, reference: [
+    fake.vocode.side_effect = lambda sequences, reference: [
         np.full(
             len(tokens) * SAMPLES_PER_CODEC_TOKEN,
             float(len(tokens)),
@@ -234,7 +234,7 @@ def _fake_code2wav_model() -> MagicMock:
 def test_vocode_payloads_uses_one_batch_path() -> None:
     fake = _fake_code2wav_model()
     output = vocode_code2wav_payloads(fake, [_payload(tokens=[7, 8, 9])])[0]
-    fake.vocode_many.assert_called_once_with([[7, 8, 9]], b"default")
+    fake.vocode.assert_called_once_with([[7, 8, 9]], b"default")
     assert output.data["sample_rate"] == 24000
     assert output.data["audio_waveform_shape"] == [3 * SAMPLES_PER_CODEC_TOKEN]
 
@@ -257,10 +257,8 @@ def test_vocode_payloads_groups_by_resolved_reference() -> None:
             ),
         ],
     )
-    assert fake.vocode_many.call_count == 2
-    batched_calls = {
-        call.args[1]: call.args[0] for call in fake.vocode_many.call_args_list
-    }
+    assert fake.vocode.call_count == 2
+    batched_calls = {call.args[1]: call.args[0] for call in fake.vocode.call_args_list}
     assert batched_calls[b"spk-a"] == [[1, 2], [4, 5, 6]]
     assert batched_calls[b"spk-b"] == [[3]]
     assert [out.data["audio_waveform_shape"][0] for out in outputs] == [
@@ -276,4 +274,4 @@ def test_vocode_payloads_resolves_default_reference_before_grouping() -> None:
         fake,
         [_payload(request_id="a", tokens=[1]), _payload(request_id="b", tokens=[2, 3])],
     )
-    fake.vocode_many.assert_called_once_with([[1], [2, 3]], b"default")
+    fake.vocode.assert_called_once_with([[1], [2, 3]], b"default")

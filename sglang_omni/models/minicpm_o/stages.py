@@ -198,7 +198,7 @@ def vocode_code2wav_payloads(
     )
     waveforms_by_index = {}
     for group_indices in groups.values():
-        group_waveforms = model.vocode_many(
+        group_waveforms = model.vocode(
             [codec_tokens[idx] for idx in group_indices],
             references[group_indices[0]],
         )

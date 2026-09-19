@@ -149,10 +149,11 @@ speculative generality.
 
 ## CONTROL FLOW
 
-- Validate inputs and preconditions before the main logic. When possible, organizing
- conditions into clear, mutually exclusive if/elif/else branches. Return early for
- invalid cases, and keep the main execution path in the final branch to avoid unnecessary
- lookups, repeated checks, and deeply nested logic.
+- Validate inputs and preconditions before the main logic. Organize conditions
+  into mutually exclusive if/elif/else branches. If an if assigns a variable
+  or returns a value, it must have the matching else (or elif/.../else).
+  Keep the main execution path in the final branch. Do not leave a lone if
+  that returns or assigns and then fall through.
 
 ## LOGGING
 
