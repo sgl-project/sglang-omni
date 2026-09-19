@@ -115,10 +115,16 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         process=process,
         factory_path=f"{PKG}.stages.create_code2wav_executor",
         factory=FactoryArgs(
-            max_batch_size=4,  # measured on A800 SeedTTS replay, c16/n50
-            max_batch_wait_ms=10.0,
+            max_batch_size=8,
+            max_batch_wait_ms=0.0,
             batch_wait_when_idle=False,
         ),
+        # Note (Chenyang): As a general comment and my usual understanding
+        # of SGLang Omni, SGLang Omni has a poor runtime which leads to a
+        # underutilized GPU/SMs. To address this, we recommend users to set
+        # batchs for your compute but never wait for grouping the batchs.
+        # As SGLang Omni Runtime moves better, we shall probably wait several
+        # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
         terminal=True,
     )
