@@ -4,7 +4,9 @@ import asyncio
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
+from PIL import Image
 
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
@@ -23,10 +25,12 @@ class _FakeProcessor:
     def __init__(self) -> None:
         self.images = None
         self.audios = None
+        self.options = None
 
-    def __call__(self, prompt_text, *, images, audios, return_tensors):
+    def __call__(self, prompt_text, *, images, audios, return_tensors, **options):
         self.images = images
         self.audios = audios
+        self.options = options
         image_count = len(images[0]) if images else 0
         return {
             "input_ids": torch.tensor([[1, 2, 3]], dtype=torch.long),
@@ -47,8 +51,12 @@ async def _explicit_audios(_audios, *, target_sr):
     return [np.array([0.25, 0.5], dtype=np.float32)] if _audios else []
 
 
-def test_minicpm_preprocessor_consumes_video_frames_and_audio(
+@pytest.mark.parametrize("use_audio_in_video", [None, False, True])
+@pytest.mark.parametrize("explicit_audio", [False, True])
+def test_minicpm_preprocessor_uses_only_requested_video_audio(
     monkeypatch,
+    use_audio_in_video,
+    explicit_audio,
 ) -> None:
     fake_processor = _FakeProcessor()
     preprocessor = object.__new__(MiniCPMOPreprocessor)
@@ -71,7 +79,12 @@ def test_minicpm_preprocessor_consumes_video_frames_and_audio(
 
     async def _videos(_videos, **kwargs):
         captured_video_kwargs.update(kwargs)
-        return [video], [2.0], [np.array([1.0, 2.0], dtype=np.float32)]
+        audio = (
+            [np.array([1.0, 2.0], dtype=np.float32)]
+            if kwargs["extract_audio"]
+            else None
+        )
+        return [video], [2.0], audio
 
     monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", _empty_images)
     monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", _explicit_audios)
@@ -86,7 +99,12 @@ def test_minicpm_preprocessor_consumes_video_frames_and_audio(
         {
             "messages": [{"role": "user", "content": "What happens?"}],
             "videos": ["clip.mp4"],
-            "audios": ["question.wav"],
+            **({"audios": ["question.wav"]} if explicit_audio else {}),
+            **(
+                {"use_audio_in_video": use_audio_in_video}
+                if use_audio_in_video is not None
+                else {}
+            ),
             "video_fps": 2,
             "video_max_frames": 8,
             "video_min_pixels": 128,
@@ -103,12 +121,88 @@ def test_minicpm_preprocessor_consumes_video_frames_and_audio(
         "min_pixels": 128,
         "max_pixels": 4096,
         "total_pixels": 8192,
-        "extract_audio": True,
+        "extract_audio": bool(use_audio_in_video),
         "audio_target_sr": 16000,
     }
     assert len(fake_processor.images[0]) == 2
-    assert len(fake_processor.audios[0]) == 2
+    assert fake_processor.options == {"max_slice_nums": 1, "use_image_id": False}
+    expected_audio_count = int(explicit_audio) + int(bool(use_audio_in_video))
+    if expected_audio_count:
+        assert len(fake_processor.audios[0]) == expected_audio_count
+        if explicit_audio:
+            np.testing.assert_array_equal(
+                fake_processor.audios[0][0],
+                np.array([0.25, 0.5], dtype=np.float32),
+            )
+        if use_audio_in_video:
+            np.testing.assert_array_equal(
+                fake_processor.audios[0][-1],
+                np.array([1.0, 2.0], dtype=np.float32),
+            )
+    else:
+        assert fake_processor.audios is None
     prompt_text = result.data["prompt"]["prompt_text"]
     assert prompt_text.count("<image>./</image>") == 2
-    assert prompt_text.count("<audio>./</audio>") == 2
+    assert prompt_text.count("<audio>./</audio>") == expected_audio_count
     assert payload.request.inputs is None
+
+
+@pytest.mark.parametrize(
+    ("with_image", "with_audio", "with_video"),
+    [(True, False, False), (False, True, False), (True, True, True)],
+)
+def test_minicpm_video_options_preserve_other_media(
+    monkeypatch, with_image, with_audio, with_video
+) -> None:
+    fake_processor = _FakeProcessor()
+    preprocessor = object.__new__(MiniCPMOPreprocessor)
+    preprocessor._processor = fake_processor
+    preprocessor.speech_enabled = False
+    monkeypatch.setattr(
+        preprocessor, "render_chat_template", lambda messages, **_: str(messages)
+    )
+    image = Image.new("RGB", (2, 2), color="red")
+    frame = Image.new("RGB", (2, 2), color="blue")
+
+    async def _images(raw_images):
+        return [image] if raw_images else []
+
+    async def _videos(raw_videos, **kwargs):
+        return [[frame]], [1.0], None
+
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", _images)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", _explicit_audios)
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", _videos)
+    result = asyncio.run(
+        preprocessor(
+            _payload(
+                {
+                    "messages": [{"role": "user", "content": "Describe this."}],
+                    "images": [image] if with_image else None,
+                    "audios": ["question.wav"] if with_audio else None,
+                    "videos": ["clip.mp4"] if with_video else None,
+                }
+            )
+        )
+    )
+
+    # The processor has one policy for the whole image list, including mixed inputs.
+    assert fake_processor.options == (
+        {"max_slice_nums": 1, "use_image_id": False} if with_video else {}
+    )
+    expected_images = ([image] if with_image else []) + ([frame] if with_video else [])
+    if expected_images:
+        assert len(fake_processor.images[0]) == len(expected_images)
+        for actual, expected in zip(fake_processor.images[0], expected_images):
+            np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    else:
+        assert fake_processor.images is None
+    if with_audio:
+        np.testing.assert_array_equal(
+            fake_processor.audios[0][0], np.array([0.25, 0.5], dtype=np.float32)
+        )
+    else:
+        assert fake_processor.audios is None
+    prompt_text = result.data["prompt"]["prompt_text"]
+    assert prompt_text.count("<image>./</image>") == len(expected_images)
+    assert prompt_text.count("<audio>./</audio>") == int(with_audio)

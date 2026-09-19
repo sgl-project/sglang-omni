@@ -140,6 +140,7 @@ def create_sglang_talker_executor_from_config(
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
     from sglang_omni.models.minicpm_o.bootstrap import create_talker_scheduler
+    from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
     from sglang_omni.scheduling.generation_batch_policy import (
         build_generation_batch_overrides,
         validate_generation_batch_policy,
@@ -149,12 +150,14 @@ def create_sglang_talker_executor_from_config(
     )
     from sglang_omni.utils.misc import avail_gpu_mem
 
+    register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         sampling_backend="pytorch",
     )
+    overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
     overrides.setdefault("max_total_tokens", 32 * max_seq_len)
@@ -258,6 +261,7 @@ def create_sglang_thinker_executor_from_config(
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
     from sglang_omni.models.minicpm_o.bootstrap import create_thinker_scheduler
+    from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
     from sglang_omni.scheduling.generation_batch_policy import (
         build_generation_batch_overrides,
         validate_generation_batch_policy,
@@ -267,6 +271,7 @@ def create_sglang_thinker_executor_from_config(
     )
     from sglang_omni.utils.misc import avail_gpu_mem
 
+    register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -275,6 +280,7 @@ def create_sglang_thinker_executor_from_config(
         chunked_prefill_size=8192,
         sampling_backend="pytorch",
     )
+    overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
     server_args = build_sglang_server_args(
         model_path,
