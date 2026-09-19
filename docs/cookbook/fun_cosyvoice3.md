@@ -9,7 +9,7 @@ speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, 
 Install `sglang-omni` for your platform:
 
 - **NVIDIA CUDA / general** — [Installation](../get_started/installation.md)
-- **Apple Silicon** — [Installation — Apple Silicon](../get_started/installation_mps.md)
+- **Apple Silicon** — [Installation — Apple Silicon](../get_started/installation_apple_silicon.md)
 
 Fun-CosyVoice3 needs `sox` and a few extra Python packages. From the repository root, install the extra against **this checkout**:
 
