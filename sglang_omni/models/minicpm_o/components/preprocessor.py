@@ -193,6 +193,7 @@ class MiniCPMOPreprocessor:
             add_generation_prompt=True,
             tokenize=False,
             use_tts_template=use_tts_template,
+            enable_thinking=False,
         )
 
     @staticmethod
