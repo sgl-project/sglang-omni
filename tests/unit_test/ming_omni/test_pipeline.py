@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from examples.launchers.ming_omni import (
@@ -688,13 +689,37 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         _launch_text_server(args)
 
 
-def test_ming_thinker_factory_registers_hf_config_before_server_args(
+@pytest.mark.parametrize(
+    (
+        "server_args_overrides",
+        "expected_operator_selected",
+        "expected_missing_ladder_error",
+    ),
+    [
+        (None, False, False),
+        (
+            {
+                "cuda_graph_backend_prefill": "breakable",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+            True,
+            False,
+        ),
+        ({"cuda_graph_backend_prefill": "breakable"}, True, True),
+    ],
+)
+def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     monkeypatch,
+    server_args_overrides,
+    expected_operator_selected,
+    expected_missing_ladder_error,
 ) -> None:
     from sglang_omni.models.ming_omni import stages
 
     call_order: list[str] = []
     captured_server_args_kwargs: dict[str, object] = {}
+    built_server_args = object()
+    validations: list[str] = []
 
     registration_module = ModuleType("sglang_omni.models.ming_omni.registration")
 
@@ -715,7 +740,7 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         assert call_order == ["register"]
         call_order.append("build_server_args")
         captured_server_args_kwargs.update(kwargs)
-        return SimpleNamespace(tp_size=1)
+        return built_server_args
 
     backend_module.build_sglang_server_args = build_sglang_server_args
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -727,10 +752,43 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         backend_module,
     )
 
+    policy_module = ModuleType("sglang_omni.scheduling.generation_batch_policy")
+    policy_module.CudaGraphBackend = SimpleNamespace(BREAKABLE="breakable")
+
+    def build_generation_batch_overrides(
+        *,
+        max_running_requests,
+        server_args_overrides,
+        **defaults,
+    ):
+        return {
+            **defaults,
+            **(server_args_overrides or {}),
+            "max_running_requests": max_running_requests,
+        }
+
+    policy_module.build_generation_batch_overrides = build_generation_batch_overrides
+    policy_module.operator_selected_prefill_backend = lambda overrides: bool(
+        overrides and overrides.get("cuda_graph_backend_prefill") is not None
+    )
+
+    def validate_generation_batch_policy(*, model_name, server_args):
+        assert server_args is built_server_args
+        validations.append(model_name)
+
+    policy_module.validate_generation_batch_policy = validate_generation_batch_policy
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.scheduling.generation_batch_policy",
+        policy_module,
+    )
+
     bootstrap_module = ModuleType("sglang_omni.models.ming_omni.bootstrap")
 
-    def create_thinker_scheduler(*args, **kwargs):
-        del args, kwargs
+    def create_thinker_scheduler(server_args, **kwargs):
+        assert server_args is built_server_args
+        assert kwargs["tp_size"] == 2
+        assert kwargs["operator_selected_prefill_backend"] is expected_operator_selected
         call_order.append("create_scheduler")
         return object()
 
@@ -741,11 +799,30 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         bootstrap_module,
     )
 
-    stages.create_sglang_thinker_executor_from_config(model_path="dummy")
+    if expected_missing_ladder_error:
+        with pytest.raises(
+            ValueError,
+            match="explicit breakable.*requires.*cuda_graph_max_bs_prefill",
+        ):
+            stages.create_sglang_thinker_executor_from_config(
+                model_path="dummy",
+                tp_size=2,
+                server_args_overrides=server_args_overrides,
+            )
+        assert call_order == ["register"]
+        return
+
+    stages.create_sglang_thinker_executor_from_config(
+        model_path="dummy", tp_size=2, server_args_overrides=server_args_overrides
+    )
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
+    assert captured_server_args_kwargs["tp_size"] == 2
     assert captured_server_args_kwargs["trust_remote_code"] is False
     assert captured_server_args_kwargs["sampling_backend"] == "pytorch"
+    assert captured_server_args_kwargs["disable_cuda_graph"] is False
+    assert captured_server_args_kwargs["max_running_requests"] == 16
+    assert validations == ["Ming-Omni thinker"]
 
 
 def test_ming_arch_override_uses_composite_llm_config() -> None:
