@@ -167,6 +167,7 @@ def _build_stage_groups(
             rank_endpoints=rank_endpoints,
             stream_targets=list(stage_cfg.stream_to),
             stream_done_to_fn=stage_cfg.stream_done_to_fn,
+            external_input_enqueue_timeout_s=stage_cfg.external_input_enqueue_timeout_s,
             gpu_stage_names=gpu_stage_names,
             stage_gpu_ids=stage_gpu_ids,
             require_factory_gpu_id=requires_factory_gpu_id(stage_cfg, config),
