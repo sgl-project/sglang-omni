@@ -456,15 +456,15 @@ async def _first_speech_to_text_chunk(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if disconnect_task in done:
-            await _cancel_task_bounded(first_chunk_task)
-            await _abort_and_close_speech_to_text_stream(
-                client, request_id, chunk_stream
-            )
             raise asyncio.CancelledError
         try:
             return first_chunk_task.result()
         except StopAsyncIteration:
             return None
+    except asyncio.CancelledError:
+        await _cancel_task_bounded(first_chunk_task)
+        await _abort_and_close_speech_to_text_stream(client, request_id, chunk_stream)
+        raise
     finally:
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
