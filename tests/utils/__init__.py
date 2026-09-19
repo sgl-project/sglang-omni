@@ -13,10 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.benchmarker import utils as benchmark_utils
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MODEL_PATH,
-)
+from benchmarks.tasks.asr import QWEN3_ASR_MODEL_PATH
 
 if TYPE_CHECKING:
     from tests.test_model.omni_router_utils import ManagedRouterHandle
@@ -36,7 +33,9 @@ wait_healthy = benchmark_utils.wait_healthy
 start_server_from_cmd = benchmark_utils.start_server_from_cmd
 
 QWEN3_ASR_WER_MODEL_PATH = QWEN3_ASR_MODEL_PATH
-QWEN3_ASR_WER_CONCURRENCY = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+# note (wenyao): bound WER to one worker's four-long-audio admission cap;
+# dedicated ASR speed benchmarks retain concurrency 32.
+QWEN3_ASR_WER_CONCURRENCY = 4
 QWEN3_ASR_ROUTER_STARTUP_TIMEOUT = 600
 
 
