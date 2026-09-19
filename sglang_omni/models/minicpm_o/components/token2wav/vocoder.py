@@ -98,14 +98,14 @@ class Token2Wav(torch.nn.Module):
         model_path: Path,
         *,
         device: torch.device,
-        float16: bool = False,
+        dtype: torch.dtype = torch.float32,
         n_timesteps: int = 10,
     ) -> None:
         super().__init__()
         if n_timesteps <= 0:
             raise ValueError("n_timesteps must be positive")
         self.device = device
-        self.float16 = float16
+        self.dtype = dtype
         self.n_timesteps = n_timesteps
         self.audio_tokenizer = (
             S3TokenizerV2(model_path / "speech_tokenizer_v2_25hz.onnx")
@@ -123,8 +123,8 @@ class Token2Wav(torch.nn.Module):
             providers=["CPUExecutionProvider"],
         )
         self.flow = load_flow(model_path / "flow.yaml")
-        if float16:
-            self.flow.half()
+        if dtype != torch.float32:
+            self.flow.to(dtype)
         self.flow.load_state_dict(
             torch.load(model_path / "flow.pt", map_location="cpu", weights_only=True),
             strict=True,
