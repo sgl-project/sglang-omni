@@ -352,13 +352,15 @@ Relevant model CI ownership:
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
-  (`QWEN3_ASR_WER_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
+  (`QWEN3_ASR_WER_CONCURRENCY`, currently 4). Used by Qwen3 talker WER tests
   and TTS WER tests instead of the in-process transformers Whisper pipeline.
 - Talker / video WER CI (`test_qwen3_omni_*_talker_ci.py`, `test_tts_ci.py`):
   generate audio with the model router first, tear down that server, free both
   GPUs, then transcribe saved WAVs through the ASR router. Qwen3-Omni
   talker/TTS generation concurrency is 16, including the
-  `videoamme_talker_tp2` stage; ASR/WER transcription concurrency is 32.
+  `videoamme_talker_tp2` stage; ASR/WER transcription concurrency is 4 to
+  respect one worker's long-audio admission cap. Dedicated ASR speed
+  benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
