@@ -116,6 +116,8 @@ class _FakeProcess:
 
 
 class _FakeGroup:
+    is_ready = False
+
     stage_control_endpoints = {"preprocessing": "ipc://preprocessing"}
     process_count = 1
 
