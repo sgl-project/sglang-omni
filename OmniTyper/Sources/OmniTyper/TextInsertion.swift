@@ -179,8 +179,9 @@ enum TextInsertion {
         // Note (Codex): Cancellation must not restore the clipboard before the queued paste consumes it.
         await Task.detached { try? await Task.sleep(nanoseconds: 800_000_000) }.value
         // Note (Jiaxin Deng): Report ignored pastes without retrying; a delayed paste could otherwise duplicate text.
-        if let before = lengthBeforePaste, let element = target.element, let after = characterCount(element),
-           let range = target.range, (text as NSString).length != range.length, after == before {
+        if let element = target.element, let range = target.range,
+           pasteWasIgnored(before: lengthBeforePaste, after: characterCount(element),
+                           inserted: (text as NSString).length, replaced: range.length) {
             throw Failure("sys.pasteIgnored")
         }
         Diagnostics.record("insert.ok", ["destination": target.bundleID,
@@ -188,10 +189,16 @@ enum TextInsertion {
     }
 
     // Note (Jiaxin Deng): Compare character counts in Accessibility's UTF-16 units.
+    // Note (Yifei Leng): Trust only AXNumberOfCharacters. Terminals such as cmux expose an AXTextArea whose
+    // AXValue stays empty, so comparing value lengths reported every successful paste as ignored.
     private static func characterCount(_ element: AXUIElement) -> Int? {
-        if let count = attribute(element, "AXNumberOfCharacters") as? NSNumber { return count.intValue }
-        if let value = attribute(element, kAXValueAttribute) as? String { return (value as NSString).length }
-        return nil
+        (attribute(element, "AXNumberOfCharacters") as? NSNumber)?.intValue
+    }
+
+    // Note (Yifei Leng): An unknown count proves nothing, and neither does replacing a selection of equal length.
+    nonisolated static func pasteWasIgnored(before: Int?, after: Int?, inserted: Int, replaced: Int) -> Bool {
+        guard let before, let after, inserted != replaced else { return false }
+        return after == before
     }
 
     static func copy(_ text: String) {
