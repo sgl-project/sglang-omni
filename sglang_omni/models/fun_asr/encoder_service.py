@@ -24,6 +24,8 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
+_EVENT_WAIT_DEVICE_TYPES = frozenset({"cuda", "xpu"})
+
 _CACHE_MAX_ENTRIES = 4096
 _CACHE_MAX_BYTES = 2 * 1024**3
 _SHUTDOWN = object()
@@ -353,6 +355,13 @@ class FunASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
     def synchronize_batch(self) -> None:
         if self._stream is not None:
             self._stream.synchronize()
+            return
+        if self._device.type not in _EVENT_WAIT_DEVICE_TYPES:
+            return
+        device_module = torch.get_device_module(self._device)
+        encoded = device_module.Event()
+        encoded.record(device_module.current_stream(self._device))
+        encoded.synchronize()
 
     def cache_embedding(
         self,
