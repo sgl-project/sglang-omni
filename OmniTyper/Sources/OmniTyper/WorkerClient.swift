@@ -17,6 +17,7 @@ final class WorkerClient: ObservableObject {
 
     private var showingReady = false
     @Published private(set) var isRunning = false
+    var hasPendingRequest: Bool { pending != nil }
 
     private struct Pending {
         let id: String
