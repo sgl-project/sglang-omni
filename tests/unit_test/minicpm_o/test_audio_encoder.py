@@ -206,6 +206,23 @@ def test_short_audio_is_rejected_before_pooling() -> None:
             encoder(audio_features=mel, audio_feature_lens=lens)
 
 
+def test_sub_pooling_tail_keeps_long_audio_embeddings() -> None:
+    """A partial final segment contributes no tokens without rejecting its clip."""
+    encoder = _tiny_audio_encoder(pool_step=5)
+    mel = torch.randn(2, 80, 3000)
+    mel[1, :, 5:] = 0
+
+    expected = encoder(audio_features=mel[:1], audio_feature_lens=torch.tensor([3000]))[
+        "audio_embeds"
+    ]
+    actual = encoder(audio_features=mel, audio_feature_lens=torch.tensor([3000, 5]))[
+        "audio_embeds"
+    ]
+
+    assert actual.shape == (300, 16)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_minimum_length_audio_still_encodes() -> None:
     """The shortest accepted clip yields exactly one pooled frame."""
     pool_step = 5

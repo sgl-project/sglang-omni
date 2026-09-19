@@ -262,9 +262,9 @@ class MiniCPMOAudioEncoder(nn.Module):
         lens_cpu = audio_feature_lens.to("cpu")
         lens = audio_feature_lens.to(self.device)
 
-        # note (MayDomine): fewer than one pooling window yields an empty output.
+        # note (wenyao): a short trailing segment contributes zero pooled tokens.
         min_mel_frames = _min_mel_frames(self.audio_pool_step)
-        if int(lens_cpu.min()) < min_mel_frames:
+        if int(lens_cpu.max()) < min_mel_frames:
             shortest = int(lens_cpu.min())
             raise ValueError(
                 f"MiniCPM-o accepts audio up to {min_mel_frames} mel frames "
