@@ -1161,7 +1161,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             hidden_states = hidden_states[last_index]
         logits, _ = self.codec_head(hidden_states)
         logits_output = LogitsProcessorOutput(
-            next_token_logits=logits,
+            # Keep sampling penalties from rounding scores back to BF16/FP16.
+            next_token_logits=logits.float(),
             hidden_states=hidden_states,
         )
         return logits_output
