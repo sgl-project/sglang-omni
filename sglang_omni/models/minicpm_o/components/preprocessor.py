@@ -288,11 +288,16 @@ class MiniCPMOPreprocessor:
             use_tts_template=bool(audios) or self.should_use_tts_template(payload),
         )
 
+        # Match the checkpoint's video recipe; the policy covers mixed images too.
+        video_options = (
+            {"max_slice_nums": 1, "use_image_id": False} if raw_videos else {}
+        )
         processed = self.processor(
             prompt_text,
             images=[images] if images else None,
             audios=[audios] if audios else None,
             return_tensors="pt",
+            **video_options,
         )
 
         input_ids = processed["input_ids"][0].to(dtype=torch.long)
