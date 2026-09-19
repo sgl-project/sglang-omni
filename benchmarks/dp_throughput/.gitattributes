@@ -1,0 +1,2 @@
+# Force LF for this tooling dir: the shell scripts must stay LF to run on Linux.
+* text=auto eol=lf
