@@ -114,8 +114,10 @@ def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
     config = HiggsTtsPipelineConfig(model_path="unused")
     vocoder_kwargs = config.stage_factory_kwargs("vocoder")
 
+    # The codec hook, not enable_code2wav_graph: a platform can capture the
+    # code2wav step and still decline this codec's frame domain.
     counts = vocoder_kwargs["decode_cuda_graph_frame_counts"]
-    if current_platform.enable_code2wav_graph():
+    if current_platform.enable_codec_decode_graph():
         assert counts == tuple(range(1, 151))
     else:
         assert counts == ()

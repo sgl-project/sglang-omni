@@ -114,6 +114,16 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
 
+    def enable_codec_decode_graph(self):
+        """Check if capturing an audio codec's whole decode frame domain pays off
+
+        Opt-in, unlike enable_code2wav_graph: capture cost scales with the size
+        of the domain, and a platform naming no graph backend cannot capture at
+        all, so a platform answers True only where replay is measured to beat
+        its own eager decode.
+        """
+        return False
+
     def enable_talker_graph(self) -> bool:
         return True
 

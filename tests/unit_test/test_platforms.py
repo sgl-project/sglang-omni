@@ -382,3 +382,26 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
 
     assert calls == [list(platform.get_graph_capture_sdpa_backends())]
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
+
+
+def test_only_cuda_opts_into_the_codec_decode_graph() -> None:
+    """Capture is opt-in, so a platform added later decodes eagerly by default.
+
+    Higgs' frame domain follows this hook, and a platform naming no graph
+    backend cannot capture at all, so defaulting it on would break that platform
+    at startup rather than merely cost it a capture it does not want.
+    """
+    assert CUDAOmniPlatform().enable_codec_decode_graph() is True
+    for platform_type in (
+        OmniPlatform,
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ):
+        assert platform_type().enable_codec_decode_graph() is False, platform_type
+
+    # enable_code2wav_graph is a different hook: XPU opts into that one.
+    assert xpu_platform.XPUOmniPlatform().enable_code2wav_graph() is True

@@ -36,6 +36,10 @@ class MUSAOmniPlatform(CUDAOmniPlatform):
     def enable_tts_predictor_graph(self) -> bool:
         return False
 
+    def enable_codec_decode_graph(self):
+        # Do not inherit NVIDIA's opt-in; never validated on MUSA.
+        return False
+
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,

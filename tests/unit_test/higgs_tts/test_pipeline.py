@@ -2131,6 +2131,14 @@ def _make_fake_codec(call_log: list[tuple[int, int]]):
     return codec
 
 
+def test_codec_capture_refuses_a_device_with_no_graph_backend() -> None:
+    """The codec asks the platform instead of requiring CUDA; CPU names no backend."""
+    codec = _make_fake_codec([])
+
+    with pytest.raises(RuntimeError, match="names no device graph backend"):
+        codec.capture_decode_cuda_graphs((1, 2))
+
+
 def test_decode_batch_buckets_by_length() -> None:
     """Same-T items batch into one call; mixed-T items get separate calls."""
     call_log: list[tuple[int, int]] = []
