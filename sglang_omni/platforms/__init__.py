@@ -90,3 +90,20 @@ platform_spec = os.environ.get("SGLANG_OMNI_PLATFORM_SPEC")
 current_platform = (
     _load_platform_class(platform_spec)() if platform_spec else _resolve_platform()
 )
+
+
+def platform_for_device(device: torch.device | str | None) -> OmniPlatform:
+    """The platform whose answers apply to a stage placed on ``device``.
+
+    ``current_platform`` speaks for the host, and a stage is normally on it. The
+    exception is a cpu placement on an accelerator host: a policy keyed to a
+    device -- what compiles, captures or fits in a memory pool there -- has to
+    follow the device rather than the cards the host happens to own. Any other
+    device type is the host's own, so it keeps ``current_platform``.
+    """
+    if device is None:
+        return current_platform
+    device_type = torch.device(device).type
+    if device_type == "cpu" and current_platform.device_type != "cpu":
+        return CPUOmniPlatform()
+    return current_platform

@@ -5,9 +5,9 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
+from collections.abc import Callable, Iterator
 from queue import Queue
 from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 import torch
@@ -36,14 +36,6 @@ class _ModelHarness:
 
     def __init__(self, pool: Zonos2DecodeStatePool) -> None:
         self._decode_state_pool = pool
-
-
-class _FakeCopyStream:
-    def wait_event(self, _event) -> None:
-        pass
-
-    def synchronize(self) -> None:
-        pass
 
 
 def _model_and_pool() -> tuple[_ModelHarness, Zonos2DecodeStatePool]:
@@ -192,6 +184,174 @@ def test_engine_builder_abort_callback_is_safe_before_and_after_allocation() -> 
     _assert_row_reset(pool, row)
 
 
+class _FakeStream:
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+
+    def wait_stream(self, other: _FakeStream) -> None:
+        pass
+
+
+class _FakeDeviceModule:
+    """Records the device every stream, guard and sync was asked for."""
+
+    def __init__(self) -> None:
+        self.stream_devices: list[torch.device] = []
+        self.current_stream_devices: list[torch.device] = []
+        self.synchronize_devices: list[torch.device] = []
+        self.guarded_devices: list[torch.device] = []
+        self.entered_streams: list[_FakeStream] = []
+
+    def Stream(self, device: torch.device) -> _FakeStream:
+        self.stream_devices.append(device)
+        return _FakeStream(device)
+
+    def current_stream(self, device: torch.device) -> _FakeStream:
+        self.current_stream_devices.append(device)
+        return _FakeStream(device)
+
+    def synchronize(self, device: torch.device) -> None:
+        self.synchronize_devices.append(device)
+
+    @contextlib.contextmanager
+    def stream(self, stream: _FakeStream) -> Iterator[None]:
+        self.entered_streams.append(stream)
+        yield
+
+    @contextlib.contextmanager
+    def device(self, device: torch.device) -> Iterator[None]:
+        self.guarded_devices.append(device)
+        yield
+
+
+class _CaptureHarness:
+    capture_tail_graphs = Zonos2SGLangModel.capture_tail_graphs
+
+    def __init__(self, device: torch.device) -> None:
+        self.device = device
+        self.dtype = torch.float32
+        self.n_codebooks = 2
+        self.audio_vocab = 8
+        self.config = SimpleNamespace(dim=4)
+        self.compute_calls: list[int] = []
+        self._tail_buckets: list[int] = []
+        self._tail_graphs: dict[int, object] = {}
+
+    def _tail_compute(self, bs: int) -> None:
+        self.compute_calls.append(bs)
+
+
+def _patch_tail_capture_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    capture: Callable[[], contextlib.AbstractContextManager[object]],
+) -> _FakeDeviceModule:
+    """Point capture_tail_graphs at a fake device module and graph backend."""
+    from sglang_omni.models.zonos2 import sglang_model as sglang_model_module
+
+    device_module = _FakeDeviceModule()
+    monkeypatch.setattr(torch, "get_device_module", lambda device: device_module)
+    monkeypatch.setattr(
+        sglang_model_module,
+        "current_platform",
+        SimpleNamespace(
+            get_device_graph_backend=lambda device: SimpleNamespace(capture=capture),
+            device_type="fake",
+        ),
+    )
+    return device_module
+
+
+def test_tail_graph_capture_binds_every_stream_to_the_model_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An indexed device is not the process's implicit one: xpu:1 is not xpu:0."""
+    from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
+
+    captures: list[object] = []
+
+    @contextlib.contextmanager
+    def capture() -> Iterator[object]:
+        graph = object()
+        captures.append(graph)
+        yield graph
+
+    device_module = _patch_tail_capture_backend(monkeypatch, capture)
+
+    dev = torch.device("cpu")
+    harness = _CaptureHarness(dev)
+    harness.capture_tail_graphs([1, 2], TTSSamplingParams())
+
+    assert device_module.stream_devices == [dev]
+    assert device_module.current_stream_devices == [dev, dev]
+    assert device_module.synchronize_devices == [dev, dev]
+    assert [stream.device for stream in device_module.entered_streams] == [dev]
+    assert device_module.guarded_devices == [dev], "the capture runs under a guard"
+    assert len(captures) == 2
+    assert harness._tail_buckets == [1, 2]
+    assert sorted(harness._tail_graphs) == [1, 2]
+
+
+def test_tail_graph_capture_stays_disarmed_when_a_bucket_fails_to_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runner reads the bucket list alone to decide it may replay, so a
+    half-recorded set must leave the per-frame tail eager."""
+    from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
+
+    captures: list[object] = []
+
+    @contextlib.contextmanager
+    def capture() -> Iterator[object]:
+        if captures:
+            raise RuntimeError("backend ran out of capture memory")
+        graph = object()
+        captures.append(graph)
+        yield graph
+
+    _patch_tail_capture_backend(monkeypatch, capture)
+
+    harness = _CaptureHarness(torch.device("cpu"))
+    with pytest.raises(RuntimeError, match="capture memory"):
+        harness.capture_tail_graphs([1, 2], TTSSamplingParams())
+
+    assert len(captures) == 1, "the first bucket did record"
+    assert harness._tail_buckets == []
+    assert harness._tail_graphs == {}
+
+
+def test_a_failed_recapture_disarms_what_the_last_capture_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recapture reallocates the buffers the armed graphs recorded against, so a
+    bucket that fails must leave none of the previous capture replayable."""
+    from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
+
+    captures: list[object] = []
+
+    @contextlib.contextmanager
+    def capture() -> Iterator[object]:
+        if len(captures) >= 2:
+            raise RuntimeError("backend ran out of capture memory")
+        graph = object()
+        captures.append(graph)
+        yield graph
+
+    _patch_tail_capture_backend(monkeypatch, capture)
+
+    harness = _CaptureHarness(torch.device("cpu"))
+    harness.capture_tail_graphs([1, 2], TTSSamplingParams())
+    armed_graphs = harness._tail_graphs
+    armed_buffers = harness._cg
+
+    with pytest.raises(RuntimeError, match="capture memory"):
+        harness.capture_tail_graphs([1, 2], TTSSamplingParams())
+
+    assert sorted(armed_graphs) == [1, 2], "the first capture really did arm both"
+    assert harness._cg is not armed_buffers, "and the second replaced their buffers"
+    assert harness._tail_buckets == []
+    assert harness._tail_graphs == {}
+
+
 def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> None:
     model, pool = _model_and_pool()
     done = SimpleNamespace(request_id="done")
@@ -240,20 +400,83 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
 
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model = model
-    runner._copy_stream = _FakeCopyStream()
+    runner._copy_stream = None
     data = SimpleNamespace(output_codes=[], eos_frame=None)
     request = SimpleNamespace(request_id=request_id, data=data)
     codes = list(range(N_CODEBOOKS))
     packed = torch.tensor([codes + [1, 5]], dtype=torch.int64)
     next_ids = torch.tensor([123], dtype=torch.int64)
     result = SimpleNamespace(next_token_ids=None)
-    launch_buf = ([request], packed, N_CODEBOOKS, next_ids, object())
+    launch_buf = ([request], packed, N_CODEBOOKS, next_ids, None)
 
-    with mock.patch("torch.cuda.stream", lambda _stream: contextlib.nullcontext()):
-        runner._collect_resolve(launch_buf, result)
+    runner._collect_resolve(launch_buf, result)
 
+    assert runner._copy_stream is None
     assert data.output_codes[0].tolist() == codes
     assert data.eos_frame == 5
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
     assert row not in pool._free_rows
+
+
+def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The D2H overlap must follow the device the codes live on, not torch.cuda."""
+    seen: dict[str, object] = {}
+
+    class _Stream:
+        def wait_event(self, event: object) -> None:
+            seen["waited"] = event
+
+        def synchronize(self) -> None:
+            seen["synchronized"] = True
+
+    class _DeviceModule:
+        @staticmethod
+        def Stream(*, device: torch.device) -> _Stream:
+            seen["stream_device"] = device
+            return _Stream()
+
+        @staticmethod
+        @contextlib.contextmanager
+        def stream(stream: _Stream) -> Iterator[None]:
+            seen["entered"] = stream
+            yield
+
+    fake_device = torch.device("privateuseone", 3)
+    host = torch.tensor([list(range(N_CODEBOOKS)) + [1, 5]], dtype=torch.int64)
+
+    class _OffDeviceTensor:
+        """Reports a device this host lacks; the D2H copy yields the real rows."""
+
+        device = fake_device
+
+        def to(self, target: str, non_blocking: bool = False) -> torch.Tensor:
+            seen["copy"] = (target, non_blocking)
+            return host
+
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: _DeviceModule if device == fake_device else None,
+    )
+
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model, _pool = _model_and_pool()
+    runner._copy_stream = None
+    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    request = SimpleNamespace(request_id="req-stream", data=data)
+    event = object()
+
+    runner._collect_resolve(
+        ([request], _OffDeviceTensor(), N_CODEBOOKS, torch.tensor([1]), event), None
+    )
+
+    assert seen["stream_device"] == fake_device
+    assert seen["waited"] is event
+    assert isinstance(seen["entered"], _Stream)
+    assert seen["synchronized"] is True
+    assert seen["copy"] == ("cpu", True)
+    assert data.output_codes[0].tolist() == list(range(N_CODEBOOKS))
+    assert data.eos_frame == 5

@@ -97,7 +97,7 @@ class Zonos2PipelineConfig(PipelineConfig):
 
 
 class Zonos2MultiGPUPipelineConfig(Zonos2PipelineConfig):
-    """Offload codec + speaker encoder to cuda:1, leaving the AR engine alone on cuda:0."""
+    """Offload codec + speaker encoder to card 1, leaving the AR engine alone on card 0."""
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _stages(auxiliary_gpu=1, auxiliary_process="auxiliary")

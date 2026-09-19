@@ -60,13 +60,13 @@ def shear_up(codes: torch.Tensor, pad_id: int = _AUDIO_PAD_ID) -> torch.Tensor:
 class Zonos2DACVocoder:
     """Decode delayed 9-codebook ZONOS2 frames into mono float32 PCM @ 44.1 kHz."""
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str):
         self.device = device
         self.n_codebooks = N_CODEBOOKS
         self.sample_rate = ZONOS2_SAMPLE_RATE
         self.hop_length = DAC_HOP_LENGTH
         self.audio_pad_id = _AUDIO_PAD_ID
-        self._dac = _get_dac(device)
+        self._dac = _get_dac(self.device)
 
     @torch.inference_mode()
     def decode(

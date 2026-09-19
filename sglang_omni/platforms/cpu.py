@@ -6,3 +6,6 @@ from sglang_omni.platforms.interface import OmniPlatform
 class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
     def enable_code2wav_graph(self):
         return False
+
+    def supports_online_fp8_quantization(self) -> bool:
+        return False

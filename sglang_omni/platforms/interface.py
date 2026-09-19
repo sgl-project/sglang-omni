@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
@@ -123,8 +124,43 @@ class OmniPlatform(DeviceMixin):
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_zonos2_torch_compile(self) -> bool:
+        """Whether ZONOS2 should ask for torch.compile, engine and sampler both."""
+        return True
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        """Static-pool floor for ZONOS2's bf16 MoE experts on this device, or None.
+
+        The floor is a fraction of one card's memory, so what it comes to depends
+        on the card the stage landed on rather than on the platform alone. None is
+        the answer wherever nothing was measured -- a device that is not this
+        platform's own included -- and leaves the stage default alone.
+        """
+        return None
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
+
+    def supports_online_fp8_quantization(self) -> bool:
+        """Whether load-time fp8 quantization both quantizes and then runs here.
+
+        Probed from the build, since shipping the quantizer is an sgl-kernel
+        property; a backend whose MoE cannot run FP8 weights overrides this.
+        """
+        for name in (
+            "sglang.srt.layers.quantization.fp8_kernel",
+            "sglang.kernels.ops.quantization.fp8_kernel",
+        ):
+            try:
+                quantize = importlib.import_module(name).scaled_fp8_quant
+            except (ImportError, AttributeError):
+                continue
+            module_globals = quantize.__globals__
+            if module_globals.get("_is_hip") or (
+                "sgl_per_tensor_quant_fp8" in module_globals
+            ):
+                return True
+        return False
 
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""

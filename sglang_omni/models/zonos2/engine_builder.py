@@ -11,6 +11,8 @@ import shutil
 import tempfile
 from typing import Any
 
+import torch
+
 from sglang_omni.models.zonos2.hf_config import (
     Zonos2Config,
     load_zonos2_pretrained_config,
@@ -18,11 +20,15 @@ from sglang_omni.models.zonos2.hf_config import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms import current_platform, platform_for_device
+from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
+
+ZONOS2_DEFAULT_MEM_FRACTION_STATIC = 0.5
 
 
 def _build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
@@ -128,7 +134,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         ),
         max_running_requests: int = 16,
         cuda_graph_max_bs: int = 16,
-        mem_fraction_static: float = 0.5,
+        mem_fraction_static: float | None = None,
     ) -> None:
         self.fp8 = fp8
         self.frame_graph = frame_graph
@@ -139,6 +145,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
         self.mem_fraction_static = mem_fraction_static
+        self.device: str | None = None
         self._cuda_graph_bs: list[int] = []
 
     def resolve_checkpoint(self, model_path: str) -> str:
@@ -152,7 +159,18 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         _register_zonos2_autoconfig()
         _install_tuned_moe_configs()
 
+    def _stage_platform(self) -> OmniPlatform:
+        """The platform for the device this stage resolved to, not the host's.
+
+        ``build()`` settles ``self.device`` before it asks for these defaults, and
+        an accelerator host can place the stage on cpu: what compiles, what
+        quantizes and what fits in a memory pool all follow that device.
+        """
+        return platform_for_device(self.device)
+
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        platform = self._stage_platform()
+        configured_fraction = self.mem_fraction_static
         defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,
@@ -160,16 +178,59 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             # async-decode lookahead overlaps the resolve D2H with the next
             # forward; the overlap scheduler must be enabled for it.
             "disable_overlap_schedule": not self.async_decode,
-            "enable_torch_compile": True,
-            "mem_fraction_static": self.mem_fraction_static,
+            "enable_torch_compile": platform.enable_zonos2_torch_compile(),
+            "mem_fraction_static": (
+                ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+                if configured_fraction is None
+                else configured_fraction
+            ),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
             "dtype": dtype,
         }
-        if self.fp8:
+        if self.fp8 and platform.supports_online_fp8_quantization():
             # Dynamic FP8 on the MoE experts (bf16 -> fp8 at load, halving the
             # expert weights); bf16 nn.Linear projections are unaffected.
             defaults["quantization"] = "fp8"
+            return defaults
+        mem_fraction_floor = platform.zonos2_bf16_mem_fraction_static(
+            torch.device(self.device or "cpu")
+        )
+        if mem_fraction_floor is None:
+            remedy = (
+                "Raise --tts_engine.engine.mem_fraction_static if the KV cache is "
+                "left without room."
+            )
+        elif configured_fraction is not None:
+            remedy = (
+                f"Keeping the configured mem_fraction_static {configured_fraction}; "
+                f"bf16 experts measured {mem_fraction_floor} on this card."
+            )
+        elif mem_fraction_floor <= ZONOS2_DEFAULT_MEM_FRACTION_STATIC:
+            remedy = (
+                f"The stage default mem_fraction_static already covers the "
+                f"{mem_fraction_floor} bf16 experts measured on this card."
+            )
+        else:
+            defaults["mem_fraction_static"] = mem_fraction_floor
+            remedy = (
+                "Raising the unset stage default mem_fraction_static to "
+                f"{mem_fraction_floor}; a configured fraction is left alone."
+            )
+        if not self.fp8:
+            logger.info(
+                "ZONOS2 serving bf16 MoE experts, as configured. Expect roughly "
+                "double the expert weight footprint of FP8. %s",
+                remedy,
+            )
+            return defaults
+        logger.warning(
+            "ZONOS2 keeping bf16 MoE experts: the installed SGLang cannot serve "
+            "FP8-quantized experts on %s. Expect roughly double the expert weight "
+            "footprint. %s",
+            platform.device_type,
+            remedy,
+        )
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
@@ -200,23 +261,40 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del server_args
-        # Opt-in tail CUDA graph: capture the per-frame head+sample+embed+hash
+        if not self.frame_graph:
+            return
+        if current_platform.get_device_graph_backend(model.device) is None:
+            logger.info(
+                "ZONOS2 frame_graph disabled: no model-owned graphs on %s, so the "
+                "per-frame tail stays eager.",
+                model.device,
+            )
+            self.frame_graph = False
+            return
+        # Opt-in tail device graph: capture the per-frame head+sample+embed+hash
         # tail (otherwise eager in the runner), one graph per decode bucket with
         # the default sampling params; the runner falls back to eager otherwise.
-        if self.frame_graph:
-            from sglang_omni.models.zonos2.components.text_frontend import (
-                TTSSamplingParams,
-            )
+        from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 
-            model.capture_tail_graphs(self._cuda_graph_bs, TTSSamplingParams())
+        model.capture_tail_graphs(self._cuda_graph_bs, TTSSamplingParams())
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner
 
+        platform = self._stage_platform()
+        compile_sampler = (
+            self.compile_sampler and platform.enable_zonos2_torch_compile()
+        )
+        if self.compile_sampler and not compile_sampler:
+            logger.info(
+                "ZONOS2 sampler left uncompiled: %s declines torch.compile for "
+                "this model.",
+                platform.device_type,
+            )
         return Zonos2ModelRunner(
             model_worker,
             output_proc,
-            compile_sampler=self.compile_sampler,
+            compile_sampler=compile_sampler,
             frame_graph=self.frame_graph,
             async_decode=self.async_decode,
             stream_emit_chunk_frames=self.stream_emit_chunk_frames,

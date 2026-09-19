@@ -278,7 +278,7 @@ class Zonos2ModelRunner(ModelRunner):
         # launch_buf snapshots what the (lagged) resolve reads. Pack codes +
         # per-row EOS metadata into one fresh int64 tensor (advanced indexing
         # already copies, and cat makes a fresh tensor, so it remains stable
-        # while the next launch mutates these pool rows). Record a CUDA event
+        # while the next launch mutates these pool rows). Record an event
         # right after, so resolve's side-stream D2H waits only for this (codes
         # ready), not the next forward. next_ids is cloned: the base aliases it
         # onto output_ids, overwritten in place before this resolve.
@@ -290,8 +290,11 @@ class Zonos2ModelRunner(ModelRunner):
             dim=1,
         )
         packed = torch.cat((codes, meta), dim=1)  # [B, n+2] int64
-        ev = torch.cuda.Event()
-        ev.record()
+        ev = None
+        if packed.device.type != "cpu":
+            device_module = torch.get_device_module(packed.device)
+            ev = device_module.Event()
+            ev.record(device_module.current_stream(packed.device))
         return (requests, packed, n, next_ids.clone(), ev)
 
     def _collect_resolve(self, launch_buf, result) -> None:
@@ -309,12 +312,16 @@ class Zonos2ModelRunner(ModelRunner):
         # as codes(N) is ready (event recorded before the next forward was queued)
         # and runs on a separate stream, so this no longer whole-stream-syncs on
         # forward(N+1). One D2H of the packed [B, n+2] snapshot.
-        if self._copy_stream is None:
-            self._copy_stream = torch.cuda.Stream(device=packed.device)
-        self._copy_stream.wait_event(ev)
-        with torch.cuda.stream(self._copy_stream):
-            packed_cpu = packed.to("cpu", non_blocking=True)
-        self._copy_stream.synchronize()
+        if packed.device.type == "cpu":
+            packed_cpu = packed
+        else:
+            device_module = torch.get_device_module(packed.device)
+            if self._copy_stream is None:
+                self._copy_stream = device_module.Stream(device=packed.device)
+            self._copy_stream.wait_event(ev)
+            with device_module.stream(self._copy_stream):
+                packed_cpu = packed.to("cpu", non_blocking=True)
+            self._copy_stream.synchronize()
         codes_cpu = packed_cpu[:, :n]
         eos_set_cpu = packed_cpu[:, n]
         eos_val_cpu = packed_cpu[:, n + 1]
