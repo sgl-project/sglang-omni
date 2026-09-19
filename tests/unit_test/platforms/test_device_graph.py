@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
-import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -16,7 +14,6 @@ from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
     NpuDeviceGraphBackend,
     XpuDeviceGraphBackend,
-    get_npu_graph_update_stream,
 )
 
 
@@ -111,32 +108,6 @@ def test_npu_backend_records_into_an_npu_graph(
     if thread_local_errors:
         expected["capture_error_mode"] = "thread_local"
     assert module.calls == [expected]
-
-
-def test_npu_graph_update_stream_is_shared(monkeypatch) -> None:
-    class GraphDispatchMode:
-        update_stream = None
-
-        def __new__(cls):
-            if cls.update_stream is None:
-                cls.update_stream = object()
-            return super().__new__(cls)
-
-    graphs = types.ModuleType("torch_npu.npu.graphs")
-    graphs._GraphDispatchMode = GraphDispatchMode
-    npu = types.ModuleType("torch_npu.npu")
-    npu.__path__ = []
-    torch_npu = types.ModuleType("torch_npu")
-    torch_npu.__path__ = []
-    monkeypatch.setitem(sys.modules, "torch_npu", torch_npu)
-    monkeypatch.setitem(sys.modules, "torch_npu.npu", npu)
-    monkeypatch.setitem(sys.modules, "torch_npu.npu.graphs", graphs)
-
-    first = get_npu_graph_update_stream()
-    second = get_npu_graph_update_stream()
-
-    assert first is GraphDispatchMode.update_stream
-    assert second is first
 
 
 def test_cuda_graph_context_declares_the_expected_keywords() -> None:

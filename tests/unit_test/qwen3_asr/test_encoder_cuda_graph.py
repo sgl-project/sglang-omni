@@ -24,6 +24,48 @@ def test_build_buckets_rejects_bad_limits():
         build_buckets(0, 780)
 
 
+@pytest.mark.parametrize("is_npu", [True, False])
+def test_runner_owns_update_stream_on_model_device(monkeypatch, is_npu):
+    created = []
+
+    def create_stream(*, device):
+        stream = object()
+        created.append((device, stream))
+        return stream
+
+    device_module = SimpleNamespace(Stream=create_stream)
+    devices = []
+
+    def get_device_module(device):
+        devices.append(device)
+        return device_module
+
+    monkeypatch.setattr(torch, "get_device_module", get_device_module)
+    monkeypatch.setattr(current_platform, "is_npu", lambda: is_npu)
+    runners = []
+    for device in (torch.device("meta", 0), torch.device("meta", 1)):
+        tower = SimpleNamespace(
+            parameters=lambda device=device: iter(
+                [SimpleNamespace(device=device, dtype=torch.float32)]
+            ),
+            config=SimpleNamespace(n_window=50, n_window_infer=100),
+        )
+        runners.append(
+            Qwen3ASREncoderLayerStackGraphRunner(
+                tower, buckets=(128,), max_batch_size=8, graph_backend=object()
+            )
+        )
+    assert devices == [torch.device("meta", 0), torch.device("meta", 1)]
+    if is_npu:
+        assert [device for device, _ in created] == devices
+        assert runners[0]._npu_update_stream is created[0][1]
+        assert runners[1]._npu_update_stream is created[1][1]
+        assert runners[0]._npu_update_stream is not runners[1]._npu_update_stream
+    else:
+        assert created == []
+        assert all(runner._npu_update_stream is None for runner in runners)
+
+
 def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
     r = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
     r._max_seqlen = 104
@@ -173,11 +215,13 @@ def test_npu_replay_updates_window_boundaries_for_bucket_graph():
 
     def capture(bucket_size, *, window_lens=None):
         captured.append((bucket_size, window_lens))
-        task = SimpleNamespace(
-            apply=lambda device_module, update_stream, boundaries: operations.append(
-                ("update", boundaries)
-            )
-        )
+
+        def apply(device_module, update_stream, boundaries):
+            assert device_module is runner._device_module
+            assert update_stream is runner._npu_update_stream
+            operations.append(("update", boundaries))
+
+        task = SimpleNamespace(apply=apply)
         return SimpleNamespace(
             hidden_states=torch.zeros(bucket_size, 2),
             cu_seqlens=torch.tensor([0, 4, 8], dtype=torch.int32),

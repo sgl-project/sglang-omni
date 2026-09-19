@@ -165,6 +165,55 @@ def test_submit_returns_before_encoding_completes() -> None:
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
 
 
+def test_cached_transfer_runs_on_encoder_worker_and_waits_for_sync(monkeypatch) -> None:
+    service = _make_service()
+    target = _item(7, 3, with_feature=False)
+    source = torch.ones((3, _HIDDEN_SIZE))
+    reached, release = threading.Event(), threading.Event()
+    threads = []
+    original = service.attach_embedding
+
+    def attach(item, embedding):
+        threads.append(threading.current_thread().name)
+        original(item, embedding)
+
+    def synchronize():
+        reached.set()
+        assert release.wait(timeout=3)
+
+    monkeypatch.setattr(service, "attach_embedding", attach)
+    monkeypatch.setattr(service, "synchronize_batch", synchronize)
+    future = service.submit_cached_embedding(target, source)
+    try:
+        assert reached.wait(timeout=2)
+        assert not future.done()
+        assert threads == ["qwen3-asr-audio-encode"]
+    finally:
+        release.set()
+    assert future.result(timeout=2) is target.precomputed_embeddings
+    assert service._model.encode_calls == 0
+
+
+def test_cached_transfer_failure_rejects_admission(monkeypatch) -> None:
+    service = _make_service()
+
+    def fail():
+        raise RuntimeError("transfer sync failed")
+
+    monkeypatch.setattr(service, "synchronize_batch", fail)
+    future = service.submit_cached_embedding(_item(7, 3), torch.ones((3, _HIDDEN_SIZE)))
+    with pytest.raises(RuntimeError, match="transfer sync failed"):
+        future.result(timeout=2)
+    assert service._model.encode_calls == 0
+
+
+def test_cached_transfer_is_rejected_after_close() -> None:
+    service = _make_service()
+    service.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        service.submit_cached_embedding(_item(7, 3), torch.ones((3, _HIDDEN_SIZE)))
+
+
 def test_async_submissions_form_full_batch_without_blocked_callers() -> None:
     model = _StubModel()
     gate = threading.Event()
