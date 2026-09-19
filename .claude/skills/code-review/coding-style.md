@@ -191,9 +191,13 @@ speculative generality.
 
 - Group: stdlib / third-party / local, blank-line separated, alphabetical within group.
 - Manage import paths consistently at the project level. Don’t patch sys.path ad hoc in individual files.
-- Prefer module-level imports; allow function-local imports for optional
-  dependencies, necessary initialization ordering, or documented
-  circular-dependency breaks. Do not use `if TYPE_CHECKING:` to keep an
+- Import at the top of the file. Do not lazy-import inside a function just
+  to keep the factory "light" or to hide a heavy dependency. Wrong: a
+  block of `from ... import ...` at the start of
+  `create_sglang_talker_executor_from_config`. Right: the same names at
+  module scope. Function-local imports are allowed only for optional
+  dependencies, necessary initialization ordering, or a documented
+  circular-dependency break. Do not use `if TYPE_CHECKING:` to keep an
   import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
