@@ -236,7 +236,9 @@ def test_cached_transfer_enters_owned_stream_before_copy(monkeypatch) -> None:
             active.stream = None
             calls.append("exit")
 
-    module = SimpleNamespace(stream=stream_context, default_stream=lambda _: consumer_stream)
+    module = SimpleNamespace(
+        stream=stream_context, default_stream=lambda _: consumer_stream
+    )
     monkeypatch.setattr(torch, "get_device_module", lambda _device=None: module)
     original_to = torch.Tensor.to
 
