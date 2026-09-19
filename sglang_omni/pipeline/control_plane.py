@@ -395,6 +395,14 @@ class CoordinatorControlPlane:
         msg: SubmitMessage | AdminMessage | ShutdownMessage,
     ) -> None:
         """Submit a request to a stage."""
+        await self._push_to_stage(stage_name, stage_endpoint, msg)
+
+    async def send_stream_chunk(
+        self, stage_name, stage_endpoint, msg: DataReadyMessage
+    ):
+        await self._push_to_stage(stage_name, stage_endpoint, msg)
+
+    async def _push_to_stage(self, stage_name, stage_endpoint, msg):
         if stage_name not in self._stage_sockets:
             sock = PushSocket(stage_endpoint)
             await sock.connect()
