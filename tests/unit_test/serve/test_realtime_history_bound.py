@@ -8,6 +8,7 @@ import pytest
 from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.serve.realtime.session import RealtimeSession
 from tests.unit_test.serve.test_realtime_barge_in import _chunk, _session
+from tests.unit_test.serve.test_realtime_history_truncation import _assistant_item_id
 
 StreamFactory = Callable[[], AsyncIterator[CompletionStreamChunk]]
 
@@ -190,3 +191,33 @@ async def test_non_integer_bound_returns_error(
     assert websocket.events[-1]["type"] == "error"
     assert websocket.events[-1]["error"]["type"] == "invalid_request_error"
     assert websocket.events[-1]["error"]["code"] == "invalid_event"
+
+
+@pytest.mark.asyncio
+async def test_truncate_evicted_assistant_item_returns_item_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _ = _session(monkeypatch, _turn_streams(2))
+    await session.dispatch(
+        {"type": "session.update", "session": {"max_history_turns": 1}}
+    )
+
+    await session.run_turn("user-item-0", "audio")
+    evicted_item_id = _assistant_item_id(websocket.events)
+
+    await session.run_turn("user-item-1", "audio")
+    history_before = list(session.conversation)
+
+    await session.dispatch(
+        {
+            "type": "conversation.item.truncate",
+            "item_id": evicted_item_id,
+            "content_index": 0,
+            "audio_end_ms": 240,
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["type"] == "invalid_request_error"
+    assert websocket.events[-1]["error"]["code"] == "item_not_found"
+    assert session.conversation == history_before
