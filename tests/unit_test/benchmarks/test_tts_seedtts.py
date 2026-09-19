@@ -1,13 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter."""
 
+import json
 import sys
+import threading
 from contextlib import contextmanager
+from pathlib import Path
+from typing import BinaryIO
 
 import pytest
+import requests
 
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+from benchmarks.tasks import asr
+from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
 
 
 @pytest.mark.parametrize(
@@ -130,3 +137,64 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     assert config.seed == 7
     assert config.output_dir == "custom-results"
     assert config.server_config == "custom.yaml"
+
+
+def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # note (wenyao): routing can send every request to one four-slot worker.
+    slots = threading.BoundedSemaphore(4)
+    cohort = threading.Barrier(min(QWEN3_ASR_WER_CONCURRENCY, 20))
+    uploaded: list[str] = []
+
+    def post(
+        url: str, *, files: dict[str, tuple[str, BinaryIO, str]], **kwargs: object
+    ) -> requests.Response:
+        admitted = slots.acquire(blocking=False)
+        try:
+            # note (wenyao): all requests attempt admission before slots reopen.
+            cohort.wait(timeout=5)
+            uploaded.append(files["file"][0])
+            response = requests.Response()
+            response.url = url
+            response.status_code = 200 if admitted else 503
+            response._content = json.dumps(
+                {"text": "hello world"}
+                if admitted
+                else {
+                    "detail": "Too many long-audio transcriptions in flight "
+                    "(limit 4); retry later"
+                }
+            ).encode()
+            return response
+        finally:
+            if admitted:
+                slots.release()
+
+    monkeypatch.setattr(asr.requests, "post", post)
+    records: list[dict[str, str | bool | int]] = []
+    for index in range(20):
+        path = tmp_path / f"sample-{index}.wav"
+        path.write_bytes(b"saved audio for mocked transcription service")
+        records.append(
+            {
+                "sample_id": f"sample-{index}",
+                "raw_response": "hello world",
+                "is_success": True,
+                "wav_path": str(path),
+                "audio_duration_s": 31,
+            }
+        )
+    result = asr.compute_text_audio_consistency_from_records(
+        records,
+        "en",
+        "cuda:0",
+        asr_router_port=12345,
+        asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
+    )
+
+    assert len(uploaded) == len(set(uploaded)) == 20
+    assert result["summary"]["evaluated"] == 20
+    assert result["summary"]["skipped"] == 0
+    assert_wer_partitioned(result, max_wer_below_50_corpus=0, max_n_above_50=0)
+    assert asr.DEFAULT_ASR_TRANSCRIBE_CONCURRENCY == 32
