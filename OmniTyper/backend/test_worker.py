@@ -477,6 +477,95 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(launch.call_args.kwargs["start_new_session"])
         self.assertEqual(instance.http.open.call_args.args[0], instance.url + "/health")
 
+    def test_download_reporter_reports_the_furthest_byte_bar(self):
+        reports = []
+        reporter = server.download_reporter(
+            lambda message, fraction=None: reports.append((message, fraction)),
+            4_000_000,
+        )
+        files = reporter(total=7, desc="Fetching 7 files")
+        files.update(3)
+        self.assertEqual(reports, [], "file counts say nothing about the large weights")
+
+        # Note (Yifei Leng): huggingface_hub 1.4 builds its byte bar with these keywords.
+        written = reporter(
+            total=0, unit="B", disable=True, name="huggingface_hub.snapshot_download"
+        )
+        written.update(1_000_000)
+        written.refresh()
+        self.assertEqual(reports, [("Downloading the speech model… 25% of 4 MB", 0.25)])
+
+        received = reporter(total=0, unit="B")
+        reporter.reported = 0.0
+        received.update(500_000)
+        received.refresh()
+        self.assertEqual(
+            len(reports), 1, "a bar that is behind must not move backwards"
+        )
+        received.update(2_500_000)
+        received.refresh()
+        self.assertEqual(reports[-1][1], 0.75)
+
+        reporter.finished, reporter.reported = True, 0.0
+        written.update(3_000_000)
+        written.refresh()
+        self.assertEqual(len(reports), 2, "nothing may report after the download")
+
+    def test_model_snapshot_reports_progress_only_for_a_real_download(self):
+        from huggingface_hub.errors import LocalEntryNotFoundError
+        from tqdm import tqdm
+
+        with tempfile.TemporaryDirectory() as cached:
+            for name in (
+                "config.json",
+                "tokenizer_config.json",
+                "vocab.json",
+                "merges.txt",
+                "model.safetensors",
+                "model.safetensors.index.json",
+            ):
+                (Path(cached) / name).touch()
+            with (
+                patch("huggingface_hub.snapshot_download", return_value=cached),
+                patch.object(server, "snapshot_bytes") as lookup,
+            ):
+                self.assertEqual(
+                    server.model_snapshot("owner/speech", "revision", Mock()), cached
+                )
+            lookup.assert_not_called()
+
+        def download(model, **options):
+            if options.get("local_files_only"):
+                raise LocalEntryNotFoundError("not cached")
+            return "/downloaded"
+
+        with (
+            patch("huggingface_hub.snapshot_download", side_effect=download) as fetch,
+            patch.object(server, "snapshot_bytes", side_effect=OSError("offline")),
+        ):
+            self.assertEqual(
+                server.model_snapshot("owner/speech", "revision", Mock()),
+                "/downloaded",
+            )
+        options = fetch.call_args.kwargs
+        self.assertEqual(options["allow_patterns"], server.MODEL_FILES)
+        self.assertTrue(issubclass(options["tqdm_class"], tqdm))
+        self.assertTrue(options["tqdm_class"].finished)
+
+    def test_progress_events_carry_the_download_fraction(self):
+        class Downloading:
+            def handle(self, value, progress):
+                progress("Downloading the speech model… 25% (1 of 4 MB)", 0.25)
+                progress("Starting")
+                return {"id": value["id"], "ok": True}
+
+        output = io.StringIO()
+        worker.serve(io.BytesIO(b'{"id":"a","op":"prepare"}\n'), output, Downloading())
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(events[0]["fraction"], 0.25)
+        self.assertNotIn("fraction", events[1])
+        self.assertTrue(events[2]["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()
