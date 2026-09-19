@@ -169,37 +169,32 @@ both text (from the thinker) and audio (from the talker) output.
 
 ### Codec Coalescing and First-Audio Latency
 
-The speech pipeline sets `codec_coalesce_frames=10`,
-`codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under
-`stages.talker_ar.factory`. The first 10 codec frames are sent individually;
-later frames are coalesced into groups of 10. Omitting a YAML override keeps
-these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
-disable the early prefix. This aligns with the default serial Code2Wav
-10-frame threshold: the first three windows contain 10, 20, and 30 frames,
-and subsequent full windows contain 35 frames including left context.
-These shapes can use the captured serial windows when CUDA Graph is enabled.
-An early prefix of 12 with this serial configuration instead produces
-22- and 32-frame windows that fall back to eager execution.
+The speech pipeline emits its first audio chunk after four codec frames, then
+uses ten-frame chunks. Talker sends the first fourteen frames individually and
+coalesces later frames in groups of ten. This keeps the serial Code2Wav windows
+at 4, 14, 24, 34, and then 35 frames including left context, matching the captured
+graph shapes. The first-chunk setting applies to both serial and batched decode.
 
-With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
-`stream_chunk_size=10`, explicitly set `codec_coalesce_early_frames=12` to
-make the first two windows eligible
-at generated frames 2 and 12.
-Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
-first group at step 11: the sender retains the newest row until the next step
-can exclude EOS, or the request finishes. For a request that continues past
-step 10, first-window input readiness therefore moves from step 2 to step 11,
-adding nine Talker decode intervals. If the interval is approximately `d` ms,
-the added input wait is approximately `9d` ms. With the serial 10-frame first
-window, readiness instead moves from step 10 to step 11. The default 10-frame
-early prefix preserves readiness at step 10; the next two windows become
-ready at steps 21 and 31. The extra step after the prefix retains the newest
-row for EOS detection, compared with steps 20 and 30 without coalescing.
+Set `stages.code2wav.factory.initial_codec_chunk_frames` to override the first
+chunk; zero uses the steady chunk size from the start. The default Talker
+coalescing prefix follows the configured first and steady chunk sizes. Explicit
+Talker coalescing settings still take precedence.
 
-This is an input-readiness estimate, not a measured end-to-end TTFA delta or
-nine frames of audio playback time. Actual TTFA also depends on transport,
-queueing, and vocoder execution; the overall coalescing benchmark does not
-isolate the early-prefix setting.
+### CPU Defaults and Runtime Statistics
+
+All Qwen3-Omni variants default to at most eight OpenMP threads and disable
+parallel tokenization. The thread limit is reduced for smaller CPU affinity or
+container quotas and for increased preprocessing concurrency. Explicit environment
+settings take precedence. Each stage logs its effective CPU affinity, thread
+settings, and preprocessing concurrency at startup.
+
+The scheduler logs `stage_stats` every ten seconds while processing work and
+flushes the remaining counters at shutdown. These summaries include mean actual
+batch size, decode graph replay rate, and observed queue waits. AR queue waits cover
+admission into the scheduler's waiting queue through the first forward; they do
+not include preprocessing or request construction. Code2Wav queue waits cover
+ready batches waiting to be dispatched. Set `SGLANG_OMNI_STATS_INTERVAL=0` to
+disable summaries, or set a positive interval in seconds.
 
 ### Launch the Server
 
@@ -233,8 +228,9 @@ When replay is enabled, a custom Code2Wav stage must define
 the model.
 
 The feature derives the exact `B=1` threshold windows from
-`stream_chunk_size` and `left_context_size`; the defaults capture
-`T{10,20,30,35}`. Unsupported shapes and final stream tails run eagerly.
+`stream_chunk_size`, `left_context_size`, and `initial_codec_chunk_frames`;
+the defaults capture `T{4,14,24,34,35}`. Unsupported shapes and final stream
+tails run eagerly.
 Capture-time incompatibilities also fall back to eager execution.
 
 Output overlap is also enabled by default on CUDA devices: each threshold

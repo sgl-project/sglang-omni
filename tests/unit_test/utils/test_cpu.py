@@ -85,7 +85,9 @@ def test_unlimited_or_invalid_cgroup_v2_quota(
 def test_effective_cpu_count_uses_lower_affinity_or_quota(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(224)))
+    monkeypatch.setattr(
+        cpu.os, "sched_getaffinity", lambda _pid: set(range(224)), raising=False
+    )
     monkeypatch.setattr(cpu, "cgroup_cpu_quota_count", lambda: 16)
 
     assert cpu.effective_cpu_count() == 16

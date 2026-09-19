@@ -15,6 +15,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.platforms import current_platform
+from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -35,16 +36,6 @@ ENABLE_TALKER_START_TOPOLOGY = False
 # FIXME (Ratish): Replace this with a bounded/pre-ready SGLang DeepGEMM compile
 # policy once that exists outside import-time environment globals.
 _DEEPGEMM_PRECOMPILE_ENV_DEFAULTS = {"SGLANG_JIT_DEEPGEMM_PRECOMPILE": "0"}
-
-# A colocated worker launches seven stage processes. Letting every PyTorch
-# process size its OpenMP pool to the full host oversubscribes launch-side CPU
-# work when multiple workers share a node. Preprocessing handles one prompt per
-# scheduler call, so a host-wide tokenizer Rayon pool only adds contention.
-_COLOCATED_STAGE_ENV_DEFAULTS = {
-    **_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS,
-    "OMP_NUM_THREADS": "8",
-    "TOKENIZERS_PARALLELISM": "false",
-}
 
 
 def _preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
@@ -227,10 +218,6 @@ def _talker_stage(
             max_seq_len=32768,
             enable_partial_start=enable_partial_start,
             partial_start_min_chunks=5,
-            # Note (wenyao): Match the default serial Code2Wav window so later
-            # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
-            codec_coalesce_frames=10,
-            codec_coalesce_early_frames=10,
             codec_coalesce_first_frames=0,
         ),
         gpu=gpu,
@@ -248,6 +235,7 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
         name="code2wav",
         process=process,
         factory_path=f"{_PKG}.components.code2wav_scheduler.create_code2wav_scheduler",
+        factory=FactoryArgs(initial_codec_chunk_frames=4),
         gpu=gpu,
         gpu_memory_fraction=0.02,
         terminal=True,
@@ -326,6 +314,21 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
         default_factory=lambda: dict(_DEEPGEMM_PRECOMPILE_ENV_DEFAULTS)
     )
 
+    def resolved_env_defaults(self) -> dict[str, str]:
+        preprocessing = next(
+            (stage for stage in self.stages if stage.name == "preprocessing"), None
+        )
+        if preprocessing is None:
+            return dict(self.env_defaults)
+        workers = max(int(preprocessing.factory.max_concurrency or 1), 1)
+        return {
+            "OMP_NUM_THREADS": str(
+                bounded_intraop_threads(worker_count=workers, max_threads=8)
+            ),
+            "TOKENIZERS_PARALLELISM": "false",
+            **self.env_defaults,
+        }
+
     @classmethod
     def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
         return {THINKER_STAGE}
@@ -385,9 +388,16 @@ class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name == "talker_ar":
+            codec = self.stage_named("code2wav").factory.model_dump(exclude_none=True)
+            steady_frames = max(int(codec.get("stream_chunk_size", 10)), 1)
+            initial_frames = min(
+                max(int(codec.get("initial_codec_chunk_frames", 0)), 0), steady_frames
+            )
             return {
                 "speech_enabled": True,
                 "feedback_enabled": True,
+                "codec_coalesce_frames": steady_frames,
+                "codec_coalesce_early_frames": initial_frames + steady_frames,
             }
         if stage_name == "code2wav":
             return {
@@ -405,10 +415,6 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     file so deployments can use hardware-appropriate stage fractions and
     SGLang AR cache fractions.
     """
-
-    env_defaults: dict[str, str] = Field(
-        default_factory=lambda: dict(_COLOCATED_STAGE_ENV_DEFAULTS)
-    )
 
     stages: list[StageConfig] = Field(
         default_factory=lambda: _speech_stages(

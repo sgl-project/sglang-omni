@@ -25,6 +25,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
+from sglang_omni.profiler.runtime_stats import RuntimeStats
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
@@ -187,6 +188,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
     ):
         self._model = model
+        self.runtime_stats = RuntimeStats("code2wav")
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
@@ -339,11 +341,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         profile["messages"] += 1
         profile["accepted_frames"] += len(state.chunks) - before_frames
         profile["ingest_host_ns"] += time.perf_counter_ns() - start_ns
-        threshold = (
-            (self._initial_codec_chunk_frames or self._stream_chunk_size)
-            if self._enable_batching
-            else self._stream_chunk_size
-        )
+        threshold = self._decode_threshold(state)
         first_ingest = profile["messages"] == 1
         ready = self._ready(state) >= threshold
         if not (first_ingest or ready):
@@ -384,17 +382,23 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 metadata=metadata,
             )
 
+    def _decode_threshold(self, state: Code2WavStreamState) -> int:
+        if state.emitted == 0 and self._initial_codec_chunk_frames:
+            return self._initial_codec_chunk_frames
+        return self._stream_chunk_size
+
     def should_decode(self, state: Code2WavStreamState, *, is_final: bool) -> bool:
         del is_final
+        threshold = self._decode_threshold(state)
         if (
             self._eos_lazy_scan
             and state.checked < len(state.chunks)
-            and self._ready(state) >= self._stream_chunk_size
+            and self._ready(state) >= threshold
         ):
             # Note (edwardzh): scan before gating — a staged EOS would
             # inflate the count and fire a short window, missing the graph key.
             self._scan_unchecked(state)
-        return self._ready(state) >= self._stream_chunk_size
+        return self._ready(state) >= threshold
 
     def _scan_unchecked(self, state: Code2WavStreamState) -> None:
         """Batched EOS scan over frames staged by the lazy-ingest path.
@@ -447,7 +451,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 "window_frames": end - start + context,
                 "active_request_count": len(self.stream_states),
                 "threshold_ready_request_count": sum(
-                    self._ready(ready_state) >= self._stream_chunk_size
+                    self._ready(ready_state) >= self._decode_threshold(ready_state)
                     for _, ready_state in self.stream_state_items()
                 ),
                 "inbox_depth": self.inbox.qsize(),
@@ -712,6 +716,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 )
 
         graph_key = None
+        self.runtime_stats.record_batch(
+            "vocoder", int(codes.shape[0]), graph=result.execution_mode == "cuda_graph"
+        )
+        self.runtime_stats.maybe_log()
         if result.key is not None:
             graph_key = {
                 "batch_size": int(result.key.batch_size),
@@ -912,6 +920,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def on_serving_stop(self) -> None:
         """Drain retired slots at shutdown, when blocking costs no latency."""
+        self.runtime_stats.maybe_log(force=True)
         retired = self._pinned_retired
         self._pinned_retired = []
         for slot in retired:
@@ -999,6 +1008,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         plan: list[int],
     ) -> dict[str, torch.Tensor]:
         decoded: dict[str, torch.Tensor] = {}
+        now = time.monotonic()
+        for _, state in participants:
+            if state.due_since is not None:
+                self.runtime_stats.record_queue_wait(now - state.due_since)
         profile_metadata: dict[str, Any] | None = None
         if _get_recorder().is_active():
             self._critical_batch_id = getattr(self, "_critical_batch_id", 0) + 1

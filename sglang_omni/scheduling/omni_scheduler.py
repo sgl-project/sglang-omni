@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import cached_property
 from itertools import islice
 from typing import Any, Callable
 
@@ -49,6 +50,7 @@ from sglang_omni.profiler.event_recorder import (
     emit_model_path_start as _emit_model_path_start,
 )
 from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+from sglang_omni.profiler.runtime_stats import RuntimeStats
 from sglang_omni.proto.admin import (
     ADMIN_CONTINUE_GENERATION,
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
@@ -1416,6 +1418,22 @@ class OmniScheduler:
             return _Upstream.get_new_batch_prefill(self, running_batch)
         return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
 
+    @cached_property
+    def runtime_stats(self) -> RuntimeStats:
+        return RuntimeStats(_get_active_stage() or "autoregressive")
+
+    def _record_runtime_batch(self, batch, mr_output) -> None:
+        mode = getattr(batch, "forward_mode", None)
+        kind = (
+            "unknown" if mode is None else "decode" if mode.is_decode() else "prefill"
+        )
+        self.runtime_stats.record_batch(
+            kind,
+            len(batch.reqs),
+            graph=mr_output.can_run_cuda_graph if kind == "decode" else None,
+        )
+        self.runtime_stats.maybe_log()
+
     def run_batch(self, batch, pp_proxy_tensors=None):
         try:
             return self._run_batch(batch, pp_proxy_tensors)
@@ -1452,6 +1470,7 @@ class OmniScheduler:
         self._stamp_batch_launch(batch)
         sched_output = self._build_sched_output(batch)
         mr_output = self._model_runner.execute(sched_output)
+        self._record_runtime_batch(batch, mr_output)
         self._emit_prefill_end_for_batch(batch)
         self._emit_stream_output(sched_output, mr_output)
         return self._make_batch_result(mr_output)
@@ -1552,6 +1571,7 @@ class OmniScheduler:
         mr_output = self._model_runner.execute_resolve(pending_step)
         if mr_output is None:
             return _FAILED_BATCH_RESULT
+        self._record_runtime_batch(batch, mr_output)
         self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
         return GenerationBatchResult(
             logits_output=None,
@@ -1579,6 +1599,9 @@ class OmniScheduler:
             if rid in self._prefill_start_done:
                 continue
             self._prefill_start_done.add(rid)
+            queued_at = getattr(req, "_coalesce_enqueue_t", None)
+            if queued_at is not None:
+                self.runtime_stats.record_queue_wait(time.perf_counter() - queued_at)
             _emit_model_path_start(rid)
             _emit_event(
                 request_id=rid,
@@ -1776,6 +1799,7 @@ class OmniScheduler:
                 self._event_loop_normal()
             model_path_status = "aborted"
         finally:
+            self.runtime_stats.maybe_log(force=True)
             self._emit_remaining_model_path_ends(status=model_path_status)
             self._scheduler_thread_id = None
             try:

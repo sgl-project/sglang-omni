@@ -70,6 +70,31 @@ def _make_batching_scheduler(**kwargs) -> Code2WavScheduler:
     )
 
 
+def test_serial_first_chunk_uses_configured_threshold_and_filters_eos():
+    scheduler = Code2WavScheduler(
+        FakeCode2WavModel(total_upsample=2),
+        device="cpu",
+        stream_chunk_size=10,
+        initial_codec_chunk_frames=4,
+    )
+    state = scheduler.create_stream_state("r")
+    state.stream_enabled = True
+    for code in (1, 2, 3):
+        scheduler.ingest("r", state, torch.tensor([code, code]))
+    assert not scheduler.should_decode(state, is_final=False)
+    scheduler.ingest("r", state, torch.tensor([2150, 0]))
+    assert not scheduler.should_decode(state, is_final=False)
+    scheduler.ingest("r", state, torch.tensor([4, 4]))
+    assert scheduler.should_decode(state, is_final=False)
+    audio = scheduler.decode_delta("r", state, is_final=False)
+    assert audio is not None and audio.numel() == 8
+    for code in range(5, 14):
+        scheduler.ingest("r", state, torch.tensor([code, code]))
+    assert not scheduler.should_decode(state, is_final=False)
+    scheduler.ingest("r", state, torch.tensor([14, 14]))
+    assert scheduler.should_decode(state, is_final=False)
+
+
 def _make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
     model = FakeCode2WavModel(total_upsample=2)
     runner = _FakeGraphRunner(model, _batched_graph_keys(2, 1, 8))

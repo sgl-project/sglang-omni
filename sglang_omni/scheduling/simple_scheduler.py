@@ -15,8 +15,11 @@ import logging
 import queue as _queue_mod
 import threading
 import time
+from functools import cached_property
 from typing import Any, Awaitable, Callable
 
+from sglang_omni.profiler.event_recorder import get_active_stage
+from sglang_omni.profiler.runtime_stats import RuntimeStats
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
@@ -166,6 +169,14 @@ class SimpleScheduler:
             )
         )
 
+    @cached_property
+    def runtime_stats(self) -> RuntimeStats:
+        return RuntimeStats(get_active_stage() or "simple")
+
+    def _record_runtime_batch(self, size: int) -> None:
+        self.runtime_stats.record_batch("compute", size)
+        self.runtime_stats.maybe_log()
+
     def _run_single(
         self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
     ) -> None:
@@ -179,6 +190,7 @@ class SimpleScheduler:
             if self._consume_if_aborted(msg.request_id):
                 return
             raise
+        self._record_runtime_batch(1)
         if self._consume_if_aborted(msg.request_id):
             return
         self._emit_result(msg.request_id, result, self.outbox)
@@ -201,6 +213,7 @@ class SimpleScheduler:
             raise ValueError(
                 f"batch_compute_fn returned {len(results)} results for {len(batch)} requests"
             )
+        self._record_runtime_batch(len(batch))
         for msg, result in zip(batch, results):
             if self._consume_if_aborted(msg.request_id):
                 continue
@@ -219,10 +232,13 @@ class SimpleScheduler:
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
         self._running = True
-        if self._max_concurrency > 1:
-            self._start_concurrent()
-        else:
-            self._start_serial()
+        try:
+            if self._max_concurrency > 1:
+                self._start_concurrent()
+            else:
+                self._start_serial()
+        finally:
+            self.runtime_stats.maybe_log(force=True)
 
     def _start_serial(self) -> None:
         loop = asyncio.new_event_loop()
@@ -288,6 +304,7 @@ class SimpleScheduler:
                     result = await asyncio.to_thread(
                         self._run_compute_in_thread, msg.data
                     )
+                    self._record_runtime_batch(1)
                     if self._consume_if_aborted(msg.request_id):
                         continue
                     self._emit_result(msg.request_id, result, self.outbox)
