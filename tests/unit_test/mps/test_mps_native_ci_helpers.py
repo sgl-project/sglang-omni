@@ -8,6 +8,7 @@ import signal
 import pytest
 
 from sglang_omni.mps import control as mps_control
+from sglang_omni.mps.manager import MpsProcessIdentity
 from tests.test_ci import test_mps_native as mps_ci
 
 
@@ -29,9 +30,9 @@ def test_operator_cleanup_preserves_signal_and_control_order(
     class Control:
         daemon_alive = True
 
-        def read_daemon_identity(self, selected_pipe_dir):
+        def read_daemon_process_identity(self, selected_pipe_dir):
             events.append(("read", selected_pipe_dir))
-            return 900
+            return MpsProcessIdentity(900, 1)
 
         def snapshot(self, selected_pipe_dir):
             events.append(("snapshot", selected_pipe_dir, frozenset(clients)))
@@ -137,8 +138,8 @@ def test_operator_cleanup_kills_owned_sessions_but_preserves_state_on_snapshot_e
     signals: list[int] = []
 
     class Control:
-        def read_daemon_identity(self, _pipe_dir):
-            return 900
+        def read_daemon_process_identity(self, _pipe_dir):
+            return MpsProcessIdentity(900, 1)
 
         def snapshot(self, _pipe_dir):
             raise RuntimeError("snapshot failed")
@@ -167,8 +168,8 @@ def test_operator_cleanup_preserves_state_while_foreign_clients_remain(
     _make_pipe_dir(tmp_path)
 
     class Control:
-        def read_daemon_identity(self, _pipe_dir):
-            return 900
+        def read_daemon_process_identity(self, _pipe_dir):
+            return MpsProcessIdentity(900, 1)
 
         def snapshot(self, _pipe_dir):
             return {"foreign-client"}

@@ -242,6 +242,31 @@ async def test_logical_gpu_aliases_coalesce_by_physical_uuid(short_root):
     assert not manager.paths.state_dir.exists()
 
 
+@pytest.mark.asyncio
+async def test_probe_failures_reports_verified_server_loss(short_root):
+    client = FakeControlClient()
+    runtime = create(short_root, client=client)
+    await runtime.start()
+
+    manager = manager_on(runtime, 0)
+    client.set_clients(manager.paths.pipe_dir, {7000: [11, 12]})
+    client.client_tokens.update(
+        {
+            11: runtime.env_for_process("a")[MPS_CLIENT_TOKEN_ENV],
+            12: runtime.env_for_process("b")[MPS_CLIENT_TOKEN_ENV],
+        }
+    )
+    await runtime.verify()
+
+    client.server_identities.pop(7000)
+    failures = await runtime.probe_failures()
+    assert gpu_uuid(0) in failures
+    assert "server identity" in failures[gpu_uuid(0)]
+
+    client.set_clients(manager.paths.pipe_dir, {})
+    await runtime.close()
+
+
 @pytest.mark.parametrize("mode", ["auto", "on"])
 def test_one_process_cannot_resolve_to_multiple_physical_gpus(
     short_root,
