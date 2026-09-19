@@ -34,11 +34,14 @@ struct ShortcutCaptureTests {
         #expect(capture.flagsChanged(keyCode: 63, flags: []) == .pending)
     }
 
-    @Test func existingKeyDownRulesAreUnchanged() {
+    @Test func functionKeysChordsAndEscapeAreHandled() {
         var capture = ShortcutCapture()
         #expect(capture.keyDown(keyCode: 53, flags: []) == .cancel)
         #expect(capture.keyDown(keyCode: 0, flags: []) == .reject)
         #expect(capture.keyDown(keyCode: 96, flags: []) == .record(keyCode: 96, modifiers: 0))
+        for key: UInt16 in [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111] {
+            #expect(capture.keyDown(keyCode: key, flags: []) == .record(keyCode: key, modifiers: 0))
+        }
         // Note (Yifei Leng): Fn accompanies arrow and function keys; it must not leak into stored modifiers.
         #expect(capture.keyDown(keyCode: 0, flags: [.command, .function])
             == .record(keyCode: 0, modifiers: UInt64(NSEvent.ModifierFlags.command.rawValue)))

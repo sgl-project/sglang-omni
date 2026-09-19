@@ -3,3 +3,5 @@
 httpx[socks]>=0.28,<1
 # Already a serving dependency; live smoke/tests use the modern client API.
 websockets>=15,<18
+# ModelScope's hub-only SDK; no additional inference runtime.
+modelscope-hub>=0.4.2,<1

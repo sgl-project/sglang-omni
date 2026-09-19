@@ -24,12 +24,5 @@ ICONSET="$APP_ROOT/.build/AppIcon.iconset"
 mkdir -p "$ICONSET"
 swift "$APP_ROOT/scripts/icon.swift" "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-if [[ "${CODE_SIGN_IDENTITY:--}" == "-" ]]; then
-  echo "note: signing ad-hoc. macOS ties the Accessibility grant to this build, so" >&2
-  echo "      updating the app requires granting it again. Set CODE_SIGN_IDENTITY to" >&2
-  echo "      a stable signing identity to keep the grant across updates." >&2
-fi
-codesign --force --sign "${CODE_SIGN_IDENTITY:--}" --options runtime \
-  --entitlements "$APP_ROOT/Resources/Entitlements.plist" "$APP_BUNDLE"
-codesign --verify --strict "$APP_BUNDLE"
+bash "$APP_ROOT/scripts/sign.sh" "$APP_BUNDLE"
 echo "$APP_BUNDLE"

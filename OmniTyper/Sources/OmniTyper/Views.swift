@@ -55,7 +55,7 @@ struct RootView: View {
                         case .history: HistoryView(model: model, store: store)
                         case .dictionary: DictionaryView(store: store)
                         case .rules: RulesView(store: store)
-                        case .settings: PreferencesView(model: model, store: store)
+                        case .settings: PreferencesView(model: model, store: store, shortcut: model.shortcut)
                         }
                     }.padding(32).frame(maxWidth: 940, alignment: .leading).frame(maxWidth: .infinity)
                 }

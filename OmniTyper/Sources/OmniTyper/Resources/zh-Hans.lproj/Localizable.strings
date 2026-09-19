@@ -136,7 +136,7 @@
 "home.title" = "说出来，它就是你的。";
 "home.subtitle" = "在任何应用里说话，剩下的交给你的 Mac。";
 "home.permissions.title" = "先完成两项授权";
-"home.permissions.axStale" = "之前授予的辅助功能权限已失效。更新会改变这次构建的签名，授权随之作废，但系统设置里仍显示为已开启。请在「隐私与安全性 → 辅助功能」中移除 OmniTyper，或执行 tccutil reset Accessibility org.sglang.OmniTyper，然后重新授权并重启 OmniTyper。";
+"home.permissions.axStale" = "之前授予的辅助功能权限已失效。更换签名身份或更新临时签名的构建可能导致授权作废，而系统设置仍显示已开启。请在「隐私与安全性 → 辅助功能」中移除 OmniTyper，或执行 tccutil reset Accessibility org.sglang.OmniTyper，然后重新授权并重启应用。当前本地构建会复用固定的签名身份。";
 "home.permissions.body" = "两项 macOS 权限，把你的声音接到任何你写字的地方。";
 "home.permissions.mic" = "仅在录音时收听";
 "home.permissions.ax" = "使用快捷键并在光标处写入";
@@ -271,7 +271,15 @@
 "settings.runtime" = "运行环境位置";
 "settings.python" = "Python 可执行文件";
 "settings.runtimeNote" = "准备模型前请先用 OmniTyper/scripts/setup.sh 安装运行环境。";
-"settings.downloadNote" = "首次使用会从 Hugging Face 下载语音模型权重。音频只留在这台 Mac 上，不收集任何统计数据。";
+"settings.downloadNote" = "首次使用会从所选来源下载语音模型权重，切换来源后将在下次使用时重新加载模型。缓存完整后可离线使用。音频只留在这台 Mac 上，不收集任何统计数据。";
+"settings.modelSource" = "模型下载来源";
+"settings.modelScope" = "ModelScope 魔搭（国内）";
+"settings.shortcutCheckNote" = "检测系统快捷键和已注册的全局快捷键。部分应用使用独立键盘监听，无法完整检测；仍有冲突时请修改任一应用的快捷键。按 Esc 取消设置。";
+"shortcut.needsModifier" = "请加入 Command、Control、Option 或 Shift，或使用 F1–F12。";
+"shortcut.systemConflict" = "此组合已被 macOS 占用。请选择其他快捷键，或在系统设置 → 键盘 → 键盘快捷键中修改。";
+"shortcut.appConflict" = "其他应用已注册此快捷键。请选择其他组合，或关闭该应用的快捷键。";
+"shortcut.checkFailed" = "macOS 无法注册此组合进行冲突检测，请选择其他快捷键。";
+"shortcut.listenFailed" = "键盘监听未能启动。请为 OmniTyper 开启辅助功能权限；若仍显示此提示，请重启应用。";
 "settings.textAPI" = "文本 API";
 "settings.textAPINote" = "连接 Ollama 或其他 OpenAI 兼容服务，用于整理、翻译、编辑和问答。";
 "settings.baseURL" = "服务地址（需包含 /v1）";

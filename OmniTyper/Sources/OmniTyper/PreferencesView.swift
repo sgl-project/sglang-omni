@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 import AppKit
+import Carbon
 import ServiceManagement
 import SwiftUI
 
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var store: AppStore
+    @ObservedObject var shortcut: GlobalShortcut
     @ViewState private var microphones: [MicrophoneDevice] = []
     @ViewState private var captureMonitor: Any?
+    @ViewState private var hotKeyMode: UnsafeMutableRawPointer?
     @ViewState private var capturing = false
     @ViewState private var capture = ShortcutCapture()
     @ViewState private var login = false
+    @ViewState private var shortcutError: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             pageTitle(L("settings.title"), detail: L("settings.subtitle"))
@@ -20,9 +24,13 @@ struct PreferencesView: View {
                     HStack {
                         Text(L("settings.shortcut")); Spacer()
                         Button(capturing ? L("settings.pressCombo") : model.shortcutLabel) { captureShortcut() }
-                            .font(.system(.body, design: .monospaced))
-                        Button(L("action.reset")) { store.preferences.shortcutKeyCode = 49; store.preferences.shortcutModifiers = 786432 }
+                            .font(.system(.body, design: .monospaced)).disabled(model.isBusy)
+                        Button(L("action.reset")) { saveShortcut(keyCode: 49, modifiers: 786432) }.disabled(model.isBusy)
                     }
+                    if let message = shortcutError ?? shortcut.errorCode.map({ L($0) }) {
+                        Label(message, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.red)
+                    }
+                    Text(L("settings.shortcutCheckNote")).font(.caption).foregroundStyle(.secondary)
                     Toggle(L("settings.holdToTalk"), isOn: $store.preferences.holdToTalk)
                     Text(L("settings.holdNote")).font(.caption).foregroundStyle(.secondary)
                     Divider()
@@ -56,6 +64,10 @@ struct PreferencesView: View {
                 VStack(alignment: .leading, spacing: 15) {
                     Label(L("settings.localModel"), systemImage: "cpu").font(.headline)
                     Text("Qwen3-ASR · 0.6B · MLX 4-bit").font(.subheadline)
+                    Picker(L("settings.modelSource"), selection: $store.preferences.asrModel) {
+                        Text("Hugging Face").tag("mlx-community/Qwen3-ASR-0.6B-4bit")
+                        Text(L("settings.modelScope")).tag("aufklarer/Qwen3-ASR-0.6B-MLX-4bit")
+                    }.disabled(model.isBusy)
                     Text(L("settings.modelNote")).font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button(L("settings.prepareASR")) { model.prepareModels() }.buttonStyle(.borderedProminent).disabled(model.isBusy)
@@ -139,9 +151,13 @@ struct PreferencesView: View {
             login = SMAppService.mainApp.status == .enabled
         }
             .onDisappear { endCapture() }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in endCapture() }
     }
     private func captureShortcut() {
-        endCapture(); capturing = true
+        endCapture(); capturing = true; shortcutError = nil
+        model.beginShortcutCapture()
+        // Note (Codex): Let the recorder receive reserved combinations so it can explain the conflict.
+        hotKeyMode = PushSymbolicHotKeyMode(OptionBits(kHIHotKeyModeAllDisabledExceptUniversalAccess))
         captureMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
             let modifierChange = event.type == .flagsChanged
             let outcome = modifierChange
@@ -150,15 +166,30 @@ struct PreferencesView: View {
             switch outcome {
             case .pending: break
             case .cancel: endCapture()
-            case .reject: NSSound.beep()
+            case .reject: shortcutError = L("shortcut.needsModifier")
             case let .record(keyCode, modifiers):
-                store.preferences.shortcutKeyCode = keyCode
-                store.preferences.shortcutModifiers = modifiers
-                endCapture()
+                saveShortcut(keyCode: keyCode, modifiers: modifiers)
             }
             // Note (Yifei Leng): Pass modifier changes through so AppKit keeps an accurate modifier state.
             return modifierChange ? event : nil
         }
     }
-    private func endCapture() { if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }; captureMonitor = nil; capturing = false; capture = ShortcutCapture() }
+    private func saveShortcut(keyCode: UInt16, modifiers: UInt64) {
+        do {
+            try GlobalShortcut.validate(keyCode: keyCode, modifiers: modifiers)
+            var preferences = store.preferences
+            preferences.shortcutKeyCode = keyCode
+            preferences.shortcutModifiers = modifiers
+            store.preferences = preferences
+            shortcutError = nil
+            endCapture()
+        } catch { shortcutError = error.localizedDescription }
+    }
+    private func endCapture() {
+        if let captureMonitor { NSEvent.removeMonitor(captureMonitor) }
+        if let hotKeyMode { PopSymbolicHotKeyMode(hotKeyMode) }
+        hotKeyMode = nil
+        captureMonitor = nil; capturing = false; capture = ShortcutCapture()
+        model.endShortcutCapture()
+    }
 }
