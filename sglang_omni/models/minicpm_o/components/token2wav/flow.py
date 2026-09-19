@@ -51,8 +51,9 @@ class CausalConditionalCFM(torch.nn.Module):
         spks: torch.Tensor,
         cond: torch.Tensor,
     ) -> torch.Tensor:
-        t, _, dt = (t_span[0], t_span[-1], t_span[1] - t_span[0])
-        t = t.unsqueeze(dim=0)
+        batch_size = x.size(0)
+        t = t_span[0].expand(batch_size)
+        dt = t_span[1] - t_span[0]
         assert self.inference_cfg_rate > 0, "inference_cfg_rate better > 0"
         mask_in = torch.cat([mask, mask], dim=0)
         mu_in = torch.cat([mu, torch.zeros_like(mu)], dim=0)
@@ -71,7 +72,7 @@ class CausalConditionalCFM(torch.nn.Module):
             x = x + dt * dphi_dt
             t = t + dt
             if step < len(t_span) - 1:
-                dt = t_span[step + 1] - t
+                dt = t_span[step + 1] - t_span[step]
         return x
 
     @torch.inference_mode()
@@ -90,7 +91,10 @@ class CausalConditionalCFM(torch.nn.Module):
             raise ValueError(
                 "Combined reference and generated audio exceed 600 seconds"
             )
-        z = self.rand_noise[:, :, : mu.size(2)] * temperature
+        z = (
+            self.rand_noise[:, :, : mu.size(2)].expand(mu.size(0), -1, -1).clone()
+            * temperature
+        )
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span, mu, mask, spks, cond)
@@ -134,24 +138,28 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding: torch.Tensor,
         n_timesteps: int = 10,
     ) -> torch.Tensor:
-        assert token.shape[0] == 1
+        if token.shape[0] != prompt_token.shape[0]:
+            raise ValueError(
+                "MiniCPM-o flow batch size mismatch: "
+                f"token={token.shape[0]} prompt_token={prompt_token.shape[0]}"
+            )
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
         token_len = prompt_token_len + token_len
         token = torch.concat([prompt_token, token], dim=1)
-        mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
-        token = self.input_embedding(torch.clamp(token, min=0)) * mask
+        token_mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
+        token = self.input_embedding(torch.clamp(token, min=0)) * token_mask
         h, _ = self.encoder.forward(token, token_len)
-        h = self.encoder_proj(h)
+        frame_mask = (~make_pad_mask(token_len * self.up_rate, h.shape[1])).to(h)
+        h = self.encoder_proj(h) * frame_mask.unsqueeze(-1)
         mel_len1 = prompt_feat.shape[1]
         mel_len2 = h.shape[1] - prompt_feat.shape[1]
         conds = torch.zeros_like(h)
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2).contiguous()
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
         feat = self.decoder.forward(
             mu=h.transpose(1, 2).contiguous(),
-            mask=mask.unsqueeze(1),
+            mask=frame_mask.unsqueeze(1),
             spks=embedding,
             cond=conds,
             n_timesteps=n_timesteps,
