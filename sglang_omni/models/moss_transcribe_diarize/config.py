@@ -53,6 +53,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
         MossTDStageConfig(
             name="asr",
             process="asr",
+
             factory_path=f"{_PKG}.stages.create_sglang_moss_transcribe_diarize_executor",
             factory=MossTDFactoryArgs(
                 encoder_cache_size_bytes=4 * 1024**3,
@@ -71,6 +72,7 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 torch_compile_max_bs=4,
             ),
             gpu=0,
+
             terminal=True,
         )
     ]

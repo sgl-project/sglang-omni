@@ -512,3 +512,207 @@ def test_processor_compat_preserves_non_template_repo_errors(
     with _missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)
+
+
+# ---------------------------------------------------------------------------
+# TP support tests
+# ---------------------------------------------------------------------------
+
+
+def test_engine_builder_infra_kwargs_includes_tp_rank() -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+    builder = MossTranscribeDiarizeEngineBuilder.__new__(MossTranscribeDiarizeEngineBuilder)
+    builder._tp_rank = 0
+    builder._nccl_port = None
+    kwargs = builder.infra_kwargs()
+    assert "tp_rank" in kwargs
+    assert kwargs["tp_rank"] == 0
+
+
+def test_engine_builder_infra_kwargs_omits_nccl_port_when_none() -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+    builder = MossTranscribeDiarizeEngineBuilder.__new__(MossTranscribeDiarizeEngineBuilder)
+    builder._tp_rank = 0
+    builder._nccl_port = None
+    kwargs = builder.infra_kwargs()
+    assert "nccl_port" not in kwargs
+
+
+def test_engine_builder_infra_kwargs_includes_nccl_port_when_set() -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+    builder = MossTranscribeDiarizeEngineBuilder.__new__(MossTranscribeDiarizeEngineBuilder)
+    builder._tp_rank = 0
+    builder._nccl_port = 12345
+    kwargs = builder.infra_kwargs()
+    assert kwargs["nccl_port"] == 12345
+
+
+def test_engine_builder_infra_kwargs_tp_rank_settable() -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+    builder = MossTranscribeDiarizeEngineBuilder.__new__(MossTranscribeDiarizeEngineBuilder)
+    builder._tp_rank = 3
+    builder._nccl_port = None
+    kwargs = builder.infra_kwargs()
+    assert kwargs["tp_rank"] == 3
+
+
+def test_executor_signature_includes_tp_params() -> None:
+    sig = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
+    assert "tp_size" in sig.parameters
+    assert "tp_rank" in sig.parameters
+    assert "nccl_port" in sig.parameters
+    assert sig.parameters["tp_size"].default == 1
+    assert sig.parameters["tp_rank"].default == 0
+    assert sig.parameters["nccl_port"].default is None
+
+
+def test_stages_tp2_strips_cuda_graph_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+
+    captured = {}
+
+    def mock_init(self, **kwargs):
+        captured["builder"] = self
+
+    def mock_build(self, *args, **kwargs):
+        captured["server_args_overrides"] = kwargs.get("server_args_overrides")
+        from types import SimpleNamespace
+        return SimpleNamespace()
+
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "__init__", mock_init)
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", mock_build)
+    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        tp_size=2,
+        server_args_overrides={
+            "cuda_graph_max_bs": 32,
+            "cuda_graph_bs": [1, 2, 4],
+            "cuda_graph_max_bs_decode": 16,
+            "cuda_graph_bs_decode": [1, 2],
+            "sampling_backend": "flashinfer",
+            "torch_compile_max_bs": 8,
+            "some_other_key": "keep_me",
+        },
+    )
+
+    overrides = captured["server_args_overrides"]
+    assert overrides is not None
+    assert "cuda_graph_max_bs" not in overrides
+    assert "cuda_graph_bs" not in overrides
+    assert "cuda_graph_max_bs_decode" not in overrides
+    assert "cuda_graph_bs_decode" not in overrides
+    assert "sampling_backend" not in overrides
+    assert "torch_compile_max_bs" not in overrides
+    assert overrides["tp_size"] == 2
+    assert overrides["some_other_key"] == "keep_me"
+
+
+def test_stages_sets_builder_tp_attrs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+
+    captured = {}
+
+    def mock_init(self, **kwargs):
+        captured["builder"] = self
+
+    def mock_build(self, *args, **kwargs):
+        captured["tp_rank"] = self._tp_rank
+        captured["nccl_port"] = self._nccl_port
+        from types import SimpleNamespace
+        return SimpleNamespace()
+
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "__init__", mock_init)
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", mock_build)
+    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        tp_rank=3,
+        nccl_port=9876,
+    )
+
+    assert captured["tp_rank"] == 3
+    assert captured["nccl_port"] == 9876
+
+
+def test_stages_tp1_does_not_inject_tp_size_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+
+    captured = {}
+
+    def mock_init(self, **kwargs):
+        captured["builder"] = self
+
+    def mock_build(self, *args, **kwargs):
+        captured["server_args_overrides"] = kwargs.get("server_args_overrides")
+        from types import SimpleNamespace
+        return SimpleNamespace()
+
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "__init__", mock_init)
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", mock_build)
+    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        tp_size=1,
+        server_args_overrides={"some_key": "value"},
+    )
+
+    overrides = captured["server_args_overrides"]
+    assert overrides is not None
+    assert "tp_size" not in overrides
+    assert overrides["some_key"] == "value"
+
+
+def test_stages_no_overrides_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
+        MossTranscribeDiarizeEngineBuilder,
+    )
+
+    captured = {}
+
+    def mock_init(self, **kwargs):
+        captured["builder"] = self
+
+    def mock_build(self, *args, **kwargs):
+        captured["server_args_overrides"] = kwargs.get("server_args_overrides")
+        from types import SimpleNamespace
+        return SimpleNamespace()
+
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "__init__", mock_init)
+    monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", mock_build)
+    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+    )
+
+    assert captured["server_args_overrides"] is None
