@@ -72,6 +72,7 @@ class _ARState:
     forced_codes: torch.Tensor | None = None
     forced_step: int = 0
     reference_ranks: list[torch.Tensor] = field(default_factory=list)
+    code_history: list[torch.Tensor] = field(default_factory=list)
     frames: _HiddenFrameBuffer = field(default_factory=_HiddenFrameBuffer)
     feedback_codes: torch.Tensor | None = None
     emitted_windows: int = 0
@@ -120,30 +121,43 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         del schedule_batch
         if not requests:
             return
+        assert len(requests) % 2 == 0
         device = forward_batch.input_ids.device
         embed_tokens = self.model.get_input_embeddings()
         rows = []
-        for request in requests:
-            data = request.data
-            if not data.is_cfg_uncond:
-                self._start_request(request.request_id, data, device)
-            prompt_ids = data.prompt_token_ids.to(device=device)
-            extend_length = int(data.req.extend_range.length)
-            if len(data.req.prefix_indices) or extend_length != prompt_ids.numel():
-                raise RuntimeError(
-                    "MiniMax Music 3 prefill must cover the whole prompt exactly "
-                    f"once (prefix={len(data.req.prefix_indices)} "
-                    f"extend={extend_length} prompt={prompt_ids.numel()}); "
-                    "radix reuse and retract/replay are not supported"
+        for cond, uncond in zip(requests[0::2], requests[1::2], strict=True):
+            assert cond.data.cfg_uncond is uncond.data
+            if cond.data.ar_state is None:
+                self._start_request(cond.request_id, cond.data, device)
+            ar_state = self._ar_state(cond)
+            code_count = len(ar_state.code_history)
+            is_replay = bool(cond.data.req.output_ids)
+            assert is_replay == bool(uncond.data.req.output_ids)
+            assert code_count == len(cond.data.req.output_ids)
+            feedback = None
+            if is_replay:
+                feedback = embed_audio_frames(
+                    self.model, torch.stack(ar_state.code_history)
                 )
-            rows.append(embed_tokens(prompt_ids))
+
+            for request in (cond, uncond):
+                data = request.data
+                req = data.req
+                prompt_ids = data.prompt_token_ids.to(device=device)
+                assert len(req.prefix_indices) == 0
+                assert len(req.output_ids) == code_count
+                assert int(req.extend_range.length) == (prompt_ids.numel() + code_count)
+                embeds = embed_tokens(prompt_ids)
+                if feedback is not None:
+                    embeds = torch.cat((embeds, feedback), dim=0)
+                rows.append(embeds)
         forward_batch.input_embeds = torch.cat(rows, dim=0)
 
     def post_prefill(
         self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
     ) -> None:
         del forward_batch
-        if bool(getattr(schedule_batch, "is_prefill_only", False)) or not requests:
+        if schedule_batch.is_prefill_only or not requests:
             return
         self._advance(result, requests, emit=False)
 
@@ -279,8 +293,11 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             if stop:
                 ar_state.finish_reason = "stop"
                 continue
+            is_replay_prefill = not emit and bool(ar_state.code_history)
             ar_state.feedback_codes = codes[index : index + 1]
-            if not emit:
+            # depth_decode returns owned outputs; the graph path clones them.
+            ar_state.code_history.append(codes[index])
+            if not emit and not is_replay_prefill:
                 continue
             ar_state.frames.append(frame_hidden[index : index + 1])
             ar_state.generated_frames += 1
