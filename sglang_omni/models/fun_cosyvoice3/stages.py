@@ -921,7 +921,7 @@ def load_cosyvoice3_flow_hift(
     )
     del cv.model.llm
     wrapped = FunCosyVoice3Flow(
-        flow, packed_estimator=PackedDiT(flow.decoder.estimator)
+        flow, packed_estimator=PackedDiT(flow.decoder.estimator, device=device)
     )
     if enable_flow_estimator_trt:
         attach_flow_estimator_trt(wrapped, checkpoint_dir, device)
@@ -1058,7 +1058,9 @@ def load_cosyvoice3_flow_hift_lightweight(
         hift = MpsHiFTAdapter(hift, device)
     del configs
     return (
-        FunCosyVoice3Flow(flow, packed_estimator=PackedDiT(flow.decoder.estimator)),
+        FunCosyVoice3Flow(
+            flow, packed_estimator=PackedDiT(flow.decoder.estimator, device=device)
+        ),
         hift,
     )
 

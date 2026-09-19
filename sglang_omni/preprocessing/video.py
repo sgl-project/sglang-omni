@@ -12,6 +12,7 @@ from typing import Any
 
 import av
 import librosa
+import numpy as np
 import torch
 from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
@@ -288,15 +289,30 @@ async def ensure_video_list_async(
     return normalized, None, extracted_audios if extract_audio else None
 
 
-def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
-    """Extract audio from a video file path."""
-    if not _check_if_video_has_audio(video_path):
-        return None
+def _extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | None:
+    """Decode the first audio stream to mono float32 at the target sample rate."""
     try:
-        audio, _ = librosa.load(str(video_path), sr=target_sr)
-        return audio
-    except Exception as e:
-        logger.debug(f"Failed to extract audio from {video_path}: {e}")
+        with av.open(str(video_path)) as container:
+            if not container.streams.audio:
+                return None
+            stream = container.streams.audio[0]
+            sample_rate = stream.rate
+            # note (MayDomine): convert packed/integer PCM before channel averaging.
+            converter = av.AudioResampler(
+                format="fltp", layout=stream.layout, rate=sample_rate
+            )
+            frames = []
+            for frame in container.decode(stream):
+                frames.extend(
+                    output.to_ndarray() for output in converter.resample(frame)
+                )
+            frames.extend(output.to_ndarray() for output in converter.resample(None))
+        if not frames:
+            return None
+        audio = librosa.to_mono(np.concatenate(frames, axis=1))
+        return librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
+    except (av.FFmpegError, ValueError) as exc:
+        logger.warning(f"Failed to extract audio from {video_path}: {exc}")
         return None
 
 
@@ -330,7 +346,7 @@ def load_video_path(
                 f"Failed to decode video path={path}; torchvision failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}"
             ) from backend_exc
-        logger.warning("Video reader %s failed, falling back to torchvision", backend)
+        logger.warning(f"Video reader {backend} failed, falling back to torchvision")
         try:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
         except Exception as fallback_exc:
@@ -397,7 +413,7 @@ def compute_video_cache_key(
     Decode params change the resulting frame count and thus the encoder
     output length. They must be part of the cache key — otherwise an entry
     produced under one (fps, max_frames, pixel-limit) tuple could be
-    returned for a request with different params, yielding ``video_embeds``
+    returned for a request with different params, yielding video_embeds
     whose length no longer matches the prompt placeholders.
     """
     base = compute_media_cache_key(videos, prefix="video")
@@ -408,16 +424,3 @@ def compute_video_cache_key(
         f"|min_px={min_pixels}|max_px={max_pixels}|total_px={total_pixels}"
     )
     return base + decode_sig
-
-
-def _check_if_video_has_audio(video_path: str | Path) -> bool:
-    try:
-        container = av.open(str(video_path))
-        audio_streams = [
-            stream for stream in container.streams if stream.type == "audio"
-        ]
-        container.close()
-        return len(audio_streams) > 0
-    except Exception as e:
-        logger.debug(f"Failed to check audio in video {video_path}: {e}")
-        return False

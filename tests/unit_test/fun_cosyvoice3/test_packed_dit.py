@@ -144,7 +144,7 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
     dit = _tiny_dit()
     padded = _padded_inputs()
     packed = _packed_inputs(padded)
-    estimator = PackedDiT(dit)
+    estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():
         expected = dit(
@@ -202,7 +202,7 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
             streaming=streaming,
         )
         out = solve_flow_euler_packed(
-            PackedDiT(dit),
+            PackedDiT(dit, device=CPU),
             gather_rows(noise.transpose(1, 2), packed["rows"]),
             time_span,
             packed["mu"],
@@ -222,7 +222,7 @@ def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
     dit = _tiny_dit()
     padded = _padded_inputs()
     packed = _packed_inputs(padded)
-    estimator = PackedDiT(dit)
+    estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():
         together = estimator.forward(

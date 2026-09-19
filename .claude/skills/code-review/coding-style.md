@@ -3,7 +3,8 @@
 This document describes the coding style for human contributors and AI agents.
 Sources: the [style prompt and do/don't examples](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5651721937)
 and [additional anti-pattern examples](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5650093336),
-including [discarded parameters](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5673011724).
+including [discarded parameters](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5673011724)
+and [f-strings plus no backticks in comments](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5734141980).
 
 ## Principles
 
@@ -40,7 +41,9 @@ speculative generality.
   Avoid verbose "why" rationale in comments.
 - Preserve license/copyright notices and concise upstream attribution.
 - Sign non-obvious/note comments with the author's name: `# note (name): ...`.
-- No backticks in Python comments.
+- No backticks in Python comments or docstrings. Identifiers stay in plain
+  text: `"""Valid frame counts after the encoder's stride-2 conv2."""`
+  is correct; wrapping the name in double backticks is not.
 - NO process markers: no ★, `# P1`, `# [FIX]`, `# TODO` without a ticket, `# === SECTION ===`
   banners.
 - NO provenance leakage: never name other repos/upstream/"the closed source" in source.
@@ -154,8 +157,8 @@ speculative generality.
   use the logger's level and context fields.
 - `print` only for CLI output the end user reads (`--help`, visualization, `__main__` demo).
   Runtime info — even debug — goes through the logger.
-- Prefer `%-style` for hot-path log calls so formatting is skipped when the level is
-  disabled: `logger.info("Loading: %s", path)`.
+- Always use f-strings, including in log calls. Do not use %-style interpolation:
+  `logger.info(f"Loading {repo_id} config={config_name} split={split}")`.
 
 ## CONFIG & MAGIC VALUES
 

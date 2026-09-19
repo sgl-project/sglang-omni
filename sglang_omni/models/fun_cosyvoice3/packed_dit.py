@@ -196,9 +196,9 @@ class PackedDiT:
     CUDA and padded elsewhere.
     """
 
-    def __init__(self, dit: torch.nn.Module) -> None:
+    def __init__(self, dit: torch.nn.Module, *, device: str | torch.device) -> None:
         self.dit = dit
-        device = next(dit.parameters()).device
+        device = torch.device(device)
         self.is_ragged = device.type == "cuda" and _is_fa3_supported()
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
