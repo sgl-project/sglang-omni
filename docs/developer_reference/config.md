@@ -171,7 +171,7 @@ overrode. Both run the same merge as `serve`.
 | `gpu` | `int`, `list[int]`, or `None` | `None` | GPU id for the stage. `None` means CPU placement. A list is used for tensor parallel ranks. |
 | `tp_size` | `int` | `1` | Number of tensor-parallel ranks. Must match `len(gpu)` when `gpu` is a list. |
 | `gpu_memory_fraction` | `float` or `None` | `None` | Per-stage-rank budget as a fraction of total physical GPU memory. Required per stage when multiple processes share one GPU. |
-| `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; every non-TP stage must declare one explicitly. For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. |
+| `process` | `str` or `None` | `None` | OS process group identifier. Non-TP stages with the same `process` value share a single OS process; every non-TP stage must declare one explicitly. For TP stages, `process` is optional and acts as a prefix for the derived rank-process names (`{process}_tp{rank}`); if unset, the stage name is used as the prefix. A TP stage whose `process` is also declared by non-TP stages drops it and uses the stage name, since TP ranks never share an OS process. |
 | `env` | `dict[str, str]` | `{}` | Per-stage env defaults applied in this stage's worker process at spawn; never overrides `os.environ`. |
 | `wait_for` | `list[str]` or `None` | `None` | Upstream stages required before this stage can execute a request. |
 | `wait_for_fn` | `str` or `None` | `None` | Dotted function path for request-aware fan-in source selection. |
@@ -324,7 +324,10 @@ the stage scheduler and model worker with a different `tp_rank` and GPU. NCCL
 collectives inside model forward keep TP ranks in lockstep. `StageConfig.process`
 is optional for TP stages; if set, it acts as the prefix for the derived
 per-rank process names (`{process}_tp{rank}`). TP ranks always own their OS
-process exclusively.
+process exclusively, so when a model's default layout colocates the stage with
+others under one process name (the `pipeline` process of the single-GPU
+configs), raising `tp_size` takes the stage out of that process and the other
+stages keep it; no `--<stage>.process` override is needed.
 
 Only rank 0 owns external stage IO:
 
