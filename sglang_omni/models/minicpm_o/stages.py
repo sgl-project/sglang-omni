@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
-from functools import partial
 from typing import Any
 
 import torch
@@ -235,15 +234,14 @@ def create_code2wav_executor(
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
     )
-    compute_batch = partial(vocode_code2wav_payloads, model)
 
     def codec_token_cost(payload: StagePayload) -> int:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         return int(state.engine_outputs[TALKER_STAGE]["codec_tokens"].numel())
 
     return SimpleScheduler(
-        lambda payload: compute_batch([payload])[0],
-        batch_compute_fn=compute_batch,
+        lambda payload: vocode_code2wav_payloads(model, [payload])[0],
+        batch_compute_fn=lambda payloads: vocode_code2wav_payloads(model, payloads),
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         batch_wait_when_idle=batch_wait_when_idle,
