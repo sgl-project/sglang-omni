@@ -52,6 +52,10 @@ class SessionConfig(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
+    # Opt-in: emit interim transcription hypotheses during active speech,
+    # before the utterance is committed. Default off preserves the current
+    # event stream for existing clients (#1837 open question #2).
+    interim_transcription: bool | None = Field(default=None, strict=True)
 
 
 class TranscriptionSessionConfig(EventBase):
@@ -76,6 +80,7 @@ class SessionObject(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float = 0.8
     max_response_output_tokens: int | str = "inf"
+    interim_transcription: bool = False
 
 
 # ================================
@@ -213,6 +218,16 @@ class ConversationItemTruncate(ClientEvent):
     item_id: str
     content_index: int
     audio_end_ms: int = Field(ge=0)
+
+
+# Interim transcription partials replace the full hypothesis text on every
+# emission (revising semantics): Qwen3-ASR's cumulative re-decode revises
+# its own earlier output. Clients must not treat these as append-only
+# deltas. See the ASR streaming GA semantics tracked in #1837.
+INTERIM_TRANSCRIPTION_EVENT = (
+    "conversation.item.input_audio_transcription.interim"
+)
+INTERIM_PARTIAL_STYLE = "revising"
 
 
 def make_event(event_type: str, **fields: Any) -> dict[str, Any]:

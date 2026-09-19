@@ -465,6 +465,40 @@ eagerness. Changing detector behavior rebuilds the detector and clears pending
 input audio; `interrupt_response` changes independently. Text-only responses
 are not interrupted automatically.
 
+### Interim transcription (opt-in)
+
+By default the conversation session transcribes each utterance only after
+`speech_stopped` — clients see no text while the user is still speaking. Set
+`interim_transcription` in `session.update` to receive live caption
+hypotheses during active speech:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "interim_transcription": true
+  }
+}
+```
+
+While speech is active, the server periodically re-decodes the uncommitted
+utterance buffer and emits `conversation.item.input_audio_transcription.interim`
+events carrying `{item_id, content_index, text, partial_style}`. The
+`item_id` matches the one from `input_audio_buffer.speech_started`, so
+captions can be attached to the utterance in progress.
+
+Partials use `partial_style: "revising"`: each event carries the full
+hypothesis for the utterance so far and replaces the previous one — they
+are not append-only deltas (Qwen3-ASR's cumulative re-decode revises its
+own earlier output). An interim hypothesis may differ from the final
+transcript delivered later via `conversation.item.input_audio_transcription.completed`;
+that final transcript remains the authoritative text for the conversation
+history. Decode failures degrade silently — captions are best-effort and
+never surface as `error` events. Refreshes are rate-limited (2 s by
+default, with a minimum of ~0.2 s of new audio between refreshes), so each
+refresh pays a full prefill; incremental prefill is future work tracked in
+the ASR streaming roadmap (#1837).
+
 The browser example in `playground/qwen-omni/realtime` captures microphone
 input, negotiates turn-detection support per connection, and lets the user
 select text-only output or text plus streamed PCM16 audio playback.

@@ -16,6 +16,8 @@ from sglang_omni.serve.realtime.events import (
     ConversationItemTruncate,
     InputAudioBufferAppend,
     InputAudioBufferClear,
+    INTERIM_PARTIAL_STYLE,
+    INTERIM_TRANSCRIPTION_EVENT,
     ResponseCancel,
     SessionObject,
     SessionUpdate,
@@ -43,6 +45,12 @@ _TRANSCRIPTION_PROMPT = (
     "verbatim into the same language they spoke. Output ONLY the transcript "
     "— no descriptions, no refusals, no explanations."
 )
+
+# Interim partial decode throttling: wait at least this long between decode
+# refreshes, and only decode when enough new audio accumulated since the
+# previous refresh (16 kHz PCM16 = 32000 bytes per second).
+_INTERIM_DECODE_INTERVAL_S = 2.0
+_INTERIM_MIN_NEW_BYTES = 32_000 // 5  # 0.2s of new audio
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
 
@@ -151,6 +159,13 @@ class RealtimeSession:
         self.buffer_origin_samples = 0
         self.utterance_start_byte: int | None = None
         self.utterance_item_id: str | None = None
+
+        # Interim transcription state (opt-in via session.update). The
+        # interval is an instance attribute so tests can shrink it.
+        self._interim_task: asyncio.Task | None = None
+        self._interim_request_id: str | None = None
+        self._interim_last_text: str = ""
+        self.interim_interval_s: float = _INTERIM_DECODE_INTERVAL_S
 
     async def run(self) -> None:
         """Drive the WebSocket loop; ``websocket.disconnect`` arrives in-band."""
@@ -281,6 +296,8 @@ class RealtimeSession:
             self.speech_idle.set()
             self.vad = replacement_vad
         self.session_object = candidate
+        if not candidate.interim_transcription:
+            await self._stop_interim_loop()
         if replacement_vad is not None and had_pending_audio:
             await self.send(make_event("input_audio_buffer.cleared"))
         await self.send(
@@ -415,6 +432,7 @@ class RealtimeSession:
             )
             if response_has_audio and interrupt_response:
                 await self.cancel_active_response("turn_detected")
+            self._start_interim_loop()
         elif emit.event_type == VADEvent.SPEECH_STOPPED:
             await self.send(
                 make_event(
@@ -423,6 +441,7 @@ class RealtimeSession:
                     item_id=self.utterance_item_id or new_id("item"),
                 )
             )
+            await self._stop_interim_loop()
             try:
                 await self.auto_commit_utterance(emit.sample_offset)
             finally:
@@ -465,9 +484,117 @@ class RealtimeSession:
             self.queue_drainer = asyncio.create_task(self.drain_queue())
 
     async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
+        await self._stop_interim_loop()
         self.drop_buffer_and_reset_vad()
         self.speech_idle.set()
         await self.send(make_event("input_audio_buffer.cleared"))
+
+    def _start_interim_loop(self) -> None:
+        """Launch interim partial decoding for the utterance in progress."""
+        # Cancel any previous loop without awaiting it: this runs in the
+        # synchronous tail of handle_vad_emit. A stale loop exits by itself
+        # on its next wake-up when it sees a different utterance_item_id.
+        task, self._interim_task = self._interim_task, None
+        if task is not None and not task.done():
+            task.cancel()
+        self._interim_request_id = None
+        self._interim_last_text = ""
+        if not self.session_object.interim_transcription:
+            return
+        if self.utterance_item_id is None or self.utterance_start_byte is None:
+            return
+        self._interim_task = asyncio.create_task(self._interim_decode_loop())
+
+    async def _stop_interim_loop(self) -> None:
+        """Cancel the interim loop and abort its in-flight engine request."""
+        task, self._interim_task = self._interim_task, None
+        request_id, self._interim_request_id = self._interim_request_id, None
+        self._interim_last_text = ""
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if request_id is not None:
+            try:
+                await self.client.abort(request_id)
+            except Exception as exc:
+                asyncio.get_running_loop().call_exception_handler(
+                    {
+                        "message": "Realtime interim transcription abort failed",
+                        "exception": exc,
+                    }
+                )
+
+    async def _interim_decode_loop(self) -> None:
+        """Periodically re-decode the uncommitted utterance buffer.
+
+        Emits revising-style interim hypotheses (full-text replacement) while
+        the user is still speaking. The loop exits by itself when the
+        utterance it was started for is committed, cleared, or replaced:
+        both anchors are re-read after every sleep, so a cancel racing a
+        commit is harmless.
+        """
+        item_id = self.utterance_item_id
+        last_decoded_end: int | None = None
+        while not self.closed:
+            await asyncio.sleep(self.interim_interval_s)
+            start_byte = self.utterance_start_byte
+            if start_byte is None or self.utterance_item_id != item_id:
+                # utterance ended / cleared / replaced while we slept
+                return
+            end_byte = self.audio_buffer.num_bytes
+            if end_byte - start_byte < _INTERIM_MIN_NEW_BYTES:
+                continue
+            if (
+                last_decoded_end is not None
+                and end_byte - last_decoded_end < _INTERIM_MIN_NEW_BYTES
+            ):
+                continue  # too little new audio since the last refresh
+            last_decoded_end = end_byte
+            payload = self.audio_buffer.to_sliced_wav_data_uri(
+                start_byte=start_byte, end_byte=end_byte
+            )
+            try:
+                text = await self._decode_interim(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Captions are best-effort; never surface as error events.
+                asyncio.get_running_loop().call_exception_handler(
+                    {
+                        "message": "Realtime interim transcription refresh failed",
+                        "session": self.session_id,
+                        "exception": exc,
+                    }
+                )
+                continue
+            if not text or text == self._interim_last_text:
+                continue
+            self._interim_last_text = text
+            await self.send(
+                make_event(
+                    INTERIM_TRANSCRIPTION_EVENT,
+                    item_id=item_id,
+                    content_index=0,
+                    text=text,
+                    partial_style=INTERIM_PARTIAL_STYLE,
+                )
+            )
+
+    async def _decode_interim(self, audio_payload: str) -> str:
+        """One verbatim decode refresh; same prompt as the final pass."""
+        self._interim_request_id = (
+            f"rt-interim-{self.session_id}-{uuid.uuid4().hex}"
+        )
+        text_acc: list[str] = []
+        async for chunk in self.client.completion_stream(
+            self.build_transcription_request(audio_payload),
+            request_id=self._interim_request_id,
+        ):
+            if chunk.modality == "text" and chunk.text:
+                text_acc.append(chunk.text)
+            if chunk.finish_reason is not None:
+                break
+        return "".join(text_acc)
 
     async def handle_response_cancel(self, event: ResponseCancel) -> None:
         await self.cancel_active_response("client_cancelled")
@@ -1067,6 +1194,7 @@ class RealtimeSession:
         self.turn_cancel_requested = True
         abort_task = self.active_response_abort_task
         await self._cancel_and_abort(self.active_task, self.active_request_id)
+        await self._stop_interim_loop()
         if abort_task is not None:
             await asyncio.gather(abort_task, return_exceptions=True)
         await self._cancel_and_abort(self.queue_drainer, None)
