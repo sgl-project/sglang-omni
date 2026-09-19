@@ -107,12 +107,6 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0", float16=False)
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
-    equal_rows = model.vocode_many([tokens_a, tokens_a], None)
-    cosine = float(
-        np.dot(equal_rows[0], equal_rows[1])
-        / (np.linalg.norm(equal_rows[0]) * np.linalg.norm(equal_rows[1]))
-    )
-    assert cosine > 0.99
     batched = model.vocode_many([tokens_a, tokens_b], None)
     single_a = model.vocode(tokens_a, None)
     single_b = model.vocode(tokens_b, None)

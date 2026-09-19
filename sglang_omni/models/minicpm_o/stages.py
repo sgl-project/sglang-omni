@@ -7,20 +7,18 @@ import logging
 import os
 from collections import defaultdict
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import torch.nn as nn
+
+from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
+    StreamingDetokenizeScheduler,
+)
 from sglang_omni.proto import StagePayload
-
-if TYPE_CHECKING:
-    from torch import nn
-
-    from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
-    from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
-        StreamingDetokenizeScheduler,
-    )
-    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +36,6 @@ def create_preprocessing_executor(
     from sglang_omni.models.minicpm_o.components.preprocessor import (
         MiniCPMOPreprocessor,
     )
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
     preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
 
@@ -80,9 +77,6 @@ def _run_single_encoder_payload(
 
 
 def _create_encoder_executor(model: nn.Module, *, stage_name: str) -> SimpleScheduler:
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-    from sglang_omni.scheduling.stage_cache import StageOutputCache
-
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
@@ -265,10 +259,8 @@ def create_code2wav_executor(
     batch_wait_when_idle: bool = CODE2WAV_BATCH_WAIT_WHEN_IDLE,
     max_batch_cost: int | None = None,
 ) -> SimpleScheduler:
-    from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
     from sglang_omni.models.minicpm_o.routing import TALKER_STAGE
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
     model = MiniCPMOCode2Wav(
