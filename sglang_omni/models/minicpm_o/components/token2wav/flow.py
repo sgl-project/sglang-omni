@@ -138,11 +138,10 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding: torch.Tensor,
         n_timesteps: int = 10,
     ) -> torch.Tensor:
-        if token.shape[0] != prompt_token.shape[0]:
-            raise ValueError(
-                "MiniCPM-o flow batch size mismatch: "
-                f"token={token.shape[0]} prompt_token={prompt_token.shape[0]}"
-            )
+        assert token.shape[0] == prompt_token.shape[0], (
+            f"flow batch size mismatch: token={token.shape[0]} "
+            f"prompt_token={prompt_token.shape[0]}"
+        )
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
         token_len = prompt_token_len + token_len

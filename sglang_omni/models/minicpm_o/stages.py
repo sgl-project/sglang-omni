@@ -5,15 +5,16 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from sglang_omni.proto import StagePayload
 
 if TYPE_CHECKING:
-    import numpy as np
-    from numpy.typing import NDArray
     from torch import nn
 
+    from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
     from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
         StreamingDetokenizeScheduler,
     )
@@ -22,6 +23,11 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
+
+# measured on A800 SeedTTS replay, c16/n50
+CODE2WAV_MAX_BATCH_SIZE = 4
+CODE2WAV_MAX_BATCH_WAIT_MS = 10.0
+CODE2WAV_BATCH_WAIT_WHEN_IDLE = False
 
 
 def create_preprocessing_executor(
@@ -194,28 +200,75 @@ def create_sglang_talker_executor_from_config(
     return scheduler
 
 
-def create_code2wav_executor(
-    model_path: str,
-    *,
-    device: str | None = None,
-    gpu_id: int | None = None,
-    float16: bool = False,
-    max_batch_size: int = 1,
-    max_batch_wait_ms: float = 0.0,
-    batch_wait_when_idle: bool = True,
-    max_batch_cost: int | None = None,
-) -> SimpleScheduler:
-    from collections import defaultdict
-
-    from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+def vocode_code2wav_payloads(
+    model: MiniCPMOCode2Wav, payloads: list[StagePayload]
+) -> list[StagePayload]:
+    """Vocode talker payloads, grouping rows that share a speaker reference."""
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
     from sglang_omni.models.minicpm_o.routing import (
         TALKER_STAGE,
         code2wav_reference_audio,
     )
     from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.audio_payload import audio_waveform_payload
+
+    codec_tokens: list[list[int]] = []
+    references: list[str | bytes] = []
+    groups: dict[str, list[int]] = defaultdict(list)
+    for idx, payload in enumerate(payloads):
+        state = MiniCPMOPipelineState.from_dict(payload.data)
+        tokens = state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
+        reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
+        codec_tokens.append(tokens)
+        references.append(reference)
+        if isinstance(reference, bytes):
+            group_key = f"bytes:{hash_bytes(reference)}"
+        else:
+            group_key = reference_path_cache_key(reference) or str(reference)
+        groups[group_key].append(idx)
+
+    logger.info(
+        f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
+        f"max_codec_tokens={max(len(tokens) for tokens in codec_tokens)}"
+    )
+    waveforms_by_index = {}
+    for group_indices in groups.values():
+        group_waveforms = model.vocode_many(
+            [codec_tokens[idx] for idx in group_indices],
+            references[group_indices[0]],
+        )
+        for idx, waveform in zip(group_indices, group_waveforms, strict=True):
+            waveforms_by_index[idx] = waveform
+
+    outputs: list[StagePayload] = []
+    for idx, payload in enumerate(payloads):
+        payload.data = dict(
+            audio_waveform_payload(
+                waveforms_by_index[idx],
+                sample_rate=model.sample_rate,
+                modality="audio",
+                source_hint="MiniCPM-o",
+            )
+        )
+        outputs.append(payload)
+    return outputs
+
+
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    float16: bool = False,
+    max_batch_size: int = CODE2WAV_MAX_BATCH_SIZE,
+    max_batch_wait_ms: float = CODE2WAV_MAX_BATCH_WAIT_MS,
+    batch_wait_when_idle: bool = CODE2WAV_BATCH_WAIT_WHEN_IDLE,
+    max_batch_cost: int | None = None,
+) -> SimpleScheduler:
+    from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+    from sglang_omni.models.minicpm_o.routing import TALKER_STAGE
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
     model = MiniCPMOCode2Wav(
@@ -223,79 +276,19 @@ def create_code2wav_executor(
         device=str(resolve_concrete_device(device, gpu_id)),
         float16=float16,
     )
+    compute_batch = partial(vocode_code2wav_payloads, model)
 
-    def _reference_key(reference: str | bytes) -> str:
-        if isinstance(reference, bytes):
-            return f"bytes:{hash_bytes(reference)}"
-        return reference_path_cache_key(reference) or str(reference)
-
-    def _payload_with_waveform(
-        payload: StagePayload, waveform: NDArray[np.float32], sample_rate: int
-    ) -> StagePayload:
-        payload.data = dict(
-            audio_waveform_payload(
-                waveform,
-                sample_rate=sample_rate,
-                modality="audio",
-                source_hint="MiniCPM-o",
-            )
-        )
-        return payload
-
-    def _vocode(payload: StagePayload) -> StagePayload:
+    def codec_token_cost(payload: StagePayload) -> int:
         state = MiniCPMOPipelineState.from_dict(payload.data)
-        talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-        out = model(
-            codec_tokens=talker_out["codec_tokens"],
-            prompt_wav=code2wav_reference_audio(payload),
-        )
-        return _payload_with_waveform(payload, out["waveform"], int(out["sample_rate"]))
+        return int(state.engine_outputs[TALKER_STAGE]["codec_tokens"].numel())
 
-    def _codec_token_cost(payload: StagePayload) -> int:
-        state = MiniCPMOPipelineState.from_dict(payload.data)
-        talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-        return int(talker_out["codec_tokens"].numel())
-
-    def _vocode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
-        parsed = []
-        groups: dict[str, list[int]] = defaultdict(list)
-        for idx, payload in enumerate(payloads):
-            state = MiniCPMOPipelineState.from_dict(payload.data)
-            talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-            codec_tokens = talker_out["codec_tokens"].reshape(-1).tolist()
-            reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
-            parsed.append((payload, codec_tokens, reference))
-            groups[_reference_key(reference)].append(idx)
-
-        max_codec_tokens = max((len(item[1]) for item in parsed), default=0)
-        logger.info(
-            f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
-            f"max_codec_tokens={max_codec_tokens}"
-        )
-        results: list[StagePayload | None] = [None] * len(payloads)
-        for group_indices in groups.values():
-            reference = parsed[group_indices[0]][2]
-            token_batches = [parsed[idx][1] for idx in group_indices]
-            waveforms = model.vocode_many(token_batches, reference)
-            assert len(waveforms) == len(group_indices)
-            for idx, waveform in zip(group_indices, waveforms):
-                results[idx] = _payload_with_waveform(
-                    parsed[idx][0], waveform, model.sample_rate
-                )
-        resolved_results: list[StagePayload] = []
-        for result in results:
-            assert result is not None
-            resolved_results.append(result)
-        return resolved_results
-
-    batch_fn = _vocode_batch if int(max_batch_size) > 1 else None
     return SimpleScheduler(
-        _vocode,
-        batch_compute_fn=batch_fn,
+        lambda payload: compute_batch([payload])[0],
+        batch_compute_fn=compute_batch,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         batch_wait_when_idle=batch_wait_when_idle,
-        request_cost_fn=_codec_token_cost,
+        request_cost_fn=codec_token_cost,
         max_batch_cost=max_batch_cost,
     )
 

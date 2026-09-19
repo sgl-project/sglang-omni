@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
@@ -20,6 +23,7 @@ if TYPE_CHECKING:
 
 OUTPUT_SAMPLE_RATE = 24000
 CODEC_TOKEN_RATE = 25
+SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -60,6 +64,7 @@ class MiniCPMOCode2Wav(nn.Module):
         self.default_prompt_wav = prompt_wav
         self.prompt_cache_key: str | None = None
         self.sample_rate = OUTPUT_SAMPLE_RATE
+        self.eval()
 
     @torch.inference_mode()
     def forward(
@@ -89,7 +94,7 @@ class MiniCPMOCode2Wav(nn.Module):
         return self.default_prompt_wav
 
     def speaker_prompt(self, prompt_wav: str | bytes | None) -> SpeakerPrompt:
-        t2w = self.token2wav
+        token2wav = self.token2wav
         prompt_wav = self.resolve_prompt_wav(prompt_wav)
         prompt_key = (
             f"bytes:{hash_bytes(prompt_wav)}"
@@ -97,7 +102,7 @@ class MiniCPMOCode2Wav(nn.Module):
             else reference_path_cache_key(prompt_wav)
         )
         if (
-            t2w.cache is None
+            token2wav.cache is None
             or prompt_key is None
             or prompt_key != self.prompt_cache_key
         ):
@@ -105,90 +110,77 @@ class MiniCPMOCode2Wav(nn.Module):
                 with tempfile.NamedTemporaryFile(suffix=".wav") as reference:
                     reference.write(prompt_wav)
                     reference.flush()
-                    prompt = t2w.prepare_prompt(reference.name)
+                    prompt = token2wav.prepare_prompt(reference.name)
             else:
-                prompt = t2w.prepare_prompt(prompt_wav)
-            t2w.cache = prompt
+                prompt = token2wav.prepare_prompt(prompt_wav)
+            token2wav.cache = prompt
             self.prompt_cache_key = prompt_key
-        return t2w.cache
+        return token2wav.cache
 
     def vocode(self, tokens: list[int], prompt_wav: str | bytes | None) -> np.ndarray:
         """Return the waveform directly, avoiding the vocoder's file encoder."""
+        if not tokens:
+            return np.zeros(0, dtype=np.float32)
         return self.vocode_many([tokens], prompt_wav)[0]
 
     def vocode_many(
-        self, token_batches: Sequence[list[int]], prompt_wav: str | bytes | None
+        self, token_sequences: Sequence[Sequence[int]], prompt_wav: str | bytes | None
     ) -> list[np.ndarray]:
         """Vocode a prompt-homogeneous batch of codec-token sequences."""
-        if not token_batches:
+        if not token_sequences:
             return []
-        if any(not tokens for tokens in token_batches):
-            return [
-                (
-                    np.zeros(0, dtype=np.float32)
-                    if not tokens
-                    else self.vocode(tokens, prompt_wav)
-                )
-                for tokens in token_batches
-            ]
+        if any(len(tokens) == 0 for tokens in token_sequences):
+            raise ValueError("codec token sequences must be non-empty")
 
-        t2w = self.token2wav
+        token2wav = self.token2wav
         (
             prompt_speech_tokens,
             prompt_speech_tokens_lens,
-            spk_emb,
+            speaker_embedding,
             prompt_mels,
         ) = self.speaker_prompt(prompt_wav)
 
-        batch_size = len(token_batches)
-        token_lens = [len(tokens) for tokens in token_batches]
-        max_token_len = max(token_lens)
-        speech_tokens = torch.zeros(
-            (batch_size, max_token_len), dtype=torch.int32, device=t2w.device
+        batch_size = len(token_sequences)
+        token_lens = [len(tokens) for tokens in token_sequences]
+        speech_tokens = pad_sequence(
+            [
+                torch.tensor(tokens, dtype=torch.int32, device=token2wav.device)
+                for tokens in token_sequences
+            ],
+            batch_first=True,
         )
-        for i, tokens in enumerate(token_batches):
-            speech_tokens[i, : len(tokens)] = torch.tensor(
-                tokens, dtype=torch.int32, device=t2w.device
-            )
         speech_tokens_lens = torch.tensor(
-            token_lens, dtype=torch.int32, device=t2w.device
+            token_lens, dtype=torch.int32, device=token2wav.device
         )
         prompt_speech_tokens = prompt_speech_tokens.expand(batch_size, -1).contiguous()
         prompt_speech_tokens_lens = prompt_speech_tokens_lens.expand(
             batch_size
         ).contiguous()
-        spk_emb = spk_emb.expand(batch_size, -1).contiguous()
+        speaker_embedding = speaker_embedding.expand(batch_size, -1).contiguous()
         prompt_mels = prompt_mels.expand(batch_size, -1, -1).contiguous()
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=t2w.float16):
-            mel = t2w.flow.inference(
+        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=token2wav.float16):
+            mel = token2wav.flow.inference(
                 speech_tokens,
                 speech_tokens_lens,
                 prompt_speech_tokens,
                 prompt_speech_tokens_lens,
                 prompt_mels,
-                spk_emb,
-                t2w.n_timesteps,
+                speaker_embedding,
+                token2wav.n_timesteps,
             )
-        samples_per_token = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
-        mel_lens = [length * t2w.flow.up_rate for length in token_lens]
-        outputs: list[np.ndarray | None] = [None] * batch_size
-        for mel_len in sorted(set(mel_lens)):
-            indices = [idx for idx, length in enumerate(mel_lens) if length == mel_len]
+        length_groups: dict[int, list[int]] = defaultdict(list)
+        for idx, token_len in enumerate(token_lens):
+            length_groups[token_len * token2wav.flow.up_rate].append(idx)
+        waveforms: dict[int, np.ndarray] = {}
+        for mel_len, indices in length_groups.items():
             speech_feat = torch.stack(
                 [mel[idx, :, :mel_len] for idx in indices],
                 dim=0,
             ).float()
             # note (MayDomine): HiFT stays FP32 when the flow runs in half precision.
-            wav, _ = t2w.hift(speech_feat=speech_feat)
+            wav, _ = token2wav.hift(speech_feat=speech_feat)
             wav = wav.float().cpu()
             for local_idx, batch_idx in enumerate(indices):
-                outputs[batch_idx] = (
-                    wav[local_idx]
-                    .reshape(-1)[: token_lens[batch_idx] * samples_per_token]
-                    .numpy()
-                )
-        resolved_outputs: list[np.ndarray] = []
-        for output in outputs:
-            assert output is not None
-            resolved_outputs.append(output)
-        return resolved_outputs
+                n_samples = token_lens[batch_idx] * SAMPLES_PER_CODEC_TOKEN
+                waveforms[batch_idx] = wav[local_idx].reshape(-1)[:n_samples].numpy()
+        return [waveforms[idx] for idx in range(batch_size)]
