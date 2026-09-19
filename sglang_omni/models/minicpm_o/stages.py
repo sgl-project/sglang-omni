@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from sglang_omni.proto import StagePayload
 
 if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
     from torch import nn
 
     from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
@@ -228,7 +230,7 @@ def create_code2wav_executor(
         return reference_path_cache_key(reference) or str(reference)
 
     def _payload_with_waveform(
-        payload: StagePayload, waveform, sample_rate: int
+        payload: StagePayload, waveform: NDArray[np.float32], sample_rate: int
     ) -> StagePayload:
         payload.data = dict(
             audio_waveform_payload(
@@ -265,22 +267,26 @@ def create_code2wav_executor(
             parsed.append((payload, codec_tokens, reference))
             groups[_reference_key(reference)].append(idx)
 
+        max_codec_tokens = max((len(item[1]) for item in parsed), default=0)
         logger.info(
-            "minicpm_code2wav_batch size=%d groups=%d max_codec_tokens=%d",
-            len(payloads),
-            len(groups),
-            max((len(item[1]) for item in parsed), default=0),
+            f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
+            f"max_codec_tokens={max_codec_tokens}"
         )
         results: list[StagePayload | None] = [None] * len(payloads)
         for group_indices in groups.values():
             reference = parsed[group_indices[0]][2]
             token_batches = [parsed[idx][1] for idx in group_indices]
             waveforms = model.vocode_many(token_batches, reference)
+            assert len(waveforms) == len(group_indices)
             for idx, waveform in zip(group_indices, waveforms):
                 results[idx] = _payload_with_waveform(
                     parsed[idx][0], waveform, model.sample_rate
                 )
-        return [result for result in results if result is not None]
+        resolved_results: list[StagePayload] = []
+        for result in results:
+            assert result is not None
+            resolved_results.append(result)
+        return resolved_results
 
     batch_fn = _vocode_batch if int(max_batch_size) > 1 else None
     return SimpleScheduler(
