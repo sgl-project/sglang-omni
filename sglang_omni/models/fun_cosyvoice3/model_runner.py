@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
-from typing import Any
+from contextlib import AbstractContextManager, nullcontext
+from typing import TYPE_CHECKING, Any
 
 import torch
+from sglang.srt.managers.overlap_utils import resolve_forward_inputs
+from sglang.srt.managers.schedule_batch import FINISH_ABORT
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
@@ -23,6 +26,9 @@ from sglang_omni.scheduling.messages import OutgoingMessage
 
 from .request_builders import accept_cosyvoice3_stream_token
 from .sglang_model import VOCAB_SIZE
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
 
 _COSYVOICE3_RAS_WINDOW_SIZE = 10
 
@@ -77,6 +83,47 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         self._collect_tokens(result, forward_batch, schedule_batch, requests)
+
+    def lookahead_eligible(self, batch: ScheduleBatch) -> bool:
+        return self.device.type == "cuda" and all(
+            req.sampling_params.frequency_penalty == 0.0
+            and req.sampling_params.presence_penalty == 0.0
+            and req.custom_logit_processor is None
+            and req.grammar is None
+            for req in batch.reqs
+        )
+
+    def _execution_context(
+        self,
+        schedule_batch: ScheduleBatch,
+        *,
+        isolate_sampling: bool = False,
+    ) -> AbstractContextManager[None]:
+        if self._async_enabled and schedule_batch.forward_mode.is_decode():
+            resolve_forward_inputs(schedule_batch, self._execution_bridge.future_map)
+            # note (ql): Repetition is idempotent; min-length already advanced.
+            repetition = schedule_batch.sampling_info.penalizer_orchestrator.penalizers[
+                BatchedRepetitionPenalizer
+            ]
+            repetition.cumulate_output_tokens(schedule_batch.input_ids)
+        return super()._execution_context(
+            schedule_batch, isolate_sampling=isolate_sampling
+        )
+
+    def post_decode_resolve(
+        self,
+        launch_buf: torch.Tensor,
+        result: Any,
+        forward_batch: Any,
+        schedule_batch: ScheduleBatch,
+        requests: list,
+    ) -> None:
+        super().post_decode_resolve(
+            launch_buf, result, forward_batch, schedule_batch, requests
+        )
+        self._collect_tokens(
+            result, forward_batch, schedule_batch, requests, skip_inactive=True
+        )
 
     def sample_before_post_prefill(
         self,
@@ -273,6 +320,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
+        *,
+        skip_inactive: bool = False,
     ) -> None:
         if result.next_token_ids is None:
             return
@@ -282,6 +331,13 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         # note (guozhihao-224): one batched D2H instead of per-request .item() syncs.
         token_ids_cpu = token_ids.tolist()
         for idx, sched_req in enumerate(requests):
+            req = sched_req.data.req
+            if skip_inactive and (
+                req.finished()
+                or req.is_retracted
+                or isinstance(req.to_finish, FINISH_ABORT)
+            ):
+                continue
             token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
                 continue
