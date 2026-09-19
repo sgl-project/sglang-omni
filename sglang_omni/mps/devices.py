@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-_MIN_COMPUTE_CAPABILITY = (7, 0)
+from sglang_omni.utils.nvml import decode_nvml_string, get_device_handle, nvml_session
 
 
 @dataclass(frozen=True)
@@ -26,15 +26,13 @@ def _check_cuda(status: Any, operation: str) -> None:
 
 def _resolve_cuda_device_uuids(
     gpu_ids: Iterable[int],
-    driver=None,
 ) -> tuple[dict[int, str], dict[int, str]]:
     """Resolve parent-visible CUDA ordinals without creating a context."""
 
     ordinals = tuple(sorted(set(gpu_ids)))
     if any(ordinal < 0 for ordinal in ordinals):
         raise ValueError(f"CUDA device ordinals must be non-negative: {ordinals}")
-    if driver is None:
-        from cuda.bindings import driver
+    from cuda.bindings import driver
 
     (status,) = driver.cuInit(0)
     _check_cuda(status, "cuInit")
@@ -102,7 +100,40 @@ class NvmlDeviceInfo:
             return devices
 
         try:
-            pynvml.nvmlInit()
+            with nvml_session(pynvml):
+                for ordinal, gpu_uuid in uuid_by_ordinal.items():
+                    try:
+                        handle = get_device_handle(pynvml, gpu_uuid)
+                        physical_uuid = decode_nvml_string(
+                            pynvml.nvmlDeviceGetUUID(handle)
+                        )
+                        if physical_uuid.startswith("MIG-"):
+                            devices[ordinal] = MpsPhysicalDevice(
+                                gpu_uuid,
+                                "MIG devices are not validated for native MPS in "
+                                "SGLang Omni",
+                            )
+                            continue
+                        try:
+                            mig_current, _ = pynvml.nvmlDeviceGetMigMode(handle)
+                            if mig_current == pynvml.NVML_DEVICE_MIG_ENABLE:
+                                devices[ordinal] = MpsPhysicalDevice(
+                                    gpu_uuid,
+                                    (
+                                        "MIG mode is enabled; native MPS is not "
+                                        "validated for MIG deployments in SGLang "
+                                        "Omni, run with mps=off"
+                                    ),
+                                )
+                                continue
+                        except pynvml.NVMLError_NotSupported:
+                            pass
+                        devices[ordinal] = MpsPhysicalDevice(gpu_uuid)
+                    except (pynvml.NVMLError, OSError, ValueError) as exc:
+                        devices[ordinal] = MpsPhysicalDevice(
+                            gpu_uuid,
+                            f"NVML query failed: {exc}",
+                        )
         except (pynvml.NVMLError, OSError) as exc:
             devices.update(
                 {
@@ -115,48 +146,4 @@ class NvmlDeviceInfo:
             )
             return devices
 
-        for ordinal, gpu_uuid in uuid_by_ordinal.items():
-            try:
-                handle = pynvml.nvmlDeviceGetHandleByUUID(gpu_uuid.encode())
-                nvml_uuid = pynvml.nvmlDeviceGetUUID(handle)
-                physical_uuid = (
-                    nvml_uuid.decode() if isinstance(nvml_uuid, bytes) else nvml_uuid
-                )
-                if physical_uuid.startswith("MIG-"):
-                    devices[ordinal] = MpsPhysicalDevice(
-                        gpu_uuid,
-                        "MIG devices are not validated for native MPS in "
-                        "SGLang Omni",
-                    )
-                    continue
-                major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-                if (major, minor) < _MIN_COMPUTE_CAPABILITY:
-                    devices[ordinal] = MpsPhysicalDevice(
-                        gpu_uuid,
-                        (
-                            f"compute capability {major}.{minor} is pre-Volta; "
-                            "per-client isolation requires Volta or newer"
-                        ),
-                    )
-                    continue
-                try:
-                    mig_current, _ = pynvml.nvmlDeviceGetMigMode(handle)
-                    if mig_current == pynvml.NVML_DEVICE_MIG_ENABLE:
-                        devices[ordinal] = MpsPhysicalDevice(
-                            gpu_uuid,
-                            (
-                                "MIG mode is enabled; native MPS is not "
-                                "validated for MIG deployments in SGLang "
-                                "Omni, run with mps=off"
-                            ),
-                        )
-                        continue
-                except pynvml.NVMLError_NotSupported:
-                    pass
-                devices[ordinal] = MpsPhysicalDevice(gpu_uuid)
-            except (pynvml.NVMLError, OSError, ValueError) as exc:
-                devices[ordinal] = MpsPhysicalDevice(
-                    gpu_uuid,
-                    f"NVML query failed: {exc}",
-                )
         return devices

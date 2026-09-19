@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from sglang_omni.utils.nvml import get_device_handle, nvml_session
+
 _NVML_SESSION_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -116,27 +118,25 @@ class ResourceMonitor:
 
     def _run(self) -> None:
         try:
-            try:
-                import psutil
-                import pynvml
+            import psutil
+            import pynvml
 
-                pynvml.nvmlInit()
+            with nvml_session(pynvml):
                 self._pynvml = pynvml
                 self._psutil = psutil
                 self._handle = _resolve_nvml_handle(pynvml, self.gpu_index)
                 psutil.cpu_percent(interval=None)
-            except Exception as exc:
-                self.error = f"{type(exc).__name__}: {exc}"
                 self._ready_event.set()
-                return
-
-            self._ready_event.set()
-            self._sample_once()
-            while not self._stop_event.wait(self.interval_s):
                 self._sample_once()
-            self._sample_once()
+                while not self._stop_event.wait(self.interval_s):
+                    self._sample_once()
+                self._sample_once()
+        except Exception as exc:
+            self.error = f"{type(exc).__name__}: {exc}"
         finally:
-            self._shutdown_nvml()
+            self._pynvml = None
+            self._handle = None
+            self._ready_event.set()
             _NVML_SESSION_LOCK.release()
 
     def _sample_once(self) -> None:
@@ -221,16 +221,6 @@ class ResourceMonitor:
                 self._processes.pop(pid, None)
                 self._inaccessible_process_pids.add(pid)
         return total if observed else None
-
-    def _shutdown_nvml(self) -> None:
-        if self._pynvml is None:
-            return
-        try:
-            self._pynvml.nvmlShutdown()
-        except Exception:
-            pass
-        self._pynvml = None
-        self._handle = None
 
 
 def summarize_resource_samples(
@@ -382,9 +372,7 @@ def _resolve_nvml_handle(pynvml: Any, logical_gpu_index: int):
             )
         token = visible[logical_gpu_index]
         device = int(token) if token.isdigit() else token
-    if isinstance(device, int):
-        return pynvml.nvmlDeviceGetHandleByIndex(device)
-    return pynvml.nvmlDeviceGetHandleByUUID(device.encode())
+    return get_device_handle(pynvml, device)
 
 
 def _nvml_compute_processes(pynvml: Any, handle: Any) -> list[Any] | None:

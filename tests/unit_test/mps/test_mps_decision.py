@@ -3,39 +3,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from sglang_omni.mps.decision import collect_mps_facts
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 
 _FACTORY = f"{__name__}.unused_factory"
 
 
-@dataclass
-class ResolvedStageLaunch:
-    """Minimal resolved launch record consumed by MPS planning."""
-
-    stage_name: str
-    gpu_id: int | None
-    tp_size: int = 1
-    placement_gpu_id: int | None = None
-    factory: str = _FACTORY
-    factory_kwargs: dict = field(default_factory=dict)
-    typed_kwargs: dict = field(default_factory=dict)
-    factory_arg_defaults: dict = field(default_factory=dict)
-
-
-@dataclass
-class ResolvedProcessSpec:
-    process_name: str
-    stage_specs: list[ResolvedStageLaunch] = field(default_factory=list)
-
-
 def proc(name, gpu_id, tp_size=1):
-    return ResolvedProcessSpec(
+    return StageWorkerProcessSpec(
         process_name=name,
         stage_specs=[
-            ResolvedStageLaunch(
+            StageLaunchConfig(
                 stage_name=name,
+                factory=_FACTORY,
                 gpu_id=gpu_id,
                 placement_gpu_id=gpu_id,
                 tp_size=tp_size,
@@ -59,3 +39,15 @@ def test_extracts_resolved_process_facts_without_deciding_physical_identity():
     assert facts[0].explicit_cuda_gpu_ids == (1, 2, 4)
     assert not facts[0].contains_tp
     assert facts[1].contains_tp
+
+
+def test_duplicate_process_specs_preserve_first_seen_order_and_merge_gpu_facts():
+    first = proc("b", 1)
+    first.stage_specs[0].factory_kwargs = {"device": "cuda:1"}
+    later = proc("b", 2)
+    later.stage_specs[0].factory_kwargs = {"device": "cuda:2"}
+    facts = collect_mps_facts(spec for spec in (first, proc("a", 0), later))
+
+    assert [fact.process_name for fact in facts] == ["b", "a"]
+    assert facts[0].placement_gpu_ids == (1, 2)
+    assert facts[0].explicit_cuda_gpu_ids == (1, 2)

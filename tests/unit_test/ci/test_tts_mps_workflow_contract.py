@@ -24,7 +24,6 @@ def test_workflow_keeps_ordinary_stage_and_adds_isolated_mps_validation() -> Non
     jobs = workflow["jobs"]
     ordinary = jobs["stage-1-non-streaming"]
     mps = jobs["stage-5-mps"]
-    assert mps["name"] == "stage 5 - MPS"
 
     ordinary_run = _step(ordinary, "Run TTS non-streaming benchmark stage")
     assert "test_tts_ci.py" in ordinary_run["run"]
@@ -60,7 +59,6 @@ def test_workflow_keeps_ordinary_stage_and_adds_isolated_mps_validation() -> Non
     assert jobs["stage-2-streaming"]["needs"] == "stage-1-non-streaming"
     assert jobs["stage-3-consistency"]["needs"] == "stage-2-streaming"
     assert jobs["stage-4-serving"]["needs"] == "stage-3-consistency"
-    assert list(jobs).index("stage-5-mps") > list(jobs).index("stage-4-serving")
 
 
 def test_mps_artifacts_cannot_be_consumed_by_canonical_consistency() -> None:

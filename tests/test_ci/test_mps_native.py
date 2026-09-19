@@ -5,7 +5,7 @@ Author: Jiaxin Deng
 
 Codifies the lifecycle contract of ``--mps`` end to end on real hardware:
 auto activation on a colocated pipeline, attach verification, a real request,
-recovery after a hard kill, the shared daemon across two serve commands, and
+isolation after a hard kill, private daemons for two serve commands, and
 zero residue after teardown. Quality and throughput are out of scope here;
 this file exists so a lifecycle regression fails a machine, not a user.
 
@@ -125,13 +125,7 @@ def _terminate(proc: subprocess.Popen, timeout: float = 120.0) -> None:
 
 def _assert_no_residue() -> None:
     leftovers = (
-        [
-            entry.name
-            for entry in STATE_ROOT.iterdir()
-            if not entry.name.startswith(".lock")
-        ]
-        if STATE_ROOT.exists()
-        else []
+        [entry.name for entry in STATE_ROOT.iterdir()] if STATE_ROOT.exists() else []
     )
     assert leftovers == [], f"MPS state residue: {leftovers}"
 
@@ -241,9 +235,7 @@ def _wait_gpu_drained(timeout_s: int = 180) -> None:
 
 @pytest.fixture(autouse=True)
 def clean_state_root(monkeypatch):
-    # Never erase the only control path or diagnostics from an interrupted run.
-    # A clean root may still contain stale per-GPU lock files, which are safe to
-    # discard only after both state and daemon checks pass.
+    # Note (kaige): preserve interrupted runs for scoped operator cleanup.
     _assert_no_residue()
     stale_daemons = _daemon_pids()
     assert not stale_daemons, (
@@ -281,11 +273,11 @@ def clean_state_root(monkeypatch):
                 pass
     if list(STATE_ROOT.glob("*/pipe")):
         _operator_cleanup(session_ids)
+        _assert_process_identities_gone(mps_processes)
     else:
         _signal_test_sessions(session_ids, signal.SIGKILL)
         _assert_process_identities_gone(mps_processes)
         shutil.rmtree(STATE_ROOT, ignore_errors=True)
-    _assert_process_identities_gone(mps_processes)
 
 
 def _signal_test_sessions(session_ids: Iterable[int], sig: int) -> set[int]:
@@ -301,19 +293,18 @@ def _signal_test_sessions(session_ids: Iterable[int], sig: int) -> set[int]:
     return signalled
 
 
-def _operator_cleanup(session_ids: int | Iterable[int]) -> None:
+def _operator_cleanup(session_ids: set[int]) -> None:
     """Clean only this test's process groups, preserving MPS signal order."""
 
     from sglang_omni.mps.control import SubprocessMpsControlClient
 
     control = SubprocessMpsControlClient()
     pipe_dirs = sorted(STATE_ROOT.glob("*/pipe"))
-    sessions = {session_ids} if isinstance(session_ids, int) else set(session_ids)
     mps_processes = _mps_process_identities()
 
     # Every test serve owns a dedicated process group. Freezing them closes the
     # attach window while keeping every signal scoped to this test.
-    live_sessions = _signal_test_sessions(sessions, signal.SIGSTOP)
+    live_sessions = _signal_test_sessions(session_ids, signal.SIGSTOP)
 
     if not pipe_dirs or not _daemon_pids():
         _signal_test_sessions(live_sessions, signal.SIGKILL)
@@ -325,7 +316,6 @@ def _operator_cleanup(session_ids: int | Iterable[int]) -> None:
     try:
         for pipe_dir in pipe_dirs:
             daemon_pids[pipe_dir] = control.read_daemon_identity(pipe_dir)
-            control.snapshot(pipe_dir)
     finally:
         _signal_test_sessions(live_sessions, signal.SIGKILL)
 
@@ -349,56 +339,73 @@ def _operator_cleanup(session_ids: int | Iterable[int]) -> None:
     shutil.rmtree(STATE_ROOT)
 
 
-def test_hard_kill_fails_fast_until_operator_cleans():
+def _require_default_compute_mode():
+    device = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
+    mode = subprocess.check_output(
+        [
+            "nvidia-smi",
+            "--query-gpu=compute_mode",
+            "--format=csv,noheader",
+            "-i",
+            device,
+        ],
+        text=True,
+    ).strip()
+    if mode != "Default":
+        pytest.skip("concurrent private MPS servers require Default compute mode")
+
+
+def test_hard_kill_leaves_old_run_without_blocking_or_joining_it():
+    _require_default_compute_mode()
     port = _free_port()
     proc = _serve(port, "auto")
     try:
         _wait_healthy(port, proc)
-        assert _daemon_pids(), "no MPS daemon started for the colocated pipeline"
+        old_daemons = _daemon_pids()
+        old_dirs = set(STATE_ROOT.glob("run-*"))
+        assert len(old_daemons) == len(old_dirs) == 1
         _request_ok(port)
-
         dirty_session = proc.pid
         proc.kill()
         proc.wait(timeout=30)
-        time.sleep(10)
 
-        # Dirty state must fail the next start with the full picture instead
-        # of being silently repaired.
-        port = _free_port()
-        proc = _serve(port, "auto")
-        assert proc.wait(timeout=180) != 0, "serve started over dirty MPS state"
-        log = Path(f"/tmp/mps-native-ci-{port}.log").read_text(errors="replace")
-        assert "dirty state" in log and "rm -rf" in log
-
-        # After the documented operator cleanup, startup succeeds again.
-        _operator_cleanup(dirty_session)
         port = _free_port()
         proc = _serve(port, "auto")
         _wait_healthy(port, proc)
+        assert len(_daemon_pids() - old_daemons) == 1
+        assert len(set(STATE_ROOT.glob("run-*")) - old_dirs) == 1
         _request_ok(port)
+        _terminate(proc)
+        assert set(STATE_ROOT.glob("run-*")) == old_dirs
+        _operator_cleanup({dirty_session})
     finally:
         _terminate(proc)
     _assert_no_residue()
-    assert not _daemon_pids(), "daemon outlived the last serve"
+    assert not _daemon_pids()
 
 
-def test_two_serves_share_one_daemon():
+def test_two_serves_have_independent_daemons():
+    _require_default_compute_mode()
     port_a, port_b = _free_port(), _free_port()
     proc_a = _serve(port_a, "on")
     proc_b: subprocess.Popen | None = None
     try:
         _wait_healthy(port_a, proc_a)
+        daemon_a = _daemon_pids()
+        dir_a = set(STATE_ROOT.glob("run-*"))
         proc_b = _serve(port_b, "on")
         _wait_healthy(port_b, proc_b)
 
         daemons = _daemon_pids()
-        assert len(daemons) == 1, f"expected one shared daemon, saw {daemons}"
+        assert len(daemons) == 2, f"expected two private daemons, saw {daemons}"
+        assert len(set(STATE_ROOT.glob("run-*"))) == 2
         _request_ok(port_a)
         _request_ok(port_b)
 
-        # First leaver must not take the daemon down under the survivor.
+        # Note (kaige): exiting one serve must leave the other private daemon intact.
         _terminate(proc_a)
-        assert _daemon_pids() == daemons, "daemon died when one owner left"
+        assert _daemon_pids() == daemons - daemon_a
+        assert not dir_a & set(STATE_ROOT.glob("run-*"))
         _request_ok(port_b)
     finally:
         if proc_b is not None:
@@ -406,4 +413,4 @@ def test_two_serves_share_one_daemon():
         if proc_a.poll() is None:
             _terminate(proc_a)
     _assert_no_residue()
-    assert not _daemon_pids(), "daemon outlived the last owner"
+    assert not _daemon_pids(), "daemon outlived its serve"

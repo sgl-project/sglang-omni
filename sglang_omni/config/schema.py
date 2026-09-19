@@ -886,6 +886,29 @@ class PipelineConfig(BaseModel):
                     "stage.gpu and stage.gpu_memory_fraction"
                 )
 
+        reserved_env = set()
+        if self.mps != "off":
+            reserved_env.update(
+                ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER", "CUDA_MPS_PIPE_DIRECTORY")
+            )
+        if self.mps != "off" or self.weight_share == "on":
+            reserved_env.add("SGLANG_OMNI_WEIGHT_SHARE")
+        for scope, env in [
+            ("env_defaults", self.env_defaults),
+            *((f"stages.{stage.name}.env", stage.env) for stage in self.stages),
+        ]:
+            conflicts = reserved_env.intersection(env)
+            if conflicts:
+                paths = ", ".join(f"{scope}.{name}" for name in sorted(conflicts))
+                raise ValueError(
+                    f"{paths} conflicts with mps={self.mps}, "
+                    f"weight_share={self.weight_share}. Configure CUDA visibility "
+                    "and device order in the parent environment; use "
+                    "weight_share=on to let the runtime assign sharing roles. "
+                    "Remove these environment defaults, or disable the managed "
+                    "feature to use an external supervisor."
+                )
+
         names = [s.name for s in self.stages]
         if not names:
             raise ValueError("Pipeline must define at least one stage")

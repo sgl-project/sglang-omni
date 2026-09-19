@@ -182,6 +182,7 @@ def test_process_scoped_memory_unavailable_when_nvml_init_fails(
 
     assert gpu_memory.is_process_scoped_memory_available() is False
     assert gpu_memory.get_process_gpu_memory_bytes(0) is None
+    assert fake.shutdown_called is False
 
 
 def test_get_process_gpu_memory_uses_current_pid_and_visible_index(

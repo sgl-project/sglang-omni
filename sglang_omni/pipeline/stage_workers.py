@@ -227,7 +227,6 @@ class StageGroup:
         self._processes: list[multiprocessing.Process] = []
         self._ready_events: list[multiprocessing.Event] = []
         self._startup_error_channels: list[object] = []
-        self._process_start_attempts: set[str] = set()
 
     @property
     def process_count(self) -> int:
@@ -265,10 +264,6 @@ class StageGroup:
     def processes(self) -> list[multiprocessing.Process]:
         return list(self._processes)
 
-    def process_start_attempts(self) -> set[str]:
-        """Return process names whose ``Process.start()`` was called."""
-        return set(self._process_start_attempts)
-
     def spawn(
         self,
         ctx: multiprocessing.context.SpawnContext,
@@ -292,7 +287,6 @@ class StageGroup:
                     else None
                 )
                 with _patched_spawn_env(spec, extra_env=extra_env):
-                    self._process_start_attempts.add(spec.process_name)
                     proc.start()
             except Exception:
                 _close_queue(startup_error_channel)
@@ -378,7 +372,7 @@ class StageGroup:
     async def shutdown(
         self,
         join_timeout: float = 30.0,
-        before_signal: Callable[[str], Awaitable[None]] | None = None,
+        before_signal: Callable[[int], Awaitable[None]] | None = None,
     ) -> None:
         try:
             for spec, p in zip(self.process_specs, self._processes):
@@ -390,12 +384,16 @@ class StageGroup:
                         p.pid,
                     )
                     if before_signal is not None:
-                        await before_signal(spec.process_name)
+                        await before_signal(p.pid)
                     p.terminate()
                     p.join(timeout=5)
                     if p.is_alive():
                         p.kill()
                         p.join(timeout=2)
+                    if p.is_alive():
+                        raise RuntimeError(
+                            f"Worker {spec.process_name} (pid={p.pid}) survived shutdown"
+                        )
         finally:
             self.close_control_channels()
             self._processes.clear()

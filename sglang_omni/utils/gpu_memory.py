@@ -11,7 +11,13 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from sglang_omni.utils.nvml import (
+    decode_nvml_string,
+    get_device_handle,
+    nvml_session,
+    try_import_pynvml,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,16 +75,14 @@ def resolve_visible_device_id(
 def is_process_scoped_memory_available() -> bool:
     """Return whether NVML process-scoped memory queries are available."""
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return False
     try:
-        pynvml.nvmlInit()
-        return True
+        with nvml_session(pynvml):
+            return True
     except Exception:
         return False
-    finally:
-        _shutdown_nvml(pynvml)
 
 
 def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
@@ -92,47 +96,40 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     visible_devices = parse_cuda_visible_devices()
     device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return None
 
     try:
-        pynvml.nvmlInit()
-    except Exception as exc:
-        logger.debug("NVML init failed; process GPU memory is unavailable: %s", exc)
-        return None
+        with nvml_session(pynvml):
+            if visible_devices:
+                try:
+                    handle = get_device_handle(pynvml, device_id)
+                except Exception as exc:
+                    raise _InvalidGpuDeviceError(
+                        f"Failed to get NVML handle for visible device {device_id!r} "
+                        f"(logical_gpu_id={logical_gpu_id}). Check CUDA_VISIBLE_DEVICES "
+                        "and stage GPU placement."
+                    ) from exc
+            else:
+                device_count = pynvml.nvmlDeviceGetCount()
+                if logical_gpu_id >= device_count:
+                    raise _InvalidGpuDeviceError(
+                        f"Invalid GPU device {logical_gpu_id}. Only {device_count} "
+                        "GPU(s) are visible to NVML."
+                    )
+                handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
 
-    try:
-        if visible_devices:
-            try:
-                handle = _get_device_handle(pynvml, device_id)
-            except Exception as exc:
-                raise _InvalidGpuDeviceError(
-                    f"Failed to get NVML handle for visible device {device_id!r} "
-                    f"(logical_gpu_id={logical_gpu_id}). Check CUDA_VISIBLE_DEVICES "
-                    "and stage GPU placement."
-                ) from exc
-        else:
-            device_count = pynvml.nvmlDeviceGetCount()
-            if logical_gpu_id >= device_count:
-                raise _InvalidGpuDeviceError(
-                    f"Invalid GPU device {logical_gpu_id}. Only {device_count} "
-                    "GPU(s) are visible to NVML."
-                )
-            handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
-
-        pid = os.getpid()
-        for proc in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
-            if proc.pid == pid:
-                return int(proc.usedGpuMemory)
-        return 0
+            pid = os.getpid()
+            for proc in pynvml.nvmlDeviceGetComputeRunningProcesses(handle):
+                if proc.pid == pid:
+                    return int(proc.usedGpuMemory)
+            return 0
     except _InvalidGpuDeviceError:
         raise
     except Exception as exc:
         logger.debug("NVML query failed; process GPU memory is unavailable: %s", exc)
         return None
-    finally:
-        _shutdown_nvml(pynvml)
 
 
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
@@ -156,36 +153,27 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
         logger.debug(f"GPU device metadata is unavailable: {exc}")
         return info
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return _get_torch_gpu_device_info(logical_gpu_id, device_id)
 
     try:
-        pynvml.nvmlInit()
-    except Exception as exc:
-        logger.debug(
-            f"NVML init failed; using PyTorch GPU metadata if available: {exc}"
-        )
-        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
-
-    try:
-        handle = _get_device_handle(pynvml, device_id)
-        name = _decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
-        memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        return GpuDeviceInfo(
-            logical_gpu_id=logical_gpu_id,
-            device_id=device_id,
-            name=name,
-            total_memory_bytes=int(memory_info.total),
-        )
+        with nvml_session(pynvml):
+            handle = get_device_handle(pynvml, device_id)
+            name = decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
+            memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return GpuDeviceInfo(
+                logical_gpu_id=logical_gpu_id,
+                device_id=device_id,
+                name=name,
+                total_memory_bytes=int(memory_info.total),
+            )
     except Exception as exc:
         logger.debug(
             f"NVML metadata query failed; using PyTorch GPU metadata if available: "
             f"{exc}"
         )
         return _get_torch_gpu_device_info(logical_gpu_id, device_id)
-    finally:
-        _shutdown_nvml(pynvml)
 
 
 def _get_torch_gpu_device_info(
@@ -301,34 +289,3 @@ def gpu_startup_lock(logical_gpu_id: int):
             yield lock_path
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def _try_import_pynvml() -> Any | None:
-    try:
-        return importlib.import_module("pynvml")
-    except ModuleNotFoundError:
-        return None
-
-
-def _get_device_handle(pynvml: Any, device_id: int | str) -> Any:
-    if isinstance(device_id, int):
-        return pynvml.nvmlDeviceGetHandleByIndex(device_id)
-
-    get_by_uuid = pynvml.nvmlDeviceGetHandleByUUID
-    try:
-        return get_by_uuid(device_id)
-    except TypeError:
-        return get_by_uuid(device_id.encode("utf-8"))
-
-
-def _decode_nvml_string(value: str | bytes) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
-
-
-def _shutdown_nvml(pynvml: Any) -> None:
-    try:
-        pynvml.nvmlShutdown()
-    except Exception:
-        pass
