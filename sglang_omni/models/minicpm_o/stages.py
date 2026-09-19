@@ -9,16 +9,44 @@ from collections import defaultdict
 from functools import partial
 from typing import Any
 
+import torch
 import torch.nn as nn
+from sglang.srt.arg_groups.model_override_base import resolved_view
 
+from sglang_omni.models.minicpm_o.bootstrap import (
+    create_talker_scheduler,
+    create_thinker_scheduler,
+)
+from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioEncoder
 from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
+from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
+from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
+    create_streaming_detokenize_scheduler,
 )
+
+# Note (Chenyang): We should refactor the streaming detokenizer
+# Never import a class from a different model.
+from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+    validate_generation_batch_policy,
+)
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.server_args_builder import (
+    build_sglang_server_args,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.misc import avail_gpu_mem
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +56,6 @@ def create_preprocessing_executor(
     *,
     speech_enabled: bool = False,
 ) -> SimpleScheduler:
-    from sglang_omni.models.minicpm_o.components.preprocessor import (
-        MiniCPMOPreprocessor,
-    )
-
     preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
 
     return SimpleScheduler(preprocessor)
@@ -41,49 +65,32 @@ ENCODER_CACHE_MAX_ENTRIES = 64
 ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
-def _run_single_encoder_payload(
-    payload: StagePayload,
-    *,
-    stage_name: str,
-    model: nn.Module,
-    cache: StageOutputCache | None,
-) -> StagePayload:
-    import torch
-
-    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-    from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
-
-    state = MiniCPMOPipelineState.from_dict(payload.data)
-    request = build_encoder_request(state, stage_name=stage_name)
-    if request.skip_result is not None:
-        result = request.skip_result
-    else:
-        result = None
-        if cache is not None and request.cache_key is not None:
-            result = cache.get(request.cache_key)
-        if result is None:
-            with torch.no_grad():
-                result = model(**request.model_inputs)
-            if cache is not None and request.cache_key is not None:
-                cache.put(request.cache_key, result)
-    state.encoder_outs[stage_name] = result
-    payload.data = state.to_dict()
-    return payload
-
-
-def _create_encoder_executor(model: nn.Module, *, stage_name: str) -> SimpleScheduler:
+def create_encoder_executor(encoder: nn.Module, *, stage_name: str) -> SimpleScheduler:
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
         cache_device="cpu",
     )
 
-    def _encode(payload: StagePayload) -> StagePayload:
-        return _run_single_encoder_payload(
-            payload, stage_name=stage_name, model=model, cache=cache
+    def encode(payload: StagePayload) -> StagePayload:
+        state = MiniCPMOPipelineState.from_dict(payload.data)
+        request = build_encoder_request(state, stage_name=stage_name)
+        cached = (
+            None if request.skip_result is not None else cache.get(request.cache_key)
         )
+        if request.skip_result is not None:
+            encoder_out = request.skip_result
+        elif cached is not None:
+            encoder_out = cached
+        else:
+            with torch.no_grad():
+                encoder_out = encoder(**request.model_inputs)
+            cache.put(request.cache_key, encoder_out)
+        state.encoder_outs[stage_name] = encoder_out
+        payload.data = state.to_dict()
+        return payload
 
-    return SimpleScheduler(_encode)
+    return SimpleScheduler(encode)
 
 
 def create_image_encoder_executor(
@@ -93,15 +100,10 @@ def create_image_encoder_executor(
     gpu_id: int | None = None,
     dtype: str | None = None,
 ) -> SimpleScheduler:
-    from sglang_omni.models.minicpm_o.components.image_encoder import (
-        MiniCPMOImageEncoder,
-    )
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    model = MiniCPMOImageEncoder(
+    encoder = MiniCPMOImageEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return _create_encoder_executor(model, stage_name="image_encoder")
+    return create_encoder_executor(encoder, stage_name="image_encoder")
 
 
 def create_audio_encoder_executor(
@@ -111,15 +113,10 @@ def create_audio_encoder_executor(
     gpu_id: int | None = None,
     dtype: str | None = None,
 ) -> SimpleScheduler:
-    from sglang_omni.models.minicpm_o.components.audio_encoder import (
-        MiniCPMOAudioEncoder,
-    )
-    from sglang_omni.utils.device import resolve_concrete_device
-
-    model = MiniCPMOAudioEncoder(
+    encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return _create_encoder_executor(model, stage_name="audio_encoder")
+    return create_encoder_executor(encoder, stage_name="audio_encoder")
 
 
 def create_sglang_talker_executor_from_config(
@@ -134,19 +131,6 @@ def create_sglang_talker_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
-    from sglang.srt.arg_groups.model_override_base import resolved_view
-
-    from sglang_omni.models.minicpm_o.bootstrap import create_talker_scheduler
-    from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
-    from sglang_omni.scheduling.generation_batch_policy import (
-        build_generation_batch_overrides,
-        validate_generation_batch_policy,
-    )
-    from sglang_omni.scheduling.sglang_backend.server_args_builder import (
-        build_sglang_server_args,
-    )
-    from sglang_omni.utils.misc import avail_gpu_mem
-
     register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=32,
@@ -193,14 +177,6 @@ def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
     """Vocode talker payloads, grouping rows that share a speaker reference."""
-    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-    from sglang_omni.models.minicpm_o.routing import (
-        TALKER_STAGE,
-        code2wav_reference_audio,
-    )
-    from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
-    from sglang_omni.utils.audio_payload import audio_waveform_payload
-
     codec_tokens: list[list[int]] = []
     references: list[str | bytes] = []
     groups: dict[str, list[int]] = defaultdict(list)
@@ -254,10 +230,6 @@ def create_code2wav_executor(
     float16: bool = False,
     max_batch_cost: int | None = None,
 ) -> SimpleScheduler:
-    from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-    from sglang_omni.models.minicpm_o.routing import TALKER_STAGE
-    from sglang_omni.utils.device import resolve_concrete_device
-
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
@@ -281,10 +253,6 @@ def create_code2wav_executor(
 
 
 def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
-    from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
-        create_streaming_detokenize_scheduler,
-    )
-
     return create_streaming_detokenize_scheduler(model_path)
 
 
@@ -303,19 +271,6 @@ def create_sglang_thinker_executor_from_config(
     speech_enabled: bool = False,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the MiniCPM-o thinker."""
-    from sglang.srt.arg_groups.model_override_base import resolved_view
-
-    from sglang_omni.models.minicpm_o.bootstrap import create_thinker_scheduler
-    from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
-    from sglang_omni.scheduling.generation_batch_policy import (
-        build_generation_batch_overrides,
-        validate_generation_batch_policy,
-    )
-    from sglang_omni.scheduling.sglang_backend.server_args_builder import (
-        build_sglang_server_args,
-    )
-    from sglang_omni.utils.misc import avail_gpu_mem
-
     register_minicpm_o_hf_config()
     overrides = build_generation_batch_overrides(
         max_running_requests=64,

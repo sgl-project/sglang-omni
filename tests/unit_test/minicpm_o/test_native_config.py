@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 from transformers import AutoConfig
@@ -92,19 +90,10 @@ def test_engine_factory_resolves_native_config_before_server_args(
     mapping = dict(CONFIG_MAPPING._extra_content)
     mapping.pop("minicpmo", None)
     monkeypatch.setattr(CONFIG_MAPPING, "_extra_content", mapping)
-    override_module = ModuleType("sglang.srt.arg_groups.model_override_base")
-    override_module.resolved_view = lambda args: args
-    monkeypatch.setitem(sys.modules, override_module.__name__, override_module)
-
-    policy = ModuleType("sglang_omni.scheduling.generation_batch_policy")
+    monkeypatch.setattr(stages, "resolved_view", lambda args: args)
 
     def build_overrides(*, server_args_overrides=None, **defaults):
         return {**defaults, **(server_args_overrides or {})}
-
-    policy.build_generation_batch_overrides = build_overrides
-    policy.validate_generation_batch_policy = lambda **kwargs: None
-    monkeypatch.setitem(sys.modules, policy.__name__, policy)
-    backend = ModuleType("sglang_omni.scheduling.sglang_backend.server_args_builder")
 
     def build_server_args(model_path, **kwargs):
         trust = kwargs.get("trust_remote_code", True)
@@ -115,8 +104,11 @@ def test_engine_factory_resolves_native_config_before_server_args(
             assert isinstance(config, MiniCPMOConfig)
         raise ConfigLoaded
 
-    backend.build_sglang_server_args = build_server_args
-    monkeypatch.setitem(sys.modules, backend.__name__, backend)
+    monkeypatch.setattr(stages, "build_generation_batch_overrides", build_overrides)
+    monkeypatch.setattr(
+        stages, "validate_generation_batch_policy", lambda **kwargs: None
+    )
+    monkeypatch.setattr(stages, "build_sglang_server_args", build_server_args)
     factory = getattr(stages, f"create_sglang_{stage}_executor_from_config")
     overrides = {} if trust_override is None else {"trust_remote_code": trust_override}
     with pytest.raises(ConfigLoaded):
