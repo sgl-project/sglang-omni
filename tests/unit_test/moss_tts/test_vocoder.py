@@ -15,6 +15,7 @@ from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.vocoder import (
     MossTTSVocoder,
     _copy_valid_waveforms_to_cpu,
+    decode_codes_batch,
 )
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
@@ -150,6 +151,45 @@ def test_moss_tts_vocoder_copies_only_valid_waveforms() -> None:
         [[1.0, 2.0]],
         [[3.0, 4.0, 5.0]],
     ]
+
+
+def test_batched_decode_casts_hidden_to_decoder_dtype_without_autocast() -> None:
+    class Decoder(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones((), dtype=torch.bfloat16))
+            self.seen_dtype: torch.dtype | None = None
+
+        @staticmethod
+        def output_lengths(lengths: list[int]) -> list[int]:
+            return list(lengths)
+
+        def forward(
+            self,
+            hidden: torch.Tensor,
+            lengths: torch.Tensor,
+            *,
+            input_lengths_cpu: list[int] | None = None,
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            assert input_lengths_cpu == lengths.tolist()
+            self.seen_dtype = hidden.dtype
+            return hidden[:, :1], lengths
+
+    decoder = Decoder()
+    rows = [torch.tensor([[1, 2], [3, 4]], dtype=torch.long)]
+
+    decode_codes_batch(
+        rows,
+        quantizer_decode=lambda codes: torch.ones(
+            codes.shape[1], 1, codes.shape[2], dtype=torch.float32
+        ),
+        decoder=decoder,
+        device=torch.device("cpu"),
+        compute_dtype=torch.float16,
+        max_batch_size=1,
+    )
+
+    assert decoder.seen_dtype is torch.bfloat16
 
 
 def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(

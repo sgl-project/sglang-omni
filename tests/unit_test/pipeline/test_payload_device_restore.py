@@ -96,6 +96,43 @@ def test_a_stream_ref_without_a_device_stays_wire_compatible() -> None:
     assert DataRef.from_dict(payload).device is None
 
 
+def test_raw_tensor_read_ignores_relay_allocation_padding() -> None:
+    """Slot-based relays may return more bytes than the logical tensor."""
+    import asyncio
+
+    from sglang_omni.comm import stage_io
+    from sglang_omni.comm.data_ref import BackendRef, DataRef, TransportKind
+    from tests.unit_test.fixtures.pipeline_fakes import FakeRelay
+
+    async def round_trip() -> torch.Tensor:
+        relay = FakeRelay(device="cpu")
+        ref, _ = await stage_io.write_tensor(
+            relay,
+            "padded",
+            torch.arange(13),
+            transport=TransportKind.SHM,
+        )
+        padded_ref = DataRef(
+            version=ref.version,
+            object_id=ref.object_id,
+            kind=ref.kind,
+            transport=ref.transport,
+            layout=ref.layout,
+            buffer=BackendRef(
+                transport=ref.buffer.transport,
+                info=ref.buffer.info,
+                length=16 * 1024,
+            ),
+            shape=ref.shape,
+            dtype=ref.dtype,
+            device=ref.device,
+            offset=ref.offset,
+        )
+        return await stage_io.read_tensor(relay, padded_ref)
+
+    assert asyncio.run(round_trip()).tolist() == list(range(13))
+
+
 async def _stream_round_trip(local_device: str | None, *, with_metadata: bool):
     """Write a chunk through a host-shm relay and read it back."""
     from sglang_omni.comm import stage_io
