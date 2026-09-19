@@ -23,6 +23,7 @@ from sglang.srt.layers.quantization.unquant import (
 from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.runtime_context import get_exec, get_parallel
 from sglang.srt.utils import add_prefix
+from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
 
 from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
@@ -44,6 +45,7 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
@@ -60,9 +62,12 @@ _PREDICTOR_GRAPH_WARMUP_PASSES = 2
 _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
 
 
-def _predictor_graph_env_enabled() -> bool:
-    value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV, "1").strip().lower()
-    return value not in ("0", "false", "off", "no")
+def _predictor_graph_env_override() -> bool | None:
+    """The operator's explicit choice, or None to leave it to the platform."""
+    value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV)
+    if value is None:
+        return None
+    return value.strip().lower() not in ("0", "false", "off", "no")
 
 
 def _predictor_gqa_attention(
@@ -144,14 +149,14 @@ def _sample_seeded_categorical(
 
 
 class _PredictorDecodeGraph:
-    """CUDA graph over the full per-token predictor chain for one batch bucket.
+    """Device graph over the full per-token predictor chain for one batch bucket.
 
     One graph per (bucket, sampling signature): the signature pins the host
     branches of the sampling path (argmax vs sampled, top-k bound, top-p
     presence), so replay reproduces the bits of the eager pass.
     Per-step inputs reach the captured region through persistent device
     buffers written with device-side copies before replay. Holds no reference
-    to the talker: a cycle would put the CUDAGraph finalizer behind the
+    to the talker: a cycle would put the graph's finalizer behind the
     cyclic collector.
     """
 
@@ -166,6 +171,8 @@ class _PredictorDecodeGraph:
     ) -> None:
         self.batch_size = batch_size
         self.signature = signature
+        self.device = device
+        self.device_module = torch.get_device_module(device)
         self.layer0_codes = torch.zeros(batch_size, 1, dtype=torch.long, device=device)
         self.talker_hidden = torch.zeros(
             batch_size, 1, hidden_size, dtype=hidden_dtype, device=device
@@ -173,7 +180,7 @@ class _PredictorDecodeGraph:
         self.semantic_positions = torch.zeros(
             batch_size, dtype=torch.long, device=device
         )
-        self.graph = torch.cuda.CUDAGraph()
+        self.graph: Any | None = None
         self.result_codes: torch.Tensor | None = None
         self.summed_embeddings: torch.Tensor | None = None
 
@@ -187,10 +194,10 @@ class _PredictorDecodeGraph:
         live = layer0_codes.shape[0]
         if live > self.batch_size:
             raise ValueError(
-                "Qwen3-TTS predictor CUDA graph bucket is too small: "
+                "Qwen3-TTS predictor graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live}"
             )
-        with torch.cuda.device(self.layer0_codes.device):
+        with self.device_module.device(self.device):
             self.layer0_codes[:live].copy_(layer0_codes)
             self.talker_hidden[:live].copy_(talker_hidden)
             if semantic_positions is None:
@@ -935,6 +942,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             .expand(predictor_len, max_batch_size)
             .contiguous()
         )
+        self._predictor_device = device
+        self._predictor_device_module = torch.get_device_module(device)
         # note(ratish): slot major, so the rope kernel stores k and v as one
         # row per (batch row, slot) and the attention reads a transposed view.
         self._predictor_k_cache = torch.zeros(
@@ -1021,7 +1030,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._predictor_graph_capture_count = 0
         self._predictor_graph_startup_count = 0
         self._predictor_graph_pool = None
-        self._predictor_capture_stream: torch.cuda.Stream | None = None
+        self._predictor_capture_stream: torch.Stream | None = None
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
@@ -1111,27 +1120,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self._decode_prep_rids = rids
             return
 
-        device = self._sub_temperature_tensor.device
-        self._semantic_sampling_seed_tensor[:batch_size] = torch.tensor(
-            semantic_seeds,
-            device=device,
-            dtype=self._semantic_sampling_seed_tensor.dtype,
-        )
-        self._sub_temperature_tensor[:batch_size] = torch.tensor(
-            sub_temperatures, device=device, dtype=self._sub_temperature_tensor.dtype
-        )
-        self._sub_top_p_tensor[:batch_size] = torch.tensor(
-            sub_top_ps, device=device, dtype=self._sub_top_p_tensor.dtype
-        )
-        self._sub_top_k_tensor[:batch_size] = torch.tensor(
-            sub_top_ks, device=device, dtype=self._sub_top_k_tensor.dtype
-        )
-        self._sub_sampling_seed_tensor[:batch_size] = torch.tensor(
-            sub_seeds, device=device, dtype=self._sub_sampling_seed_tensor.dtype
-        )
-        self._sub_do_sample_tensor[:batch_size] = torch.tensor(
-            sub_do_samples, device=device, dtype=torch.bool
-        )
+        # note(ratish): a pageable source waits for the last step's predictor.
+        pin_memory = is_pin_memory_available(self._sub_temperature_tensor.device)
+        for buffer, values in (
+            (self._semantic_sampling_seed_tensor, semantic_seeds),
+            (self._sub_temperature_tensor, sub_temperatures),
+            (self._sub_top_p_tensor, sub_top_ps),
+            (self._sub_top_k_tensor, sub_top_ks),
+            (self._sub_sampling_seed_tensor, sub_seeds),
+            (self._sub_do_sample_tensor, sub_do_samples),
+        ):
+            buffer[:batch_size].copy_(
+                torch.tensor(values, dtype=buffer.dtype, pin_memory=pin_memory),
+                non_blocking=True,
+            )
         self._decode_prep_rids = rids
 
     @torch.no_grad()
@@ -1237,7 +1239,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         semantic_positions: torch.Tensor | None,
     ) -> tuple | None:
         if semantic_positions is not None:
-            if not semantic_positions.is_cuda:
+            if semantic_positions.device != self._predictor_device:
                 return None
             if (
                 semantic_positions.ndim not in (1, 2)
@@ -1293,19 +1295,27 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # Note: (Jiaxin Deng) one shared pool across keys; private per-graph
         # pools would retain intermediates per key and scale with diversity.
         if self._predictor_graph_pool is None:
-            self._predictor_graph_pool = torch.cuda.graph_pool_handle()
+            self._predictor_graph_pool = (
+                self._predictor_device_module.graph_pool_handle()
+            )
         return self._predictor_graph_pool
 
     def _resolve_predictor_graph_enabled(self) -> bool:
-        if not _predictor_graph_env_enabled():
-            return False
-        if self.device.type != "cuda":
-            return False
-        if bool(get_exec().graph.disable_cuda_graph):
+        # Device first: a device that cannot record answers without published config.
+        if current_platform.get_device_graph_backend(self._predictor_device) is None:
             return False
         # Note: (Jiaxin Deng) capture under TP would record collectives; the
         # graphed chain is only validated single-rank, so TP stays eager.
-        return int(get_parallel().tp_size) == 1
+        if int(get_parallel().tp_size) != 1:
+            return False
+        override = _predictor_graph_env_override()
+        if override is None:
+            should_capture = current_platform.enable_tts_predictor_graph()
+        else:
+            should_capture = override
+        if not should_capture:
+            return False
+        return not bool(get_exec().graph.disable_cuda_graph)
 
     def capture_predictor_graphs(
         self,
@@ -1353,7 +1363,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         captured = len(self._predictor_graphs) - captured_before
         elapsed_s = time.perf_counter() - started
         logger.info(
-            f"Captured {captured} Qwen3-TTS predictor CUDA graphs for "
+            f"Captured {captured} Qwen3-TTS predictor graphs for "
             f"signatures={signatures} in {elapsed_s:.1f} s"
         )
         return captured
@@ -1366,14 +1376,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> _PredictorDecodeGraph:
         """One stream per talker for warmups and captures: the allocator only
         reuses a pool block on the stream that freed it. Automatic collection
-        is off for the capture because a CUDAGraph finalizer reached by the
+        is off for the capture because a graph finalizer reached by the
         cyclic collector while a stream is capturing destroys its pool inside
         the capture."""
-        device = self._predictor_k_cache.device
+        device = self._predictor_device
+        module = self._predictor_device_module
+        backend = current_platform.get_device_graph_backend(device)
         if self._predictor_capture_stream is None:
-            self._predictor_capture_stream = torch.cuda.Stream(device=device)
+            self._predictor_capture_stream = module.Stream(device=device)
         capture_stream = self._predictor_capture_stream
-        current_stream = torch.cuda.current_stream(device=device)
+        current_stream = module.current_stream(device)
         graph = _PredictorDecodeGraph(
             bucket_size,
             signature,
@@ -1394,38 +1406,41 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
 
         gc_was_enabled = gc.isenabled()
         gc.disable()
+        captured = None
         try:
             # note(ratish): the outer stream context restores the current stream
-            # when a failed capture raises from capture_end before torch.cuda.graph
-            # restores it.
+            # when a failed capture raises from capture_end before the graph
+            # context restores it.
             with (
-                torch.cuda.device(device),
+                module.device(device),
+                current_platform.graph_capture_attention(),
                 self._predictor_graph_capture_state(bucket_size, signature),
-                torch.cuda.stream(capture_stream),
+                module.stream(capture_stream),
             ):
                 for _ in range(_PREDICTOR_GRAPH_WARMUP_PASSES):
                     run_once()
-                with torch.cuda.graph(
-                    graph.graph,
+                with backend.capture(
                     pool=self._predictor_graph_memory_pool(),
                     stream=capture_stream,
-                    capture_error_mode="thread_local",
-                ):
+                    thread_local_errors=True,
+                ) as captured:
                     graph.result_codes, graph.summed_embeddings = run_once()
         except Exception:
             # Note: (Jiaxin Deng) release the graph's private memory pool
             # eagerly; the raising object may linger on traceback frames.
-            try:
-                graph.graph.reset()
-            except Exception:
-                pass
+            if captured is not None:
+                try:
+                    captured.reset()
+                except Exception:
+                    pass
             raise
         finally:
             current_stream.wait_stream(capture_stream)
             if gc_was_enabled:
                 gc.enable()
+        graph.graph = captured
         if graph.result_codes is None or graph.summed_embeddings is None:
-            raise RuntimeError("Qwen3-TTS predictor CUDA graph captured no outputs")
+            raise RuntimeError("Qwen3-TTS predictor graph captured no outputs")
         return graph
 
     def _predictor_forward_graphed(
@@ -1443,11 +1458,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return None
         if layer0_codes.dtype not in (torch.int, torch.long):
             return None
-        if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
+        graph_device = self._predictor_device
+        if layer0_codes.device != graph_device or talker_hidden.device != graph_device:
             return None
         if batch_size != self._sub_batch_size:
             return None
-        if torch.cuda.is_current_stream_capturing():
+        if self._predictor_device_module.is_current_stream_capturing():
             return None
         signature = self._predictor_graph_signature(batch_size, semantic_positions)
         if signature is None:
@@ -1468,7 +1484,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 if not self._predictor_graph_capacity_warned:
                     self._predictor_graph_capacity_warned = True
                     logger.warning(
-                        "Qwen3-TTS predictor CUDA graph cache holds %d keys beyond "
+                        "Qwen3-TTS predictor graph cache holds %d keys beyond "
                         "the startup set; falling back to eager execution for "
                         "uncached key=%s",
                         lazy_keys,
@@ -1481,21 +1497,21 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 self._predictor_graph_disabled.add(key)
                 self._predictor_graph_failure_count += 1
                 logger.warning(
-                    "Disabling Qwen3-TTS predictor CUDA graph for key=%s",
+                    "Disabling Qwen3-TTS predictor graph for key=%s",
                     key,
                     exc_info=True,
                 )
                 if self._predictor_graph_failure_count >= _PREDICTOR_GRAPH_MAX_FAILURES:
                     self._predictor_graph_enabled = False
                     logger.warning(
-                        "Disabling Qwen3-TTS predictor CUDA graphs entirely "
+                        "Disabling Qwen3-TTS predictor graphs entirely "
                         "after %d capture failures",
                         self._predictor_graph_failure_count,
                     )
                 return None
             self._predictor_graphs[key] = graph
             self._predictor_graph_capture_count += 1
-            logger.info("Captured Qwen3-TTS predictor CUDA graph for key=%s", key)
+            logger.info("Captured Qwen3-TTS predictor graph for key=%s", key)
         result = graph.replay(layer0_codes, talker_hidden, semantic_positions)
         return result
 

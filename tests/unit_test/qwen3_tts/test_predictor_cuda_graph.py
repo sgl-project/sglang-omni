@@ -11,6 +11,7 @@ bucket-exact batch sizes, and the dispatch/replay path must never host-sync.
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import gc
 import weakref
@@ -116,6 +117,10 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
     )
     talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    talker._predictor_device = talker._predictor_k_cache.device
+    talker._predictor_device_module = torch.get_device_module(
+        talker._predictor_k_cache.device
+    )
     talker._predictor_rope_stores_kv = False
     talker._output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
@@ -752,15 +757,196 @@ def test_kill_switch_disables_graph_path():
 def test_env_switch_parsing(monkeypatch: pytest.MonkeyPatch):
     env = sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV
     monkeypatch.delenv(env, raising=False)
-    assert sglang_model_module._predictor_graph_env_enabled() is True
+    assert sglang_model_module._predictor_graph_env_override() is None
     monkeypatch.setenv(env, "0")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module._predictor_graph_env_override() is False
     monkeypatch.setenv(env, "false")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module._predictor_graph_env_override() is False
     monkeypatch.setenv(env, "no")
-    assert sglang_model_module._predictor_graph_env_enabled() is False
+    assert sglang_model_module._predictor_graph_env_override() is False
     monkeypatch.setenv(env, "1")
-    assert sglang_model_module._predictor_graph_env_enabled() is True
+    assert sglang_model_module._predictor_graph_env_override() is True
+
+
+def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Both startup captures read the resolved flag, not the operator's field."""
+    import sys
+    import types
+
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.qwen3_tts import engine_builder as engine_builder_mod
+    from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    contexts: list[dict] = []
+    captures: list[tuple] = []
+
+    class FakeTalker:
+        device = torch.device("cpu")
+
+        def load_speech_tokenizer(self, tokenizer) -> None:
+            del tokenizer
+
+        def capture_predictor_graphs(self, **kwargs) -> int:
+            captures.append(tuple(sorted(kwargs)))
+            return 0
+
+    qwen_tts_module = types.ModuleType("qwen_tts")
+    qwen_tts_module.Qwen3TTSModel = lambda **kwargs: SimpleNamespace(
+        _merge_generate_kwargs=lambda: {}
+    )
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
+    monkeypatch.setattr(
+        qwen3_stages, "_load_qwen3_tts_tokenizer", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "_load_qwen3_tts_generate_defaults", lambda path: {}
+    )
+    monkeypatch.setattr(
+        AutoProcessor, "from_pretrained", staticmethod(lambda *a, **k: object())
+    )
+    monkeypatch.setattr(
+        engine_builder_mod.request_builders,
+        "set_qwen3_tts_preprocessing_context",
+        lambda **kwargs: contexts.append(kwargs),
+    )
+
+    builder = Qwen3TtsEngineBuilder()
+    builder.dtype = "bfloat16"
+    builder.before_memory_pool(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace(model=FakeTalker())),
+        checkpoint_dir="/ckpt",
+        device="cpu",
+        gpu_id=0,
+        server_args=SimpleNamespace(
+            disable_cuda_graph=False,
+            _resolved_overrides=(("_handle_dwdp", {"disable_cuda_graph": True}),),
+        ),
+    )
+
+    assert contexts[0]["reference_encoder_graph_bucket_frames"] == ()
+    assert captures == []
+
+
+def test_a_graph_signature_is_reachable_off_cuda():
+    """The signature gate must admit the device the predictor cache is on."""
+    talker = _build_talker(torch.device("cpu"))
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    positions = torch.zeros(2, dtype=torch.long)
+
+    assert talker._sub_has_sampled_rows is True
+    assert talker._predictor_graph_signature(2, positions) is not None
+    elsewhere = torch.zeros(2, dtype=torch.long, device="meta")
+    assert talker._predictor_graph_signature(2, elsewhere) is None
+
+
+def test_both_gates_reject_another_card_of_the_same_kind() -> None:
+    """The gates compare the whole device, not its kind."""
+    talker = _build_talker(torch.device("cpu"))
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    talker._sub_batch_size = 2
+    talker._predictor_device = torch.device("xpu", 0)
+
+    same_card = SimpleNamespace(device=torch.device("xpu", 0), ndim=1, shape=(2,))
+    other_card = SimpleNamespace(device=torch.device("xpu", 1), ndim=1, shape=(2,))
+    assert talker._predictor_graph_signature(2, same_card) is not None
+    assert talker._predictor_graph_signature(2, other_card) is None
+
+    elsewhere = SimpleNamespace(
+        device=torch.device("xpu", 1), dtype=torch.long, shape=(2, 1)
+    )
+    assert talker._predictor_forward_graphed(elsewhere, elsewhere, None) is None
+
+
+def test_a_capture_that_fails_after_the_graph_exists_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cleanup path resets only what capture yielded."""
+    resets: list[int] = []
+
+    class _FakeGraph:
+        def reset(self) -> None:
+            resets.append(1)
+
+    class _FailingBackend:
+        @contextmanager
+        def capture(self, **kwargs):
+            yield _FakeGraph()
+            raise RuntimeError("simulated capture_end failure")
+
+    class _FakeModule:
+        def Event(self):  # noqa: N802 - mirrors the torch spelling
+            return None
+
+        def Stream(self, device=None):  # noqa: N802 - ditto
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        def current_stream(self, device=None):
+            return SimpleNamespace(wait_stream=lambda other: None)
+
+        @contextmanager
+        def stream(self, stream):
+            yield
+
+        def device(self, device):
+            return contextlib.nullcontext()
+
+        def graph_pool_handle(self):
+            return "pool"
+
+    talker = _build_talker(torch.device("cpu"))
+    talker._predictor_device_module = _FakeModule()
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda device: _FailingBackend(),
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "graph_capture_attention",
+        lambda: contextlib.nullcontext(),
+    )
+    monkeypatch.setattr(
+        Qwen3TTSTalker,
+        "_code_predictor_forward_incremental",
+        lambda self, *a, **k: (talker._output_codes[:2], talker._output_embeds[:2]),
+    )
+
+    with pytest.raises(RuntimeError, match="simulated capture_end failure"):
+        talker._capture_predictor_graph(2, ("argmax", 0, False, False, False))
+
+    assert resets == [1]
+
+
+def test_a_step_on_a_device_without_a_graph_backend_stays_eager(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A device with no graph backend must stay eager."""
+    talker = _build_talker(torch.device("cpu"))
+    talker._predictor_graph_enabled = None
+    talker.prepare_decode_buffers(_uniform_requests(2))
+    talker._sub_batch_size = 2
+    monkeypatch.setattr(
+        sglang_model_module,
+        "get_exec",
+        lambda: SimpleNamespace(graph=SimpleNamespace(disable_cuda_graph=False)),
+    )
+    monkeypatch.setattr(
+        sglang_model_module, "get_parallel", lambda: SimpleNamespace(tp_size=1)
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "enable_tts_predictor_graph",
+        lambda: True,
+    )
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    layer0, hidden, positions = _step_inputs(2, torch.device("cpu"))
+
+    assert talker._predictor_forward_graphed(layer0, hidden, positions) is None
+    assert not talker._predictor_graphs
 
 
 @pytest.mark.accelerator
@@ -904,21 +1090,19 @@ def test_capture_uses_thread_local_error_mode():
         / "sglang_model.py"
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    graph_calls = [
+    capture_calls = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "graph"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "cuda"
+        and node.func.attr == "capture"
     ]
-    assert graph_calls, "Qwen3-TTS predictor CUDA graph capture call not found"
+    assert capture_calls, "Qwen3-TTS predictor graph capture call not found"
     assert any(
-        keyword.arg == "capture_error_mode"
+        keyword.arg == "thread_local_errors"
         and isinstance(keyword.value, ast.Constant)
-        and keyword.value.value == "thread_local"
-        for call in graph_calls
+        and keyword.value.value is True
+        for call in capture_calls
         for keyword in call.keywords
     )
 
@@ -1068,12 +1252,16 @@ def test_capture_failure_resets_cuda_graph(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(torch.cuda.CUDAGraph, "reset", spy_reset)
 
-    @contextmanager
-    def boom_capture_state(bucket_size, signature):
-        raise RuntimeError("simulated capture failure")
-        yield
+    real_forward = Qwen3TTSTalker._code_predictor_forward_incremental
 
-    talker._predictor_graph_capture_state = boom_capture_state
+    def boom_forward(self, *args, **kwargs):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("simulated capture failure")
+        return real_forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        Qwen3TTSTalker, "_code_predictor_forward_incremental", boom_forward
+    )
     talker.prepare_decode_buffers(_uniform_requests(2))
     layer0, hidden, positions = _step_inputs(2, device)
     _run_forward(talker, layer0, hidden, positions)
@@ -1221,17 +1409,24 @@ def test_capture_state_body_failure_restores_state():
 
 def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     talker = object.__new__(Qwen3TTSTalker)
-    talker.model = SimpleNamespace(
-        codec_embedding=SimpleNamespace(
-            weight=SimpleNamespace(device=torch.device("cuda"))
-        )
-    )
+    talker._predictor_device = torch.device("cuda")
     graph = SimpleNamespace(disable_cuda_graph=False)
     parallel = SimpleNamespace(tp_size=1)
+    platform = {"enabled": True, "backend": object()}
     monkeypatch.setattr(
         sglang_model_module, "get_exec", lambda: SimpleNamespace(graph=graph)
     )
     monkeypatch.setattr(sglang_model_module, "get_parallel", lambda: parallel)
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "enable_tts_predictor_graph",
+        lambda: platform["enabled"],
+    )
+    monkeypatch.setattr(
+        sglang_model_module.current_platform,
+        "get_device_graph_backend",
+        lambda device: platform["backend"],
+    )
     monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
 
     assert talker._resolve_predictor_graph_enabled() is True
@@ -1242,6 +1437,17 @@ def test_resolve_predictor_graph_enabled(monkeypatch: pytest.MonkeyPatch):
     assert talker._resolve_predictor_graph_enabled() is False
     parallel.tp_size = 1
     monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "0")
+    assert talker._resolve_predictor_graph_enabled() is False
+
+    platform["enabled"] = False
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
+    assert talker._resolve_predictor_graph_enabled() is False
+    monkeypatch.setenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, "1")
+    assert talker._resolve_predictor_graph_enabled() is True
+
+    platform.update(enabled=True, backend=None)
+    assert talker._resolve_predictor_graph_enabled() is False
+    monkeypatch.delenv(sglang_model_module.QTTS_PREDICTOR_GRAPH_ENV, raising=False)
     assert talker._resolve_predictor_graph_enabled() is False
 
 
