@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from fastapi import WebSocket
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
@@ -65,6 +66,7 @@ def new_id(prefix: str) -> str:
 class ConversationItem:
     role: str  # "user" | "assistant"
     text: str
+    turn_id: str
     item_id: str | None = None
 
 
@@ -86,6 +88,9 @@ class RealtimeSession:
       3. The transcript and completed assistant response are appended to
          ``self.conversation``. Cancelled assistant output is omitted, and a
          client truncate event removes completed output interrupted in playback.
+         Items share the committed user item ID as their turn ID. When
+         ``session_object.max_history_turns`` is set, complete oldest turns are
+         dropped after each turn.
     """
 
     def __init__(
@@ -157,7 +162,7 @@ class RealtimeSession:
         await self.send(
             make_event(
                 "session.created",
-                session=self.session_object.model_dump(exclude_none=True),
+                session=self._session_payload(),
             )
         )
 
@@ -173,7 +178,11 @@ class RealtimeSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_conversation_client_event(payload)
+        try:
+            event = parse_conversation_client_event(payload)
+        except ValidationError as exc:
+            await self.send_error("invalid_request_error", "invalid_event", str(exc))
+            return
         assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
         method_name = HANDLERS[type(event)]
         await getattr(self, method_name)(event)
@@ -186,6 +195,17 @@ class RealtimeSession:
             mode="json",
         )
         update.pop("capabilities", None)
+        if "max_history_turns" in event.session.model_fields_set:
+            max_history_turns = event.session.max_history_turns
+            if max_history_turns is not None and max_history_turns <= 0:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_max_history_turns",
+                    "max_history_turns must be null or a positive integer.",
+                )
+                return
+            # Null is meaningful for this field: it restores unbounded history.
+            update["max_history_turns"] = max_history_turns
         current = self.session_object.model_dump(mode="json")
         turn_detection_update = update.pop("turn_detection", _UNSET)
         try:
@@ -281,14 +301,21 @@ class RealtimeSession:
             self.speech_idle.set()
             self.vad = replacement_vad
         self.session_object = candidate
+        self._enforce_history_bound()
         if replacement_vad is not None and had_pending_audio:
             await self.send(make_event("input_audio_buffer.cleared"))
         await self.send(
             make_event(
                 "session.updated",
-                session=self.session_object.model_dump(exclude_none=True),
+                session=self._session_payload(),
             )
         )
+
+    def _session_payload(self) -> dict[str, Any]:
+        payload = self.session_object.model_dump(exclude_none=True)
+        # Null advertises the supported, unbounded state to clients.
+        payload["max_history_turns"] = self.session_object.max_history_turns
+        return payload
 
     @staticmethod
     def _detector_config(value: TurnDetection | None) -> dict[str, Any]:
@@ -599,7 +626,12 @@ class RealtimeSession:
             transcript = await self.run_transcription(item_id, audio_payload)
             if transcript:
                 self.conversation.append(
-                    ConversationItem(role="user", text=transcript, item_id=item_id)
+                    ConversationItem(
+                        role="user",
+                        text=transcript,
+                        turn_id=item_id,
+                        item_id=item_id,
+                    )
                 )
             if (
                 response_output is not None
@@ -610,13 +642,30 @@ class RealtimeSession:
                     ConversationItem(
                         role="assistant",
                         text=response_output.text,
+                        turn_id=item_id,
                         item_id=response_output.item_id,
                     )
                 )
+            self._enforce_history_bound()
         finally:
             if response_output is not None:
                 self.pending_assistant_item_ids.discard(response_output.item_id)
                 self.truncated_assistant_item_ids.discard(response_output.item_id)
+
+    def _enforce_history_bound(self) -> None:
+        """Drop complete oldest turns beyond ``max_history_turns``."""
+        max_turns = self.session_object.max_history_turns
+        if max_turns is None:
+            return
+
+        retained_turn_ids: set[str] = set()
+        for item in reversed(self.conversation):
+            retained_turn_ids.add(item.turn_id)
+            if len(retained_turn_ids) == max_turns:
+                break
+        self.conversation[:] = [
+            item for item in self.conversation if item.turn_id in retained_turn_ids
+        ]
 
     async def run_response(self, audio_payload: str) -> ResponseOutput:
         """Stream the assistant response and wait for every active terminal."""
