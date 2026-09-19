@@ -71,6 +71,8 @@
 "mode.edit.detail" = "Select text, then describe your changes.";
 "mode.ask.detail" = "Ask a question about your selected text or an idea.";
 "error.baseURL" = "Enter an HTTP(S) API base URL without credentials, query, or fragment, such as http://127.0.0.1:11434/v1, or use verbatim dictation for ASR only.";
+"error.hfEndpoint" = "Enter an HTTP(S) endpoint without credentials, query, or fragment, such as https://hf-mirror.com, or leave it empty for huggingface.co.";
+"error.modelDownload" = "Could not download the speech model. If huggingface.co is unreachable, set a mirror endpoint such as https://hf-mirror.com in Settings → Local speech model, then retry.\n\n%@";
 "error.model" = "Choose a text model in Settings → Text API, or use verbatim dictation for ASR only.";
 "error.apiKey" = "Enter an API key without spaces or control characters.";
 "error.options" = "Request options must be a JSON object under 8 KiB, without model, messages, or stream.";
@@ -266,6 +268,11 @@
 "settings.languageNote" = "Recognition coverage follows Qwen3-ASR. Translation quality depends on your text API model.";
 "settings.localModel" = "Local speech model";
 "settings.modelNote" = "SGLang-Omni performs speech recognition on Apple Silicon. Text processing is configured separately below.";
+"settings.hfEndpoint" = "Hugging Face endpoint (optional)";
+"settings.hfEndpointLabel" = "Hugging Face endpoint";
+"settings.hfEndpointPrompt" = "https://huggingface.co";
+"settings.hfEndpointNote" = "Leave empty for huggingface.co. Set a mirror such as https://hf-mirror.com when direct downloads fail. Cached models work offline.";
+"settings.useHfMirror" = "Use hf-mirror.com and retry";
 "settings.prepareASR" = "Download & prepare ASR";
 "settings.unloadASR" = "Unload ASR";
 "settings.runtime" = "Runtime location";

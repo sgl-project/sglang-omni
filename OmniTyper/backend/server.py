@@ -26,7 +26,13 @@ MODEL_REVISION = "313d850181767edf09f00a9c289becca70e58cd0"
 SERVED_MODEL = "Qwen/Qwen3-ASR-0.6B"
 
 
-def model_snapshot(model: str, revision: str) -> str:
+class ModelDownloadError(RuntimeError):
+    """A pinned speech model could not be fetched from its Hugging Face endpoint."""
+
+    code = "model.download"
+
+
+def model_snapshot(model: str, revision: str, endpoint: str = "") -> str:
     """Use a complete pinned local snapshot offline; download on first use."""
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
@@ -48,11 +54,19 @@ def model_snapshot(model: str, revision: str) -> str:
     except LocalEntryNotFoundError:
         # Note (Jiaxin Deng): Not cached yet, so fall through to the online download below.
         pass
-    return snapshot_download(
-        model,
-        revision=revision,
-        allow_patterns=["*.json", "*.safetensors", "*.txt"],
-    )
+    try:
+        return snapshot_download(
+            model,
+            revision=revision,
+            allow_patterns=["*.json", "*.safetensors", "*.txt"],
+            endpoint=endpoint or None,
+        )
+    except Exception as exc:
+        # Note (Codex): Name the endpoint so a blocked host points at the mirror setting.
+        target = endpoint or os.environ.get("HF_ENDPOINT") or "https://huggingface.co"
+        raise ModelDownloadError(
+            f"Could not download {model} from {target}: {exc}"
+        ) from exc
 
 
 class NativeASRServer:
@@ -62,14 +76,17 @@ class NativeASRServer:
         # Note (Codex): Local audio must not leave loopback through inherited proxy settings.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self, progress: Callable[[str], None]) -> None:
+    def start(self, progress: Callable[[str], None], endpoint: str = "") -> None:
         if self.process is not None and self.process.poll() is None:
             return
         self.close()
         progress(
             "Loading the pinned local speech model; first use downloads model files…"
         )
-        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION)
+        if endpoint:
+            # Note (Codex): The ASR server inherits this, so nested Hub calls use the mirror too.
+            os.environ["HF_ENDPOINT"] = endpoint
+        model_path = model_snapshot(DEFAULT_MODEL, MODEL_REVISION, endpoint)
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             port = reservation.getsockname()[1]

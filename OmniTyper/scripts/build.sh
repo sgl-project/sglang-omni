@@ -6,7 +6,12 @@ CONFIGURATION="${CONFIGURATION:-release}"
 PYTHON_BIN="${OMNITYPER_PYTHON:-$APP_ROOT/.venv/bin/python}"
 swift build --package-path "$APP_ROOT" -c "$CONFIGURATION"
 BIN_DIR="$(swift build --package-path "$APP_ROOT" -c "$CONFIGURATION" --show-bin-path)"
-APP_BUNDLE="$APP_ROOT/dist/OmniTyper.app"
+DIST="$APP_ROOT/dist/OmniTyper.app"
+# Note (Codex): File Provider folders re-attach xattrs to the bundle, and codesign
+# rejects those as detritus, so assemble and sign outside the synchronized tree.
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+APP_BUNDLE="$STAGING/OmniTyper.app"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources/backend"
 cp "$BIN_DIR/OmniTyper" "$APP_BUNDLE/Contents/MacOS/"
 cp "$APP_ROOT/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
@@ -20,7 +25,7 @@ for LPROJ in "$APP_ROOT"/Sources/OmniTyper/Resources/*.lproj; do
   cp -R "$LPROJ" "$APP_BUNDLE/Contents/Resources/"
 done
 /usr/libexec/PlistBuddy -c "Add :OmniTyperPython string $PYTHON_BIN" "$APP_BUNDLE/Contents/Info.plist"
-ICONSET="$APP_ROOT/.build/AppIcon.iconset"
+ICONSET="$STAGING/AppIcon.iconset"
 mkdir -p "$ICONSET"
 swift "$APP_ROOT/scripts/icon.swift" "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
@@ -29,7 +34,11 @@ if [[ "${CODE_SIGN_IDENTITY:--}" == "-" ]]; then
   echo "      updating the app requires granting it again. Set CODE_SIGN_IDENTITY to" >&2
   echo "      a stable signing identity to keep the grant across updates." >&2
 fi
+xattr -cr "$APP_BUNDLE"
 codesign --force --sign "${CODE_SIGN_IDENTITY:--}" --options runtime \
   --entitlements "$APP_ROOT/Resources/Entitlements.plist" "$APP_BUNDLE"
 codesign --verify --strict "$APP_BUNDLE"
-echo "$APP_BUNDLE"
+rm -rf "$DIST"
+mkdir -p "$APP_ROOT/dist"
+ditto --norsrc --noextattr "$APP_BUNDLE" "$DIST"
+echo "$DIST"
