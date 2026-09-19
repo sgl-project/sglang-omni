@@ -2,6 +2,7 @@
 """Model selection and calibration admission for shared Omni CI benchmarks."""
 
 from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -32,40 +33,90 @@ def test_omni_ci_selection_honors_explicit_model_over_environment(
 
 @pytest.mark.parametrize("stage", tuple(OMNI_CI_PRESETS["minicpmo"].thresholds))
 def test_uncalibrated_minicpmo_cannot_qualify(stage: str) -> None:
-    thresholds = OMNI_CI_PRESETS["minicpmo"].thresholds[stage]
+    thresholds = replace(
+        OMNI_CI_PRESETS["minicpmo"].thresholds[stage], calibrated=False
+    )
     with pytest.raises(AssertionError, match="thresholds are uncalibrated"):
         thresholds.require_calibrated("minicpmo", stage)
+    replace(thresholds, calibrated=True).require_calibrated("minicpmo", stage)
     OMNI_CI_PRESETS["qwen3-omni"].thresholds[stage].require_calibrated(
         "qwen3-omni", stage
     )
 
 
 @pytest.mark.parametrize(
-    ("model_name", "failed", "traffic_error", "expected_error"),
+    (
+        "model_name",
+        "calibrated",
+        "failed",
+        "traffic_error",
+        "accuracy",
+        "throughput",
+        "expected_error",
+    ),
     [
-        ("qwen3-omni", 0, None, None),
-        ("minicpmo", 0, None, "thresholds are uncalibrated"),
-        ("minicpmo", 1, None, "MMMU had 1/50 failed requests"),
-        ("minicpmo", 0, "worker 1 served no requests", "worker 1 served no requests"),
+        ("qwen3-omni", True, 0, None, 1.0, 100.0, None),
+        ("minicpmo", False, 0, None, 1.0, 100.0, "thresholds are uncalibrated"),
+        ("minicpmo", False, 1, None, 1.0, 100.0, "MMMU had 1/50 failed requests"),
+        (
+            "minicpmo",
+            False,
+            0,
+            "worker 1 served no requests",
+            1.0,
+            100.0,
+            "worker 1 served no requests",
+        ),
+        ("minicpmo", True, 0, None, 1.0, 100.0, None),
+        ("minicpmo", True, 1, None, 1.0, 100.0, "MMMU had 1/50 failed requests"),
+        (
+            "minicpmo",
+            True,
+            0,
+            "worker 1 served no requests",
+            1.0,
+            100.0,
+            "worker 1 served no requests",
+        ),
+        ("minicpmo", True, 0, None, 0.5, 100.0, "MMMU accuracy"),
+        ("minicpmo", True, 0, None, 1.0, 1.0, "throughput_qps"),
     ],
 )
 def test_mmmu_collects_selected_model_metrics_before_calibration_gate(
     model_name: str,
+    calibrated: bool,
     failed: int,
     traffic_error: str | None,
+    accuracy: float,
+    throughput: float,
     expected_error: str | None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     preset = OMNI_CI_PRESETS[model_name]
+    if model_name == "minicpmo":
+        # note (wenyao): Synthetic gates keep admission tests independent of calibration.
+        thresholds = replace(
+            preset.thresholds["mmmu"],
+            calibrated=calibrated,
+            accuracy=0.6,
+            speed={
+                16: {
+                    "throughput_qps_min": 2.0,
+                    "output_tok_per_req_s_min": 10.0,
+                    "latency_mean_s_max": 1.0,
+                }
+            },
+        )
+        preset = replace(preset, thresholds={**preset.thresholds, "mmmu": thresholds})
     configs: list[MMMUEvalConfig] = []
 
     async def evaluate(config: MMMUEvalConfig) -> dict[str, object]:
         configs.append(config)
         return {
-            "summary": {"accuracy": 1.0, "failed": failed, "total_samples": 50},
+            "summary": {"accuracy": accuracy, "failed": failed, "total_samples": 50},
             "speed": {
-                "throughput_qps": 100.0,
+                "throughput_qps": throughput,
                 "output_tok_per_req_s": 100.0,
                 "latency_mean_s": 0.1,
             },
