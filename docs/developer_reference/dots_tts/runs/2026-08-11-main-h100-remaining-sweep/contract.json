@@ -1,0 +1,57 @@
+{
+  "run_id": "dots-main-h100-remaining-20260811-085002-499693000",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "commit": "2b45073cc08f3bdb202248cb247f491bd0e059c2",
+    "relation": "current-main baseline used by the PR #1445 H100 crossover run"
+  },
+  "runtime": {
+    "image": "hongccc/sglang-omni:dev",
+    "image_id": "sha256:832e31ce61309be004ec1b085cb92eab5da28f3687a96d854934753a13dff1e7",
+    "image_created_at": "2026-08-05T05:25:13.880314656Z",
+    "dots_tts_version": "0.2.1"
+  },
+  "hardware": {
+    "host": "h100",
+    "gpu_model": "NVIDIA H100",
+    "physical_gpu_ids": [
+      0,
+      1
+    ]
+  },
+  "allocation": {
+    "preflight": "five-second continuous-zero sample immediately before launch",
+    "selection": "physical GPUs 0 and 1",
+    "execution": "same-concurrency dual-GPU repeats",
+    "task_container": "sglang-omni-jaxan-20260811-085002-499693000",
+    "persistent_host_run_root": "/data/jaxan/dots_seedtts_runs/dots-main-h100-remaining-20260811-085002-499693000"
+  },
+  "benchmark": {
+    "model": "dots-studio/dots.tts-mf",
+    "dataset": "zhaochenyang20/seed-tts-eval-arrow",
+    "dataset_revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en",
+    "sample_counts": {
+      "1": 50,
+      "2": 1088,
+      "4": 1088,
+      "8": 1088
+    },
+    "repeats_per_concurrency": 2,
+    "stream": false,
+    "generate_only": true,
+    "seed": 42,
+    "warmup_requests": 10,
+    "server_config": "examples/configs/dots_tts.yaml",
+    "max_running_requests": 16,
+    "cuda_graph_max_bs": 16
+  },
+  "validation": {
+    "all_runs_completed": true,
+    "total_runs": 8,
+    "failed_requests": 0,
+    "wer_rerun": false
+  },
+  "summary": "results-summary.json"
+}
