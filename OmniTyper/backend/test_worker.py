@@ -526,13 +526,18 @@ class WorkerTests(unittest.TestCase):
             ):
                 (Path(cached) / name).touch()
             with (
-                patch("huggingface_hub.snapshot_download", return_value=cached),
+                patch(
+                    "huggingface_hub.snapshot_download", return_value=cached
+                ) as local,
                 patch.object(server, "snapshot_bytes") as lookup,
             ):
                 self.assertEqual(
                     server.model_snapshot("owner/speech", "revision", Mock()), cached
                 )
             lookup.assert_not_called()
+            self.assertEqual(
+                local.call_args.kwargs["allow_patterns"], server.MODEL_FILES
+            )
 
         def download(model, **options):
             if options.get("local_files_only"):

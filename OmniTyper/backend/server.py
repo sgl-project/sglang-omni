@@ -95,7 +95,14 @@ def model_snapshot(model: str, revision: str, progress: Callable[..., None]) -> 
     if model == DEFAULT_MODEL:
         required.add("preprocessor_config.json")
     try:
-        cached = snapshot_download(model, revision=revision, local_files_only=True)
+        # Note (Yifei Leng): Recent huggingface_hub releases call a snapshot incomplete unless
+        # every file of the repository is cached, so name the files this app downloads.
+        cached = snapshot_download(
+            model,
+            revision=revision,
+            local_files_only=True,
+            allow_patterns=MODEL_FILES,
+        )
         if all((Path(cached) / name).is_file() for name in required):
             return cached
     except LocalEntryNotFoundError:
