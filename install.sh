@@ -186,6 +186,58 @@ ensure_formula() {
   fi
 }
 
+# Node(kaizuo li):Replace the manual `export DYLD_LIBRARY_PATH=...` step (documented in
+# installation_apple_silicon.md) by wiring the keg-only ffmpeg@7 library
+# directory into every venv activation script. After this runs,
+# `source .venv-apple/bin/activate` exports DYLD_LIBRARY_PATH automatically.
+# Idempotent: any block injected by a previous install.sh run is removed
+# before re-adding it, so rerunning the installer never duplicates exports.
+inject_venv_ffmpeg_dyld() {
+  local ffmpeg_lib="$1"
+  local start_mark="# >>> sglang-omni ffmpeg@7 loader path >>>"
+  local end_mark="# <<< sglang-omni ffmpeg@7 loader path <<<"
+  local file tmp
+
+  for file in "$VENV_DIR/bin/activate" "$VENV_DIR/bin/activate.csh" "$VENV_DIR/bin/activate.fish"; do
+    [[ -f "$file" ]] || continue
+    # Node(kaizuo li):Drop any previously injected block so re-runs stay idempotent.
+    tmp="$(mktemp "${file}.strip.XXXXXX")"
+    awk -v s="$start_mark" -v e="$end_mark" '
+      $0 == s { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+
+    {
+      printf '%s\n' "$start_mark"
+      printf '# Added by install.sh: expose keg-only ffmpeg@7 to TorchCodec.\n'
+      case "$file" in
+        *.csh)
+          printf 'if ( $?DYLD_LIBRARY_PATH ) then\n'
+          printf '  setenv DYLD_LIBRARY_PATH "%s:$DYLD_LIBRARY_PATH"\n' "$ffmpeg_lib"
+          printf 'else\n'
+          printf '  setenv DYLD_LIBRARY_PATH "%s"\n' "$ffmpeg_lib"
+          printf 'endif\n'
+          ;;
+        *.fish)
+          printf 'if set -q DYLD_LIBRARY_PATH\n'
+          printf '  set -gx DYLD_LIBRARY_PATH "%s:$DYLD_LIBRARY_PATH"\n' "$ffmpeg_lib"
+          printf 'else\n'
+          printf '  set -gx DYLD_LIBRARY_PATH "%s"\n' "$ffmpeg_lib"
+          printf 'end\n'
+          ;;
+        *)
+          # Node(kaizuo li):bash/zsh: preserve any pre-existing value after ffmpeg@7.
+          printf 'export DYLD_LIBRARY_PATH="%s${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"\n' "$ffmpeg_lib"
+          ;;
+      esac
+      printf '%s\n' "$end_mark"
+    } >> "$file"
+  done
+
+  log "Wired ffmpeg@7 ($ffmpeg_lib) into the venv activation scripts (DYLD_LIBRARY_PATH)"
+}
+
 ensure_formula ffmpeg@7
 ensure_formula uv
 
@@ -315,6 +367,18 @@ log "Installing sglang-omni${EXTRAS:+ with extras: $EXTRAS}"
 FFMPEG_LIB="$($BREW_BIN --prefix ffmpeg@7)/lib"
 [[ -d "$FFMPEG_LIB" ]] || die "ffmpeg@7 library directory not found: $FFMPEG_LIB"
 
+# Note(kaizuo li):Make the keg-only ffmpeg@7 libraries visible to TorchCodec automatically.
+# This performs the export that the Apple Silicon install docs otherwise ask
+# the user to run by hand; it takes effect whenever the venv is activated.
+inject_venv_ffmpeg_dyld "$FFMPEG_LIB"
+
+# Verify the bash activation hook actually exports the resolved ffmpeg@7 path.
+_activated_dyld="$(bash -c "source '$VENV_DIR/bin/activate' >/dev/null 2>&1; printf '%s' \"\$DYLD_LIBRARY_PATH\"")"
+case ":$_activated_dyld:" in
+  *":$FFMPEG_LIB:"*) ;;
+  *) die "could not confirm DYLD_LIBRARY_PATH was wired into $VENV_DIR/bin/activate (got: $_activated_dyld)" ;;
+esac
+
 log "Verifying the installed Python package and CLI"
 uv pip check --python "$PYTHON_BIN"
 "$PYTHON_BIN" -c 'import sglang_omni; print("sglang_omni", sglang_omni.__version__)'
@@ -336,9 +400,9 @@ Virtual environment: $VENV_DIR
 Activate it with:
   source "$VENV_DIR/bin/activate"
 
-For TorchCodec/FFmpeg audio decoding, export:
-  export DYLD_LIBRARY_PATH="$FFMPEG_LIB\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}"
-
+TorchCodec/FFmpeg audio decoding works out of the box: the venv activation
+scripts export DYLD_LIBRARY_PATH for ffmpeg@7 ($FFMPEG_LIB) automatically,
+so you no longer need to run the manual export step from the docs.
 The Apple Silicon Qwen3-ASR examples are documented at:
   $PROJECT_DIR/docs/cookbook/qwen3_asr.md
 EOF
