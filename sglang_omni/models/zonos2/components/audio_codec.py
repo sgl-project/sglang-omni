@@ -18,7 +18,7 @@ _AUDIO_PAD_ID = 1025
 _dac_cache: tuple[str, torch.nn.Module] | None = None
 
 
-def _get_dac(device: str):
+def get_dac(device: str):
     """Lazily load and cache the DAC 44 kHz model on ``device``."""
     global _dac_cache
     if _dac_cache is None or _dac_cache[0] != device:
@@ -66,7 +66,7 @@ class Zonos2DACVocoder:
         self.sample_rate = ZONOS2_SAMPLE_RATE
         self.hop_length = DAC_HOP_LENGTH
         self.audio_pad_id = _AUDIO_PAD_ID
-        self._dac = _get_dac(device)
+        self._dac = get_dac(device)
 
     @torch.inference_mode()
     def decode(

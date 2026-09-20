@@ -40,7 +40,7 @@ def build_cfm_sde_random(
     )
 
 
-def _expand_batch_param(
+def expand_batch_param(
     value: float | torch.Tensor,
     *,
     batch_size: int,
@@ -144,7 +144,7 @@ class CFM(nn.Module):
         sigma: float | torch.Tensor = 0.25,
         temperature: float | torch.Tensor = 1.5,
     ) -> torch.Tensor:
-        fn, y0, t, sigma_tensor, temperature_tensor = self._prepare_sampling(
+        fn, y0, t, sigma_tensor, temperature_tensor = self.prepare_sampling(
             noise=noise,
             c=c,
             latent_history=latent_history,
@@ -157,7 +157,7 @@ class CFM(nn.Module):
         solver = Solver(fn, y0, sigma=sigma_tensor, temperature=temperature_tensor)
         return solver.integrate(t, sde_random=sde_random)
 
-    def _prepare_sampling(
+    def prepare_sampling(
         self,
         *,
         noise: torch.Tensor,
@@ -170,19 +170,19 @@ class CFM(nn.Module):
         temperature: float | torch.Tensor,
     ):
         batch_size = int(noise.shape[0])
-        cfg_tensor = _expand_batch_param(
+        cfg_tensor = expand_batch_param(
             cfg_scale,
             batch_size=batch_size,
             device=noise.device,
             dtype=noise.dtype,
         )
-        sigma_tensor = _expand_batch_param(
+        sigma_tensor = expand_batch_param(
             sigma,
             batch_size=batch_size,
             device=noise.device,
             dtype=noise.dtype,
         )
-        temperature_tensor = _expand_batch_param(
+        temperature_tensor = expand_batch_param(
             temperature,
             batch_size=batch_size,
             device=noise.device,

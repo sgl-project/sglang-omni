@@ -10,7 +10,7 @@ import triton.language as tl
     do_not_specialize=("QB", "KB", "CB", "SEQ"),
     do_not_specialize_on_alignment=("QB", "KB", "CB", "SEQ"),
 )
-def _norm_rope_kernel(
+def norm_rope_kernel(
     Q,
     K,
     Q_WEIGHT,
@@ -85,9 +85,9 @@ def _norm_rope_kernel(
 def fused_qk_norm_rope(q, k, q_norm, k_norm, rope):
     """Norm and rotate Q and K in one launch, from the caller's trig tables.
 
-    The tables come in on ``rope`` rather than from a cache of this module's
-    own: the blocks that call this are compiled, and a lookup keyed on the
-    freqs pointer would make every trajectory a new guard to recompile for.
+    The tables come in on the rope tuple rather than from a cache of this
+    module's own: the blocks that call this are compiled, and a lookup keyed on
+    the freqs pointer would make every trajectory a new guard to recompile for.
     """
     if rope.scale != 1.0:
         raise ValueError("AuK Q/K fusion requires XPos disabled")
@@ -105,7 +105,7 @@ def fused_qk_norm_rope(q, k, q_norm, k_norm, rope):
     k_out = torch.empty_like(q_out)
     epsilon = torch.finfo(output_dtype).eps if q_norm.eps is None else q_norm.eps
     # Runtime sequence/outer strides share a kernel across request lengths.
-    _norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
+    norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
         q,
         k,
         q_norm.weight,

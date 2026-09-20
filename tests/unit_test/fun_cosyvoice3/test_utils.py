@@ -88,7 +88,7 @@ def test_cosyvoice3_prompt_mel_uses_flow_layout_and_fixed_configuration(
         captured["waveform"] = waveform
         return torch.arange(1 * 80 * 3, dtype=torch.float32).reshape(1, 80, 3)
 
-    monkeypatch.setattr(utils, "_run_cosyvoice3_mel_spectrogram", fake_mel)
+    monkeypatch.setattr(utils, "run_cosyvoice3_mel_spectrogram", fake_mel)
 
     result = utils.extract_prompt_speech_feat(np.zeros(12, dtype=np.float64))
 

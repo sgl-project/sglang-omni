@@ -130,7 +130,7 @@ def _patch_audio_decode_factory_dependencies(
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda _: "checkpoint")
     monkeypatch.setattr(
         stages,
-        "_load_ming_tts_config",
+        "load_ming_tts_config",
         lambda _: SimpleNamespace(
             audio_tokenizer_config=object(),
             audio_patch_size=2,
@@ -142,7 +142,7 @@ def _patch_audio_decode_factory_dependencies(
         "resolve_ming_tts_audio_vae_config",
         lambda *_args, **_kwargs: SimpleNamespace(dec_kwargs={"latent_dim": 4}),
     )
-    monkeypatch.setattr(stages, "_load_ming_tts_audio_vae", lambda *_a, **_k: object())
+    monkeypatch.setattr(stages, "load_ming_tts_audio_vae", lambda *_a, **_k: object())
     monkeypatch.setattr(
         stages,
         "get_gpu_device_info",
@@ -170,7 +170,7 @@ def test_ming_tts_audio_decode_factory_binds_the_placed_gpu(
     vae_loads: list[dict] = []
     monkeypatch.setattr(
         stages,
-        "_load_ming_tts_audio_vae",
+        "load_ming_tts_audio_vae",
         lambda *args, **kwargs: vae_loads.append(kwargs) or object(),
     )
 

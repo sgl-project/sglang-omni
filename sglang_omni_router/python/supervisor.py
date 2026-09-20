@@ -181,7 +181,7 @@ def watch_supervisor_liveness(
     return thread
 
 
-def _default_spawn_dp(
+def default_spawn_dp(
     ctx: SupervisorContext, index: int, generation: int
 ) -> ChildProcess:
     env = ctx.child_env()
@@ -195,7 +195,7 @@ def _default_spawn_dp(
     )
 
 
-def _default_spawn_cp(ctx: SupervisorContext) -> ChildProcess:
+def default_spawn_cp(ctx: SupervisorContext) -> ChildProcess:
     return subprocess.Popen(
         [sys.executable, "-m", "sglang_omni_router.python.cp_runner"],
         env=ctx.child_env(),
@@ -265,8 +265,8 @@ class RouterSupervisor:
         self._prefer_uds = (
             prefer_uds if prefer_uds is not None else hasattr(socket, "AF_UNIX")
         )
-        self._spawn_dp = spawn_dp or _default_spawn_dp
-        self._spawn_cp = spawn_cp or _default_spawn_cp
+        self._spawn_dp = spawn_dp or default_spawn_dp
+        self._spawn_cp = spawn_cp or default_spawn_cp
         self._clock = clock
         self._rapid_window_secs = rapid_window_secs
         self._max_rapid_restarts = max_rapid_restarts
@@ -315,14 +315,14 @@ class RouterSupervisor:
         if self._context is not None:
             raise RuntimeError("supervisor already started")
         try:
-            self._start_inner()
+            self.start_inner()
         except BaseException:
             # Note (Jiaxin Deng): a half-started supervisor must not leak
             # spawned children, the bound socket, or workdir artifacts.
-            self._cleanup_partial_start()
+            self.cleanup_partial_start()
             raise
 
-    def _cleanup_partial_start(self) -> None:
+    def cleanup_partial_start(self) -> None:
         # Note (Jiaxin Deng): same order as shutdown(): drop the listener,
         # signal every DP, then await; a blocked drain must not leave siblings
         # unsignaled or connections queued in an acceptorless backlog.
@@ -330,15 +330,15 @@ class RouterSupervisor:
             self._socket.close()
             self._socket = None
         for slot in self._dp_slots.values():
-            self._signal_child(slot.process)
+            self.signal_child(slot.process)
         for slot in self._dp_slots.values():
-            self._await_child(slot.process)
+            self.await_child(slot.process)
         self._dp_slots.clear()
         if self._cp_process is not None:
-            self._stop_child(self._cp_process)
+            self.stop_child(self._cp_process)
             self._cp_process = None
-        self._close_death_pipe()
-        self._close_admission_shm()
+        self.close_death_pipe()
+        self.close_admission_shm()
         self._context = None
         if self._workdir:
             for name in (
@@ -358,7 +358,7 @@ class RouterSupervisor:
                     pass
                 self._workdir = None
 
-    def _start_inner(self) -> None:
+    def start_inner(self) -> None:
         if self._workdir is None:
             self._workdir = tempfile.mkdtemp(prefix="sglang-omni-router-")
         os.chmod(self._workdir, 0o700)
@@ -392,7 +392,9 @@ class RouterSupervisor:
 
         admission_shm_path = os.path.join(self._workdir, "admission.shm")
         create_admission_file(admission_shm_path, self._router_processes)
-        self._admission_file = open(admission_shm_path, "r+b")
+        self._admission_file = open(  # noqa: SIM115 - Closed by rollback/shutdown.
+            admission_shm_path, "r+b"
+        )
         self._admission_mmap = mmap.mmap(
             self._admission_file.fileno(),
             admission_file_size(self._router_processes),
@@ -428,9 +430,9 @@ class RouterSupervisor:
         self._cp_process = self._spawn_cp(self._context)
         self._cp_spawned_at = self._clock()
         for index in range(self._router_processes):
-            self._spawn_dp_slot(index, generation=1)
+            self.spawn_dp_slot(index, generation=1)
 
-    def _spawn_dp_slot(self, index: int, generation: int) -> None:
+    def spawn_dp_slot(self, index: int, generation: int) -> None:
         process = self._spawn_dp(self.context, index, generation)
         previous = self._dp_slots.get(index)
         self._dp_slots[index] = DataPlaneSlot(
@@ -455,7 +457,7 @@ class RouterSupervisor:
             # DP's rejected/peak into the retired slot first so aggregate
             # totals never move backwards.
             if self._admission_mmap is not None:
-                self._fold_and_reclaim_slot(slot.index)
+                self.fold_and_reclaim_slot(slot.index)
             if self.on_dp_exit is not None:
                 self.on_dp_exit(slot.index, slot.generation, returncode)
             lifetime = self._clock() - slot.spawned_at
@@ -469,7 +471,7 @@ class RouterSupervisor:
                     f"within {self._rapid_window_secs}s of spawn; failing "
                     "closed instead of flapping"
                 )
-            self._spawn_dp_slot(slot.index, generation=slot.generation + 1)
+            self.spawn_dp_slot(slot.index, generation=slot.generation + 1)
 
         if self._cp_process is not None and self._cp_process.poll() is not None:
             returncode = self._cp_process.wait()
@@ -529,11 +531,11 @@ class RouterSupervisor:
                     if handler is not None:
                         signal.signal(signum, handler)
 
-    def _signal_child(self, process: ChildProcess) -> None:
+    def signal_child(self, process: ChildProcess) -> None:
         if process.poll() is None:
             process.terminate()
 
-    def _await_child(
+    def await_child(
         self, process: ChildProcess, *, timeout: float = _SHUTDOWN_GRACE_SECS
     ) -> None:
         if process.poll() is not None:
@@ -544,17 +546,17 @@ class RouterSupervisor:
             process.kill()
             process.wait()
 
-    def _stop_child(self, process: ChildProcess) -> None:
-        self._signal_child(process)
-        self._await_child(process)
+    def stop_child(self, process: ChildProcess) -> None:
+        self.signal_child(process)
+        self.await_child(process)
 
-    def _dp_stop_budget(self) -> float:
+    def dp_stop_budget(self) -> float:
         # Note (Jiaxin Deng): the wait must outlast the DP's own drain
         # deadline, or the supervisor SIGKILLs mid-drain and truncates exactly
         # what the drain protects.
         return self._config.effective_shutdown_drain_secs + _SHUTDOWN_GRACE_SECS
 
-    def _close_death_pipe(self) -> None:
+    def close_death_pipe(self) -> None:
         for fd_attr in ("_death_pipe_write", "_death_pipe_read"):
             fd = getattr(self, fd_attr)
             if fd is not None:
@@ -564,7 +566,7 @@ class RouterSupervisor:
                     pass
                 setattr(self, fd_attr, None)
 
-    def _fold_and_reclaim_slot(self, index: int) -> None:
+    def fold_and_reclaim_slot(self, index: int) -> None:
         dying = SlotCodec(self._admission_mmap, index)
         retired = SlotCodec(self._admission_mmap, self._router_processes)
         try:
@@ -594,7 +596,7 @@ class RouterSupervisor:
         dying.reclaim()
         retired.end_write(marker)
 
-    def _close_admission_shm(self) -> None:
+    def close_admission_shm(self) -> None:
         if self._admission_mmap is not None:
             try:
                 self._admission_mmap.close()
@@ -618,15 +620,15 @@ class RouterSupervisor:
         # Note (Jiaxin Deng): signal every DP before awaiting any, so none keeps
         # accepting from the shared socket while its siblings drain.
         for slot in self._dp_slots.values():
-            self._signal_child(slot.process)
+            self.signal_child(slot.process)
         for slot in self._dp_slots.values():
-            self._await_child(slot.process, timeout=self._dp_stop_budget())
+            self.await_child(slot.process, timeout=self.dp_stop_budget())
         self._dp_slots.clear()
         if self._cp_process is not None:
-            self._stop_child(self._cp_process)
+            self.stop_child(self._cp_process)
             self._cp_process = None
-        self._close_death_pipe()
-        self._close_admission_shm()
+        self.close_death_pipe()
+        self.close_admission_shm()
         context, self._context = self._context, None
         if context is not None:
             for path in (

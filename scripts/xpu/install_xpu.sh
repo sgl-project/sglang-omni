@@ -197,6 +197,7 @@ else
   echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
   echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --extra-index-url ${XPU_INDEX}"
+  echo "           pip install --no-deps xgrammar==0.1.33"
 fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then

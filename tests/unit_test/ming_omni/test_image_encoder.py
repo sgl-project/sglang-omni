@@ -38,7 +38,7 @@ def test_tp_initialization_uses_platform_backend(monkeypatch) -> None:
     )
     monkeypatch.setattr(image_encoder.MingImageEncoder, "_did_init_tp", False)
 
-    image_encoder.MingImageEncoder._init_sglang_tp(tp_rank=1, tp_size=2)
+    image_encoder.MingImageEncoder.init_sglang_tp(tp_rank=1, tp_size=2)
 
     distributed = calls["distributed"]
     assert distributed["backend"] == "hccl"

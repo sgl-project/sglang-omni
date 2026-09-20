@@ -74,10 +74,10 @@ DEFAULT_CAPTURE_SHAPES: tuple[AuKGraphShape, ...] = tuple(
 StepFn = Callable[[Mapping[str, Any], torch.Tensor, torch.Tensor], torch.Tensor]
 
 
-class _CapturedStep(NamedTuple):
+class CapturedStep(NamedTuple):
     """A recorded step and the buffers a replay reads from and writes into.
 
-    ``graph`` is the platform's graph object, so it is typed by the backend that
+    The graph is the platform's own object, so it is typed by the backend that
     recorded it rather than by torch.cuda.
     """
 
@@ -117,7 +117,7 @@ def build_step_graph_runner(
     device: torch.device,
     capture_shapes: Iterable[Sequence[int]] | None = None,
 ) -> AuKStepCudaGraphRunner | None:
-    """The runner for ``device``, or None where the platform records no graphs."""
+    """The runner for a device, or None where the platform records no graphs."""
     backend = current_platform.get_device_graph_backend(device)
     if backend is None:
         return None
@@ -150,16 +150,12 @@ class AuKStepCudaGraphRunner:
             raise ValueError("AuK DiT graph capture needs a warmup iteration")
         self._min_free_bytes = int(min_free_gb * 1024**3)
         self._warmup_iters = warmup_iters
-        self._graphs: dict[tuple, _CapturedStep] = {}
+        self._graphs: dict[tuple, CapturedStep] = {}
         # The declared shapes that hold a graph, and the one being captured now.
         self._ready: set[AuKGraphShape] = set()
         self._capturing: AuKGraphShape | None = None
         self._pool: Any | None = None
         self._graph_bytes = 0
-
-    @property
-    def declared_shapes(self) -> tuple[AuKGraphShape, ...]:
-        return self._declared
 
     def capture_declared(self, run_trajectory: Callable[[AuKGraphShape], Any]) -> None:
         """Capture every declared shape by running one trajectory through each.
@@ -202,14 +198,14 @@ class AuKStepCudaGraphRunner:
         None means no captured graph covers this batch, so the caller should
         neither pad it nor try to bind it: an eager step is cheaper unpadded.
         """
-        shape = self._capturing or self._fit(
+        shape = self._capturing or self.fit(
             frames=frames, ref=ref, text=text, batch=batch
         )
         if shape is None:
             return None
         return (shape.frames, shape.ref, shape.text)
 
-    def _fit(
+    def fit(
         self, *, frames: int, ref: int, text: int, batch: int
     ) -> AuKGraphShape | None:
         """The cheapest captured shape that covers this batch on every axis."""
@@ -235,18 +231,18 @@ class AuKStepCudaGraphRunner:
     ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None:
         """Load this trajectory's constants into a captured step, or return None.
 
-        ``baked`` names the values ``step`` closes over rather than reads from
-        ``inputs`` -- they select a different computation, so they belong in the
+        baked names the values the step closes over rather than reads from
+        its inputs -- they select a different computation, so they belong in the
         key. None means the caller runs the step eagerly instead.
         """
-        key = self._key(inputs, x, baked)
+        key = self.graph_key(inputs, x, baked)
         entry = self._graphs.get(key)
         if entry is None:
-            # Outside ``capture_declared`` a miss stays a miss: a capture costs
+            # Outside capture_declared a miss stays a miss: a capture costs
             # the whole device a synchronization and its allocator cache.
             if self._capturing is None:
                 return None
-            entry = self._prepare(key, step, inputs, x, time)
+            entry = self.prepare(key, step, inputs, x, time)
             if entry is None:
                 return None
             self._ready.add(self._capturing)
@@ -263,7 +259,7 @@ class AuKStepCudaGraphRunner:
 
         return replay
 
-    def _key(
+    def graph_key(
         self, inputs: Mapping[str, Any], x: torch.Tensor, baked: Sequence[Any]
     ) -> tuple:
         parts: list[Any] = [(tuple(x.shape), x.dtype)]
@@ -274,14 +270,14 @@ class AuKStepCudaGraphRunner:
                 parts.append((name, value))
         return (tuple(parts), tuple(baked))
 
-    def _prepare(
+    def prepare(
         self,
         key: tuple,
         step: StepFn,
         inputs: Mapping[str, Any],
         x: torch.Tensor,
         time: torch.Tensor,
-    ) -> _CapturedStep | None:
+    ) -> CapturedStep | None:
         free, _ = self._module.mem_get_info(self._device)
         if free < self._min_free_bytes:
             logger.warning(
@@ -294,7 +290,7 @@ class AuKStepCudaGraphRunner:
             return None
         try:
             with self._module.device(self._device):
-                entry = self._capture(step, inputs, x, time)
+                entry = self.capture(step, inputs, x, time)
         except Exception as exc:
             logger.warning(
                 "AuK DiT step graph capture failed for x=%s: %s; "
@@ -317,13 +313,13 @@ class AuKStepCudaGraphRunner:
         )
         return entry
 
-    def _capture(
+    def capture(
         self,
         step: StepFn,
         inputs: Mapping[str, Any],
         x: torch.Tensor,
         time: torch.Tensor,
-    ) -> _CapturedStep:
+    ) -> CapturedStep:
         statics = {
             name: value.clone() if isinstance(value, torch.Tensor) else value
             for name, value in inputs.items()
@@ -346,7 +342,7 @@ class AuKStepCudaGraphRunner:
         with self._backend.capture(pool=self._pool, thread_local_errors=True) as graph:
             static_out = step(statics, static_time, static_x)
         self._module.synchronize(self._device)
-        return _CapturedStep(graph, statics, static_x, static_time, static_out)
+        return CapturedStep(graph, statics, static_x, static_time, static_out)
 
 
 __all__ = [

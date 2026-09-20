@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import torch
 
 
-def _as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
+def as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
     try:
         tensor = tensor.detach()
     except AttributeError as exc:
@@ -112,7 +112,7 @@ class PendingTextTensorQueue:
         self.append_rows(row)
 
     def append_rows(self, rows: torch.Tensor) -> None:
-        rows = _as_rows(rows)
+        rows = as_rows(rows)
         if rows is None:
             return
         appended_rows = int(rows.shape[0])

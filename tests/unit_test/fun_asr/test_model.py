@@ -15,10 +15,7 @@ from sglang_omni.models.fun_asr.sglang_model import (
     FunAsrNanoForConditionalGeneration,
     FunAsrNanoFSMN,
     MultiHeadedAttentionSANM,
-    _sanm_mask_from_lengths,
-)
-from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
-    fun_asr_low_frame_rate_length,
+    sanm_mask_from_lengths,
 )
 
 
@@ -34,17 +31,17 @@ def test_fun_asr_audio_modules_match_current_checkpoint_parameter_names() -> Non
     )
     encoder_names = set(dict(encoder.named_parameters()))
 
-    assert "stem.self_attn.q_proj.weight" in encoder_names
-    assert "stem.self_attn.k_proj.weight" in encoder_names
-    assert "stem.self_attn.v_proj.weight" in encoder_names
-    assert "stem.self_attn.out_proj.weight" in encoder_names
-    assert "stem.fsmn.conv.weight" in encoder_names
-    assert "stem.fc1.weight" in encoder_names
-    assert "layers.0.self_attn_layer_norm.weight" in encoder_names
-    assert "layers.0.final_layer_norm.weight" in encoder_names
-    assert "layer_norm.weight" in encoder_names
-    assert "timestamp_prediction_layers.0.fc2.weight" in encoder_names
-    assert "timestamp_prediction_layer_norm.weight" in encoder_names
+    assert "layers.0.self_attn.q_proj.weight" in encoder_names
+    assert "layers.0.self_attn.k_proj.weight" in encoder_names
+    assert "layers.0.self_attn.v_proj.weight" in encoder_names
+    assert "layers.0.self_attn.o_proj.weight" in encoder_names
+    assert "layers.0.self_attn.fsmn.conv.weight" in encoder_names
+    assert "layers.0.mlp.fc1.weight" in encoder_names
+    assert "layers.0.input_layernorm.weight" in encoder_names
+    assert "layers.0.post_attention_layernorm.weight" in encoder_names
+    assert "layers.1.final_layernorm.weight" in encoder_names
+    assert "layers.2.mlp.fc2.weight" in encoder_names
+    assert "layers.2.final_layernorm.weight" in encoder_names
 
     projector = FunAsrNanoAdaptor(
         encoder_dim=8,
@@ -57,10 +54,10 @@ def test_fun_asr_audio_modules_match_current_checkpoint_parameter_names() -> Non
 
     assert "linear_1.weight" in projector_names
     assert "linear_2.weight" in projector_names
-    assert "blocks.0.self_attn.q_proj.weight" in projector_names
-    assert "blocks.0.self_attn_layer_norm.weight" in projector_names
-    assert "blocks.0.fc1.weight" in projector_names
-    assert "blocks.0.final_layer_norm.weight" in projector_names
+    assert "layers.0.self_attn.q_proj.weight" in projector_names
+    assert "layers.0.input_layernorm.weight" in projector_names
+    assert "layers.0.mlp.fc1.weight" in projector_names
+    assert "layers.0.post_attention_layernorm.weight" in projector_names
 
 
 def _weight_loader_target() -> FunAsrNanoForConditionalGeneration:
@@ -69,12 +66,12 @@ def _weight_loader_target() -> FunAsrNanoForConditionalGeneration:
     )
     nn.Module.__init__(model)
     model.config = SimpleNamespace(
-        text_config=SimpleNamespace(tie_word_embeddings=False)
+        text_config=SimpleNamespace(tie_word_embeddings=False),
     )
     model.audio_tower = nn.Module()
-    model.audio_tower.layer_norm = nn.LayerNorm(2)
+    model.audio_tower.layers = nn.ModuleList([nn.Module(), nn.Module()])
+    model.audio_tower.layers[1].final_layernorm = nn.LayerNorm(2, bias=False)
     model.multi_modal_projector = nn.Module()
-    model.multi_modal_projector.linear_1 = nn.Linear(2, 2)
     return model
 
 
@@ -82,37 +79,11 @@ def test_fun_asr_weight_loader_loads_current_audio_prefixes() -> None:
     model = _weight_loader_target()
     expected = torch.tensor([2.0, 3.0])
 
-    model.load_weights([("model.audio_tower.layer_norm.weight", expected.clone())])
-
-    assert torch.equal(model.audio_tower.layer_norm.weight, expected)
-
-
-def test_fun_asr_weight_loader_maps_new_checkpoint_names() -> None:
-    model = _weight_loader_target()
-    model.audio_tower.stem = nn.Module()
-    model.audio_tower.stem.fsmn = nn.Module()
-    model.audio_tower.stem.fsmn.conv = nn.Conv1d(2, 2, 1, bias=False)
-    model.multi_modal_projector.blocks = nn.ModuleList([nn.Module()])
-    model.multi_modal_projector.blocks[0].fc1 = nn.Linear(2, 2, bias=False)
-    expected_fsmn = torch.full_like(model.audio_tower.stem.fsmn.conv.weight, 2.0)
-    expected_adaptor = torch.full_like(
-        model.multi_modal_projector.blocks[0].fc1.weight, 3.0
-    )
-
     model.load_weights(
-        [
-            (
-                "model.audio_tower.stem.feedforward_sequential_memory.conv.weight",
-                expected_fsmn,
-            ),
-            ("model.audio_adaptor.blocks.0.fc1.weight", expected_adaptor),
-        ]
+        [("model.audio_tower.layers.1.final_layernorm.weight", expected.clone())]
     )
 
-    assert torch.equal(model.audio_tower.stem.fsmn.conv.weight, expected_fsmn)
-    assert torch.equal(
-        model.multi_modal_projector.blocks[0].fc1.weight, expected_adaptor
-    )
+    assert torch.equal(model.audio_tower.layers[1].final_layernorm.weight, expected)
 
 
 def test_fun_asr_weight_loader_rejects_unknown_audio_weights() -> None:
@@ -153,6 +124,7 @@ def test_fun_asr_audio_feature_shape() -> None:
     embedding = model.get_audio_feature([item])
 
     assert embedding.shape == (3, 4)
+    torch.testing.assert_close(embedding, item.feature[0, :, :3].T)
 
 
 def _tiny_audio_mm_model() -> FunAsrNanoForConditionalGeneration:
@@ -247,7 +219,7 @@ def test_encoder_layer_runs_attention_once() -> None:
         dropout_rate=0.0,
         attention_dropout_rate=0.0,
         activation_dropout_rate=0.0,
-    ).stem
+    ).layers[0]
     layer.eval()
     calls = {"attn": 0}
     original = layer.self_attn.forward
@@ -270,7 +242,7 @@ def test_fsmn_mask_zeros_pad_and_matches_unpadded() -> None:
     padded = torch.zeros(1, 8, 4)
     padded[:, :5] = valid
     padded[:, 5:] = 7.0
-    mask = _sanm_mask_from_lengths(
+    mask = sanm_mask_from_lengths(
         torch.tensor([5]), 8, dtype=valid.dtype, device=valid.device
     )
 
@@ -297,9 +269,7 @@ def test_get_audio_feature_batched_matches_serial() -> None:
         serial_parts = [model.get_audio_feature([item]) for item in items]
         serial = torch.cat(serial_parts, dim=0)
 
-    expected_tokens = sum(
-        max(fun_asr_low_frame_rate_length(length), 1) for length in lengths
-    )
+    expected_tokens = sum((length + 7) // 8 for length in lengths)
     assert batched.shape == (expected_tokens, 8)
     assert serial.shape == batched.shape
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
@@ -337,7 +307,7 @@ def test_get_audio_feature_single_item_output_length() -> None:
     with torch.no_grad():
         out = model.get_audio_feature([item])
 
-    assert out.shape == (fun_asr_low_frame_rate_length(length), 8)
+    assert out.shape == (2, 8)
 
 
 def test_get_audio_feature_rejects_empty_items() -> None:

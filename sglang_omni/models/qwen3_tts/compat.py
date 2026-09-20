@@ -20,7 +20,7 @@ _MASK_FACTORY_NAMES = (
 )
 
 
-def _compute_default_rope_parameters(
+def compute_default_rope_parameters(
     config: Any,
     device: torch.device | None = None,
     seq_len: int | None = None,
@@ -45,7 +45,7 @@ def _compute_default_rope_parameters(
     return inv_freq, 1.0
 
 
-def _make_mask_factory_compat(
+def make_mask_factory_compat(
     original: Callable[..., Any], name: str
 ) -> Callable[..., Any]:
     def mask_factory_compat(*args: Any, **kwargs: Any) -> Any:
@@ -60,7 +60,7 @@ def _make_mask_factory_compat(
     return mask_factory_compat
 
 
-def _patch_mask_factories() -> None:
+def patch_mask_factories() -> None:
     """Accept the qwen-tts call shape for the Transformers mask factories."""
     from transformers import masking_utils
 
@@ -77,7 +77,7 @@ def _patch_mask_factories() -> None:
         if "inputs_embeds" not in parameters or "input_embeds" in parameters:
             continue
 
-        setattr(masking_utils, name, _make_mask_factory_compat(original, name))
+        setattr(masking_utils, name, make_mask_factory_compat(original, name))
 
 
 def apply_qwen_tts_transformers_compatibility_patches() -> None:
@@ -86,8 +86,8 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
     from transformers.utils import generic
 
     with _APPLY_LOCK:
-        ROPE_INIT_FUNCTIONS.setdefault("default", _compute_default_rope_parameters)
-        _patch_mask_factories()
+        ROPE_INIT_FUNCTIONS.setdefault("default", compute_default_rope_parameters)
+        patch_mask_factories()
 
         current = generic.check_model_inputs
         if getattr(current, _PATCHED_FLAG, False):

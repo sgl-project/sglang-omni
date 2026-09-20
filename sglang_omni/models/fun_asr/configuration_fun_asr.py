@@ -28,8 +28,8 @@ AUDIO_PLACEHOLDER_TOKEN = "<|object_ref_start|>"
 class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
     """80-mel log-mel fbank + LFR stacking, matching Fun-ASR's WavFrontend.
 
-    Output ``input_features`` shape is ``[batch, lfr_m * n_mels, T_lfr]`` =
-    ``[batch, 560, T_lfr]`` where ``T_lfr = ceil(T_mel / lfr_n)``. The encoder's
+    Output ``input_features`` shape is ``[batch, num_frames_lfr * n_mels, T_lfr]`` =
+    ``[batch, 560, T_lfr]`` where ``T_lfr = ceil(T_mel / stride_lfr)``. The encoder's
     ``input_size`` is 560 (= 7 * 80). ``attention_mask`` tracks valid LFR
     frames; its per-row sum is the post-LFR frame count fed to
     :func:`fun_asr_low_frame_rate_length`.
@@ -43,8 +43,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         sampling_rate: int = 16000,
         frame_length: int = 25,
         frame_shift: int = 10,
-        lfr_m: int = 7,
-        lfr_n: int = 6,
+        num_frames_lfr: int = 7,
+        stride_lfr: int = 6,
         window: str = "hamming",
         padding_value: float = 0.0,
         return_attention_mask: bool = True,
@@ -67,8 +67,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         self.n_fft = int(round(frame_length * sampling_rate / 1000))  # 400 @ 16k
         self.hop_length = int(round(frame_shift * sampling_rate / 1000))  # 160 @ 16k
         self.win_length = self.n_fft
-        self.lfr_m = lfr_m
-        self.lfr_n = lfr_n
+        self.num_frames_lfr = num_frames_lfr
+        self.stride_lfr = stride_lfr
         self.window = window
         self.padding_value = padding_value
         self.return_attention_mask = return_attention_mask
@@ -82,9 +82,9 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
     def nb_max_frames(self) -> int:
         """Max LFR frames for a 30s clip — used for context_length sizing."""
         max_mel = int(round(30.0 * self.sampling_rate / self.hop_length))
-        return (max_mel + self.lfr_n - 1) // self.lfr_n
+        return (max_mel + self.stride_lfr - 1) // self.stride_lfr
 
-    def _extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
+    def extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
         """Compute 80-mel log-mel fbank via Kaldi compliance (matches funasr WavFrontend).
 
         Mirrors ``funasr.frontends.wav_frontend.WavFrontend.forward``:
@@ -111,28 +111,32 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         )  # [T_mel, n_mels]
         return mat, mat.shape[0]
 
-    def _lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
+    def lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Low frame rate stacking (matches funasr ``apply_lfr``).
 
-        Stacks ``lfr_m`` frames every ``lfr_n`` stride: left-pad by repeating
-        the first frame ``(lfr_m-1)//2`` times, right-pad the last frame to
+        Stacks ``num_frames_lfr`` frames every ``stride_lfr`` stride: left-pad by repeating
+        the first frame ``(num_frames_lfr-1)//2`` times, right-pad the last frame to
         fill the final window, then gather via ``as_strided``.
-        Returns ``(lfr_out, T_lfr)`` where ``lfr_out`` is ``[T_lfr, lfr_m*n_mels]``.
+        Returns ``(lfr_out, T_lfr)`` where ``lfr_out`` is ``[T_lfr, num_frames_lfr*n_mels]``.
         """
         t_mel = fbank.shape[0]
-        t_lfr = int(np.ceil(t_mel / self.lfr_n))
-        pad_left = (self.lfr_m - 1) // 2
+        t_lfr = int(np.ceil(t_mel / self.stride_lfr))
+        pad_left = (self.num_frames_lfr - 1) // 2
         left_padding = fbank[0:1].repeat(pad_left, 1)
         inputs = torch.vstack([left_padding, fbank])
         t_padded = inputs.shape[0]
         feat_dim = inputs.shape[-1]
-        strides = (self.lfr_n * feat_dim, 1)
-        sizes = (t_lfr, self.lfr_m * feat_dim)
-        last_idx = (t_padded - self.lfr_m) // self.lfr_n + 1
-        num_padding = self.lfr_m - (t_padded - last_idx * self.lfr_n)
+        strides = (self.stride_lfr * feat_dim, 1)
+        sizes = (t_lfr, self.num_frames_lfr * feat_dim)
+        last_idx = (t_padded - self.num_frames_lfr) // self.stride_lfr + 1
+        num_padding = self.num_frames_lfr - (t_padded - last_idx * self.stride_lfr)
         if num_padding > 0:
             num_padding = (
-                (2 * self.lfr_m - 2 * t_padded + (t_lfr - 1 + last_idx) * self.lfr_n)
+                (
+                    2 * self.num_frames_lfr
+                    - 2 * t_padded
+                    + (t_lfr - 1 + last_idx) * self.stride_lfr
+                )
                 / 2
                 * (t_lfr - last_idx)
             )
@@ -170,9 +174,9 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
 
         feats, masks = [], []
         for wav in waveforms:
-            fbank, t_mel = self._extract_fbank(wav)
-            lfr_feat, t_lfr = self._lfr(fbank)  # [t_lfr, lfr_m*n_mels=560]
-            # Transpose to [lfr_m * n_mels, t_lfr] = [560, t_lfr] (encoder expects [B, T, 560])
+            fbank, t_mel = self.extract_fbank(wav)
+            lfr_feat, t_lfr = self.lfr(fbank)  # [t_lfr, num_frames_lfr*n_mels=560]
+            # Transpose to [num_frames_lfr * n_mels, t_lfr] = [560, t_lfr] (encoder expects [B, T, 560])
             lfr_feat = lfr_feat.t().contiguous()
             feats.append(lfr_feat)
             masks.append([1] * t_lfr)
@@ -184,7 +188,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         else:
             max_t = max(f.shape[1] for f in feats)
 
-        n_feat = self.lfr_m * self.n_mels
+        n_feat = self.num_frames_lfr * self.n_mels
         batched = np.full(
             (len(feats), n_feat, max_t), self.padding_value, dtype=np.float32
         )
@@ -244,7 +248,7 @@ class FunAsrNanoProcessor:
         )
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _get_feat_extract_output_lengths(self, input_lengths):
+    def get_feat_extract_output_lengths(self, input_lengths):
         """LFR frames -> adaptor audio-token count (3x stride-2)."""
         return fun_asr_low_frame_rate_length(input_lengths)
 
@@ -280,7 +284,7 @@ class FunAsrNanoProcessor:
                     AUDIO_PLACEHOLDER_TOKEN
                 )
                 feat_lengths = inputs["feature_attention_mask"].sum(dim=-1)
-                audio_token_counts = self._get_feat_extract_output_lengths(feat_lengths)
+                audio_token_counts = self.get_feat_extract_output_lengths(feat_lengths)
                 expanded = []
                 for seq_idx in range(input_ids.shape[0]):
                     ids = (
@@ -316,35 +320,69 @@ class FunAsrNanoEncoderConfig(PretrainedConfig):
         self,
         num_mel_bins: int = 80,
         num_stacked_frames: int = 7,
-        d_model: int = 512,
-        encoder_attention_heads: int = 4,
-        encoder_ffn_dim: int = 2048,
-        encoder_layers: int = 50,
-        num_timestamp_prediction_blocks: int = 20,
-        kernel_size: int = 11,
-        dropout: float = 0.1,
+        hidden_size: int = 512,
+        num_attention_heads: int = 4,
+        intermediate_size: int = 2048,
+        num_hidden_layers: int = 70,
+        num_timestamp_prediction_layers: int = 20,
+        fsmn_kernel_size: int = 11,
+        hidden_dropout: float = 0.1,
         attention_dropout: float = 0.1,
         activation_dropout: float = 0.1,
-        activation_function: str = "relu",
+        hidden_act: str = "relu",
+        layer_norm_eps: float = 1e-5,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.num_mel_bins = num_mel_bins
         self.num_stacked_frames = num_stacked_frames
-        self.d_model = d_model
-        self.encoder_attention_heads = encoder_attention_heads
-        self.encoder_ffn_dim = encoder_ffn_dim
-        self.encoder_layers = encoder_layers
-        self.num_timestamp_prediction_blocks = num_timestamp_prediction_blocks
-        self.kernel_size = kernel_size
-        self.dropout = dropout
+        self.hidden_size = hidden_size
+        self.num_attention_heads = num_attention_heads
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_timestamp_prediction_layers = num_timestamp_prediction_layers
+        self.fsmn_kernel_size = fsmn_kernel_size
+        self.hidden_dropout = hidden_dropout
         self.attention_dropout = attention_dropout
         self.activation_dropout = activation_dropout
-        self.activation_function = activation_function
+        self.hidden_act = hidden_act
+        self.layer_norm_eps = layer_norm_eps
 
     @property
     def input_size(self) -> int:
         return self.num_mel_bins * self.num_stacked_frames
+
+
+class FunAsrNanoAdaptorConfig(PretrainedConfig):
+    """Bidirectional adaptor and projection configuration in HF field names."""
+
+    model_type = "fun_asr_nano_adaptor"
+
+    def __init__(
+        self,
+        hidden_size: int = 1024,
+        intermediate_size: int = 256,
+        num_hidden_layers: int = 2,
+        num_attention_heads: int = 8,
+        projector_hidden_size: int = 2048,
+        projector_hidden_act: str = "relu",
+        hidden_act: str = "relu",
+        hidden_dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        layer_norm_eps: float = 1e-5,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
+        self.projector_hidden_size = projector_hidden_size
+        self.projector_hidden_act = projector_hidden_act
+        self.hidden_act = hidden_act
+        self.hidden_dropout = hidden_dropout
+        self.attention_dropout = attention_dropout
+        self.layer_norm_eps = layer_norm_eps
 
 
 @register_customized_processor(FunAsrNanoProcessor)
@@ -353,27 +391,35 @@ class FunAsrNanoConfig(PretrainedConfig):
 
     model_type = "fun_asr_nano"
     sub_configs: ClassVar[dict[str, Any]] = {
-        "encoder_config": FunAsrNanoEncoderConfig,
+        "audio_config": FunAsrNanoEncoderConfig,
+        "adaptor_config": FunAsrNanoAdaptorConfig,
     }
 
     def __init__(
         self,
-        encoder_config=None,
+        audio_config=None,
+        adaptor_config=None,
         text_config=None,
         audio_token_id: int = 151646,
-        adaptor_intermediate_size: int = 2048,
-        adaptor_num_hidden_layers: int = 2,
-        adaptor_num_attention_heads: int = 8,
-        activation_function: str = "relu",
         initializer_range: float = 0.02,
         tie_word_embeddings: bool = True,
         **kwargs,
     ):
-        if isinstance(encoder_config, dict):
-            encoder_config = FunAsrNanoEncoderConfig(**encoder_config)
-        elif encoder_config is None:
-            encoder_config = FunAsrNanoEncoderConfig()
-        self.encoder_config = encoder_config
+        if "encoder_config" in kwargs:
+            raise ValueError(
+                "Fun-ASR supports only the current flat HF checkpoint; "
+                "download the latest FunAudioLLM/Fun-ASR-Nano-2512-hf revision."
+            )
+        if isinstance(audio_config, dict):
+            audio_config = FunAsrNanoEncoderConfig(**audio_config)
+        elif audio_config is None:
+            audio_config = FunAsrNanoEncoderConfig()
+        self.audio_config = audio_config
+        if isinstance(adaptor_config, dict):
+            adaptor_config = FunAsrNanoAdaptorConfig(**adaptor_config)
+        elif adaptor_config is None:
+            adaptor_config = FunAsrNanoAdaptorConfig()
+        self.adaptor_config = adaptor_config
 
         from transformers.models.qwen3.configuration_qwen3 import (
             Qwen3Config as HFQwen3Config,
@@ -385,10 +431,6 @@ class FunAsrNanoConfig(PretrainedConfig):
             text_config = HFQwen3Config()
         self.text_config = text_config
         self.audio_token_id = audio_token_id
-        self.adaptor_intermediate_size = adaptor_intermediate_size
-        self.adaptor_num_hidden_layers = adaptor_num_hidden_layers
-        self.adaptor_num_attention_heads = adaptor_num_attention_heads
-        self.activation_function = activation_function
         self.initializer_range = initializer_range
 
         super().__init__(

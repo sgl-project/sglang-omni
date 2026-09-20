@@ -9,11 +9,11 @@ import os
 from collections.abc import Mapping, MutableMapping, Sequence
 
 from sglang_omni.utils.gpu_memory import (
-    _get_device_handle,
-    _shutdown_nvml,
-    _try_import_pynvml,
+    get_device_handle,
     parse_cuda_visible_devices,
     resolve_visible_device_id,
+    shutdown_nvml,
+    try_import_pynvml,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ def gpu_architecture_for_sm(sm_version: int | None) -> str:
     return _GPU_ARCHITECTURES.get(sm_version, f"sm{sm_version}")
 
 
-def _get_compute_capability(
+def get_compute_capability(
     logical_gpu_id: int,
     env: Mapping[str, str] | None = None,
 ) -> tuple[int, int] | None:
@@ -49,12 +49,12 @@ def _get_compute_capability(
     except Exception:
         return None
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is not None:
         try:
             pynvml.nvmlInit()
             if visible_devices:
-                handle = _get_device_handle(pynvml, device_id)
+                handle = get_device_handle(pynvml, device_id)
             else:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(logical_gpu_id)
             major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
@@ -66,7 +66,7 @@ def _get_compute_capability(
                 exc,
             )
         finally:
-            _shutdown_nvml(pynvml)
+            shutdown_nvml(pynvml)
 
     if source_env.get("CUDA_VISIBLE_DEVICES") != os.environ.get("CUDA_VISIBLE_DEVICES"):
         return None
@@ -85,8 +85,8 @@ def _get_compute_capability(
     return None
 
 
-def _get_cuda_device_count() -> int | None:
-    pynvml = _try_import_pynvml()
+def get_cuda_device_count() -> int | None:
+    pynvml = try_import_pynvml()
     if pynvml is not None:
         try:
             pynvml.nvmlInit()
@@ -94,7 +94,7 @@ def _get_cuda_device_count() -> int | None:
         except Exception as exc:
             logger.debug("NVML device count query failed: %s", exc)
         finally:
-            _shutdown_nvml(pynvml)
+            shutdown_nvml(pynvml)
 
     try:
         torch = importlib.import_module("torch")
@@ -105,14 +105,14 @@ def _get_cuda_device_count() -> int | None:
     return None
 
 
-def _visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
+def visible_gpu_ids(env: Mapping[str, str] | None = None) -> list[int]:
     source_env = os.environ if env is None else env
     visible_devices = parse_cuda_visible_devices(
         source_env.get("CUDA_VISIBLE_DEVICES") or ""
     )
     if visible_devices:
         return list(range(len(visible_devices)))
-    device_count = _get_cuda_device_count()
+    device_count = get_cuda_device_count()
     if device_count is not None:
         return list(range(device_count))
     return [0]
@@ -124,7 +124,7 @@ def get_visible_gpu_sm_version(
 ) -> int | None:
     """Return the CUDA SM version for a logical visible GPU."""
     source_env = os.environ if env is None else env
-    capability = _get_compute_capability(logical_gpu_id, source_env)
+    capability = get_compute_capability(logical_gpu_id, source_env)
     if capability is None:
         return None
     major, minor = capability
@@ -136,7 +136,7 @@ def visible_gpus_need_flashinfer_cuda_norm(
 ) -> bool:
     """Return whether any visible CUDA device needs the FlashInfer CUDA norm workaround."""
     source_env = os.environ if env is None else env
-    for gpu_id in _visible_gpu_ids(source_env):
+    for gpu_id in visible_gpu_ids(source_env):
         sm_version = get_visible_gpu_sm_version(gpu_id, source_env)
         if sm_version is not None and sm_version >= 100:
             return True
@@ -186,7 +186,7 @@ def gpu_ids_support_p2p_mesh(
     if len(ids) < 2:
         return None
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return None
 
@@ -211,7 +211,7 @@ def gpu_ids_support_p2p_mesh(
         handles = []
         for logical_id in ids:
             device_id = resolve_visible_device_id(logical_id, visible_devices)
-            handles.append(_get_device_handle(pynvml, device_id))
+            handles.append(get_device_handle(pynvml, device_id))
         for i, handle_i in enumerate(handles):
             for j, handle_j in enumerate(handles):
                 if i == j:
@@ -225,7 +225,7 @@ def gpu_ids_support_p2p_mesh(
         )
         return None
     finally:
-        _shutdown_nvml(pynvml)
+        shutdown_nvml(pynvml)
 
 
 def should_disable_custom_all_reduce_for_gpus(

@@ -18,7 +18,7 @@ IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 
 
-def _cast_tensor(
+def cast_tensor(
     value: torch.Tensor | None, dtype: torch.dtype | None = None
 ) -> torch.Tensor | None:
     if value is None:
@@ -26,7 +26,7 @@ def _cast_tensor(
     return value.to(dtype=dtype) if dtype is not None else value
 
 
-def _non_empty(value: Any) -> bool:
+def non_empty(value: Any) -> bool:
     if isinstance(value, torch.Tensor):
         return value.numel() > 0
     return False
@@ -52,7 +52,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
     state.thinker_inputs = thinker_inputs
     state.encoder_inputs = {}
-    _prune_preprocessing_for_thinker(state, encoder_outs)
+    prune_preprocessing_for_thinker(state, encoder_outs)
     # Encoder outputs have been consumed into thinker_inputs; keeping both
     # doubles multimodal tensor payloads sent to the thinker.
     state.encoder_outs = {}
@@ -79,7 +79,7 @@ def build_thinker_inputs(
     audio_embeds = audio_out.get("audio_embeds")
     video_embeds = video_out.get("video_embeds")
 
-    image_grid_thw = _cast_tensor(
+    image_grid_thw = cast_tensor(
         (
             image_out.get("image_grid_thw")
             if image_out.get("image_grid_thw") is not None
@@ -87,7 +87,7 @@ def build_thinker_inputs(
         ),
         dtype=torch.long,
     )
-    video_grid_thw = _cast_tensor(
+    video_grid_thw = cast_tensor(
         (
             video_out.get("video_grid_thw")
             if video_out.get("video_grid_thw") is not None
@@ -95,11 +95,11 @@ def build_thinker_inputs(
         ),
         dtype=torch.long,
     )
-    feature_attention_mask = _cast_tensor(
+    feature_attention_mask = cast_tensor(
         mm_audio.get("feature_attention_mask"),
         dtype=torch.long,
     )
-    audio_feature_lengths = _cast_tensor(
+    audio_feature_lengths = cast_tensor(
         (
             audio_out.get("audio_feature_lengths")
             if audio_out.get("audio_feature_lengths") is not None
@@ -107,14 +107,14 @@ def build_thinker_inputs(
         ),
         dtype=torch.long,
     )
-    video_second_per_grid = _cast_tensor(
+    video_second_per_grid = cast_tensor(
         mm_video.get("video_second_per_grid"),
         dtype=torch.float,
     )
 
     thinker_model_inputs: dict[str, Any] = {}
-    has_image = _non_empty(image_embeds)
-    has_video = _non_empty(video_embeds)
+    has_image = non_empty(image_embeds)
+    has_video = non_empty(video_embeds)
     if has_image:
         thinker_model_inputs["image_embeds"] = image_embeds
     if has_video:
@@ -135,17 +135,17 @@ def build_thinker_inputs(
         thinker_model_inputs["deepstack_visual_embeds"] = image_deepstack_visual_embeds
     elif has_video and video_deepstack_visual_embeds:
         thinker_model_inputs["deepstack_visual_embeds"] = video_deepstack_visual_embeds
-    if _non_empty(audio_embeds):
+    if non_empty(audio_embeds):
         thinker_model_inputs["audio_embeds"] = audio_embeds
-    if _non_empty(image_grid_thw):
+    if non_empty(image_grid_thw):
         thinker_model_inputs["image_grid_thw"] = image_grid_thw
-    if _non_empty(video_grid_thw):
+    if non_empty(video_grid_thw):
         thinker_model_inputs["video_grid_thw"] = video_grid_thw
-    if _non_empty(feature_attention_mask):
+    if non_empty(feature_attention_mask):
         thinker_model_inputs["feature_attention_mask"] = feature_attention_mask
-    if _non_empty(audio_feature_lengths):
+    if non_empty(audio_feature_lengths):
         thinker_model_inputs["audio_feature_lengths"] = audio_feature_lengths
-    if _non_empty(video_second_per_grid):
+    if non_empty(video_second_per_grid):
         thinker_model_inputs["video_second_per_grid"] = video_second_per_grid
     if mm_video.get("use_audio_in_video") is True:
         thinker_model_inputs["use_audio_in_video"] = True
@@ -168,7 +168,7 @@ def build_thinker_inputs(
     return result
 
 
-def _prune_preprocessing_for_thinker(
+def prune_preprocessing_for_thinker(
     state: Qwen3OmniPipelineState,
     encoder_outs: dict[str, Any],
 ) -> None:
@@ -181,7 +181,7 @@ def _prune_preprocessing_for_thinker(
     audio_out = encoder_outs.get(AUDIO_STAGE, {})
     video_out = image_out
 
-    image_grid_thw = _cast_tensor(
+    image_grid_thw = cast_tensor(
         (
             image_out.get("image_grid_thw")
             if image_out.get("image_grid_thw") is not None
@@ -189,7 +189,7 @@ def _prune_preprocessing_for_thinker(
         ),
         dtype=torch.long,
     )
-    audio_feature_lengths = _cast_tensor(
+    audio_feature_lengths = cast_tensor(
         (
             audio_out.get("audio_feature_lengths")
             if audio_out.get("audio_feature_lengths") is not None
@@ -197,7 +197,7 @@ def _prune_preprocessing_for_thinker(
         ),
         dtype=torch.long,
     )
-    video_grid_thw = _cast_tensor(
+    video_grid_thw = cast_tensor(
         (
             video_out.get("video_grid_thw")
             if video_out.get("video_grid_thw") is not None
@@ -205,7 +205,7 @@ def _prune_preprocessing_for_thinker(
         ),
         dtype=torch.long,
     )
-    video_second_per_grid = _cast_tensor(
+    video_second_per_grid = cast_tensor(
         mm_video.get("video_second_per_grid"),
         dtype=torch.float,
     )

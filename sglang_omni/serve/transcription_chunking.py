@@ -108,7 +108,7 @@ class RMSSplitter:
             # Never search past the boundary (that would overrun the context limit)
             # and never back to `start`.
             search_start = max(boundary - search_samples, start + 1)
-            cut = self._find_split_point(waveform, search_start, boundary)
+            cut = self.find_split_point(waveform, search_start, boundary)
             tail_samples = total_samples - cut
             min_tail = int(min_tail_s * sample_rate)
             if 0 < tail_samples < min_tail <= chunk_samples:
@@ -121,7 +121,7 @@ class RMSSplitter:
             start = cut
         return spans
 
-    def _find_split_point(
+    def find_split_point(
         self, waveform: np.ndarray, search_start: int, search_end: int
     ) -> int:
         """Return the sample index to cut at, within [search_start, search_end]."""
@@ -263,7 +263,7 @@ _UNSPACED_SCRIPT_RANGES = (
 )
 
 
-def _is_spaced_script(char: str) -> bool:
+def is_spaced_script(char: str) -> bool:
     """Whether this character's writing system separates words with spaces."""
     if char.isspace():
         return False
@@ -290,7 +290,7 @@ def join_transcript_parts(parts: Iterable[str]) -> str:
         stripped = part.strip()
         if not stripped:
             continue
-        if joined and _is_spaced_script(joined[-1]) and _is_spaced_script(stripped[0]):
+        if joined and is_spaced_script(joined[-1]) and is_spaced_script(stripped[0]):
             joined += " "
         joined += stripped
     return joined

@@ -7,7 +7,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
@@ -15,9 +14,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
-
-if TYPE_CHECKING:
-    from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
+from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
 
 
 def request_generator(
@@ -35,8 +32,8 @@ def fuse_hidden_states(hidden_states, layer_weights, layer_scale):
     return (stacked * weights[None, :, None, None]).sum(dim=1) * layer_scale
 
 
-def _pad_rows(tensor: torch.Tensor, rows: int) -> torch.Tensor:
-    """Pad axis 1 up to ``rows`` with zeros, i.e. False for a boolean mask."""
+def pad_rows(tensor: torch.Tensor, rows: int) -> torch.Tensor:
+    """Pad axis 1 up to rows with zeros, i.e. False for a boolean mask."""
     extra = rows - tensor.shape[1]
     if extra <= 0:
         return tensor
@@ -116,7 +113,7 @@ class AuKFlowMatching(nn.Module):
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
-        With a ``step_graph`` the batch pads to one of that runner's declared
+        With a step graph the batch pads to one of that runner's declared
         shapes, so one captured step can be replayed for every NFE step.
         """
         device = next(self.parameters()).device
@@ -130,7 +127,7 @@ class AuKFlowMatching(nn.Module):
                 if len(tensors) == 1
                 else pad_sequence(tensors, batch_first=True)
             )
-            return packed if rows is None else _pad_rows(packed, rows)
+            return packed if rows is None else pad_rows(packed, rows)
 
         references = [
             (
@@ -141,7 +138,7 @@ class AuKFlowMatching(nn.Module):
             for item in items
         ]
         # A runner declines a batch no captured shape covers, and that batch
-        # then neither pads nor binds: ``padding`` carries both decisions.
+        # then neither pads nor binds: the padding carries both decisions.
         padding = None
         if step_graph is not None:
             padding = step_graph.pad_lengths(

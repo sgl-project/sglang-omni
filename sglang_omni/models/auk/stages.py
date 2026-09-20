@@ -55,7 +55,7 @@ _TORCH_DTYPES = {
 }
 
 
-def _resolve_dtype(*, field: str, name: str) -> torch.dtype:
+def resolve_dtype(*, field: str, name: str) -> torch.dtype:
     if name not in _TORCH_DTYPES:
         raise ValueError(
             f"AuK {field} must be one of {', '.join(_TORCH_DTYPES)}, got {name!r}"
@@ -63,7 +63,7 @@ def _resolve_dtype(*, field: str, name: str) -> torch.dtype:
     return _TORCH_DTYPES[name]
 
 
-def _autocast(device, dtype):
+def autocast(device, dtype):
     # fp32 means "no autocast": the weights already carry the compute dtype.
     return torch.autocast(
         device_type=device.type, dtype=dtype, enabled=dtype != torch.float32
@@ -71,7 +71,7 @@ def _autocast(device, dtype):
 
 
 @lru_cache(maxsize=None)
-def _load_vae(checkpoint: str, device: str):
+def load_vae(checkpoint: str, device: str):
     config = make_runtime_config(checkpoint)
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
@@ -83,7 +83,7 @@ _FUSION_PARAMETERS = ("layer_weights", "layer_scale")
 
 
 @lru_cache(maxsize=None)
-def _load_fusion(checkpoint: str, device: str):
+def load_fusion(checkpoint: str, device: str):
     # Read straight from the file so a conditioning-only process does not have to
     # hold the 1.5B DiT these two tensors are stored next to.
     with safe_open(str(resolve_weight_file(checkpoint)), framework="pt") as weights:
@@ -95,11 +95,11 @@ def _load_fusion(checkpoint: str, device: str):
 
 
 @lru_cache(maxsize=None)
-def _load_flow(
+def load_flow(
     checkpoint: str, device: str, backbone_dtype: torch.dtype, compile_blocks: bool
 ):
     config = make_runtime_config(checkpoint)
-    layer_weights, _ = _load_fusion(checkpoint, device)
+    layer_weights, _ = load_fusion(checkpoint, device)
     dit_config = AuKDitConfig.from_dict(config.arch)
     dit = AuKDit(**{**dit_config.__dict__, "latent_dim": config.latent_dim})
     flow = AuKFlowMatching(dit, num_llm_layers=layer_weights.numel())
@@ -113,7 +113,7 @@ def _load_flow(
     return flow
 
 
-def _warmup_items(flow, device, *, batch, frames, ref, text):
+def warmup_items(flow, device, *, batch, frames, ref, text):
     """A synthetic sampling batch shaped like one the server will be given."""
     return [
         AuKSampleItem(
@@ -132,33 +132,33 @@ def _warmup_items(flow, device, *, batch, frames, ref, text):
     ]
 
 
-def _warmup_flow(flow, device, dtype, sampling, step_graph=None):
+def warmup_flow(flow, device, dtype, sampling, step_graph=None):
     """Pay the block compile, and every declared graph capture, at startup.
 
-    The warmup enters at ``sample_batch``, where a request does, so it compiles
-    the shapes a request runs: a batch that pads to a graph shape and one that
-    does not differ in the rope's batch dimension, and a single item that is
-    not padded differs again, so a warmup through one of them alone would leave
-    the first requests recompiling.
+    The warmup enters at sample_batch, where a request does, so it compiles the
+    shapes a request runs: a batch that pads to a graph shape and one that does
+    not differ in the rope's batch dimension, and a single item that is not
+    padded differs again, so a warmup through one of them alone would leave the
+    first requests recompiling.
     """
     started = time.perf_counter()
     # One step compiles and captures everything a trajectory needs; the rest of
     # its steps replay or recompute the same shapes. The released time grid
-    # goes with them: it overrides ``steps`` where a checkpoint declares one,
-    # and only the shapes matter here, not where in the trajectory they sit.
+    # goes with them: it overrides steps where a checkpoint declares one, and
+    # only the shapes matter here, not where in the trajectory they sit.
     one_step = {**sampling, "steps": 1, "t_grid": None}
     # Under inference_mode like the request path, so dynamo compiles once.
-    with torch.inference_mode(), _autocast(device, dtype):
+    with torch.inference_mode(), autocast(device, dtype):
         # The eager path, which a batch too wide or too long for a declared
         # graph still takes: a lone unpadded item, and the multi-item batch
         # that carries explicit rope positions.
         for batch in (1, 2):
-            items = _warmup_items(flow, device, batch=batch, frames=64, ref=32, text=16)
+            items = warmup_items(flow, device, batch=batch, frames=64, ref=32, text=16)
             flow.sample_batch(items, **one_step)
         if step_graph is not None:
             step_graph.capture_declared(
                 lambda shape: flow.sample_batch(
-                    _warmup_items(flow, device, **shape._asdict()),
+                    warmup_items(flow, device, **shape._asdict()),
                     **one_step,
                     step_graph=step_graph,
                 )
@@ -166,7 +166,7 @@ def _warmup_flow(flow, device, dtype, sampling, step_graph=None):
     logger.info("AuK DiT: warmed the sampler in %.1fs", time.perf_counter() - started)
 
 
-def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
+def scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
     @torch.inference_mode()
@@ -201,7 +201,7 @@ def create_preprocessing_executor(
     return SimpleScheduler(preprocess_auk_payload, max_concurrency=max_concurrency)
 
 
-def _reference_latent(vae, device, audio, seed=None):
+def reference_latent(vae, device, audio, seed=None):
     if audio is None:
         return None, 0
     waveform = torch.from_numpy(
@@ -216,7 +216,7 @@ def _reference_latent(vae, device, audio, seed=None):
     return latent[0], int(lengths[0])
 
 
-def _condition_batch(payloads, encoder, vae, fusion, device, dtype):
+def condition_batch(payloads, encoder, vae, fusion, device, dtype):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     messages = [
@@ -224,10 +224,10 @@ def _condition_batch(payloads, encoder, vae, fusion, device, dtype):
         for state in states
     ]
     for state in states:
-        state.ref_latent, state.ref_length = _reference_latent(
+        state.ref_latent, state.ref_length = reference_latent(
             vae, device, state.ref_audio, state.seed
         )
-    with _autocast(device, dtype):
+    with autocast(device, dtype):
         encodings = encoder.encode_batch(
             messages, [state.qwen_audio for state in states]
         )
@@ -251,16 +251,16 @@ def create_conditioning_executor(
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler:
-    compute_dtype = _resolve_dtype(field="dtype", name=dtype)
+    compute_dtype = resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     encoder = AuKConditionEncoder(
         text_encoder_path, device=device, dtype=torch.bfloat16
     )
-    vae = _load_vae(checkpoint, str(device))
-    fusion = _load_fusion(checkpoint, str(device))
-    return _scheduler(
-        lambda payloads: _condition_batch(
+    vae = load_vae(checkpoint, str(device))
+    fusion = load_fusion(checkpoint, str(device))
+    return scheduler(
+        lambda payloads: condition_batch(
             payloads, encoder, vae, fusion, device, compute_dtype
         ),
         device,
@@ -269,7 +269,7 @@ def create_conditioning_executor(
     )
 
 
-def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
+def sample_batch(payloads, flow, device, dtype, max_frames, sampling):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     items = [
@@ -284,7 +284,7 @@ def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
         for state in states
     ]
     logger.info("AuK DiT: sampling batch of %d requests", len(items))
-    with _autocast(device, dtype):
+    with autocast(device, dtype):
         latents = flow.sample_batch(items, **sampling)
     for state, latent in zip(states, latents):
         if not torch.isfinite(latent).all():
@@ -325,15 +325,15 @@ def create_auk_engine_executor(
     startup -- to do so (see docs/cookbook/auk.md, Sampling).
     """
     # Named dtypes are checked before resolve_checkpoint, which downloads.
-    compute_dtype = _resolve_dtype(field="dtype", name=dtype)
-    backbone_dtype = _resolve_dtype(field="weight_dtype", name=weight_dtype)
+    compute_dtype = resolve_dtype(field="dtype", name=dtype)
+    backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
-    # A non-fp32 backbone runs natively, and _autocast reads fp32 as "off":
+    # A non-fp32 backbone runs natively, and autocast reads fp32 as "off":
     # autocast would only re-cast per op and force the norms back to fp32.
     autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
-    flow = _load_flow(checkpoint, str(device), backbone_dtype, enable_dit_torch_compile)
+    flow = load_flow(checkpoint, str(device), backbone_dtype, enable_dit_torch_compile)
     sampling = dict(
         steps=C.FLASH_NFE if config.is_flash else nfe,
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
@@ -355,11 +355,11 @@ def create_auk_engine_executor(
             )
         step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
     if enable_dit_torch_compile or step_graph is not None:
-        _warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
+        warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
     if step_graph is not None:
         sampling["step_graph"] = step_graph
-    return _scheduler(
-        lambda payloads: _sample_batch(
+    return scheduler(
+        lambda payloads: sample_batch(
             payloads,
             flow,
             device,
@@ -373,7 +373,7 @@ def create_auk_engine_executor(
     )
 
 
-def _decode_batch(payloads, vae, device):
+def decode_batch(payloads, vae, device):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
     groups = defaultdict(list)
@@ -416,9 +416,9 @@ def create_decode_executor(
 ) -> SimpleScheduler:
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
-    vae = _load_vae(checkpoint, str(device))
-    return _scheduler(
-        lambda payloads: _decode_batch(payloads, vae, device),
+    vae = load_vae(checkpoint, str(device))
+    return scheduler(
+        lambda payloads: decode_batch(payloads, vae, device),
         device,
         max_batch_size,
         max_batch_wait_ms,

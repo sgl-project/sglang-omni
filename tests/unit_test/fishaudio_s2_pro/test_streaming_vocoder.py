@@ -13,8 +13,8 @@ from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import apply_tts_result
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
-    _apply_stream_crossfade,
-    _StreamVocoderState,
+    StreamVocoderState,
+    apply_stream_crossfade,
     build_stream_vocoder_chunk,
     flush_stream_vocoder_chunk,
 )
@@ -171,7 +171,7 @@ def test_streaming_vocoder_chunk_cadence() -> None:
 
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
     codec = _ContextCodec()
-    state = _StreamVocoderState()
+    state = StreamVocoderState()
     full_codes = torch.arange(11 * 7, dtype=torch.long).reshape(11, 7)
     chunks = []
 
@@ -206,12 +206,12 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
 
 
 def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None:
-    state = _StreamVocoderState(
+    state = StreamVocoderState(
         pending_tail=torch.tensor([10.0, 20.0, 30.0]),
     )
     delta_audio = torch.tensor([100.0, 200.0, 300.0, 400.0])
 
-    output = _apply_stream_crossfade(
+    output = apply_stream_crossfade(
         state,
         delta_audio,
         stream_crossfade_samples=2,
@@ -225,7 +225,7 @@ def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None
 
 def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
     codec = _FakeCodec()
-    state = _StreamVocoderState()
+    state = StreamVocoderState()
 
     first = build_stream_vocoder_chunk(
         state,
@@ -257,7 +257,7 @@ def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> Non
 
 def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
     codec = _FakeCodec()
-    state = _StreamVocoderState(
+    state = StreamVocoderState(
         codes=[torch.arange(11, dtype=torch.long).reshape(11, 1)],
         last_vocode_tokens=1,
         total_tokens=1,
@@ -423,9 +423,9 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
     thread = threading.Thread(target=scheduler.start, daemon=True)
     try:
         scheduler._payloads["req"] = _payload("req")
-        scheduler._pending_done.add("req")
-        scheduler._on_chunk("req", _chunk(1))
-        scheduler._pending_messages.append(IncomingMessage("req", "stream_done"))
+        scheduler.pending_done.add("req")
+        scheduler.handle_stream_chunk("req", _chunk(1))
+        scheduler.pending_messages.append(IncomingMessage("req", "stream_done"))
         scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
 
@@ -433,9 +433,9 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         thread.start()
 
         assert "req" not in scheduler._payloads
-        assert "req" not in scheduler._stream_states
-        assert "req" not in scheduler._pending_done
-        assert "req" in scheduler._aborted_request_ids
+        assert "req" not in scheduler.stream_states
+        assert "req" not in scheduler.pending_done
+        assert "req" in scheduler.aborted_request_ids
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
@@ -472,7 +472,7 @@ def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> Non
         del request_id, chunk
         raise RuntimeError("chunk failed")
 
-    scheduler._on_chunk = _raise_on_chunk
+    scheduler.handle_stream_chunk = _raise_on_chunk
     try:
         scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
         scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
@@ -481,7 +481,7 @@ def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> Non
         assert error.request_id == "req"
         assert error.type == "error"
         assert isinstance(error.data, RuntimeError)
-        assert "req" in scheduler._aborted_request_ids
+        assert "req" in scheduler.aborted_request_ids
 
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
         with pytest.raises(queue.Empty):
@@ -497,17 +497,17 @@ def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
     )
-    scheduler._on_streaming_new_request("req", _payload("req"))
+    scheduler.handle_streaming_new_request("req", _payload("req"))
 
     def _abort_during_vocode(payload):
         scheduler.abort(payload.request_id)
         return payload
 
-    scheduler._vocode_payload = _abort_during_vocode
+    scheduler.vocode_payload = _abort_during_vocode
 
-    scheduler._on_done("req")
+    scheduler.handle_stream_done("req")
 
-    assert "req" in scheduler._aborted_request_ids
+    assert "req" in scheduler.aborted_request_ids
     assert scheduler.outbox.empty()
 
 
@@ -536,7 +536,7 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
         stream_crossfade_samples=0,
     )
     with pytest.raises(ValueError, match="req-zero"):
-        scheduler._vocode_payloads(
+        scheduler.vocode_payloads(
             [
                 _payload("req-good", stream=False),
                 _zero_length_payload("req-zero"),
@@ -561,7 +561,7 @@ def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
         ),
     ]
 
-    scheduler._handle_new_request_batch(messages)
+    scheduler.handle_new_request_batch(messages)
 
     outputs = [scheduler.outbox.get_nowait(), scheduler.outbox.get_nowait()]
     by_request = {out.request_id: out for out in outputs}
@@ -591,7 +591,7 @@ def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:
         stream_crossfade_samples=0,
     )
 
-    result = scheduler._vocode_payload(payload)
+    result = scheduler.vocode_payload(payload)
 
     assert result.data["finish_reason"] == "length"
 
@@ -610,8 +610,8 @@ def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
         IncomingMessage("aborted", "new_request", _payload("aborted", stream=False))
     )
 
-    batch = scheduler._collect_new_request_batch(first)
-    scheduler._handle_new_request_batch(batch)
+    batch = scheduler.collect_new_request_batch(first)
+    scheduler.handle_new_request_batch(batch)
 
     out = scheduler.outbox.get_nowait()
     assert out.request_id == "other"
@@ -635,9 +635,9 @@ def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> 
         scheduler.abort("aborted")
         return payloads
 
-    scheduler._batch_fn = _abort_during_decode
+    scheduler.batch_fn = _abort_during_decode
 
-    scheduler._handle_new_request_batch(messages)
+    scheduler.handle_new_request_batch(messages)
 
     out = scheduler.outbox.get_nowait()
     assert out.request_id == "other"

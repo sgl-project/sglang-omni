@@ -35,7 +35,7 @@ class Reference:
     vq_codes: torch.Tensor | None = None
 
 
-class _InferencePromptEncoder:
+class InferencePromptEncoder:
     """Accumulate the tensor fields consumed by the Fish serving path."""
 
     def __init__(self, tokenizer: PreTrainedTokenizerFast) -> None:
@@ -109,7 +109,7 @@ class S2ProTokenizerAdapter:
                         f"({num_codebooks}, T); got {shape}"
                     )
 
-        encoder = _InferencePromptEncoder(self._tok)
+        encoder = InferencePromptEncoder(self._tok)
 
         # System message: reference audio for voice cloning
         if references:

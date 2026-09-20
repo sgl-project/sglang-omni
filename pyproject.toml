@@ -116,6 +116,11 @@ fun-cosyvoice3 = [
     "matplotlib",
 ]
 
+minicpm-o = [
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router-py = "sglang_omni_router.python.serve:main"
@@ -148,6 +153,22 @@ markers = [
     "accelerator: requires accelerator hardware",
 ]
 
+[tool.ruff.lint]
+exclude = ["tests/**"]
+select = [
+    "B006",     # Mutable argument defaults
+    "B009",     # Constant-name getattr without a default
+    "B010",     # Constant-name setattr
+    "E722",     # No bare except
+    "F403",     # No wildcard imports
+    "N801",     # Class names
+    "N815",     # Class-scope variable names
+    "N816",     # Module-scope variable names
+    "PGH004",   # No blanket noqa
+    "RUF008",   # Mutable dataclass defaults
+    "SIM115",   # Context managers for files (not sockets/CUDA streams)
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
@@ -166,4 +187,5 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]
