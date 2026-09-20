@@ -25,7 +25,10 @@ from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
     project_talker_to_code2wav,
 )
-from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
+from sglang_omni.models.minicpm_o.stages import (
+    code2wav_reference_key,
+    vocode_code2wav_payloads,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -159,12 +162,22 @@ def test_invalid_reference_does_not_silently_use_default() -> None:
         code2wav_reference_audio(payload)
 
 
-def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
+def test_speech_pipeline_defaults_to_reference_aware_code2wav_batching() -> None:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
     code2wav = next(stage for stage in config.stages if stage.name == "code2wav")
-    assert code2wav.factory.max_batch_size == 8
+    assert code2wav.factory.max_batch_size == 4
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
+
+
+def test_code2wav_reference_key_uses_resolved_reference_identity() -> None:
+    model = SimpleNamespace(resolve_prompt_wav=lambda ref: ref or "/tmp/default.wav")
+
+    assert code2wav_reference_key(model, _payload()) == "/tmp/default.wav"
+    first = code2wav_reference_key(model, _payload(params={"ref_audio": b"speaker"}))
+    second = code2wav_reference_key(model, _payload(params={"ref_audio": b"speaker"}))
+    assert first == second
+    assert first.startswith("bytes:")
 
 
 def test_vocode_slices_waveforms_to_token_lengths() -> None:

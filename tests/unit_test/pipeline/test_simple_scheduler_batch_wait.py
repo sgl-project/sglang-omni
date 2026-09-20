@@ -21,6 +21,14 @@ def _msg(request_id: str) -> IncomingMessage:
     return IncomingMessage(type="new_request", request_id=request_id, data=request_id)
 
 
+def _keyed_msg(request_id: str, batch_key: str) -> IncomingMessage:
+    return IncomingMessage(
+        type="new_request",
+        request_id=request_id,
+        data={"request_id": request_id, "batch_key": batch_key},
+    )
+
+
 def _batching_scheduler(**kwargs: Any) -> SimpleScheduler:
     return SimpleScheduler(
         lambda payload: payload,
@@ -111,3 +119,62 @@ def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
         thread.join(timeout=2.0)
     assert len(results) == 3
     assert max(seen_batches) >= 3, f"straggler did not join: {seen_batches}"
+
+
+def test_batch_key_keeps_incompatible_requests_out_of_the_batch() -> None:
+    seen_batches: list[list[str]] = []
+
+    def batch_fn(payloads: list[dict[str, str]]) -> list[dict[str, str]]:
+        seen_batches.append([payload["request_id"] for payload in payloads])
+        return payloads
+
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=batch_fn,
+        max_batch_size=4,
+        max_batch_wait_ms=WINDOW_MS,
+        batch_wait_when_idle=False,
+        batch_key_fn=lambda payload: payload["batch_key"],
+    )
+    outputs, _ = _run(
+        scheduler,
+        [
+            _keyed_msg("a1", "a"),
+            _keyed_msg("b1", "b"),
+            _keyed_msg("a2", "a"),
+            _keyed_msg("b2", "b"),
+        ],
+        output_count=4,
+    )
+
+    assert [output.request_id for output in outputs] == ["a1", "a2", "b1", "b2"]
+    assert seen_batches == [["a1", "a2"], ["b1", "b2"]]
+
+
+def test_batch_key_error_does_not_drop_already_dequeued_candidates() -> None:
+    def batch_key(payload: dict[str, str]) -> str:
+        if payload["batch_key"] == "bad":
+            raise ValueError("invalid batch key")
+        return payload["batch_key"]
+
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=lambda payloads: list(payloads),
+        max_batch_size=4,
+        max_batch_wait_ms=WINDOW_MS,
+        batch_wait_when_idle=False,
+        batch_key_fn=batch_key,
+    )
+    outputs, _ = _run(
+        scheduler,
+        [
+            _keyed_msg("a1", "a"),
+            _keyed_msg("a2", "a"),
+            _keyed_msg("bad", "bad"),
+        ],
+        output_count=3,
+    )
+
+    assert [output.request_id for output in outputs] == ["a1", "a2", "bad"]
+    assert [output.type for output in outputs] == ["error", "error", "error"]
+    assert all(isinstance(output.data, ValueError) for output in outputs)

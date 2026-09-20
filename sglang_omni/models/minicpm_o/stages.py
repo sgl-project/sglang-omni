@@ -184,11 +184,7 @@ def vocode_code2wav_payloads(
         reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
         codec_tokens.append(tokens)
         references.append(reference)
-        if isinstance(reference, bytes):
-            group_key = f"bytes:{hash_bytes(reference)}"
-        else:
-            group_key = reference_path_cache_key(reference) or str(reference)
-        groups[group_key].append(idx)
+        groups[code2wav_reference_key(model, payload)].append(idx)
 
     logger.info(
         f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
@@ -217,12 +213,19 @@ def vocode_code2wav_payloads(
     return outputs
 
 
+def code2wav_reference_key(model: MiniCPMOCode2Wav, payload: StagePayload) -> str:
+    reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
+    if isinstance(reference, bytes):
+        return f"bytes:{hash_bytes(reference)}"
+    return reference_path_cache_key(reference) or str(reference)
+
+
 def create_code2wav_executor(
     model_path: str,
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    max_batch_size: int = 8,
+    max_batch_size: int = 4,
     max_batch_wait_ms: float = 0.0,
     batch_wait_when_idle: bool = False,
     dtype: str | None = None,
@@ -244,6 +247,7 @@ def create_code2wav_executor(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         batch_wait_when_idle=batch_wait_when_idle,
+        batch_key_fn=lambda payload: code2wav_reference_key(model, payload),
         request_cost_fn=codec_token_cost,
         max_batch_cost=max_batch_cost,
     )

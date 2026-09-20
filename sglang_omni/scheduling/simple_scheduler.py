@@ -38,6 +38,7 @@ class SimpleScheduler:
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
         batch_wait_when_idle: bool = True,
+        batch_key_fn: Callable[[Any], Any] | None = None,
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
@@ -52,6 +53,7 @@ class SimpleScheduler:
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
         self._batch_wait_when_idle = bool(batch_wait_when_idle)
+        self._batch_key_fn = batch_key_fn
         self._request_cost_fn = request_cost_fn
         self._max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
@@ -95,6 +97,11 @@ class SimpleScheduler:
             return 0
         return max(int(self._request_cost_fn(msg.data)), 0)
 
+    def message_batch_key(self, msg: IncomingMessage) -> Any:
+        if self._batch_key_fn is None or msg.type != "new_request":
+            return None
+        return self._batch_key_fn(msg.data)
+
     def next_message(self) -> IncomingMessage | None:
         if self._pending_messages:
             return self._pending_messages.popleft()
@@ -103,44 +110,71 @@ class SimpleScheduler:
         except _queue_mod.Empty:
             return None
 
+    def next_batch_candidate(self, deadline: float | None) -> IncomingMessage | None:
+        if self._pending_messages:
+            return self._pending_messages.popleft()
+        try:
+            return self.inbox.get_nowait()
+        except _queue_mod.Empty:
+            if deadline is None:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                return self.inbox.get(timeout=remaining)
+            except _queue_mod.Empty:
+                return None
+
     def collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
         batch = [first_msg]
         if self._batch_fn is None or self._max_batch_size <= 1:
             return batch
 
-        batch_cost = self.message_cost(first_msg)
-        deadline: float | None = (
-            time.monotonic() + self._max_batch_wait_s
-            if self._batch_wait_when_idle
-            else None
-        )
-        while len(batch) < self._max_batch_size:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                if deadline is None:
+        deferred_messages: list[IncomingMessage] = []
+        completed = False
+        try:
+            batch_key = self.message_batch_key(first_msg)
+            batch_cost = self.message_cost(first_msg)
+            deadline: float | None = (
+                time.monotonic() + self._max_batch_wait_s
+                if self._batch_wait_when_idle
+                else None
+            )
+            candidates_seen = 0
+            while len(batch) < self._max_batch_size:
+                msg = self.next_batch_candidate(deadline)
+                if msg is None:
                     break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    msg = self.inbox.get(timeout=remaining)
-                except _queue_mod.Empty:
-                    break
+                candidates_seen += 1
+                deferred_messages.append(msg)
 
-            if msg.type == "new_request":
-                if self._max_batch_cost is not None:
-                    msg_cost = self.message_cost(msg)
-                    if batch and batch_cost + msg_cost > self._max_batch_cost:
-                        self._pending_messages.appendleft(msg)
+                if msg.type == "new_request":
+                    if self.message_batch_key(msg) != batch_key:
+                        if candidates_seen >= self._max_batch_size - 1:
+                            break
+                        continue
+
+                    if self._max_batch_cost is not None:
+                        msg_cost = self.message_cost(msg)
+                        if batch and batch_cost + msg_cost > self._max_batch_cost:
+                            break
+                        batch_cost += msg_cost
+                    deferred_messages.pop()
+                    batch.append(msg)
+                    if deadline is None:
+                        deadline = time.monotonic() + self._max_batch_wait_s
+                else:
+                    if candidates_seen >= self._max_batch_size - 1:
                         break
-                    batch_cost += msg_cost
-                batch.append(msg)
-                if deadline is None:
-                    deadline = time.monotonic() + self._max_batch_wait_s
-            else:
-                self._pending_messages.append(msg)
-        return batch
+            completed = True
+            return batch
+        finally:
+            for msg in reversed(deferred_messages):
+                self._pending_messages.appendleft(msg)
+            if not completed:
+                for msg in reversed(batch[1:]):
+                    self._pending_messages.appendleft(msg)
 
     @staticmethod
     def emit_result(
