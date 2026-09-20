@@ -29,7 +29,7 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 _HIDDEN = 8
 
 
-def model(max_running_requests: int = 4) -> SimpleNamespace:
+def _model(max_running_requests: int = 4) -> SimpleNamespace:
     """Fake model exposing only what the pool reads."""
     weight = torch.zeros(max_running_requests, _HIDDEN, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
@@ -54,7 +54,7 @@ def _params(seed: int = 7, audio_repetition_penalty: float = 1.0) -> SimpleNames
 
 def test_pool_dims_derive_from_embedding_weight():
     """P = weight.shape[0] + 1; no literal row count, padding row reserved."""
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=4))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=4))
     assert pool.num_rows == 5
     assert pool.padding_row == 4
     assert pool.hidden_size == _HIDDEN
@@ -77,7 +77,7 @@ def test_pool_dims_derive_from_embedding_weight():
 
 
 def test_acquire_is_idempotent_by_rid():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     first = pool.acquire_row("a")
     again = pool.acquire_row("a")
     assert first == again
@@ -88,14 +88,14 @@ def test_acquire_is_idempotent_by_rid():
 
 def test_padding_row_never_acquired():
     """Real rows are 0..P-2; the padding row stays out of every assignment."""
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=4))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=4))
     acquired = {pool.acquire_row(f"r{i}") for i in range(4)}
     assert acquired == {0, 1, 2, 3}
     assert pool.padding_row not in acquired
 
 
 def test_pool_exhaustion_raises():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     pool.acquire_row("a")
     pool.acquire_row("b")
     try:
@@ -107,7 +107,7 @@ def test_pool_exhaustion_raises():
 
 
 def test_release_is_noop_for_unheld_rid():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     # No row held: release must not raise or perturb the free list.
     free_before = list(pool._free_rows)
     pool.release_row("ghost")
@@ -115,7 +115,7 @@ def test_release_is_noop_for_unheld_rid():
 
 
 def test_release_frees_and_recycles_row():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     row_a = pool.acquire_row("a")
     pool.acquire_row("b")
     pool.release_row("a")
@@ -126,7 +126,7 @@ def test_release_frees_and_recycles_row():
 
 
 def test_release_resets_row_fields():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.write_params(row, _params(seed=123))
     pool.commit_generation_step("a", 3)
@@ -143,7 +143,7 @@ def test_release_resets_row_fields():
 
 
 def test_reset_row_zeroes_all_fields():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.write_params(row, _params(seed=99))
     pool.feedback_embeds[row].fill_(2.0)
@@ -166,7 +166,7 @@ def test_reset_row_zeroes_all_fields():
 
 
 def test_write_params_writes_request_static_fields():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.write_params(row, _params(seed=555, audio_repetition_penalty=1.25))
     assert pool.text_temp[row].item() == torch.tensor(0.5, dtype=torch.float32).item()
@@ -184,7 +184,7 @@ def test_write_params_writes_request_static_fields():
 
 
 def test_write_params_does_not_touch_other_rows():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row_a = pool.acquire_row("a")
     row_b = pool.acquire_row("b")
     pool.write_params(row_a, _params(seed=1))
@@ -193,7 +193,7 @@ def test_write_params_does_not_touch_other_rows():
 
 
 def test_ensure_params_writes_once_until_invalidated():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", _params(seed=1))
     pool.ensure_params(row, "a", _params(seed=2))
@@ -205,14 +205,14 @@ def test_ensure_params_writes_once_until_invalidated():
 
 
 def test_row_for_returns_none_when_unheld():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     assert pool.row_for("nobody") is None
     row = pool.acquire_row("a")
     assert pool.row_for("a") == row
 
 
 def test_commit_generation_step_updates_active_row():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
 
     pool.commit_generation_step("a", 7)
@@ -223,7 +223,7 @@ def test_commit_generation_step_updates_active_row():
 
 
 def test_commit_generation_steps_updates_active_rows():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row_a = pool.acquire_row("a")
     row_b = pool.acquire_row("b")
 
@@ -239,7 +239,7 @@ def test_commit_generation_steps_updates_active_rows():
 
 
 def test_reset_for_refill_clears_active_row():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", _params(seed=1))
     pool.commit_generation_step("a", 4)
@@ -258,7 +258,7 @@ def test_reset_for_refill_clears_active_row():
 
 
 def test_reset_for_refill_is_noop_for_unheld_rid():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", _params(seed=1))
 
@@ -269,7 +269,7 @@ def test_reset_for_refill_is_noop_for_unheld_rid():
 
 
 def test_prepare_active_rows_gathers_rows_and_params():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     reqs = [
         SimpleNamespace(request_id="a", data=_params(seed=11)),
         SimpleNamespace(request_id="b", data=_params(seed=22)),
@@ -285,7 +285,7 @@ def test_prepare_active_rows_gathers_rows_and_params():
 
 
 def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     reqs = [
         SimpleNamespace(request_id="a", data=_params(seed=11)),
         SimpleNamespace(
@@ -300,7 +300,7 @@ def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
 
 
 def test_audio_history_updates_pool_presence_mask():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     row_a = pool.acquire_row("a")
     row_b = pool.acquire_row("b")
     rows = torch.full((2, 13), 999, dtype=torch.long)
@@ -316,7 +316,7 @@ def test_audio_history_updates_pool_presence_mask():
 
 
 def test_rebuild_audio_history_clears_stale_presence():
-    pool = MossTTSLocalDecodeStatePool(model())
+    pool = MossTTSLocalDecodeStatePool(_model())
     row = pool.acquire_row("a")
     pool.audio_token_presence[row, 0, 99] = True
     rows = []
@@ -341,7 +341,7 @@ def test_journal_holds_fields():
 
 
 def test_feedback_gather_equals_old_popleft():
-    model = model(max_running_requests=4)
+    model = _model(max_running_requests=4)
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
     rows = [pool.acquire_row("a"), pool.acquire_row("b")]
@@ -369,7 +369,7 @@ def test_feedback_gather_equals_old_popleft():
 
 
 def test_fresh_row_zeros_feedback():
-    model = model(max_running_requests=2)
+    model = _model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
     runner = object.__new__(MossTTSLocalModelRunner)
@@ -548,7 +548,7 @@ def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
         )
 
     model.decode_frame_graphed = decode_frame_graphed
-    model._prepare_multi_modal_inputs = lambda rows: torch.zeros(
+    model.prepare_multi_modal_inputs = lambda rows: torch.zeros(
         (rows.shape[0], _HIDDEN), dtype=model.dtype
     )
     output_processor = SimpleNamespace(
@@ -563,24 +563,24 @@ def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
     schedule_batch = SimpleNamespace(is_prefill_only=False)
     scheduler_output = SimpleNamespace(requests=[request], batch_data=schedule_batch)
     is_prefill = False
-    monkeypatch.setattr(runner, "_execution_context", lambda *a, **k: nullcontext())
+    monkeypatch.setattr(runner, "execution_context", lambda *a, **k: nullcontext())
     monkeypatch.setattr(
         runner,
-        "_build_forward_batch",
+        "build_forward_batch",
         lambda output: (forward_batch, schedule_batch, is_prefill),
     )
     runner._execution_bridge = SimpleNamespace(publish_next_tokens=lambda *a: None)
 
     def prepare_and_forward(forward_batch, schedule_batch, requests, prefill):
         if prefill:
-            runner._build_prefill_input_embeds(forward_batch, requests)
+            runner.build_prefill_input_embeds(forward_batch, requests)
         return SimpleNamespace(
             logits_output=SimpleNamespace(hidden_states=torch.zeros(1, _HIDDEN)),
             can_run_cuda_graph=False,
             next_token_ids=None,
         )
 
-    monkeypatch.setattr(runner, "_prepare_and_forward", prepare_and_forward)
+    monkeypatch.setattr(runner, "prepare_and_forward", prepare_and_forward)
     for step in range(4):
         is_prefill = step == 2
         if is_prefill:
@@ -663,7 +663,7 @@ def test_pool_sampling_position_leads_unresolved_lookahead_launches():
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_collect_frame_stages_host_token_ids():
-    model = model(max_running_requests=2)
+    model = _model(max_running_requests=2)
     model._decode_input_embedding.weight = model._decode_input_embedding.weight.cuda()
     model.device = model._decode_input_embedding.weight.device
     model.config.audio_assistant_slot_token_id = 151646
@@ -919,7 +919,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
 
 
 def test_finalize_commits_generation_steps_to_pool():
-    model = model(max_running_requests=2)
+    model = _model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
     model._state_pool = pool
     model.config = SimpleNamespace(audio_end_token_id=1001)
@@ -962,7 +962,7 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     ``pending_feedback_queue.clear()``. Drives the retraction branch of
     ``build_prefill_input_embeds`` (the only path that resets a live row).
     """
-    model = model(max_running_requests=4)
+    model = _model(max_running_requests=4)
     model.hidden_size = _HIDDEN
     model.dtype = torch.bfloat16
     model.prepare_multi_modal_inputs = lambda rows: torch.zeros(
@@ -1133,7 +1133,7 @@ def test_resume_resets_sampling_steps_to_generation_steps():
     generation_steps so a lookahead-advanced counter does not skip the resumed
     frame's RNG position. No-op on the sync path (already equal).
     """
-    model = model(max_running_requests=4)
+    model = _model(max_running_requests=4)
     model.hidden_size = _HIDDEN
     model.dtype = torch.bfloat16
     model.prepare_multi_modal_inputs = lambda rows: torch.zeros(
@@ -1174,7 +1174,7 @@ def test_resume_with_empty_output_rows_still_resets_sampling_steps():
     refill reset must fire off the held row, not off output_rows, so the resumed
     frame samples at generation_steps, not the stale launch position.
     """
-    model = model(max_running_requests=4)
+    model = _model(max_running_requests=4)
     model.hidden_size = _HIDDEN
     model.dtype = torch.bfloat16
     model.prepare_multi_modal_inputs = lambda rows: torch.zeros(
@@ -1302,7 +1302,7 @@ def test_journal_rows_appended_to_output_rows():
 
 
 def test_param_gather_matches_old_cache():
-    pool = MossTTSLocalDecodeStatePool(model(max_running_requests=2))
+    pool = MossTTSLocalDecodeStatePool(_model(max_running_requests=2))
     data = _params(seed=12345)
     row = pool.acquire_row("rid")
     pool.write_params(row, data)

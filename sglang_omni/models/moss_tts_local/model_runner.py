@@ -506,7 +506,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             result.next_token_ids = launch_buf
 
     @staticmethod
-    def _advance_sampling_position(data: Any) -> int:
+    def advance_sampling_position(data: Any) -> int:
         """RNG position for this collect, advancing the launch-side counter in
         floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
         path the two stay equal (generation_steps increments after every collect)

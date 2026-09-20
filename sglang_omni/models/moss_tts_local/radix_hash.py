@@ -70,7 +70,7 @@ if triton is not None:
             "text_stride",
         ]
     )
-    def _radix_row_hash_kernel(
+    def radix_row_hash_kernel(
         rows_ptr,
         next_text_ptr,
         out_ptr,
@@ -120,7 +120,7 @@ if triton is not None:
             "code_col_stride",
         ]
     )
-    def _build_rows_and_hash_kernel(
+    def build_rows_and_hash_kernel(
         stop_ptr,
         codes_ptr,
         rows_ptr,
@@ -168,8 +168,8 @@ if triton is not None:
         tl.store(ids_ptr + row, output, mask=row_mask)
 
 else:
-    _radix_row_hash_kernel = None
-    _build_rows_and_hash_kernel = None
+    radix_row_hash_kernel = None
+    build_rows_and_hash_kernel = None
 
 
 def poly_row_hash(rows: torch.Tensor) -> torch.Tensor:
@@ -207,7 +207,7 @@ def gpu_radix_row_hash(
     so the existing eos detection still fires. device/dtype follow ``rows``.
     """
     if (
-        _radix_row_hash_kernel is not None
+        radix_row_hash_kernel is not None
         and rows.device.type == "cuda"
         and rows.ndim == 2
         and rows.dtype in (torch.int32, torch.int64)
@@ -221,7 +221,7 @@ def gpu_radix_row_hash(
         if rows.shape[0] == 0:
             return output
         with torch.cuda.device(rows.device):
-            _radix_row_hash_kernel[(triton.cdiv(rows.shape[0], _TRITON_BLOCK_SIZE),)](
+            radix_row_hash_kernel[(triton.cdiv(rows.shape[0], _TRITON_BLOCK_SIZE),)](
                 rows,
                 next_text,
                 output,
@@ -261,7 +261,7 @@ def build_rows_and_radix_token_ids(
     Torch sequence as a fallback.
     """
     if (
-        _build_rows_and_hash_kernel is not None
+        build_rows_and_hash_kernel is not None
         and stop_choice.device.type == "cuda"
         and codes.device == stop_choice.device
         and stop_choice.ndim == 1
@@ -281,7 +281,7 @@ def build_rows_and_radix_token_ids(
         if batch_size == 0:
             return rows, ids
         with torch.cuda.device(codes.device):
-            _build_rows_and_hash_kernel[(triton.cdiv(batch_size, _TRITON_BLOCK_SIZE),)](
+            build_rows_and_hash_kernel[(triton.cdiv(batch_size, _TRITON_BLOCK_SIZE),)](
                 stop_choice,
                 codes,
                 rows,
