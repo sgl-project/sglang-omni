@@ -17,7 +17,7 @@ import transformers
 _QWEN3_ROPE_THETA = 1_000_000
 
 
-def _build_text_config(raw: Any) -> transformers.PretrainedConfig:
+def build_text_config(raw: Any) -> transformers.PretrainedConfig:
     """Realise a text-backbone sub-config into a concrete ``PretrainedConfig``."""
     if isinstance(raw, transformers.PretrainedConfig):
         return raw
@@ -58,7 +58,7 @@ class HiggsMultimodalQwen3Config(transformers.PretrainedConfig):
         self.audio_token_id = audio_token_id
         self.mel_per_sample = mel_per_sample
         self.audio_encoder_config = audio_encoder_config
-        self.text_config = _build_text_config(text_config)
+        self.text_config = build_text_config(text_config)
         super().__init__(**kwargs)
 
     def get_text_config(self, decoder: bool = False) -> transformers.PretrainedConfig:

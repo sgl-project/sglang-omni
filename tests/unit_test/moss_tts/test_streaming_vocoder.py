@@ -185,7 +185,7 @@ def test_streaming_matches_full_decode_across_segments() -> None:
     scheduler, tokenizer, vocoder = _make_scheduler()
     payload = _payload("req", delayed)
     full_state, full_delayed = vocoder.prepare_item(payload)
-    full, _ = vocoder._decode_audio(full_state, full_delayed)
+    full, _ = vocoder.decode_audio(full_state, full_delayed)
 
     scheduler.handle_streaming_new_request("req", payload)
     scheduler.handle_stream_chunk("req", _item(delayed[:5], 0))
@@ -237,7 +237,7 @@ def test_chunks_and_done_before_payload_preserve_final_tail() -> None:
     scheduler, _, vocoder = _make_scheduler(stream_holdback_tokens=1)
     payload = _payload("req", delayed)
     full_state, full_delayed = vocoder.prepare_item(payload)
-    full, _ = vocoder._decode_audio(full_state, full_delayed)
+    full, _ = vocoder.decode_audio(full_state, full_delayed)
 
     scheduler.handle_stream_chunk("req", _item(delayed))
     scheduler.handle_stream_done("req")

@@ -17,7 +17,7 @@ from sglang_omni.models.fun_cosyvoice3.mlx.model import (  # noqa: E402
     SPEECH_TOKEN_SIZE,
     TOTAL_VOCAB_SIZE,
     CosyVoice3MlxModel,
-    _quantize_loaded_backbone,
+    quantize_loaded_backbone,
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.runner import (  # noqa: E402
     FunCosyVoice3MlxModelRunner,
@@ -78,7 +78,7 @@ def test_native_mlx_builds_prompt_and_projects_only_last_logits() -> None:
 def test_native_mlx_quantizes_only_the_qwen_layers() -> None:
     model = _tiny_model(hidden_size=64, intermediate_size=128)
 
-    _quantize_loaded_backbone(model.model, "mlx_q4")
+    quantize_loaded_backbone(model.model, "mlx_q4")
 
     assert isinstance(model.model.layers[0].self_attn.q_proj, QuantizedLinear)
     assert not isinstance(model.speech_embedding, QuantizedLinear)
@@ -87,7 +87,7 @@ def test_native_mlx_quantizes_only_the_qwen_layers() -> None:
 
 def test_native_mlx_rejects_unknown_quantization() -> None:
     with pytest.raises(ValueError, match="must be one of"):
-        _quantize_loaded_backbone(_tiny_model().model, "unknown")
+        quantize_loaded_backbone(_tiny_model().model, "unknown")
 
 
 def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
@@ -105,7 +105,7 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     raw_logits[0, 5] = 4.0
     raw_logits[0, 6] = -4.0
     raw_logits[0, SPEECH_TOKEN_SIZE] = 100.0
-    constrained = runner._constrain_logits(
+    constrained = runner.constrain_logits(
         mx.array(raw_logits),
         ["req"],
         [[]],
@@ -130,7 +130,7 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
     raw_logits[0, 5] = 4.0
     raw_logits[0, 6] = 6.0
 
-    constrained = runner._constrain_logits(
+    constrained = runner.constrain_logits(
         mx.array(raw_logits),
         ["req"],
         [[]],
@@ -145,7 +145,7 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
 def test_runner_tracks_recent_history_for_ras() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
     runner._cosyvoice3_recent_tokens = {"req": [29, 28, 29]}
-    mask = runner._recent_token_masks(["req"], None)
+    mask = runner.recent_token_masks(["req"], None)
     mx.eval(mask)
     assert mask.shape == (1, SPEECH_TOKEN_SIZE)
     assert bool(mask[0, 29].item())
@@ -170,7 +170,7 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     logits = mx.full((1, TOTAL_VOCAB_SIZE), -10.0, dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
     logits = logits.at[0, 6].add(9.0)
-    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) != 5
@@ -193,7 +193,7 @@ def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
     logits = logits.at[0, 6].add(9.0)
-    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) == 5
@@ -216,7 +216,7 @@ def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 6].add(10.0)
     logits = logits.at[0, 5].add(9.0)
-    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) == 6
@@ -247,7 +247,7 @@ def test_runner_resolves_omni_sampling_seed(
         )
     )
 
-    params = runner._sampling_params_for_request(req)
+    params = runner.sampling_params_for_request(req)
 
     assert params.seed == expected
 

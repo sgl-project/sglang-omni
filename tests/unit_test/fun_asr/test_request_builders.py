@@ -317,6 +317,30 @@ def test_fun_asr_request_builder_rejects_audio_over_vad_limit(monkeypatch) -> No
         request_builder(payload)
 
 
+def test_fun_asr_request_builder_enforces_scheduler_request_limits(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    request_builder, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=_FakeTokenizer(),
+        max_new_tokens=16,
+        feature_extractor=_feature_extractor(17),
+    )
+    payload = StagePayload(
+        request_id="req-fun-asr-request-limits",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params={}),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.enforce_request_limits is True
+
+
 def test_fun_asr_request_builder_rejects_explicit_token_budget_over_cap(
     monkeypatch,
 ) -> None:

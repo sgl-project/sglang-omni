@@ -19,7 +19,7 @@ def _load_shim_dir():
     function = next(
         node
         for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_shim_dir"
+        if isinstance(node, ast.FunctionDef) and node.name == "shim_dir"
     )
     namespace = {
         "Path": Path,
@@ -31,7 +31,7 @@ def _load_shim_dir():
         compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"),
         namespace,
     )
-    return namespace["_shim_dir"]
+    return namespace["shim_dir"]
 
 
 class TestCheckpointShim(unittest.TestCase):

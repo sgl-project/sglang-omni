@@ -42,7 +42,7 @@ class Qwen3ASRProcessor(ProcessorMixin):
         )
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _get_feat_extract_output_lengths(self, input_lengths):
+    def get_feat_extract_output_lengths(self, input_lengths):
         return qwen3_asr_audio_token_lengths(input_lengths)
 
     def __call__(self, text=None, audio=None, audio_kwargs=None, **kwargs):
@@ -75,7 +75,7 @@ class Qwen3ASRProcessor(ProcessorMixin):
             if audio is not None and "feature_attention_mask" in inputs:
                 audio_pad_id = self.tokenizer.convert_tokens_to_ids("<|audio_pad|>")
                 feat_lengths = inputs["feature_attention_mask"].sum(dim=-1)
-                audio_token_counts = self._get_feat_extract_output_lengths(feat_lengths)
+                audio_token_counts = self.get_feat_extract_output_lengths(feat_lengths)
                 expanded = []
                 for seq_idx in range(input_ids.shape[0]):
                     ids = input_ids[seq_idx].tolist()

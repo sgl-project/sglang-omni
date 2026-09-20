@@ -191,9 +191,9 @@ class FishQwen3Config(PretrainedConfig):
         self.initializer_range = initializer_range
 
         # Post-initialization
-        self._post_init_config()
+        self.post_init_config()
 
-    def _post_init_config(self):
+    def post_init_config(self):
         """Post-initialization to compute derived values."""
         if self.n_local_heads == -1:
             self.n_local_heads = self.n_head

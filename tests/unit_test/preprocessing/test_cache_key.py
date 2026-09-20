@@ -71,14 +71,14 @@ def test_reference_path_cache_key_trust_stat_skips_sentinel_on_hit(
     cache_key._REF_PATH_HASH_MEMO.clear()
 
     sentinel_calls = 0
-    original_sentinel = cache_key._reference_path_sentinel
+    original_sentinel = cache_key.reference_path_sentinel
 
     def counting_sentinel(path, file_size):
         nonlocal sentinel_calls
         sentinel_calls += 1
         return original_sentinel(path, file_size)
 
-    monkeypatch.setattr(cache_key, "_reference_path_sentinel", counting_sentinel)
+    monkeypatch.setattr(cache_key, "reference_path_sentinel", counting_sentinel)
 
     # First call (memo miss) must still compute the sentinel once so the memo
     # entry stays valid for default (trust_stat=False) callers like Higgs.

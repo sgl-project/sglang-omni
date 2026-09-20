@@ -148,7 +148,7 @@ def _make_gpu_scheduler(
             device=device,
             num_quantizers=2,
             total_gpu_memory_fraction=1.0,
-            graph_keys=code2wav_scheduler._serial_threshold_graph_keys(10, 1),
+            graph_keys=code2wav_scheduler.serial_threshold_graph_keys(10, 1),
         )
         assert runner.stats()["enabled"] is True
     scheduler = Code2WavScheduler(
@@ -165,9 +165,7 @@ def _make_gpu_scheduler(
         # Note (jiannan-17): cudaHostAlloc may synchronize the device, so no
         # pinned allocation may sit between queued device work and the fenced
         # copy the probe tests observe.
-        scheduler._release_slot(
-            scheduler._acquire_slot(scheduler._default_slot_samples)
-        )
+        scheduler.release_slot(scheduler.acquire_slot(scheduler._default_slot_samples))
     return scheduler
 
 
@@ -229,7 +227,7 @@ def _force_pipeline(scheduler: Code2WavScheduler, monkeypatch) -> list:
     scheduler._pipeline_active = True
     monkeypatch.setattr(
         cuda_staging,
-        "_allocate_pinned",
+        "allocate_pinned",
         lambda numel, dtype: torch.empty(numel, dtype=dtype),
     )
     monkeypatch.setattr(torch.cuda, "Event", _FakeEvent)
@@ -396,7 +394,7 @@ def test_overlap_flush_failure_keeps_pending_owned_until_abort(monkeypatch) -> N
     event.sync_error = RuntimeError("D2H synchronization failed")
 
     with pytest.raises(RuntimeError, match="D2H synchronization failed"):
-        scheduler._flush_pending("req-1", state)
+        scheduler.flush_pending("req-1", state)
 
     assert state.pending is pending
     assert pending.slot not in scheduler._pinned_free
@@ -441,7 +439,7 @@ def test_overlap_acquire_reaps_completed_retired_slot(monkeypatch) -> None:
     scheduler.abort("req-1")
 
     _slot_event(slot).complete = True
-    acquired = scheduler._acquire_slot(slot.capacity)
+    acquired = scheduler.acquire_slot(slot.capacity)
 
     assert acquired is slot
     assert scheduler._pinned_retired == []
@@ -460,7 +458,7 @@ def test_overlap_query_failure_quarantines_slot(monkeypatch, caplog) -> None:
     _slot_event(slot).query_error = RuntimeError("event query failed")
     scheduler.abort("req-1")
 
-    scheduler._reap_retired_slots()
+    scheduler.reap_retired_slots()
 
     assert scheduler._pinned_retired == []
     assert scheduler._pinned_quarantined == [slot]
@@ -575,17 +573,17 @@ def test_overlap_rerecord_failure_on_reused_slot_quarantines_it(monkeypatch) -> 
 def test_overlap_slot_growth_failure_returns_original_free_slot(monkeypatch) -> None:
     scheduler = _make_scheduler(overlap=True)
     _force_pipeline(scheduler, monkeypatch)
-    slot = scheduler._acquire_slot(2)
+    slot = scheduler.acquire_slot(2)
     assert slot is not None
-    scheduler._release_slot(slot)
+    scheduler.release_slot(slot)
 
     def _fail_alloc(numel: int, dtype: torch.dtype) -> torch.Tensor:
         raise RuntimeError(f"cannot grow to {numel}")
 
-    monkeypatch.setattr(cuda_staging, "_allocate_pinned", _fail_alloc)
+    monkeypatch.setattr(cuda_staging, "allocate_pinned", _fail_alloc)
 
     with pytest.raises(RuntimeError, match="cannot grow"):
-        scheduler._acquire_slot(slot.capacity + 1)
+        scheduler.acquire_slot(slot.capacity + 1)
 
     assert scheduler._pinned_free == [slot]
     assert scheduler._pinned_created == 1
@@ -601,13 +599,13 @@ def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
     assert pending is not None
     event = _slot_event(pending.slot)
 
-    release_slot = scheduler._release_slot
+    release_slot = scheduler.release_slot
 
     def _release_after_synchronize(slot) -> None:
         assert _slot_event(slot).synchronize_calls == 1
         release_slot(slot)
 
-    monkeypatch.setattr(scheduler, "_release_slot", _release_after_synchronize)
+    monkeypatch.setattr(scheduler, "release_slot", _release_after_synchronize)
 
     scheduler.handle_stream_done("req-1")
 
@@ -722,13 +720,13 @@ def test_eos_lazy_scan_one_scan_per_window_and_tail_stays_stream_done(
     scheduler = _make_scheduler(overlap=True, model=model)
     _seed(scheduler)
     scans: list[int] = []
-    original_scan = scheduler._scan_unchecked
+    original_scan = scheduler.scan_unchecked
 
     def _counted_scan(state):
         scans.append(len(state.chunks) - state.checked)
         return original_scan(state)
 
-    monkeypatch.setattr(scheduler, "_scan_unchecked", _counted_scan)
+    monkeypatch.setattr(scheduler, "scan_unchecked", _counted_scan)
 
     # Note (edwardzh): raw ready hits the threshold here, so this fails
     # if the scan runs after the gate instead of before it.
@@ -754,13 +752,13 @@ def test_eos_lazy_scan_batches_one_scan_per_threshold_window(monkeypatch) -> Non
     scheduler = _make_scheduler(overlap=True, model=model)
     _seed(scheduler)
     scans: list[int] = []
-    original_scan = scheduler._scan_unchecked
+    original_scan = scheduler.scan_unchecked
 
     def _counted_scan(state):
         scans.append(len(state.chunks) - state.checked)
         return original_scan(state)
 
-    monkeypatch.setattr(scheduler, "_scan_unchecked", _counted_scan)
+    monkeypatch.setattr(scheduler, "scan_unchecked", _counted_scan)
 
     _feed(scheduler, "req-1", range(30))
     assert model.calls == [(1, 2, 10), (1, 2, 11), (1, 2, 11)]
@@ -1034,17 +1032,17 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
     # same-stream ordering means the copy still lands with the old bytes. This
     # runs before any pinned allocation (cudaHostAlloc may synchronize).
     window = torch.stack(chunks[19:30], dim=0).transpose(0, 1).unsqueeze(0)
-    _, execution = scheduler._forward_codes(window, graph_eligible=True)
+    _, execution = scheduler.forward_codes(window, graph_eligible=True)
     assert execution["execution_mode"] == ("cuda_graph" if cuda_graph else "eager")
     assert slot.query() is False, "the replay queues behind the copy, not before"
 
     # The reap precedes the allocation, so this holds even if cudaHostAlloc
     # synchronizes.
-    other = scheduler._acquire_slot(pending.samples)
+    other = scheduler.acquire_slot(pending.samples)
     assert other is not None and other is not slot
     assert scheduler._pinned_created == 2
     assert scheduler._pinned_retired == [slot]
-    scheduler._release_slot(other)
+    scheduler.release_slot(other)
 
     slot.synchronize()
     assert slot.query() is True
@@ -1052,12 +1050,12 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
         slot.view(pending.samples).numpy(), expected_window_2
     ), "the retired copy landed intact; nothing overwrote the buffer early"
 
-    reaped = scheduler._acquire_slot(pending.samples)
+    reaped = scheduler.acquire_slot(pending.samples)
     assert reaped is slot
     assert scheduler._pinned_retired == []
     assert scheduler._pinned_quarantined == []
     assert scheduler._pinned_created == 2
-    scheduler._release_slot(reaped)
+    scheduler.release_slot(reaped)
     assert sorted(map(id, scheduler._pinned_free)) == sorted(map(id, [other, slot]))
 
 
@@ -1129,7 +1127,7 @@ def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
         torch.cuda.set_device(0)
         scheduler.abort("req-2")
         assert scheduler._pinned_retired == [retired.slot]
-        scheduler._reap_retired_slots()
+        scheduler.reap_retired_slots()
         assert torch.cuda.current_device() == 0
         assert scheduler._pinned_retired == [retired.slot], "still in flight"
         scheduler.on_serving_stop()

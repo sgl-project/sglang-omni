@@ -127,7 +127,7 @@ def test_dots_executor_resolves_tokenizer_invariants_once(
     tokenizer = _RecordingTokenizer()
     monkeypatch.setattr(
         stages,
-        "_load_model_metadata",
+        "load_model_metadata",
         lambda _path: (
             "model",
             SimpleNamespace(

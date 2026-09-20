@@ -111,12 +111,12 @@ class WorkerConfig(BaseModel):
 
     @field_validator("url")
     @classmethod
-    def _normalize_url(cls, value: str) -> str:
+    def normalize_url(cls, value: str) -> str:
         return normalize_worker_url(value)
 
     @field_validator("model", mode="before")
     @classmethod
-    def _normalize_model(cls, value: object) -> str | None:
+    def normalize_model(cls, value: object) -> str | None:
         if value is None:
             return None
         if not isinstance(value, str):
@@ -126,7 +126,7 @@ class WorkerConfig(BaseModel):
 
     @field_validator("capabilities")
     @classmethod
-    def _validate_capabilities(cls, value: set[Capability]) -> set[Capability]:
+    def validate_capabilities(cls, value: set[Capability]) -> set[Capability]:
         if not value:
             raise ValueError("worker capabilities must not be empty")
         return value
@@ -153,7 +153,7 @@ class RouterConfig(BaseModel):
 
     @field_validator("port")
     @classmethod
-    def _validate_port(cls, value: int) -> int:
+    def validate_port(cls, value: int) -> int:
         if value <= 0 or value > 65535:
             raise ValueError("port must be in [1, 65535]")
         return value
@@ -167,28 +167,28 @@ class RouterConfig(BaseModel):
         "health_check_interval_secs",
     )
     @classmethod
-    def _validate_positive_int(cls, value: int) -> int:
+    def validate_positive_int(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("value must be > 0")
         return value
 
     @field_validator("max_connections")
     @classmethod
-    def _validate_max_connections(cls, value: int | None) -> int | None:
+    def validate_max_connections(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError("value must be > 0")
         return value
 
     @field_validator("max_inflight")
     @classmethod
-    def _validate_max_inflight(cls, value: int | None) -> int | None:
+    def validate_max_inflight(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError("max_inflight must be > 0")
         return value
 
     @field_validator("shutdown_drain_secs")
     @classmethod
-    def _validate_shutdown_drain_secs(cls, value: int | None) -> int | None:
+    def validate_shutdown_drain_secs(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError("shutdown_drain_secs must be > 0")
         return value
@@ -218,7 +218,7 @@ class RouterConfig(BaseModel):
 
     @field_validator("health_check_endpoint")
     @classmethod
-    def _validate_health_endpoint(cls, value: str) -> str:
+    def validate_health_endpoint(cls, value: str) -> str:
         if not value.startswith("/"):
             raise ValueError("health_check_endpoint must start with /")
         if "?" in value or "#" in value:
@@ -227,11 +227,11 @@ class RouterConfig(BaseModel):
 
     @field_validator("voice_owner_worker_url")
     @classmethod
-    def _normalize_voice_owner_worker_url(cls, value: str | None) -> str | None:
+    def normalize_voice_owner_worker_url(cls, value: str | None) -> str | None:
         return normalize_worker_url(value) if value is not None else None
 
     @model_validator(mode="after")
-    def _validate_workers(self) -> "RouterConfig":
+    def validate_workers(self) -> "RouterConfig":
         if not self.workers:
             raise ValueError("at least one worker is required")
         urls = [worker.url for worker in self.workers]
@@ -258,7 +258,7 @@ class RouterConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _resolve_max_connections(self) -> "RouterConfig":
+    def resolve_max_connections(self) -> "RouterConfig":
         if self.max_connections is None:
             self.max_connections = min(
                 MAX_AUTO_CONNECTIONS, CONNECTIONS_PER_WORKER * len(self.workers)

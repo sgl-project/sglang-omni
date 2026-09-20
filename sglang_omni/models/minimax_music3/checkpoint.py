@@ -26,12 +26,12 @@ class TTMCheckpointPaths:
 
 
 @lru_cache(maxsize=None)
-def _download_once(model_path: str) -> str:
+def download_once(model_path: str) -> str:
     return _resolve_source(model_path)
 
 
 def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
-    root = Path(_download_once(str(Path(model_path).expanduser()))).expanduser()
+    root = Path(download_once(str(Path(model_path).expanduser()))).expanduser()
     direct_qwen = root / "qwen_7B" / "qwen_7B"
     direct_dit = root / "flowmatching_vae.pth"
     if not (direct_qwen.is_dir() and direct_dit.exists()) and root.is_dir():

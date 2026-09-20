@@ -19,14 +19,14 @@ else:
     tl = None
 
 
-def _has_triton_runtime() -> bool:
+def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
 
 
-if _has_triton_runtime():
+if has_triton_runtime():
 
     @triton.jit
-    def _gather_codec_embedding_and_add_kernel(
+    def gather_codec_embedding_and_add_kernel(
         token_ids,
         embedding_weight,
         gathered,
@@ -54,10 +54,10 @@ if _has_triton_runtime():
         tl.store(accumulated_offsets, current + values, mask=mask)
 
 else:
-    _gather_codec_embedding_and_add_kernel = None
+    gather_codec_embedding_and_add_kernel = None
 
 
-def _contiguous_storage_ranges_overlap(
+def contiguous_storage_ranges_overlap(
     first: torch.Tensor, second: torch.Tensor
 ) -> bool:
     first_start = first.data_ptr()
@@ -78,7 +78,7 @@ def gather_codec_embedding_and_add(
     Return ``False`` without writes when the caller must use the eager path.
     """
 
-    if _gather_codec_embedding_and_add_kernel is None:
+    if gather_codec_embedding_and_add_kernel is None:
         return False
     if not (
         token_ids.is_cuda
@@ -129,15 +129,15 @@ def gather_codec_embedding_and_add(
     ):
         return False
     if (
-        _contiguous_storage_ranges_overlap(gathered, accumulated)
-        or _contiguous_storage_ranges_overlap(gathered, embedding_weight)
-        or _contiguous_storage_ranges_overlap(accumulated, embedding_weight)
+        contiguous_storage_ranges_overlap(gathered, accumulated)
+        or contiguous_storage_ranges_overlap(gathered, embedding_weight)
+        or contiguous_storage_ranges_overlap(accumulated, embedding_weight)
     ):
         return False
 
     block_size = 256
     grid = (batch_size, triton.cdiv(hidden_size, block_size))
-    _gather_codec_embedding_and_add_kernel[grid](
+    gather_codec_embedding_and_add_kernel[grid](
         token_ids,
         embedding_weight,
         gathered,

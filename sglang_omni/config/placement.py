@@ -91,7 +91,7 @@ class StagePlacementPlanner:
                 gpu_entries[gpu_id].append(placement)
 
         gpu_plans = {
-            gpu_id: _build_gpu_placement(gpu_id, entries)
+            gpu_id: build_gpu_placement(gpu_id, entries)
             for gpu_id, entries in gpu_entries.items()
         }
         plan = StagePlacementPlan(
@@ -99,12 +99,12 @@ class StagePlacementPlanner:
             gpus=gpu_plans,
             replica_instances=dict(replica_instances or {}),
         )
-        self._validate_memory_budgets(plan)
+        self.validate_memory_budgets(plan)
         if apply_policy:
-            _apply_placement_policy(self._config, plan)
+            apply_placement_policy(self._config, plan)
         return plan
 
-    def _validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
+    def validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
         limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
         for gpu in plan.gpus.values():
             if gpu.total_gpu_memory_fraction > limit + 1e-9:
@@ -220,7 +220,7 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     return gpu_ids
 
 
-def _build_gpu_placement(
+def build_gpu_placement(
     gpu_id: int,
     entries: list[StagePlacement],
 ) -> GpuPlacement:
@@ -253,7 +253,7 @@ def _build_gpu_placement(
     )
 
 
-def _apply_placement_policy(
+def apply_placement_policy(
     config: PipelineConfig,
     plan: StagePlacementPlan,
 ) -> None:

@@ -15,7 +15,7 @@ from sglang_omni.models.fun_asr.sglang_model import (
     FunAsrNanoForConditionalGeneration,
     FunAsrNanoFSMN,
     MultiHeadedAttentionSANM,
-    _sanm_mask_from_lengths,
+    sanm_mask_from_lengths,
 )
 
 
@@ -242,7 +242,7 @@ def test_fsmn_mask_zeros_pad_and_matches_unpadded() -> None:
     padded = torch.zeros(1, 8, 4)
     padded[:, :5] = valid
     padded[:, 5:] = 7.0
-    mask = _sanm_mask_from_lengths(
+    mask = sanm_mask_from_lengths(
         torch.tensor([5]), 8, dtype=valid.dtype, device=valid.device
     )
 

@@ -3,7 +3,8 @@
 This document describes the coding style for human contributors and AI agents.
 Sources: the [style prompt and do/don't examples](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5651721937)
 and [additional anti-pattern examples](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5650093336),
-including [discarded parameters](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5673011724).
+including [discarded parameters](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5673011724)
+and [f-strings plus no backticks in comments](https://github.com/zhaochenyang20/sglang-diffusion-routing/issues/32#issuecomment-5734141980).
 
 ## Principles
 
@@ -40,7 +41,9 @@ speculative generality.
   Avoid verbose "why" rationale in comments.
 - Preserve license/copyright notices and concise upstream attribution.
 - Sign non-obvious/note comments with the author's name: `# note (name): ...`.
-- No backticks in Python comments.
+- No backticks in Python comments or docstrings. Identifiers stay in plain
+  text: `"""Valid frame counts after the encoder's stride-2 conv2."""`
+  is correct; wrapping the name in double backticks is not.
 - NO process markers: no ★, `# P1`, `# [FIX]`, `# TODO` without a ticket, `# === SECTION ===`
   banners.
 - NO provenance leakage: never name other repos/upstream/"the closed source" in source.
@@ -54,9 +57,19 @@ speculative generality.
 ## NAMING
 
 - Classes PascalCase; functions/variables snake_case; constants UPPER_SNAKE.
-  Use a leading underscore only for private functions and variables. Public
-  functions and variables must not have a leading underscore.
   Preserve language-defined special methods such as `__init__`.
+- **Do not prefix names with `_` by default.** A leading underscore is the
+  exception, not a habit or a "this is internal" badge. It is not a marker
+  for "used only in this class", "used only in this file", "set in
+  `__init__`", or "not part of the HTTP API". Use `_` only when the name
+  must stay invisible to every caller outside its defining class or module
+  — a helper that would be a mistake to call from anywhere else.
+  Attributes other methods of the same class read are public: `is_ragged`,
+  never `_is_ragged`. Module-level constants are public UPPER_SNAKE:
+  `FA3_PAGE_SIZE`, never `_FA3_PAGE_SIZE`. Boolean names already start
+  with `is_` / `has_` / `should_` / `can_`; do not add a second underscore
+  in front. Public functions, variables, and constants must not have a
+  leading underscore.
 - Names say what, not how: `load_checkpoint` not `do_thing`; `num_codebooks` not `n`.
   Single letters only for loop indices (`i`,`j`) or math (`x`,`y`,`t`).
 - Interface names must identify the domain meaning, role, or unit of a value.
@@ -71,7 +84,12 @@ speculative generality.
   preferred; if the repo uses `Optional`, match it.
 - Either `requires-python >= 3.10` (native `X | Y`) or `from __future__ import annotations`.
   Don't use `Optional` to work around forward refs — use quoted annotations
-  (`"ModelConfig"`). Type-only imports are covered in IMPORTS.
+  (`"ModelConfig"`).
+- Do not use `if TYPE_CHECKING:`. It hides imports from runtime and from
+  pre-commit. Import the name at module level, or write the concrete type in
+  the annotation (`tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]`
+  instead of a gated alias). If an import is circular, move the shared type
+  into a third module.
 - Closed value sets → `Literal[...]` or `Enum`, not bare strings in comparisons.
 - No mutable function defaults: `def f(x=[])`/`= {}` are bugs. Use a `None` sentinel.
 - Use concrete types, including model and decoder types, rather than `any`/`Any`
@@ -131,10 +149,11 @@ speculative generality.
 
 ## CONTROL FLOW
 
-- Validate inputs and preconditions before the main logic. When possible, organizing
- conditions into clear, mutually exclusive if/elif/else branches. Return early for
- invalid cases, and keep the main execution path in the final branch to avoid unnecessary
- lookups, repeated checks, and deeply nested logic.
+- Validate inputs and preconditions before the main logic. Organize conditions
+  into mutually exclusive if/elif/else branches. If an if assigns a variable
+  or returns a value, it must have the matching else (or elif/.../else).
+  Keep the main execution path in the final branch. Do not leave a lone if
+  that returns or assigns and then fall through.
 
 ## LOGGING
 
@@ -144,8 +163,8 @@ speculative generality.
   use the logger's level and context fields.
 - `print` only for CLI output the end user reads (`--help`, visualization, `__main__` demo).
   Runtime info — even debug — goes through the logger.
-- Prefer `%-style` for hot-path log calls so formatting is skipped when the level is
-  disabled: `logger.info("Loading: %s", path)`.
+- Always use f-strings, including in log calls. Do not use %-style interpolation:
+  `logger.info(f"Loading {repo_id} config={config_name} split={split}")`.
 
 ## CONFIG & MAGIC VALUES
 
@@ -160,25 +179,49 @@ speculative generality.
 - Do not ship a YAML file that is "documentation only" and never loaded.
 - Define a constant used by only one module in that module; do not create a
   cross-file import solely for it.
+- Parameters flow top-down. A default owned by pipeline or stage config
+  (FactoryArgs, StageConfig, CLI) is written once at that layer and passed
+  down. Do not re-declare the same value as a lower-layer module constant or
+  factory default. The factory takes the knobs as required parameters and
+  forwards them; it does not invent a second copy of the policy.
+  Wrong: `CODE2WAV_MAX_BATCH_SIZE = 8` in stages.py plus
+  `FactoryArgs(max_batch_size=8)` in config.py. Right: only the config
+  FactoryArgs; `create_code2wav_executor(..., max_batch_size: int, ...)`.
 
 ## IMPORTS
 
 - Group: stdlib / third-party / local, blank-line separated, alphabetical within group.
 - Manage import paths consistently at the project level. Don’t patch sys.path ad hoc in individual files.
-- Prefer module-level imports; allow function-local imports for optional
-  dependencies, necessary initialization ordering, or documented
-  circular-dependency breaks. Put type-only cycle-breaking imports under
-  `if TYPE_CHECKING:` with quoted annotations.
+- Import at the top of the file. Do not lazy-import inside a function just
+  to keep the factory "light" or to hide a heavy dependency. Wrong: a
+  block of `from ... import ...` at the start of
+  `create_sglang_talker_executor_from_config`. Right: the same names at
+  module scope. Function-local imports are allowed only for optional
+  dependencies, necessary initialization ordering, or a documented
+  circular-dependency break. Do not use `if TYPE_CHECKING:` to keep an
+  import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit
   `__all__`; no wildcard imports. For third-party libraries, prefer their
   documented public import paths (e.g. `from pydantic import BaseModel`).
+- Do not import a class or factory from a sibling model package. Shared
+  runtime belongs in sglang_omni/scheduling (or another non-model module).
+  Wrong: MiniCPM-o stages importing Qwen3-Omni StreamingDetokenizeScheduler.
+  Right: both models import the shared scheduler and pass their own
+  build_result.
 
 ## TOOLING
 
 - This repository already configures linting, formatting, and other checks in
   [.pre-commit-config.yaml](/.pre-commit-config.yaml). Run
   `pre-commit run --all-files` before completing a change.
+- Test the public contract (inputs → outputs), not internal layout.
+  Do not snapshot helper tuples, page tables, prefix sums, or other
+  encodings that can change without changing behavior. A representation
+  refactor that preserves the caller's result should not break tests.
+- Do not add a new test file for one case that belongs next to the
+  existing suite. Put GPU or optional-backend cases on the same module
+  with a marker; skip when that backend is absent.
 - Test actual failure contracts and supported fallback paths;
   do not add tests solely to preserve speculative recovery scaffolding.

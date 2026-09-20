@@ -121,14 +121,14 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     forwarded = []
 
     scheduler._running = True
-    scheduler._drain_and_purge = lambda: None
-    scheduler._schedule_next_batch = lambda: batch
-    scheduler._apply_results = lambda *_: None
+    scheduler.drain_and_purge = lambda: None
+    scheduler.schedule_next_batch = lambda: batch
+    scheduler.apply_results = lambda *_: None
 
     def stop_after_step(_batch) -> None:
         scheduler._running = False
 
-    scheduler._post_step = stop_after_step
+    scheduler.post_step = stop_after_step
     scheduler.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(device="cpu"),
         forward_batch_generation=lambda forward_batch, *, batch: (
@@ -192,7 +192,7 @@ def test_dllm_staging_admission_uses_dllm_config(
     monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", _Batch)
 
     with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
-        batch = scheduler._schedule_next_batch()
+        batch = scheduler.schedule_next_batch()
 
     assert batch is not None
     assert created["dllm_config"] is scheduler.dllm_config
@@ -223,8 +223,8 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
         dllm_algo_state=[state],
     )
 
-    scheduler._apply_results(batch, result)
-    scheduler._post_step(batch)
+    scheduler.apply_results(batch, result)
+    scheduler.post_step(batch)
 
     assert req.dllm_incomplete_ids == array("q", [10, 11, 12, 13])
     assert req.dllm_algo_state is state
@@ -248,7 +248,7 @@ def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
         dllm_algo_state=[None],
     )
 
-    scheduler._apply_results(batch, result)
+    scheduler.apply_results(batch, result)
 
     assert req.dllm_incomplete_ids == array("q")
     assert req.dllm_algo_state is None
@@ -267,7 +267,7 @@ def test_fdfo_result_requires_accept_lengths() -> None:
     )
 
     with pytest.raises(AssertionError, match="missing accept lengths"):
-        scheduler._apply_results(batch, result)
+        scheduler.apply_results(batch, result)
 
 
 def test_sync_dllm_result_commits_generated_suffix() -> None:
@@ -280,7 +280,7 @@ def test_sync_dllm_result_commits_generated_suffix() -> None:
         dllm_algo_state=None,
     )
 
-    scheduler._apply_results(batch, result)
+    scheduler.apply_results(batch, result)
 
     assert req.full_untruncated_fill_ids == array("q", [1, 2, -1, -1, 10, 11])
     assert req.output_ids == [10, 11]

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 from benchmarks.dataset import asr_longform, prepare, seedtts, stt_benchmark
 from benchmarks.eval import (
@@ -31,6 +32,14 @@ class _FakeDataset:
     def select(self, indices: list[int]) -> "_FakeDataset":
         self.selected_indices = list(indices)
         return _FakeDataset([self._rows[i] for i in indices])
+
+    def rename_columns(self, aliases: dict[str, str]) -> "_FakeDataset":
+        return _FakeDataset(
+            [
+                {aliases.get(key, key): value for key, value in row.items()}
+                for row in self._rows
+            ]
+        )
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -464,6 +473,9 @@ def _install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> Non
         types.SimpleNamespace(
             Audio=lambda **kwargs: ("Audio", kwargs),
             load_dataset=load_dataset,
+            get_dataset_config_names=lambda repo_id: pytest.fail(
+                f"Unexpected config enumeration for {repo_id}"
+            ),
         ),
     )
 
@@ -541,6 +553,118 @@ def test_custom_stt_benchmark_repo_loads_default_revision(
     assert observed == {"repo_id": "example/custom-stt", "split": "validation"}
 
     stt_benchmark._STAGED_CACHE.clear()
+
+
+def test_custom_stt_config_uses_dataset_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()
+    calls: list[dict] = []
+
+    def load_dataset(repo_id: str, **kwargs):
+        calls.append({"repo_id": repo_id, **kwargs})
+        return _FakeDataset(_stt_rows(1))
+
+    _install_fake_datasets(monkeypatch, load_dataset)
+    _stage_stt_into(monkeypatch, tmp_path)
+    for config_name in ("english", "chinese", "english"):
+        samples = stt_benchmark.load_stt_benchmark_samples(
+            "example/custom-stt", config_name=config_name, split="validation"
+        )
+        assert len(samples) == 1
+
+    assert calls == [
+        {
+            "repo_id": "example/custom-stt",
+            "split": "validation",
+            "name": name,
+        }
+        for name in ("english", "chinese")
+    ]
+    stt_benchmark._STAGED_CACHE.clear()
+
+
+def test_librispeech_stages_flac_with_column_aliases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()
+    audio = io.BytesIO()
+    waveform = np.array([0.0, 0.25, -0.25, 0.5], dtype=np.float32)
+    sf.write(audio, waveform, 16000, format="FLAC")
+
+    def load_dataset(repo_id: str, **kwargs):
+        assert repo_id == "openslr/librispeech_asr"
+        assert kwargs == {
+            "split": "test",
+            "data_files": {"test": "clean/test/*.parquet"},
+            "verification_mode": "no_checks",
+            "revision": "example-revision",
+        }
+        return _FakeDataset(
+            [
+                {
+                    "id": "sample-0",
+                    "text": "Transcript.",
+                    "audio": {"bytes": audio.getvalue()},
+                }
+            ]
+        )
+
+    _install_fake_datasets(monkeypatch, load_dataset)
+    _stage_stt_into(monkeypatch, tmp_path)
+    samples = stt_benchmark.load_stt_benchmark_samples(
+        "openslr/librispeech_asr",
+        config_name="clean",
+        split="test",
+        revision="example-revision",
+    )
+
+    assert samples[0].sample_id == "sample-0"
+    assert samples[0].ref_text == "Transcript."
+    staged = sf.info(samples[0].ref_audio)
+    assert staged.format == "WAV"
+    assert staged.samplerate == 16000
+    decoded, _ = sf.read(samples[0].ref_audio)
+    np.testing.assert_array_equal(decoded, waveform)
+    stt_benchmark._STAGED_CACHE.clear()
+
+
+def test_stt_column_aliases_preserve_canonical_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stt_benchmark._STAGED_CACHE.clear()
+    rows = _stt_rows(1)
+    rows[0].update(id="alternate-id", text="Alternate transcript.")
+    _install_fake_datasets(monkeypatch, lambda *args, **kwargs: _FakeDataset(rows))
+    _stage_stt_into(monkeypatch, tmp_path)
+
+    samples = stt_benchmark.load_stt_benchmark_samples()
+
+    assert samples[0].sample_id == "sample-0"
+    assert samples[0].ref_text == "Transcript 0."
+    stt_benchmark._STAGED_CACHE.clear()
+
+
+@pytest.mark.parametrize("config_name", ["clean", "other"])
+def test_download_librispeech_selects_only_test_files(
+    monkeypatch: pytest.MonkeyPatch, config_name: str
+) -> None:
+    calls: list[dict] = []
+    _install_fake_datasets(
+        monkeypatch,
+        lambda repo_id, **kwargs: calls.append({"repo_id": repo_id, **kwargs}),
+    )
+
+    prepare.download_dataset(f"openslr/librispeech_asr:{config_name}", quiet=True)
+
+    assert calls == [
+        {
+            "repo_id": "openslr/librispeech_asr",
+            "data_files": {"test": f"{config_name}/test/*.parquet"},
+            "split": "test",
+            "verification_mode": "no_checks",
+        }
+    ]
 
 
 @pytest.mark.parametrize("sample_id", ["../escape", "nested/id", "", ".."])
@@ -635,6 +759,7 @@ def test_stt_benchmark_main_pins_canonical_revision_and_english(
     assert loaded == {
         "repo_id": prepare.STT_BENCHMARK_DATASET_ID,
         "max_samples": None,
+        "config_name": None,
         "split": "train",
         "revision": prepare.STT_BENCHMARK_DATASET_REVISION,
     }
@@ -664,6 +789,29 @@ def test_custom_stt_benchmark_repo_does_not_use_canonical_revision(
     assert loaded["revision"] is None
     assert loaded["max_samples"] == 3
     assert captured["dataset_revision"] is None
+
+
+def test_stt_benchmark_cli_records_config_and_language(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    loaded, _ = _run_stt_benchmark_main(
+        monkeypatch,
+        tmp_path,
+        argv=[
+            "--repo-id",
+            "example/custom-stt",
+            "--config-name",
+            "mandarin",
+            "--lang",
+            "zh",
+        ],
+        samples=_one_stt_sample(tmp_path),
+    )
+
+    assert loaded["config_name"] == "mandarin"
+    payload = json.loads((tmp_path / "result.json").read_text())
+    assert payload["config"]["config_name"] == "mandarin"
+    assert payload["config"]["lang"] == "zh"
 
 
 def test_stt_benchmark_main_rejects_empty_dataset(

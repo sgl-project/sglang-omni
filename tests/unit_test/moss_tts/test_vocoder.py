@@ -14,7 +14,7 @@ import sglang_omni.models.moss_tts.vocoder as vocoder_module
 from sglang_omni.models.moss_tts.payload_types import MossTTSState
 from sglang_omni.models.moss_tts.vocoder import (
     MossTTSVocoder,
-    _copy_valid_waveforms_to_cpu,
+    copy_valid_waveforms_to_cpu,
 )
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
@@ -140,7 +140,7 @@ def test_moss_tts_vocoder_copies_only_valid_waveforms() -> None:
         dtype=torch.bfloat16,
     )
 
-    waveforms = _copy_valid_waveforms_to_cpu(audio, [2, 3])
+    waveforms = copy_valid_waveforms_to_cpu(audio, [2, 3])
 
     assert [waveform.dtype for waveform in waveforms] == [
         torch.float32,
@@ -211,7 +211,7 @@ def test_moss_tts_vocoder_batches_mixed_length_segments_across_requests(
         audio_tokenizer=None,
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=24000),
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -301,7 +301,7 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -378,7 +378,7 @@ def test_moss_tts_vocoder_autocasts_low_precision_standalone_codec() -> None:
         dtype=torch.long,
     )
 
-    waveform, sample_rate = vocoder._decode_audio(state, delayed_codes)
+    waveform, sample_rate = vocoder.decode_audio(state, delayed_codes)
 
     assert audio_vocoder.autocast_enabled == [True]
     assert waveform.dtype is torch.float32
@@ -449,7 +449,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",
@@ -540,7 +540,7 @@ def test_moss_tts_vocoder_can_disable_batched_decode(
     processor = SimpleNamespace(
         model_config=SimpleNamespace(audio_pad_code=1024, sampling_rate=16000)
     )
-    monkeypatch.setattr(stages, "_load_moss_processor", lambda *args: processor)
+    monkeypatch.setattr(stages, "load_moss_processor", lambda *args: processor)
     monkeypatch.setattr(
         stages,
         "load_moss_audio_vocoder",

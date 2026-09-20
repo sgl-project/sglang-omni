@@ -68,7 +68,7 @@ class _FakeDAC:
 @pytest.fixture(autouse=True)
 def _mock_dac(monkeypatch):
     fake = _FakeDAC()
-    monkeypatch.setattr(streaming_vocoder, "_get_vocoder", lambda device: fake)
+    monkeypatch.setattr(streaming_vocoder, "get_vocoder", lambda device: fake)
     monkeypatch.setattr(
         streaming_vocoder,
         "decode_to_pcm",

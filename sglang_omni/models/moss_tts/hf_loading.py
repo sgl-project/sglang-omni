@@ -21,7 +21,7 @@ from sglang.srt.utils.hf_transformers import (
 MOSS_TTS_DEFAULT_CONTEXT_LENGTH = 8192
 
 
-def _validate_context_length_metadata(text_config: Any) -> bool:
+def validate_context_length_metadata(text_config: Any) -> bool:
     context_value = None
     for key in CONTEXT_LENGTH_KEYS:
         value = getattr(text_config, key, None)
@@ -119,7 +119,7 @@ def resolve_moss_tts_context_length(
         config_kwargs["_configuration_file"] = config_file.strip()
     config = copy.deepcopy(get_config(checkpoint_dir, **config_kwargs))
     text_config = get_hf_text_config(config)
-    if not _validate_context_length_metadata(text_config):
+    if not validate_context_length_metadata(text_config):
         return MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     try:
         return int(get_context_length(text_config))

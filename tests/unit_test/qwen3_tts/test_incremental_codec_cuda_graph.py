@@ -8,15 +8,15 @@ import torch
 
 from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalCodecState
 from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+    CaptureResourceSet,
     IncrementalCodecGraphKey,
     Qwen3TTSIncrementalCodecCudaGraphRunner,
-    _CaptureResourceSet,
     split_frames_by_width,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+    IncrementalDecodeBatch,
+    IncrementalDecodePlan,
     Qwen3TTSStreamingVocoderScheduler,
-    _IncrementalDecodeBatch,
-    _IncrementalDecodePlan,
 )
 
 
@@ -304,7 +304,7 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
 
     monkeypatch.setattr(torch.cuda, "synchronize", fail_synchronize)
 
-    runner._rollback_capture(
+    runner.rollback_capture(
         temporary,
         pool=pool,
         capture_stream=capture_stream,
@@ -340,7 +340,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
     monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
 
-    runner._rollback_capture(
+    runner.rollback_capture(
         temporary,
         pool=object(),
         capture_stream=object(),
@@ -425,11 +425,11 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
 
     static_codes = torch.zeros(1, 2, 4, dtype=torch.long, device=device)
     key = IncrementalCodecGraphKey(fresh_frames=4, batch_bucket=1)
-    resources = _CaptureResourceSet(
+    resources = CaptureResourceSet(
         pool=None, stream=torch.cuda.Stream(device=device), keepalives=[static_codes]
     )
 
-    runner((4,))._warmup_capture_shape(key, static_codes, resources)
+    runner((4,)).warmup_capture_shape(key, static_codes, resources)
 
     assert len(traces) == 1
     codes, state, inference, grad = traces[0]
@@ -443,7 +443,7 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
 
     traces.clear()
     decodes.clear()
-    runner(())._warmup_capture_shape(key, static_codes, resources)
+    runner(()).warmup_capture_shape(key, static_codes, resources)
 
     assert traces == []
     assert [entry[2] for entry in decodes] == [False, False, False]
@@ -488,7 +488,7 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     scheduler._initial_incremental_decode_graphs = None
     scheduler._followup_incremental_graph_holders = (graph_runner,)
     scheduler._worker_ctx.incremental_graphs = graph_runner
-    plan = _IncrementalDecodePlan(
+    plan = IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
         fresh_frames=2,
@@ -496,9 +496,9 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
         generated_frames=2,
         emitted_generated_frames=0,
     )
-    batch = _IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
+    batch = IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
 
-    handle = scheduler._launch_decode_plans(
+    handle = scheduler.launch_decode_plans(
         [plan],
         stream=scheduler._followup_decode_stream,
         incremental=batch,
@@ -554,7 +554,7 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
     scheduler._initial_incremental_decode_graphs = None
     scheduler._followup_incremental_graph_holders = (graph_runner,)
     scheduler._worker_ctx.incremental_graphs = graph_runner
-    plan = _IncrementalDecodePlan(
+    plan = IncrementalDecodePlan(
         decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
         slot=0,
         fresh_frames=2,
@@ -562,9 +562,9 @@ def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
         generated_frames=2,
         emitted_generated_frames=0,
     )
-    batch = _IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
+    batch = IncrementalDecodeBatch(decoder=eager_decoder, arena=arena, slots=[0])
 
-    handle = scheduler._launch_decode_plans(
+    handle = scheduler.launch_decode_plans(
         [plan],
         stream=scheduler._followup_decode_stream,
         incremental=batch,
@@ -592,8 +592,8 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
         ),
     )
 
-    def plan(slot: int, fresh_frames: int = 8) -> _IncrementalDecodePlan:
-        return _IncrementalDecodePlan(
+    def plan(slot: int, fresh_frames: int = 8) -> IncrementalDecodePlan:
+        return IncrementalDecodePlan(
             decoder_input=torch.zeros(1, 2, fresh_frames, dtype=torch.long),
             slot=slot,
             fresh_frames=fresh_frames,
@@ -604,7 +604,7 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
 
     group = [(str(index), None, plan(index)) for index in range(10)]
     runner = scheduler._followup_incremental_graph_holders[0]
-    split = scheduler._split_incremental_group_for_graph(group, runner=runner)
+    split = scheduler.split_incremental_group_for_graph(group, runner=runner)
 
     assert [len(item) for item in split] == [4, 4, 2]
     assert [entry[0] for subgroup in split for entry in subgroup] == [
@@ -612,14 +612,14 @@ def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
     ]
 
     terminal = [("terminal", None, plan(11, fresh_frames=3))]
-    assert scheduler._split_incremental_group_for_graph(terminal, runner=runner) == [
+    assert scheduler.split_incremental_group_for_graph(terminal, runner=runner) == [
         terminal
     ]
 
 
 def test_incremental_codec_warm_graph_uses_standard_batch_bucket_prefix() -> None:
     select = (
-        Qwen3TTSStreamingVocoderScheduler._resolve_incremental_warm_graph_batch_sizes
+        Qwen3TTSStreamingVocoderScheduler.resolve_incremental_warm_graph_batch_sizes
     )
 
     assert select(max_batch_size=1) == (1,)
