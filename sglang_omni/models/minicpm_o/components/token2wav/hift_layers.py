@@ -125,11 +125,11 @@ class SineGen2(torch.nn.Module):
         self.voiced_threshold = voiced_threshold
         self.upsample_scale = upsample_scale
 
-    def _f02uv(self, f0: torch.Tensor) -> torch.Tensor:
+    def f02uv(self, f0: torch.Tensor) -> torch.Tensor:
         uv = (f0 > self.voiced_threshold).type(torch.float32)
         return uv
 
-    def _f02sine(self, f0_values: torch.Tensor) -> torch.Tensor:
+    def f02sine(self, f0_values: torch.Tensor) -> torch.Tensor:
         rad_values = f0_values / self.sampling_rate % 1
         rand_ini = torch.rand(
             f0_values.shape[0], f0_values.shape[2], device=f0_values.device
@@ -155,8 +155,8 @@ class SineGen2(torch.nn.Module):
         fn = torch.multiply(
             f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device)
         )
-        sine_waves = self._f02sine(fn) * self.sine_amp
-        uv = self._f02uv(f0)
+        sine_waves = self.f02sine(fn) * self.sine_amp
+        uv = self.f02uv(f0)
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * torch.randn_like(sine_waves)
         sine_waves = sine_waves * uv + noise

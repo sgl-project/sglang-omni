@@ -32,14 +32,14 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 logger = logging.getLogger(__name__)
 
 
-def _codec_device(codec: Any, fallback: str) -> torch.device:
+def codec_device(codec: Any, fallback: str) -> torch.device:
     try:
         return next(codec.parameters()).device
     except (AttributeError, StopIteration):
         return torch.device(fallback)
 
 
-def _module_dtype(module: Any) -> torch.dtype | None:
+def module_dtype(module: Any) -> torch.dtype | None:
     try:
         return next(
             parameter.dtype
@@ -51,7 +51,7 @@ def _module_dtype(module: Any) -> torch.dtype | None:
 
 
 @contextmanager
-def _autocast_if_supported(
+def autocast_if_supported(
     device: torch.device,
     dtype: torch.dtype | None,
 ) -> Iterator[None]:
@@ -68,13 +68,13 @@ def _autocast_if_supported(
         yield
 
 
-def _join_waveforms(waveforms: list[torch.Tensor]) -> torch.Tensor:
+def join_waveforms(waveforms: list[torch.Tensor]) -> torch.Tensor:
     if not waveforms:
         raise ValueError("waveforms must not be empty")
     return waveforms[0] if len(waveforms) == 1 else torch.cat(waveforms, dim=0)
 
 
-def _mono_waveform(wav: torch.Tensor) -> torch.Tensor:
+def mono_waveform(wav: torch.Tensor) -> torch.Tensor:
     if wav.ndim != 2 or int(wav.shape[0]) != 1:
         raise ValueError(
             f"MOSS-TTS Delay batched decode must yield mono audio [1, T], got "
@@ -83,7 +83,7 @@ def _mono_waveform(wav: torch.Tensor) -> torch.Tensor:
     return wav[0]
 
 
-def _copy_valid_waveforms_to_cpu(
+def copy_valid_waveforms_to_cpu(
     audio: torch.Tensor,
     output_lengths: list[int],
 ) -> list[torch.Tensor]:
@@ -180,7 +180,7 @@ def decode_codes_batch(
             # the attention backend.
             with torch.autocast(device_type=device.type, enabled=False):
                 decoder_hidden_states = quantizer_decode(audio_codes).float()
-            with _autocast_if_supported(device, compute_dtype):
+            with autocast_if_supported(device, compute_dtype):
                 audio, audio_lengths = decoder(
                     decoder_hidden_states,
                     input_lengths,
@@ -212,7 +212,7 @@ def decode_codes_batch(
             output_lengths_cpu = [
                 length // interleaved_channels for length in output_lengths_cpu
             ]
-        decoded.extend(_copy_valid_waveforms_to_cpu(audio, output_lengths_cpu))
+        decoded.extend(copy_valid_waveforms_to_cpu(audio, output_lengths_cpu))
     return decoded
 
 
@@ -240,14 +240,14 @@ class MossTTSVocoder(BatchVocoderBase):
             and callable(getattr(self._quantizer, "decode_codes", None))
             and hasattr(self._codec, "decoder")
         ):
-            codec_device = _codec_device(self._codec, self._device)
+            resolved_codec_device = codec_device(self._codec, self._device)
             try:
                 source_decoder = self._codec.decoder
                 nonstream_decoder = MossAudioTokenizerVocoderDecoder.from_module(
                     source_decoder
                 )
                 supports_packed_attention = nonstream_decoder.supports_packed_attention(
-                    codec_device,
+                    resolved_codec_device,
                     self._compute_dtype,
                 )
             except (AttributeError, AssertionError, TypeError, ValueError):
@@ -269,7 +269,7 @@ class MossTTSVocoder(BatchVocoderBase):
                     logger.info(
                         "MOSS-TTS Delay packed decoder is unavailable for "
                         "device=%s compute_dtype=%s; using standalone codec decode",
-                        codec_device,
+                        resolved_codec_device,
                         self._compute_dtype,
                     )
 
@@ -282,7 +282,7 @@ class MossTTSVocoder(BatchVocoderBase):
             raise RuntimeError("MOSS-TTS generated no delayed audio codes")
         return state, delayed_codes
 
-    def _decode_audio(
+    def decode_audio(
         self,
         state: MossTTSState,
         delayed_codes: torch.Tensor,
@@ -297,10 +297,10 @@ class MossTTSVocoder(BatchVocoderBase):
             assistant_start_length=int(state.assistant_start_length),
         )
         codec_decoder = getattr(self._codec, "decoder", self._codec)
-        codec_dtype = _module_dtype(codec_decoder) or _module_dtype(self._codec)
-        codec_device = _codec_device(self._codec, self._device)
+        codec_dtype = module_dtype(codec_decoder) or module_dtype(self._codec)
+        resolved_codec_device = codec_device(self._codec, self._device)
         decoded = []
-        with _autocast_if_supported(codec_device, codec_dtype):
+        with autocast_if_supported(resolved_codec_device, codec_dtype):
             for segment in segments:
                 decoded.extend(self._audio_vocoder.decode_codes([segment]))
         if not decoded:
@@ -308,10 +308,10 @@ class MossTTSVocoder(BatchVocoderBase):
         waveforms = [
             torch.as_tensor(wav).detach().reshape(-1).to("cpu") for wav in decoded
         ]
-        waveform = _join_waveforms(waveforms)
-        return waveform, self._resolve_sample_rate(state)
+        waveform = join_waveforms(waveforms)
+        return waveform, self.resolve_sample_rate(state)
 
-    def _resolve_sample_rate(self, state: MossTTSState) -> int:
+    def resolve_sample_rate(self, state: MossTTSState) -> int:
         return int(
             getattr(self._audio_vocoder, "sample_rate", 0)
             or getattr(getattr(self._codec, "config", None), "sampling_rate", 0)
@@ -322,7 +322,7 @@ class MossTTSVocoder(BatchVocoderBase):
             or 24000
         )
 
-    def _decode_segment_batches(
+    def decode_segment_batches(
         self,
         segments: list[torch.Tensor],
     ) -> list[torch.Tensor]:
@@ -343,19 +343,19 @@ class MossTTSVocoder(BatchVocoderBase):
             segments,
             quantizer_decode=quantizer.decode_codes,
             decoder=self._nonstream_decoder,
-            device=_codec_device(codec, self._device),
+            device=codec_device(codec, self._device),
             compute_dtype=self._compute_dtype,
             max_batch_size=self._max_segment_batch_size,
         )
         # note (Zhang Yiyang): the Delay codec is mono: [1, samples] ->
         # [samples].
-        return [_mono_waveform(wav) for wav in wavs]
+        return [mono_waveform(wav) for wav in wavs]
 
     async def decode_batch(
         self, items: list[tuple[MossTTSState, torch.Tensor]]
     ) -> list[tuple[torch.Tensor, int]]:
         if self._nonstream_decoder is None:
-            return [self._decode_audio(state, codes) for state, codes in items]
+            return [self.decode_audio(state, codes) for state, codes in items]
 
         audio_pad_code = resolve_moss_audio_pad_code(
             getattr(self._processor, "model_config", None)
@@ -377,7 +377,7 @@ class MossTTSVocoder(BatchVocoderBase):
 
         failure_traceback = None
         try:
-            decoded_segments = self._decode_segment_batches(flat_segments)
+            decoded_segments = self.decode_segment_batches(flat_segments)
         except Exception:
             # Materialize the traceback as text, then leave the exception scope
             # before retrying. The exception traceback can otherwise retain the
@@ -390,12 +390,12 @@ class MossTTSVocoder(BatchVocoderBase):
                 "packed path and falling back to standalone codec decode:\n%s",
                 failure_traceback.rstrip(),
             )
-            return [self._decode_audio(state, codes) for state, codes in items]
+            return [self.decode_audio(state, codes) for state, codes in items]
 
         return [
             (
-                _join_waveforms([decoded_segments[index] for index in indices]),
-                self._resolve_sample_rate(items[request_index][0]),
+                join_waveforms([decoded_segments[index] for index in indices]),
+                self.resolve_sample_rate(items[request_index][0]),
             )
             for request_index, indices in enumerate(request_segments)
         ]

@@ -74,7 +74,7 @@ def test_collect_codes_stages_the_ids_before_the_predictor_runs():
 
     runner = _runner(code_predictor_forward, torch.device("cpu"))
 
-    runner._collect_codes(result, forward_batch, object(), requests)
+    runner.collect_codes(result, forward_batch, object(), requests)
 
     assert len(staged_when_called) == 1
     assert staged_when_called[0] is ids
@@ -123,8 +123,8 @@ def test_staged_ids_resolve_while_the_predictor_is_still_running():
     runner = _runner(code_predictor_forward, device)
     stream = torch.cuda.current_stream(device)
 
-    runner._collect_codes(result, forward_batch, object(), requests)
-    host_ids = runner._resolve_host_token_ids(result)
+    runner.collect_codes(result, forward_batch, object(), requests)
+    host_ids = runner.resolve_host_token_ids(result)
     predictor_done = stream.query()
     torch.cuda.synchronize()
 
@@ -143,7 +143,7 @@ def test_staged_ids_keep_the_sampled_values_when_later_stream_work_overwrites_th
 
     runner = _runner(code_predictor_forward, device)
 
-    runner._collect_codes(result, forward_batch, object(), requests)
+    runner.collect_codes(result, forward_batch, object(), requests)
 
-    assert runner._resolve_host_token_ids(result).tolist() == [7, 8]
+    assert runner.resolve_host_token_ids(result).tolist() == [7, 8]
     assert result.next_token_ids.tolist() == [-1, -1]

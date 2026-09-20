@@ -49,7 +49,7 @@ _unit_mapping = {
 }
 
 
-def _num_to_words(num_str):
+def num_to_words(num_str):
     """Convert a number string to words. Returns None on failure."""
     if not _HAS_INFLECT:
         return None
@@ -86,25 +86,25 @@ def _num_to_words(num_str):
         return None
 
 
-def _remove_commas(m):
+def remove_commas(m):
     return m.group(1).replace(",", "")
 
 
-def _expand_unit(m):
+def expand_unit(m):
     num_str, unit = m.group(1), m.group(2).lower()
     unit_word = _unit_mapping.get(unit, unit)
-    word = _num_to_words(num_str)
+    word = num_to_words(num_str)
     return f" {word} {unit_word} " if word else f" {num_str} {unit} "
 
 
-def _expand_percent(m):
-    word = _num_to_words(m.group(1))
+def expand_percent(m):
+    word = num_to_words(m.group(1))
     return f" {word} percent " if word else f" {m.group(1)} percent "
 
 
-def _expand_dollars(m):
+def expand_dollars(m):
     match = m.group(1)
-    word = _num_to_words(match)
+    word = num_to_words(match)
     if word:
         clean = match.lstrip("-") or "0"
         unit = "dollar" if abs(float(clean)) == 1.0 else "dollars"
@@ -112,9 +112,9 @@ def _expand_dollars(m):
     return f" {match} dollars "
 
 
-def _expand_pounds(m):
+def expand_pounds(m):
     num_str = m.group(1)
-    word = _num_to_words(num_str)
+    word = num_to_words(num_str)
     if word:
         clean = num_str.lstrip("-") or "0"
         unit = "pound" if abs(float(clean)) == 1.0 else "pounds"
@@ -122,7 +122,7 @@ def _expand_pounds(m):
     return f" {num_str} pounds "
 
 
-def _expand_fraction(m):
+def expand_fraction(m):
     if not _HAS_INFLECT:
         return m.group(0)
     try:
@@ -137,7 +137,7 @@ def _expand_fraction(m):
         return m.group(0)
 
 
-def _expand_ordinal(m):
+def expand_ordinal(m):
     if not _HAS_INFLECT:
         return m.group(0)
     try:
@@ -147,12 +147,12 @@ def _expand_ordinal(m):
         return m.group(0)
 
 
-def _expand_number(m):
-    word = _num_to_words(m.group(0))
+def expand_number(m):
+    word = num_to_words(m.group(0))
     return f" {word} " if word else f" {m.group(0)} "
 
 
-def _expand_version(m):
+def expand_version(m):
     if not _HAS_INFLECT:
         return m.group(0)
     prefix, _, num_str = m.group(1), m.group(2), m.group(3)
@@ -178,14 +178,14 @@ def _expand_version(m):
 def normalize_numbers(text):
     if not _HAS_INFLECT:
         return text
-    text = re.sub(_comma_number_re, _remove_commas, text)
-    text = re.sub(_unit_re, _expand_unit, text)
-    text = re.sub(_pounds_re, _expand_pounds, text)
-    text = re.sub(_dollars_re, _expand_dollars, text)
-    text = re.sub(_fraction_re, _expand_fraction, text)
-    text = re.sub(_percent_number_re, _expand_percent, text)
-    text = re.sub(_ordinal_re, _expand_ordinal, text)
-    text = re.sub(_version_re, _expand_version, text)
-    text = re.sub(_number_re, _expand_number, text)
+    text = re.sub(_comma_number_re, remove_commas, text)
+    text = re.sub(_unit_re, expand_unit, text)
+    text = re.sub(_pounds_re, expand_pounds, text)
+    text = re.sub(_dollars_re, expand_dollars, text)
+    text = re.sub(_fraction_re, expand_fraction, text)
+    text = re.sub(_percent_number_re, expand_percent, text)
+    text = re.sub(_ordinal_re, expand_ordinal, text)
+    text = re.sub(_version_re, expand_version, text)
+    text = re.sub(_number_re, expand_number, text)
     text = re.sub(_whitespace_re, " ", text)
     return text.strip()

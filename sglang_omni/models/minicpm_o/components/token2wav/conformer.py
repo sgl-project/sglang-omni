@@ -196,7 +196,9 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         T = xs.size(1)
         masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
         xs, pos_emb, masks = self.embed(xs, masks)
+        xs = xs * masks.transpose(1, 2).to(xs)
         xs = self.pre_lookahead_layer(xs)
+        xs = xs * masks.transpose(1, 2).to(xs)
         for layer in self.encoders:
             xs = layer(xs, masks, pos_emb)
         xs = xs.transpose(1, 2).contiguous()
@@ -205,6 +207,7 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         T = xs.size(1)
         masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
         xs, pos_emb, masks = self.up_embed(xs, masks)
+        xs = xs * masks.transpose(1, 2).to(xs)
         for layer in self.up_encoders:
             xs = layer(xs, masks, pos_emb)
         if self.normalize_before:

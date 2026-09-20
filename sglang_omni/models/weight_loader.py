@@ -45,11 +45,11 @@ def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Pa
     return Path(snapshot_download(model_path, local_files_only=False))
 
 
-def _load_bin_shard(path: str) -> dict[str, torch.Tensor]:
+def load_bin_shard(path: str) -> dict[str, torch.Tensor]:
     return torch.load(path, map_location="cpu")
 
 
-def _read_safetensors_keys(path: Path, keys: list[str]) -> dict[str, torch.Tensor]:
+def read_safetensors_keys(path: Path, keys: list[str]) -> dict[str, torch.Tensor]:
     from safetensors import safe_open
 
     state_dict: dict[str, torch.Tensor] = {}
@@ -61,7 +61,7 @@ def _read_safetensors_keys(path: Path, keys: list[str]) -> dict[str, torch.Tenso
     return state_dict
 
 
-def _load_safetensors_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
+def load_safetensors_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     index_file = model_path / "model.safetensors.index.json"
     if not index_file.exists():
         return {}
@@ -77,14 +77,14 @@ def _load_safetensors_sharded(model_path: Path, prefix: str) -> dict[str, torch.
     state_dict: dict[str, torch.Tensor] = {}
     for shard, keys in shards.items():
         shard_path = model_path / shard
-        shard_weights = _read_safetensors_keys(shard_path, keys)
+        shard_weights = read_safetensors_keys(shard_path, keys)
         for key, tensor in shard_weights.items():
             new_key = key[len(prefix) :]
             state_dict[new_key] = tensor
     return state_dict
 
 
-def _load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
+def load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     single = model_path / "model.safetensors"
     if not single.exists():
         return {}
@@ -99,7 +99,7 @@ def _load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.T
     return state_dict
 
 
-def _load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
+def load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     index_file = model_path / "pytorch_model.bin.index.json"
     if not index_file.exists():
         return {}
@@ -114,29 +114,29 @@ def _load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
 
     state_dict: dict[str, torch.Tensor] = {}
     for shard, keys in shards.items():
-        shard_weights = _load_bin_shard(str(model_path / shard))
+        shard_weights = load_bin_shard(str(model_path / shard))
         for key in keys:
             new_key = key[len(prefix) :]
             state_dict[new_key] = shard_weights[key]
     return state_dict
 
 
-def _load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
+def load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     single = model_path / "pytorch_model.bin"
     if not single.exists():
         return {}
 
-    all_weights = _load_bin_shard(str(single))
+    all_weights = load_bin_shard(str(single))
     return {k[len(prefix) :]: v for k, v in all_weights.items() if k.startswith(prefix)}
 
 
-def _normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
     if isinstance(prefixes, str):
         return (prefixes,)
     return tuple(prefixes)
 
 
-def _load_weights_from_resolved_path(
+def load_weights_from_resolved_path(
     model_path: Path, prefixes: tuple[str, ...]
 ) -> dict[str, torch.Tensor]:
     """Return the first matching state_dict, or {} if no prefix matches.
@@ -147,22 +147,22 @@ def _load_weights_from_resolved_path(
     refreshed remote snapshot.
     """
     for prefix_item in prefixes:
-        state_dict = _load_safetensors_sharded(model_path, prefix_item)
+        state_dict = load_safetensors_sharded(model_path, prefix_item)
         if state_dict:
             return state_dict
-        state_dict = _load_safetensors_single(model_path, prefix_item)
+        state_dict = load_safetensors_single(model_path, prefix_item)
         if state_dict:
             return state_dict
-        state_dict = _load_bin_sharded(model_path, prefix_item)
+        state_dict = load_bin_sharded(model_path, prefix_item)
         if state_dict:
             return state_dict
-        state_dict = _load_bin_single(model_path, prefix_item)
+        state_dict = load_bin_single(model_path, prefix_item)
         if state_dict:
             return state_dict
     return {}
 
 
-def _should_retry_remote_weight_load(
+def should_retry_remote_weight_load(
     *,
     model_path: str,
     local_files_only: bool,
@@ -180,14 +180,14 @@ def load_weights_by_prefix(
     resolved_model_path = resolve_model_path(
         model_path, local_files_only=local_files_only
     )
-    prefixes = _normalize_prefixes(prefix)
-    should_retry_remote_load = _should_retry_remote_weight_load(
+    prefixes = normalize_prefixes(prefix)
+    should_retry_remote_load = should_retry_remote_weight_load(
         model_path=model_path,
         local_files_only=local_files_only,
     )
 
     try:
-        state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+        state_dict = load_weights_from_resolved_path(resolved_model_path, prefixes)
     except Exception:
         if not should_retry_remote_load:
             raise
@@ -203,7 +203,7 @@ def load_weights_by_prefix(
         resolved_model_path = Path(
             snapshot_download(model_path, local_files_only=False, force_download=True)
         )
-        state_dict = _load_weights_from_resolved_path(resolved_model_path, prefixes)
+        state_dict = load_weights_from_resolved_path(resolved_model_path, prefixes)
         if state_dict:
             return state_dict
 

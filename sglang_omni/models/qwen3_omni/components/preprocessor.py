@@ -50,7 +50,7 @@ _TRAIN_INPUT_TENSOR_NAMES = frozenset(
 )
 
 
-def _resolve_local_model_dir(model_path: str) -> str:
+def resolve_local_model_dir(model_path: str) -> str:
     """Resolve a local model directory without eagerly hydrating full snapshots."""
     path = Path(model_path)
     if path.exists():
@@ -66,7 +66,7 @@ def _resolve_local_model_dir(model_path: str) -> str:
         return model_path
 
 
-def _combine_cache_keys(*keys: str | None) -> str | None:
+def combine_cache_keys(*keys: str | None) -> str | None:
     parts = [key for key in keys if key]
     if not parts:
         return None
@@ -85,7 +85,7 @@ _QWEN3_OMNI_SPECIAL_TOKEN_KEYS = (
 )
 
 
-def _extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
+def extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
     """Rebuild ``extra_special_tokens`` for tokenizer_config exported by transformers 5.x.
 
     transformers 5.x writes the multimodal special tokens (``image_token`` etc.)
@@ -108,7 +108,7 @@ def _extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
     }
 
 
-def _contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
+def contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
     if base_key is None:
         return None
     parts = [base_key]
@@ -159,7 +159,7 @@ def validate_prompt_seq_len(
         )
 
 
-def _is_pretokenized_prompt(inputs: Any) -> bool:
+def is_pretokenized_prompt(inputs: Any) -> bool:
     """True when a rollout request carries pre-tokenized prompt ids.
 
     Miles RL rollout sends the exact prompt token ids it trains on, so those
@@ -202,11 +202,11 @@ class Qwen3OmniPreprocessor:
         self.default_video_total_pixels = (
             int(video_total_pixels) if video_total_pixels is not None else None
         )
-        self.model_dir = _resolve_local_model_dir(model_path)
+        self.model_dir = resolve_local_model_dir(model_path)
         # Only override ``extra_special_tokens`` when the checkpoint omits them
         # (transformers 5.x layout). Passing an empty dict would clobber the
         # tokens a transformers 4.x checkpoint already declares in its config.
-        extra_special_tokens = _extra_special_tokens_compat(self.model_dir)
+        extra_special_tokens = extra_special_tokens_compat(self.model_dir)
         compat_kwargs = (
             {"extra_special_tokens": extra_special_tokens}
             if extra_special_tokens
@@ -253,7 +253,7 @@ class Qwen3OmniPreprocessor:
         ):
             self.processor.chat_template = self.tokenizer.chat_template
 
-    def _build_multimodal_messages(
+    def build_multimodal_messages(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -294,7 +294,7 @@ class Qwen3OmniPreprocessor:
             event_name="preprocess_start",
         )
         try:
-            result = await self._call_impl(payload)
+            result = await self.call_impl(payload)
         finally:
             _emit_event(
                 request_id=payload.request_id,
@@ -303,7 +303,7 @@ class Qwen3OmniPreprocessor:
             )
         return result
 
-    def _finalize_state(
+    def finalize_state(
         self,
         payload: StagePayload,
         *,
@@ -332,7 +332,7 @@ class Qwen3OmniPreprocessor:
             payload.request.metadata.pop(key, None)
         return payload
 
-    def _preprocess_train_inputs(
+    def preprocess_train_inputs(
         self,
         payload: StagePayload,
         token_ids: list[int],
@@ -417,7 +417,7 @@ class Qwen3OmniPreprocessor:
                 image_encoder_inputs["cache_key"] = processed_cache_key
             if audio_encoder_inputs:
                 audio_encoder_inputs["cache_key"] = processed_cache_key
-        return self._finalize_state(
+        return self.finalize_state(
             payload,
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -437,14 +437,14 @@ class Qwen3OmniPreprocessor:
             },
         )
 
-    async def _call_impl(self, payload: StagePayload) -> StagePayload:
+    async def call_impl(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
-        if _is_pretokenized_prompt(inputs):
-            return self._preprocess_train_inputs(payload, inputs)
+        if is_pretokenized_prompt(inputs):
+            return self.preprocess_train_inputs(payload, inputs)
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
-                return self._preprocess_train_inputs(
+                return self.preprocess_train_inputs(
                     payload,
                     inputs["input_ids"],
                     multimodal_train_inputs,
@@ -601,7 +601,7 @@ class Qwen3OmniPreprocessor:
         # - Explicit audio files get independent audio placeholders
         # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
         num_audios_for_placeholder = num_explicit_audios
-        messages_mm = self._build_multimodal_messages(
+        messages_mm = self.build_multimodal_messages(
             messages_norm,
             num_images=len(images),
             num_audios=num_audios_for_placeholder,
@@ -691,7 +691,7 @@ class Qwen3OmniPreprocessor:
         elif resolved_video_fps is not None:
             effective_video_fps = (resolved_video_fps,)
 
-        contextual_video_cache_key = _contextualize_cache_key(
+        contextual_video_cache_key = contextualize_cache_key(
             video_cache_key,
             fps=effective_video_fps,
             max_frames=resolved_video_max_frames,
@@ -700,21 +700,21 @@ class Qwen3OmniPreprocessor:
             total_pixels=resolved_video_total_pixels,
             seconds_per_chunk=resolved_video_seconds_per_chunk,
         )
-        combined_cache_key = _combine_cache_keys(
+        combined_cache_key = combine_cache_keys(
             image_cache_key, contextual_video_cache_key
         )
         if combined_cache_key:
             image_encoder_inputs["cache_key"] = combined_cache_key
 
         audio_encoder_inputs = {**full_mm_inputs["audio"]}
-        contextualized_audio_cache_key = _contextualize_cache_key(
+        contextualized_audio_cache_key = contextualize_cache_key(
             audio_cache_key,
             target_sr=audio_target_sr,
         )
         if audio_from_video and contextualized_audio_cache_key is not None:
-            contextualized_audio_cache_key = _combine_cache_keys(
+            contextualized_audio_cache_key = combine_cache_keys(
                 contextualized_audio_cache_key,
-                _contextualize_cache_key(
+                contextualize_cache_key(
                     video_cache_key,
                     extracted_audio=True,
                     target_sr=audio_target_sr,
@@ -739,7 +739,7 @@ class Qwen3OmniPreprocessor:
         else:
             encoder_inputs["audio_encoder"] = {"_skip": True, "_result": {}}
 
-        return self._finalize_state(
+        return self.finalize_state(
             payload,
             input_ids=input_ids,
             attention_mask=attention_mask,

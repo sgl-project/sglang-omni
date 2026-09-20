@@ -89,16 +89,16 @@ _OVERLOAD_RETRY_AFTER_SECS = "1"
 
 
 @dataclass(frozen=True)
-class _VoiceUploadRequest:
+class VoiceUploadRequest:
     pass
 
 
 @dataclass(frozen=True)
-class _VoiceDeleteRequest:
+class VoiceDeleteRequest:
     mutation: VoiceMutation
 
 
-_VoiceMutationRequest = _VoiceUploadRequest | _VoiceDeleteRequest
+_VoiceMutationRequest = VoiceUploadRequest | VoiceDeleteRequest
 
 
 class PayloadTooLargeError(ValueError):
@@ -144,7 +144,7 @@ class AdmissionController:
         self._inflight -= 1
 
 
-class _ReleaseOnce:
+class ReleaseOnce:
     """Idempotent release so every response path can call it safely."""
 
     def __init__(self, admission: AdmissionController) -> None:
@@ -158,7 +158,7 @@ class _ReleaseOnce:
         self._admission.release()
 
 
-class _RelayCleanup:
+class RelayCleanup:
     """Idempotent teardown for one streamed relay.
 
     Closes the upstream stream, decrements the worker in-flight count, releases
@@ -173,7 +173,7 @@ class _RelayCleanup:
         *,
         upstream: httpx.Response,
         worker: Worker,
-        release: _ReleaseOnce,
+        release: ReleaseOnce,
         record_completion: Callable[[str], None],
     ) -> None:
         self._upstream = upstream
@@ -196,7 +196,7 @@ class _RelayCleanup:
             self._record_completion(outcome)
 
 
-class _RelayResponse(StreamingResponse):
+class RelayResponse(StreamingResponse):
     """Streaming relay response that cleans up even if the body never streams.
 
     Starlette sends ``http.response.start`` before it iterates the body, so a
@@ -204,7 +204,7 @@ class _RelayResponse(StreamingResponse):
     iterator's ``finally``. This ``__call__`` is the cleanup owner for that path.
     """
 
-    def __init__(self, *args, cleanup: _RelayCleanup, **kwargs) -> None:
+    def __init__(self, *args, cleanup: RelayCleanup, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._cleanup = cleanup
 
@@ -275,7 +275,7 @@ class ProxyHandler:
         self._on_worker_failure = on_worker_failure
         self._voice_routing = voice_routing
 
-    def _current_workers(self) -> list[Worker]:
+    def current_workers(self) -> list[Worker]:
         if self._worker_provider is not None:
             return self._worker_provider()
         return self._workers
@@ -288,7 +288,7 @@ class ProxyHandler:
         # Note (Jiaxin Deng): reject before reading the body; past the bound
         # the relay must shed load, not queue it.
         if not self._admission.try_acquire():
-            self._log_route_rejection(
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=503,
@@ -307,9 +307,9 @@ class ProxyHandler:
                 },
                 headers={"Retry-After": _OVERLOAD_RETRY_AFTER_SECS},
             )
-        release = _ReleaseOnce(self._admission)
+        release = ReleaseOnce(self._admission)
         try:
-            response = await self._forward_admitted(request, path, release)
+            response = await self.forward_admitted(request, path, release)
         except BaseException:
             release()
             raise
@@ -322,11 +322,11 @@ class ProxyHandler:
             weakref.finalize(response, release)
         return response
 
-    async def _forward_admitted(
+    async def forward_admitted(
         self,
         request: Request,
         path: str,
-        release: _ReleaseOnce,
+        release: ReleaseOnce,
     ) -> Response:
         route_kind = classify_route(path)
         body_limit = self._config.max_payload_size
@@ -334,28 +334,28 @@ class ProxyHandler:
         if is_voice_upload:
             body_limit = min(body_limit, MAX_VOICE_UPLOAD_BODY_BYTES)
         content_length = request.headers.get("content-length")
-        if content_length is not None and _exceeds_max_size(content_length, body_limit):
-            self._log_route_rejection(
+        if content_length is not None and exceeds_max_size(content_length, body_limit):
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=413,
                 reason="payload_too_large",
             )
-            return _payload_too_large_response(
+            return payload_too_large_response(
                 is_voice_upload=is_voice_upload,
                 max_size=body_limit,
             )
 
         try:
-            body = await _read_body_with_limit(request, body_limit)
+            body = await read_body_with_limit(request, body_limit)
         except PayloadTooLargeError:
-            self._log_route_rejection(
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=413,
                 reason="payload_too_large",
             )
-            return _payload_too_large_response(
+            return payload_too_large_response(
                 is_voice_upload=is_voice_upload,
                 max_size=body_limit,
             )
@@ -363,7 +363,7 @@ class ProxyHandler:
         try:
             metadata = extract_route_metadata(request, route_kind, body)
         except RouteMetadataError as exc:
-            self._log_route_rejection(
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=400,
@@ -381,7 +381,7 @@ class ProxyHandler:
         if is_large_speech_request:
             metadata.required_capabilities.add("audio_input")
         large_request_candidates, large_request_error = (
-            _large_request_candidates_and_model_error(self._current_workers(), metadata)
+            large_request_candidates_and_model_error(self.current_workers(), metadata)
         )
         voice_owner_handles_large_body = (
             is_large_speech_request
@@ -392,12 +392,12 @@ class ProxyHandler:
             extra_capabilities = set()
         else:
             extra_capabilities, large_request_error = (
-                _large_request_extra_capabilities_or_error(
+                large_request_extra_capabilities_or_error(
                     large_request_candidates, metadata
                 )
             )
         if large_request_error is not None:
-            self._log_route_rejection(
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=400,
@@ -411,7 +411,7 @@ class ProxyHandler:
         metadata.required_capabilities.update(extra_capabilities)
 
         voice_mutation = (
-            self._voice_mutation_request(request, path)
+            self.voice_mutation_request(request, path)
             if self._voice_routing is not None
             else None
         )
@@ -419,7 +419,7 @@ class ProxyHandler:
             assert self._voice_routing is not None
             self._voice_routing.begin_mutation()
         try:
-            return await self._select_and_forward(
+            return await self.select_and_forward(
                 request,
                 path,
                 body,
@@ -432,20 +432,20 @@ class ProxyHandler:
                 assert self._voice_routing is not None
                 self._voice_routing.end_mutation()
 
-    async def _select_and_forward(
+    async def select_and_forward(
         self,
         request: Request,
         path: str,
         body: bytes,
         metadata: RouteMetadata,
-        release: _ReleaseOnce,
+        release: ReleaseOnce,
         *,
         voice_mutation: _VoiceMutationRequest | None = None,
     ) -> Response:
         try:
-            worker = self._select_worker(metadata)
+            worker = self.select_worker(metadata)
         except NoEligibleWorkerError:
-            self._log_route_rejection(
+            self.log_route_rejection(
                 request=request,
                 path=path,
                 status_code=503,
@@ -457,7 +457,7 @@ class ProxyHandler:
                 content={"error": {"message": "no eligible upstream"}},
             )
 
-        return await self._forward_relay(
+        return await self.forward_relay(
             request,
             path,
             body,
@@ -467,7 +467,7 @@ class ProxyHandler:
             voice_mutation=voice_mutation,
         )
 
-    def _select_worker(
+    def select_worker(
         self,
         metadata: RouteMetadata,
     ) -> Worker:
@@ -491,23 +491,23 @@ class ProxyHandler:
                     requested_model=metadata.model,
                 )
         return self._selector.select(
-            self._current_workers(),
+            self.current_workers(),
             required_capabilities=metadata.required_capabilities,
             requested_model=metadata.model,
         )
 
-    async def _forward_relay(
+    async def forward_relay(
         self,
         request: Request,
         path: str,
         body: bytes,
         metadata: RouteMetadata,
         worker: Worker,
-        release: _ReleaseOnce,
+        release: ReleaseOnce,
         voice_mutation: _VoiceMutationRequest | None = None,
     ) -> Response:
         start_time = time.perf_counter()
-        upstream = await self._open_upstream(
+        upstream = await self.open_upstream(
             request=request,
             path=path,
             body=body,
@@ -521,7 +521,7 @@ class ProxyHandler:
         if voice_mutation is not None:
             assert self._voice_routing is not None
             self._voice_routing.mark_mutation_dispatched()
-        return await self._build_relay_response(
+        return await self.build_relay_response(
             upstream=upstream,
             worker=worker,
             path=path,
@@ -531,7 +531,7 @@ class ProxyHandler:
             voice_mutation=voice_mutation,
         )
 
-    async def _open_upstream(
+    async def open_upstream(
         self,
         *,
         request: Request,
@@ -556,7 +556,7 @@ class ProxyHandler:
             # fault; feed neither the eviction signal nor failed_requests, and
             # the request never reached the worker, so it is not routed.
             worker.decrement_active()
-            self._log_route_completion(
+            self.log_route_completion(
                 worker=worker,
                 path=path,
                 metadata=metadata,
@@ -580,11 +580,11 @@ class ProxyHandler:
             if voice_mutation is not None and self._voice_routing is not None:
                 self._voice_routing.mark_uncertain()
             worker.record_routed_request(service_class=metadata.service_class)
-            self._record_worker_request_failure(
+            self.record_worker_request_failure(
                 worker,
                 error=type(exc).__name__,
             )
-            self._log_route_completion(
+            self.log_route_completion(
                 worker=worker,
                 path=path,
                 metadata=metadata,
@@ -595,7 +595,7 @@ class ProxyHandler:
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": "upstream request failed"}},
-                headers=self._diagnostic_headers(worker, metadata),
+                headers=self.diagnostic_headers(worker, metadata),
             )
         except BaseException:
             # Note (Jiaxin Deng): a client disconnect cancels this await, and
@@ -609,14 +609,14 @@ class ProxyHandler:
 
         return upstream
 
-    async def _build_relay_response(
+    async def build_relay_response(
         self,
         *,
         upstream: httpx.Response,
         worker: Worker,
         path: str,
         metadata: RouteMetadata,
-        release: _ReleaseOnce,
+        release: ReleaseOnce,
         start_time: float,
         voice_mutation: _VoiceMutationRequest | None,
     ) -> Response:
@@ -631,7 +631,7 @@ class ProxyHandler:
             if worker_failure_recorded:
                 return
             worker_failure_recorded = True
-            self._record_worker_request_failure(
+            self.record_worker_request_failure(
                 worker,
                 status_code=status_code,
                 error=error,
@@ -649,7 +649,7 @@ class ProxyHandler:
                 status_code=status_code,
                 service_class=metadata.service_class,
             )
-            self._log_route_completion(
+            self.log_route_completion(
                 worker=worker,
                 path=path,
                 metadata=metadata,
@@ -658,7 +658,7 @@ class ProxyHandler:
                 start_time=start_time,
             )
 
-        cleanup = _RelayCleanup(
+        cleanup = RelayCleanup(
             upstream=upstream,
             worker=worker,
             release=release,
@@ -667,7 +667,7 @@ class ProxyHandler:
 
         if voice_mutation is not None:
             assert self._voice_routing is not None
-            return await self._buffer_voice_mutation_response(
+            return await self.buffer_voice_mutation_response(
                 upstream=upstream,
                 worker=worker,
                 metadata=metadata,
@@ -676,7 +676,7 @@ class ProxyHandler:
                 record_worker_failure=record_worker_failure_once,
             )
 
-        return await self._streaming_relay_response(
+        return await self.streaming_relay_response(
             upstream=upstream,
             worker=worker,
             metadata=metadata,
@@ -684,13 +684,13 @@ class ProxyHandler:
             record_worker_failure=record_worker_failure_once,
         )
 
-    async def _streaming_relay_response(
+    async def streaming_relay_response(
         self,
         *,
         upstream: httpx.Response,
         worker: Worker,
         metadata: RouteMetadata,
-        cleanup: _RelayCleanup,
+        cleanup: RelayCleanup,
         record_worker_failure: Callable[..., None],
     ) -> Response:
         try:
@@ -698,7 +698,7 @@ class ProxyHandler:
                 upstream.headers,
                 buffered=not metadata.stream,
             )
-            headers.update(self._diagnostic_headers(worker, metadata))
+            headers.update(self.diagnostic_headers(worker, metadata))
         except Exception:
             await upstream.aclose()
             worker.decrement_active()
@@ -708,8 +708,8 @@ class ProxyHandler:
             if metadata.stream
             else upstream.headers.get("content-type")
         )
-        return _RelayResponse(
-            self._iter_upstream_bytes(
+        return RelayResponse(
+            self.iter_upstream_bytes(
                 upstream,
                 cleanup=cleanup,
                 record_worker_failure=record_worker_failure,
@@ -720,16 +720,16 @@ class ProxyHandler:
             cleanup=cleanup,
         )
 
-    async def _iter_upstream_bytes(
+    async def iter_upstream_bytes(
         self,
         upstream: httpx.Response,
         *,
-        cleanup: _RelayCleanup,
+        cleanup: RelayCleanup,
         record_worker_failure: Callable[..., None],
     ) -> AsyncIterator[bytes]:
         # A mid-stream failure after a 2xx cannot become a 502. SSE responses
         # receive a terminal error event; audio and JSON responses truncate.
-        outcome = _response_outcome(upstream.status_code)
+        outcome = response_outcome(upstream.status_code)
         is_event_stream = (upstream.headers.get("content-type") or "").startswith(
             "text/event-stream"
         )
@@ -749,14 +749,14 @@ class ProxyHandler:
         finally:
             await cleanup(outcome)
 
-    async def _buffer_voice_mutation_response(
+    async def buffer_voice_mutation_response(
         self,
         *,
         upstream: httpx.Response,
         worker: Worker,
         metadata: RouteMetadata,
         mutation_request: _VoiceMutationRequest,
-        cleanup: _RelayCleanup,
+        cleanup: RelayCleanup,
         record_worker_failure: Callable[..., None],
     ) -> Response:
         assert self._voice_routing is not None
@@ -773,12 +773,12 @@ class ProxyHandler:
             return JSONResponse(
                 status_code=502,
                 content={"error": {"message": "upstream response failed"}},
-                headers=self._diagnostic_headers(worker, metadata),
+                headers=self.diagnostic_headers(worker, metadata),
             )
 
         if 200 <= upstream.status_code < 300:
             try:
-                mutation = _committed_voice_mutation(mutation_request, body)
+                mutation = committed_voice_mutation(mutation_request, body)
             except ValueError as exc:
                 logger.warning(
                     f"voice_registry_commit_uncertain worker={worker.display_id} "
@@ -789,8 +789,8 @@ class ProxyHandler:
                 self._voice_routing.apply(mutation)
 
         headers = filter_response_headers(upstream.headers, buffered=True)
-        headers.update(self._diagnostic_headers(worker, metadata))
-        await cleanup(_response_outcome(upstream.status_code))
+        headers.update(self.diagnostic_headers(worker, metadata))
+        await cleanup(response_outcome(upstream.status_code))
         return Response(
             content=body,
             status_code=upstream.status_code,
@@ -798,22 +798,22 @@ class ProxyHandler:
             media_type=upstream.headers.get("content-type"),
         )
 
-    def _voice_mutation_request(
+    def voice_mutation_request(
         self,
         request: Request,
         path: str,
     ) -> _VoiceMutationRequest | None:
         if path == "/v1/audio/voices" and request.method == "POST":
-            return _VoiceUploadRequest()
+            return VoiceUploadRequest()
 
         prefix = "/v1/audio/voices/"
         if path.startswith(prefix) and request.method == "DELETE":
             name = unquote(path.removeprefix(prefix))
             mutation = VoiceMutation.create("delete", name)
-            return None if mutation is None else _VoiceDeleteRequest(mutation)
+            return None if mutation is None else VoiceDeleteRequest(mutation)
         return None
 
-    def _diagnostic_headers(
+    def diagnostic_headers(
         self,
         worker: Worker,
         metadata: RouteMetadata,
@@ -824,7 +824,7 @@ class ProxyHandler:
             "X-SGLang-Omni-Route-Attempt": "1",
         }
 
-    def _record_worker_request_failure(
+    def record_worker_request_failure(
         self,
         worker: Worker,
         *,
@@ -854,7 +854,7 @@ class ProxyHandler:
             f"consecutive_failures={worker.consecutive_failures}",
         )
 
-    def _log_route_completion(
+    def log_route_completion(
         self,
         *,
         worker: Worker,
@@ -868,12 +868,12 @@ class ProxyHandler:
         logger.info(
             f"route_completed request_id={metadata.request_id} "
             f"worker={worker.display_id} path={path} stream={metadata.stream} "
-            f"capabilities={_format_capabilities(metadata.required_capabilities)} "
+            f"capabilities={format_capabilities(metadata.required_capabilities)} "
             f"status_code={status_code} duration_ms={duration_ms:.2f} "
             f"outcome={outcome}",
         )
 
-    def _log_route_rejection(
+    def log_route_rejection(
         self,
         *,
         request: Request,
@@ -883,25 +883,25 @@ class ProxyHandler:
         metadata: RouteMetadata | None = None,
     ) -> None:
         request_id = (
-            metadata.request_id if metadata else _request_id_from_headers(request)
+            metadata.request_id if metadata else request_id_from_headers(request)
         )
         model = metadata.model if metadata else None
         capabilities = metadata.required_capabilities if metadata else set()
         logger.warning(
             f"route_rejected request_id={request_id or '-'} path={path} "
             f"status_code={status_code} reason={reason} "
-            f"model={model or '-'} capabilities={_format_capabilities(capabilities)}",
+            f"model={model or '-'} capabilities={format_capabilities(capabilities)}",
         )
 
 
-def _exceeds_max_size(value: str, max_size: int) -> bool:
+def exceeds_max_size(value: str, max_size: int) -> bool:
     try:
         return int(value) > max_size
     except ValueError:
         return True
 
 
-async def _read_body_with_limit(request: Request, max_size: int) -> bytes:
+async def read_body_with_limit(request: Request, max_size: int) -> bytes:
     total_size = 0
     chunks: list[bytes] = []
     async for chunk in request.stream():
@@ -912,7 +912,7 @@ async def _read_body_with_limit(request: Request, max_size: int) -> bytes:
     return b"".join(chunks)
 
 
-def _response_outcome(status_code: int) -> str:
+def response_outcome(status_code: int) -> str:
     if status_code in WORKER_EVICTION_STATUS_CODES:
         return "worker_failure_status"
     if status_code == HTTPStatus.INTERNAL_SERVER_ERROR.value:
@@ -920,13 +920,13 @@ def _response_outcome(status_code: int) -> str:
     return "completed"
 
 
-def _format_capabilities(capabilities: set[Capability]) -> str:
+def format_capabilities(capabilities: set[Capability]) -> str:
     if not capabilities:
         return "-"
     return ",".join(sorted(capabilities))
 
 
-def _request_id_from_headers(request: Request) -> str | None:
+def request_id_from_headers(request: Request) -> str | None:
     return (
         request.headers.get("x-sglang-omni-request-id")
         or request.headers.get("x-request-id")
@@ -934,11 +934,11 @@ def _request_id_from_headers(request: Request) -> str | None:
     )
 
 
-def _committed_voice_mutation(
+def committed_voice_mutation(
     request: _VoiceMutationRequest,
     body: bytes,
 ) -> VoiceMutation:
-    if isinstance(request, _VoiceDeleteRequest):
+    if isinstance(request, VoiceDeleteRequest):
         return request.mutation
 
     try:
@@ -953,7 +953,7 @@ def _committed_voice_mutation(
     return mutation
 
 
-def _payload_too_large_response(
+def payload_too_large_response(
     *,
     is_voice_upload: bool,
     max_size: int,
@@ -974,7 +974,7 @@ def _payload_too_large_response(
     )
 
 
-def _large_request_extra_capabilities_or_error(
+def large_request_extra_capabilities_or_error(
     candidates: list[Worker],
     metadata: RouteMetadata,
 ) -> tuple[set[Capability], str | None]:
@@ -1001,7 +1001,7 @@ def _large_request_extra_capabilities_or_error(
     )
 
 
-def _large_request_candidates_and_model_error(
+def large_request_candidates_and_model_error(
     workers: list[Worker],
     metadata: RouteMetadata,
 ) -> tuple[list[Worker], str | None]:

@@ -20,7 +20,7 @@ if triton is not None:
     # variants at unpredictable points during serving, each a 40-450 ms stall.
     # Excluding every integer argument leaves one binary per pool.
     @triton.jit(do_not_specialize=["row", "no_seed", "codes_row_stride"])
-    def _reset_sampler_row_kernel(
+    def reset_sampler_row_kernel(
         delay_count,
         eoc_countdown,
         generation_done,
@@ -46,7 +46,7 @@ if triton is not None:
         )
 
 else:
-    _reset_sampler_row_kernel = None
+    reset_sampler_row_kernel = None
 
 
 def reset_sampler_row(
@@ -66,7 +66,7 @@ def reset_sampler_row(
     contiguous, which the kernel does not address.
     """
     if (
-        _reset_sampler_row_kernel is None
+        reset_sampler_row_kernel is None
         or not delay_count.is_cuda
         or last_codes.stride(1) != 1
     ):
@@ -78,7 +78,7 @@ def reset_sampler_row(
 
     num_codebooks = last_codes.shape[1]
     block_size = triton.next_power_of_2(num_codebooks)
-    _reset_sampler_row_kernel[(1,)](
+    reset_sampler_row_kernel[(1,)](
         delay_count,
         eoc_countdown,
         generation_done,

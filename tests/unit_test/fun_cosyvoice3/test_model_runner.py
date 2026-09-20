@@ -32,7 +32,7 @@ def test_cosyvoice3_runner_collects_speech_tokens_and_skips_eos() -> None:
     ]
     result = SimpleNamespace(next_token_ids=torch.tensor([[EOS_ID], [13]]))
 
-    runner._collect_tokens(result, None, None, requests)
+    runner.collect_tokens(result, None, None, requests)
 
     assert requests[0].data.output_codes == []
     assert [code.item() for code in requests[1].data.output_codes] == [13]
@@ -44,7 +44,7 @@ def test_cosyvoice3_runner_skips_all_control_tokens() -> None:
     runner._outbox = None
     requests = [SimpleNamespace(data=CosyVoice3SGLangRequestData())]
 
-    runner._collect_tokens(
+    runner.collect_tokens(
         SimpleNamespace(next_token_ids=torch.tensor([VOCAB_SIZE + 3])),
         None,
         None,
@@ -130,13 +130,13 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     sampled_with = []
 
     class _Runner(FunCosyVoice3ModelRunner):
-        def _apply_repetition_penalty(self, logits_output, requests):
+        def apply_repetition_penalty(self, logits_output, requests):
             del logits_output, requests
 
-        def _apply_codec_suppress_tokens(self, logits_output, requests):
+        def apply_codec_suppress_tokens(self, logits_output, requests):
             del logits_output, requests
 
-        def _install_sampling_seeds(self, forward_batch, requests):
+        def install_sampling_seeds(self, forward_batch, requests):
             del requests
             forward_batch.sampling_info.sampling_seed = torch.tensor([7])
 
@@ -188,7 +188,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     )
     forward_batch = SimpleNamespace(sampling_info=sampling_info)
 
-    token_ids = runner._sample_next_token_ids(
+    token_ids = runner.sample_next_token_ids(
         logits_output,
         forward_batch,
         None,
@@ -224,7 +224,7 @@ def test_cosyvoice3_torch_mps_ras_redraws_recent_speech_token(
     monkeypatch.setattr(torch, "multinomial", fake_multinomial)
     request = SimpleNamespace(request_id="req")
 
-    result = runner._apply_ras_fallback(
+    result = runner.apply_ras_fallback(
         logits_output,
         torch.tensor([9], dtype=torch.int32),
         sampling_info,
@@ -252,7 +252,7 @@ def test_cosyvoice3_torch_mps_ras_keeps_non_repeated_token() -> None:
     )
     request = SimpleNamespace(request_id="req")
 
-    result = runner._apply_ras_fallback(
+    result = runner.apply_ras_fallback(
         logits_output,
         torch.tensor([6], dtype=torch.int32),
         sampling_info,
@@ -323,7 +323,7 @@ def test_cosyvoice3_runner_builds_prefill_embedding_slice_after_prefix() -> None
     ]
     forward_batch = SimpleNamespace(input_ids=torch.zeros(2, dtype=torch.long))
 
-    result = runner._build_prefill_input_embeds(forward_batch, requests)
+    result = runner.build_prefill_input_embeds(forward_batch, requests)
 
     assert torch.equal(
         result, torch.tensor([[4, 5, 6, 7], [8, 9, 10, 11]], dtype=torch.float32)

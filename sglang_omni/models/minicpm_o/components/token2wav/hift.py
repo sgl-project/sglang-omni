@@ -178,7 +178,7 @@ class HiFTGenerator(nn.Module):
             ConvRNNF0Predictor() if f0_predictor is None else f0_predictor
         )
 
-    def _stft(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def stft(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         spec = torch.stft(
             x,
             self.istft_params["n_fft"],
@@ -190,7 +190,7 @@ class HiFTGenerator(nn.Module):
         spec = torch.view_as_real(spec)
         return (spec[..., 0], spec[..., 1])
 
-    def _istft(self, magnitude: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
+    def istft(self, magnitude: torch.Tensor, phase: torch.Tensor) -> torch.Tensor:
         magnitude = torch.clip(magnitude, max=100.0)
         real = magnitude * torch.cos(phase)
         img = magnitude * torch.sin(phase)
@@ -204,7 +204,7 @@ class HiFTGenerator(nn.Module):
         return inverse_transform
 
     def decode(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
-        s_stft_real, s_stft_imag = self._stft(s.squeeze(1))
+        s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
         x = self.conv_pre(x)
         for i in range(self.num_upsamples):
@@ -226,7 +226,7 @@ class HiFTGenerator(nn.Module):
         x = self.conv_post(x)
         magnitude = torch.exp(x[:, : self.istft_params["n_fft"] // 2 + 1, :])
         phase = torch.sin(x[:, self.istft_params["n_fft"] // 2 + 1 :, :])
-        x = self._istft(magnitude, phase)
+        x = self.istft(magnitude, phase)
         x = torch.clamp(x, -self.audio_limit, self.audio_limit)
         return x
 

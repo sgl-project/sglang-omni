@@ -40,7 +40,7 @@ class MossTTSLocalModelRunner(ModelRunner):
     def set_stream_outbox(self, outbox: Any) -> None:
         self._outbox = outbox
 
-    def _flush_stream_rows(
+    def flush_stream_rows(
         self,
         request_id: str,
         data: Any,
@@ -75,7 +75,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         # other stop (max_new_tokens, scheduler stop) would strand up to
         # MOSS_STREAM_TRANSPORT_BATCH_FRAMES - 1 frames, and the terminal
         # payload carries no audio to recover them from.
-        self._flush_stream_rows(request_id, req_data, force=True)
+        self.flush_stream_rows(request_id, req_data, force=True)
 
     def custom_prefill_forward(
         self,
@@ -84,7 +84,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
+        forward_batch.input_embeds = self.build_prefill_input_embeds(
             forward_batch, requests
         )
         return None
@@ -99,7 +99,7 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         del is_lookahead
         del schedule_batch
-        self._write_decode_input_embedding(forward_batch, requests)
+        self.write_decode_input_embedding(forward_batch, requests)
 
     def post_prefill(
         self,
@@ -114,7 +114,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             is_prefill_only = False
         if bool(is_prefill_only):
             return
-        self._collect_frame(result, forward_batch, schedule_batch, requests)
+        self.collect_frame(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -123,7 +123,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_frame(result, forward_batch, schedule_batch, requests)
+        self.collect_frame(result, forward_batch, schedule_batch, requests)
 
     def lookahead_eligible(self, batch: Any) -> bool:
         """Route to sync when the batch cannot take the graphed frame-decode
@@ -157,7 +157,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 return False
         return True
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -197,7 +197,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                     f"(prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, "
                     f"generated={len(data.output_rows)})"
                 )
-            embeds = self.model._prepare_multi_modal_inputs(
+            embeds = self.model.prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
             pieces.append(embeds)
@@ -212,7 +212,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             dtype=self.model.dtype,
         )
 
-    def _write_decode_input_embedding(
+    def write_decode_input_embedding(
         self,
         forward_batch: Any,
         requests: list,
@@ -247,7 +247,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         )
         forward_batch.input_ids[:batch_size].copy_(row_ids)
 
-    def _collect_frame(
+    def collect_frame(
         self,
         result: Any,
         forward_batch: Any,
@@ -256,13 +256,13 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         if not requests:
             return
-        rows, end_id = self._run_frame_decode(result, forward_batch, requests)
+        rows, end_id = self.run_frame_decode(result, forward_batch, requests)
         # Radix key is a capture-safe GPU hash: a device op, no host sync.
         next_text = rows[:, 0]
-        next_token_ids = self._row_radix_token_ids(rows, next_text, end_id)
+        next_token_ids = self.row_radix_token_ids(rows, next_text, end_id)
         result.next_token_ids = next_token_ids
 
-    def _run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
+    def run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
         """GPU half shared by sync ``_collect_frame`` and async
         ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
         ``next_token_ids``; the caller does, because the async path keeps a
@@ -325,7 +325,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         emit_set = {
             i
             for i, sched_req in enumerate(requests)
-            if not self._is_chunked_request(sched_req)
+            if not self.is_chunked_request(sched_req)
         }
         gen_steps = torch.maximum(
             pool.sampling_steps[row_t].to(device=device),
@@ -336,7 +336,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         )
 
         def sample_text(logits: torch.Tensor) -> torch.Tensor:
-            return MossTTSModelRunner._sample_tokens(
+            return MossTTSModelRunner.sample_tokens(
                 logits,
                 temperature=text_temp,
                 top_p=text_top_p,
@@ -352,12 +352,12 @@ class MossTTSLocalModelRunner(ModelRunner):
                 )
                 if int(presence.shape[-1]) != int(logits.shape[-1]):
                     presence = presence[:, : logits.shape[-1]]
-                self._apply_audio_repetition_penalty_mask(
+                self.apply_audio_repetition_penalty_mask(
                     logits,
                     presence,
                     rep_penalties.to(device=logits.device, dtype=logits.dtype),
                 )
-            return MossTTSModelRunner._sample_tokens(
+            return MossTTSModelRunner.sample_tokens(
                 logits,
                 temperature=audio_temp,
                 top_p=audio_top_p,
@@ -410,7 +410,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         rows[:, 1:] = codes
 
         if embeds is None:
-            embeds = self.model._prepare_multi_modal_inputs(
+            embeds = self.model.prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
         emit_indices = sorted(emit_set)
@@ -467,8 +467,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         """
         if not requests:
             return None
-        rows, end_id = self._run_frame_decode(result, forward_batch, requests)
-        next_token_ids = self._row_radix_token_ids(rows, rows[:, 0], end_id)
+        rows, end_id = self.run_frame_decode(result, forward_batch, requests)
+        next_token_ids = self.row_radix_token_ids(rows, rows[:, 0], end_id)
         result.next_token_ids = next_token_ids
         return next_token_ids.clone()
 
@@ -490,7 +490,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             result.next_token_ids = launch_buf
 
     @staticmethod
-    def _row_radix_token_ids(
+    def row_radix_token_ids(
         rows: torch.Tensor,
         next_text: torch.Tensor,
         end_id: int,
@@ -518,7 +518,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return gpu_radix_row_hash(rows, next_text, end_id)
 
     @staticmethod
-    def _advance_sampling_position(data: Any) -> int:
+    def advance_sampling_position(data: Any) -> int:
         """RNG position for this collect, advancing the launch-side counter in
         floor mode: ``max(sampling_steps or 0, generation_steps)``. On the sync
         path the two stay equal (generation_steps increments after every collect)
@@ -535,7 +535,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return s
 
     @staticmethod
-    def _apply_audio_repetition_penalty_mask(
+    def apply_audio_repetition_penalty_mask(
         logits: torch.Tensor,
         token_presence: torch.Tensor,
         penalties: torch.Tensor,
@@ -551,7 +551,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         logits.copy_(torch.where(active, penalized, logits))
 
     @staticmethod
-    def _is_chunked_request(sched_req: Any) -> bool:
+    def is_chunked_request(sched_req: Any) -> bool:
         try:
             req = sched_req.data.req
         except AttributeError:
@@ -576,7 +576,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         return {
             sched_req.request_id
             for sched_req in scheduler_output.requests
-            if self._is_chunked_request(sched_req)
+            if self.is_chunked_request(sched_req)
         }
 
     def on_generation_step_advanced(
@@ -643,7 +643,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         expected_reqs = [
             sched_req
             for sched_req in scheduler_output.requests
-            if not self._is_chunked_request(sched_req)
+            if not self.is_chunked_request(sched_req)
         ]
         expected_rids = [sched_req.request_id for sched_req in expected_reqs]
         rows_len = int(journal.rows.shape[0])
@@ -676,7 +676,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                     continue
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
-                self._flush_stream_rows(
+                self.flush_stream_rows(
                     sched_req.request_id,
                     sched_req.data,
                     force=True,
@@ -696,7 +696,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 pending = []
                 sched_req.data.stream_pending_rows = pending
             pending.append(journal.rows[i])
-            self._flush_stream_rows(
+            self.flush_stream_rows(
                 sched_req.request_id,
                 sched_req.data,
                 force=False,

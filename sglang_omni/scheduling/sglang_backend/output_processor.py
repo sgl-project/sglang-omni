@@ -40,10 +40,10 @@ class SGLangOutputProcessor:
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
         if self._capture_hidden:
             should_emit_hidden_by_request = [
-                self._should_emit_hidden_for_request(request)
+                self.should_emit_hidden_for_request(request)
                 for request in scheduler_output.requests
             ]
-            hidden_extras_by_request = self._build_hidden_extras_by_request(
+            hidden_extras_by_request = self.build_hidden_extras_by_request(
                 model_output,
                 scheduler_output=scheduler_output,
                 should_emit_hidden_by_request=should_emit_hidden_by_request,
@@ -61,12 +61,12 @@ class SGLangOutputProcessor:
             )
         return outputs
 
-    def _should_emit_hidden_for_request(self, request: Any) -> bool:
+    def should_emit_hidden_for_request(self, request: Any) -> bool:
         if self._should_emit_hidden is None:
             return True
         return self._should_emit_hidden(request)
 
-    def _build_hidden_extras_by_request(
+    def build_hidden_extras_by_request(
         self,
         model_output: Any,
         *,
@@ -84,8 +84,8 @@ class SGLangOutputProcessor:
         if self._model is not None and self._capture_hidden_layers:
             static_capture = getattr(self._model, "_omni_aux_hidden_capture", None)
             if static_capture is not None:
-                logical_rows = self._logical_hidden_rows(scheduler_output)
-                return self._build_aux_hidden_extras(
+                logical_rows = self.logical_hidden_rows(scheduler_output)
+                return self.build_aux_hidden_extras(
                     static_capture.views(logical_rows),
                     model_output=model_output,
                     scheduler_output=scheduler_output,
@@ -101,7 +101,7 @@ class SGLangOutputProcessor:
 
         if isinstance(raw_hidden, dict):
             return {
-                request_index: self._build_dict_hidden_extra(
+                request_index: self.build_dict_hidden_extra(
                     raw_hidden,
                     request_index=request_index,
                     scheduler_output=scheduler_output,
@@ -111,7 +111,7 @@ class SGLangOutputProcessor:
         elif isinstance(raw_hidden, torch.Tensor):
             return {
                 request_index: {
-                    "hidden_states": self._slice_per_request_tensor(
+                    "hidden_states": self.slice_per_request_tensor(
                         raw_hidden,
                         request_index=request_index,
                         scheduler_output=scheduler_output,
@@ -121,7 +121,7 @@ class SGLangOutputProcessor:
             }
         return {}
 
-    def _build_aux_hidden_extras(
+    def build_aux_hidden_extras(
         self,
         aux_hidden_states: Sequence[torch.Tensor],
         *,
@@ -131,9 +131,9 @@ class SGLangOutputProcessor:
     ) -> dict[int, dict[str, Any] | None]:
         if not request_indexes:
             return {}
-        stream_hidden_states = self._extract_stream_hidden_states(model_output)
+        stream_hidden_states = self.extract_stream_hidden_states(model_output)
         return {
-            request_index: self._build_aux_hidden_extra(
+            request_index: self.build_aux_hidden_extra(
                 aux_hidden_states,
                 request_index=request_index,
                 scheduler_output=scheduler_output,
@@ -142,7 +142,7 @@ class SGLangOutputProcessor:
             for request_index in request_indexes
         }
 
-    def _build_aux_hidden_extra(
+    def build_aux_hidden_extra(
         self,
         aux_hidden_states: Sequence[torch.Tensor],
         *,
@@ -156,7 +156,7 @@ class SGLangOutputProcessor:
             aux_hidden_states,
         ):
             key = "embed" if layer_id == 0 else layer_id
-            per_request_hidden[key] = self._slice_static_aux_hidden_tensor(
+            per_request_hidden[key] = self.slice_static_aux_hidden_tensor(
                 tensor,
                 request_index=request_index,
                 scheduler_output=scheduler_output,
@@ -164,14 +164,14 @@ class SGLangOutputProcessor:
 
         extra: dict[str, Any] = {"hidden_states": per_request_hidden}
         if stream_hidden_states is not None:
-            extra["stream_hidden_states"] = self._slice_per_request_tensor(
+            extra["stream_hidden_states"] = self.slice_per_request_tensor(
                 stream_hidden_states,
                 request_index=request_index,
                 scheduler_output=scheduler_output,
             ).clone()
         return extra
 
-    def _build_dict_hidden_extra(
+    def build_dict_hidden_extra(
         self,
         hidden_states: dict[Any, torch.Tensor],
         *,
@@ -180,7 +180,7 @@ class SGLangOutputProcessor:
     ) -> dict[str, Any]:
         return {
             "hidden_states": {
-                key: self._slice_per_request_tensor(
+                key: self.slice_per_request_tensor(
                     tensor,
                     request_index=request_index,
                     scheduler_output=scheduler_output,
@@ -189,7 +189,7 @@ class SGLangOutputProcessor:
             }
         }
 
-    def _extract_stream_hidden_states(self, model_output: Any) -> torch.Tensor | None:
+    def extract_stream_hidden_states(self, model_output: Any) -> torch.Tensor | None:
         logits_output = model_output.logits_output
         if logits_output is None:
             return None
@@ -197,14 +197,14 @@ class SGLangOutputProcessor:
         return raw_hidden if isinstance(raw_hidden, torch.Tensor) else None
 
     @staticmethod
-    def _logical_hidden_rows(scheduler_output: SchedulerOutput) -> int:
+    def logical_hidden_rows(scheduler_output: SchedulerOutput) -> int:
         batch_data = scheduler_output.batch_data
         if batch_data.forward_mode.is_extend():
             return sum(req.extend_range.length for req in batch_data.reqs)
         return len(batch_data.reqs)
 
     @staticmethod
-    def _slice_static_aux_hidden_tensor(
+    def slice_static_aux_hidden_tensor(
         tensor: torch.Tensor,
         *,
         request_index: int,
@@ -238,7 +238,7 @@ class SGLangOutputProcessor:
         return tensor[start:end]
 
     @staticmethod
-    def _slice_per_request_tensor(
+    def slice_per_request_tensor(
         tensor: torch.Tensor,
         *,
         request_index: int,

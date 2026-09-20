@@ -83,7 +83,7 @@ def resolve_preprocessing_next_stages(
     """Select encoder branches; request_id is required by the routing interface."""
     state = MiniCPMOPipelineState.from_dict(output.data)
     return [
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
         THINKER_STAGE,
     ]
 
@@ -99,16 +99,16 @@ def resolve_thinker_wait_sources(
     state = MiniCPMOPipelineState.from_dict(payload.data)
     return [
         "preprocessing",
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
     ]
 
 
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
 
 def project_preprocessing_to_thinker(payload: StagePayload) -> StagePayload:
@@ -116,7 +116,7 @@ def project_preprocessing_to_thinker(payload: StagePayload) -> StagePayload:
     projected = MiniCPMOPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=dict(state.mm_inputs),
-        encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
+        encoder_inputs=project_encoder_input_metadata(state.encoder_inputs),
         stream_state=dict(state.stream_state),
     )
     return payload_with_state(payload, projected)
@@ -196,7 +196,7 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, state)
 
 
-def _project_preprocessing_to_encoder(
+def project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
     stage_name: str,
@@ -220,7 +220,7 @@ def payload_with_state(
     )
 
 
-def _project_encoder_input_metadata(
+def project_encoder_input_metadata(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     projected: dict[str, dict[str, Any]] = {}
@@ -231,24 +231,24 @@ def _project_encoder_input_metadata(
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             stage_metadata["cache_key"] = cache_key
-        if _has_encoder_model_input(stage_name, stage_inputs):
+        if has_encoder_model_input(stage_name, stage_inputs):
             stage_metadata["_active"] = True
         if stage_metadata:
             projected[stage_name] = stage_metadata
     return projected
 
 
-def _encoder_stages_with_model_inputs(
+def encoder_stages_with_model_inputs(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
+        if has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+def has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
     if not isinstance(stage_inputs, dict):
         return False
     if stage_inputs.get("_active") is not None:

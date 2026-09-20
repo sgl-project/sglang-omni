@@ -51,7 +51,7 @@ def validate_attention_backend(attention_backend: str) -> str:
     return attention_backend
 
 
-def _packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
+def packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
     device = torch.device(device)
     if device.type != "cuda":
         return f"device type {device.type!r} is not CUDA"
@@ -63,7 +63,7 @@ def _packed_flash_device_unavailable_reason(device: torch.device) -> str | None:
 
 
 @cache
-def _packed_flash_requires_query_chunks(device: torch.device) -> bool:
+def packed_flash_requires_query_chunks(device: torch.device) -> bool:
     device = torch.device(device)
     if device.type != "cuda" or not torch.cuda.is_available():
         return True
@@ -79,7 +79,7 @@ class AttentionBackendResolution:
 
 
 @dataclass(frozen=True)
-class _LocalCausalFlashPlan:
+class LocalCausalFlashPlan:
     cu_seqlens_q: torch.Tensor
     cu_seqlens_k: torch.Tensor
     kv_indices: torch.Tensor | None
@@ -112,13 +112,13 @@ def merge_attention_backend_resolutions(
     )
 
 
-def _build_local_causal_flash_plan(
+def build_local_causal_flash_plan(
     cu_seqlens: torch.Tensor,
     *,
     context: int,
     query_chunk_size: int = _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE,
     sequence_lengths: Sequence[int] | None = None,
-) -> _LocalCausalFlashPlan:
+) -> LocalCausalFlashPlan:
     if context <= 0:
         raise ValueError(f"local causal context must be positive, got {context}")
     if query_chunk_size <= 0:
@@ -196,7 +196,7 @@ def _build_local_causal_flash_plan(
             )
             + repeated_offsets
         )
-    return _LocalCausalFlashPlan(
+    return LocalCausalFlashPlan(
         cu_seqlens_q=cu_seqlens_q,
         cu_seqlens_k=cu_seqlens_k,
         kv_indices=kv_indices,
@@ -206,7 +206,7 @@ def _build_local_causal_flash_plan(
     )
 
 
-def _gather_local_flash_kv(
+def gather_local_flash_kv(
     x: torch.Tensor,
     kv_indices: torch.Tensor | None,
 ) -> torch.Tensor:
@@ -259,7 +259,7 @@ class MossAudioTokenizerStreamingModule(nn.Module):
     def is_streaming(self) -> bool:
         return self._streaming_state is not None
 
-    def _streaming_device(self) -> torch.device:
+    def streaming_device(self) -> torch.device:
         parameter = next(self.parameters(), None)
         if parameter is not None:
             return parameter.device
@@ -268,11 +268,9 @@ class MossAudioTokenizerStreamingModule(nn.Module):
             return buffer.device
         return torch.device("cpu")
 
-    def _init_streaming_state(
-        self, batch_size: int
-    ) -> MossAudioTokenizerStreamingState:
+    def init_streaming_state(self, batch_size: int) -> MossAudioTokenizerStreamingState:
         return MossAudioTokenizerStreamingState(
-            int(batch_size), self._streaming_device()
+            int(batch_size), self.streaming_device()
         )
 
     @contextmanager
@@ -289,14 +287,14 @@ class MossAudioTokenizerStreamingModule(nn.Module):
         initialized: list[MossAudioTokenizerStreamingModule] = []
         try:
             for module in modules:
-                module._streaming_state = module._init_streaming_state(batch_size)
+                module._streaming_state = module.init_streaming_state(batch_size)
                 initialized.append(module)
             yield
         finally:
             for module in reversed(initialized):
                 module._streaming_state = None
 
-    def _set_streaming_exec_mask(self, exec_mask: torch.Tensor) -> None:
+    def set_streaming_exec_mask(self, exec_mask: torch.Tensor) -> None:
         states = [
             module._streaming_state
             for module in self.modules()
@@ -310,7 +308,7 @@ class MossAudioTokenizerStreamingModule(nn.Module):
 
 
 @dataclass
-class _AttentionStreamingState(MossAudioTokenizerStreamingState):
+class AttentionStreamingState(MossAudioTokenizerStreamingState):
     cached_keys: torch.Tensor | None
     cached_values: torch.Tensor | None
     cached_positions: torch.Tensor | None
@@ -327,7 +325,7 @@ class _AttentionStreamingState(MossAudioTokenizerStreamingState):
             self.cached_positions.index_fill_(0, slots, -1)
 
 
-def _single_module(module: nn.Module, singular: str, plural: str) -> nn.Module:
+def single_module(module: nn.Module, singular: str, plural: str) -> nn.Module:
     child = getattr(module, singular, None)
     if child is not None:
         return child
@@ -518,7 +516,7 @@ class MossPackedRopeCache:
         return self._cos_sin[:max_positions]
 
 
-def _apply_cached_packed_rope(
+def apply_cached_packed_rope(
     q: torch.Tensor,
     k: torch.Tensor,
     position_ids: torch.Tensor,
@@ -587,7 +585,7 @@ def _apply_cached_packed_rope(
     return q_out, k_out
 
 
-def _apply_cached_streaming_rope(
+def apply_cached_streaming_rope(
     q: torch.Tensor,
     k: torch.Tensor,
     offset: torch.Tensor,
@@ -660,7 +658,7 @@ def _apply_cached_streaming_rope(
                 batch_size, sequence_length, num_heads, head_dim
             ).transpose(1, 2),
         )
-    rotated_q, rotated_k = _apply_cached_packed_rope(
+    rotated_q, rotated_k = apply_cached_packed_rope(
         q_token_major,
         k_token_major,
         position_ids,
@@ -677,7 +675,7 @@ def _apply_cached_streaming_rope(
     )
 
 
-def _run_query_chunked_sdpa(
+def run_query_chunked_sdpa(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -737,14 +735,14 @@ def _run_query_chunked_sdpa(
     )
 
 
-def _flash_window_size(causal: bool, context: int | None) -> tuple[int, int]:
+def flash_window_size(causal: bool, context: int | None) -> tuple[int, int]:
     if context is None or not causal:
         return (-1, -1)
     # note (Zhang Yiyang): Map total-token context to FlashAttention's prior-key window.
     return (max(int(context) - 1, 0), 0)
 
 
-def _run_packed_flash_attention(
+def run_packed_flash_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -753,18 +751,18 @@ def _run_packed_flash_attention(
     max_seqlen: int,
     causal: bool,
     context: int | None,
-    local_flash_plan: _LocalCausalFlashPlan | None,
+    local_flash_plan: LocalCausalFlashPlan | None,
     flash_attn_varlen: Callable[..., torch.Tensor],
 ) -> torch.Tensor:
     """Run packed attention through SGLang's packed FlashAttention kernel."""
     if (
         causal
         and context is not None
-        and _packed_flash_requires_query_chunks(q.device)
+        and packed_flash_requires_query_chunks(q.device)
         and max_seqlen > _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE
     ):
         context = int(context)
-        plan = local_flash_plan or _build_local_causal_flash_plan(
+        plan = local_flash_plan or build_local_causal_flash_plan(
             cu_seqlens,
             context=context,
         )
@@ -775,14 +773,14 @@ def _run_packed_flash_attention(
             )
         return flash_attn_varlen(
             q,
-            _gather_local_flash_kv(k, plan.kv_indices),
-            _gather_local_flash_kv(v, plan.kv_indices),
+            gather_local_flash_kv(k, plan.kv_indices),
+            gather_local_flash_kv(v, plan.kv_indices),
             plan.cu_seqlens_q,
             plan.cu_seqlens_k,
             plan.max_seqlen_q,
             plan.max_seqlen_k,
             causal=True,
-            window_size=_flash_window_size(causal, context),
+            window_size=flash_window_size(causal, context),
         )
     return flash_attn_varlen(
         q,
@@ -793,11 +791,11 @@ def _run_packed_flash_attention(
         max_seqlen,
         max_seqlen,
         causal=causal,
-        window_size=_flash_window_size(causal, context),
+        window_size=flash_window_size(causal, context),
     )
 
 
-def _merge_attention_heads(output: torch.Tensor, embed_dim: int) -> torch.Tensor:
+def merge_attention_heads(output: torch.Tensor, embed_dim: int) -> torch.Tensor:
     if output.dim() == 4:
         output = output.transpose(1, 2)
     elif output.dim() != 3:
@@ -850,9 +848,9 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             max_period=max_period
         )
 
-    def _init_streaming_state(self, batch_size: int) -> _AttentionStreamingState:
+    def init_streaming_state(self, batch_size: int) -> AttentionStreamingState:
         device = self.in_proj.weight.device
-        return _AttentionStreamingState(
+        return AttentionStreamingState(
             int(batch_size),
             device,
             cached_keys=None,
@@ -870,8 +868,8 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         packed_rope_cache: MossPackedRopeCache | None = None,
     ) -> MossAudioTokenizerAttention:
         return cls(
-            in_proj=_single_module(module, "in_proj", "in_projs"),
-            out_proj=_single_module(module, "out_proj", "out_projs"),
+            in_proj=single_module(module, "in_proj", "in_projs"),
+            out_proj=single_module(module, "out_proj", "out_projs"),
             embed_dim=int(module.embed_dim),
             num_heads=int(module.num_heads),
             causal=bool(module.causal),
@@ -889,7 +887,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         if self.attention_backend == SDPA_ATTENTION_BACKEND:
             return AttentionBackendResolution(SDPA_ATTENTION_BACKEND)
 
-        unavailable_reason = self._packed_flash_unavailable_reason(device, dtype)
+        unavailable_reason = self.packed_flash_unavailable_reason(device, dtype)
         if unavailable_reason is None:
             return AttentionBackendResolution(PACKED_FLASH_ATTENTION_BACKEND)
         if self.attention_backend == PACKED_FLASH_ATTENTION_BACKEND:
@@ -904,14 +902,14 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             fallback_reason=unavailable_reason,
         )
 
-    def _packed_flash_unavailable_reason(
+    def packed_flash_unavailable_reason(
         self,
         device: torch.device,
         dtype: torch.dtype | None,
     ) -> str | None:
         if dtype is not torch.bfloat16:
             return f"packed FlashAttention requires torch.bfloat16; got {dtype}"
-        return _packed_flash_device_unavailable_reason(device)
+        return packed_flash_device_unavailable_reason(device)
 
     def supports_packed_attention(
         self,
@@ -920,7 +918,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
     ) -> bool:
         if self.attention_backend == SDPA_ATTENTION_BACKEND:
             return False
-        return self._packed_flash_unavailable_reason(device, dtype) is None
+        return self.packed_flash_unavailable_reason(device, dtype) is None
 
     @staticmethod
     def get_backend_dtype(x: torch.Tensor) -> torch.dtype:
@@ -944,15 +942,15 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         *,
         max_seqlen: int,
         sequence_lengths: Sequence[int] | None = None,
-    ) -> _LocalCausalFlashPlan | None:
+    ) -> LocalCausalFlashPlan | None:
         if (
             not self.causal
             or self.context is None
-            or not _packed_flash_requires_query_chunks(cu_seqlens.device)
+            or not packed_flash_requires_query_chunks(cu_seqlens.device)
             or max_seqlen <= _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE
         ):
             return None
-        return _build_local_causal_flash_plan(
+        return build_local_causal_flash_plan(
             cu_seqlens,
             context=int(self.context),
             sequence_lengths=sequence_lengths,
@@ -966,12 +964,12 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         max_seqlen: int | None = None,
         position_ids: torch.Tensor | None = None,
         input_lengths: torch.Tensor | None = None,
-        local_flash_plan: _LocalCausalFlashPlan | None = None,
+        local_flash_plan: LocalCausalFlashPlan | None = None,
         execution_context: StreamingExecutionContext | None = None,
     ) -> torch.Tensor:
         state = self._streaming_state
         if state is not None:
-            if not isinstance(state, _AttentionStreamingState):
+            if not isinstance(state, AttentionStreamingState):
                 raise RuntimeError("invalid MOSS attention streaming state")
             if query.dim() != 3:
                 raise ValueError(
@@ -979,14 +977,14 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                     f"got {tuple(query.shape)}"
                 )
             if execution_context is not None:
-                return self._forward_streaming_indexed(
+                return self.forward_streaming_indexed(
                     query,
                     state,
                     execution_context,
                 )
             # Note (Zhang Yiyang): Keep streaming on SDPA; packed FlashAttention
             # is reserved for the validated non-streaming path.
-            return self._forward_streaming_sdpa(query, state)
+            return self.forward_streaming_sdpa(query, state)
         if execution_context is not None:
             raise RuntimeError(
                 "streaming execution context requires an active attention state"
@@ -1017,15 +1015,15 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             if query.shape[1] == 0:
                 return self.out_proj(query)
 
-        q, k, v = self._project_qkv(query)
+        q, k, v = self.project_qkv(query)
         if is_packed:
-            q, k = self._apply_packed_rope(
+            q, k = self.apply_packed_rope(
                 q,
                 k,
                 position_ids,
                 max_positions=max_seqlen,
             )
-            output = _run_packed_flash_attention(
+            output = run_packed_flash_attention(
                 q,
                 k,
                 v,
@@ -1044,7 +1042,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                     dtype=torch.long,
                 )
                 q, k = self.rope(q, k, offset)
-            output = _run_query_chunked_sdpa(
+            output = run_query_chunked_sdpa(
                 q,
                 k,
                 v,
@@ -1052,12 +1050,12 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                 causal=self.causal,
                 context=self.context,
             )
-        return self.out_proj(_merge_attention_heads(output, self.embed_dim))
+        return self.out_proj(merge_attention_heads(output, self.embed_dim))
 
-    def _forward_streaming_indexed(
+    def forward_streaming_indexed(
         self,
         x: torch.Tensor,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
         execution_context: StreamingExecutionContext,
     ) -> torch.Tensor:
         """Gather compact rows and write their chronological KV state in place.
@@ -1070,7 +1068,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         batch_size = int(x.shape[0])
         slots = execution_context.state_slot_ids
         valid_rows = execution_context.valid_rows
-        cached_keys, cached_values, cached_positions = self._ensure_streaming_cache(
+        cached_keys, cached_values, cached_positions = self.ensure_streaming_cache(
             state,
             state.batch_size,
             x.device,
@@ -1089,7 +1087,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                 valid_rows,
             )
         ):
-            q, current_k, current_v, query_positions = self._project_streaming_qkv(
+            q, current_k, current_v, query_positions = self.project_streaming_qkv(
                 x, old_offsets
             )
             all_k, all_v, key_positions = gather_streaming_kv(
@@ -1101,7 +1099,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                 query_positions,
                 slots,
             )
-            output = self._streaming_attention(
+            output = self.streaming_attention(
                 q, all_k, all_v, query_positions, key_positions
             )
             output = self.out_proj(output)
@@ -1121,7 +1119,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         old_row_keys = cached_keys.index_select(0, slots)
         old_row_values = cached_values.index_select(0, slots)
         old_row_positions = cached_positions.index_select(0, slots)
-        row_state = _AttentionStreamingState(
+        row_state = AttentionStreamingState(
             batch_size,
             x.device,
             cached_keys=old_row_keys,
@@ -1132,7 +1130,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         row_state.exec_mask.copy_(valid_rows)
         if self.context is None:
             row_state.exec_mask.fill_(True)
-        output = self._forward_streaming_sdpa(x, row_state)
+        output = self.forward_streaming_sdpa(x, row_state)
 
         # note (Zhang Yiyang): Finite-context SDPA preserves inactive rows and
         # offsets. Unbounded attention advances every execution row while its
@@ -1191,9 +1189,9 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         state.cached_positions.index_copy_(0, slots, next_row_positions)
         return output.masked_fill(~valid_rows.view(-1, 1, 1), 0)
 
-    def _ensure_streaming_cache(
+    def ensure_streaming_cache(
         self,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
         batch_size: int,
         device: torch.device,
         dtype: torch.dtype,
@@ -1232,7 +1230,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         return state.cached_keys, state.cached_values, state.cached_positions
 
     @staticmethod
-    def _build_streaming_kv(
+    def build_streaming_kv(
         cached_k: torch.Tensor,
         cached_v: torch.Tensor,
         cached_pos: torch.Tensor,
@@ -1246,9 +1244,9 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             torch.cat((cached_pos, query_positions), dim=1),
         )
 
-    def _update_streaming_cache(
+    def update_streaming_cache(
         self,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
         cached_k: torch.Tensor,
         cached_v: torch.Tensor,
         cached_pos: torch.Tensor,
@@ -1278,14 +1276,14 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             cached_pos,
         )
 
-    def _project_streaming_qkv(
+    def project_streaming_qkv(
         self,
         x: torch.Tensor,
         offsets: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        q, current_k, current_v = self._project_qkv(x)
+        q, current_k, current_v = self.project_qkv(x)
         if self.rope is not None:
-            q, current_k = _apply_cached_streaming_rope(
+            q, current_k = apply_cached_streaming_rope(
                 q, current_k, offsets, cache=self._packed_rope_cache
             )
         query_positions = offsets.view(-1, 1) + torch.arange(
@@ -1293,10 +1291,10 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         ).view(1, -1)
         return q, current_k, current_v, query_positions
 
-    def _streaming_qkv(
+    def streaming_qkv(
         self,
         x: torch.Tensor,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -1307,16 +1305,16 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         torch.Tensor,
         torch.Tensor,
     ]:
-        q, current_k, current_v, query_positions = self._project_streaming_qkv(
+        q, current_k, current_v, query_positions = self.project_streaming_qkv(
             x, state.offset
         )
-        cached_k, cached_v, cached_pos = self._ensure_streaming_cache(
+        cached_k, cached_v, cached_pos = self.ensure_streaming_cache(
             state,
             x.shape[0],
             current_k.device,
             current_k.dtype,
         )
-        all_k, all_v, key_positions = self._build_streaming_kv(
+        all_k, all_v, key_positions = self.build_streaming_kv(
             cached_k,
             cached_v,
             cached_pos,
@@ -1335,11 +1333,11 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             cached_pos,
         )
 
-    def _finish_streaming_attention(
+    def finish_streaming_attention(
         self,
         output: torch.Tensor,
         *,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
         chunk_length: int,
         cached_k: torch.Tensor,
         cached_v: torch.Tensor,
@@ -1348,7 +1346,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         all_v: torch.Tensor,
         key_positions: torch.Tensor,
     ) -> torch.Tensor:
-        self._update_streaming_cache(
+        self.update_streaming_cache(
             state,
             cached_k,
             cached_v,
@@ -1366,10 +1364,10 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         )
         return self.out_proj(output)
 
-    def _forward_streaming_sdpa(
+    def forward_streaming_sdpa(
         self,
         x: torch.Tensor,
-        state: _AttentionStreamingState,
+        state: AttentionStreamingState,
     ) -> torch.Tensor:
         chunk_length = x.shape[1]
         if chunk_length == 0:
@@ -1383,11 +1381,11 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             cached_k,
             cached_v,
             cached_pos,
-        ) = self._streaming_qkv(x, state)
-        output = self._streaming_attention(
+        ) = self.streaming_qkv(x, state)
+        output = self.streaming_attention(
             q, all_k, all_v, query_positions, key_positions
         )
-        return self._finish_streaming_attention(
+        return self.finish_streaming_attention(
             output,
             state=state,
             chunk_length=chunk_length,
@@ -1399,7 +1397,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             key_positions=key_positions,
         )
 
-    def _streaming_attention(
+    def streaming_attention(
         self,
         q: torch.Tensor,
         all_k: torch.Tensor,
@@ -1418,7 +1416,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             query_positions.shape[0], query_positions.shape[1], self.embed_dim
         )
 
-    def _project_qkv(
+    def project_qkv(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         projected = self.in_proj(x)
@@ -1432,7 +1430,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             return projected[:, 0], projected[:, 1], projected[:, 2]
         raise ValueError(f"expected a 2D or 3D tensor, got {tuple(x.shape)}")
 
-    def _apply_packed_rope(
+    def apply_packed_rope(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -1442,7 +1440,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.rope is None:
             return q, k
-        return _apply_cached_packed_rope(
+        return apply_cached_packed_rope(
             q,
             k,
             position_ids,

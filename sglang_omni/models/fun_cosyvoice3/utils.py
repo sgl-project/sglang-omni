@@ -142,7 +142,7 @@ class SpeakerEncoder:
         return torch.tensor([embedding.flatten().tolist()])
 
 
-def _run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
+def run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
     """Run the official CosyVoice3 prompt-mel configuration."""
     from matcha.utils.audio import mel_spectrogram
 
@@ -184,7 +184,7 @@ def extract_prompt_speech_feat(
         )
 
     waveform = torch.from_numpy(audio_array)
-    mel = _run_cosyvoice3_mel_spectrogram(waveform)
+    mel = run_cosyvoice3_mel_spectrogram(waveform)
     if mel.ndim != 3 or mel.shape[0] != waveform.shape[0] or mel.shape[1] != 80:
         raise RuntimeError(
             f"CosyVoice3 mel extractor returned an unexpected shape: {tuple(mel.shape)}"

@@ -387,11 +387,11 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         def is_extend_in_batch(self):
             raise AssertionError("fast path must not build metadata")
 
-    scheduler._emit_prefill_end_for_batch(_ExplodingBatch())
+    scheduler.emit_prefill_end_for_batch(_ExplodingBatch())
     assert emitted == []
 
     scheduler._prefill_start_done = {"r1", "r2"}
     batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r2")], is_extend_in_batch=True)
-    scheduler._emit_prefill_end_for_batch(batch)
+    scheduler.emit_prefill_end_for_batch(batch)
     assert emitted == ["r2"]
     assert scheduler._prefill_end_done == {"r1", "r2"}

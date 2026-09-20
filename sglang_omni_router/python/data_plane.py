@@ -29,9 +29,9 @@ from fastapi.responses import JSONResponse, Response
 from sglang_omni import __version__
 from sglang_omni.http.admin_auth import resolve_admin_api_key
 from sglang_omni_router.python.app import (
-    _merge_models,
-    _worker_pool_status_response,
+    merge_models,
     register_data_routes,
+    worker_pool_status_response,
 )
 from sglang_omni_router.python.config import RouterConfig, WorkerConfig
 from sglang_omni_router.python.internal_channel import (
@@ -96,7 +96,7 @@ class DataPlaneWorkerView:
         done = {id(worker) for worker in reported}
         self._retiring = [worker for worker in self._retiring if id(worker) not in done]
 
-    def _retire(self, worker: Worker) -> None:
+    def retire(self, worker: Worker) -> None:
         if worker.active_requests > 0 or worker.routed_requests > 0:
             self._retiring.append(worker)
 
@@ -119,7 +119,7 @@ class DataPlaneWorkerView:
                 # an in-flight request holding the old object cannot
                 # misattribute a late failure to the new worker (ABA).
                 if worker is not None:
-                    self._retire(worker)
+                    self.retire(worker)
                 worker = Worker(config=config)
                 if entry.incarnation:
                     worker.incarnation = entry.incarnation
@@ -136,12 +136,12 @@ class DataPlaneWorkerView:
             worker.disabled = entry.disabled
         for url in list(self._workers):
             if url not in seen:
-                self._retire(self._workers.pop(url))
+                self.retire(self._workers.pop(url))
         self.last_applied_seq = snapshot.seq
         self.last_applied_epoch = getattr(snapshot, "cp_epoch", "")
 
 
-def _default_fence_reaction() -> None:
+def default_fence_reaction() -> None:
     # Note (Jiaxin Deng): SIGTERM lets uvicorn finish in-flight responses
     # instead of dropping them.
     os.kill(os.getpid(), signal.SIGTERM)
@@ -159,7 +159,7 @@ def dp_client_limits(config: RouterConfig, total_data_planes: int) -> httpx.Limi
     )
 
 
-def _counter_report_applied(response: httpx.Response) -> bool:
+def counter_report_applied(response: httpx.Response) -> bool:
     try:
         return response.json().get("applied", True) is not False
     except ValueError:
@@ -183,7 +183,7 @@ def create_data_plane_app(
     snapshot_max_age_secs: float = DEFAULT_SNAPSHOT_MAX_AGE_SECS,
     heartbeat_interval_secs: float = DEFAULT_HEARTBEAT_INTERVAL_SECS,
     counter_flush_interval_secs: float = DEFAULT_COUNTER_FLUSH_INTERVAL_SECS,
-    on_fenced: Callable[[], None] = _default_fence_reaction,
+    on_fenced: Callable[[], None] = default_fence_reaction,
     admin_api_key: str | None = None,
 ) -> FastAPI:
     view = DataPlaneWorkerView()
@@ -235,7 +235,7 @@ def create_data_plane_app(
                     await internal_client.post(
                         "/internal/worker_failure",
                         json=payload,
-                        headers=_internal_headers(internal_token),
+                        headers=internal_headers(internal_token),
                     )
                     return
                 except httpx.HTTPError as exc:
@@ -309,7 +309,7 @@ def create_data_plane_app(
                     response = await internal_client.post(
                         "/internal/register",
                         json=identity,
-                        headers=_internal_headers(internal_token),
+                        headers=internal_headers(internal_token),
                     )
                 else:
                     response = await internal_client.post(
@@ -322,7 +322,7 @@ def create_data_plane_app(
                             # must show up in CP /health.
                             "serving": _stale_gate() is None,
                         },
-                        headers=_internal_headers(internal_token),
+                        headers=internal_headers(internal_token),
                     )
                 if response.status_code == 409:
                     logger.critical("fenced out by a newer generation; stopping")
@@ -414,13 +414,13 @@ def create_data_plane_app(
                 response = await internal_client.post(
                     "/internal/counters",
                     json=payload,
-                    headers=_internal_headers(internal_token),
+                    headers=internal_headers(internal_token),
                 )
                 if response.status_code == 409:
                     logger.critical("counter report fenced by a newer generation")
                     on_fenced()
                     return
-                if response.status_code < 300 and _counter_report_applied(response):
+                if response.status_code < 300 and counter_report_applied(response):
                     # Note (Jiaxin Deng): a retiree's totals live only in this
                     # payload, so release it on acceptance, not on a 200 that
                     # dropped the report as stale.
@@ -484,7 +484,7 @@ def create_data_plane_app(
                 status_code=503,
                 content={"status": "not_ready", "reason": "snapshot_stale"},
             )
-        return _worker_pool_status_response(
+        return worker_pool_status_response(
             view.workers(),
             available_status="ready",
             unavailable_status="not_ready",
@@ -492,7 +492,7 @@ def create_data_plane_app(
 
     @app.get("/v1/models")
     async def models(request: Request) -> JSONResponse:
-        return await _merge_models(
+        return await merge_models(
             view.workers(),
             metadata_client,
             request,
@@ -508,7 +508,7 @@ def create_data_plane_app(
         forward_client if forward_client is not None else internal_client
     )
     if forwarding_client is not None:
-        _register_cp_forwarding(
+        register_cp_forwarding(
             app,
             forwarding_client,
             config,
@@ -575,7 +575,7 @@ _FORWARD_RESPONSE_STRIP = {
 }
 
 
-def _register_cp_forwarding(
+def register_cp_forwarding(
     app: FastAPI,
     internal_client: httpx.AsyncClient,
     config: RouterConfig,
@@ -701,7 +701,7 @@ def _register_cp_forwarding(
         )
 
 
-def _internal_headers(token: str | None) -> dict[str, str]:
+def internal_headers(token: str | None) -> dict[str, str]:
     if token:
         return {INTERNAL_TOKEN_HEADER: token}
     return {}
@@ -784,7 +784,7 @@ def create_dp_app_from_env() -> FastAPI:
                 max_inflight=config.effective_max_inflight,
                 generation=generation,
                 pid=os.getpid(),
-                on_fenced=_default_fence_reaction,
+                on_fenced=default_fence_reaction,
             )
 
         app = create_data_plane_app(

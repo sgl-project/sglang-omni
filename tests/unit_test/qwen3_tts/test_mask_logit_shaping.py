@@ -33,7 +33,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     original = logits.clone()
     logits_output = types.SimpleNamespace(next_token_logits=logits)
 
-    runner._apply_codec_suppress_tokens(logits_output, [object(), object()])
+    runner.apply_codec_suppress_tokens(logits_output, [object(), object()])
 
     suppress_start = configured_vocab - 1024
     assert torch.equal(logits[:2, :suppress_start], original[:2, :suppress_start])
@@ -49,7 +49,7 @@ def test_qwen3_tts_suppression_skips_empty_request_batch() -> None:
     logits = torch.randn(1, 6144)
     original = logits.clone()
 
-    runner._apply_codec_suppress_tokens(
+    runner.apply_codec_suppress_tokens(
         types.SimpleNamespace(next_token_logits=logits), []
     )
 

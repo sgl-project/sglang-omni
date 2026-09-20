@@ -18,7 +18,7 @@ from typing import Any
 import torch
 
 
-def _allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
+def allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
     # Note (jiannan-17): allocate outside inference mode even when the caller
     # is inside it, so the buffer is an ordinary tensor that can be filled
     # under inference mode and cloned or mutated outside it later.
@@ -26,7 +26,7 @@ def _allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
         return torch.empty(numel, dtype=dtype, pin_memory=True)
 
 
-def _normalize_device(device: torch.device | str | int) -> torch.device:
+def normalize_device(device: torch.device | str | int) -> torch.device:
     resolved = torch.device(device)
     if resolved.type == "cuda" and resolved.index is None:
         return torch.device("cuda", torch.cuda.current_device())
@@ -58,7 +58,7 @@ class GrowablePinnedBuffer:
             raise ValueError("required capacity must be >= 0")
         if required <= self.capacity:
             return
-        storage = _allocate_pinned(required, self._dtype)
+        storage = allocate_pinned(required, self._dtype)
         self._storage = storage
 
     def view(self, numel: int) -> torch.Tensor:
@@ -92,7 +92,7 @@ class PinnedTransferSlot:
         *,
         initial_capacity: int = 0,
     ) -> None:
-        self.device = _normalize_device(device)
+        self.device = normalize_device(device)
         self._buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
         self._event: Any = None
         # Note (jiannan-17): True only while the most recent ``record()``
@@ -112,7 +112,7 @@ class PinnedTransferSlot:
     def view(self, numel: int) -> torch.Tensor:
         return self._buffer.view(numel)
 
-    def _device_guard(self) -> contextlib.AbstractContextManager[Any]:
+    def device_guard(self) -> contextlib.AbstractContextManager[Any]:
         if self.device.type == "cuda":
             return torch.cuda.device(self.device)
         return contextlib.nullcontext()
@@ -130,21 +130,18 @@ class PinnedTransferSlot:
         # transfer's completion state readable as this transfer's.
         self._recorded = False
         stream_device = getattr(stream, "device", None)
-        if (
-            stream_device is not None
-            and _normalize_device(stream_device) != self.device
-        ):
+        if stream_device is not None and normalize_device(stream_device) != self.device:
             raise ValueError(
                 f"cannot record a transfer slot on {self.device} from a stream on "
                 f"{stream_device}"
             )
-        with self._device_guard():
+        with self.device_guard():
             if self._event is None:
                 self._event = torch.cuda.Event()
             self._event.record(stream)
         self._recorded = True
 
-    def _recorded_event(self) -> Any:
+    def recorded_event(self) -> Any:
         if not self._recorded:
             raise RuntimeError(
                 "transfer event was not recorded: no record() has succeeded on "
@@ -157,8 +154,8 @@ class PinnedTransferSlot:
 
         Raises ``RuntimeError`` until a ``record()`` has succeeded.
         """
-        event = self._recorded_event()
-        with self._device_guard():
+        event = self.recorded_event()
+        with self.device_guard():
             return bool(event.query())
 
     def synchronize(self) -> None:
@@ -166,8 +163,8 @@ class PinnedTransferSlot:
 
         Raises ``RuntimeError`` until a ``record()`` has succeeded.
         """
-        event = self._recorded_event()
-        with self._device_guard():
+        event = self.recorded_event()
+        with self.device_guard():
             event.synchronize()
 
 

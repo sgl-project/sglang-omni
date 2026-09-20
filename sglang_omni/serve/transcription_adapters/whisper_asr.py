@@ -38,10 +38,10 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         audio_duration_s: float,
     ) -> TranscriptionVerboseResponse:
         clean_text = self.postprocess_text(text)
-        segments = self._parse_segments(text)
+        segments = self.parse_segments(text)
         if not segments:
-            segments = self._build_fallback_segments(clean_text, audio_duration_s)
-        return self._build_response(clean_text, language, audio_duration_s, segments)
+            segments = self.build_fallback_segments(clean_text, audio_duration_s)
+        return self.build_response(clean_text, language, audio_duration_s, segments)
 
     def build_timestamped_response(
         self,
@@ -49,19 +49,19 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         language: str | None,
         audio_duration_s: float,
     ) -> TranscriptionVerboseResponse:
-        segments = self._parse_timestamped_segments(text)
-        return self._build_response(
+        segments = self.parse_timestamped_segments(text)
+        return self.build_response(
             self.postprocess_text(text), language, audio_duration_s, segments
         )
 
-    def _build_response(
+    def build_response(
         self,
         text: str,
         language: str | None,
         audio_duration_s: float,
         segments: list[TranscriptionSegment],
     ) -> TranscriptionVerboseResponse:
-        segments = self._sanitize_segments(segments, audio_duration_s)
+        segments = self.sanitize_segments(segments, audio_duration_s)
         duration = (
             round(float(audio_duration_s), 2)
             if audio_duration_s > 0
@@ -75,7 +75,7 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         )
 
     @staticmethod
-    def _parse_segments(text: str) -> list[TranscriptionSegment]:
+    def parse_segments(text: str) -> list[TranscriptionSegment]:
         segments: list[TranscriptionSegment] = []
         for match in _SEGMENT_RE.finditer(text):
             segment_text = match.group("text").strip()
@@ -92,7 +92,7 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         return segments
 
     @staticmethod
-    def _parse_timestamped_segments(text: str) -> list[TranscriptionSegment]:
+    def parse_timestamped_segments(text: str) -> list[TranscriptionSegment]:
         segments: list[TranscriptionSegment] = []
         cursor = 0
         previous_end = 0.0
@@ -123,7 +123,7 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         return segments
 
     @staticmethod
-    def _sanitize_segments(
+    def sanitize_segments(
         segments: list[TranscriptionSegment], audio_duration_s: float
     ) -> list[TranscriptionSegment]:
         if audio_duration_s <= 0:
@@ -146,7 +146,7 @@ class WhisperASRAdapter(WhisperTranscriptionAdapter):
         return segments
 
     @staticmethod
-    def _build_fallback_segments(
+    def build_fallback_segments(
         text: str, audio_duration_s: float
     ) -> list[TranscriptionSegment]:
         text = text.strip()

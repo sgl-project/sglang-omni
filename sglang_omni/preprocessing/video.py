@@ -18,7 +18,7 @@ from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
-from .base import MediaIO, _is_url
+from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 from .resource_connector import global_thread_pool
 
@@ -69,7 +69,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         self.audio_target_sr = audio_target_sr
         self.kwargs = kwargs
 
-    def _load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
+    def load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
         return load_video_path(
             filepath,
             fps=self.fps,
@@ -95,11 +95,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         try:
             if self.extract_audio:
                 # Load video and extract audio from the same file
-                video, sample_fps = self._load_path(tmp_path)
-                audio = _extract_audio_from_path(tmp_path, self.audio_target_sr)
+                video, sample_fps = self.load_path(tmp_path)
+                audio = extract_audio_from_path(tmp_path, self.audio_target_sr)
                 return video, sample_fps, audio
             else:
-                video, sample_fps = self._load_path(tmp_path)
+                video, sample_fps = self.load_path(tmp_path)
                 return video, sample_fps, None
         finally:
             # Clean up temporary file
@@ -117,11 +117,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         """Load video from a local file path, optionally extracting audio."""
         if self.extract_audio:
             # Load video and extract audio from the same file
-            video, sample_fps = self._load_path(filepath)
-            audio = _extract_audio_from_path(filepath, self.audio_target_sr)
+            video, sample_fps = self.load_path(filepath)
+            audio = extract_audio_from_path(filepath, self.audio_target_sr)
             return video, sample_fps, audio
         else:
-            video, sample_fps = self._load_path(filepath)
+            video, sample_fps = self.load_path(filepath)
             return video, sample_fps, None
 
 
@@ -209,7 +209,7 @@ async def ensure_video_list_async(
                 )
                 audio_task = loop.run_in_executor(
                     global_thread_pool,
-                    _extract_audio_from_path,
+                    extract_audio_from_path,
                     video_path,
                     audio_target_sr,
                 )
@@ -237,7 +237,7 @@ async def ensure_video_list_async(
     # First pass: identify items that need loading
     for idx, video_item in enumerate(items):
         if isinstance(video_item, (str, Path)):
-            if _is_url(video_item):
+            if is_url(video_item):
                 # Create coroutine for async URL fetching with optional audio extraction
                 coro = _load_video_with_audio(video_item, is_url=True)
                 task = asyncio.create_task(coro)
@@ -289,7 +289,7 @@ async def ensure_video_list_async(
     return normalized, None, extracted_audios if extract_audio else None
 
 
-def _extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | None:
+def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | None:
     """Decode the first audio stream to mono float32 at the target sample rate."""
     try:
         with av.open(str(video_path)) as container:

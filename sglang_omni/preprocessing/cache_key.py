@@ -12,13 +12,13 @@ import xxhash
 from PIL import Image
 
 
-def _is_url_like(s: str) -> bool:
+def is_url_like(s: str) -> bool:
     """Quick check if a string is a URL (http, https, data, file)."""
     parsed = urlparse(s)
     return bool(parsed.scheme and parsed.scheme in ("http", "https", "data", "file"))
 
 
-def _hash_joined(parts: list[str]) -> str:
+def hash_joined(parts: list[str]) -> str:
     return xxhash.xxh3_64("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -58,7 +58,7 @@ _REF_PATH_HASH_MEMO: OrderedDict[str, tuple[str, str]] = OrderedDict()
 _REF_PATH_HASH_MEMO_LOCK = threading.Lock()
 
 
-def _reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
+def reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
     try:
         if not path.is_file():
             return None
@@ -74,7 +74,7 @@ def _reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
         return None
 
 
-def _reference_path_sentinel(path: Path, file_size: int) -> str | None:
+def reference_path_sentinel(path: Path, file_size: int) -> str | None:
     try:
         chunk_size = min(_REF_PATH_HASH_SENTINEL_BYTES, file_size)
         with path.open("rb") as f:
@@ -91,7 +91,7 @@ def _reference_path_sentinel(path: Path, file_size: int) -> str | None:
         return None
 
 
-def _get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
+def get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
     with _REF_PATH_HASH_MEMO_LOCK:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
         if cached is None:
@@ -104,7 +104,7 @@ def _get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
         return digest
 
 
-def _get_reference_path_hash_by_memo_key(memo_key: str) -> str | None:
+def get_reference_path_hash_by_memo_key(memo_key: str) -> str | None:
     # Memo lookup ignoring the sentinel; trust_stat=True callers only.
     with _REF_PATH_HASH_MEMO_LOCK:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
@@ -114,7 +114,7 @@ def _get_reference_path_hash_by_memo_key(memo_key: str) -> str | None:
         return cached[1]
 
 
-def _put_reference_path_hash(memo_key: str, sentinel: str, digest: str) -> None:
+def put_reference_path_hash(memo_key: str, sentinel: str, digest: str) -> None:
     with _REF_PATH_HASH_MEMO_LOCK:
         _REF_PATH_HASH_MEMO[memo_key] = (sentinel, digest)
         _REF_PATH_HASH_MEMO.move_to_end(memo_key)
@@ -131,22 +131,22 @@ def reference_path_cache_key(
     # is same-size+mtime+ctime-with-different-content (reachable only by clock
     # rollback). Default False keeps Higgs's sentinel path; keys are identical.
     path = Path(str(path_like)).expanduser()
-    memo = _reference_path_hash_memo_key(path)
+    memo = reference_path_hash_memo_key(path)
     if memo is None:
         return None
     memo_key, file_size = memo
 
     if trust_stat:
-        digest = _get_reference_path_hash_by_memo_key(memo_key)
+        digest = get_reference_path_hash_by_memo_key(memo_key)
         if digest is not None:
             return f"file:{digest}"
 
-    sentinel = _reference_path_sentinel(path, file_size)
+    sentinel = reference_path_sentinel(path, file_size)
     if sentinel is None:
         return None
 
     if not trust_stat:
-        digest = _get_reference_path_hash(memo_key, sentinel)
+        digest = get_reference_path_hash(memo_key, sentinel)
         if digest is not None:
             return f"file:{digest}"
 
@@ -154,9 +154,9 @@ def reference_path_cache_key(
         digest = hash_bytes(path.read_bytes())
     except OSError:
         return None
-    if _reference_path_hash_memo_key(path) == memo:
+    if reference_path_hash_memo_key(path) == memo:
         # Always store the sentinel so default callers still validate this entry.
-        _put_reference_path_hash(memo_key, sentinel, digest)
+        put_reference_path_hash(memo_key, sentinel, digest)
     return f"file:{digest}"
 
 
@@ -175,7 +175,7 @@ def hash_media_item(item: Any) -> str | None:
     # File path or URL
     if isinstance(item, (str, Path)):
         s = str(item)
-        if _is_url_like(s):
+        if is_url_like(s):
             return f"url:{hash_bytes(s.encode())}"
         p = Path(s)
         if p.exists() and p.is_file():
@@ -232,4 +232,4 @@ def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
             return None
         parts.append(part)
 
-    return f"{prefix}:{_hash_joined(parts)}"
+    return f"{prefix}:{hash_joined(parts)}"

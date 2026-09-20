@@ -142,7 +142,7 @@ class TPFollowerControlPlane:
         | ProfilerStopMessage
         | TPWorkMessage
     ):
-        msg = await self._recv_from_queue(self._work_queue)
+        msg = await self.recv_from_queue(self._work_queue)
         if isinstance(
             msg,
             (
@@ -157,7 +157,7 @@ class TPFollowerControlPlane:
         raise ValueError(f"Unexpected TP follower work message: {type(msg)}")
 
     async def recv_abort(self) -> AbortMessage:
-        msg = await self._recv_from_queue(self._abort_queue)
+        msg = await self.recv_from_queue(self._abort_queue)
         if isinstance(msg, AbortMessage):
             return msg
         raise ValueError(f"Unexpected TP follower abort message: {type(msg)}")
@@ -169,7 +169,7 @@ class TPFollowerControlPlane:
             )
         self._admin_result_queue.put_nowait(msg)
 
-    async def _recv_from_queue(self, q: Any) -> Any:
+    async def recv_from_queue(self, q: Any) -> Any:
         loop = asyncio.get_running_loop()
         while True:
             if self._closed:
