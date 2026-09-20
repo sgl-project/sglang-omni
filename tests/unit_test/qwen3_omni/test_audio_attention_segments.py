@@ -8,8 +8,8 @@ import torch.nn as nn
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 from sglang_omni.models.qwen3_omni.components.audio_encoder import (
-    _SegmentSplits,
-    _share_segment_splits,
+    SegmentSplits,
+    share_segment_splits,
 )
 
 HEADS, HEAD_DIM = 4, 16
@@ -81,8 +81,8 @@ def _inputs(segments: list[int]):
 
 
 def test_share_segment_splits_patches_every_layer() -> None:
-    tower, splits = _Tower(), _SegmentSplits()
-    _share_segment_splits(tower, splits)
+    tower, splits = _Tower(), SegmentSplits()
+    share_segment_splits(tower, splits)
     for layer in tower.layers:
         assert layer.self_attn._omni_segment_splits is splits
         assert hasattr(layer.self_attn, "_omni_unshared_forward")
@@ -90,12 +90,12 @@ def test_share_segment_splits_patches_every_layer() -> None:
 
 def test_shared_splits_match_the_per_layer_split_bitwise() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
+    tower, splits = _Tower(), SegmentSplits()
     segments = [104, 104, 52]
     hs, cu = _inputs(segments)
     with torch.no_grad():
         reference = [layer.self_attn(hs, cu) for layer in tower.layers]
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits)
     splits.value = segments
     with torch.no_grad():
         shared = [layer.self_attn(hs, cu) for layer in tower.layers]
@@ -105,11 +105,11 @@ def test_shared_splits_match_the_per_layer_split_bitwise() -> None:
 
 def test_missing_splits_fall_back_to_the_stock_path() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
+    tower, splits = _Tower(), SegmentSplits()
     hs, cu = _inputs([104, 26])
     with torch.no_grad():
         reference = tower.layers[0].self_attn(hs, cu)
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits)
     splits.value = None
     with torch.no_grad():
         assert torch.equal(tower.layers[0].self_attn(hs, cu), reference)
@@ -117,11 +117,11 @@ def test_missing_splits_fall_back_to_the_stock_path() -> None:
 
 def test_mismatched_splits_fall_back_instead_of_corrupting() -> None:
     torch.manual_seed(0)
-    tower, splits = _Tower(), _SegmentSplits()
+    tower, splits = _Tower(), SegmentSplits()
     hs, cu = _inputs([104, 26])
     with torch.no_grad():
         reference = tower.layers[0].self_attn(hs, cu)
-    _share_segment_splits(tower, splits)
+    share_segment_splits(tower, splits)
     splits.value = [64, 64]
     with torch.no_grad():
         assert torch.equal(tower.layers[0].self_attn(hs, cu), reference)
@@ -129,8 +129,8 @@ def test_mismatched_splits_fall_back_instead_of_corrupting() -> None:
 
 def test_shared_splits_do_not_copy_from_device_per_layer() -> None:
     """The whole point is one host round-trip per request, not one per layer."""
-    tower, splits = _Tower(), _SegmentSplits()
-    _share_segment_splits(tower, splits)
+    tower, splits = _Tower(), SegmentSplits()
+    share_segment_splits(tower, splits)
     segments = [104, 26]
     hs, cu = _inputs(segments)
     splits.value = segments

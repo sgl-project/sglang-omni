@@ -171,12 +171,12 @@ def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
         stream_slots=4,
         slot_pool=pool,
     )
-    assert vocoder._can_batch_stream_chunks is True
-    assert vocoder._stream_chunk_batch_max == 4
+    assert vocoder.can_batch_stream_chunks is True
+    assert vocoder.stream_chunk_batch_max == 4
 
     for request_id in ("a", "b"):
         state = vocoder.create_stream_state(request_id)
-        vocoder._stream_states[request_id] = state
+        vocoder.stream_states[request_id] = state
         vocoder.ingest(request_id, state, _patch(1.0 if request_id == "a" else 2.0))
 
     participants = vocoder.select_step_participants()
@@ -201,11 +201,11 @@ def test_select_step_participants_respects_max_batch_size() -> None:
         stream_slots=8,
         slot_pool=pool,
     )
-    assert vocoder._stream_chunk_batch_max == 2
+    assert vocoder.stream_chunk_batch_max == 2
 
     for request_id in ("a", "b", "c", "d"):
         state = vocoder.create_stream_state(request_id)
-        vocoder._stream_states[request_id] = state
+        vocoder.stream_states[request_id] = state
         vocoder.ingest(request_id, state, _patch(float(ord(request_id))))
 
     participants = vocoder.select_step_participants()
@@ -227,7 +227,7 @@ def test_stream_chunk_batch_cap_follows_max_batch_size_not_slots() -> None:
         stream_slots=1,
         slot_pool=_RecordingSlotPool(num_slots=1),
     )
-    assert vocoder._stream_chunk_batch_max == 8
+    assert vocoder.stream_chunk_batch_max == 8
     assert vocoder.stream_slots == 1
 
 
@@ -242,8 +242,8 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     )
     early = vocoder.create_stream_state("early")
     steady = vocoder.create_stream_state("steady")
-    vocoder._stream_states["early"] = early
-    vocoder._stream_states["steady"] = steady
+    vocoder.stream_states["early"] = early
+    vocoder.stream_states["steady"] = steady
 
     vocoder.ingest("early", early, _patch(1.0))
     # note (guozhihao-224): past the first-two-patch fast path so take_patches
@@ -253,7 +253,7 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     steady.slot = pool.acquire()
 
     participants = vocoder.select_step_participants()
-    frames = {vocoder._step_frames(state) for _, state in participants}
+    frames = {vocoder.step_frames(state) for _, state in participants}
     assert len(frames) == 1
     plan = vocoder.build_step_plan(participants)
     assert len({int(t.shape[1]) for t in plan.slot_latents.values()}) == 1
@@ -318,8 +318,8 @@ def test_on_stream_chunk_batch_uses_pool_not_compiled_stream_step() -> None:
         slot_pool=pool,
     )
     payload_state = vocoder.create_stream_state("req")
-    vocoder._stream_states["req"] = payload_state
-    vocoder._stream_payloads["req"] = SimpleNamespace(
+    vocoder.stream_states["req"] = payload_state
+    vocoder.stream_payloads["req"] = SimpleNamespace(
         request_id="req",
         request=SimpleNamespace(params={"stream": True}),
         data={},

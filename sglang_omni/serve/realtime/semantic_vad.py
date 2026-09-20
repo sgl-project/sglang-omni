@@ -145,7 +145,7 @@ class SemanticTurnDetector:
 
             if self._eou_broken:
                 if silence_ms >= self.config.fallback_silence_ms:
-                    emits.append(self._end_turn())
+                    emits.append(self.end_turn())
                 continue
 
             if (
@@ -153,7 +153,7 @@ class SemanticTurnDetector:
                 and silence_ms >= self.config.candidate_pause_ms
             ):
                 try:
-                    self.candidate_probability = self._predict_eou()
+                    self.candidate_probability = self.predict_eou()
                 except Exception:
                     logger.warning(
                         "Smart Turn inference failed; using fixed-silence fallback",
@@ -161,7 +161,7 @@ class SemanticTurnDetector:
                     )
                     self._eou_broken = True
                     if silence_ms >= self.config.fallback_silence_ms:
-                        emits.append(self._end_turn())
+                        emits.append(self.end_turn())
                     continue
 
             required_silence_ms = self.config.max_pause_ms
@@ -183,11 +183,11 @@ class SemanticTurnDetector:
                     self.config.confidence_silence_ms,
                 )
             if silence_ms >= required_silence_ms:
-                emits.append(self._end_turn())
+                emits.append(self.end_turn())
 
         return emits
 
-    def _predict_eou(self) -> float:
+    def predict_eou(self) -> float:
         audio = np.frombuffer(self.utterance_audio, dtype="<i2").astype(np.float32)
         audio /= 32768.0
         max_samples = self.config.max_utterance_seconds * VAD_SAMPLE_RATE
@@ -195,7 +195,7 @@ class SemanticTurnDetector:
             audio = audio[-max_samples:]
         return float(self.eou_model.predict(audio, VAD_SAMPLE_RATE))
 
-    def _end_turn(self) -> Emit:
+    def end_turn(self) -> Emit:
         self.is_speech = False
         self.silence_run_samples = 0
         self.candidate_probability = None

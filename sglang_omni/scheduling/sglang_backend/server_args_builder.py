@@ -16,13 +16,13 @@ _DECODE_CUDA_GRAPH_ALIASES = {
 }
 
 
-def _platform_device_type() -> str:
+def platform_device_type() -> str:
     from sglang_omni.platforms import current_platform
 
     return current_platform.device_type
 
 
-def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
+def normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
     """Translate Omni's legacy public knobs to SGLang's decode fields."""
     for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
         if legacy_name not in kwargs:
@@ -48,7 +48,7 @@ def pin_resolved_device_type(overrides: dict[str, Any], resolved_type: str) -> N
     overrides["device"] = resolved_type
 
 
-def _apply_platform_decode_cuda_graph_backend(kwargs: dict[str, Any]) -> None:
+def apply_platform_decode_cuda_graph_backend(kwargs: dict[str, Any]) -> None:
     """SGLang applies this after its disable switches, and a stage may name cpu
     on an accelerator host, so both are checked before it is set."""
     from sglang_omni.platforms import current_platform
@@ -89,15 +89,15 @@ def build_sglang_server_args(
     if mem_fraction_static is not None:
         kwargs["mem_fraction_static"] = mem_fraction_static
     kwargs.update(overrides)
-    _normalize_decode_cuda_graph_overrides(kwargs)
+    normalize_decode_cuda_graph_overrides(kwargs)
     # Existing Omni models remain eager-prefill by default. Models that have
     # adapted SGLang's phase-specific prefill contract opt in explicitly
     # through their generation defaults / server overrides.
     kwargs.setdefault("cuda_graph_backend_prefill", CudaGraphBackend.DISABLED)
     if kwargs.get("mem_fraction_static") is None:
         kwargs.pop("mem_fraction_static", None)
-    kwargs.setdefault("device", _platform_device_type())
-    _apply_platform_decode_cuda_graph_backend(kwargs)
+    kwargs.setdefault("device", platform_device_type())
+    apply_platform_decode_cuda_graph_backend(kwargs)
     server_args = ServerArgs(**kwargs)
     server_args.resolve_once()
     resolved = resolved_view(server_args)

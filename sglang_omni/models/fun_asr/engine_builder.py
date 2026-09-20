@@ -164,9 +164,9 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 self.pre_lm_max_batch_size,
             )
         elif self.enable_encoder_torch_compile:
-            from sglang_omni.models.fun_asr.stages import _compile_fun_asr_audio_encoder
+            from sglang_omni.models.fun_asr.stages import compile_fun_asr_audio_encoder
 
-            _compile_fun_asr_audio_encoder(
+            compile_fun_asr_audio_encoder(
                 model,
                 warmup_inference_mode=self.enable_pre_lm_encoder,
             )

@@ -30,7 +30,7 @@ FISH_BATCH_INVARIANT = os.getenv("FISH_BATCH_INVARIANT", "false").lower() in (
 
 
 @cache
-def _fast_ar_uses_fa3(device_index: int) -> bool:
+def fast_ar_uses_fa3(device_index: int) -> bool:
     major, minor = torch.cuda.get_device_capability(device_index)
     sm_version = major * 10 + minor
     if sm_version == 90:
@@ -43,7 +43,7 @@ def _fast_ar_uses_fa3(device_index: int) -> bool:
     )
 
 
-def _flashinfer_kvcache_attention(
+def flashinfer_kvcache_attention(
     *,
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -81,7 +81,7 @@ def _flashinfer_kvcache_attention(
     return torch.stack(outputs, dim=0)
 
 
-def _npu_kvcache_attention(
+def npu_kvcache_attention(
     *,
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -124,7 +124,7 @@ def _npu_kvcache_attention(
     return out
 
 
-def _cuda_kvcache_attention(
+def cuda_kvcache_attention(
     *,
     q: torch.Tensor,
     k_cache: torch.Tensor,
@@ -140,7 +140,7 @@ def _cuda_kvcache_attention(
     device_index = q.device.index
     if device_index is None:
         raise RuntimeError("FishAudio S2-Pro Fast-AR requires an indexed CUDA device")
-    if _fast_ar_uses_fa3(device_index):
+    if fast_ar_uses_fa3(device_index):
         from sgl_kernel.flash_attn import flash_attn_with_kvcache
 
         return flash_attn_with_kvcache(
@@ -153,7 +153,7 @@ def _cuda_kvcache_attention(
             causal=causal,
             num_splits=num_splits,
         )
-    return _flashinfer_kvcache_attention(
+    return flashinfer_kvcache_attention(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
@@ -180,7 +180,7 @@ def flash_attn_kvcache_op(
 ) -> torch.Tensor:
     device_type = q.device.type
     if device_type == "npu":
-        output = _npu_kvcache_attention(
+        output = npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -189,7 +189,7 @@ def flash_attn_kvcache_op(
             cache_position=cache_position,
         )
     elif device_type == "cuda":
-        output = _cuda_kvcache_attention(
+        output = cuda_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -485,7 +485,7 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         self._compiled_forward_kvcached_layers = forward_kvcached_layers
         self._compiled_forward_kvcached_max_bs = max_batch_size
 
-    def _select_forward_kvcached_layers(
+    def select_forward_kvcached_layers(
         self, bsz: int
     ) -> list[Callable[[Tensor, Tensor, Tensor, int], Tensor]]:
         if (
@@ -502,7 +502,7 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         freqs_cis = self.freqs_cis[self.input_pos]
         cache_seqlens = self.input_pos.expand(bsz).to(torch.int32)
 
-        for layer in self._select_forward_kvcached_layers(bsz):
+        for layer in self.select_forward_kvcached_layers(bsz):
             x = layer(x, freqs_cis, cache_seqlens, codebook_idx)
 
         return self.output(self.norm(x))

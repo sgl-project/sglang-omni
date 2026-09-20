@@ -46,7 +46,7 @@ class ThinkerFusedRopeGate:
         self.positions = positions[0].contiguous()
 
 
-def _fused_apply_qk_norm_rope(
+def fused_apply_qk_norm_rope(
     attn: Any,
     qkv: torch.Tensor,
     positions: torch.Tensor,
@@ -77,7 +77,7 @@ def _fused_apply_qk_norm_rope(
     return q, k, v
 
 
-def _prefill_graph_enabled() -> bool:
+def is_prefill_graph_enabled() -> bool:
     """Whether prefill runs under a graph that would freeze a Python decision."""
     from sglang.srt.model_executor.cuda_graph_config import Backend
     from sglang.srt.runtime_context import get_exec
@@ -104,7 +104,7 @@ def install_thinker_fused_rope(
     if not current_platform.is_xpu():
         return None
     if prefill_graph_enabled is None:
-        prefill_graph_enabled = _prefill_graph_enabled()
+        prefill_graph_enabled = is_prefill_graph_enabled()
     if prefill_graph_enabled:
         logger.info(
             "Qwen3-Omni thinker: fused QK-norm-RoPE stays off because a replayed "
@@ -155,7 +155,7 @@ def install_thinker_fused_rope(
             _kernel=kernel,
             _cache=cos_sin_cache,
         ):
-            return _fused_apply_qk_norm_rope(
+            return fused_apply_qk_norm_rope(
                 attn_self,
                 qkv,
                 positions,

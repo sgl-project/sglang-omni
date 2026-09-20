@@ -59,7 +59,12 @@ def models():
     conditioning = create_conditioning_executor(
         checkpoint, device="cuda", gpu_id=0, text_encoder_path=qwen
     )
-    engine = create_auk_engine_executor(checkpoint, device="cuda", gpu_id=0)
+    engine = create_auk_engine_executor(
+        checkpoint,
+        device="cuda",
+        gpu_id=0,
+        enable_dit_fused_qk_norm_rope=False,
+    )
     decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
@@ -96,7 +101,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         default_model="tencent/AuK"
     ).build_generate_request(request)
     payload = StagePayload(
-        request_id="parity", request=Client._build_omni_request(generated), data={}
+        request_id="parity", request=Client.build_omni_request(generated), data={}
     )
     state = build_auk_state(payload, make_runtime_config(checkpoint))
     payload.data = state.to_dict()

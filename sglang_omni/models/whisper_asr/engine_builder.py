@@ -28,7 +28,7 @@ _DECODER_PREFILL_TOKENS_PER_REQUEST = (
 )
 
 
-def _max_reachable_decoder_prefill_tokens(
+def max_reachable_decoder_prefill_tokens(
     *,
     budget: int,
     encoder_token_count: int,
@@ -61,7 +61,7 @@ def _max_reachable_decoder_prefill_tokens(
     return max(_DECODER_PREFILL_TOKENS_PER_REQUEST, lower_cap, upper_cap)
 
 
-def _reachable_prefill_cuda_graph_max_bs(
+def reachable_prefill_cuda_graph_max_bs(
     overrides: dict[str, Any],
     *,
     encoder_token_count: int,
@@ -81,7 +81,7 @@ def _reachable_prefill_cuda_graph_max_bs(
         request_limit = min(request_limit, int(max_running_requests))
 
     caps = [
-        _max_reachable_decoder_prefill_tokens(
+        max_reachable_decoder_prefill_tokens(
             budget=budget,
             encoder_token_count=encoder_token_count,
             request_limit=request_limit,
@@ -96,13 +96,13 @@ def _reachable_prefill_cuda_graph_max_bs(
     return cap
 
 
-def _normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
+def normalize_encoder_graph_buckets(buckets: list[int] | None) -> tuple[int, ...]:
     values = _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS if buckets is None else buckets
     normalized = {int(value) for value in values}
     return tuple(sorted(value for value in normalized if value >= 1))
 
 
-def _resolve_encoder_graph_buckets(
+def resolve_encoder_graph_buckets(
     buckets: tuple[int, ...],
     *,
     enable_pre_lm_encoder: bool,
@@ -180,7 +180,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
         self._using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
-        self.encoder_graph_batch_buckets = _normalize_encoder_graph_buckets(
+        self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
         )
         self.enable_async_decode = enable_async_decode
@@ -245,7 +245,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
 
         max_prefill_tokens = int(get_schedule().max_prefill_tokens)
         max_running_requests = int(get_schedule().max_running_requests)
-        resolved_buckets = _resolve_encoder_graph_buckets(
+        resolved_buckets = resolve_encoder_graph_buckets(
             self.encoder_graph_batch_buckets,
             enable_pre_lm_encoder=self.enable_pre_lm_encoder,
             pre_lm_max_batch_size=self.pre_lm_max_batch_size,
@@ -322,7 +322,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         ):
             return
 
-        cap = _reachable_prefill_cuda_graph_max_bs(
+        cap = reachable_prefill_cuda_graph_max_bs(
             overrides,
             encoder_token_count=self.encoder_token_count,
             max_running_requests=overrides.get("max_running_requests"),

@@ -352,13 +352,15 @@ Relevant model CI ownership:
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
-  (`QWEN3_ASR_WER_CONCURRENCY`, currently 32). Used by Qwen3 talker WER tests
+  (`QWEN3_ASR_WER_CONCURRENCY`, currently 4). Used by Qwen3 talker WER tests
   and TTS WER tests instead of the in-process transformers Whisper pipeline.
 - Talker / video WER CI (`test_qwen3_omni_*_talker_ci.py`, `test_tts_ci.py`):
   generate audio with the model router first, tear down that server, free both
   GPUs, then transcribe saved WAVs through the ASR router. Qwen3-Omni
   talker/TTS generation concurrency is 16, including the
-  `videoamme_talker_tp2` stage; ASR/WER transcription concurrency is 32.
+  `videoamme_talker_tp2` stage; ASR/WER transcription concurrency is 4 to
+  respect one worker's long-audio admission cap. Dedicated ASR speed
+  benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
   Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
@@ -410,7 +412,7 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
   concurrency 16, and frees the server GPUs before ASR/WER and
   speaker-similarity checks. Non-streaming and streaming WER pass the selected
   TTS generation concurrency into the result config while keeping Qwen3-ASR
-  transcription concurrency at 32.
+  transcription concurrency at 4.
 - `test_tts_consistency_artifacts.py`: CPU-only stage-3 check that compares
   TTS non-stream and streaming `speed_results.json` under
   `${OMNI_CI_HOME}/tts-stage-results/{nonstream,stream}/`.
@@ -423,6 +425,27 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
+- CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
+  model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
+  GitHub CI accepts the mutually exclusive `run-qwen3-omni` and `run-minicpmo`
+  labels, or the `omni_ci_model` manual-dispatch input. The input overrides
+  a single label; conflicting labels fail selection. Without either, Qwen3-Omni
+  remains selected. `/tag-and-rerun-ci minicpmo` selects MiniCPM-O 4.5 and
+  reruns Omni CI; it can be combined with one TTS and one ASR model target.
+  Model selection does not imply calibrated performance or quality thresholds.
+  MiniCPM uses two complete one-GPU workers behind the Rust router, with
+  non-streaming speech output. The shared stages cover thinker length, SeedTTS,
+  and text/speech answers for MMMU, MMSU, Video-MME, and Video-AMME. Qwen's
+  TP2 and speech CUDA-graph assertions remain Qwen-only, as does the PCM stage.
+  `SGLANG_OMNI_TEST_MINICPMO_MODEL` can point to an offline checkpoint including
+  its `assets/token2wav` files and default reference audio.
+  MiniCPM's raw references in `omni_ci_config.py` are calibrated on H100 DP2
+  with the Rust router. Benchmarks enforce request completeness and the
+  model-specific accuracy, speed, WER, speaker similarity, and UTMOS gates.
+  Calibration establishes a baseline; ordinary CI must still pass for the
+  revision being qualified. For an uncalibrated preset, metrics are collected
+  before the explicit calibration gate. Calibration runs must omit `-x` so
+  later quality metrics are collected after that expected gate.
 
 ## `unit_test/`
 
@@ -869,7 +892,11 @@ that happened to contain an older version of the test.
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting
   a WAV container), duration validation, fingerprinting, downmixing, and
-  legacy input compatibility.
+  legacy input compatibility. `test_resource_connector.py` covers the
+  `MultiModalResourceConnector` local-media policy: bare local paths and
+  `file://` URLs are both scoped to `allowed_local_media_path` once it is
+  configured, and `..` traversal and symlink escapes are rejected before
+  MediaIO is called.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.

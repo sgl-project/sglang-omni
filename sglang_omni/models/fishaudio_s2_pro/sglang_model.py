@@ -379,7 +379,7 @@ class S2ProSGLangTextModel(nn.Module):
 
         # Codebook decode: constrained sampling + batched codebook loop
         if self._vq_ready:
-            self._decode_codebooks(logits, hidden_states)
+            self.decode_codebooks(logits, hidden_states)
 
         return LogitsProcessorOutput(
             next_token_logits=logits,
@@ -387,7 +387,7 @@ class S2ProSGLangTextModel(nn.Module):
         )
 
     @torch.no_grad()
-    def _decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
+    def decode_codebooks(self, logits: Tensor, hidden_states: Tensor) -> None:
         """Constrained semantic sampling + batched codebook generation.
 
         Semantic tokens use temperature/top-p sampling with RAS fallback.
@@ -493,17 +493,17 @@ class S2ProSGLangTextModel(nn.Module):
             else:
                 continue
 
-            if self._load_remapped_weight(name, loaded_weight, params_dict):
+            if self.load_remapped_weight(name, loaded_weight, params_dict):
                 continue
 
             if name in params_dict:
                 param = params_dict[name]
-                weight_loader = getattr(param, "weight_loader", _default_weight_loader)
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             else:
                 logger.debug("Skipping weight: %s", name)
 
-    def _load_remapped_weight(
+    def load_remapped_weight(
         self,
         name: str,
         loaded_weight: Tensor,
@@ -527,7 +527,7 @@ class S2ProSGLangTextModel(nn.Module):
                 continue
             prefix = name[: -len(ckpt_suffix)]
             if target is None:
-                return self._load_fused_qkv(prefix, loaded_weight, params_dict)
+                return self.load_fused_qkv(prefix, loaded_weight, params_dict)
             if isinstance(target, tuple):
                 target_suffix, shard_id = target
             else:
@@ -536,12 +536,12 @@ class S2ProSGLangTextModel(nn.Module):
             if shard_id is not None:
                 param.weight_loader(param, loaded_weight, shard_id)
             else:
-                weight_loader = getattr(param, "weight_loader", _default_weight_loader)
+                weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
             return True
         return False
 
-    def _load_fused_qkv(
+    def load_fused_qkv(
         self,
         prefix: str,
         wqkv: Tensor,
@@ -560,7 +560,7 @@ class S2ProSGLangTextModel(nn.Module):
         return True
 
 
-def _default_weight_loader(param: nn.Parameter, loaded_weight: Tensor):
+def default_weight_loader(param: nn.Parameter, loaded_weight: Tensor):
     param.data.copy_(loaded_weight)
 
 

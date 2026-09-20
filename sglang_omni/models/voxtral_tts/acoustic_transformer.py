@@ -116,7 +116,7 @@ class MultimodalAudioModelArgs:
 # ---------------------------------------------------------------------------
 
 
-def _repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
+def repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
     return t.unsqueeze(3).expand([-1, -1, -1, repeats, -1]).flatten(2, 3)
 
 
@@ -124,8 +124,8 @@ def repeat_kv(
     keys: torch.Tensor, values: torch.Tensor, repeats: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if repeats > 1:
-        keys = _repeat_interleave(keys, repeats=repeats)
-        values = _repeat_interleave(values, repeats=repeats)
+        keys = repeat_interleave(keys, repeats=repeats)
+        values = repeat_interleave(values, repeats=repeats)
     return keys, values
 
 
@@ -195,7 +195,7 @@ class BidirectionalAttention(nn.Module):
         self.softmax_scale: float = args.head_dim**-0.5
         self.repeats = self.n_local_heads // self.n_local_kv_heads
 
-    def _native_attention(
+    def native_attention(
         self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
     ) -> torch.Tensor:
         scale = 1.0 / query.shape[-1] ** 0.5
@@ -208,12 +208,12 @@ class BidirectionalAttention(nn.Module):
         attn = attn @ value
         return attn.transpose(1, 2).contiguous()
 
-    def _forward_attention(
+    def forward_attention(
         self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
     ) -> torch.Tensor:
         key, value = repeat_kv(key, value, repeats=self.repeats)
         bsz, seqlen, _, _ = query.shape
-        output = self._native_attention(query, key, value)
+        output = self.native_attention(query, key, value)
         return output.view(bsz, seqlen, -1)
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
@@ -227,7 +227,7 @@ class BidirectionalAttention(nn.Module):
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
-        output = self._forward_attention(query=xq, key=xk, value=xv, **kwargs)
+        output = self.forward_attention(query=xq, key=xk, value=xv, **kwargs)
         output = output.view(bsz, seqlen, self.n_local_heads * self.head_dim)
         return self.wo(output).squeeze(0)
 
@@ -316,9 +316,9 @@ class FlowMatchingAudioTransformer(nn.Module):
         self.acoustic_embeddings_levels = acoustic_codebook_sizes[0]
         self.acoustic_embeddings_dim = len(acoustic_codebook_sizes)
 
-        self._init_audio_embeddings_layer()
-        self._init_output_layer()
-        self._init_layers()
+        self.init_audio_embeddings_layer()
+        self.init_output_layer()
+        self.init_layers()
 
         self._end_audio_token_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
         self._empty_audio_token_id = AudioSpecialTokens.id(
@@ -348,7 +348,7 @@ class FlowMatchingAudioTransformer(nn.Module):
 
     # -- Initialization helpers ---------------------------------------------
 
-    def _init_audio_embeddings_layer(self) -> None:
+    def init_audio_embeddings_layer(self) -> None:
         self.time_embedding = TimeEmbedding(self.acoustic_transformer_args.dim)
         input_dim = self.acoustic_embeddings_dim
         self.input_projection = nn.Linear(
@@ -365,7 +365,7 @@ class FlowMatchingAudioTransformer(nn.Module):
             bias=False,
         )
 
-    def _init_output_layer(self) -> None:
+    def init_output_layer(self) -> None:
         padded_codebook_sizes = self.model_args.get_codebook_sizes(pad_to_multiple=128)
         self.semantic_codebook_output = nn.Linear(
             self.acoustic_transformer_args.dim,
@@ -378,7 +378,7 @@ class FlowMatchingAudioTransformer(nn.Module):
             bias=False,
         )
 
-    def _init_layers(self) -> None:
+    def init_layers(self) -> None:
         self.layers_ids: list[int] = list(
             range(self.acoustic_transformer_args.n_layers)
         )
@@ -424,7 +424,7 @@ class FlowMatchingAudioTransformer(nn.Module):
             llm_batched = torch.cat([llm_hidden, llm_hidden_zero], dim=0)
             t_emb_batched = torch.cat([t_emb, t_emb], dim=0)
 
-            v_all = self._predict_velocity(
+            v_all = self.predict_velocity(
                 x_t=x_batched, llm_output=llm_batched, t_emb=t_emb_batched
             )
             v_t, uncond_v_t = v_all[:B], v_all[B:]
@@ -440,7 +440,7 @@ class FlowMatchingAudioTransformer(nn.Module):
         # Offset by the number of special tokens to avoid ID conflicts
         return output_codes + len(AudioSpecialTokens)
 
-    def _predict_velocity(
+    def predict_velocity(
         self,
         x_t: torch.Tensor,
         llm_output: torch.Tensor,

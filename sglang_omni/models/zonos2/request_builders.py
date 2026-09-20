@@ -16,9 +16,9 @@ from typing import Any
 import torch
 
 from sglang_omni.models.moss_tts.request_builders import (
-    _resolve_optional_text,
     normalize_moss_tts_inputs,
     resolve_moss_reference,
+    resolve_optional_text,
 )
 from sglang_omni.models.zonos2.components.text_frontend import (
     TTSSamplingParams,
@@ -66,7 +66,7 @@ def build_zonos2_state(payload: StagePayload) -> Zonos2State:
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
-    language = _resolve_optional_text(
+    language = resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
 
@@ -155,7 +155,7 @@ def build_zonos2_stream_metadata(payload: StagePayload, *, n_codebooks: int):
     return metadata
 
 
-def _marker_token_ids(cfg) -> tuple[int, int]:
+def marker_token_ids(cfg) -> tuple[int, int]:
     """(clean/noisy background, accurate-mode) text-column ids per the layout."""
     base = (
         cfg.text_vocab - cfg.speaking_rate_num_buckets - cfg.quality_num_buckets - 2 - 1
@@ -164,7 +164,7 @@ def _marker_token_ids(cfg) -> tuple[int, int]:
     return base + cond + 1, base + cond + 2  # noisy bg (default), accurate
 
 
-def _marker_row(cfg, tok: int) -> torch.Tensor:
+def marker_row(cfg, tok: int) -> torch.Tensor:
     row = torch.full((1, cfg.n_codebooks + 1), cfg.audio_pad_id, dtype=torch.long)
     row[0, cfg.n_codebooks] = tok
     return row
@@ -184,12 +184,12 @@ def build_sglang_zonos2_request(
     speaker_position = -1
     if speaker_emb is not None:
         speaker_emb = torch.as_tensor(speaker_emb, dtype=torch.float32)
-        bg, acc = _marker_token_ids(cfg)
+        bg, acc = marker_token_ids(cfg)
         rows = torch.cat(
             [
                 make_speaker_slot().to(torch.long),
-                _marker_row(cfg, bg),
-                _marker_row(cfg, acc),
+                marker_row(cfg, bg),
+                marker_row(cfg, acc),
                 rows,
             ],
             dim=0,

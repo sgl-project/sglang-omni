@@ -29,7 +29,7 @@ def is_flash_attn_available() -> bool:
     )
 
 
-def _raise_flash_attn_unavailable() -> None:
+def raise_flash_attn_unavailable() -> None:
     raise ImportError(
         "Ming flash_attn backend requires the legacy flash_attn API "
         "with flash_attn_func and flash_attn_varlen_func. The installed "
@@ -124,7 +124,7 @@ class Attention(nn.Module):
 
         if attn_backend == "flash_attn":
             if not is_flash_attn_available():
-                _raise_flash_attn_unavailable()
+                raise_flash_attn_unavailable()
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
@@ -192,7 +192,7 @@ class Attention(nn.Module):
 
         elif self.attn_backend == "flash_attn":
             if not is_flash_attn_available():
-                _raise_flash_attn_unavailable()
+                raise_flash_attn_unavailable()
             query = query.transpose(1, 2)  # [b, h, n, d] -> [b, n, h, d]
             key = key.transpose(1, 2)
             value = value.transpose(1, 2)
@@ -291,7 +291,7 @@ def modulate(x, shift, scale):
     return x * (1 + scale) + shift
 
 
-class FinalLayer_mlp(nn.Module):
+class FinalLayer_mlp(nn.Module):  # noqa: N801 - Preserve the existing class name.
     """
     The final layer adopted from DiT.
     """

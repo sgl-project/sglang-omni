@@ -49,7 +49,7 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
             vq_parts=[torch.tensor([[7, 8], [9, 10]], dtype=torch.long)],
         ),
     )
-    embeds = runner._build_prefill_input_embeds(
+    embeds = runner.build_prefill_input_embeds(
         SimpleNamespace(input_ids=torch.tensor([10, 11, 12])),
         [prefill_request],
     )
@@ -68,7 +68,7 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
             latest_stream_code_chunk=None,
         ),
     )
-    runner._collect_step_outputs(SimpleNamespace(next_token_ids=None), [active])
+    runner.collect_step_outputs(SimpleNamespace(next_token_ids=None), [active])
     assert len(active.data.output_codes) == 1
     assert torch.equal(active.data.last_codebook_values, torch.tensor([1, 2]))
     assert torch.equal(
@@ -342,7 +342,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         assert torch.isneginf(logprobs).any()
         return logprobs.argmax(-1, keepdim=True)
 
-    decode_codebooks = S2ProSGLangTextModel._decode_codebooks.__wrapped__
+    decode_codebooks = S2ProSGLangTextModel.decode_codebooks.__wrapped__
     monkeypatch.setitem(
         decode_codebooks.__globals__,
         "multinomial_with_seed",
@@ -403,7 +403,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
     logits = torch.full((1, 40), -1_000_000.0)
     logits[0, 30] = 1_000_000.0
 
-    S2ProSGLangTextModel._decode_codebooks(
+    S2ProSGLangTextModel.decode_codebooks(
         model,
         logits,
         torch.zeros(1, 4),
@@ -478,7 +478,7 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
         _output_semantic_ids=torch.zeros(batch, dtype=torch.long, device=device),
     )
 
-    S2ProSGLangTextModel._decode_codebooks(
+    S2ProSGLangTextModel.decode_codebooks(
         model,
         logits,
         torch.zeros(batch, 4, device=device),

@@ -19,7 +19,7 @@ from sglang_omni.models.qwen3_omni.components import (
 )
 from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     Qwen3OmniThinkerForCausalLM,
-    _config_uses_mrope,
+    config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
     Qwen3OmniMoeTextConfig,
@@ -37,7 +37,7 @@ from sglang_omni.models.qwen3_omni.hf_config import (
     ],
 )
 def test_qwen_text_config_declares_mrope_only_for_mrope_sections(config, expected):
-    assert _config_uses_mrope(config) is expected
+    assert config_uses_mrope(config) is expected
 
 
 @pytest.mark.parametrize(

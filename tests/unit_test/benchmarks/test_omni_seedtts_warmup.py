@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import base64
 import io
 import json
 import wave
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -125,3 +128,70 @@ def test_cli_accepts_separate_warmup_dataset():
     )
     config = benchmark._config_from_args(args)
     assert config.warmup_meta == "warmup.lst" and config.warmup == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference_audio_field, voice_clone",
+    [(None, True), ("audio.ref_audio", True), ("audio.ref_audio", False)],
+)
+async def test_speaker_reference_transport_reaches_warmup_and_measured_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    warmup_config: benchmark.OmniSeedttsBenchmarkConfig,
+    reference_audio_field: str | None,
+    voice_clone: bool,
+) -> None:
+    warmup_config.stream = False
+    warmup_config.voice_clone = voice_clone
+    if reference_audio_field is not None:
+        warmup_config.reference_audio_field = reference_audio_field
+    reference = _wav()
+    if voice_clone:
+        for filename in ("a.wav", "b.wav", "measured.wav"):
+            (tmp_path / filename).write_bytes(reference)
+
+    response = AsyncMock()
+    response.status = 200
+    response.json.return_value = {
+        "choices": [{"message": {"audio": {"data": base64.b64encode(_wav()).decode()}}}]
+    }
+    request = AsyncMock()
+    request.__aenter__.return_value = response
+    post = Mock(return_value=request)
+    monkeypatch.setattr(benchmark.aiohttp.ClientSession, "post", post)
+
+    results = await benchmark.run_omni_seedtts_benchmark(warmup_config)
+
+    assert post.call_count == 3
+    for call in post.call_args_list:
+        payload = call.kwargs["json"]
+        if voice_clone and reference_audio_field is None:
+            assert payload["audios"][0].endswith(".wav")
+            assert payload["audio"] == {"format": "wav"}
+            assert "Listen to the audio above" in payload["messages"][-1]["content"]
+        elif voice_clone:
+            assert "audios" not in payload
+            prefix, encoded = payload["audio"]["ref_audio"].split(",", 1)
+            assert prefix == "data:audio/wav;base64"
+            assert base64.b64decode(encoded, validate=True) == reference
+            assert (
+                "Please read the following text out loud"
+                in payload["messages"][-1]["content"]
+            )
+        else:
+            assert "audios" not in payload
+            assert payload["audio"] == {"format": "wav"}
+    assert results["config"]["reference_audio_field"] == (
+        reference_audio_field or "audios"
+    )
+    assert (tmp_path / "results/audio/measured.wav").read_bytes() == _wav()
+
+
+def test_cli_selects_explicit_speaker_reference_transport() -> None:
+    args = benchmark._build_arg_parser().parse_args(
+        ["--voice-clone", "--reference-audio-field", "audio.ref_audio"]
+    )
+    config = benchmark._config_from_args(args)
+    assert config.voice_clone
+    assert config.reference_audio_field == "audio.ref_audio"

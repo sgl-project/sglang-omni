@@ -174,7 +174,7 @@ class EngineArgs(BaseModel):
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
-    def _parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
+    def parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -284,7 +284,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices", mode="before")
     @classmethod
-    def _parse_replica_devices(cls, value: Any) -> Any:
+    def parse_replica_devices(cls, value: Any) -> Any:
         if value is None:
             return None
         if isinstance(value, int):
@@ -303,7 +303,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices")
     @classmethod
-    def _validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
+    def validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
         if value is None:
             return None
         if not value:
@@ -392,7 +392,7 @@ class StageConfig(BaseModel):
 
     @field_validator("total_reserve_bytes", mode="before")
     @classmethod
-    def _parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
+    def parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("total_reserve_bytes", value)
 
     # --- Consumer groups ---
@@ -497,6 +497,17 @@ class EngineStageConfig(StageConfig):
     engine: EngineArgs | None = Field(default_factory=EngineArgs)
 
 
+DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS = 4
+
+
+def default_max_concurrent_long_audio_requests(
+    max_running_requests: int | None, max_concurrent_chunks: int
+) -> int:
+    if max_running_requests is None or max_running_requests < 1:
+        return DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS
+    return max(1, max_running_requests // (2 * max(int(max_concurrent_chunks), 1)))
+
+
 class AudioChunkingConfig(BaseModel):
     """Operator-tunable scheduling policy for long-audio transcription.
 
@@ -525,6 +536,9 @@ class AudioChunkingConfig(BaseModel):
     # This is a pre-request cap.
     max_concurrent_chunks: int = Field(default=8, ge=1)
 
+    # Note (Jeffro): How many long uploads the HTTP process admits at once.
+    max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
+
     def model_post_init(self, __context: Any = None) -> None:
         if (
             self.max_total_audio_s is not None
@@ -549,6 +563,7 @@ class ResolvedAudioChunking:
     max_total_audio_s: float | None = 3600.0
     min_tail_s: float = 0.5
     max_concurrent_chunks: int = 8
+    max_concurrent_long_audio_requests: int = DEFAULT_MAX_CONCURRENT_LONG_AUDIO_REQUESTS
     condition_on_previous_text: bool = False
 
     @classmethod
@@ -652,7 +667,7 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _materialize_stage_types(cls, data: Any) -> Any:
+    def materialize_stage_types(cls, data: Any) -> Any:
         """Validate stage documents against their declared per-stage types."""
         if not isinstance(data, dict) or not isinstance(data.get("stages"), list):
             return data
@@ -669,8 +684,8 @@ class PipelineConfig(BaseModel):
         return {**data, "stages": stages}
 
     def model_post_init(self, __context: Any = None) -> None:
-        self._validate_general()
-        self._validate_processes()
+        self.validate_general()
+        self.validate_processes()
 
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
@@ -690,18 +705,52 @@ class PipelineConfig(BaseModel):
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
+        self.warn_long_audio_admission_exceeds_engine()
+
+    def warn_long_audio_admission_exceeds_engine(self) -> None:
+        """Warn when long audio alone can fill every engine running slot."""
+        if not type(self).allow_audio_chunking:
+            return
+        explicit = self.audio_chunking.max_concurrent_long_audio_requests
+        engine = self.stage_named(self.resolved_entry_stage).engine
+        max_running = engine.max_running_requests if engine is not None else None
+        if explicit is None or max_running is None:
+            return
+        chunks = self.audio_chunking.max_concurrent_chunks
+        if explicit * chunks >= max_running:
+            logger.warning(
+                "audio_chunking.max_concurrent_long_audio_requests=%d x "
+                "max_concurrent_chunks=%d = %d engine requests, which is not "
+                "below engine.max_running_requests=%d (per replica): when "
+                "long audio is saturated, short transcriptions queue behind "
+                "its chunks. Lower one of the two or raise "
+                "max_running_requests (which also resizes CUDA graph capture).",
+                explicit,
+                chunks,
+                explicit * chunks,
+                max_running,
+            )
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
         """The merged long-audio contract: model ClassVars + operator policy."""
         cls = type(self)
+        policy = self.audio_chunking
+        long_audio_requests = policy.max_concurrent_long_audio_requests
+        if long_audio_requests is None:
+            engine = self.stage_named(self.resolved_entry_stage).engine
+            long_audio_requests = default_max_concurrent_long_audio_requests(
+                engine.max_running_requests if engine is not None else None,
+                policy.max_concurrent_chunks,
+            )
         return ResolvedAudioChunking(
             allow_audio_chunking=cls.allow_audio_chunking,
-            max_audio_clip_s=self.audio_chunking.max_audio_clip_s,
+            max_audio_clip_s=policy.max_audio_clip_s,
             max_native_clip_s=cls.max_native_clip_s,
-            max_total_audio_s=self.audio_chunking.max_total_audio_s,
+            max_total_audio_s=policy.max_total_audio_s,
             min_tail_s=cls.min_tail_s,
-            max_concurrent_chunks=self.audio_chunking.max_concurrent_chunks,
+            max_concurrent_chunks=policy.max_concurrent_chunks,
+            max_concurrent_long_audio_requests=long_audio_requests,
             condition_on_previous_text=cls.condition_on_previous_text,
         )
 
@@ -822,7 +871,7 @@ class PipelineConfig(BaseModel):
                 out[s.name] = s.gpu
         return out
 
-    def _validate_general(self) -> None:
+    def validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
 
@@ -906,7 +955,7 @@ class PipelineConfig(BaseModel):
                 f"missing process for {missing_process}"
             )
 
-    def _validate_processes(self) -> None:
+    def validate_processes(self) -> None:
         """Check Process Names and the sparse ``processes`` replica policy.
 
         Membership grouping, cross-process edges, and device counts belong to
