@@ -10,14 +10,14 @@ from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.auk.flow_matching import AuKSampleItem
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.stages import (
-    _partition_sample_items_by_target,
     create_auk_engine_executor,
+    partition_sample_items_by_target,
     sample_batch,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def _item(
+def make_item(
     target_frames: int, reference_frames: int = 20, text_frames: int = 10
 ) -> AuKSampleItem:
     return AuKSampleItem(
@@ -30,9 +30,9 @@ def _item(
 
 
 def test_shape_grouping_is_disabled_by_default():
-    items = [_item(frames) for frames in (100, 110, 400)]
+    items = [make_item(frames) for frames in (100, 110, 400)]
 
-    groups = _partition_sample_items_by_target(items, None)
+    groups = partition_sample_items_by_target(items, None)
 
     assert [[index for index, _ in group] for group in groups] == [[0, 1, 2]]
     engine = next(
@@ -44,34 +44,34 @@ def test_shape_grouping_is_disabled_by_default():
 
 
 def test_shape_grouping_is_bounded_to_two_groups_and_preserves_indices():
-    items = [_item(frames) for frames in (400, 100, 110)]
+    items = [make_item(frames) for frames in (400, 100, 110)]
 
-    groups = _partition_sample_items_by_target(items, 0.25)
+    groups = partition_sample_items_by_target(items, 0.25)
 
     assert [[index for index, _ in group] for group in groups] == [[1, 2], [0]]
 
 
 def test_shape_grouping_keeps_similar_shapes_together():
-    items = [_item(frames) for frames in (100, 110, 120)]
+    items = [make_item(frames) for frames in (100, 110, 120)]
 
-    groups = _partition_sample_items_by_target(items, 0.25)
+    groups = partition_sample_items_by_target(items, 0.25)
 
     assert [[index for index, _ in group] for group in groups] == [[0, 1, 2]]
 
 
 def test_shape_grouping_rejects_invalid_savings_threshold():
     with pytest.raises(ValueError, match="between 0 and 1"):
-        _partition_sample_items_by_target([_item(100), _item(400)], 1.1)
+        partition_sample_items_by_target([make_item(100), make_item(400)], 1.1)
 
 
 def test_shape_grouping_scores_reference_and_text_padding():
     items = [
-        _item(100, reference_frames=400, text_frames=10),
-        _item(110, reference_frames=10, text_frames=400),
-        _item(400, reference_frames=400, text_frames=400),
+        make_item(100, reference_frames=400, text_frames=10),
+        make_item(110, reference_frames=10, text_frames=400),
+        make_item(400, reference_frames=400, text_frames=400),
     ]
 
-    groups = _partition_sample_items_by_target(items, 0.2)
+    groups = partition_sample_items_by_target(items, 0.2)
 
     assert [[index for index, _ in group] for group in groups] == [[0, 1, 2]]
 

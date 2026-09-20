@@ -286,21 +286,25 @@ def create_conditioning_executor(
     )
 
 
-def _sample_item_shape(item: AuKSampleItem) -> tuple[int, int, int]:
-    reference_frames = 0 if item.ref_latent is None else item.ref_latent.shape[0]
-    return item.target_frames, reference_frames, item.conditioning.shape[0]
-
-
-def _partition_sample_items_by_target(items, min_batch_work_savings):
-    _validate_min_batch_work_savings(min_batch_work_savings)
+def partition_sample_items_by_target(
+    items: list[AuKSampleItem], min_batch_work_savings: float | None
+) -> list[list[tuple[int, AuKSampleItem]]]:
+    validate_min_batch_work_savings(min_batch_work_savings)
     indexed = list(enumerate(items))
     if min_batch_work_savings is None or len(indexed) < 2:
         return [indexed]
 
     ranked = sorted(indexed, key=lambda pair: pair[1].target_frames)
 
-    def padded_work(group):
-        shapes = [_sample_item_shape(item) for _, item in group]
+    def padded_work(group: list[tuple[int, AuKSampleItem]]) -> int:
+        shapes = [
+            (
+                item.target_frames,
+                0 if item.ref_latent is None else item.ref_latent.shape[0],
+                item.conditioning.shape[0],
+            )
+            for _, item in group
+        ]
         return len(group) * sum(
             max(shape[axis] for shape in shapes) for axis in range(3)
         )
@@ -316,7 +320,7 @@ def _partition_sample_items_by_target(items, min_batch_work_savings):
     return [ranked[:split_at], ranked[split_at:]]
 
 
-def _validate_min_batch_work_savings(min_batch_work_savings):
+def validate_min_batch_work_savings(min_batch_work_savings: float | None) -> None:
     if min_batch_work_savings is not None and not 0 <= min_batch_work_savings <= 1:
         raise ValueError("min_batch_work_savings must be between 0 and 1")
 
@@ -343,16 +347,15 @@ def sample_batch(
         )
         for state in states
     ]
-    groups = _partition_sample_items_by_target(items, min_batch_work_savings)
+    groups = partition_sample_items_by_target(items, min_batch_work_savings)
     with autocast(device, dtype):
         if len(groups) == 1:
-            logger.info("AuK DiT: sampling batch of %d requests", len(items))
+            logger.info(f"AuK DiT: sampling batch of {len(items)} requests")
             latents = flow.sample_batch(items, **sampling)
         else:
+            group_sizes = [len(group) for group in groups]
             logger.info(
-                "AuK DiT: sampling %d requests in groups %s",
-                len(items),
-                [len(group) for group in groups],
+                f"AuK DiT: sampling {len(items)} requests in groups {group_sizes}"
             )
             latents = [None] * len(items)
             for group in groups:
@@ -397,7 +400,7 @@ def create_auk_engine_executor(
     autocast. See docs/cookbook/auk.md, Sampling, for the compile and graph
     options and the capture shape format.
     """
-    _validate_min_batch_work_savings(min_batch_work_savings)
+    validate_min_batch_work_savings(min_batch_work_savings)
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
