@@ -26,7 +26,7 @@ def make_admin_auth_dependency(admin_api_key: str | None):
     async def _check_admin_key(
         authorization: str | None = Header(default=None),
     ) -> None:
-        token = _extract_bearer_token(authorization)
+        token = extract_bearer_token(authorization)
         if token is None:
             raise HTTPException(
                 status_code=401,
@@ -42,7 +42,7 @@ def make_admin_auth_dependency(admin_api_key: str | None):
     return _check_admin_key
 
 
-def _extract_bearer_token(authorization: str | None) -> str | None:
+def extract_bearer_token(authorization: str | None) -> str | None:
     if not authorization:
         return None
     parts = authorization.split(None, 1)

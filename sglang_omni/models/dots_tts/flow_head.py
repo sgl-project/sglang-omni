@@ -116,7 +116,7 @@ class DotsTTSFlowHead(nn.Module):
         self._batched_eos_host: list[bool] | None = None
         self._batched_eos_pending: int = 0
 
-    def _bucket(self, requested: int) -> int:
+    def bucket(self, requested: int) -> int:
         if requested <= 0:
             raise ValueError("dots.tts max audio patch count must be positive")
         for bucket in self._LENGTH_BUCKETS:
@@ -126,7 +126,7 @@ class DotsTTSFlowHead(nn.Module):
             f"dots.tts supports at most {self._LENGTH_BUCKETS[-1]} audio patches"
         )
 
-    def _patch_encoder_inference(self):
+    def patch_encoder_inference(self):
         if self._patch_inference is None:
             import_dots_tts()
             from dots_tts.modules.backbone.encoder_inference import (
@@ -136,7 +136,7 @@ class DotsTTSFlowHead(nn.Module):
             self._patch_inference = SemanticEncoderInference(self.patch_encoder)
         return self._patch_inference
 
-    def _solver(self):
+    def solver(self):
         if self._dit_solver is None:
             import_dots_tts()
             from dots_tts.modules.backbone.dit_inference import (
@@ -147,7 +147,7 @@ class DotsTTSFlowHead(nn.Module):
             self._dit_solver = DiTSolver(
                 DiTInferenceContext.from_core(self),
                 optimize=self.optimize,
-                bucket_resolver=self._bucket,
+                bucket_resolver=self.bucket,
                 meanflow=self.mode == "meanflow",
             )
         return self._dit_solver
@@ -203,7 +203,7 @@ class DotsTTSFlowHead(nn.Module):
             optimize=optimize,
         )
         self._batched_nfe = int(nfe)
-        self._prepare_batched_eos_staging(int(num_slots), parameter.device)
+        self.prepare_batched_eos_staging(int(num_slots), parameter.device)
 
     def validate_request(
         self,
@@ -274,7 +274,7 @@ class DotsTTSFlowHead(nn.Module):
                 )
                 prompt_latents = prompt_latents.to(device=device, dtype=dtype)
                 prompt_embeddings = self._tail.encode_prompt_patches(
-                    slot, self._patch_encoder_input(prompt_latents)
+                    slot, self.patch_encoder_input(prompt_latents)
                 )
                 prompt_patches = rearrange(
                     self.io.normalize(prompt_latents).to(dtype=dtype),
@@ -301,7 +301,7 @@ class DotsTTSFlowHead(nn.Module):
                 self._tail.release_slot(slot)
                 raise
         capacity_patches = (
-            self._bucket(max_audio_patch_count)
+            self.bucket(max_audio_patch_count)
             if self.optimize
             else int(max_audio_patch_count)
         )
@@ -335,15 +335,15 @@ class DotsTTSFlowHead(nn.Module):
             return state, None
 
         prompt_latents = prompt_latents.to(device=device, dtype=dtype)
-        patch_input = self._patch_encoder_input(prompt_latents)
+        patch_input = self.patch_encoder_input(prompt_latents)
         (
             prompt_embeddings,
             state.patch_encoder_state,
-        ) = self._patch_encoder_inference().prefill_with_state(
+        ) = self.patch_encoder_inference().prefill_with_state(
             patch_input,
             None,
             optimize=self.optimize,
-            bucket_resolver=self._bucket,
+            bucket_resolver=self.bucket,
             dtype=dtype,
         )
         state.prompt_patches = rearrange(
@@ -365,7 +365,7 @@ class DotsTTSFlowHead(nn.Module):
         rows = []
         for patch in decoded_latent_patches:
             normalized = self.io.normalize(patch.to(device=state.fm_sequence.device))
-            patch_input = self._patch_encoder_input(
+            patch_input = self.patch_encoder_input(
                 normalized,
                 already_normalized=True,
             )
@@ -373,11 +373,11 @@ class DotsTTSFlowHead(nn.Module):
                 (
                     feedback,
                     state.patch_encoder_state,
-                ) = self._patch_encoder_inference().decode_patch_with_state(
+                ) = self.patch_encoder_inference().decode_patch_with_state(
                     patch_input,
                     state.patch_encoder_state,
                     optimize=self.optimize,
-                    bucket_resolver=self._bucket,
+                    bucket_resolver=self.bucket,
                     dtype=state.fm_sequence.dtype,
                 )
             else:
@@ -471,7 +471,7 @@ class DotsTTSFlowHead(nn.Module):
                 )
             if prompt_patches is None:
                 raise RuntimeError("dots.tts prompt spans require prompt latents")
-            self._append_history(state, prompt_patches[:, prompt_index])
+            self.append_history(state, prompt_patches[:, prompt_index])
             next_position = span_position + 1
             if (
                 next_position < generation_schedule.shape[1]
@@ -484,7 +484,7 @@ class DotsTTSFlowHead(nn.Module):
         if prefill_end > cursor:
             self.append_hidden(state, hidden_states[:, prefill_end - 1 : prefill_end])
         for patch_index, patch in enumerate(decoded_latent_patches):
-            self._append_history(
+            self.append_history(
                 state,
                 self.io.normalize(patch.to(device=hidden_states.device)).to(
                     dtype=state.fm_sequence.dtype
@@ -508,7 +508,7 @@ class DotsTTSFlowHead(nn.Module):
         hidden = hidden_states[:, -self.hidden_patch_size :]
         projected = self.hidden_proj(hidden)
         null_projected = self.hidden_proj.bias.view(1, 1, -1).expand_as(projected)
-        start, end = self._reserve(state, projected.shape[1])
+        start, end = self.reserve(state, projected.shape[1])
         state.fm_sequence[:, start:end].copy_(projected)
         state.fm_cfg_sequence[:, start:end].copy_(null_projected)
         state.fm_seq_len = end
@@ -553,11 +553,11 @@ class DotsTTSFlowHead(nn.Module):
 
         if state.dit_state is None:
             state.dit_state = DiTSolverState()
-        solver = self._solver()
+        solver = self.solver()
         dtype = state.fm_sequence.dtype
         device_type = state.fm_sequence.device.type
         with (
-            self._request_rng(state),
+            self.request_rng(state),
             torch.autocast(
                 device_type=device_type,
                 dtype=dtype,
@@ -576,15 +576,15 @@ class DotsTTSFlowHead(nn.Module):
                 ode_method=str(ode_method),
                 guidance_scale=float(guidance_scale),
             )
-        self._append_history(state, normalized_patch)
+        self.append_history(state, normalized_patch)
         (
             feedback,
             state.patch_encoder_state,
-        ) = self._patch_encoder_inference().decode_patch_with_state(
-            self._patch_encoder_input(normalized_patch, already_normalized=True),
+        ) = self.patch_encoder_inference().decode_patch_with_state(
+            self.patch_encoder_input(normalized_patch, already_normalized=True),
             state.patch_encoder_state,
             optimize=self.optimize,
-            bucket_resolver=self._bucket,
+            bucket_resolver=self.bucket,
             dtype=state.fm_sequence.dtype,
         )
         if eos_hit is None:
@@ -666,7 +666,7 @@ class DotsTTSFlowHead(nn.Module):
             patch_encoder_input,
         )
         self._tail.note_decode_cycle()
-        self._stage_batched_eos(eos_hits)
+        self.stage_batched_eos(eos_hits)
         results = []
         for row, state in enumerate(states):
             emit = not state.drop_regenerated_prompt_patch
@@ -702,7 +702,7 @@ class DotsTTSFlowHead(nn.Module):
         self._batched_eos_pending = 0
         return flags
 
-    def _prepare_batched_eos_staging(self, capacity: int, device: torch.device) -> None:
+    def prepare_batched_eos_staging(self, capacity: int, device: torch.device) -> None:
         """Reset pending EOS staging and size the pinned buffer at init."""
         self._batched_eos_pending = 0
         self._batched_eos_host = None
@@ -710,9 +710,9 @@ class DotsTTSFlowHead(nn.Module):
             self._batched_eos_pinned = None
             self._batched_eos_event = None
             return
-        self._ensure_batched_eos_capacity(capacity, device)
+        self.ensure_batched_eos_capacity(capacity, device)
 
-    def _ensure_batched_eos_capacity(self, capacity: int, device: torch.device) -> None:
+    def ensure_batched_eos_capacity(self, capacity: int, device: torch.device) -> None:
         if device.type != "cuda" or capacity <= 0:
             return
         if (
@@ -724,7 +724,7 @@ class DotsTTSFlowHead(nn.Module):
             )
             self._batched_eos_event = torch.cuda.Event()
 
-    def _stage_batched_eos(self, eos_hits: torch.Tensor) -> None:
+    def stage_batched_eos(self, eos_hits: torch.Tensor) -> None:
         if eos_hits.ndim != 1:
             raise RuntimeError(
                 f"dots.tts batched EOS flags must be rank-1, got {tuple(eos_hits.shape)}"
@@ -735,7 +735,7 @@ class DotsTTSFlowHead(nn.Module):
             self._batched_eos_host = None
             return
         if eos_hits.is_cuda:
-            self._ensure_batched_eos_capacity(n, eos_hits.device)
+            self.ensure_batched_eos_capacity(n, eos_hits.device)
             assert self._batched_eos_pinned is not None
             assert self._batched_eos_event is not None
             self._batched_eos_pinned[:n].copy_(
@@ -760,7 +760,7 @@ class DotsTTSFlowHead(nn.Module):
         return None if state.rng_state is None else state.rng_state.clone()
 
     @contextmanager
-    def _request_rng(self, state: DotsFlowState) -> Iterator[None]:
+    def request_rng(self, state: DotsFlowState) -> Iterator[None]:
         if state.rng_state is None:
             yield
             return
@@ -788,7 +788,7 @@ class DotsTTSFlowHead(nn.Module):
                     else torch.cuda.get_rng_state(cuda_device)
                 )
 
-    def _patch_encoder_input(
+    def patch_encoder_input(
         self, latents: torch.Tensor, *, already_normalized: bool = False
     ) -> torch.Tensor:
         if self.patch_encoder.expects_normalized_input:
@@ -797,15 +797,15 @@ class DotsTTSFlowHead(nn.Module):
             value = self.io.denormalize(latents) if already_normalized else latents
         return value.to(dtype=next(self.patch_encoder.parameters()).dtype)
 
-    def _append_history(self, state: DotsFlowState, latent_patch: torch.Tensor) -> None:
+    def append_history(self, state: DotsFlowState, latent_patch: torch.Tensor) -> None:
         projected = self.latent_proj(latent_patch)
-        start, end = self._reserve(state, projected.shape[1])
+        start, end = self.reserve(state, projected.shape[1])
         state.fm_sequence[:, start:end].copy_(projected)
         state.fm_cfg_sequence[:, start:end].copy_(projected)
         state.fm_seq_len = end
 
     @staticmethod
-    def _reserve(state: DotsFlowState, length: int) -> tuple[int, int]:
+    def reserve(state: DotsFlowState, length: int) -> tuple[int, int]:
         start = int(state.fm_seq_len)
         end = start + int(length)
         if end > state.fm_capacity:

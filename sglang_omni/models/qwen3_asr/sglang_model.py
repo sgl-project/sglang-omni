@@ -39,7 +39,7 @@ fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
 
-def _normalize_asr_text_rope(text_config: Any) -> None:
+def normalize_asr_text_rope(text_config: Any) -> None:
     # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
     # rows are identical, so ordinary text RoPE is numerically equivalent and
     # avoids the multimodal permutation/copy path on every decoder layer.
@@ -58,7 +58,7 @@ def _normalize_asr_text_rope(text_config: Any) -> None:
         )
 
 
-def _fused_asr_forward_prepare_native(
+def fused_asr_forward_prepare_native(
     attention: Any,
     positions: torch.Tensor,
     hidden_states: torch.Tensor,
@@ -96,7 +96,7 @@ def _fused_asr_forward_prepare_native(
     )
 
 
-def _enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
+def enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
     # note (luojiaxuan): the sgl-kernel op operates in place on packed QKV and
     # replaces split + two RMSNorm launches + RoPE for the equivalent text
     # positions. Keep the original bound method for non-bfloat16 fallbacks.
@@ -109,7 +109,7 @@ def _enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
             continue
         attention._asr_unfused_forward_prepare_native = attention.forward_prepare_native
         attention.forward_prepare_native = MethodType(
-            _fused_asr_forward_prepare_native,
+            fused_asr_forward_prepare_native,
             attention,
         )
 
@@ -145,7 +145,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         if getattr(thinker_config, "audio_config", None) is None:
             thinker_config.audio_config = Qwen3OmniMoeAudioEncoderConfig()
 
-        _normalize_asr_text_rope(thinker_config.text_config)
+        normalize_asr_text_rope(thinker_config.text_config)
 
         self.audio_tower = Qwen3OmniMoeAudioEncoder(thinker_config.audio_config)
         self.language_model = Qwen3ForCausalLM(
@@ -153,7 +153,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             quant_config,
             prefix=add_prefix("language_model", prefix),
         )
-        _enable_fused_asr_qk_norm_rope(self.language_model)
+        enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
         self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
 

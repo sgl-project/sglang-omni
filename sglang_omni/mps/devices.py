@@ -17,14 +17,14 @@ class MpsPhysicalDevice:
     unsupported_reason: str | None = None
 
 
-def _check_cuda(status: Any, operation: str) -> None:
+def check_cuda(status: Any, operation: str) -> None:
     if int(status) == 0:
         return
     detail = getattr(status, "name", str(int(status)))
     raise RuntimeError(f"{operation} failed with {detail}")
 
 
-def _resolve_cuda_device_uuids(
+def resolve_cuda_device_uuids(
     gpu_ids: Iterable[int],
     driver=None,
 ) -> tuple[dict[int, str], dict[int, str]]:
@@ -37,16 +37,16 @@ def _resolve_cuda_device_uuids(
         from cuda.bindings import driver
 
     (status,) = driver.cuInit(0)
-    _check_cuda(status, "cuInit")
+    check_cuda(status, "cuInit")
 
     resolved: dict[int, str] = {}
     errors: dict[int, str] = {}
     for ordinal in ordinals:
         try:
             status, device = driver.cuDeviceGet(ordinal)
-            _check_cuda(status, f"cuDeviceGet({ordinal})")
+            check_cuda(status, f"cuDeviceGet({ordinal})")
             status, device_uuid = driver.cuDeviceGetUuid(device)
-            _check_cuda(status, f"cuDeviceGetUuid({ordinal})")
+            check_cuda(status, f"cuDeviceGetUuid({ordinal})")
             raw_uuid = bytes(device_uuid.bytes)
             if len(raw_uuid) != 16:
                 raise RuntimeError(
@@ -67,7 +67,7 @@ class NvmlDeviceInfo:
         if not ordinals:
             return {}
         try:
-            uuid_by_ordinal, cuda_errors = _resolve_cuda_device_uuids(ordinals)
+            uuid_by_ordinal, cuda_errors = resolve_cuda_device_uuids(ordinals)
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
             return {
                 ordinal: MpsPhysicalDevice(

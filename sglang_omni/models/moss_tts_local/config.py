@@ -31,7 +31,7 @@ _PREPROCESSING_MAX_CONCURRENCY = 16
 _MAX_PIPELINE_INTRAOP_THREADS = 8
 
 
-def _uses_rocm_wsl_dxg() -> bool:
+def uses_rocm_wsl_dxg() -> bool:
     """Return whether PyTorch HIP can select the WSL DXG device path."""
     try:
         import torch
@@ -46,7 +46,7 @@ def _uses_rocm_wsl_dxg() -> bool:
 
 def resolve_vocoder_cuda_graph(vocoder_cuda_graph: bool | None) -> bool:
     """Resolve the platform default and reject an unsafe DXG opt-in."""
-    if not _uses_rocm_wsl_dxg():
+    if not uses_rocm_wsl_dxg():
         return True if vocoder_cuda_graph is None else vocoder_cuda_graph
     if vocoder_cuda_graph is True:
         raise ValueError(
@@ -57,7 +57,7 @@ def resolve_vocoder_cuda_graph(vocoder_cuda_graph: bool | None) -> bool:
     return False
 
 
-def _stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
+def stages(*, codec_gpu: int, colocated: bool) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
@@ -155,7 +155,7 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         return frozenset({("preprocessing", "tts_engine")})
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_gpu=0, colocated=True)
+        default_factory=lambda: stages(codec_gpu=0, colocated=True)
     )
 
     # note (Zhang Yiyang): These options only control streaming vocoder graphs;
@@ -265,7 +265,7 @@ class MossTTSLocalColocatedPipelineConfig(MossTTSLocalPipelineConfig):
     """Backward-compatible alias for the default single-GPU pipeline."""
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_gpu=0, colocated=True)
+        default_factory=lambda: stages(codec_gpu=0, colocated=True)
     )
 
 
@@ -273,7 +273,7 @@ class MossTTSLocalSplitPipelineConfig(MossTTSLocalPipelineConfig):
     """Two-GPU variant that places codec work on the second visible GPU."""
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(codec_gpu=1, colocated=False)
+        default_factory=lambda: stages(codec_gpu=1, colocated=False)
     )
 
 

@@ -55,19 +55,19 @@ _MOSS_TTS_REFERENCE_ENCODE_STOP = object()
 
 
 @dataclass(frozen=True, eq=False)
-class _LoadedReferenceWaveform:
+class LoadedReferenceWaveform:
     waveform: torch.Tensor
     sample_rate: int
     content_key: str
 
 
 _ReferenceEncodeQueueEntry: TypeAlias = tuple[
-    _LoadedReferenceWaveform,
+    LoadedReferenceWaveform,
     concurrent.futures.Future[torch.Tensor],
 ]
 
 
-def _resolve_compute_dtype(
+def resolve_compute_dtype(
     dtype: str | torch.dtype | None,
 ) -> torch.dtype | None:
     return resolve_moss_audio_dtype(
@@ -77,7 +77,7 @@ def _resolve_compute_dtype(
     )
 
 
-def _normalize_moss_processor_config(processor: Any) -> None:
+def normalize_moss_processor_config(processor: Any) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
         return
@@ -87,7 +87,7 @@ def _normalize_moss_processor_config(processor: Any) -> None:
             setattr(model_config, attr, default)
 
 
-def _audio_tokenizer_model_path_from_processor_dict(
+def audio_tokenizer_model_path_from_processor_dict(
     processor_dict: dict[str, Any],
 ) -> str | None:
     model_path = processor_dict.get("audio_tokenizer_name_or_path")
@@ -99,7 +99,7 @@ def _audio_tokenizer_model_path_from_processor_dict(
     return str(model_path) if model_path else None
 
 
-def _load_moss_processor(
+def load_moss_processor(
     model_path: str,
 ) -> Any:
     logger.info(f"Loading MOSS-TTS processor from {model_path} without codec")
@@ -107,8 +107,8 @@ def _load_moss_processor(
         with moss_transformers_processor_compat():
             processor_cls = load_moss_processor_class(model_path)
             processor_dict, _ = processor_cls.get_processor_dict(model_path)
-            audio_tokenizer_model_path = (
-                _audio_tokenizer_model_path_from_processor_dict(processor_dict)
+            audio_tokenizer_model_path = audio_tokenizer_model_path_from_processor_dict(
+                processor_dict
             )
             model_config = AutoConfig.from_pretrained(
                 model_path,
@@ -131,11 +131,11 @@ def _load_moss_processor(
     except Exception as exc:
         raise RuntimeError(_MOSS_TTS_INSTALL_HINT) from exc
 
-    _normalize_moss_processor_config(processor)
+    normalize_moss_processor_config(processor)
     return processor
 
 
-def _resolve_audio_tokenizer_model_path(
+def resolve_audio_tokenizer_model_path(
     processor: Any,
     codec_model_path: str | None,
 ) -> str:
@@ -146,7 +146,7 @@ def _resolve_audio_tokenizer_model_path(
     )
 
 
-class _BatchedReferenceEncoder:
+class BatchedReferenceEncoder:
     """Coalesce concurrent Delay reference encodes into encoder batches."""
 
     MAX_REFERENCE_SECONDS = _MAX_REFERENCE_SECONDS
@@ -168,7 +168,7 @@ class _BatchedReferenceEncoder:
         self._lifecycle_lock = threading.Lock()
         self._closed = False
         self._thread = threading.Thread(
-            target=self._worker,
+            target=self.worker,
             name="moss-tts-ref-encode",
             daemon=True,
         )
@@ -183,16 +183,16 @@ class _BatchedReferenceEncoder:
             self._queue.put(_MOSS_TTS_REFERENCE_ENCODE_STOP)
         self._thread.join(timeout=5.0)
 
-    def load(self, source: str | os.PathLike[str]) -> _LoadedReferenceWaveform:
+    def load(self, source: str | os.PathLike[str]) -> LoadedReferenceWaveform:
         with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeError("MOSS-TTS reference encoder is closed")
-        return _load_reference_waveform(self._audio_encoder, source)
+        return load_reference_waveform(self._audio_encoder, source)
 
     def encode(self, source: str | os.PathLike[str]) -> torch.Tensor:
         return self.encode_input(self.load(source))
 
-    def encode_input(self, item: _LoadedReferenceWaveform) -> torch.Tensor:
+    def encode_input(self, item: LoadedReferenceWaveform) -> torch.Tensor:
         future: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
         with self._lifecycle_lock:
             if self._closed:
@@ -200,7 +200,7 @@ class _BatchedReferenceEncoder:
             self._queue.put((item, future))
         return future.result(timeout=self.ENCODE_TIMEOUT_S)
 
-    def _drain_batch(
+    def drain_batch(
         self,
     ) -> tuple[list[_ReferenceEncodeQueueEntry], bool]:
         first = self._queue.get()
@@ -226,13 +226,13 @@ class _BatchedReferenceEncoder:
             batch.append(cast(_ReferenceEncodeQueueEntry, queued))
         return batch, shutdown
 
-    def _worker(self) -> None:
+    def worker(self) -> None:
         while True:
-            batch, shutdown = self._drain_batch()
+            batch, shutdown = self.drain_batch()
             if not batch:
                 return
             try:
-                results = self._encode_batch(batch)
+                results = self.encode_batch(batch)
             except BaseException as exc:
                 logger.exception("MOSS-TTS reference encode worker failed")
                 results = {index: exc for index in range(len(batch))}
@@ -251,7 +251,7 @@ class _BatchedReferenceEncoder:
             if shutdown:
                 return
 
-    def _encode_batch(
+    def encode_batch(
         self,
         batch: list[_ReferenceEncodeQueueEntry],
     ) -> dict[int, torch.Tensor | BaseException]:
@@ -300,10 +300,10 @@ class _BatchedReferenceEncoder:
         return results
 
 
-def _load_reference_waveform(
+def load_reference_waveform(
     audio_encoder: MossAudioEncoder,
     source: str | os.PathLike[str],
-) -> _LoadedReferenceWaveform:
+) -> LoadedReferenceWaveform:
     """Load once through the shared resolver and key the exact codec input."""
 
     waveform = load_audio(
@@ -318,14 +318,14 @@ def _load_reference_waveform(
             f"reference audio is {duration:.1f}s long, limit is "
             f"{_MAX_REFERENCE_SECONDS:.0f}s"
         )
-    return _LoadedReferenceWaveform(
+    return LoadedReferenceWaveform(
         torch.from_numpy(waveform),
         audio_encoder.sample_rate,
         f"waveform:{audio_fingerprint(waveform)}",
     )
 
 
-class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWaveform]):
+class MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[LoadedReferenceWaveform]):
     model_id = "moss_tts_delay"
     encoder_id = "moss_audio_encoder"
     artifact_kind = "moss_tts_reference_codes"
@@ -334,7 +334,7 @@ class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWave
 
     def __init__(
         self,
-        encoder: _BatchedReferenceEncoder,
+        encoder: BatchedReferenceEncoder,
         *,
         codec_model_path: str,
         n_vq: int,
@@ -354,17 +354,17 @@ class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWave
         )
         self.encoder_config_hash = hash_bytes(config.encode("utf-8"))
 
-    def normalize_input(self, raw_input: Any) -> _LoadedReferenceWaveform:
-        if isinstance(raw_input, _LoadedReferenceWaveform):
+    def normalize_input(self, raw_input: Any) -> LoadedReferenceWaveform:
+        if isinstance(raw_input, LoadedReferenceWaveform):
             return raw_input
         # The service needs content identity before lookup; derive it only after
         # load_audio has resolved and normalized the source.
         return self._encoder.load(raw_input)
 
-    def input_key(self, item: _LoadedReferenceWaveform) -> str:
+    def input_key(self, item: LoadedReferenceWaveform) -> str:
         return item.content_key
 
-    def encode_one(self, item: _LoadedReferenceWaveform) -> torch.Tensor:
+    def encode_one(self, item: LoadedReferenceWaveform) -> torch.Tensor:
         return self._encoder.encode_input(item)
 
     def close(self) -> None:
@@ -373,12 +373,12 @@ class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWave
             close()
 
 
-class _MossTTSReferenceEncoder:
+class MossTTSReferenceEncoder:
     """Load each source, then cache/merge codec work by waveform identity."""
 
     def __init__(
         self,
-        encoder: _BatchedReferenceEncoder,
+        encoder: BatchedReferenceEncoder,
         *,
         codec_model_path: str,
         n_vq: int,
@@ -386,14 +386,14 @@ class _MossTTSReferenceEncoder:
         max_bytes: int | None = 64 * 1024 * 1024,
     ) -> None:
         self._service = ReferenceEncodeService(
-            _MossTTSReferenceEncodeHook(
+            MossTTSReferenceEncodeHook(
                 encoder,
                 codec_model_path=codec_model_path,
                 n_vq=n_vq,
             ),
             max_items=max_items,
             max_bytes=max_bytes,
-            timeout_s=_BatchedReferenceEncoder.ENCODE_TIMEOUT_S + 10,
+            timeout_s=BatchedReferenceEncoder.ENCODE_TIMEOUT_S + 10,
             log_prefix="MOSS-TTS ref cache",
         )
 
@@ -445,26 +445,26 @@ def create_preprocessing_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    processor = _load_moss_processor(model_path)
-    resolved_codec_model_path = _resolve_audio_tokenizer_model_path(
+    processor = load_moss_processor(model_path)
+    resolved_codec_model_path = resolve_audio_tokenizer_model_path(
         processor,
         codec_model_path,
     )
-    resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
+    resolved_compute_dtype = resolve_compute_dtype(compute_dtype)
     audio_encoder = load_moss_audio_encoder(
         resolved_codec_model_path,
         device=device,
         compute_dtype=resolved_compute_dtype,
         attention_backend=attention_backend,
     )
-    reference_encoder: Any = _BatchedReferenceEncoder(
+    reference_encoder: Any = BatchedReferenceEncoder(
         audio_encoder,
         n_vq=int(processor.model_config.n_vq),
         max_batch_size=encode_batch_size,
         max_batch_wait_ms=encode_batch_wait_ms,
     )
     if ref_audio_cache:
-        reference_encoder = _MossTTSReferenceEncoder(
+        reference_encoder = MossTTSReferenceEncoder(
             reference_encoder,
             codec_model_path=resolved_codec_model_path,
             n_vq=int(processor.model_config.n_vq),
@@ -541,8 +541,8 @@ def create_vocoder_executor(
 
     # note (lennox): device is the policy override; gpu_id is the placement fallback.
     device = str(resolve_concrete_device(device, gpu_id))
-    resolved_compute_dtype = _resolve_compute_dtype(compute_dtype)
-    processor = _load_moss_processor(model_path)
+    resolved_compute_dtype = resolve_compute_dtype(compute_dtype)
+    processor = load_moss_processor(model_path)
     decoder_dtype = resolve_moss_audio_dtype(
         dtype,
         name="dtype",
@@ -550,7 +550,7 @@ def create_vocoder_executor(
     )
     assert decoder_dtype is not None
     audio_vocoder = load_moss_audio_vocoder(
-        _resolve_audio_tokenizer_model_path(processor, codec_model_path),
+        resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
         decoder_dtype=decoder_dtype,
         compute_dtype=resolved_compute_dtype,

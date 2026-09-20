@@ -37,17 +37,17 @@ from sglang_omni.mps.state import MpsGpuPaths
 logger = logging.getLogger(__name__)
 
 
-class _MpsDeviceInfo(Protocol):
+class MpsDeviceInfo(Protocol):
     def inspect(self, gpu_ids: Iterable[int]) -> dict[int, MpsPhysicalDevice]: ...
 
 
 @dataclass(frozen=True)
-class _PhysicalMpsPlan:
+class PhysicalMpsPlan:
     logical_gpu_ids: tuple[int, ...]
     client_process_names: tuple[str, ...]
 
 
-def _default_state_root() -> Path:
+def default_state_root() -> Path:
     # Keep this short: the control socket must fit Linux's AF_UNIX path budget.
     override = os.environ.get("SGLANG_OMNI_MPS_STATE_ROOT")
     if override:
@@ -55,12 +55,12 @@ def _default_state_root() -> Path:
     return Path(tempfile.gettempdir()) / f"sglang-omni-mps-{getpass.getuser()}"
 
 
-def _resolve_physical_plans(
+def resolve_physical_plans(
     *,
     mode: str,
     process_facts: tuple[MpsProcessFact, ...],
-    device_info: _MpsDeviceInfo,
-) -> dict[str, _PhysicalMpsPlan]:
+    device_info: MpsDeviceInfo,
+) -> dict[str, PhysicalMpsPlan]:
     """Resolve physical identity before applying any MPS-specific gate."""
 
     potential_clients = [
@@ -193,7 +193,7 @@ def _resolve_physical_plans(
     for gpu_uuid, reasons in unsupported_candidates.items():
         block({gpu_uuid}, "; ".join(reasons))
 
-    physical_plans: dict[str, _PhysicalMpsPlan] = {}
+    physical_plans: dict[str, PhysicalMpsPlan] = {}
     for gpu_uuid, process_names in sorted(clients_by_uuid.items()):
         reasons = blocked.get(gpu_uuid, ())
         logical_gpu_ids = tuple(sorted(logical_ids_by_uuid[gpu_uuid]))
@@ -214,7 +214,7 @@ def _resolve_physical_plans(
                 list(logical_gpu_ids),
             )
             continue
-        physical_plans[gpu_uuid] = _PhysicalMpsPlan(
+        physical_plans[gpu_uuid] = PhysicalMpsPlan(
             logical_gpu_ids=logical_gpu_ids,
             client_process_names=tuple(process_names),
         )
@@ -238,7 +238,7 @@ _UNSUPPORTED_PROCESS_ENV = (
 )
 
 
-def _reject_process_env_overrides(process_specs) -> None:
+def reject_process_env_overrides(process_specs) -> None:
     conflicts: list[str] = []
     for process_spec in process_specs:
         for stage_spec in process_spec.stage_specs:
@@ -265,7 +265,7 @@ class MpsPipelineRuntime:
     def __init__(
         self,
         managers: dict[str, MpsManager],
-        plans: dict[str, _PhysicalMpsPlan],
+        plans: dict[str, PhysicalMpsPlan],
         mode: str = "auto",
     ):
         self.managers = managers
@@ -292,7 +292,7 @@ class MpsPipelineRuntime:
         *,
         mode: str,
         process_specs,
-        device_info: _MpsDeviceInfo,
+        device_info: MpsDeviceInfo,
         client: MpsControlClient,
         state_root: Path | None = None,
     ) -> MpsPipelineRuntime | None:
@@ -301,9 +301,9 @@ class MpsPipelineRuntime:
         if mode == "off":
             return None
         process_specs = list(process_specs)
-        _reject_process_env_overrides(process_specs)
+        reject_process_env_overrides(process_specs)
         process_facts = collect_mps_facts(process_specs)
-        physical_plans = _resolve_physical_plans(
+        physical_plans = resolve_physical_plans(
             mode=mode,
             process_facts=process_facts,
             device_info=device_info,
@@ -312,7 +312,7 @@ class MpsPipelineRuntime:
         if not physical_plans:
             return None
 
-        root = state_root if state_root is not None else _default_state_root()
+        root = state_root if state_root is not None else default_state_root()
         managers = {
             gpu_uuid: MpsManager(
                 paths=MpsGpuPaths(
@@ -329,10 +329,10 @@ class MpsPipelineRuntime:
     async def start(self) -> None:
         async with self._operation_lock:
             try:
-                await self._run_blocking(self._start)
+                await self.run_blocking(self._start)
             except asyncio.CancelledError as cancellation:
                 try:
-                    await self._run_blocking(
+                    await self.run_blocking(
                         self._close,
                         frozenset(),
                     )
@@ -350,7 +350,7 @@ class MpsPipelineRuntime:
         acquired: list[str] = []
         try:
             for gpu_uuid, manager in self.managers.items():
-                lease = manager.acquire(self._tokens_on(gpu_uuid))
+                lease = manager.acquire(self.tokens_on(gpu_uuid))
                 self._leases[gpu_uuid] = lease
                 acquired.append(gpu_uuid)
                 logger.info(
@@ -363,7 +363,7 @@ class MpsPipelineRuntime:
         except BaseException as startup_error:
             rollback_errors: list[tuple[str, MpsError]] = []
             for gpu_uuid in reversed(acquired):
-                error = self._release_one(
+                error = self.release_one(
                     gpu_uuid,
                     suppress_errors=True,
                     clients_could_have_attached=False,
@@ -396,19 +396,19 @@ class MpsPipelineRuntime:
                 gpu_uuid: {
                     "logical_gpus": list(self._plans[gpu_uuid].logical_gpu_ids),
                     "daemon_pid": self._leases[gpu_uuid].daemon_pid,
-                    "clients": sorted(self._names_on(gpu_uuid)),
+                    "clients": sorted(self.names_on(gpu_uuid)),
                 }
                 for gpu_uuid in self._leases
             },
         )
 
-    def _names_on(self, gpu_uuid: str) -> list[str]:
+    def names_on(self, gpu_uuid: str) -> list[str]:
         return [
             name for name, physical in self._client_uuid.items() if physical == gpu_uuid
         ]
 
-    def _tokens_on(self, gpu_uuid: str) -> dict[str, str]:
-        return {name: self._client_tokens[name] for name in self._names_on(gpu_uuid)}
+    def tokens_on(self, gpu_uuid: str) -> dict[str, str]:
+        return {name: self._client_tokens[name] for name in self.names_on(gpu_uuid)}
 
     def env_for_process(self, process_name: str) -> dict[str, str]:
         gpu_uuid = self._client_uuid.get(process_name)
@@ -422,7 +422,7 @@ class MpsPipelineRuntime:
 
     async def verify(self) -> None:
         async with self._operation_lock:
-            await self._run_blocking(self._verify)
+            await self.run_blocking(self._verify)
 
     def _verify(self) -> None:
         for gpu_uuid, lease in self._leases.items():
@@ -432,7 +432,7 @@ class MpsPipelineRuntime:
         """Retire one process's MPS clients before the runner signals it."""
 
         async with self._operation_lock:
-            return await self._run_blocking(
+            return await self.run_blocking(
                 self._retire_process_clients,
                 process_name,
             )
@@ -446,7 +446,7 @@ class MpsPipelineRuntime:
 
     async def probe_failures(self) -> dict[str, str]:
         async with self._operation_lock:
-            return await self._run_blocking(self._probe_failures)
+            return await self.run_blocking(self._probe_failures)
 
     def _probe_failures(self) -> dict[str, str]:
         failures: dict[str, str] = {}
@@ -469,7 +469,7 @@ class MpsPipelineRuntime:
             else frozenset(process_start_attempts)
         )
         async with self._operation_lock:
-            await self._run_blocking(
+            await self.run_blocking(
                 self._close,
                 attempts,
             )
@@ -479,9 +479,9 @@ class MpsPipelineRuntime:
         for gpu_uuid in reversed(list(self._leases)):
             clients_could_have_attached = (
                 process_start_attempts is None
-                or not process_start_attempts.isdisjoint(self._names_on(gpu_uuid))
+                or not process_start_attempts.isdisjoint(self.names_on(gpu_uuid))
             )
-            error = self._release_one(
+            error = self.release_one(
                 gpu_uuid,
                 suppress_errors=False,
                 clients_could_have_attached=clients_could_have_attached,
@@ -500,7 +500,7 @@ class MpsPipelineRuntime:
             raise error_type(details)
 
     @staticmethod
-    async def _run_blocking(call: Callable[..., Any], *args: Any) -> Any:
+    async def run_blocking(call: Callable[..., Any], *args: Any) -> Any:
         """Finish an ownership-changing call before propagating cancellation."""
 
         task = asyncio.create_task(asyncio.to_thread(call, *args))
@@ -527,7 +527,7 @@ class MpsPipelineRuntime:
             raise cancelled
         return result
 
-    def _release_one(
+    def release_one(
         self,
         gpu_uuid: str,
         *,
@@ -562,7 +562,7 @@ def create_for_pipeline(
     if mode == "off":
         return None
     process_specs = list(process_specs)
-    _reject_process_env_overrides(process_specs)
+    reject_process_env_overrides(process_specs)
     if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
         raise MpsError(
             "native MPS cannot join CUDA_MPS_PIPE_DIRECTORY="

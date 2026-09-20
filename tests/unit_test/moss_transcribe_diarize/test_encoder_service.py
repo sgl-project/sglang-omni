@@ -33,7 +33,7 @@ def test_drain_batch_respects_gpu_microbatch_limit() -> None:
     for entry in entries:
         service._queue.put(entry)
 
-    assert service._drain_batch() == entries[:2]
+    assert service.drain_batch() == entries[:2]
     assert service._queue.qsize() == 2
 
 
@@ -61,7 +61,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     service = object.__new__(BatchedAudioEncoderService)
     service._stream = _FailingStream()
     service._model = SimpleNamespace(
-        _get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
+        get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
     )
     monkeypatch.setattr(
         encoder_service.torch.cuda,
@@ -79,7 +79,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     ]
 
     with pytest.raises(torch.OutOfMemoryError, match="test encoder OOM"):
-        service._execute_batch(items)
+        service.execute_batch(items)
 
     for item, feature in zip(items, features):
         assert item.feature is feature
@@ -135,13 +135,13 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     service._stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
-    monkeypatch.setattr(service, "_execute_batch", _execute_batch)
+    monkeypatch.setattr(service, "execute_batch", _execute_batch)
     monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
     monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
 
     def _run_worker() -> None:
         try:
-            service._worker()
+            service.worker()
         except _StopWorker:
             pass
 
@@ -209,14 +209,14 @@ def test_batched_oom_falls_back_to_per_item_encoding(
         cleanup_steps.append("empty_cache")
         poisoned = False
 
-    monkeypatch.setattr(service, "_execute_batch", _execute_batch)
+    monkeypatch.setattr(service, "execute_batch", _execute_batch)
     monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
     monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
     entries = [QueueEntry(item, concurrent.futures.Future()) for item in items]
     batches = iter([(entries, False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     assert [entry.future.result() for entry in entries] == [None, None]
     assert calls == [items, [items[0]], [items[1]]]
@@ -240,12 +240,12 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
         retained_intermediates.append(weakref.ref(intermediate))
         raise ValueError("unexpected encoder shape")
 
-    monkeypatch.setattr(service, "_execute_batch", _raise_non_oom_encoder_failure)
+    monkeypatch.setattr(service, "execute_batch", _raise_non_oom_encoder_failure)
     entry = QueueEntry(object(), concurrent.futures.Future())
     batches = iter([([entry], False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     failure = entry.future.exception()
     assert isinstance(failure, ValueError)
@@ -283,7 +283,7 @@ def test_encode_item_rechecks_cache_after_preprocessing() -> None:
             "audio_feature_lengths": torch.tensor([2]),
         },
     )
-    service._submit = lambda item: pytest.fail("cached item must not be submitted")
+    service.submit = lambda item: pytest.fail("cached item must not be submitted")
 
     service.encode_item(item)
 
@@ -356,14 +356,14 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
         rows = int(items[0].audio_feature_lengths.sum())
         return torch.ones(rows, 3)
 
-    service._model = SimpleNamespace(_get_audio_feature_uncached=encode)
-    service._batch_context = contextlib.nullcontext
+    service._model = SimpleNamespace(get_audio_feature_uncached=encode)
+    service.batch_context = contextlib.nullcontext
     good_entry = QueueEntry(good, concurrent.futures.Future())
     bad_entry = QueueEntry(bad, concurrent.futures.Future())
     batches = iter([([good_entry, bad_entry], False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     assert good_entry.future.result(timeout=0) is None
     with pytest.raises(RuntimeError, match="item failed"):

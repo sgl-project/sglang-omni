@@ -24,7 +24,7 @@ class LocalStageDispatcher:
         for stage in stages:
             self.register(stage)
 
-    def _get_stage(self, from_stage: str, to_stage: str) -> Any:
+    def get_stage(self, from_stage: str, to_stage: str) -> Any:
         target = self._stages.get(to_stage)
         if target is None:
             raise RuntimeError(
@@ -42,7 +42,7 @@ class LocalStageDispatcher:
         payload: Any,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_payload(
             request_id, from_stage, payload, replica_bindings
         )
@@ -58,7 +58,7 @@ class LocalStageDispatcher:
         metadata: dict[str, Any] | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_chunk(
             request_id,
             from_stage,
@@ -78,7 +78,7 @@ class LocalStageDispatcher:
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_signal(
             request_id,
             from_stage,

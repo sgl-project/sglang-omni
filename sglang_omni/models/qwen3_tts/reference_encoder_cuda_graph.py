@@ -40,7 +40,7 @@ def smallest_bucket(frames: int, buckets: Iterable[int]) -> int | None:
 
 
 @dataclass
-class _CapturedEncoderGraph:
+class CapturedEncoderGraph:
     graph: torch.cuda.CUDAGraph
     static_input: torch.Tensor
     static_codes: torch.Tensor
@@ -66,20 +66,20 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         param = next(encoder.parameters())
         self._device = param.device
         self._dtype = param.dtype
-        self._graphs: dict[int, _CapturedEncoderGraph] = {}
+        self._graphs: dict[int, CapturedEncoderGraph] = {}
         self._pool: Any | None = None
         self._disable_reason: str | None = None
         self._replays = 0
         self._misses = 0
 
     def capture(self) -> None:
-        graphs: dict[int, _CapturedEncoderGraph] = {}
+        graphs: dict[int, CapturedEncoderGraph] = {}
         try:
             with torch.cuda.device(self._device):
                 pool = torch.cuda.graph_pool_handle()
                 # note(ratish): largest first so the shared pool is sized once.
                 for frames in reversed(self._bucket_frames):
-                    graphs[frames] = self._capture_bucket(frames, pool)
+                    graphs[frames] = self.capture_bucket(frames, pool)
         except Exception as exc:
             self._disable_reason = f"capture_failed: {type(exc).__name__}: {exc}"
             logger.warning(
@@ -95,7 +95,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
             list(self._bucket_frames),
         )
 
-    def _capture_bucket(self, frames: int, pool: Any) -> _CapturedEncoderGraph:
+    def capture_bucket(self, frames: int, pool: Any) -> CapturedEncoderGraph:
         static_input = torch.zeros(
             (1, 1, frames * self._hop), device=self._device, dtype=self._dtype
         )
@@ -115,7 +115,7 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         ):
             static_codes = self._encode(static_input)
         self._stream.synchronize()
-        return _CapturedEncoderGraph(
+        return CapturedEncoderGraph(
             graph=graph, static_input=static_input, static_codes=static_codes
         )
 

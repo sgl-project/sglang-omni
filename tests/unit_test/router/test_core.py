@@ -432,7 +432,7 @@ def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> No
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", fail_health)
     monkeypatch.setattr(
         local_launcher,
-        "_terminate_worker_process_groups",
+        "terminate_worker_process_groups",
         record_terminated_workers,
     )
 
@@ -489,7 +489,7 @@ def test_launcher_cleans_up_managed_workers_on_startup_interrupt(monkeypatch) ->
     monkeypatch.setattr(local_launcher, "wait", interrupt_wait)
     monkeypatch.setattr(
         local_launcher,
-        "_terminate_worker_process_groups",
+        "terminate_worker_process_groups",
         record_terminated_workers,
     )
 
@@ -549,7 +549,7 @@ def test_launcher_waits_for_managed_workers_in_parallel(monkeypatch) -> None:
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", wait_health)
     monkeypatch.setattr(
         local_launcher,
-        "_terminate_worker_process_groups",
+        "terminate_worker_process_groups",
         record_terminated_workers,
     )
 
@@ -1119,7 +1119,7 @@ def test_nofile_check_warns_when_soft_limit_too_low(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 1024)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=512,
@@ -1139,7 +1139,7 @@ def test_nofile_check_silent_when_soft_limit_sufficient(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 65536)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 65536)
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=512,
@@ -1154,7 +1154,7 @@ def test_nofile_check_silent_when_soft_limit_sufficient(
 def test_nofile_check_strict_mode_fails_fast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 1024)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=512,
@@ -1239,7 +1239,7 @@ def test_nofile_check_follows_the_upstream_pool_size(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 1024)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=64,
@@ -1260,7 +1260,7 @@ def test_nofile_check_explicit_tie_recommends_both_flags(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 1024)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
     config = RouterConfig(
         workers=[WorkerConfig(url="http://127.0.0.1:8101")],
         max_connections=512,
@@ -1280,7 +1280,7 @@ def test_nofile_check_derived_tie_recommends_max_connections(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setattr(serve_module, "_read_nofile_soft_limit", lambda: 1024)
+    monkeypatch.setattr(serve_module, "read_nofile_soft_limit", lambda: 1024)
     # max_inflight unset: effective_max_inflight derives from max_connections, so
     # lowering --max-connections also lowers the admission bound and clears it.
     config = RouterConfig(

@@ -51,7 +51,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.process_total_gpu_memory_fraction = process_total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
-        self.memory_budget = moss_local_stages._ArMemoryBudget(
+        self.memory_budget = moss_local_stages.ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
@@ -80,7 +80,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        self.memory_budget = moss_local_stages._apply_colocated_ar_memory_budget(
+        self.memory_budget = moss_local_stages.apply_colocated_ar_memory_budget(
             overrides,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
             codec_mem_reserve=self.codec_mem_reserve,

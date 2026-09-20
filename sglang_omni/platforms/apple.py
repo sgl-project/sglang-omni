@@ -34,14 +34,14 @@ class AppleOmniPlatform(OmniPlatform):
         return False
 
     @staticmethod
-    def _validate_device_id(device_id: int) -> None:
+    def validate_device_id(device_id: int) -> None:
         if int(device_id) != 0:
             raise ValueError(
                 f"Apple Silicon exposes one Metal device, got device_id={device_id}"
             )
 
     def get_device(self, device_id: int = 0) -> torch.device:
-        self._validate_device_id(device_id)
+        self.validate_device_id(device_id)
         return torch.device("mps")
 
     def set_device(self, device: torch.device | int) -> None:
@@ -51,16 +51,16 @@ class AppleOmniPlatform(OmniPlatform):
             index = 0 if device.index is None else device.index
         else:
             index = int(device)
-        self._validate_device_id(index)
+        self.validate_device_id(index)
         # Note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
         # device, so there is no CUDA-style device selection to perform.
 
     def get_device_name(self, device_id: int = 0) -> str:
-        self._validate_device_id(device_id)
+        self.validate_device_id(device_id)
         return "Apple Metal"
 
     def get_device_total_memory(self, device_id: int = 0) -> int:
-        self._validate_device_id(device_id)
+        self.validate_device_id(device_id)
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
@@ -92,7 +92,7 @@ class AppleOmniPlatform(OmniPlatform):
                 f"got tp_size={spec.tp_size}"
             )
         if spec.gpu_id is not None:
-            self._validate_device_id(spec.gpu_id)
+            self.validate_device_id(spec.gpu_id)
         return {}
 
     def get_intra_node_transport(self):

@@ -28,9 +28,9 @@ class SmartTurnEOU(SemanticEOUModel):
 
     @classmethod
     def load(cls, model_path: Path | str) -> SmartTurnEOU:
-        resolved_path = _resolve_model_path(model_path)
-        _verify_checksum(resolved_path)
-        session = _load_model(resolved_path)
+        resolved_path = resolve_model_path(model_path)
+        verify_checksum(resolved_path)
+        session = load_model(resolved_path)
         feature_extractor = WhisperFeatureExtractor(chunk_length=8)
         return cls(session=session, feature_extractor=feature_extractor)
 
@@ -68,7 +68,7 @@ def load_smart_turn() -> SmartTurnEOU | None:
     return SmartTurnEOU.load(configured_path)
 
 
-def _resolve_model_path(model_path: Path | str) -> Path:
+def resolve_model_path(model_path: Path | str) -> Path:
     path = Path(model_path).expanduser()
     if path.is_dir():
         path = path / SMART_TURN_MODEL_FILENAME
@@ -77,7 +77,7 @@ def _resolve_model_path(model_path: Path | str) -> Path:
     return path
 
 
-def _verify_checksum(path: Path) -> None:
+def verify_checksum(path: Path) -> None:
     digest = hashlib.sha256()
     with path.open("rb") as model_file:
         for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
@@ -90,7 +90,7 @@ def _verify_checksum(path: Path) -> None:
         )
 
 
-def _load_model(model_path: Path) -> Any:
+def load_model(model_path: Path) -> Any:
     import onnxruntime as ort
 
     options = ort.SessionOptions()

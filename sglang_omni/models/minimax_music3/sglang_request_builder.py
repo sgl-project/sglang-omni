@@ -135,7 +135,7 @@ def build_stream_output(
     request_id: str, data: MiniMaxMusic3SGLangRequestData, req_output: Any
 ) -> Iterator[OutgoingMessage]:
     del req_output
-    yield from _drain_pending_chunks(request_id, data)
+    yield from drain_pending_chunks(request_id, data)
 
 
 def flush_stream_output(
@@ -143,7 +143,7 @@ def flush_stream_output(
 ) -> Iterator[OutgoingMessage]:
     """Terminal drain — the runner's final windows are queued after the last
     decode step, so they need a flush pass of their own."""
-    yield from _drain_pending_chunks(request_id, data)
+    yield from drain_pending_chunks(request_id, data)
 
 
 build_stream_output.flush = flush_stream_output
@@ -159,7 +159,7 @@ def apply_minimax_result(data: MiniMaxMusic3SGLangRequestData) -> StagePayload:
     return store_state(data.stage_payload, state)
 
 
-def _drain_pending_chunks(
+def drain_pending_chunks(
     request_id: str, data: MiniMaxMusic3SGLangRequestData
 ) -> Iterator[OutgoingMessage]:
     ar_state = data.ar_state

@@ -15,15 +15,15 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 from sglang_omni.models.moss_tts.request_builders import (
     _DATA_URI_RE,
     MOSS_TTS_DEFAULT_MAX_NEW_TOKENS,
-    _new_moss_tts_sampling_seed,
-    _reference_for_processor,
-    _resolve_optional_text,
-    _resolve_token_count,
-    _validate_moss_tts_generation_kwargs,
     build_row_cache_key_ids,
     derive_moss_tts_sampling_seed,
+    new_moss_tts_sampling_seed,
     normalize_moss_tts_inputs,
+    reference_for_processor,
     resolve_moss_reference,
+    resolve_optional_text,
+    resolve_token_count,
+    validate_moss_tts_generation_kwargs,
 )
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
@@ -68,7 +68,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     audio_top_k: int = 25
     audio_repetition_penalty: float = 1.0
     seed: int | None = None
-    sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
+    sampling_seed: int = field(default_factory=new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
     stream_metadata: dict[str, Any] | None = None
     stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
@@ -87,12 +87,12 @@ class MossTTSLocalPreparedRequest:
 
 
 @dataclass
-class _PreprocessingContext:
+class PreprocessingContext:
     processor: Any
     reference_encoder: Any = None
 
 
-_QUEUE: PreparedRequestQueue[_PreprocessingContext, MossTTSLocalPreparedRequest] = (
+_QUEUE: PreparedRequestQueue[PreprocessingContext, MossTTSLocalPreparedRequest] = (
     PreparedRequestQueue()
 )
 MOSS_STREAM_TRANSPORT_BATCH_FRAMES = 5
@@ -102,7 +102,7 @@ def set_moss_tts_local_preprocessing_context(
     *, processor: Any, reference_encoder: Any = None
 ) -> None:
     _QUEUE.set_context(
-        _PreprocessingContext(processor=processor, reference_encoder=reference_encoder)
+        PreprocessingContext(processor=processor, reference_encoder=reference_encoder)
     )
 
 
@@ -141,18 +141,18 @@ def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
-    language = _resolve_optional_text(
+    language = resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
     if language is not None and language.casefold() == "auto":
         language = None
-    instructions = _resolve_optional_text(
+    instructions = resolve_optional_text(
         tts_params.get("instructions")
         or tts_params.get("instruct")
         or params.get("instructions")
         or params.get("instruct")
     )
-    text, token_count = _resolve_token_count(text, params, tts_params)
+    text, token_count = resolve_token_count(text, params, tts_params)
     return MossTTSLocalState(
         text=text,
         ref_audio=ref_audio,
@@ -244,11 +244,11 @@ def build_generation_kwargs(
     if seed is not None:
         generation_kwargs["seed"] = seed
 
-    _validate_moss_tts_generation_kwargs(generation_kwargs)
+    validate_moss_tts_generation_kwargs(generation_kwargs)
     return generation_kwargs
 
 
-def _build_processor_message(
+def build_processor_message(
     processor: Any,
     state: MossTTSLocalState,
     reference_encoder: Any = None,
@@ -261,7 +261,7 @@ def _build_processor_message(
             # Data-URI refs through the same LRU (bytes: keyspace).
             reference = [reference_encoder.encode_data_uri(ref_audio)]
     else:
-        reference = _reference_for_processor(processor, ref_audio)
+        reference = reference_for_processor(processor, ref_audio)
     return processor.build_user_message(
         text=state.text,
         reference=reference,
@@ -271,14 +271,14 @@ def _build_processor_message(
     )
 
 
-def _prepare_moss_tts_local_request(
+def prepare_moss_tts_local_request(
     payload: StagePayload,
     *,
     processor: Any,
     reference_encoder: Any = None,
 ) -> MossTTSLocalPreparedRequest:
     state = build_moss_tts_local_state(payload)
-    message = _build_processor_message(processor, state, reference_encoder)
+    message = build_processor_message(processor, state, reference_encoder)
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
@@ -308,7 +308,7 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
         )
 
     try:
-        prepared = _prepare_moss_tts_local_request(
+        prepared = prepare_moss_tts_local_request(
             payload,
             processor=context.processor,
             reference_encoder=context.reference_encoder,
@@ -411,7 +411,7 @@ def build_sglang_moss_tts_local_request(
         sampling_seed=(
             derive_moss_tts_sampling_seed(gen_kwargs["seed"])
             if gen_kwargs.get("seed") is not None
-            else _new_moss_tts_sampling_seed()
+            else new_moss_tts_sampling_seed()
         ),
         engine_start_s=time.perf_counter(),
         stream_metadata=build_moss_tts_local_stream_metadata(

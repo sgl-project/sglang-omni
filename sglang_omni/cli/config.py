@@ -39,7 +39,7 @@ _MEM_FRACTION_HELP = (
 )
 
 
-def _dump_yaml(data: Any) -> str:
+def dump_yaml(data: Any) -> str:
     return yaml.dump(
         data,
         sort_keys=False,  # preserve order
@@ -61,7 +61,7 @@ def view(
     """View the model's pipeline configuration."""
     config_cls = resolve_config_cls_for_model_path(model_path)
     config = config_cls(model_path=model_path)
-    print(_dump_yaml(dump_user_config(config)))
+    print(dump_yaml(dump_user_config(config)))
 
 
 @config_app.command()
@@ -87,7 +87,7 @@ def export(
         output_path = f"./config_{config.name}.yaml"
 
     with open(output_path, "w") as f:
-        f.write(_dump_yaml(dump_user_config(config)))
+        f.write(dump_yaml(dump_user_config(config)))
     print(f"Pipeline config exported to {output_path}")
 
 
@@ -113,7 +113,7 @@ class Resolution(NamedTuple):
     resolved: ResolvedConfig
 
 
-def _resolve_sources(
+def resolve_sources(
     *,
     model_path: str | None,
     config_file: str | None,
@@ -234,7 +234,7 @@ def resolve(
         sgl-omni config resolve --model-path Qwen/Qwen3-Omni \\
             --thinker.tp_size 4 --show diff
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
@@ -244,7 +244,7 @@ def resolve(
     provenance = resolution.resolved.provenance
 
     if show is ResolveOutput.config:
-        print(_dump_yaml(dump_user_config(resolution.resolved.config)))
+        print(dump_yaml(dump_user_config(resolution.resolved.config)))
         return
 
     if show is ResolveOutput.diff:
@@ -302,7 +302,7 @@ def explain(
         sgl-omni config explain stages.thinker.factory.max_seq_len \\
             --config omni.yaml --thinker.factory.max_seq_len 8192
     """
-    resolution = _resolve_sources(
+    resolution = resolve_sources(
         model_path=model_path,
         config_file=config,
         text_only=text_only,

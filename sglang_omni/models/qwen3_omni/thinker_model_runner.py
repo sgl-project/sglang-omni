@@ -31,7 +31,7 @@ _UNSUPPORTED = "unsupported"
 
 
 @dataclass(frozen=True)
-class _PrefillDisposition:
+class PrefillDisposition:
     kind: str
     has_audio: bool = False
 
@@ -46,7 +46,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
     """
 
     @staticmethod
-    def _origin_num_tokens(value: Any) -> int | None:
+    def origin_num_tokens(value: Any) -> int | None:
         if isinstance(value, torch.Tensor):
             return int(value.numel()) if value.ndim == 1 else None
         if isinstance(value, (array, list, tuple)):
@@ -54,7 +54,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return None
 
     @staticmethod
-    def _valid_positions(value: Any) -> bool:
+    def valid_positions(value: Any) -> bool:
         if not (
             isinstance(value, torch.Tensor)
             and value.ndim == 1
@@ -69,7 +69,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return bool(torch.all(value[1:] > value[:-1]))
 
     @staticmethod
-    def _cpu_int_sequence(value: Any) -> list[int] | None:
+    def cpu_int_sequence(value: Any) -> list[int] | None:
         if isinstance(value, torch.Tensor):
             if value.ndim != 1 or value.device.type != "cpu":
                 return None
@@ -82,17 +82,17 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             return None
         return [int(item) for item in value]
 
-    def _mm_positions(
+    def mm_positions(
         self, req: Any, pad_values: dict[str, Any]
     ) -> dict[str, torch.Tensor] | None:
         try:
-            positions = self._req_mm_token_positions(req, pad_values)
+            positions = self.req_mm_token_positions(req, pad_values)
         except (AttributeError, KeyError, TypeError, ValueError, RuntimeError):
             return None
         if not isinstance(positions, dict):
             return None
 
-        origin_num_tokens = self._origin_num_tokens(
+        origin_num_tokens = self.origin_num_tokens(
             getattr(req, "origin_input_ids", None)
         )
         if origin_num_tokens is None:
@@ -101,7 +101,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         validated: dict[str, torch.Tensor] = {}
         for modality in ("image", "video", "audio"):
             value = positions.get(modality)
-            if not self._valid_positions(value) or (
+            if not self.valid_positions(value) or (
                 value.numel() and int(value[-1]) >= origin_num_tokens
             ):
                 return None
@@ -109,10 +109,10 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return validated
 
     @classmethod
-    def _batch_chunk_spans(
+    def batch_chunk_spans(
         cls, forward_batch: Any, expected_batch_size: int
     ) -> list[tuple[int, int]] | None:
-        extend_lens = cls._cpu_int_sequence(
+        extend_lens = cls.cpu_int_sequence(
             getattr(forward_batch, "extend_seq_lens_cpu", None)
         )
         if extend_lens is None or len(extend_lens) != expected_batch_size:
@@ -122,7 +122,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         if prefix_lens is None:
             prefix_values = [0] * expected_batch_size
         else:
-            prefix_values = cls._cpu_int_sequence(prefix_lens)
+            prefix_values = cls.cpu_int_sequence(prefix_lens)
             if prefix_values is None or len(prefix_values) != expected_batch_size:
                 return None
 
@@ -133,7 +133,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             spans.append((prefix, length))
         return spans
 
-    def _audio_inputs_are_supported(
+    def audio_inputs_are_supported(
         self,
         req: Any,
         model_inputs: Any,
@@ -181,7 +181,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         ):
             return False
 
-        positions = self._mm_positions(req, pad_values)
+        positions = self.mm_positions(req, pad_values)
         if positions is None:
             return False
         if positions["image"].numel() or positions["video"].numel():
@@ -204,7 +204,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             chunk_consumed = consumed
         else:
             return False
-        _, audio_offset, live_audio_count = self._plan_modality_chunk(
+        _, audio_offset, live_audio_count = self.plan_modality_chunk(
             positions["audio"], chunk_consumed, "audio", prefix, length
         )
         if (
@@ -222,20 +222,20 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             and middle_chunks >= 0
         )
 
-    def _classify_prefill(
+    def classify_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list[Any]
-    ) -> _PrefillDisposition:
+    ) -> PrefillDisposition:
         if len(requests) != getattr(forward_batch, "batch_size", None):
-            return _PrefillDisposition(_UNSUPPORTED)
+            return PrefillDisposition(_UNSUPPORTED)
         schedule_reqs = getattr(schedule_batch, "reqs", None)
         if schedule_reqs is None or len(schedule_reqs) != len(requests):
-            return _PrefillDisposition(_UNSUPPORTED)
+            return PrefillDisposition(_UNSUPPORTED)
         if (
             getattr(forward_batch, "input_embeds", None) is not None
             or getattr(forward_batch, "replace_embeds", None) is not None
             or get_omni_prefill_inputs(forward_batch) is not None
         ):
-            return _PrefillDisposition(_UNSUPPORTED)
+            return PrefillDisposition(_UNSUPPORTED)
 
         model_inputs_by_request = [
             getattr(req, "omni_model_inputs", None) for req in schedule_reqs
@@ -246,11 +246,11 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             for model_inputs in model_inputs_by_request
         )
         if not has_model_inputs:
-            return _PrefillDisposition(_SIDECAR)
+            return PrefillDisposition(_SIDECAR)
 
-        chunk_spans = self._batch_chunk_spans(forward_batch, len(schedule_reqs))
+        chunk_spans = self.batch_chunk_spans(forward_batch, len(schedule_reqs))
         if chunk_spans is None:
-            return _PrefillDisposition(_UNSUPPORTED)
+            return PrefillDisposition(_UNSUPPORTED)
         has_audio = False
         for request_index, (req, model_inputs) in enumerate(
             zip(schedule_reqs, model_inputs_by_request)
@@ -259,26 +259,26 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
                 isinstance(model_inputs, dict) and not model_inputs
             ):
                 continue
-            if not self._audio_inputs_are_supported(
+            if not self.audio_inputs_are_supported(
                 req, model_inputs, chunk_spans[request_index]
             ):
-                return _PrefillDisposition(_UNSUPPORTED)
+                return PrefillDisposition(_UNSUPPORTED)
             has_audio = True
 
-        return _PrefillDisposition(_SIDECAR, has_audio=has_audio)
+        return PrefillDisposition(_SIDECAR, has_audio=has_audio)
 
-    def _text_input_embeds(self, forward_batch: Any) -> torch.Tensor:
+    def text_input_embeds(self, forward_batch: Any) -> torch.Tensor:
         return self._embed_tokens(forward_batch.input_ids)
 
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list[Any]
     ) -> None:
-        disposition = self._classify_prefill(forward_batch, schedule_batch, requests)
+        disposition = self.classify_prefill(forward_batch, schedule_batch, requests)
         if disposition.kind != _SIDECAR:
             return
 
         if disposition.has_audio:
-            omni_result = self._inject_multimodal_embeds(forward_batch, schedule_batch)
+            omni_result = self.inject_multimodal_embeds(forward_batch, schedule_batch)
             if omni_result is None:
                 raise RuntimeError(
                     "Qwen audio prefill was classified as sidecar-compatible, "
@@ -294,7 +294,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
                     "Qwen text-output sidecar cannot carry visual deepstack embeddings"
                 )
         else:
-            input_embeds = self._text_input_embeds(forward_batch)
+            input_embeds = self.text_input_embeds(forward_batch)
 
         attach_omni_prefill_inputs(
             forward_batch,
@@ -307,7 +307,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         if get_omni_prefill_inputs(forward_batch) is not None:
             return None
 
-        disposition = self._classify_prefill(forward_batch, schedule_batch, requests)
+        disposition = self.classify_prefill(forward_batch, schedule_batch, requests)
         if disposition.kind == _SIDECAR:
             raise RuntimeError("Qwen prefill sidecar was not attached before forward")
 

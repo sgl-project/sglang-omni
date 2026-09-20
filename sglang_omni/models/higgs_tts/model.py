@@ -47,7 +47,7 @@ class HiggsGenParams:
     top_k: int | None = None
 
 
-def _resolve_max_running_requests() -> int:
+def resolve_max_running_requests() -> int:
     try:
         from sglang.srt.server_args import get_global_server_args
 
@@ -61,7 +61,7 @@ def _resolve_max_running_requests() -> int:
         return fallback
 
 
-def _flat_sampling_attr(sampling_info, attr: str) -> list | None:
+def flat_sampling_attr(sampling_info, attr: str) -> list | None:
     """Return ``sampling_info.<attr>`` as a flat Python list, or ``None``.
 
     One D2H per attribute (not per row).
@@ -74,7 +74,7 @@ def _flat_sampling_attr(sampling_info, attr: str) -> list | None:
     return list(val)
 
 
-class _HiggsMultimodalEmbedding(nn.Module):
+class HiggsMultimodalEmbedding(nn.Module):
     """Container matching the Higgs checkpoint layout for straight prefix subst."""
 
     def __init__(self, num_codebooks: int, vocab_size: int, hidden_size: int):
@@ -137,7 +137,7 @@ class HiggsTTSModel(nn.Module):
         self._codebook_vocab_size = vocab_size
         self._tie_modality = bool(enc_cfg.get("tie_word_embeddings", True))
 
-        self.multimodal_embedding = _HiggsMultimodalEmbedding(
+        self.multimodal_embedding = HiggsMultimodalEmbedding(
             num_codebooks=num_codebooks,
             vocab_size=vocab_size,
             hidden_size=hidden_size,
@@ -156,7 +156,7 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        self._sampler_pool_max_running_requests = _resolve_max_running_requests()
+        self._sampler_pool_max_running_requests = resolve_max_running_requests()
         pool_size = self._sampler_pool_max_running_requests + 1
         self._sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,
@@ -437,10 +437,10 @@ class HiggsTTSModel(nn.Module):
         at ``-100``); decode reads embeds and sampling state from
         ``_cg_active_*`` shadow buffers populated by the runner.
         """
-        is_decode = self._is_decode_step(forward_batch)
+        is_decode = self.is_decode_step(forward_batch)
 
         if is_decode:
-            input_embeds = self._decode_step_embeds_cg(
+            input_embeds = self.decode_step_embeds_cg(
                 input_ids, batch_size=input_ids.shape[0]
             )
         else:
@@ -452,7 +452,7 @@ class HiggsTTSModel(nn.Module):
                 raise RuntimeError(
                     "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
                 )
-            req_ids, gen_params = self._extract_batch_metadata(
+            req_ids, gen_params = self.extract_batch_metadata(
                 forward_batch, omni_prefill_rids
             )
 
@@ -490,7 +490,7 @@ class HiggsTTSModel(nn.Module):
             hidden_states=hidden_states_last,
         )
 
-    def _decode_step_embeds_cg(
+    def decode_step_embeds_cg(
         self, input_ids: torch.Tensor, batch_size: int
     ) -> torch.Tensor:
         """Graph-capture-friendly decode-step embedding lookup; reads from
@@ -509,31 +509,31 @@ class HiggsTTSModel(nn.Module):
         return torch.where(has_codes, fused_embeds.to(text_embeds.dtype), text_embeds)
 
     @staticmethod
-    def _is_decode_step(forward_batch) -> bool:
+    def is_decode_step(forward_batch) -> bool:
         mode = getattr(forward_batch, "forward_mode", None)
         if mode is None:
             return False
         is_decode = getattr(mode, "is_decode", None)
         return bool(is_decode()) if callable(is_decode) else False
 
-    def _extract_batch_metadata(
+    def extract_batch_metadata(
         self,
         forward_batch,
         req_ids: list[str],
     ) -> tuple[list[str], list[HiggsGenParams]]:
-        batch_size = self._infer_batch_size(forward_batch)
-        gen_params = self._gen_params_for_batch(forward_batch.sampling_info, batch_size)
+        batch_size = self.infer_batch_size(forward_batch)
+        gen_params = self.gen_params_for_batch(forward_batch.sampling_info, batch_size)
         return req_ids, gen_params
 
     @staticmethod
-    def _gen_params_for_batch(sampling_info, batch_size: int) -> list[HiggsGenParams]:
+    def gen_params_for_batch(sampling_info, batch_size: int) -> list[HiggsGenParams]:
         """Pull per-row sampling params off ``sampling_info``."""
         if sampling_info is None:
             return [HiggsGenParams() for _ in range(batch_size)]
 
-        temps = _flat_sampling_attr(sampling_info, "temperatures")
-        top_ps = _flat_sampling_attr(sampling_info, "top_ps")
-        top_ks = _flat_sampling_attr(sampling_info, "top_ks")
+        temps = flat_sampling_attr(sampling_info, "temperatures")
+        top_ps = flat_sampling_attr(sampling_info, "top_ps")
+        top_ks = flat_sampling_attr(sampling_info, "top_ks")
 
         params: list[HiggsGenParams] = []
         for b in range(batch_size):
@@ -550,7 +550,7 @@ class HiggsTTSModel(nn.Module):
         return params
 
     @staticmethod
-    def _infer_batch_size(forward_batch) -> int:
+    def infer_batch_size(forward_batch) -> int:
         seq_lens = getattr(forward_batch, "seq_lens", None)
         if seq_lens is not None and hasattr(seq_lens, "shape"):
             return int(seq_lens.shape[0])
@@ -572,7 +572,7 @@ class HiggsTTSModel(nn.Module):
         backbone_weights: list[Tuple[str, torch.Tensor]] = []
         self_weights: list[Tuple[str, torch.Tensor]] = []
         loaded: set[str] = set()
-        own_names = self._own_param_names()
+        own_names = self.own_param_names()
 
         for name, tensor in weights:
             mapped = mapper.map(name)
@@ -600,7 +600,7 @@ class HiggsTTSModel(nn.Module):
 
         return loaded
 
-    def _own_param_names(self) -> set[str]:
+    def own_param_names(self) -> set[str]:
         names: set[str] = set()
         for name, _ in self.named_parameters(remove_duplicate=False):
             if not name.startswith("backbone."):

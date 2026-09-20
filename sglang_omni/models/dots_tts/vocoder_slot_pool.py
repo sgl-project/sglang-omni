@@ -115,7 +115,7 @@ class DotsVocoderSlotPool:
                 f"(num_slots={self.num_slots})"
             )
         slot = int(self._free_slots.pop())
-        self._reset_slot(slot)
+        self.reset_slot(slot)
         self._in_use.add(slot)
         return slot
 
@@ -123,7 +123,7 @@ class DotsVocoderSlotPool:
         slot = int(slot)
         if slot not in self._in_use:
             return
-        self._reset_slot(slot)
+        self.reset_slot(slot)
         self._in_use.remove(slot)
         self._free_slots.append(slot)
 
@@ -192,9 +192,7 @@ class DotsVocoderSlotPool:
         out: dict[int, torch.Tensor] = {}
         for row, slot in enumerate(slots):
             self._total_frames[slot] += step_t
-            out[slot] = self._slice_audio(
-                slot, audio_window[row : row + 1], final=False
-            )
+            out[slot] = self.slice_audio(slot, audio_window[row : row + 1], final=False)
         return out
 
     @torch.no_grad()
@@ -205,16 +203,16 @@ class DotsVocoderSlotPool:
         audio_window = self._inference._decode_stream_window(
             self._window[slot : slot + 1]
         )
-        return self._slice_audio(slot, audio_window, final=True)
+        return self.slice_audio(slot, audio_window, final=True)
 
-    def _reset_slot(self, slot: int) -> None:
+    def reset_slot(self, slot: int) -> None:
         self._lstm_h[:, slot].zero_()
         self._lstm_c[:, slot].zero_()
         self._window[slot].zero_()
         self._total_frames[slot] = 0
         self._emitted_frames[slot] = 0
 
-    def _slice_audio(
+    def slice_audio(
         self, slot: int, audio_window: torch.Tensor, *, final: bool
     ) -> torch.Tensor:
         # note (guozhihao-224): mirrors VocoderInference._slice_stream_audio_window

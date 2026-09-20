@@ -203,7 +203,7 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
-def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+def resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
         return audio.astype(np.float32, copy=False)
     if audio.size == 0:
@@ -221,7 +221,7 @@ def _resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndar
     return resampled.reshape(audio.shape[:-1] + (new_len,)).astype(np.float32)
 
 
-def _encode_with_pyav(
+def encode_with_pyav(
     audio: np.ndarray,
     sample_rate: int,
     container_format: str,
@@ -234,7 +234,7 @@ def _encode_with_pyav(
 
     if sample_rate not in valid_rates:
         nearest_rate = min(valid_rates, key=lambda r: abs(r - sample_rate))
-        audio = _resample_linear(audio, sample_rate, nearest_rate)
+        audio = resample_linear(audio, sample_rate, nearest_rate)
         sample_rate = nearest_rate
 
     buf = io.BytesIO()
@@ -376,7 +376,7 @@ def encode_audio(
     if fmt in ("opus", "aac", "mp3"):
         try:
             config = PYAV_ENCODE_CONFIGS[fmt]
-            encoded_bytes = _encode_with_pyav(
+            encoded_bytes = encode_with_pyav(
                 arr,
                 sample_rate,
                 container_format=config["container"],

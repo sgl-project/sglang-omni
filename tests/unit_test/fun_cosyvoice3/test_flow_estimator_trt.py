@@ -13,11 +13,11 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     _PROFILE_MAX_TIME,
     _PROFILE_MIN_TIME,
     FlowEstimatorTRTModule,
-    _cfg_pair_shapes,
-    _dynamic_shapes,
-    _require_cfg_pair_inputs,
+    cfg_pair_shapes,
+    dynamic_shapes,
     execute_flow_estimator,
     is_flow_estimator_trt,
+    require_cfg_pair_inputs,
     resolve_flow_estimator_onnx,
 )
 
@@ -56,7 +56,7 @@ def test_resolve_flow_estimator_onnx_missing(tmp_path: Path) -> None:
 
 def test_dynamic_shapes_keep_official_cfg_batch() -> None:
     for time in (_PROFILE_MIN_TIME, 500, _PROFILE_MAX_TIME):
-        shapes = _dynamic_shapes(time)
+        shapes = dynamic_shapes(time)
         assert list(shapes) == ["x", "mask", "mu", "cond"]
         assert all(shape[0] == _CFG_BATCH for shape in shapes.values())
         assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, time)
@@ -64,7 +64,7 @@ def test_dynamic_shapes_keep_official_cfg_batch() -> None:
 
 
 def test_cfg_pair_shapes_match_official_layout() -> None:
-    shapes = _cfg_pair_shapes(16)
+    shapes = cfg_pair_shapes(16)
     assert shapes["t"] == (_CFG_BATCH,)
     assert shapes["spks"] == (_CFG_BATCH, _MEL_DIM)
     assert shapes["x"] == (_CFG_BATCH, _MEL_DIM, 16)
@@ -78,7 +78,7 @@ def test_require_cfg_pair_inputs_accepts_official_layout() -> None:
     t = torch.zeros(_CFG_BATCH)
     spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
     cond = torch.zeros_like(x)
-    assert _require_cfg_pair_inputs(x, mask, mu, t, spks, cond) == _cfg_pair_shapes(
+    assert require_cfg_pair_inputs(x, mask, mu, t, spks, cond) == cfg_pair_shapes(
         frames
     )
 
@@ -90,23 +90,21 @@ def test_require_cfg_pair_inputs_rejects_wrong_t_or_spks() -> None:
     mu = torch.zeros_like(x)
     cond = torch.zeros_like(x)
     with pytest.raises(ValueError, match=r"input t has shape"):
-        _require_cfg_pair_inputs(
+        require_cfg_pair_inputs(
             x, mask, mu, torch.zeros(4), torch.zeros(_CFG_BATCH, _MEL_DIM), cond
         )
     with pytest.raises(ValueError, match=r"input spks has shape"):
-        _require_cfg_pair_inputs(
+        require_cfg_pair_inputs(
             x, mask, mu, torch.zeros(_CFG_BATCH), torch.zeros(4, _MEL_DIM), cond
         )
 
 
 def test_canonicalize_device_equates_cuda_and_cuda0(monkeypatch) -> None:
-    from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
-        _canonicalize_device,
-    )
+    from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import canonicalize_device
 
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
-    assert _canonicalize_device("cuda") == torch.device("cuda:0")
-    assert _canonicalize_device("cuda:0") == torch.device("cuda:0")
+    assert canonicalize_device("cuda") == torch.device("cuda:0")
+    assert canonicalize_device("cuda:0") == torch.device("cuda:0")
 
 
 def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:

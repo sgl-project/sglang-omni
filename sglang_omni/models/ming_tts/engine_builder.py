@@ -13,7 +13,7 @@ from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph
 logger = logging.getLogger(__name__)
 
 
-def _is_truthy(value: Any) -> bool:
+def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -65,7 +65,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
 
-        self.config = ming_stages._load_ming_tts_config(checkpoint_dir)
+        self.config = ming_stages.load_ming_tts_config(checkpoint_dir)
         if self.tp_size > 1:
             llm_config = self.config.llm_config
             hidden_size = int(llm_config.hidden_size)
@@ -97,7 +97,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             )
         context_length = int(self.requested_context_length or 0)
         if context_length <= 0:
-            context_length = ming_stages._resolve_context_length(self.config)
+            context_length = ming_stages.resolve_context_length(self.config)
         self.context_length = int(context_length)
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
@@ -117,7 +117,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         overrides.pop("context_length", None)
         overrides["tp_size"] = self.tp_size
 
-        if not _is_truthy(overrides["disable_overlap_schedule"]):
+        if not is_truthy(overrides["disable_overlap_schedule"]):
             raise ValueError(
                 "Ming-Omni-TTS does not currently support SGLang overlap "
                 "scheduling; set disable_overlap_schedule=true because the "
@@ -125,7 +125,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
             )
         overrides["disable_overlap_schedule"] = True
 
-        if not _is_truthy(overrides["disable_radix_cache"]):
+        if not is_truthy(overrides["disable_radix_cache"]):
             raise ValueError(
                 "Ming-Omni-TTS requires disable_radix_cache=true because "
                 "prefix/radix cache is not currently supported"
@@ -141,7 +141,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
                 "continuous state does not have chunk rollback semantics"
             )
         overrides["chunked_prefill_size"] = 0
-        if _is_truthy(overrides.get("enable_torch_compile", False)):
+        if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Ming-Omni-TTS torch.compile is not currently supported")
 
     def infra_kwargs(self) -> dict[str, Any]:

@@ -143,7 +143,7 @@ def resolve_stage_factory_arg_defaults(
 
     defaults: dict[str, Any] = {"model_path": global_cfg.model_path}
     if gpu_id is None:
-        gpu_id = _resolve_primary_gpu_id(stage_cfg, global_cfg)
+        gpu_id = resolve_primary_gpu_id(stage_cfg, global_cfg)
     defaults["gpu_id"] = gpu_id
     if stage_cfg.gpu_memory_fraction is not None:
         defaults["total_gpu_memory_fraction"] = stage_cfg.gpu_memory_fraction
@@ -232,7 +232,7 @@ def resolve_stage_factory_args(
     )
 
 
-def _resolve_primary_gpu_id(
+def resolve_primary_gpu_id(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,
 ) -> int | None:

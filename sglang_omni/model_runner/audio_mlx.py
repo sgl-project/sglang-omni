@@ -13,7 +13,7 @@ class AudioMlxModelRunner:
     model_name = "Audio ASR"
 
     @classmethod
-    def _audio_item(cls, req: Any) -> Any:
+    def audio_item(cls, req: Any) -> Any:
         mm_inputs = req.multimodal_inputs
         if mm_inputs is None:
             raise ValueError(f"{cls.model_name} MLX prefill requires multimodal inputs")
@@ -25,15 +25,15 @@ class AudioMlxModelRunner:
         return mm_inputs.mm_items[0]
 
     @staticmethod
-    def _to_numpy(tensor: Any) -> Any:
+    def to_numpy(tensor: Any) -> Any:
         tensor = tensor.detach().cpu()
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.float()
         return tensor.numpy()
 
     @classmethod
-    def _normalize_audio_token_ids(cls, req: Any, token_ids: list[int]) -> list[int]:
-        item = cls._audio_item(req)
+    def normalize_audio_token_ids(cls, req: Any, token_ids: list[int]) -> list[int]:
+        item = cls.audio_item(req)
         mm_inputs = req.multimodal_inputs
         if mm_inputs.audio_token_id is None or item.pad_value is None:
             raise ValueError(
@@ -46,16 +46,16 @@ class AudioMlxModelRunner:
             for token_id in token_ids
         ]
 
-    def _audio_prefill_inputs(
+    def audio_prefill_inputs(
         self, req: Any, token_ids: list[int]
     ) -> tuple[mx.array, mx.array]:
-        item = self._audio_item(req)
+        item = self.audio_item(req)
         if item.feature is None or item.feature_attention_mask is None:
             raise ValueError(
                 f"{self.model_name} MLX prefill requires audio features and mask"
             )
 
-        normalized_ids = self._normalize_audio_token_ids(req, token_ids)
+        normalized_ids = self.normalize_audio_token_ids(req, token_ids)
         audio_token_id = int(req.multimodal_inputs.audio_token_id)
         audio_positions = [
             index
@@ -71,12 +71,12 @@ class AudioMlxModelRunner:
                 f"{self.model_name} MLX audio placeholders must be contiguous"
             )
         input_ids = mx.array([normalized_ids], dtype=mx.int32)
-        input_features = mx.array(self._to_numpy(item.feature))
-        feature_attention_mask = mx.array(self._to_numpy(item.feature_attention_mask))
+        input_features = mx.array(self.to_numpy(item.feature))
+        feature_attention_mask = mx.array(self.to_numpy(item.feature_attention_mask))
         audio_features = self.model.get_audio_features(
             input_features, feature_attention_mask
         )
-        input_embeddings = self.model._build_inputs_embeds(
+        input_embeddings = self.model.build_inputs_embeds(
             input_ids,
             audio_features,
             audio_start=audio_start,
@@ -116,9 +116,9 @@ class AudioMlxModelRunner:
                 f"{self.model_name} MLX audio prefill supports greedy decoding only"
             )
 
-        _input_ids, input_embeddings = self._audio_prefill_inputs(req, new_token_ids)
+        _input_ids, input_embeddings = self.audio_prefill_inputs(req, new_token_ids)
         cache = self._acquire_cache()
-        logits = self.model._forward_last_logits(input_embeddings, cache=cache)
+        logits = self.model.forward_last_logits(input_embeddings, cache=cache)
         # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
         # needs_logits is always true; retain the argument for the SGLang API.
         del needs_logits
@@ -129,7 +129,7 @@ class AudioMlxModelRunner:
             req_id=req_id,
             # Note (yexiaodong): Later decode bookkeeping requires real model
             # token IDs instead of Omni's out-of-vocabulary audio placeholder.
-            full_token_ids=self._normalize_audio_token_ids(req, full_token_ids),
+            full_token_ids=self.normalize_audio_token_ids(req, full_token_ids),
             req_pool_idx=req_pool_idx,
             synced_offset=0,
             lazy_logprobs=None,

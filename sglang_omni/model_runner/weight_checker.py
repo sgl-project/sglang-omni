@@ -50,20 +50,20 @@ class StrictWeightChecker:
         )
 
     def snapshot(self) -> dict[str, Any]:
-        self._snapshot = self._digest_model()
-        return self._summary(self._snapshot, action="snapshot")
+        self._snapshot = self.digest_model()
+        return self.summary(self._snapshot, action="snapshot")
 
     def reset_tensors(self) -> dict[str, Any]:
-        self._snapshot = self._digest_model()
-        return self._summary(self._snapshot, action="reset_tensors")
+        self._snapshot = self.digest_model()
+        return self.summary(self._snapshot, action="reset_tensors")
 
     def checksum(self) -> dict[str, Any]:
-        return self._summary(self._digest_model(), action="checksum")
+        return self.summary(self.digest_model(), action="checksum")
 
     def compare(self) -> dict[str, Any]:
         if self._snapshot is None:
             raise RuntimeError("weights_checker compare requires snapshot first")
-        current = self._digest_model()
+        current = self.digest_model()
         missing = sorted(set(self._snapshot) - set(current))
         unexpected = sorted(set(current) - set(self._snapshot))
         changed = [
@@ -73,7 +73,7 @@ class StrictWeightChecker:
             or self._snapshot[name].shape != current[name].shape
             or self._snapshot[name].dtype != current[name].dtype
         ]
-        summary = self._summary(current, action="compare")
+        summary = self.summary(current, action="compare")
         summary.update(
             {
                 "matched": not missing and not unexpected and not changed,
@@ -84,7 +84,7 @@ class StrictWeightChecker:
         )
         return summary
 
-    def _digest_model(self) -> dict[str, TensorDigest]:
+    def digest_model(self) -> dict[str, TensorDigest]:
         model = getattr(self._model_runner, "model", None)
         if model is None:
             raise RuntimeError("model_runner has no model for weights_checker")
@@ -96,8 +96,8 @@ class StrictWeightChecker:
         )
         t0 = time.time()
         digests: dict[str, TensorDigest] = {}
-        for name, tensor in self._iter_named_tensors(model):
-            digests[name] = _digest_tensor(name, tensor)
+        for name, tensor in self.iter_named_tensors(model):
+            digests[name] = digest_tensor(name, tensor)
         logger.warning(
             "weights_checker: digest complete; %d tensors in %.1fs",
             len(digests),
@@ -106,7 +106,7 @@ class StrictWeightChecker:
         return digests
 
     @staticmethod
-    def _iter_named_tensors(model: Any):
+    def iter_named_tensors(model: Any):
         seen: set[int] = set()
         named_parameters = getattr(model, "named_parameters", None)
         if callable(named_parameters):
@@ -127,14 +127,14 @@ class StrictWeightChecker:
                 yield name, tensor
 
     @staticmethod
-    def _summary(
+    def summary(
         digests: dict[str, TensorDigest],
         *,
         action: str,
     ) -> dict[str, Any]:
         started = time.time()
         tensor_sha = {name: digest.sha256 for name, digest in digests.items()}
-        overall = _aggregate_checksum(tensor_sha)
+        overall = aggregate_checksum(tensor_sha)
         return {
             "action": action,
             "tensor_count": len(digests),
@@ -147,7 +147,7 @@ class StrictWeightChecker:
         }
 
 
-def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
+def digest_tensor(name: str, tensor: Any) -> TensorDigest:
     detached = tensor.detach() if hasattr(tensor, "detach") else tensor
     contiguous = detached.contiguous() if hasattr(detached, "contiguous") else detached
     cpu = contiguous.cpu() if hasattr(contiguous, "cpu") else contiguous
@@ -157,11 +157,11 @@ def _digest_tensor(name: str, tensor: Any) -> TensorDigest:
     h.update(name.encode())
     h.update(dtype.encode())
     h.update(str(shape).encode())
-    h.update(_tensor_bytes(cpu))
+    h.update(tensor_bytes(cpu))
     return TensorDigest(name=name, shape=shape, dtype=dtype, sha256=h.hexdigest())
 
 
-def _tensor_bytes(tensor: Any) -> bytes:
+def tensor_bytes(tensor: Any) -> bytes:
     numpy = getattr(tensor, "numpy", None)
     if callable(numpy):
         try:
@@ -187,7 +187,7 @@ def _tensor_bytes(tensor: Any) -> bytes:
     )
 
 
-def _aggregate_checksum(checksums: dict[str, str]) -> str:
+def aggregate_checksum(checksums: dict[str, str]) -> str:
     h = hashlib.sha256()
     for name in sorted(checksums):
         h.update(name.encode())

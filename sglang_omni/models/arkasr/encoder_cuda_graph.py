@@ -23,20 +23,20 @@ _PRECAPTURE_MEL_FRAMES = 1024
 
 
 @dataclass
-class _CapturedGraph:
+class CapturedGraph:
     graph: torch.cuda.CUDAGraph
     static_mel: torch.Tensor
     static_ilens: torch.Tensor
     static_out: torch.Tensor
 
 
-def _t_step(merge_factor: int) -> int:
+def t_step(merge_factor: int) -> int:
     align = 2 * max(merge_factor, 1)
     step = max(_T_BUCKET_STEP, align)
     return (step // align) * align
 
 
-def _batch_buckets(max_batch: int) -> tuple[int, ...]:
+def batch_buckets(max_batch: int) -> tuple[int, ...]:
     """Powers of two up to max_batch, then max_batch itself."""
     limit = max(max_batch, 1)
     buckets: list[int] = []
@@ -48,14 +48,14 @@ def _batch_buckets(max_batch: int) -> tuple[int, ...]:
     return tuple(buckets)
 
 
-def _t_buckets_upto(
+def t_buckets_upto(
     max_t: int,
     *,
     merge_factor: int,
     max_mel_frames: int | None = None,
 ) -> tuple[int, ...]:
     """Inclusive T buckets from the step size up to max_t."""
-    step = _t_step(merge_factor)
+    step = t_step(merge_factor)
     limit = max_t
     if max_mel_frames is not None:
         limit = min(limit, max_mel_frames)
@@ -67,7 +67,7 @@ def _t_buckets_upto(
     return tuple(buckets)
 
 
-def _fit_bucket(value: int, buckets: tuple[int, ...]) -> int | None:
+def fit_bucket(value: int, buckets: tuple[int, ...]) -> int | None:
     """Smallest captured bucket that fits value, or None."""
     if value < 1:
         return None
@@ -98,7 +98,7 @@ class ArkasrEncoderCudaGraphRunner:
         self._device = reference.device
         self._dtype = reference.dtype
         self._max_batch = max(max_batch_size, 1)
-        self._batch_buckets = _batch_buckets(self._max_batch)
+        self._batch_buckets = batch_buckets(self._max_batch)
         self._max_mel_frames = (
             max(max_mel_frames, 1) if max_mel_frames is not None else None
         )
@@ -108,7 +108,7 @@ class ArkasrEncoderCudaGraphRunner:
         )
         self._t_buckets: tuple[int, ...] = ()
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._graphs: dict[tuple[int, int], _CapturedGraph] = {}
+        self._graphs: dict[tuple[int, int], CapturedGraph] = {}
         self._failed: set[tuple[int, int]] = set()
         self._pool = None
         self._logged_replay_buckets: set[tuple[int, int]] = set()
@@ -124,21 +124,21 @@ class ArkasrEncoderCudaGraphRunner:
         """Return captured (batch, T) buckets in ascending order."""
         return tuple(sorted(self._graphs))
 
-    def _mel_mask(self, ilens: torch.Tensor, t_bucket: int) -> torch.Tensor:
+    def mel_mask(self, ilens: torch.Tensor, t_bucket: int) -> torch.Tensor:
         frame_index = torch.arange(t_bucket, device=self._device).unsqueeze(0)
         return frame_index < ilens.unsqueeze(1)
 
-    def _forward(self, mel: torch.Tensor, ilens: torch.Tensor) -> torch.Tensor:
-        mask = self._mel_mask(ilens, mel.shape[-1])
+    def forward(self, mel: torch.Tensor, ilens: torch.Tensor) -> torch.Tensor:
+        mask = self.mel_mask(ilens, mel.shape[-1])
         return self._audio_encoder(mel, attention_mask=mask)
 
-    def _enough_free_vram(self) -> tuple[bool, int]:
+    def enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _capture(
+    def capture(
         self, batch_bucket: int, t_bucket: int, num_mel_bins: int
-    ) -> _CapturedGraph:
+    ) -> CapturedGraph:
         static_mel = torch.zeros(
             batch_bucket,
             num_mel_bins,
@@ -149,7 +149,7 @@ class ArkasrEncoderCudaGraphRunner:
         static_ilens = torch.ones(batch_bucket, device=self._device, dtype=torch.long)
 
         def _masked_forward() -> torch.Tensor:
-            return self._forward(static_mel, static_ilens)
+            return self.forward(static_mel, static_ilens)
 
         stream = torch.cuda.Stream(device=self._device)
         stream.wait_stream(torch.cuda.current_stream(self._device))
@@ -177,16 +177,16 @@ class ArkasrEncoderCudaGraphRunner:
             tuple(static_out.shape),
             len(self._graphs) + 1,
         )
-        return _CapturedGraph(graph, static_mel, static_ilens, static_out)
+        return CapturedGraph(graph, static_mel, static_ilens, static_out)
 
-    def _capture_bucket(
+    def capture_bucket(
         self, batch_bucket: int, t_bucket: int, num_mel_bins: int
-    ) -> _CapturedGraph | None:
+    ) -> CapturedGraph | None:
         """Capture one startup bucket. Caller holds _lock."""
         key = (batch_bucket, t_bucket)
         if key in self._failed or key in self._graphs:
             return self._graphs.get(key)
-        enough, free = self._enough_free_vram()
+        enough, free = self.enough_free_vram()
         if not enough:
             logger.warning(
                 "ARK-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
@@ -200,7 +200,7 @@ class ArkasrEncoderCudaGraphRunner:
             return None
         try:
             with torch.cuda.device(self._device):
-                entry = self._capture(batch_bucket, t_bucket, num_mel_bins)
+                entry = self.capture(batch_bucket, t_bucket, num_mel_bins)
         except Exception as exc:
             logger.warning(
                 "ARK-ASR encoder CUDA graph capture failed for "
@@ -231,7 +231,7 @@ class ArkasrEncoderCudaGraphRunner:
         t_limit = (
             max_mel_frames if max_mel_frames is not None else _PRECAPTURE_MEL_FRAMES
         )
-        t_buckets = _t_buckets_upto(
+        t_buckets = t_buckets_upto(
             t_limit,
             merge_factor=self._merge_factor,
             max_mel_frames=self._max_mel_frames,
@@ -252,7 +252,7 @@ class ArkasrEncoderCudaGraphRunner:
         with self._lock:
             self._t_buckets = t_buckets
             for batch_bucket, t_bucket in keys:
-                self._capture_bucket(batch_bucket, t_bucket, num_mel_bins)
+                self.capture_bucket(batch_bucket, t_bucket, num_mel_bins)
         logger.info(
             "ARK-ASR encoder CUDA graph precapture done (%d cached, %d failed)",
             len(self._graphs),
@@ -270,8 +270,8 @@ class ArkasrEncoderCudaGraphRunner:
         if self._device.type != "cuda" or mel.ndim != 3:
             return None
         b, num_mel_bins, t = mel.shape
-        batch_bucket = _fit_bucket(b, self._batch_buckets)
-        t_bucket = _fit_bucket(t, self._t_buckets)
+        batch_bucket = fit_bucket(b, self._batch_buckets)
+        t_bucket = fit_bucket(t, self._t_buckets)
         if batch_bucket is None or t_bucket is None:
             return None
         key = (batch_bucket, t_bucket)

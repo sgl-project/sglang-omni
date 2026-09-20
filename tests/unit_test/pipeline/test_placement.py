@@ -148,7 +148,7 @@ def test_placement_summary_includes_kv_cache_bytes(monkeypatch) -> None:
         ),
     )
 
-    summary = launcher._placement_log_summary(
+    summary = launcher.placement_log_summary(
         plan,
         process_plan,
         config,

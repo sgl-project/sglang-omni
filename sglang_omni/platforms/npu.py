@@ -30,6 +30,9 @@ class NPUOmniPlatform(OmniPlatform):
     def enable_code2wav_graph(self):
         return False
 
+    def enable_tts_predictor_graph(self) -> bool:
+        return False
+
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _CapturedGraph:
+class CapturedGraph:
     graph: torch.cuda.CUDAGraph
     input_features: torch.Tensor
     output: torch.Tensor
@@ -44,7 +44,7 @@ class WhisperEncoderCudaGraphRunner:
         self._dtype = parameter.dtype
         self._min_free_bytes = int(float(min_free_gb) * (1024**3))
         self._warmup_iters = max(int(warmup_iters), 1)
-        self._graphs: dict[int, _CapturedGraph] = {}
+        self._graphs: dict[int, CapturedGraph] = {}
         self._logged_replay_buckets: set[int] = set()
 
     @property
@@ -52,11 +52,11 @@ class WhisperEncoderCudaGraphRunner:
         """Return the captured request-batch buckets in ascending order."""
         return tuple(sorted(self._graphs))
 
-    def _enough_free_vram(self) -> tuple[bool, int]:
+    def enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _warmup(self, static_features: torch.Tensor) -> None:
+    def warmup(self, static_features: torch.Tensor) -> None:
         stream = torch.cuda.Stream(device=self._device)
         stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(stream):
@@ -65,7 +65,7 @@ class WhisperEncoderCudaGraphRunner:
         torch.cuda.current_stream(self._device).wait_stream(stream)
         torch.cuda.synchronize(self._device)
 
-    def _capture_bucket(self, batch_size: int) -> None:
+    def capture_bucket(self, batch_size: int) -> None:
         static_features = torch.zeros(
             batch_size,
             self._num_mel_bins,
@@ -73,11 +73,11 @@ class WhisperEncoderCudaGraphRunner:
             device=self._device,
             dtype=self._dtype,
         )
-        self._warmup(static_features)
+        self.warmup(static_features)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, capture_error_mode="thread_local"):
             static_output = self._encoder(static_features)
-        self._graphs[batch_size] = _CapturedGraph(
+        self._graphs[batch_size] = CapturedGraph(
             graph=graph,
             input_features=static_features,
             output=static_output,
@@ -99,7 +99,7 @@ class WhisperEncoderCudaGraphRunner:
             for batch_size in reversed(buckets):
                 if batch_size in self._graphs:
                     continue
-                enough, free = self._enough_free_vram()
+                enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
                         "Whisper encoder CUDA graph skipped batch=%d: free VRAM "
@@ -110,7 +110,7 @@ class WhisperEncoderCudaGraphRunner:
                     )
                     continue
                 try:
-                    self._capture_bucket(batch_size)
+                    self.capture_bucket(batch_size)
                 except Exception as exc:
                     logger.warning(
                         "Whisper encoder CUDA graph capture failed for batch=%d: %s; "

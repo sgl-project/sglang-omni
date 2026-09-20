@@ -29,13 +29,13 @@ _DEFAULT_ONNX_CANDIDATES = (
 )
 
 
-def _trt_logger():
+def trt_logger():
     import tensorrt as trt
 
     return trt.Logger(trt.Logger.WARNING)
 
 
-def _is_fp16_onnx(onnx_path: str) -> bool:
+def is_fp16_onnx(onnx_path: str) -> bool:
     name = os.path.basename(onnx_path).lower()
     return "fp16" in name or "autocast" in name
 
@@ -51,7 +51,7 @@ def resolve_flow_estimator_onnx(checkpoint_dir: str) -> str:
     )
 
 
-def _resolve_plan_path(onnx_path: str) -> str:
+def resolve_plan_path(onnx_path: str) -> str:
     cache_dir = os.environ.get("COSYVOICE3_TRT_CACHE") or os.path.join(
         os.path.expanduser("~"), ".cache", "sglang-omni", "cosyvoice3_trt"
     )
@@ -72,7 +72,7 @@ def _resolve_plan_path(onnx_path: str) -> str:
     return os.path.join(cache_dir, f"flow_estimator_{digest}.plan")
 
 
-def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
+def dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
     # note (guozhihao-224): official ONNX freezes CFG batch=2 and static t/spks;
     # only profile the time dim on x/mask/mu/cond.
     return {
@@ -83,7 +83,7 @@ def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
     }
 
 
-def _try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
+def try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
     """Enable weak-typed FP16 tactics when TensorRT still exposes the flag.
 
     Note (chenyang):
@@ -99,7 +99,7 @@ def _try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
     return True
 
 
-def _cfg_pair_shapes(frames: int) -> dict[str, tuple[int, ...]]:
+def cfg_pair_shapes(frames: int) -> dict[str, tuple[int, ...]]:
     return {
         "x": (_CFG_BATCH, _MEL_DIM, frames),
         "mask": (_CFG_BATCH, 1, frames),
@@ -110,7 +110,7 @@ def _cfg_pair_shapes(frames: int) -> dict[str, tuple[int, ...]]:
     }
 
 
-def _require_cfg_pair_inputs(
+def require_cfg_pair_inputs(
     x: torch.Tensor,
     mask: torch.Tensor,
     mu: torch.Tensor,
@@ -118,7 +118,7 @@ def _require_cfg_pair_inputs(
     spks: torch.Tensor,
     cond: torch.Tensor,
 ) -> dict[str, tuple[int, ...]]:
-    shapes = _cfg_pair_shapes(int(x.shape[2]))
+    shapes = cfg_pair_shapes(int(x.shape[2]))
     for (name, want), tensor in zip(
         shapes.items(), (x, mask, mu, t, spks, cond), strict=True
     ):
@@ -131,7 +131,7 @@ def _require_cfg_pair_inputs(
     return shapes
 
 
-def _convert_onnx_to_trt(
+def convert_onnx_to_trt(
     onnx_path: str,
     plan_path: str,
     *,
@@ -160,15 +160,15 @@ def _convert_onnx_to_trt(
         max_time,
         precision,
     )
-    trt_logger = _trt_logger()
-    builder = trt.Builder(trt_logger)
+    engine_logger = trt_logger()
+    builder = trt.Builder(engine_logger)
     if strongly_typed:
         network = builder.create_network(
             1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
         )
     else:
         network = builder.create_network(0)
-    parser = trt.OnnxParser(network, trt_logger)
+    parser = trt.OnnxParser(network, engine_logger)
     with open(onnx_path, "rb") as f:
         if not parser.parse(f.read()):
             errs = "; ".join(str(parser.get_error(i)) for i in range(parser.num_errors))
@@ -177,12 +177,12 @@ def _convert_onnx_to_trt(
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 33)
     if not strongly_typed:
-        _try_enable_fp16_tactics(config, trt)
+        try_enable_fp16_tactics(config, trt)
 
     profile = builder.create_optimization_profile()
-    mins = _dynamic_shapes(min_time)
-    opts = _dynamic_shapes(opt_time)
-    maxs = _dynamic_shapes(max_time)
+    mins = dynamic_shapes(min_time)
+    opts = dynamic_shapes(opt_time)
+    maxs = dynamic_shapes(max_time)
     for name in mins:
         profile.set_shape(name, mins[name], opts[name], maxs[name])
     config.add_optimization_profile(profile)
@@ -199,7 +199,7 @@ def _convert_onnx_to_trt(
     logger.info("Wrote Flow-estimator TensorRT engine to %s", plan_path)
 
 
-def _canonicalize_device(device: str | torch.device) -> torch.device:
+def canonicalize_device(device: str | torch.device) -> torch.device:
     dev = torch.device(device)
     if dev.type == "cuda" and dev.index is None:
         return torch.device("cuda", torch.cuda.current_device())
@@ -218,7 +218,7 @@ class FlowEstimatorTRT:
         self.trt_engine = engine
         self.io_dtype = io_dtype
         self.max_batch = _CFG_BATCH
-        self.device = _canonicalize_device(device)
+        self.device = canonicalize_device(device)
         self._pool: queue.Queue = queue.Queue(maxsize=trt_concurrent)
         for _ in range(trt_concurrent):
             ctx = engine.create_execution_context()
@@ -249,7 +249,7 @@ class FlowEstimatorTRT:
         return execute_flow_estimator(self, x, mask, mu, t, spks, cond)
 
 
-def _enqueue_once(
+def enqueue_once(
     estimator: FlowEstimatorTRT,
     x: torch.Tensor,
     mask: torch.Tensor,
@@ -258,12 +258,12 @@ def _enqueue_once(
     spks: torch.Tensor,
     cond: torch.Tensor,
 ) -> torch.Tensor:
-    if _canonicalize_device(x.device) != estimator.device:
+    if canonicalize_device(x.device) != estimator.device:
         raise RuntimeError(
             "Flow-estimator TensorRT device is "
             f"{estimator.device}, got tensors on {x.device}"
         )
-    shapes = _require_cfg_pair_inputs(x, mask, mu, t, spks, cond)
+    shapes = require_cfg_pair_inputs(x, mask, mu, t, spks, cond)
     frames = int(x.shape[2])
     if frames < _PROFILE_MIN_TIME or frames > _PROFILE_MAX_TIME:
         raise ValueError(
@@ -300,7 +300,7 @@ def _enqueue_once(
         estimator.release_estimator(context, stream)
 
 
-def _run_estimator(
+def run_estimator(
     estimator: Any,
     x: torch.Tensor,
     mask: torch.Tensor,
@@ -312,11 +312,11 @@ def _run_estimator(
     # note (guozhihao-224): FlowEstimatorTRT.execute calls execute_flow_estimator;
     # enqueue here to avoid recursion. Test doubles implement execute() instead.
     if isinstance(estimator, FlowEstimatorTRT):
-        return _enqueue_once(estimator, x, mask, mu, t, spks, cond)
+        return enqueue_once(estimator, x, mask, mu, t, spks, cond)
     return estimator.execute(x, mask, mu, t, spks, cond)
 
 
-def _take_cfg_pairs(
+def take_cfg_pairs(
     tensors: tuple[torch.Tensor, ...],
     start: int,
     end: int,
@@ -349,7 +349,7 @@ def execute_flow_estimator(
         t = t.expand(cfg_batch).contiguous()
     max_batch = int(estimator.max_batch)
     if cfg_batch <= max_batch:
-        return _run_estimator(estimator, x, mask, mu, t, spks, cond)
+        return run_estimator(estimator, x, mask, mu, t, spks, cond)
 
     # note (guozhihao-224): packed CFG is [cond_0..B, uncond_0..B]; chunk by
     # request pair (slicing the first N rows mixes two conditionals).
@@ -358,10 +358,8 @@ def execute_flow_estimator(
     out = torch.empty_like(x)
     for start in range(0, request_batch, max_requests):
         end = min(start + max_requests, request_batch)
-        chunks = _take_cfg_pairs(
-            (x, mask, mu, t, spks, cond), start, end, request_batch
-        )
-        y = _run_estimator(estimator, *chunks)
+        chunks = take_cfg_pairs((x, mask, mu, t, spks, cond), start, end, request_batch)
+        y = run_estimator(estimator, *chunks)
         n = end - start
         out[start:end] = y[:n]
         out[request_batch + start : request_batch + end] = y[n:]
@@ -457,13 +455,13 @@ def build_flow_estimator_trt(
             "Install NVIDIA TensorRT in the serving environment."
         ) from exc
 
-    strongly_typed = _is_fp16_onnx(onnx_path)
+    strongly_typed = is_fp16_onnx(onnx_path)
     io_dtype = torch.float16 if strongly_typed else torch.float32
-    plan_path = _resolve_plan_path(onnx_path)
+    plan_path = resolve_plan_path(onnx_path)
     if not os.path.exists(plan_path) or os.path.getsize(plan_path) == 0:
-        _convert_onnx_to_trt(onnx_path, plan_path, strongly_typed=strongly_typed)
+        convert_onnx_to_trt(onnx_path, plan_path, strongly_typed=strongly_typed)
 
-    runtime = trt.Runtime(_trt_logger())
+    runtime = trt.Runtime(trt_logger())
     with open(plan_path, "rb") as f:
         engine = runtime.deserialize_cuda_engine(f.read())
     if engine is None:

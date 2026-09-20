@@ -14,12 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _CacheEntry:
+class CacheEntry:
     data: Any
     size_bytes: int
 
 
-def _to_pinned_host(value: torch.Tensor) -> torch.Tensor:
+def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
     if value.device.type == "cpu" and value.is_pinned():
         return value
     host = torch.empty(value.shape, dtype=value.dtype, device="cpu", pin_memory=True)
@@ -27,7 +27,7 @@ def _to_pinned_host(value: torch.Tensor) -> torch.Tensor:
     return host
 
 
-def _detach_value(
+def detach_value(
     value: Any, *, device: torch.device | None, pin_memory: bool = False
 ) -> Any:
     if isinstance(value, torch.Tensor):
@@ -35,7 +35,7 @@ def _detach_value(
         if device is not None:
             if pin_memory and device.type == "cpu":
                 try:
-                    return _to_pinned_host(value)
+                    return to_pinned_host(value)
                 except RuntimeError as exc:
                     logger.warning(
                         "StageOutputCache pinned host copy failed (%s); "
@@ -46,25 +46,25 @@ def _detach_value(
         return value
     if isinstance(value, dict):
         return {
-            key: _detach_value(item, device=device, pin_memory=pin_memory)
+            key: detach_value(item, device=device, pin_memory=pin_memory)
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return type(value)(
-            _detach_value(item, device=device, pin_memory=pin_memory) for item in value
+            detach_value(item, device=device, pin_memory=pin_memory) for item in value
         )
     return value
 
 
-def _value_size_bytes(value: Any) -> int:
+def value_size_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
     if isinstance(value, (bytes, bytearray)):
         return len(value)
     if isinstance(value, dict):
-        return sum(_value_size_bytes(item) for item in value.values())
+        return sum(value_size_bytes(item) for item in value.values())
     if isinstance(value, (list, tuple)):
-        return sum(_value_size_bytes(item) for item in value)
+        return sum(value_size_bytes(item) for item in value)
     return 0
 
 
@@ -87,7 +87,7 @@ class StageOutputCache:
             cache_device = torch.device(cache_device)
         if pin_memory and (cache_device is None or cache_device.type != "cpu"):
             raise ValueError("pin_memory requires cache_device='cpu'")
-        self._cache: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.max_size = max_size
         self.max_bytes = max_bytes
         self.cache_device = cache_device
@@ -96,7 +96,7 @@ class StageOutputCache:
         self.pin_memory = bool(pin_memory) and torch.cuda.is_available()
         self.current_bytes = 0
         self.eviction_count = 0
-        self._size_fn = size_fn or _value_size_bytes
+        self._size_fn = size_fn or value_size_bytes
         self._lock = threading.Lock()
 
     def get(self, key: str | None) -> Any | None:
@@ -121,15 +121,15 @@ class StageOutputCache:
                 self.current_bytes -= old_entry.size_bytes
             if self.max_bytes is not None and size_bytes > self.max_bytes:
                 return
-            self._cache[key] = _CacheEntry(
-                data=_detach_value(
+            self._cache[key] = CacheEntry(
+                data=detach_value(
                     data, device=self.cache_device, pin_memory=self.pin_memory
                 ),
                 size_bytes=size_bytes,
             )
             self.current_bytes += size_bytes
             self._cache.move_to_end(key)
-            self._evict_over_budget()
+            self.evict_over_budget()
 
     def clear(self) -> None:
         with self._lock:
@@ -170,7 +170,7 @@ class StageOutputCache:
         with self._lock:
             return len(self._cache)
 
-    def _evict_over_budget(self) -> None:
+    def evict_over_budget(self) -> None:
         while self.max_size is not None and len(self._cache) > self.max_size:
             _, entry = self._cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes

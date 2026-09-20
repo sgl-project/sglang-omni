@@ -10,7 +10,7 @@ from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_serving
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.weight_checker import StrictWeightChecker, _tensor_bytes
+from sglang_omni.model_runner.weight_checker import StrictWeightChecker, tensor_bytes
 
 
 def test_strict_weight_checker_snapshot_compare_and_checksum() -> None:
@@ -55,7 +55,7 @@ def test_strict_weight_checker_checksums_bfloat16_tensor_bytes() -> None:
 def test_tensor_bytes_supports_bfloat16_fallback_path() -> None:
     tensor = torch.tensor([1.0, -2.0, 3.5], dtype=torch.bfloat16)
 
-    raw = _tensor_bytes(tensor)
+    raw = tensor_bytes(tensor)
 
     assert isinstance(raw, bytes)
     assert len(raw) == tensor.numel() * tensor.element_size()
@@ -67,7 +67,7 @@ def test_tensor_bytes_supports_float8_fallback_path() -> None:
         pytest.skip("torch does not expose float8_e4m3fn")
     tensor = torch.tensor([1.0, -2.0, 0.5], dtype=dtype)
 
-    raw = _tensor_bytes(tensor)
+    raw = tensor_bytes(tensor)
 
     assert isinstance(raw, bytes)
     assert len(raw) == tensor.numel() * tensor.element_size()

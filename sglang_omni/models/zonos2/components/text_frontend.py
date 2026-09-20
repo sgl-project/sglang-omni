@@ -157,7 +157,7 @@ def configure_tts_norm_cache_root(path: str | None) -> None:
     _TTS_NORM_CACHE_ROOT = path or None
 
 
-def _default_cache_root() -> str:
+def default_cache_root() -> str:
     return _TTS_NORM_CACHE_ROOT or os.path.expanduser("~/.cache/zonos2-tts-norm")
 
 
@@ -169,18 +169,18 @@ class TTSTextNormalizer:
     """
 
     def __init__(self, cache_root: str | None = None):
-        self.cache_root = cache_root or _default_cache_root()
+        self.cache_root = cache_root or default_cache_root()
         self._normalizers: dict[str, object] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._global_lock = threading.Lock()
 
-    def _lang_lock(self, lang: str) -> threading.Lock:
+    def lang_lock(self, lang: str) -> threading.Lock:
         with self._global_lock:
             if lang not in self._locks:
                 self._locks[lang] = threading.Lock()
             return self._locks[lang]
 
-    def _build(self, lang: str):
+    def build(self, lang: str):
         from nemo_text_processing.text_normalization.normalize import Normalizer
 
         input_case = "lower_cased" if lang in _LOWER_CASED_LANGS else "cased"
@@ -211,9 +211,9 @@ class TTSTextNormalizer:
         return normalizer
 
     def get(self, lang: str):
-        with self._lang_lock(lang):
+        with self.lang_lock(lang):
             if lang not in self._normalizers:
-                self._normalizers[lang] = self._build(lang)
+                self._normalizers[lang] = self.build(lang)
             return self._normalizers[lang]
 
     def warmup(self, languages: list[str] | None = None) -> None:
@@ -239,7 +239,7 @@ class TTSTextNormalizer:
         use_moses = lang in _MOSES_POSTPROCESS_LANGS
         try:
             normalizer = self.get(lang)
-            with self._lang_lock(lang):
+            with self.lang_lock(lang):
                 result = normalizer.normalize(text_in, punct_post_process=use_moses)
         except Exception:  # noqa: BLE001
             logger.exception(
@@ -254,7 +254,7 @@ class TTSTextNormalizer:
         return result
 
 
-def _get_normalizer():
+def get_normalizer():
     """Lazily build the NeMo normalizer; ``None`` if its heavy deps are missing."""
     global _NORMALIZER
     if _NORMALIZER is not None:
@@ -287,7 +287,7 @@ def normalize_text(text: str, language: str | None) -> str:
         cached = _NORMALIZE_CACHE.get(key)
         if cached is not None:
             return cached
-    normalizer = _get_normalizer()
+    normalizer = get_normalizer()
     if normalizer is None:
         return text
     try:
@@ -339,11 +339,11 @@ def quality_token_id(feature_idx: int, bucket: int) -> int:
     )
 
 
-def _audio_pad_row(text_id: int) -> list[int]:
+def audio_pad_row(text_id: int) -> list[int]:
     return [AUDIO_PAD_ID] * N_CODEBOOKS + [int(text_id)]
 
 
-def _text_rows(
+def text_rows(
     tokens: list[int],
     *,
     speaking_rate_bucket: int | None = None,
@@ -351,13 +351,13 @@ def _text_rows(
 ) -> list[list[int]]:
     rows: list[list[int]] = []
     if speaking_rate_bucket is not None:
-        rows.append(_audio_pad_row(speaking_rate_token_id(speaking_rate_bucket)))
+        rows.append(audio_pad_row(speaking_rate_token_id(speaking_rate_bucket)))
     if quality_buckets is not None:
         for feature_idx, bucket in enumerate(quality_buckets):
             if bucket is None:
                 continue
-            rows.append(_audio_pad_row(quality_token_id(feature_idx, bucket)))
-    rows.extend(_audio_pad_row(token) for token in tokens)
+            rows.append(audio_pad_row(quality_token_id(feature_idx, bucket)))
+    rows.extend(audio_pad_row(token) for token in tokens)
     return rows
 
 
@@ -408,7 +408,7 @@ def build_prompt_rows(
     if normalize:
         text = normalize_text(text, language)
     tokens = text_to_byte_ids(text)
-    rows = _text_rows(
+    rows = text_rows(
         tokens,
         speaking_rate_bucket=speaking_rate_bucket,
         quality_buckets=quality_buckets,

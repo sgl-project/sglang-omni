@@ -16,7 +16,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_
 from sglang_omni.proto import StagePayload
 
 
-def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | None:
+def as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | None:
     if value is None:
         return None
     if isinstance(value, torch.Tensor):
@@ -27,7 +27,7 @@ def _as_tensor(value: Any, dtype: torch.dtype | None = None) -> torch.Tensor | N
         return None
 
 
-def _non_empty(tensor: torch.Tensor | None) -> bool:
+def non_empty(tensor: torch.Tensor | None) -> bool:
     return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
 
 
@@ -82,36 +82,36 @@ def build_thinker_inputs(
     )
 
     audio_embeds = (
-        _as_tensor(audio_out.get("audio_embeds"))
+        as_tensor(audio_out.get("audio_embeds"))
         if isinstance(audio_out, dict)
         else None
     )
     image_embeds = (
-        _as_tensor(image_out.get("image_embeds"))
+        as_tensor(image_out.get("image_embeds"))
         if isinstance(image_out, dict)
         else None
     )
     video_embeds = (
-        _as_tensor(image_out.get("video_embeds"))
+        as_tensor(image_out.get("video_embeds"))
         if isinstance(image_out, dict)
         else None
     )
 
     thinker_model_inputs: dict[str, Any] = {}
 
-    if _non_empty(audio_embeds):
+    if non_empty(audio_embeds):
         # Flatten: [B, T', H] -> [T', H] (remove batch dim for SGLang injection)
         if audio_embeds.dim() == 3:
             audio_embeds = audio_embeds.squeeze(0)
         thinker_model_inputs["audio_embeds"] = audio_embeds
 
-    if _non_empty(image_embeds):
+    if non_empty(image_embeds):
         # Flatten: [B, T', H] -> [T', H] if needed
         if image_embeds.dim() == 3:
             image_embeds = image_embeds.squeeze(0)
         thinker_model_inputs["image_embeds"] = image_embeds
 
-    if _non_empty(video_embeds):
+    if non_empty(video_embeds):
         if video_embeds.dim() == 3:
             video_embeds = video_embeds.squeeze(0)
         thinker_model_inputs["video_embeds"] = video_embeds

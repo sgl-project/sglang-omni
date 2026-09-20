@@ -63,10 +63,10 @@ class _Runner(MlxSchedulerModelRunner):
         self.finalized = []
 
     @staticmethod
-    def _mlx_stream_context():
+    def mlx_stream_context():
         return nullcontext()
 
-    def _finalize(
+    def finalize(
         self,
         batch_result,
         forward_batch,
@@ -196,7 +196,7 @@ def test_mlx_scheduler_stream_is_valid_on_its_execution_thread() -> None:
     observed = []
 
     def evaluate() -> None:
-        with runner._mlx_stream_context():
+        with runner.mlx_stream_context():
             result = source + 1
             mx.async_eval(result)
             mx.eval(result)

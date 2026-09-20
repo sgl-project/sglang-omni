@@ -28,7 +28,7 @@ _MLX_QUANTIZATION_PRESETS: dict[str, tuple[int, int]] = {
 }
 
 
-def _qwen2_args(config: dict[str, Any]) -> ModelArgs:
+def qwen2_args(config: dict[str, Any]) -> ModelArgs:
     """Build the fixed 0.5B Qwen2 shape used by Fun-CosyVoice3."""
     # Note (yexiaodong): The converted artifact has Flow/HiFT config at its
     # root, so validate the nested Qwen2 architecture before loading weights.
@@ -63,7 +63,7 @@ def _qwen2_args(config: dict[str, Any]) -> ModelArgs:
     )
 
 
-def _strip_qwen2_prefix(name: str) -> str:
+def strip_qwen2_prefix(name: str) -> str:
     name = name.removeprefix("qwen2.")
     return name.removeprefix("model.")
 
@@ -129,14 +129,14 @@ class CosyVoice3MlxModel(nn.Module):
         return self.forward_embeddings(embeddings, cache=cache)
 
 
-def _find_weight(weights: dict[str, mx.array], *names: str) -> mx.array:
+def find_weight(weights: dict[str, mx.array], *names: str) -> mx.array:
     for name in names:
         if name in weights:
             return weights[name]
     raise ValueError(f"Fun-CosyVoice3 MLX checkpoint is missing {names[0]!r}")
 
 
-def _load_converted_backbone(
+def load_converted_backbone(
     args: ModelArgs,
     config: dict[str, Any],
     weights: dict[str, mx.array],
@@ -163,7 +163,7 @@ def _load_converted_backbone(
             class_predicate=quantize_layers,
         )
     backbone_weights = {
-        _strip_qwen2_prefix(name): value
+        strip_qwen2_prefix(name): value
         for name, value in weights.items()
         if name.startswith("qwen2.") and not name.endswith("lm_head.weight")
     }
@@ -173,7 +173,7 @@ def _load_converted_backbone(
     return backbone
 
 
-def _quantize_loaded_backbone(
+def quantize_loaded_backbone(
     backbone: Qwen2Model,
     quantization: str | None,
 ) -> None:
@@ -202,7 +202,7 @@ def _quantize_loaded_backbone(
     )
 
 
-def _to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
+def to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
     import numpy as np
 
     # Note (yexiaodong): NumPy has no bfloat16 representation for this export.
@@ -213,7 +213,7 @@ def _to_mlx_float(tensor: Any, dtype: mx.Dtype) -> mx.array:
     return mx.array(np.asarray(tensor, dtype=np.float32)).astype(dtype)
 
 
-def _load_raw_backbone(
+def load_raw_backbone(
     checkpoint_root: Path,
     *,
     dtype: mx.Dtype,
@@ -229,11 +229,11 @@ def _load_raw_backbone(
         raise FileNotFoundError(f"Fun-CosyVoice3 checkpoint is missing {llm_path}")
 
     nested_config = json.loads((nested_dir / "config.json").read_text(encoding="utf-8"))
-    args = _qwen2_args({"llm": nested_config})
+    args = qwen2_args({"llm": nested_config})
     state = torch.load(llm_path, map_location="cpu", weights_only=True)
     backbone = Qwen2Model(args)
     backbone_weights = {
-        name.removeprefix("llm.model.model."): _to_mlx_float(value, dtype)
+        name.removeprefix("llm.model.model."): to_mlx_float(value, dtype)
         for name, value in state.items()
         if name.startswith("llm.model.model.")
     }
@@ -241,8 +241,8 @@ def _load_raw_backbone(
         raise ValueError("Fun-CosyVoice3 llm.pt has no fine-tuned Qwen2 weights")
     backbone.load_weights(list(backbone_weights.items()))
     try:
-        speech_embedding = _to_mlx_float(state["speech_embedding.weight"], dtype)
-        llm_decoder = _to_mlx_float(state["llm_decoder.weight"], dtype)
+        speech_embedding = to_mlx_float(state["speech_embedding.weight"], dtype)
+        llm_decoder = to_mlx_float(state["llm_decoder.weight"], dtype)
     except KeyError as exc:
         raise ValueError(
             "Fun-CosyVoice3 llm.pt is missing speech_embedding/llm_decoder weights"
@@ -264,14 +264,14 @@ def load_cosyvoice3_mlx_model(
     if weights_path.is_file() and config_path.is_file():
         config = json.loads(config_path.read_text(encoding="utf-8"))
         all_weights = mx.load(str(weights_path))
-        args = _qwen2_args(config)
-        backbone = _load_converted_backbone(args, config, all_weights)
-        speech_embedding = _find_weight(
+        args = qwen2_args(config)
+        backbone = load_converted_backbone(args, config, all_weights)
+        speech_embedding = find_weight(
             all_weights,
             "llm.speech_embedding.weight",
             "speech_embedding.weight",
         )
-        llm_decoder = _find_weight(
+        llm_decoder = find_weight(
             all_weights,
             "llm.llm_decoder.weight",
             "llm_decoder.weight",
@@ -282,18 +282,18 @@ def load_cosyvoice3_mlx_model(
         if quantization is not None and not isinstance(
             config.get("quantization"), dict
         ):
-            _quantize_loaded_backbone(backbone, quantization)
+            quantize_loaded_backbone(backbone, quantization)
         elif quantization is not None:
             logger.info(
                 "Fun-CosyVoice3 MLX artifact is already quantized; ignoring %s",
                 quantization,
             )
     else:
-        args, backbone, speech_embedding, llm_decoder = _load_raw_backbone(
+        args, backbone, speech_embedding, llm_decoder = load_raw_backbone(
             model_dir,
             dtype=dtype,
         )
-        _quantize_loaded_backbone(backbone, quantization)
+        quantize_loaded_backbone(backbone, quantization)
     if tuple(speech_embedding.shape) != (TOTAL_VOCAB_SIZE, args.hidden_size):
         raise ValueError(
             "unexpected Fun-CosyVoice3 speech embedding shape: "

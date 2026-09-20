@@ -56,7 +56,7 @@ def test_dense_write_skips_index_tensor(monkeypatch: Any) -> None:
 
     monkeypatch.setattr(talker_model_runner.torch, "tensor", _spy)
 
-    runner._write_feedback_buffers(requests)
+    runner.write_feedback_buffers(requests)
 
     assert calls == []
     assert torch.equal(model._feedback_mask, torch.ones(n, dtype=torch.bool))
@@ -77,7 +77,7 @@ def test_sparse_write_leaves_starved_row_unwritten() -> None:
         _req_wrap(_data(feedbacks[2], texts[2])),
     ]
 
-    runner._write_feedback_buffers(requests)
+    runner.write_feedback_buffers(requests)
 
     assert model._feedback_mask.tolist() == [True, False, True]
     assert torch.equal(model._feedback_buffer[0], feedbacks[0] + texts[0])

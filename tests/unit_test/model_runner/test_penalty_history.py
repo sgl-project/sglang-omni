@@ -73,7 +73,7 @@ def _forward(batch):
 
     runner = object.__new__(ModelRunner)
     runner._execution_bridge = SimpleNamespace(forward_context=forward_context)
-    with runner._execution_context(batch, isolate_sampling=True) as snapshot:
+    with runner.execution_context(batch, isolate_sampling=True) as snapshot:
         return snapshot
 
 

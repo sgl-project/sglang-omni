@@ -165,6 +165,7 @@ from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
 )
 from benchmarks.tasks.tts import (
+    ReferenceAudioField,
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
@@ -194,6 +195,7 @@ class OmniSeedttsBenchmarkConfig:
     lang: str = "en"
     speaker: str = "Ethan"
     voice_clone: bool = False
+    reference_audio_field: ReferenceAudioField = "audios"
     stream: bool = False
     output_dir: str = "results/omni_seedtts"
     max_samples: int | None = None
@@ -231,6 +233,7 @@ def _build_results_config(
         "base_url": base_url,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
+        "reference_audio_field": config.reference_audio_field,
         "stream": config.stream,
         "lang": config.lang,
         "speaker": config.speaker,
@@ -255,8 +258,9 @@ def make_send_fn(
     stream: bool,
     save_audio_dir: str,
     system_prompt: str | None = None,
+    reference_audio_field: ReferenceAudioField = "audios",
 ) -> SendFn:
-    """Return a SendFn that calls Qwen3-Omni via VoiceCloneOmni and saves WAV."""
+    """Return a SendFn that calls the Omni chat API and saves WAV."""
     task = VoiceCloneOmni()
 
     async def send_fn(
@@ -282,6 +286,7 @@ def make_send_fn(
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                reference_audio_field=reference_audio_field,
                 chunk_times_out=chunk_times if stream else None,
                 text_first_time_holder=text_first_time_holder if stream else None,
             )
@@ -356,6 +361,7 @@ async def run_omni_seedtts_benchmark(
         temperature=config.temperature,
         stream=config.stream,
         system_prompt=config.system_prompt,
+        reference_audio_field=config.reference_audio_field,
     )
 
     warmup_count = _resolve_warmup(config)
@@ -467,6 +473,7 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         lang=args.lang,
         speaker=args.speaker,
         voice_clone=voice_clone,
+        reference_audio_field=args.reference_audio_field,
         stream=args.stream,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
@@ -541,7 +548,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--voice-clone",
         dest="voice_clone",
         action="store_true",
-        help="Pass ref_audio via 'audios' field for voice cloning.",
+        help="Pass the sample's reference audio for voice cloning.",
     )
     voice_clone_group.add_argument(
         "--no-ref-audio",
@@ -551,6 +558,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--voice-clone; kept for backward-compatible shell history).",
     )
     parser.set_defaults(voice_clone=False, no_ref_audio=False)
+    parser.add_argument(
+        "--reference-audio-field",
+        choices=["audios", "audio.ref_audio"],
+        default="audios",
+        help="Reference transport: audios for Qwen3-Omni, audio.ref_audio for MiniCPM-o.",
+    )
     parser.add_argument("--output-dir", type=str, default="results/omni_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=256)

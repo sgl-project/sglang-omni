@@ -34,7 +34,7 @@ _TEST_CHUNKS = [1, 2, 3, 4, 5, 8, 12, 16, 20, 32]
 
 def test_capture_uses_thread_local_error_mode():
     source = textwrap.dedent(
-        inspect.getsource(WhisperEncoderCudaGraphRunner._capture_bucket)
+        inspect.getsource(WhisperEncoderCudaGraphRunner.capture_bucket)
     )
     tree = ast.parse(source)
     graph_calls = [
@@ -185,7 +185,7 @@ def test_capture_failure_falls_back_to_eager(encoder_bundle):
     def boom(*args, **kwargs):
         raise RuntimeError("simulated capture OOM")
 
-    runner._capture_bucket = boom
+    runner.capture_bucket = boom
     runner.capture(_CHUNK_BUCKETS)
     assert runner._graphs == {}, "capture failures must be caught -> no graphs"
 

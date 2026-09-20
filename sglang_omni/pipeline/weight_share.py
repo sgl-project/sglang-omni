@@ -84,12 +84,12 @@ def plan_weight_share(
             "flock leases and owner-only directory permissions"
         )
 
-    _reject_external_env(process_specs)
+    reject_external_env(process_specs)
 
     gpu_ids_by_process = {
         spec.process_name: process_gpu_ids(spec) for spec in process_specs
     }
-    candidates = _collect_candidate_groups(logical_process_plan, gpu_ids_by_process)
+    candidates = collect_candidate_groups(logical_process_plan, gpu_ids_by_process)
     if not candidates:
         raise WeightShareError(
             "weight_share=on but no logical Process places two or more replicas "
@@ -98,13 +98,13 @@ def plan_weight_share(
         )
 
     for logical_process, _, _ in candidates:
-        _validate_sharing_process(config, logical_process)
+        validate_sharing_process(config, logical_process)
 
     run_id = secrets.token_hex(8)
     groups: list[WeightShareGroup] = []
     env_by_process: dict[str, dict[str, str]] = {}
     for logical_process, gpu_id, replica_ids in candidates:
-        store_dir = _create_store_dir(runtime_dir, logical_process.name, gpu_id)
+        store_dir = create_store_dir(runtime_dir, logical_process.name, gpu_id)
         members = [
             replica_instance_name(logical_process.name, replica_id)
             for replica_id in replica_ids
@@ -149,7 +149,7 @@ def plan_weight_share(
     )
 
 
-def _reject_external_env(process_specs) -> None:
+def reject_external_env(process_specs) -> None:
     """Refuse to plan on top of a supervisor that already assigned roles."""
 
     external = (os.environ.get(ENV_WEIGHT_SHARE) or "").strip()
@@ -169,7 +169,7 @@ def _reject_external_env(process_specs) -> None:
                 )
 
 
-def _collect_candidate_groups(
+def collect_candidate_groups(
     logical_process_plan: LogicalProcessPlan,
     gpu_ids_by_process: dict[str, set[int]],
 ) -> list[tuple[LogicalProcess, int, tuple[int, ...]]]:
@@ -210,7 +210,7 @@ def _collect_candidate_groups(
     return candidates
 
 
-def _validate_sharing_process(
+def validate_sharing_process(
     config: PipelineConfig,
     process: LogicalProcess,
 ) -> None:
@@ -230,7 +230,7 @@ def _validate_sharing_process(
     # Note (Jiaxin Deng): a follower frees its dummy weights before KV
     # profiling, so an underived cap would over-budget KV. The child enforces
     # this too, but only after the leader has loaded a whole checkpoint.
-    if _resolved_max_total_tokens(config, stage) is None:
+    if resolved_max_total_tokens(config, stage) is None:
         raise WeightShareError(
             f"weight sharing requires an explicit max_total_tokens on engine "
             f"stage {stage_name!r} (set stages.{stage_name}.engine."
@@ -239,7 +239,7 @@ def _validate_sharing_process(
         )
 
 
-def _resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
+def resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
     # Both kwarg channels can carry server args; the stage's own engine block
     # outranks stage_factory_kwargs, matching how the worker overlays them.
     overrides = dict(
@@ -259,7 +259,7 @@ def _resolved_max_total_tokens(config: PipelineConfig, stage) -> int | None:
     return value
 
 
-def _create_store_dir(runtime_dir: Path, process_name: str, gpu_id: int) -> Path:
+def create_store_dir(runtime_dir: Path, process_name: str, gpu_id: int) -> Path:
     store_dir = Path(runtime_dir) / "weights" / process_name / f"gpu{gpu_id}"
     store_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     return store_dir

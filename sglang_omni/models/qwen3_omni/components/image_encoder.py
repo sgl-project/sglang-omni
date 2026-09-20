@@ -22,12 +22,12 @@ VISUAL_PREFIX = ("thinker.visual.", "visual.")
 VISUAL_CLASS = Qwen3OmniMoeVisionEncoderCompat
 
 
-def _patch_embed_forward(self: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
+def patch_embed_forward(self: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
     """Optimized PatchEmbed forward using Linear instead of Conv3d."""
     return self.linear(hidden_states.to(dtype=self.linear.weight.dtype))
 
 
-def _optimize_patch_embed(visual: nn.Module) -> None:
+def optimize_patch_embed(visual: nn.Module) -> None:
     """Replace Conv3d with Linear in PatchEmbed for ~7-15× speedup.
 
     The Conv3d kernel does not slide (kernel_size == stride), so it is
@@ -78,7 +78,7 @@ def _optimize_patch_embed(visual: nn.Module) -> None:
 
     del patch_embed.proj
     patch_embed.linear = linear
-    patch_embed.forward = types.MethodType(_patch_embed_forward, patch_embed)
+    patch_embed.forward = types.MethodType(patch_embed_forward, patch_embed)
     logger.info(
         "PatchEmbed optimized: Conv3d(%d→%d) replaced with Linear(%d→%d)",
         conv.in_channels,
@@ -88,7 +88,7 @@ def _optimize_patch_embed(visual: nn.Module) -> None:
     )
 
 
-def _unpack_visual_output(visual_out):
+def unpack_visual_output(visual_out):
     """Unpack visual forward output regardless of return type.
 
     Supports two shapes that appear across transformers versions:
@@ -100,7 +100,7 @@ def _unpack_visual_output(visual_out):
     return visual_out.pooler_output, visual_out.deepstack_features
 
 
-def _build_visual(
+def build_visual(
     model_path: str,
     *,
     thinker_cfg: object,
@@ -117,7 +117,7 @@ def _build_visual(
         device=device,
         strict=True,
     )
-    _optimize_patch_embed(visual)
+    optimize_patch_embed(visual)
     return visual
 
 
@@ -136,7 +136,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         thinker_cfg = load_thinker_config(model_path)
         vision_cfg = thinker_cfg.vision_config
         self._device = torch.device(device)
-        self.visual = _build_visual(
+        self.visual = build_visual(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
@@ -166,7 +166,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         ):
             image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
             pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
-            image_embeds, image_embeds_multiscale = _unpack_visual_output(
+            image_embeds, image_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values, grid_thw=image_grid_thw)
             )
             image_token_counts = image_grid_thw.prod(-1) // merge
@@ -186,7 +186,7 @@ class Qwen3OmniImageEncoder(nn.Module):
             pixel_values_videos = pixel_values_videos.to(
                 device=self._device, dtype=self.visual.dtype
             )
-            video_embeds, video_embeds_multiscale = _unpack_visual_output(
+            video_embeds, video_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values_videos, grid_thw=video_grid_thw)
             )
             video_token_counts = video_grid_thw.prod(-1) // merge

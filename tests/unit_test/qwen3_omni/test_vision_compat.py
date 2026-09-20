@@ -121,7 +121,7 @@ def test_interpolation_is_bit_exact_to_transformers_5_6(grid_thw) -> None:
     grid = torch.tensor(grid_thw, dtype=torch.long)
 
     expected = _transformers_5_6_pos_embed_interpolate(encoder, grid)
-    actual = encoder._legacy_pos_embed_interpolate(grid)
+    actual = encoder.legacy_pos_embed_interpolate(grid)
 
     assert torch.equal(actual, expected)
 

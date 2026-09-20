@@ -9,8 +9,8 @@ import torch
 
 import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.qwen3_asr.request_builders import (
-    _retained_streaming_prefix,
     make_qwen3_asr_scheduler_adapters,
+    retained_streaming_prefix,
 )
 from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -47,7 +47,7 @@ def test_retained_streaming_prefix_rolls_back_tokens(
     expected_ids: list[int],
     expected_text: str,
 ) -> None:
-    assert _retained_streaming_prefix(Tokenizer(), text, rollback) == (
+    assert retained_streaming_prefix(Tokenizer(), text, rollback) == (
         expected_ids,
         expected_text,
     )
@@ -58,7 +58,7 @@ def test_retained_streaming_prefix_drops_incomplete_utf8_suffix() -> None:
         def decode(self, token_ids: list[int], **_: object) -> str:
             return {3: "hello\ufffd", 2: "hello"}.get(len(token_ids), "")
 
-    assert _retained_streaming_prefix(Utf8Tokenizer(), "four", 1) == (
+    assert retained_streaming_prefix(Utf8Tokenizer(), "four", 1) == (
         [1, 2],
         "hello",
     )

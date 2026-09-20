@@ -28,7 +28,7 @@ from typing import List, Optional, Tuple
 
 import torch
 
-from .sglang_model import _sanm_mask_from_lengths
+from .sglang_model import sanm_mask_from_lengths
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ _T_BUCKET_STEP = 64
 _T_BUCKET_MAX = 512  # 30 s * (1000 ms / 60 ms per LFR frame) ~= 500 frames
 
 
-def _bucket_batch(b: int, max_batch: int) -> int | None:
+def bucket_batch(b: int, max_batch: int) -> int | None:
     for bucket in _BATCH_BUCKETS:
         if bucket > max_batch:
             break
@@ -46,7 +46,7 @@ def _bucket_batch(b: int, max_batch: int) -> int | None:
     return max_batch if b <= max_batch else None
 
 
-def _bucket_t(t: int) -> int | None:
+def bucket_t(t: int) -> int | None:
     if t > _T_BUCKET_MAX:
         return None
     bucket = ((t + _T_BUCKET_STEP - 1) // _T_BUCKET_STEP) * _T_BUCKET_STEP
@@ -88,25 +88,25 @@ class FunASREncoderCudaGraphRunner:
         self._done_event = torch.cuda.Event()
         self._event_recorded = False
 
-    def _forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    def forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
         enc_out = self._audio_tower(xs, mask)
         return self._projector(enc_out, mask)
 
-    def _enough_free_vram(self) -> tuple[bool, int]:
+    def enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _capture(self, batch_bucket: int, t_bucket: int, feat_dim: int) -> tuple:
+    def capture(self, batch_bucket: int, t_bucket: int, feat_dim: int) -> tuple:
         static_xs = torch.zeros(
             batch_bucket, t_bucket, feat_dim, device=self._device, dtype=self._dtype
         )
         static_ilens = torch.ones(batch_bucket, device=self._device, dtype=torch.long)
 
         def _masked_forward() -> torch.Tensor:
-            mask = _sanm_mask_from_lengths(
+            mask = sanm_mask_from_lengths(
                 static_ilens, t_bucket, dtype=self._dtype, device=self._device
             )
-            return self._forward(static_xs, mask)
+            return self.forward(static_xs, mask)
 
         # note (wilsonzheng0327): warmup on a fresh stream so allocator state
         # settles before capture.
@@ -147,8 +147,8 @@ class FunASREncoderCudaGraphRunner:
         the eager path).
         """
         b, t, feat_dim = xs.shape
-        batch_bucket = _bucket_batch(b, self._max_batch)
-        t_bucket = _bucket_t(t)
+        batch_bucket = bucket_batch(b, self._max_batch)
+        t_bucket = bucket_t(t)
         if batch_bucket is None or t_bucket is None:
             return None
         key = (batch_bucket, t_bucket)
@@ -158,7 +158,7 @@ class FunASREncoderCudaGraphRunner:
         with self._lock:
             entry = self._graphs.get(key)
             if entry is None:
-                enough, free = self._enough_free_vram()
+                enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
                         "Fun-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
@@ -172,7 +172,7 @@ class FunASREncoderCudaGraphRunner:
                     return None
                 try:
                     with torch.cuda.device(self._device):
-                        entry = self._capture(batch_bucket, t_bucket, feat_dim)
+                        entry = self.capture(batch_bucket, t_bucket, feat_dim)
                 except Exception as exc:
                     logger.warning(
                         "Fun-ASR encoder CUDA graph capture failed for "

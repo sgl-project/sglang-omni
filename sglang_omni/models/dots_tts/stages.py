@@ -28,7 +28,7 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint
 _DEFAULT_CONTEXT_LENGTH = 2048
 
 
-def _configure_optimized_kernels() -> None:
+def configure_optimized_kernels() -> None:
     """Configure the process-global dots DiT compile hook.
 
     This temporary upstream monkey patch is restored once dots.tts supports
@@ -58,21 +58,21 @@ def _configure_optimized_kernels() -> None:
     dit_inference.compile_module_forward = _compile_dit_step
 
 
-def _first_not_none(*values: Any, default: Any = None) -> Any:
+def first_not_none(*values: Any, default: Any = None) -> Any:
     return next((value for value in values if value is not None), default)
 
 
-def _dict(value: Any) -> dict[str, Any]:
+def as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _inputs(value: Any) -> dict[str, Any]:
+def inputs(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return {"text": value}
-    return _dict(value)
+    return as_dict(value)
 
 
-def _reference_path(value: Any) -> str | None:
+def reference_path(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -117,12 +117,12 @@ def preprocess_dots_tts_payload(
         require_token_id,
     )
 
-    inputs = _inputs(payload.request.inputs)
-    params = _dict(payload.request.params)
-    tts_params = _dict(_dict(payload.request.metadata).get("tts_params"))
-    stage_params = _dict(params.get("stage_params"))
-    engine_params = _dict(stage_params.get("latent_engine"))
-    references = inputs.get("references")
+    request_inputs = inputs(payload.request.inputs)
+    params = as_dict(payload.request.params)
+    tts_params = as_dict(as_dict(payload.request.metadata).get("tts_params"))
+    stage_params = as_dict(params.get("stage_params"))
+    engine_params = as_dict(stage_params.get("latent_engine"))
+    references = request_inputs.get("references")
     if isinstance(references, list) and len(references) > 1:
         raise ValueError("dots.tts accepts at most one reference audio")
     reference = (
@@ -133,19 +133,23 @@ def preprocess_dots_tts_payload(
         else {}
     )
 
-    text = str(_first_not_none(inputs.get("input"), inputs.get("text"), default=""))
+    text = str(
+        first_not_none(
+            request_inputs.get("input"), request_inputs.get("text"), default=""
+        )
+    )
     if not text.strip():
         raise ValueError("dots.tts requires non-empty input text")
-    prompt_audio = _first_not_none(
-        _reference_path(inputs.get("prompt_audio_path")),
-        _reference_path(inputs.get("prompt_audio")),
-        _reference_path(inputs.get("reference_audio")),
-        _reference_path(tts_params.get("ref_audio")),
-        _reference_path(reference),
+    prompt_audio = first_not_none(
+        reference_path(request_inputs.get("prompt_audio_path")),
+        reference_path(request_inputs.get("prompt_audio")),
+        reference_path(request_inputs.get("reference_audio")),
+        reference_path(tts_params.get("ref_audio")),
+        reference_path(reference),
     )
-    prompt_text_value = _first_not_none(
-        inputs.get("prompt_text"),
-        inputs.get("reference_text"),
+    prompt_text_value = first_not_none(
+        request_inputs.get("prompt_text"),
+        request_inputs.get("reference_text"),
         tts_params.get("ref_text"),
         reference.get("text"),
     )
@@ -154,16 +158,16 @@ def preprocess_dots_tts_payload(
         raise ValueError("dots.tts prompt_text requires prompt audio")
 
     template_name = str(
-        _first_not_none(
-            inputs.get("template_name"),
+        first_not_none(
+            request_inputs.get("template_name"),
             tts_params.get("template_name"),
             params.get("template_name"),
             tts_params.get("task_type"),
             params.get("task_type"),
             default=(
                 "instruction_tts"
-                if _first_not_none(
-                    tts_params.get("instructions"), inputs.get("instructions")
+                if first_not_none(
+                    tts_params.get("instructions"), request_inputs.get("instructions")
                 )
                 else "tts"
             ),
@@ -182,15 +186,17 @@ def preprocess_dots_tts_payload(
         )
 
     normalize = bool(
-        _first_not_none(
-            inputs.get("normalize_text"),
+        first_not_none(
+            request_inputs.get("normalize_text"),
             tts_params.get("normalize_text"),
             params.get("normalize_text"),
             default=False,
         )
     )
     text = normalize_text(text.strip()) if normalize else text.strip()
-    language_value = _first_not_none(inputs.get("language"), tts_params.get("language"))
+    language_value = first_not_none(
+        request_inputs.get("language"), tts_params.get("language")
+    )
     language = None
     if language_value is not None:
         raw_language = str(language_value).strip()
@@ -212,8 +218,8 @@ def preprocess_dots_tts_payload(
         text = attach_language_tag(text, language)
 
     request_limit = int(
-        _first_not_none(
-            inputs.get("max_generate_length"),
+        first_not_none(
+            request_inputs.get("max_generate_length"),
             tts_params.get("max_generate_length"),
             engine_params.get("max_generate_length"),
             params.get("max_generate_length"),
@@ -249,8 +255,8 @@ def preprocess_dots_tts_payload(
         prompt_audio_path=prompt_audio,
         use_prompt_prefill=bool(normalized_prompt_text),
         speaker_scale=float(
-            _first_not_none(
-                inputs.get("speaker_scale"),
+            first_not_none(
+                request_inputs.get("speaker_scale"),
                 tts_params.get("speaker_scale"),
                 engine_params.get("speaker_scale"),
                 params.get("speaker_scale"),
@@ -258,8 +264,8 @@ def preprocess_dots_tts_payload(
             )
         ),
         ode_method=str(
-            _first_not_none(
-                inputs.get("ode_method"),
+            first_not_none(
+                request_inputs.get("ode_method"),
                 tts_params.get("ode_method"),
                 engine_params.get("ode_method"),
                 params.get("ode_method"),
@@ -267,8 +273,8 @@ def preprocess_dots_tts_payload(
             )
         ),
         num_steps=int(
-            _first_not_none(
-                inputs.get("num_steps"),
+            first_not_none(
+                request_inputs.get("num_steps"),
                 tts_params.get("num_steps"),
                 engine_params.get("num_steps"),
                 params.get("num_steps"),
@@ -276,8 +282,8 @@ def preprocess_dots_tts_payload(
             )
         ),
         guidance_scale=float(
-            _first_not_none(
-                inputs.get("guidance_scale"),
+            first_not_none(
+                request_inputs.get("guidance_scale"),
                 tts_params.get("guidance_scale"),
                 engine_params.get("guidance_scale"),
                 params.get("guidance_scale"),
@@ -285,8 +291,8 @@ def preprocess_dots_tts_payload(
             )
         ),
         eos_threshold=float(
-            _first_not_none(
-                inputs.get("eos_threshold"),
+            first_not_none(
+                request_inputs.get("eos_threshold"),
                 tts_params.get("eos_threshold"),
                 engine_params.get("eos_threshold"),
                 params.get("eos_threshold"),
@@ -296,8 +302,8 @@ def preprocess_dots_tts_payload(
         seed=(
             None
             if (
-                seed := _first_not_none(
-                    inputs.get("seed"),
+                seed := first_not_none(
+                    request_inputs.get("seed"),
                     tts_params.get("seed"),
                     engine_params.get("seed"),
                     params.get("seed"),
@@ -330,7 +336,7 @@ def preprocess_dots_tts_payload(
     return payload
 
 
-def _load_model_metadata(model_path: str) -> tuple[str, Any, Any, int]:
+def load_model_metadata(model_path: str) -> tuple[str, Any, Any, int]:
     import_dots_tts()
     from dots_tts.models.dots_tts.config import ModelConfig
     from transformers import AutoTokenizer
@@ -355,7 +361,7 @@ def create_preprocessing_executor(
     num_steps: int = 4,
     max_concurrency: int = 8,
 ) -> SimpleScheduler:
-    _root, config, tokenizer, context_length = _load_model_metadata(model_path)
+    _root, config, tokenizer, context_length = load_model_metadata(model_path)
     from dots_tts.utils.tokenizer import (
         AUDIO_COMP_SPAN_TOKEN,
         AUDIO_GEN_SPAN_TOKEN,

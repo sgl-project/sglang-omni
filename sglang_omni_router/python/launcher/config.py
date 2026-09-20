@@ -35,7 +35,7 @@ class LocalLauncherConfig(BaseModel):
 
     @field_validator("model_path", "model_name", "worker_host", mode="before")
     @classmethod
-    def _normalize_optional_text(cls, value: object) -> object:
+    def normalize_optional_text(cls, value: object) -> object:
         if value is None:
             return None
         if not isinstance(value, str):
@@ -47,7 +47,7 @@ class LocalLauncherConfig(BaseModel):
 
     @field_validator("worker_extra_args", mode="before")
     @classmethod
-    def _normalize_extra_args(cls, value: object) -> str:
+    def normalize_extra_args(cls, value: object) -> str:
         if value is None:
             return ""
         if not isinstance(value, str):
@@ -60,21 +60,21 @@ class LocalLauncherConfig(BaseModel):
         "wait_timeout",
     )
     @classmethod
-    def _validate_positive_int(cls, value: int | None) -> int | None:
+    def validate_positive_int(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
             raise ValueError("value must be > 0")
         return value
 
     @field_validator("worker_base_port")
     @classmethod
-    def _validate_port(cls, value: int) -> int:
+    def validate_port(cls, value: int) -> int:
         if value <= 0 or value > 65535:
             raise ValueError("worker_base_port must be in [1, 65535]")
         return value
 
     @field_validator("worker_gpu_ids")
     @classmethod
-    def _validate_worker_gpu_ids(cls, value: list[str] | None) -> list[str] | None:
+    def validate_worker_gpu_ids(cls, value: list[str] | None) -> list[str] | None:
         if value is None:
             return None
         normalized: list[str] = []
@@ -89,7 +89,7 @@ class LocalLauncherConfig(BaseModel):
 
     @field_validator("worker_capabilities")
     @classmethod
-    def _validate_worker_capabilities(
+    def validate_worker_capabilities(
         cls, value: set[Capability] | None
     ) -> set[Capability] | None:
         if value is not None and not value:
@@ -97,7 +97,7 @@ class LocalLauncherConfig(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _validate_launch_shape(self) -> "LocalLauncherConfig":
+    def validate_launch_shape(self) -> "LocalLauncherConfig":
         if self.worker_base_port + self.num_workers - 1 > 65535:
             raise ValueError("worker port range exceeds 65535")
         if (

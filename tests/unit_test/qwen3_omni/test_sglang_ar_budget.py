@@ -52,8 +52,8 @@ def _configurator(
     ``_OmniKVCacheConfigurator`` is a slots dataclass with ~25 required fields,
     so populate only the attributes ``_profile_available_bytes`` reads.
     """
-    configurator = runner_mod._OmniKVCacheConfigurator.__new__(
-        runner_mod._OmniKVCacheConfigurator
+    configurator = runner_mod.OmniKVCacheConfigurator.__new__(
+        runner_mod.OmniKVCacheConfigurator
     )
     configurator.gpu_id = 0
     configurator.device = "cuda"
@@ -68,7 +68,7 @@ def test_kv_cache_bytes_budget_is_returned_verbatim(monkeypatch) -> None:
         total_gpu_memory_fraction=None, kv_cache_bytes=2 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
     )
 
     assert configurator._profile_available_bytes(0) == 2 * 1024**3
@@ -79,7 +79,7 @@ def test_kv_cache_bytes_budget_wins_over_stage_fraction(monkeypatch) -> None:
         total_gpu_memory_fraction=0.4, kv_cache_bytes=2 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
     )
 
     assert configurator._profile_available_bytes(0) == 2 * 1024**3
@@ -102,7 +102,7 @@ def test_kv_cache_bytes_over_free_memory_raises_actionable_error(monkeypatch) ->
         total_gpu_memory_fraction=None, kv_cache_bytes=8 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 3 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 3 * 1024**3
     )
 
     with pytest.raises(ValueError) as exc_info:
@@ -128,7 +128,7 @@ def test_post_capture_resize_shrinking_a_byte_budget_raises(monkeypatch) -> None
 
     monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", _shrinking_resize)
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 1024**3
     )
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -267,8 +267,8 @@ def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailab
         return 7 * 1024**3
 
     monkeypatch.setattr(
-        runner_mod._OmniKVCacheConfigurator,
-        "_profile_available_bytes_from_stage_load_delta",
+        runner_mod.OmniKVCacheConfigurator,
+        "profile_available_bytes_from_stage_load_delta",
         _fake_stage_load_delta,
     )
 
@@ -296,7 +296,7 @@ def test_non_colocated_ar_delegates_to_upstream_available_bytes(
 def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
     overrides = {"disable_cuda_graph": False}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.78,
@@ -310,7 +310,7 @@ def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
 def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
     overrides = {"disable_cuda_graph": False}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.75,
@@ -325,7 +325,7 @@ def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
 def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -> None:
     overrides = {"mem_fraction_static": 0.75}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.75,
@@ -338,7 +338,7 @@ def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -
 
 def test_qwen_ar_factory_rejects_conflicting_memory_contract() -> None:
     with pytest.raises(ValueError, match="conflicting colocated memory contracts"):
-        qwen_stages._apply_colocated_ar_memory_contract(
+        qwen_stages.apply_colocated_ar_memory_contract(
             {"mem_fraction_static": 0.7},
             stage_name="thinker",
             total_gpu_memory_fraction=0.78,

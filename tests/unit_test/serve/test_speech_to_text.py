@@ -111,7 +111,7 @@ def test_assemble_uses_the_caller_probed_duration(monkeypatch) -> None:
 def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:
     monkeypatch.setattr(
         speech_to_text,
-        "_av_duration",
+        "av_duration",
         lambda audio_bytes: pytest.fail("fell back to av for a wav upload"),
     )
     buffer = io.BytesIO()
@@ -145,13 +145,13 @@ def test_probe_keeps_estimated_containers_on_av(monkeypatch, header) -> None:
             "soundfile consulted for a container it can only estimate"
         ),
     )
-    monkeypatch.setattr(speech_to_text, "_av_duration", lambda audio_bytes: 86.0)
+    monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 86.0)
 
     assert speech_to_text.probe_audio_duration(header) == 86.0
 
 
 def test_probe_falls_back_when_soundfile_cannot_measure(monkeypatch) -> None:
-    monkeypatch.setattr(speech_to_text, "_av_duration", lambda audio_bytes: 12.5)
+    monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 12.5)
 
     assert speech_to_text.probe_audio_duration(b"fLaC" + b"\x00" * 64) == 12.5
 
@@ -177,7 +177,7 @@ def test_probe_distrusts_inexact_soundfile_answers(monkeypatch, header, info) ->
     import soundfile
 
     monkeypatch.setattr(soundfile, "info", lambda *args, **kwargs: info)
-    monkeypatch.setattr(speech_to_text, "_av_duration", lambda audio_bytes: 100.0)
+    monkeypatch.setattr(speech_to_text, "av_duration", lambda audio_bytes: 100.0)
 
     assert speech_to_text.probe_audio_duration(header) == 100.0
 
@@ -266,7 +266,7 @@ async def test_probe_measures_wrapped_g711_without_the_av_fallback(
 ) -> None:
     monkeypatch.setattr(
         speech_to_text,
-        "_av_duration",
+        "av_duration",
         lambda audio_bytes: pytest.fail("fell back to av for a G.711 upload"),
     )
 

@@ -323,8 +323,8 @@ class StreamingPerception:
         assert not self.flushed
         assert samples_S.shape == (SAMPLES_PER_FRAME,)
         samples_S = samples_S.to(device=self.device, dtype=self.dtype)
-        mel_1TM = self._featurize(samples_S)
-        return self._encode(mel_1TM)
+        mel_1TM = self.featurize(samples_S)
+        return self.encode(mel_1TM)
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
@@ -334,9 +334,9 @@ class StreamingPerception:
         self.flushed = True
         num_mels = self.perception.preprocessor.featurizer.fb.shape[1]
         zero_mel_1TM = torch.zeros(1, 1, num_mels, device=self.device, dtype=self.dtype)
-        return self._encode(zero_mel_1TM)
+        return self.encode(zero_mel_1TM)
 
-    def _featurize(self, samples_S: torch.Tensor) -> torch.Tensor:
+    def featurize(self, samples_S: torch.Tensor) -> torch.Tensor:
         preprocessor = self.perception.preprocessor
         previous_S = torch.cat((self.preemphasis_carry, samples_S[:-1]))
         preemphasized_S = samples_S - DEFAULT_PREEMPHASIS * previous_S
@@ -358,16 +358,16 @@ class StreamingPerception:
         log_mel_MT = torch.log(mel_MT + DEFAULT_LOG_ZERO_GUARD)
         return rearrange(log_mel_MT, "m t -> 1 t m")
 
-    def _encode(self, mel_1TM: torch.Tensor) -> torch.Tensor:
-        hidden_11D = self._subsample(mel_1TM) * self.xscale
+    def encode(self, mel_1TM: torch.Tensor) -> torch.Tensor:
+        hidden_11D = self.subsample(mel_1TM) * self.xscale
         for index, layer in enumerate(self.perception.encoder.layers):
             hidden_11D = hidden_11D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward1(
                 layer.norm_feed_forward1(hidden_11D)
             )
-            hidden_11D = hidden_11D + self._attend(
+            hidden_11D = hidden_11D + self.attend(
                 index, layer.self_attn, layer.norm_self_att(hidden_11D)
             )
-            hidden_11D = hidden_11D + self._convolve(
+            hidden_11D = hidden_11D + self.convolve(
                 index, layer.conv, layer.norm_conv(hidden_11D)
             )
             hidden_11D = hidden_11D + FEED_FORWARD_RESIDUAL_SCALE * layer.feed_forward2(
@@ -376,7 +376,7 @@ class StreamingPerception:
             hidden_11D = layer.norm_out(hidden_11D)
         return self.perception.proj(hidden_11D)[0]
 
-    def _subsample(self, mel_1TM: torch.Tensor) -> torch.Tensor:
+    def subsample(self, mel_1TM: torch.Tensor) -> torch.Tensor:
         hidden_1CTM = rearrange(mel_1TM, "b t m -> b 1 t m")
         for stage, (conv, pointwise) in enumerate(self.sub_stages):
             hidden_1CTM = torch.cat((self.sub_caches[stage], hidden_1CTM), dim=2)
@@ -392,7 +392,7 @@ class StreamingPerception:
             rearrange(hidden_1CTM, "b c t m -> b t (c m)")
         )
 
-    def _attend(self, index: int, attention, hidden_11D: torch.Tensor) -> torch.Tensor:
+    def attend(self, index: int, attention, hidden_11D: torch.Tensor) -> torch.Tensor:
         query_HS = rearrange(
             attention.linear_q(hidden_11D), "1 1 (h s) -> h s", h=self.num_heads
         )
@@ -424,7 +424,7 @@ class StreamingPerception:
         attended_HS = einsum(weights_KH, values_KHS, "k h, k h s -> h s")
         return attention.linear_out(rearrange(attended_HS, "h s -> 1 1 (h s)"))
 
-    def _convolve(self, index: int, conv, hidden_11D: torch.Tensor) -> torch.Tensor:
+    def convolve(self, index: int, conv, hidden_11D: torch.Tensor) -> torch.Tensor:
         gates_1Gt = conv.pointwise_conv1(rearrange(hidden_11D, "b t d -> b d t"))
         hidden_1Dt = nn.functional.glu(gates_1Gt, dim=1)
         window_1DT = torch.cat((self.conv_caches[index], hidden_1Dt), dim=2)

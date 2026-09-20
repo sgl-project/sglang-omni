@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
 
-def _resolve_model_path(model_path: str) -> Path:
+def resolve_model_path(model_path: str) -> Path:
     path = Path(model_path).expanduser()
     if path.is_dir():
         return path.resolve()
@@ -30,7 +30,7 @@ def _resolve_model_path(model_path: str) -> Path:
     return Path(snapshot_download(model_path))
 
 
-def _text_config(model_path: Path) -> Qwen3Config:
+def text_config(model_path: Path) -> Qwen3Config:
     root_config = json.loads((model_path / "config.json").read_text())
     text_config = dict(root_config["thinker_config"]["text_config"])
     for field in ("rope_parameters", "rope_scaling"):
@@ -44,7 +44,7 @@ def _text_config(model_path: Path) -> Qwen3Config:
     return Qwen3Config(**text_config)
 
 
-def _load_language_weights(
+def load_language_weights(
     language_model: Qwen3ForCausalLM,
     model_path: Path,
 ) -> None:
@@ -86,7 +86,7 @@ def _load_language_weights(
 
 def install_torch_mps_language_model(model: Any, model_path: str) -> None:
     """Replace SGLang's Torch-native LM with the pinned HF Torch implementation."""
-    checkpoint = _resolve_model_path(model_path)
+    checkpoint = resolve_model_path(model_path)
     old_parameter = next(model.language_model.parameters())
     device = old_parameter.device
     dtype = old_parameter.dtype
@@ -96,8 +96,8 @@ def install_torch_mps_language_model(model: Any, model_path: str) -> None:
     torch.mps.empty_cache()
 
     with torch.device("meta"):
-        language_model = Qwen3ForCausalLM(_text_config(checkpoint))
-    _load_language_weights(language_model, checkpoint)
+        language_model = Qwen3ForCausalLM(text_config(checkpoint))
+    load_language_weights(language_model, checkpoint)
     model.language_model = language_model.eval().to(device=device, dtype=dtype)
     logger.info("Installed Qwen3-ASR Hugging Face Torch LM on %s (%s)", device, dtype)
 

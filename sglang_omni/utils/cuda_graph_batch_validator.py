@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _BufferProbe:
+class BufferProbe:
     """Per-model ``(label, fn)`` extractors reading the allocated buffer first dim."""
 
     extractors: tuple[tuple[str, Callable[[Any], int]], ...]
     note: str = ""
 
 
-_BUFFER_PROBES: dict[str, _BufferProbe] = {
-    "HiggsTTSModel": _BufferProbe(
+_BUFFER_PROBES: dict[str, BufferProbe] = {
+    "HiggsTTSModel": BufferProbe(
         (
             ("_sampler_pool.seeds", lambda m: m._sampler_pool.seeds.shape[0]),
             ("_cg_codes_BN", lambda m: m._cg_codes_BN.shape[0]),
@@ -32,10 +32,10 @@ _BUFFER_PROBES: dict[str, _BufferProbe] = {
         ),
         note="sampler pool = max_running_requests + 1 (one reserved padding row)",
     ),
-    "Qwen3TTSTalker": _BufferProbe(
+    "Qwen3TTSTalker": BufferProbe(
         (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
     ),
-    "MossTTSDelaySGLangModel": _BufferProbe(
+    "MossTTSDelaySGLangModel": BufferProbe(
         (
             (
                 "_decode_input_embedding.weight",
@@ -43,7 +43,7 @@ _BUFFER_PROBES: dict[str, _BufferProbe] = {
             ),
         )
     ),
-    "MossTTSLocalSGLangModel": _BufferProbe(
+    "MossTTSLocalSGLangModel": BufferProbe(
         (
             (
                 "_decode_input_embedding.weight",
@@ -51,11 +51,11 @@ _BUFFER_PROBES: dict[str, _BufferProbe] = {
             ),
         )
     ),
-    "S2ProSGLangTextModel": _BufferProbe(
+    "S2ProSGLangTextModel": BufferProbe(
         (("_vq_codes", lambda m: m._vq_codes.shape[0]),),
         note="allocated only after setup_vq_decode()",
     ),
-    "VoxtralSGLangTTSModel": _BufferProbe(
+    "VoxtralSGLangTTSModel": BufferProbe(
         (
             (
                 "_decode_input_embed_buffer",
@@ -63,7 +63,7 @@ _BUFFER_PROBES: dict[str, _BufferProbe] = {
             ),
         )
     ),
-    "Qwen3OmniTalker": _BufferProbe(
+    "Qwen3OmniTalker": BufferProbe(
         (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
     ),
 }

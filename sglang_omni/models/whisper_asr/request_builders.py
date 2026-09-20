@@ -61,7 +61,7 @@ class WhisperASRRequestData(SGLangARRequestData):
 _TIMESTAMP_STEP_S = 0.02
 
 
-def _render_timestamped_text(
+def render_timestamped_text(
     tokenizer: Any, output_ids: list[int], *, timestamp_begin_id: int
 ) -> str:
     parts: list[str] = []
@@ -80,7 +80,7 @@ def _render_timestamped_text(
     return "".join(parts).strip()
 
 
-def _resolve_language(value: Any) -> str:
+def resolve_language(value: Any) -> str:
     if value is None:
         return "english"
     language = str(value).strip().lower()
@@ -89,14 +89,14 @@ def _resolve_language(value: Any) -> str:
     return _LANGUAGE_ALIASES.get(language, language)
 
 
-def _build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
+def build_logit_bias(generation_config: GenerationConfig) -> dict[str, float] | None:
     suppress_tokens = generation_config.suppress_tokens
     if not suppress_tokens:
         return None
     return {str(int(token_id)): -1.0e9 for token_id in suppress_tokens if token_id >= 0}
 
 
-def _build_prefix_tokens(
+def build_prefix_tokens(
     tokenizer: Any,
     *,
     language: str,
@@ -111,7 +111,7 @@ def _build_prefix_tokens(
     return list(tokenizer.prefix_tokens)
 
 
-def _decoder_token_budgets(
+def decoder_token_budgets(
     *,
     decoder_context_len: int,
     prefix_len: int,
@@ -131,7 +131,7 @@ def _decoder_token_budgets(
     return max_new_tokens, max_prev_tokens
 
 
-def _build_prev_context_tokens(
+def build_prev_context_tokens(
     tokenizer: Any, prompt: Any, *, max_prev_tokens: int
 ) -> list[int]:
     """Map the OpenAI ``prompt`` field to Whisper prev-context tokens."""
@@ -158,7 +158,7 @@ def make_whisper_scheduler_adapters(
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData], Callable[[Any], StagePayload]
 ]:
-    logit_bias = _build_logit_bias(generation_config)
+    logit_bias = build_logit_bias(generation_config)
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
     # across request-build workers.
     tokenizer_lock = Lock()
@@ -204,7 +204,7 @@ def make_whisper_scheduler_adapters(
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
 
-        language = _resolve_language(params.get("language"))
+        language = resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
         segment_timestamps = bool(params.get("segment_timestamps"))
@@ -213,20 +213,20 @@ def make_whisper_scheduler_adapters(
             request_max_new_tokens = 1
         else:
             with tokenizer_lock:
-                prefix_token_ids = _build_prefix_tokens(
+                prefix_token_ids = build_prefix_tokens(
                     tokenizer,
                     language=language,
                     task=task,
                     predict_timestamps=segment_timestamps,
                 )
-                request_max_new_tokens, max_prev_tokens = _decoder_token_budgets(
+                request_max_new_tokens, max_prev_tokens = decoder_token_budgets(
                     decoder_context_len=decoder_context_len,
                     prefix_len=len(prefix_token_ids),
                     requested_max_new_tokens=int(
                         params.get("max_new_tokens") or max_new_tokens
                     ),
                 )
-                prev_context_ids = _build_prev_context_tokens(
+                prev_context_ids = build_prev_context_tokens(
                     tokenizer, params.get("prompt"), max_prev_tokens=max_prev_tokens
                 )
             prompt_token_ids = prev_context_ids + prefix_token_ids
@@ -327,7 +327,7 @@ def make_whisper_scheduler_adapters(
         if data.detect_language:
             text = id_to_language.get(output_ids[0], "") if output_ids else ""
         elif data.segment_timestamps:
-            text = _render_timestamped_text(
+            text = render_timestamped_text(
                 tokenizer, output_ids, timestamp_begin_id=timestamp_begin_id
             )
         else:

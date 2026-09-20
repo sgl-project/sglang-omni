@@ -21,7 +21,7 @@ import torch
 
 from sglang_omni.models.higgs_tts.audio_codec import HiggsAudioCodec
 from sglang_omni.preprocessing.audio import AudioMediaIO
-from sglang_omni.preprocessing.base import _is_url
+from sglang_omni.preprocessing.base import is_url
 from sglang_omni.preprocessing.resource_connector import global_http_connection
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -118,7 +118,7 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
     io = AudioMediaIO(target_sr=HiggsAudioCodec.SAMPLE_RATE)
 
     def _load_path_or_url(src: str | Path) -> tuple[np.ndarray, int]:
-        if isinstance(src, str) and _is_url(src):
+        if isinstance(src, str) and is_url(src):
             response = global_http_connection.get_sync_client().get(src)
             response.raise_for_status()
             audio, sr = io.load_bytes(response.content)

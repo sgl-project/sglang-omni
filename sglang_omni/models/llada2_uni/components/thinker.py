@@ -293,7 +293,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             scores_for_routing = scores
 
         # Group-limited top-k selection
-        topk_weights, topk_ids = self._group_limited_topk(scores_for_routing)
+        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
 
         # Gather actual scores (without bias) for the selected experts
         topk_weights = torch.gather(scores, dim=1, index=topk_ids)
@@ -318,7 +318,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
 
         return y
 
-    def _group_limited_topk(
+    def group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection."""

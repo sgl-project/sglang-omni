@@ -12,7 +12,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def _rematerialize_audio_decoder_buffers(
+def rematerialize_audio_decoder_buffers(
     audio_decoder: torch.nn.Module, device: Any
 ) -> None:
     """Recompute the audio decoder's non-persistent computed buffers.
@@ -120,7 +120,7 @@ def load_audio_decoder(
     )
     # note (xinyu): Meta construction leaves non-persistent buffers on meta after strict
     # parameter assignment. Rebuild them before moving the module to its device.
-    _rematerialize_audio_decoder_buffers(audio_decoder, device)
+    rematerialize_audio_decoder_buffers(audio_decoder, device)
     audio_decoder = audio_decoder.to(device=device, dtype=torch.bfloat16).eval()
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)

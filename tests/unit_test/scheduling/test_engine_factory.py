@@ -112,25 +112,25 @@ def test_context_length_override_is_capability_gated() -> None:
     [True, False, 1.5, 3.0, float("inf"), float("-inf"), float("nan"), "8192", None],
 )
 def test_normalize_context_length_rejects_non_integral_values(value: Any) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
     with pytest.raises(ValueError, match="context length must be a positive integer"):
-        _normalize_context_length(value, model_name="MOSS-TTS")
+        normalize_context_length(value, model_name="MOSS-TTS")
 
 
 @pytest.mark.parametrize("value", [0, -1])
 def test_normalize_context_length_rejects_non_positive_values(value: int) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
     with pytest.raises(ValueError, match="resolved an invalid context length"):
-        _normalize_context_length(value, model_name="MOSS-TTS")
+        normalize_context_length(value, model_name="MOSS-TTS")
 
 
 @pytest.mark.parametrize("value", [1, 8192])
 def test_normalize_context_length_preserves_integral_values(value: int) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
-    assert _normalize_context_length(value, model_name="MOSS-TTS") == value
+    assert normalize_context_length(value, model_name="MOSS-TTS") == value
 
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
@@ -685,7 +685,7 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             events.append("extra_scheduler_kwargs")
             return {"stream_output_builder": "stream_builder"}
 
-        def _make_scheduler(self, **kwargs: Any) -> Any:
+        def make_scheduler(self, **kwargs: Any) -> Any:
             assert kwargs["extra_scheduler_kwargs"] == {
                 "stream_output_builder": "stream_builder"
             }

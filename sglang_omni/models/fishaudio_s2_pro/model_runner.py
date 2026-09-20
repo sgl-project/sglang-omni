@@ -41,14 +41,12 @@ def collect_s2pro_step_outputs(
         data.last_codebook_values = codes[1:, 0].clone()
         data.previous_semantic_tokens.append(semantic_token)
         if rep_history_len is not None:
-            _append_semantic_history(
-                data, output_semantic_ids[row_idx], rep_history_len
-            )
+            append_semantic_history(data, output_semantic_ids[row_idx], rep_history_len)
         data.output_codes.append(codes)
         data.latest_stream_code_chunk = codes
 
 
-def _append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -> None:
+def append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -> None:
     history = data.semantic_history_tokens
     if (
         history is None
@@ -85,8 +83,8 @@ class FishS2ProModelRunner(ModelRunner):
 
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
-        self._sync_decode_state(requests)
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
+        self.sync_decode_state(requests)
+        input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
         if input_embeds is not None:
             forward_batch.input_embeds = input_embeds
 
@@ -109,7 +107,7 @@ class FishS2ProModelRunner(ModelRunner):
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            self._sync_decode_row_state(row_idx, data)
+            self.sync_decode_row_state(row_idx, data)
 
             last_codes = data.last_codebook_values
             if last_codes is None:
@@ -123,17 +121,17 @@ class FishS2ProModelRunner(ModelRunner):
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
-        self._collect_step_outputs(result, requests)
+        self.collect_step_outputs(result, requests)
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
-        self._collect_step_outputs(result, requests)
+        self.collect_step_outputs(result, requests)
 
-    def _sync_decode_state(self, requests: list) -> None:
+    def sync_decode_state(self, requests: list) -> None:
         for row_idx, sched_req in enumerate(requests):
-            self._sync_decode_row_state(row_idx, sched_req.data)
+            self.sync_decode_row_state(row_idx, sched_req.data)
 
-    def _sync_decode_row_state(self, row_idx: int, data: Any) -> None:
+    def sync_decode_row_state(self, row_idx: int, data: Any) -> None:
         self.model._sampling_temperature[row_idx] = data.temperature
         self.model._sampling_top_p[row_idx] = data.top_p
         self.model._sampling_top_k[row_idx] = data.top_k
@@ -162,7 +160,7 @@ class FishS2ProModelRunner(ModelRunner):
             self.model._prev_tokens[row_idx].zero_()
             self.model._prev_token_count[row_idx] = 0
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -222,7 +220,7 @@ class FishS2ProModelRunner(ModelRunner):
 
         return text_embeds
 
-    def _collect_step_outputs(self, result: Any, requests: list) -> None:
+    def collect_step_outputs(self, result: Any, requests: list) -> None:
         collect_s2pro_step_outputs(
             result,
             requests,

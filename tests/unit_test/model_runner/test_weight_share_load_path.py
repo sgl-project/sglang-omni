@@ -94,7 +94,7 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
     assert runner._weight_share_record is None
     assert not os.listdir(tmp_path)  # nothing exported anywhere
     # Weight updates stay allowed on the stock path.
-    assert runner._weight_update_blocked_reason() is None
+    assert runner.weight_update_blocked_reason() is None
 
 
 def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
@@ -111,7 +111,7 @@ def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
     # Leader-side record kept for the pre-capture identity check (empty here:
     # a CPU model has no IPC-shareable tensors, everything rode the value path).
     assert runner._weight_share_record is not None
-    assert runner._weight_update_blocked_reason() is not None
+    assert runner.weight_update_blocked_reason() is not None
 
 
 def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
@@ -138,7 +138,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     # Values came from the leader export, not the dummy init.
     assert torch.all(runner.model.linear.weight == 7.0)
     assert runner._weight_share_record is not None
-    assert runner._weight_update_blocked_reason() is not None
+    assert runner.weight_update_blocked_reason() is not None
 
 
 def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):

@@ -34,10 +34,10 @@ TRANSCRIPTION_RESPONSE_FORMATS = (
     speech_to_text.DEFAULT_RESPONSE_FORMATS | speech_to_text.SEGMENT_RESPONSE_FORMATS
 )
 
-_first_transcription_chunk = speech_to_text._first_speech_to_text_chunk
+_first_transcription_chunk = speech_to_text.first_speech_to_text_chunk
 _transcription_stream = speech_to_text.speech_to_text_stream
-_cancel_task_bounded = speech_to_text._cancel_task_bounded
-_wait_for_request_disconnect = speech_to_text._wait_for_request_disconnect
+_cancel_task_bounded = speech_to_text.cancel_task_bounded
+_wait_for_request_disconnect = speech_to_text.wait_for_request_disconnect
 _probe_audio_duration = speech_to_text.probe_audio_duration
 build_transcription_generate_request = (
     speech_to_text.build_speech_to_text_generate_request
@@ -186,11 +186,11 @@ def register_transcriptions(app: FastAPI) -> None:
         try:
             plan: ChunkPlan | None = None
             if admitted:
-                plan = await _plan_admitted_upload(audio_bytes, chunking)
+                plan = await plan_admitted_upload(audio_bytes, chunking)
             if plan is None and admitted:
                 admission.release()
                 admitted = False
-            return await _transcribe_planned_upload(
+            return await transcribe_planned_upload(
                 request,
                 app,
                 form,
@@ -205,7 +205,7 @@ def register_transcriptions(app: FastAPI) -> None:
                 admission.release()
 
 
-async def _plan_admitted_upload(
+async def plan_admitted_upload(
     audio_bytes: bytes, chunking: ResolvedAudioChunking
 ) -> ChunkPlan | None:
     """Decode and split an admitted long upload; None when it fits one chunk."""
@@ -223,7 +223,7 @@ async def _plan_admitted_upload(
     return plan
 
 
-async def _transcribe_planned_upload(
+async def transcribe_planned_upload(
     request: Request,
     app: FastAPI,
     form: speech_to_text.SpeechToTextForm,
@@ -288,9 +288,9 @@ async def _transcribe_planned_upload(
         adapter = speech_to_text.resolve_speech_to_text_adapter(
             getattr(app.state, "architectures", None)
         )
-        chunk_texts = await _await_transcription_with_disconnect_abort(
+        chunk_texts = await await_transcription_with_disconnect_abort(
             request,
-            _transcribe_audio_chunks(
+            transcribe_audio_chunks(
                 client,
                 plan,
                 request_id=request_id,
@@ -318,7 +318,7 @@ async def _transcribe_planned_upload(
         logger.exception("Error transcribing audio for request %s", request_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     text = join_transcript_parts(chunk_texts)
-    return _assemble_chunked_response(
+    return assemble_chunked_response(
         text=text,
         response_format=form.response_format,
         language=form.language,
@@ -328,7 +328,7 @@ async def _transcribe_planned_upload(
     )
 
 
-def _assemble_chunked_response(
+def assemble_chunked_response(
     *,
     text: str,
     response_format: str,
@@ -378,7 +378,7 @@ def _assemble_chunked_response(
     )
 
 
-def _build_chunk_generate_request(
+def build_chunk_generate_request(
     chunk_bytes: bytes,
     *,
     model: str,
@@ -406,7 +406,7 @@ def _build_chunk_generate_request(
     )
 
 
-async def _transcribe_audio_chunks(
+async def transcribe_audio_chunks(
     client: Client,
     plan: ChunkPlan,
     *,
@@ -447,7 +447,7 @@ async def _transcribe_audio_chunks(
             # Encode inside the semaphore so at most max_concurrent chunk
             # WAVs exist at a time.
             chunk_bytes = await asyncio.to_thread(plan.encode, span)
-            gen_req = _build_chunk_generate_request(
+            gen_req = build_chunk_generate_request(
                 chunk_bytes,
                 model=model,
                 filename=filename,
@@ -532,7 +532,7 @@ async def _transcribe_audio_chunks(
         raise
 
 
-async def _await_transcription_with_disconnect_abort(
+async def await_transcription_with_disconnect_abort(
     request: Request,
     work: Awaitable[list[str]],
 ) -> list[str]:

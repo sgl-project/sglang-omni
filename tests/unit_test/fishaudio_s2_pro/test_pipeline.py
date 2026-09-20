@@ -149,7 +149,7 @@ def test_fish_preprocessing_uses_bounded_cpu_threads(
     configured_threads: list[int] = []
     monkeypatch.setattr(stages.torch, "set_num_threads", configured_threads.append)
 
-    intraop_threads = stages._configure_preprocessing_threads(worker_count=8)
+    intraop_threads = stages.configure_preprocessing_threads(worker_count=8)
 
     assert configured_threads == [expected_intraop_threads]
     assert intraop_threads == expected_intraop_threads
@@ -163,7 +163,7 @@ def _run_configure_preprocessing_threads(
     snippet = (
         "import torch\n"
         "from sglang_omni.models.fishaudio_s2_pro.stages import (\n"
-        "    _configure_preprocessing_threads as configure,\n"
+        "    configure_preprocessing_threads as configure,\n"
         "    _MAX_PREPROCESSING_INTRAOP_THREADS as cap,\n"
         ")\n"
         f"returned = configure({worker_count})\n"
@@ -688,7 +688,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     warmup_calls: list[tuple[object, int]] = []
     monkeypatch.setattr(
         stages,
-        "_warmup_s2pro_codebook_decoder",
+        "warmup_s2pro_codebook_decoder",
         lambda model, *, max_batch_size: warmup_calls.append((model, max_batch_size)),
     )
 
@@ -719,7 +719,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     audio_decoder = _AudioDecoder()
     model = SimpleNamespace(_audio_decoder=audio_decoder)
 
-    stages._compile_s2pro_codebook_decoder(model, max_batch_size=2)
+    stages.compile_s2pro_codebook_decoder(model, max_batch_size=2)
 
     assert len(compile_calls) == 1
     target, mode, kwargs = compile_calls[0]
@@ -762,7 +762,7 @@ def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
     audio_decoder = _AudioDecoder()
     model = SimpleNamespace(_audio_decoder=audio_decoder)
 
-    stages._warmup_s2pro_codebook_decoder(model, max_batch_size=20)
+    stages.warmup_s2pro_codebook_decoder(model, max_batch_size=20)
 
     expected = [
         (batch_size, codebook_idx)
@@ -840,7 +840,7 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
             )
 
     audio_decoder = _AudioDecoder()
-    stages._compile_s2pro_codebook_decoder(
+    stages.compile_s2pro_codebook_decoder(
         SimpleNamespace(_audio_decoder=audio_decoder),
         max_batch_size=8,
     )
@@ -1042,7 +1042,7 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_compile(model: object, *, max_batch_size: int) -> None:
         compile_calls.append((model, max_batch_size))
 
-    monkeypatch.setattr(stages, "_compile_s2pro_codebook_decoder", fake_compile)
+    monkeypatch.setattr(stages, "compile_s2pro_codebook_decoder", fake_compile)
 
     scheduler = stages.create_sglang_tts_engine_executor(
         "model",
@@ -1268,7 +1268,7 @@ def test_s2pro_engine_validates_allocated_decode_buffers(
 def test_fish_reference_encode_service_same_key_concurrent_merge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+    from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
     from sglang_omni.preprocessing import audio as audio_module
 
     release = threading.Event()
@@ -1310,7 +1310,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
     worker_count = 4
     gate = threading.Barrier(worker_count)
 
-    class _GatedFishReferenceEncodeHook(_FishReferenceEncodeHook):
+    class _GatedFishReferenceEncodeHook(FishReferenceEncodeHook):
         def normalize_input(self, raw_input):
             item = super().normalize_input(raw_input)
             gate.wait(timeout=5)
@@ -1348,7 +1348,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
 def test_fish_reference_encode_service_failure_does_not_poison(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+    from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
     from sglang_omni.preprocessing import audio as audio_module
 
     class _AudioMediaIO:
@@ -1384,7 +1384,7 @@ def test_fish_reference_encode_service_failure_does_not_poison(
 
     codec = _Codec()
     service = ReferenceEncodeService(
-        _FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
         max_items=16,
         max_bytes=1024,
     )
@@ -1401,7 +1401,7 @@ def test_fish_reference_encode_service_failure_does_not_poison(
 def test_fish_reference_path_mutation_returns_but_does_not_cache(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sglang_omni.models.fishaudio_s2_pro.stages import _FishReferenceEncodeHook
+    from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
 
     ref_path = tmp_path / "ref.wav"
     ref_path.write_bytes(b"version-a")
@@ -1431,7 +1431,7 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
 
     codec = _Codec()
     service = ReferenceEncodeService(
-        _FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
         max_items=16,
         max_bytes=1024,
     )
@@ -1601,10 +1601,10 @@ def test_fast_ar_fa3_selection_follows_compute_capability(
         audio_decoder,
     )
 
-    audio_decoder._fast_ar_uses_fa3.cache_clear()
+    audio_decoder.fast_ar_uses_fa3.cache_clear()
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: capability)
 
-    assert audio_decoder._fast_ar_uses_fa3(0) is expected
+    assert audio_decoder.fast_ar_uses_fa3(0) is expected
 
 
 def test_fast_ar_rejects_unsupported_capability(
@@ -1614,11 +1614,11 @@ def test_fast_ar_rejects_unsupported_capability(
         audio_decoder,
     )
 
-    audio_decoder._fast_ar_uses_fa3.cache_clear()
+    audio_decoder.fast_ar_uses_fa3.cache_clear()
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index: (8, 0))
 
     with pytest.raises(RuntimeError, match="Fast-AR does not support SM80"):
-        audio_decoder._fast_ar_uses_fa3(0)
+        audio_decoder.fast_ar_uses_fa3(0)
 
 
 def test_flashinfer_fast_ar_updates_kv_cache(
@@ -1652,7 +1652,7 @@ def test_flashinfer_fast_ar_updates_kv_cache(
     expected_k_cache[:, 2] = k[:, 0]
     expected_v_cache[:, 2] = v[:, 0]
 
-    output = audio_decoder._flashinfer_kvcache_attention(
+    output = audio_decoder.flashinfer_kvcache_attention(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,

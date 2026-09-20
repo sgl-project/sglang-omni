@@ -34,13 +34,13 @@ def build_turn_detector(
             eagerness = "medium"
         semantic_config = replace(
             SemanticVADConfig.from_eagerness(eagerness),
-            speech_threshold=_optional_float(
+            speech_threshold=optional_float(
                 config.get("threshold"),
                 SemanticVADConfig.speech_threshold,
                 minimum=0.0,
                 maximum=1.0,
             ),
-            prefix_padding_ms=_optional_int(
+            prefix_padding_ms=optional_int(
                 config.get("prefix_padding_ms"),
                 SemanticVADConfig.prefix_padding_ms,
                 minimum=0,
@@ -57,13 +57,13 @@ def build_turn_detector(
         return TurnDetectorBuild(detector, effective)
 
     server_config = VADConfig(
-        threshold=_optional_float(
+        threshold=optional_float(
             config.get("threshold"), VADConfig.threshold, minimum=0.0, maximum=1.0
         ),
-        prefix_padding_ms=_optional_int(
+        prefix_padding_ms=optional_int(
             config.get("prefix_padding_ms"), VADConfig.prefix_padding_ms, minimum=0
         ),
-        silence_duration_ms=_optional_int(
+        silence_duration_ms=optional_int(
             config.get("silence_duration_ms"),
             VADConfig.silence_duration_ms,
             minimum=0,
@@ -75,7 +75,7 @@ def build_turn_detector(
     return TurnDetectorBuild(StreamingVAD(server_config), effective)
 
 
-def _optional_float(
+def optional_float(
     value: Any,
     default: float,
     *,
@@ -94,7 +94,7 @@ def _optional_float(
     return result
 
 
-def _optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
+def optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     if value is None:
         return default
     result = int(value)

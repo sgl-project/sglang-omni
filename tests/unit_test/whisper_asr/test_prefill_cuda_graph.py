@@ -139,7 +139,7 @@ def test_model_runner_selects_whisper_prefill_adapter_only_when_needed(
             decode=PhaseConfig(), prefill=PhaseConfig(backend=backend)
         )
     ):
-        assert runner._prefill_cuda_graph_runner_cls() is expected
+        assert runner.prefill_cuda_graph_runner_cls() is expected
 
 
 def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
@@ -151,7 +151,7 @@ def _install_dispatch_for_test(monkeypatch: pytest.MonkeyPatch):
     # monkeypatch teardown undoes the install.
     monkeypatch.setattr(cuda_graph_setup, "PrefillCudaGraphRunner", stock_cls)
     monkeypatch.setattr(runner_module, "_PREFILL_RUNNER_DISPATCH_DEFAULT", None)
-    runner_module._install_prefill_runner_dispatch()
+    runner_module.install_prefill_runner_dispatch()
     return cuda_graph_setup, stock_cls
 
 

@@ -195,12 +195,12 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             if cached is not None:
                 device = next(self.vq_adaptor.parameters()).device
                 return cached.to(device, non_blocking=True)
-            output = self._get_audio_feature_uncached(items, forward_batch)
+            output = self.get_audio_feature_uncached(items, forward_batch)
             cache.put(str(key), output)
             return output
-        return self._get_audio_feature_uncached(items, forward_batch)
+        return self.get_audio_feature_uncached(items, forward_batch)
 
-    def _get_audio_feature_uncached(
+    def get_audio_feature_uncached(
         self,
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch,

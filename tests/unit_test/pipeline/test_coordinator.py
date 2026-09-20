@@ -31,12 +31,12 @@ def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request("req-1", {"text": "hello"})
-        await coordinator._handle_completion(
+        await coordinator.submit_request("req-1", {"text": "hello"})
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "hi"})
         )
         assert not coordinator._completion_futures["req-1"].done()
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", True, result={"audio": "ok"})
         )
         assert coordinator._completion_futures["req-1"].result() == {
@@ -44,7 +44,7 @@ def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
             "code2wav": {"audio": "ok"},
         }
 
-        await coordinator._submit_request("req-2", "hello")
+        await coordinator.submit_request("req-2", "hello")
         future = coordinator._completion_futures["req-2"]
         assert await coordinator.abort("req-2") is True
         assert control_plane.aborts[0].request_id == "req-2"
@@ -72,32 +72,32 @@ def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request(
+        await coordinator.submit_request(
             "text-req",
             OmniRequest(inputs="hello", metadata={"audio": False}),
         )
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("text-req", "decode", True, result={"text": "hi"})
         )
         assert coordinator._completion_futures["text-req"].result() == {"text": "hi"}
 
-        await coordinator._submit_request("raw-text-req", "hello")
-        await coordinator._handle_completion(
+        await coordinator.submit_request("raw-text-req", "hello")
+        await coordinator.handle_completion(
             CompleteMessage("raw-text-req", "decode", True, result={"text": "raw"})
         )
         assert coordinator._completion_futures["raw-text-req"].result() == {
             "text": "raw"
         }
 
-        await coordinator._submit_request(
+        await coordinator.submit_request(
             "audio-req",
             OmniRequest(inputs="hello", metadata={"audio": True}),
         )
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("audio-req", "decode", True, result={"text": "hi"})
         )
         assert not coordinator._completion_futures["audio-req"].done()
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage(
                 "audio-req",
                 "code2wav",
@@ -131,7 +131,7 @@ def test_coordinator_rejects_invalid_resolved_terminal_subset() -> None:
             coordinator.register_stage("preprocess", "inproc://preprocess")
 
             with pytest.raises(ValueError, match=error):
-                await coordinator._submit_request("req-1", OmniRequest(inputs="hello"))
+                await coordinator.submit_request("req-1", OmniRequest(inputs="hello"))
             assert coordinator._requests == {}
             assert coordinator.control_plane.submitted == []
 
@@ -185,7 +185,7 @@ def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None
             if "req-1" in coordinator._requests:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "hi"})
         )
         await asyncio.wait_for(task, timeout=1)
@@ -212,7 +212,7 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
         queue: asyncio.Queue = asyncio.Queue()
         coordinator._stream_queues["req-1"] = queue
 
-        await coordinator._handle_stream(
+        await coordinator.handle_stream(
             StreamMessage(
                 request_id="req-1",
                 from_stage="decode",
@@ -270,14 +270,14 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request("req-1", "hello")
+        await coordinator.submit_request("req-1", "hello")
         future = coordinator._completion_futures["req-1"]
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "hi"})
         )
         assert coordinator._partial_results["req-1"] == {"decode": {"text": "hi"}}
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", False, error="boom")
         )
 
@@ -301,7 +301,7 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request("req-1", "hello")
+        await coordinator.submit_request("req-1", "hello")
         future = coordinator._completion_futures["req-1"]
 
         await coordinator.fail_pending_requests(RuntimeError("stage died"))
@@ -353,7 +353,7 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
             if "req-1" in coordinator._stream_queues:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_stream(
+        await coordinator.handle_stream(
             StreamMessage(
                 request_id="req-1",
                 from_stage="decode",
@@ -390,7 +390,7 @@ def test_stream_close_after_one_terminal_aborts_remaining_terminal_work() -> Non
             if "req-1" in coordinator._requests:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "done"})
         )
         assert (await first_terminal).from_stage == "decode"
@@ -432,7 +432,7 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
             if "req-1" in coordinator._requests:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage(
                 request_id="req-1",
                 from_stage="decode",
@@ -463,7 +463,7 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request("req-1", "original")
+        await coordinator.submit_request("req-1", "original")
         original_request = coordinator._requests["req-1"]
         original_future = coordinator._completion_futures["req-1"]
 
@@ -501,7 +501,7 @@ def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
             if "req-1" in coordinator._requests:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "done"})
         )
         assert (await terminal_event).result == {"text": "done"}
@@ -511,14 +511,14 @@ def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
         assert "req-1" not in coordinator._requests
 
         with pytest.raises(ValueError, match="already exists"):
-            await coordinator._submit_request("req-1", "replacement")
+            await coordinator.submit_request("req-1", "replacement")
         assert coordinator._completion_futures["req-1"] is old_future
         assert coordinator._stream_queues["req-1"] is old_queue
 
         await stream.aclose()
         assert "req-1" not in coordinator._completion_futures
         assert "req-1" not in coordinator._stream_queues
-        await coordinator._submit_request("req-1", "replacement")
+        await coordinator.submit_request("req-1", "replacement")
         assert coordinator._requests["req-1"].request_id == "req-1"
 
     asyncio.run(_run())
@@ -553,7 +553,7 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
             if "req-1" in coordinator._requests:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_stream(
+        await coordinator.handle_stream(
             StreamMessage(
                 request_id="req-1",
                 from_stage="decode",
@@ -566,14 +566,14 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
         close_task = asyncio.create_task(stream.aclose())
         await control_plane.abort_started.wait()
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "done"})
         )
         assert "req-1" not in coordinator._requests
         assert "req-1" in coordinator._abort_tasks
 
         with pytest.raises(ValueError, match="already exists"):
-            await coordinator._submit_request("req-1", "replacement")
+            await coordinator.submit_request("req-1", "replacement")
 
         control_plane.release_abort.set()
         await close_task
@@ -640,7 +640,7 @@ def test_coordinator_stream_abort_failure_is_logged(
             if "req-1" in coordinator._stream_queues:
                 break
             await asyncio.sleep(0)
-        await coordinator._handle_stream(
+        await coordinator.handle_stream(
             StreamMessage(
                 request_id="req-1",
                 from_stage="decode",
@@ -764,7 +764,7 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
             coordinator, "req-1"
         )
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", False, error="boom")
         )
         await asyncio.wait_for(task, timeout=1)
@@ -788,17 +788,17 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        await coordinator._submit_request("req-1", "hello")
+        await coordinator.submit_request("req-1", "hello")
         with pytest.raises(QueueFullError, match="The request queue is full"):
-            await coordinator._submit_request("req-2", "hello")
+            await coordinator.submit_request("req-2", "hello")
 
         assert [msg.request_id for _, _, msg in control_plane.submitted] == ["req-1"]
         assert list(coordinator._requests) == ["req-1"]
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage("req-1", "preprocess", True, result={"ok": True})
         )
-        await coordinator._submit_request("req-2", "hello")
+        await coordinator.submit_request("req-2", "hello")
         assert [msg.request_id for _, _, msg in control_plane.submitted] == [
             "req-1",
             "req-2",
@@ -821,20 +821,20 @@ def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
     coordinator.register_stage("talker_ar@r1", "inproc://t1")
     coordinator.register_stage("thinker", "inproc://thinker")
 
-    assert coordinator._resolve_admin_stages(["talker_ar"]) == [
+    assert coordinator.resolve_admin_stages(["talker_ar"]) == [
         "talker_ar@r0",
         "talker_ar@r1",
     ]
-    assert coordinator._resolve_admin_stages(
+    assert coordinator.resolve_admin_stages(
         ["talker_ar", "talker_ar@r0", "thinker"]
     ) == ["talker_ar@r0", "talker_ar@r1", "thinker"]
-    assert coordinator._resolve_admin_stages(None) == [
+    assert coordinator.resolve_admin_stages(None) == [
         "talker_ar@r0",
         "talker_ar@r1",
         "thinker",
     ]
     with pytest.raises(ValueError, match="Unknown admin target"):
-        coordinator._resolve_admin_stages(["nope"])
+        coordinator.resolve_admin_stages(["nope"])
 
 
 def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
@@ -851,11 +851,11 @@ def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
         queue: asyncio.Queue = asyncio.Queue()
-        await coordinator._submit_request("req-1", "hello", stream_queue=queue)
+        await coordinator.submit_request("req-1", "hello", stream_queue=queue)
         bindings = coordinator.control_plane.submitted[0][2].replica_bindings
         instance = replica_topology.resolve("code2wav", bindings["code2wav"])
 
-        await coordinator._handle_stream(
+        await coordinator.handle_stream(
             StreamMessage(
                 request_id="req-1",
                 from_stage=instance,
@@ -891,13 +891,11 @@ def test_coordinator_normalizes_replica_instance_name_on_completion(
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         queue: asyncio.Queue = asyncio.Queue()
-        await coordinator._submit_request(
-            "req-1", {"text": "hello"}, stream_queue=queue
-        )
+        await coordinator.submit_request("req-1", {"text": "hello"}, stream_queue=queue)
         bindings = coordinator.control_plane.submitted[0][2].replica_bindings
         instance = replica_topology.resolve("code2wav", bindings["code2wav"])
 
-        await coordinator._handle_completion(
+        await coordinator.handle_completion(
             CompleteMessage(
                 "req-1",
                 instance,
@@ -967,8 +965,8 @@ def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("normalize", "inproc://normalize")
 
-        await coordinator._submit_request("req-0", "hello")
-        await coordinator._submit_request("req-1", "hello")
+        await coordinator.submit_request("req-0", "hello")
+        await coordinator.submit_request("req-1", "hello")
 
         bindings = [
             msg.replica_bindings for _stage, _ep, msg in control_plane.submitted
@@ -1011,12 +1009,12 @@ def test_binding_validation_precedes_request_registration() -> None:
         coordinator.register_stage("normalize", "inproc://normalize")
 
         with pytest.raises(ValueError, match="selected replica 2"):
-            await coordinator._submit_request("req-retry", "hello")
+            await coordinator.submit_request("req-retry", "hello")
 
         assert coordinator._requests == {}
         assert coordinator._completion_futures == {}
 
-        await coordinator._submit_request("req-retry", "hello")
+        await coordinator.submit_request("req-retry", "hello")
         assert control_plane.submitted[0][2].replica_bindings == {
             "decode": 0,
             "postprocess": 0,
@@ -1040,8 +1038,8 @@ def test_coordinator_submits_to_the_bound_entry_replica() -> None:
         coordinator.register_stage("normalize@r0", "inproc://n0")
         coordinator.register_stage("normalize@r1", "inproc://n1")
 
-        await coordinator._submit_request("req-0", "hello")
-        await coordinator._submit_request("req-1", "hello")
+        await coordinator.submit_request("req-0", "hello")
+        await coordinator.submit_request("req-1", "hello")
 
         assert [stage for stage, _ep, _msg in control_plane.submitted] == [
             "normalize@r0",
@@ -1069,7 +1067,7 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("normalize", "inproc://normalize")
 
-        await coordinator._submit_request("req-0", "hello")
+        await coordinator.submit_request("req-0", "hello")
 
         assert control_plane.submitted[0][2].replica_bindings is None
 

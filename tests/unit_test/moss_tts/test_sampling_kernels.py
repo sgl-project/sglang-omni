@@ -533,7 +533,7 @@ def test_tied_two_token_head_agrees_across_sampling_paths() -> None:
         )
         fused = sample_seeded_fused(logits, **params)
         branchless = sample_seeded_branchless(logits, **params)
-        eager = MossTTSModelRunner._sample_tokens(logits, **params).view(-1)
+        eager = MossTTSModelRunner.sample_tokens(logits, **params).view(-1)
         assert int(fused.item()) == 0
         assert torch.equal(fused, branchless), f"branchless seed={seed}"
         assert torch.equal(fused, eager), f"eager seed={seed}"

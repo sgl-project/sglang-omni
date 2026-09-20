@@ -40,7 +40,7 @@ class ThinkerModelRunner(ModelRunner):
         if not schedule_batch.forward_mode.is_extend():
             return None
 
-        omni_result = self._inject_multimodal_embeds(forward_batch, schedule_batch)
+        omni_result = self.inject_multimodal_embeds(forward_batch, schedule_batch)
         if omni_result is not None and omni_result[0] is not None:
             input_embeds, ds_embeds, vis_masks = omni_result
             # note (jun): SGLang owns ordinary input embeds and attention
@@ -49,7 +49,7 @@ class ThinkerModelRunner(ModelRunner):
             if ds_embeds is None:
                 forward_batch.input_embeds = input_embeds
                 return None
-            return self._forward_with_omni_embeds(
+            return self.forward_with_omni_embeds(
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
         return None
@@ -75,7 +75,7 @@ class ThinkerModelRunner(ModelRunner):
     # Multimodal embedding injection
     # ------------------------------------------------------------------
 
-    def _req_mm_token_positions(
+    def req_mm_token_positions(
         self, req: Any, pad_values: dict
     ) -> dict[str, torch.Tensor]:
         """Prompt-absolute placeholder positions per modality, as CPU int64
@@ -98,7 +98,7 @@ class ThinkerModelRunner(ModelRunner):
         return positions
 
     @staticmethod
-    def _plan_modality_chunk(
+    def plan_modality_chunk(
         positions: torch.Tensor,
         consumed: dict[str, Any],
         modality: str,
@@ -118,7 +118,7 @@ class ThinkerModelRunner(ModelRunner):
         )
 
     @staticmethod
-    def _ensure_consumed_cursor(req: Any) -> dict[str, Any]:
+    def ensure_consumed_cursor(req: Any) -> dict[str, Any]:
         consumed = req._omni_consumed
         if consumed is None:
             consumed = {}
@@ -131,7 +131,7 @@ class ThinkerModelRunner(ModelRunner):
         return consumed
 
     @staticmethod
-    def _validate_modality_cursor(
+    def validate_modality_cursor(
         modality: str, offset: Any, row_count: int, live_count: int
     ) -> int:
         if not isinstance(offset, Integral) or isinstance(offset, bool):
@@ -152,7 +152,7 @@ class ThinkerModelRunner(ModelRunner):
         return offset
 
     @staticmethod
-    def _reconstruct_missing_cursor(
+    def reconstruct_missing_cursor(
         modality: str,
         positions: torch.Tensor,
         prefix: int,
@@ -174,7 +174,7 @@ class ThinkerModelRunner(ModelRunner):
             )
         return cached_count
 
-    def _inject_multimodal_embeds(
+    def inject_multimodal_embeds(
         self, forward_batch: Any, schedule_batch: Any
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
@@ -214,14 +214,14 @@ class ThinkerModelRunner(ModelRunner):
             start = offsets[i]
             length = extend_lens[i]
             prefix = 0 if prefix_lens is None else int(prefix_lens[i])
-            consumed = self._ensure_consumed_cursor(req)
+            consumed = self.ensure_consumed_cursor(req)
             chunk_offsets: dict[str, tuple[int, int]] = {}
             pad_values = omni_inputs.get("pad_values", {})
 
-            positions = self._req_mm_token_positions(req, pad_values)
+            positions = self.req_mm_token_positions(req, pad_values)
             chunk_positions: dict[str, torch.Tensor] = {}
             for modality in ("image", "video", "audio"):
-                rel, offset, n_tokens = self._plan_modality_chunk(
+                rel, offset, n_tokens = self.plan_modality_chunk(
                     positions[modality], consumed, modality, prefix, length
                 )
                 chunk_positions[modality] = rel
@@ -230,7 +230,7 @@ class ThinkerModelRunner(ModelRunner):
                     continue
                 row_count = embeds.shape[0]
                 if modality not in consumed:
-                    reconstructed_offset = self._reconstruct_missing_cursor(
+                    reconstructed_offset = self.reconstruct_missing_cursor(
                         modality,
                         positions[modality],
                         prefix,
@@ -239,7 +239,7 @@ class ThinkerModelRunner(ModelRunner):
                     if reconstructed_offset is not None:
                         consumed[modality] = reconstructed_offset
                         offset = reconstructed_offset
-                offset = self._validate_modality_cursor(
+                offset = self.validate_modality_cursor(
                     modality, offset, row_count, n_tokens
                 )
                 if n_tokens:
@@ -358,7 +358,7 @@ class ThinkerModelRunner(ModelRunner):
     # Custom forward with multimodal embeddings + deepstack
     # ------------------------------------------------------------------
 
-    def _forward_with_omni_embeds(
+    def forward_with_omni_embeds(
         self,
         forward_batch,
         input_embeds,
@@ -446,7 +446,7 @@ class ThinkerModelRunner(ModelRunner):
                 return False
         return True
 
-    def _async_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+    def async_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
         # note (jiaxin deng): two pinned buffers ping-ponged so resolve(N) reads
         # one while launch(N+1) writes the other.
         if self._th_host_bufs is None or self._th_host_bufs[0].shape[0] < n:
@@ -459,10 +459,10 @@ class ThinkerModelRunner(ModelRunner):
         self._th_slot ^= 1
         return buf
 
-    def _sample_lookahead(self, logits_output, forward_batch, requests):
+    def sample_lookahead(self, logits_output, forward_batch, requests):
         # note (jiaxin deng): penalties never reach here (lookahead_eligible routes
         # those batches to sync); only static suppress tokens are lag-safe.
-        self._apply_codec_suppress_tokens(logits_output, requests)
+        self.apply_codec_suppress_tokens(logits_output, requests)
         return self.tp_worker.model_runner.sample(logits_output, forward_batch)
 
     def post_decode_launch(self, result, forward_batch, requests):
@@ -472,11 +472,11 @@ class ThinkerModelRunner(ModelRunner):
         # note (jiaxin deng): the decode forward leaves next_token_ids None (sync
         # samples in _finalize); set it here for the next-step input chain.
         if result.next_token_ids is None:
-            result.next_token_ids = self._sample_lookahead(
+            result.next_token_ids = self.sample_lookahead(
                 result.logits_output, forward_batch, requests
             )
         nt = result.next_token_ids
-        host_buf = self._async_host_buf(nt, n)
+        host_buf = self.async_host_buf(nt, n)
         host_buf[:n].copy_(nt[:n], non_blocking=True)
         return host_buf
 

@@ -111,7 +111,7 @@ def test_fused_rope_hook_feeds_the_kernel_int32_positions(
     positions = torch.arange(3, dtype=positions_dtype)
     hidden_states = torch.zeros((3, 8), dtype=torch.bfloat16)
 
-    query, key, value = sglang_model._fused_asr_forward_prepare_native(
+    query, key, value = sglang_model.fused_asr_forward_prepare_native(
         attention, positions, hidden_states
     )
 

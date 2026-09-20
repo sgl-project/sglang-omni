@@ -30,7 +30,7 @@ MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES = 4
 MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH = False
 
 
-def _validate_ming_tts_pipeline_contract(
+def validate_ming_tts_pipeline_contract(
     config: "MingTTSPipelineConfig",
 ) -> dict[str, StageConfig]:
     """Validate the fixed Ming payload and streaming topology."""
@@ -286,7 +286,7 @@ class MingTTSPipelineConfig(PipelineConfig):
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        stages = _validate_ming_tts_pipeline_contract(self)
+        stages = validate_ming_tts_pipeline_contract(self)
         preprocessing = stages[PREPROCESSING_STAGE]
         audio_decode = stages[AUDIO_DECODE_STAGE]
 

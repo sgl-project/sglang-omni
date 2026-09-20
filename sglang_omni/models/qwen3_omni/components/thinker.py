@@ -19,7 +19,7 @@ LM_HEAD_PREFIX = ("thinker.lm_head.", "lm_head.")
 TEXT_MODEL_CLASS = hf_modeling.Qwen3OmniMoeThinkerTextModel
 
 
-def _concat_features(value: Any) -> torch.Tensor | None:
+def concat_features(value: Any) -> torch.Tensor | None:
     if value is None:
         return None
     if isinstance(value, torch.Tensor):
@@ -32,22 +32,22 @@ def _concat_features(value: Any) -> torch.Tensor | None:
     return None
 
 
-def _should_tie_embeddings(config: Any) -> bool:
+def should_tie_embeddings(config: Any) -> bool:
     return bool(config.text_config.tie_word_embeddings)
 
 
-def _maybe_tie_weights(
+def maybe_tie_weights(
     *,
     config: Any,
     text_model: nn.Module,
     lm_head: nn.Module,
 ) -> None:
-    if not _should_tie_embeddings(config):
+    if not should_tie_embeddings(config):
         return
     lm_head.weight = text_model.embed_tokens.weight
 
 
-def _build_text_model(
+def build_text_model(
     model_path: str,
     *,
     thinker_cfg: Any,
@@ -65,7 +65,7 @@ def _build_text_model(
     )
 
 
-def _build_lm_head(
+def build_lm_head(
     model_path: str,
     *,
     thinker_cfg: Any,
@@ -76,7 +76,7 @@ def _build_lm_head(
         thinker_cfg.text_config.vocab_size,
         bias=False,
     )
-    if not _should_tie_embeddings(thinker_cfg):
+    if not should_tie_embeddings(thinker_cfg):
         lm_head = load_module(
             lm_head,
             model_path,
@@ -88,7 +88,7 @@ def _build_lm_head(
     return lm_head
 
 
-def _build_thinker_shell(
+def build_thinker_shell(
     thinker_cfg: Any,
 ) -> hf_modeling.Qwen3OmniMoeThinkerForConditionalGeneration:
     with init_empty_weights():
@@ -111,19 +111,19 @@ class Qwen3OmniSplitThinker(nn.Module):
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
 
-        text_model = _build_text_model(
+        text_model = build_text_model(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )
-        lm_head = _build_lm_head(
+        lm_head = build_lm_head(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
         )
-        _maybe_tie_weights(config=thinker_cfg, text_model=text_model, lm_head=lm_head)
+        maybe_tie_weights(config=thinker_cfg, text_model=text_model, lm_head=lm_head)
 
-        self.thinker = _build_thinker_shell(thinker_cfg)
+        self.thinker = build_thinker_shell(thinker_cfg)
         self.thinker.model = text_model
         self.thinker.lm_head = lm_head
         # Move only the text model and LM head to the thinker device.
@@ -151,7 +151,7 @@ class Qwen3OmniSplitThinker(nn.Module):
             self.thinker.lm_head = self.thinker.lm_head.to(dtype=dtype)
         return self
 
-    def _merge_embeddings(
+    def merge_embeddings(
         self,
         *,
         input_ids: torch.Tensor,
@@ -235,9 +235,9 @@ class Qwen3OmniSplitThinker(nn.Module):
         audio_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         **kwargs: Any,
     ):
-        image_embeds_t = _concat_features(image_embeds)
-        video_embeds_t = _concat_features(video_embeds)
-        audio_embeds_t = _concat_features(audio_embeds)
+        image_embeds_t = concat_features(image_embeds)
+        video_embeds_t = concat_features(video_embeds)
+        audio_embeds_t = concat_features(audio_embeds)
         deepstack_visual_embeds = kwargs.pop("deepstack_visual_embeds", None)
         image_deepstack_visual_embeds = kwargs.pop(
             "image_deepstack_visual_embeds", None
@@ -276,7 +276,7 @@ class Qwen3OmniSplitThinker(nn.Module):
             audio_embeds_t = (
                 audio_embeds_t.to(self._device) if audio_embeds_t is not None else None
             )
-            inputs_embeds, image_mask, video_mask = self._merge_embeddings(
+            inputs_embeds, image_mask, video_mask = self.merge_embeddings(
                 input_ids=input_ids.to(self._device),
                 inputs_embeds=inputs_embeds,
                 image_embeds=image_embeds_t,

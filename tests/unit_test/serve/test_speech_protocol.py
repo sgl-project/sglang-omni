@@ -465,7 +465,7 @@ def test_reference_audio_accepts_allowed_https(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -504,7 +504,7 @@ def test_reference_audio_accepts_public_https_by_default(
     service = SpeechRequestValidator(default_model="tts")
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -596,7 +596,7 @@ def test_reference_audio_rejects_http_status_with_speech_error(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -655,7 +655,7 @@ def test_reference_audio_revalidates_redirect_domains(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -683,7 +683,7 @@ def test_reference_audio_allows_configured_domain_suffix_redirect(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -725,7 +725,7 @@ def test_reference_audio_revalidates_redirect_addresses(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         resolve_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -754,7 +754,7 @@ def test_reference_audio_rejects_oversized_https_response(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(

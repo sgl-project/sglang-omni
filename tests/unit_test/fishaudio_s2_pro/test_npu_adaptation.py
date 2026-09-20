@@ -37,7 +37,7 @@ def test_npu_kvcache_attention_uses_fused_infer_attention(
         raising=False,
     )
 
-    out = fish_audio_decoder._npu_kvcache_attention(
+    out = fish_audio_decoder.npu_kvcache_attention(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
@@ -75,7 +75,7 @@ def test_npu_kvcache_attention_requires_fused_infer_attention(
     v_cache = torch.zeros(1, 11, 4, 8)
 
     with pytest.raises(RuntimeError, match="npu_fused_infer_attention_score"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -97,7 +97,7 @@ def test_npu_kvcache_attention_requires_single_token_query(monkeypatch) -> None:
     v_cache = torch.zeros(1, 11, 4, 8)
 
     with pytest.raises(ValueError, match="single-token query"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -132,7 +132,7 @@ def test_npu_kvcache_attention_requires_kv_and_cache_position() -> None:
     k = torch.randn(1, 1, 4, 8)
 
     with pytest.raises(ValueError, match="requires k and v"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -141,7 +141,7 @@ def test_npu_kvcache_attention_requires_kv_and_cache_position() -> None:
             cache_position=0,
         )
     with pytest.raises(ValueError, match="requires cache_position"):
-        fish_audio_decoder._npu_kvcache_attention(
+        fish_audio_decoder.npu_kvcache_attention(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -174,7 +174,7 @@ def test_fish_engine_builder_npu_defaults(monkeypatch) -> None:
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 16]
     assert overrides["cuda_graph_max_bs"] == 16
 
-    assert fish_engine._resolve_fast_ar_attention_backend(gpu_id=0) == "ascend"
+    assert fish_engine.resolve_fast_ar_attention_backend(gpu_id=0) == "ascend"
 
 
 def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) -> None:
@@ -190,7 +190,7 @@ def test_fish_engine_builder_compiles_when_npu_opt_in_is_enabled(monkeypatch) ->
     compiled: list[tuple[object, int]] = []
     monkeypatch.setattr(
         fish_engine.fish_stages,
-        "_compile_s2pro_codebook_decoder",
+        "compile_s2pro_codebook_decoder",
         lambda model, *, max_batch_size: compiled.append((model, max_batch_size)),
     )
 
@@ -249,7 +249,7 @@ def test_stage_devices_resolve_from_current_platform(monkeypatch) -> None:
     monkeypatch.setattr(fish_stages, "_resolve_checkpoint", lambda model_path: "ckpt")
     monkeypatch.setattr(
         fish_stages,
-        "_load_codec",
+        "load_codec",
         lambda checkpoint_dir, device: seen.append(device) or object(),
     )
     monkeypatch.setattr(

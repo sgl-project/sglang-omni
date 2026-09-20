@@ -26,7 +26,7 @@ _CACHE_MAX_BYTES = 2 * 1024**3
 
 
 @dataclass(frozen=True)
-class _DetachedFailure:
+class DetachedFailure:
     exception: Exception
     formatted_traceback: str
 
@@ -57,16 +57,16 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         """Blocks until item.precomputed_embeddings is attached."""
         feature_lengths = getattr(item, "audio_feature_lengths", None)
         if feature_lengths is None:
-            future = self._submit(item)
+            future = self.submit(item)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
         expected_tokens = int(feature_lengths.sum())
-        key = self._cache_key(item)
+        key = self.cache_key(item)
         cached = self._lookup_cached_embedding(key, expected_tokens)
         if cached is not None:
             self.attach_embedding(item, cached)
             return
-        future = self._submit(item)
+        future = self.submit(item)
         future.result(timeout=self.ENCODE_TIMEOUT_S)
 
     def lookup_cached_embedding(
@@ -85,7 +85,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         cached = self._cache.get(key)
         if cached is None:
             return None
-        if self._is_valid(cached, expected_tokens):
+        if self.is_valid(cached, expected_tokens):
             return cached
         logger.warning(
             "MOSS-TD pre-LM cache entry %s failed validation "
@@ -97,13 +97,13 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self._cache.remove_if_same(key, cached)
         return None
 
-    def _cache_key(self, item: Any) -> str | None:
+    def cache_key(self, item: Any) -> str | None:
         fingerprint = getattr(item, "audio_fingerprint", None)
         if fingerprint is None:
             fingerprint = getattr(item, "hash", None)
         return None if fingerprint is None else str(fingerprint)
 
-    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -112,7 +112,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             and embedding.dtype == self._dtype
         )
 
-    def _drain_batch(self) -> list[QueueEntry[Any]]:
+    def drain_batch(self) -> list[QueueEntry[Any]]:
         # note (yichi): never wait — a window costs 8~16ms at low concurrency, buys <=5ms at high.
         batch = [self._queue.get()]
         for _ in range(self._max_batch_size - 1):
@@ -122,14 +122,14 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 break
         return batch
 
-    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
-        return self._drain_batch(), False
+    def next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+        return self.drain_batch(), False
 
-    def _batch_context(self) -> contextlib.AbstractContextManager[Any]:
+    def batch_context(self) -> contextlib.AbstractContextManager[Any]:
         return torch.cuda.stream(self._stream)
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
-        return self._model._get_audio_feature_uncached(items, None)
+        return self._model.get_audio_feature_uncached(items, None)
 
     def split_embeddings(
         self,
@@ -163,14 +163,14 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         host_copy: torch.Tensor | None = None,
     ) -> None:
         del host_copy
-        self._cache.put(self._cache_key(item), embedding)
+        self._cache.put(self.cache_key(item), embedding)
 
-    def _handle_batch_failure(
+    def handle_batch_failure(
         self,
         batch: list[QueueEntry[Any]],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         if len(batch) == 1:
             logger.error(
                 "MOSS-TD audio encode failed:\n%s",
@@ -183,29 +183,29 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 len(batch),
                 failure.formatted_traceback,
             )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
-    def _handle_item_failure(
+    def handle_item_failure(
         self,
         _entry: QueueEntry[Any],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         logger.error(
             "MOSS-TD per-item audio encode retry failed:\n%s",
             failure.formatted_traceback,
         )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         return len(batch) > 1
 
-    def _future_result(self, _embedding: torch.Tensor) -> None:
+    def future_result(self, _embedding: torch.Tensor) -> None:
         return None
 
-    def _on_batch_finished(
+    def on_batch_finished(
         self,
         batch: list[QueueEntry[Any]],
         batch_exc: Exception | None,
@@ -213,13 +213,13 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         _elapsed_s: float,
     ) -> None:
         if batch_exc is None:
-            self._record_success(len(batch))
+            self.record_success(len(batch))
             return
         for _ in range(retry_recovered or 0):
-            self._record_success(1)
+            self.record_success(1)
 
     @staticmethod
-    def _detach_failure(exc: Exception) -> _DetachedFailure:
+    def detach_failure(exc: Exception) -> DetachedFailure:
         formatted_traceback = "".join(traceback.format_exception(exc)).rstrip()
         message = str(exc)
         traceback.clear_frames(exc.__traceback__)
@@ -232,12 +232,12 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             detached = ValueError(message)
         else:
             detached = RuntimeError(f"{type(exc).__name__}: {message}")
-        return _DetachedFailure(
+        return DetachedFailure(
             exception=detached,
             formatted_traceback=formatted_traceback,
         )
 
-    def _recover_after_failure(self, exc: Exception) -> None:
+    def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
         try:
@@ -252,7 +252,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         except Exception:
             logger.warning("MOSS-TD CUDA cache cleanup failed after OOM", exc_info=True)
 
-    def _record_success(self, item_count: int) -> None:
+    def record_success(self, item_count: int) -> None:
         self._batch_count += 1
         self._item_count += item_count
         if self._batch_count % 50 == 1:

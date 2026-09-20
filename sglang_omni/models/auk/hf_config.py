@@ -57,12 +57,12 @@ class AuKRuntimeConfig:
         return frames * self.downsample_rate / self.sample_rate
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
+def load_yaml(path: Path) -> dict[str, Any]:
     loaded = OmegaConf.to_container(OmegaConf.load(str(path)), resolve=True)
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _load_json(path: Path) -> dict[str, Any]:
+def load_json(path: Path) -> dict[str, Any]:
     import json
 
     with path.open("r", encoding="utf-8") as handle:
@@ -76,12 +76,12 @@ def load_auk_config(model_path: str) -> AuKRuntimeConfig:
     for name in CONFIG_YAML_NAMES:
         candidate = root / name
         if candidate.is_file():
-            raw = _load_yaml(candidate)
+            raw = load_yaml(candidate)
             break
     else:
         config_json = root / "config.json"
         if config_json.is_file():
-            raw = _load_json(config_json)
+            raw = load_json(config_json)
 
     model = raw.get("model") if isinstance(raw.get("model"), dict) else raw
     model = model or {}

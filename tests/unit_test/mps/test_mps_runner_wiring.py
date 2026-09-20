@@ -256,7 +256,7 @@ def _patch_runner(
     )
     monkeypatch.setattr(
         mp_runner,
-        "_build_stage_groups",
+        "build_stage_groups",
         lambda *args, **kwargs: [group],
     )
     if fake_mps is not None:

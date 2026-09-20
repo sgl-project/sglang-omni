@@ -47,7 +47,7 @@ _COLOCATED_STAGE_ENV_DEFAULTS = {
 }
 
 
-def _preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
+def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageConfig:
     if speech_enabled:
         next_stages = ["image_encoder", "audio_encoder", "thinker", "talker_ar"]
         route_fn = f"{_PKG}.request_builders.resolve_preprocessing_next_stages_speech"
@@ -80,7 +80,7 @@ def _preprocessing_stage(*, process: str, speech_enabled: bool = False) -> Stage
     )
 
 
-def _encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
+def encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
     if speech_enabled:
         return {
             "next": ["thinker", "talker_ar"],
@@ -98,7 +98,7 @@ def _encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
     }
 
 
-def _image_encoder_stage(
+def image_encoder_stage(
     *, gpu: int, process: str, speech_enabled: bool = False
 ) -> StageConfig:
     return StageConfig(
@@ -106,11 +106,11 @@ def _image_encoder_stage(
         process=process,
         factory_path=f"{_PKG}.stages.create_image_encoder_executor",
         gpu=gpu,
-        **_encoder_join_edges(speech_enabled=speech_enabled),
+        **encoder_join_edges(speech_enabled=speech_enabled),
     )
 
 
-def _audio_encoder_stage(
+def audio_encoder_stage(
     *, gpu: int, process: str, speech_enabled: bool = False
 ) -> StageConfig:
     return StageConfig(
@@ -120,11 +120,11 @@ def _audio_encoder_stage(
         factory=FactoryArgs(enable_layer_cuda_graph=True),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
-        **_encoder_join_edges(speech_enabled=speech_enabled),
+        **encoder_join_edges(speech_enabled=speech_enabled),
     )
 
 
-def _aggregate_stage(*, process: str, gpu: int) -> StageConfig:
+def aggregate_stage(*, process: str, gpu: int) -> StageConfig:
     return StageConfig(
         name="mm_aggregate",
         process=process,
@@ -138,7 +138,7 @@ def _aggregate_stage(*, process: str, gpu: int) -> StageConfig:
     )
 
 
-def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
+def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
     # note (jiaxin deng): async decode defaults on;
     # --thinker.factory.enable_async_decode false overrides it.
     factory_group = FactoryArgs(max_seq_len=8192, enable_async_decode=True)
@@ -180,7 +180,7 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
     )
 
 
-def _decode_stage(*, process: str) -> StageConfig:
+def decode_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="decode",
         process=process,
@@ -190,16 +190,19 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
-def _talker_stage_env() -> dict[str, str]:
-    if not current_platform.is_rocm():
-        return {}
-    # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
-    # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
-    # greedy Talker request would corrupt its first codec token.
-    return {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}
+def talker_stage_env() -> dict[str, str]:
+    # Note (jeffro): FlashInfer CUTLASS fused finalize uses BF16 atomic-add;
+    # accumulation order is not fixed and can flip Talker codec tokens.
+    env = {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}
+    if current_platform.is_rocm():
+        # Note (zijiecode): aiter.greedy_sample returns wrong ids for vocab sizes below
+        # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
+        # greedy Talker request would corrupt its first codec token.
+        env["SGLANG_DISABLE_AITER_GREEDY_SAMPLE"] = "1"
+    return env
 
 
-def _talker_stage(
+def talker_stage(
     *,
     gpu: int,
     process: str,
@@ -208,7 +211,7 @@ def _talker_stage(
     return EngineStageConfig(
         name="talker_ar",
         process=process,
-        env=_talker_stage_env(),
+        env=talker_stage_env(),
         wait_for=["preprocessing", "image_encoder", "audio_encoder"],
         wait_for_fn=f"{_PKG}.request_builders.resolve_mm_aggregate_wait_sources",
         merge_fn=f"{_PKG}.request_builders.merge_for_talker",
@@ -240,7 +243,7 @@ def _talker_stage(
     )
 
 
-def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
+def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="code2wav",
         process=process,
@@ -252,18 +255,18 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _text_stages() -> list[StageConfig]:
+def text_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="pipeline"),
-        _image_encoder_stage(gpu=0, process="pipeline"),
-        _audio_encoder_stage(gpu=0, process="pipeline"),
-        _aggregate_stage(process="pipeline", gpu=0),
-        _thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
-        _decode_stage(process="pipeline"),
+        preprocessing_stage(process="pipeline"),
+        image_encoder_stage(gpu=0, process="pipeline"),
+        audio_encoder_stage(gpu=0, process="pipeline"),
+        aggregate_stage(process="pipeline", gpu=0),
+        thinker_stage(gpu=0, speech_enabled=False, process="pipeline"),
+        decode_stage(process="pipeline"),
     ]
 
 
-def _speech_stages(
+def speech_stages(
     *,
     thinker_gpu: int,
     talker_gpu: int,
@@ -271,32 +274,32 @@ def _speech_stages(
     enable_partial_start: bool,
 ) -> list[StageConfig]:
     return [
-        _preprocessing_stage(
+        preprocessing_stage(
             process=process_by_stage["preprocessing"],
             speech_enabled=True,
         ),
-        _image_encoder_stage(
+        image_encoder_stage(
             gpu=thinker_gpu,
             process=process_by_stage["image_encoder"],
             speech_enabled=True,
         ),
-        _audio_encoder_stage(
+        audio_encoder_stage(
             gpu=thinker_gpu,
             process=process_by_stage["audio_encoder"],
             speech_enabled=True,
         ),
-        _thinker_stage(
+        thinker_stage(
             gpu=thinker_gpu,
             speech_enabled=True,
             process=process_by_stage["thinker"],
         ),
-        _decode_stage(process=process_by_stage["decode"]),
-        _talker_stage(
+        decode_stage(process=process_by_stage["decode"]),
+        talker_stage(
             gpu=talker_gpu,
             process=process_by_stage["talker_ar"],
             enable_partial_start=enable_partial_start,
         ),
-        _code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
+        code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
     ]
 
 
@@ -311,7 +314,7 @@ _SPEECH_DEFAULT_PROCESSES = {
 }
 
 
-class _Qwen3OmniBasePipelineConfig(PipelineConfig):
+class Qwen3OmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "Qwen3OmniMoeForConditionalGeneration"
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
         THINKER_STAGE,
@@ -338,7 +341,7 @@ class _Qwen3OmniBasePipelineConfig(PipelineConfig):
         return {}
 
 
-class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):
+class Qwen3OmniPipelineConfig(Qwen3OmniBasePipelineConfig):
     """6-stage text-only pipeline."""
 
     model_path: str
@@ -348,10 +351,10 @@ class Qwen3OmniPipelineConfig(_Qwen3OmniBasePipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
-    stages: list[StageConfig] = Field(default_factory=_text_stages)
+    stages: list[StageConfig] = Field(default_factory=text_stages)
 
 
-class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
+class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
     """7-stage speech pipeline (text + audio output)."""
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
@@ -372,7 +375,7 @@ class Qwen3OmniSpeechPipelineConfig(_Qwen3OmniBasePipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _speech_stages(
+        default_factory=lambda: speech_stages(
             thinker_gpu=0,
             talker_gpu=1,
             process_by_stage=_SPEECH_DEFAULT_PROCESSES,
@@ -408,7 +411,7 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
     )
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _speech_stages(
+        default_factory=lambda: speech_stages(
             thinker_gpu=0,
             talker_gpu=0,
             process_by_stage=_SPEECH_DEFAULT_PROCESSES,

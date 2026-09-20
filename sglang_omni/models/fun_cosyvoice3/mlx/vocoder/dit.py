@@ -27,7 +27,7 @@ class RotaryEmbedding:
         self._sin: Optional[mx.array] = None
         self._cached_len = 0
 
-    def _build(self, seq_len: int):
+    def build(self, seq_len: int):
         inv_freq = 1.0 / (
             self.theta ** (mx.arange(0, self.dim, 2).astype(mx.float32) / self.dim)
         )
@@ -41,11 +41,11 @@ class RotaryEmbedding:
 
     def forward_from_seq_len(self, seq_len: int):
         if self._cos is None or seq_len > self._cached_len:
-            self._build(seq_len)
+            self.build(seq_len)
         return self._cos[:seq_len], self._sin[:seq_len]
 
 
-def _rotate_half(x: mx.array) -> mx.array:
+def rotate_half(x: mx.array) -> mx.array:
     """Rotate adjacent channel pairs by 90 degrees."""
     shape = x.shape
     x = x.reshape(*shape[:-1], shape[-1] // 2, 2)
@@ -62,7 +62,7 @@ def apply_rotary_pos_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     sin = sin[None]
     # Note (yexiaodong): Preserve the table dtype to keep this path on fused
     # Metal kernels instead of adding explicit fp32 casts.
-    x_rot = (x_rot * cos + _rotate_half(x_rot) * sin).astype(x.dtype)
+    x_rot = (x_rot * cos + rotate_half(x_rot) * sin).astype(x.dtype)
     return mx.concatenate([x_rot, x_pass], axis=-1)
 
 
@@ -152,7 +152,7 @@ class ConvNeXtV2Block(nn.Module):
         return residual + x
 
 
-def _layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
+def layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return mx.fast.layer_norm(x, weight=None, bias=None, eps=eps)
 
 
@@ -168,7 +168,7 @@ class AdaLayerNormZero(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mx.split(
             emb, 6, axis=-1
         )
-        x = _layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -180,7 +180,7 @@ class AdaLayerNormZeroFinal(nn.Module):
     def __call__(self, x: mx.array, emb: mx.array) -> mx.array:
         emb = self.linear(nn.silu(emb))
         scale, shift = mx.split(emb, 2, axis=-1)
-        return _layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
 
 class Attention(nn.Module):
@@ -257,7 +257,7 @@ class DiTBlock(nn.Module):
         attn_out = self.attn(norm, mask=mask, rope=rope)
         x = x + gate_msa[:, None] * attn_out
 
-        ff_norm = _layer_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        ff_norm = layer_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
         ff_out = self.ff(ff_norm)
         x = x + gate_mlp[:, None] * ff_out
         return x

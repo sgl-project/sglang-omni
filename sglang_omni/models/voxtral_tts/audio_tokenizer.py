@@ -79,32 +79,32 @@ class AudioTokenizerArgs:
             == len(self.decoder_convs_strides)
         )
 
-    def _str2list(self, s: str) -> tuple[int, ...]:
+    def str2list(self, s: str) -> tuple[int, ...]:
         return tuple(int(i) for i in s.split(","))
 
     @property
     def encoder_transformer_lengths(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_transformer_lengths_str)
+        return self.str2list(self.encoder_transformer_lengths_str)
 
     @property
     def encoder_convs_kernels(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_convs_kernels_str)
+        return self.str2list(self.encoder_convs_kernels_str)
 
     @property
     def encoder_convs_strides(self) -> tuple[int, ...]:
-        return self._str2list(self.encoder_convs_strides_str)
+        return self.str2list(self.encoder_convs_strides_str)
 
     @property
     def decoder_transformer_lengths(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_transformer_lengths_str)
+        return self.str2list(self.decoder_transformer_lengths_str)
 
     @property
     def decoder_convs_kernels(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_convs_kernels_str)
+        return self.str2list(self.decoder_convs_kernels_str)
 
     @property
     def decoder_convs_strides(self) -> tuple[int, ...]:
-        return self._str2list(self.decoder_convs_strides_str)
+        return self.str2list(self.decoder_convs_strides_str)
 
     @property
     def frame_rate(self) -> float:
@@ -156,13 +156,13 @@ class AcousticCodebook(nn.Module):
         self.n_levels = codebook_size
         self.num_codebooks = codebook_dim
 
-    def _rescale(self, x: torch.Tensor, levels: int) -> torch.Tensor:
+    def rescale(self, x: torch.Tensor, levels: int) -> torch.Tensor:
         return (x * 2 / (levels - 1)) - 1
 
     def decode(
         self, codes: torch.Tensor, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        quantized = self._rescale(codes, self.n_levels).to(dtype)
+        quantized = self.rescale(codes, self.n_levels).to(dtype)
         return quantized
 
 
@@ -335,7 +335,7 @@ class Attention(nn.Module):
                 args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps
             )
 
-    def _native_attention(
+    def native_attention(
         self, xq: torch.Tensor, xk: torch.Tensor, xv: torch.Tensor
     ) -> torch.Tensor:
         B, S, H, D = xq.shape
@@ -391,7 +391,7 @@ class Attention(nn.Module):
                 alibi_slopes=alibi_slopes,
             )
         else:
-            output = self._native_attention(xq, xk, xv)
+            output = self.native_attention(xq, xk, xv)
 
         output = output.reshape(bsz, seqlen, self.n_local_heads * self.args.head_dim)
         return self.wo(output).squeeze(0)
@@ -563,7 +563,7 @@ class VoxtralTTSAudioTokenizer(nn.Module):
     def num_codebooks(self) -> int:
         return self.quantizer.num_codebooks
 
-    def _forward_decoder(self, emb: torch.Tensor) -> torch.Tensor:
+    def forward_decoder(self, emb: torch.Tensor) -> torch.Tensor:
         emb = rearrange(emb, "b d t -> b t d").contiguous()
         for block in self.decoder_blocks:
             if isinstance(block, (CausalConvTranspose1d, CausalConv1d)):
@@ -580,7 +580,7 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         self, codes: torch.Tensor, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
         emb = self.quantizer.decode(codes, dtype)
-        return self._forward_decoder(emb)
+        return self.forward_decoder(emb)
 
     def decode_helper_batch_async(
         self, codes_list: list[torch.Tensor]

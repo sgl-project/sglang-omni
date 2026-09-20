@@ -359,8 +359,8 @@ def test_stream_done_before_payload_can_opt_in_to_early_tail() -> None:
             waveform = self.decode_delta(request_id, state, is_final=True)
             if waveform is None:
                 return []
-            self._mark_stream_emitted(request_id)
-            return [self._stream_chunk_message(request_id, waveform)]
+            self.mark_stream_emitted(request_id)
+            return [self.stream_chunk_message(request_id, waveform)]
 
     scheduler = EarlyTailVocoder(threshold=10)
     scheduler.handle_stream_chunk("r", _item([7]))
@@ -461,7 +461,7 @@ def test_completed_stream_ids_evict_oldest_first(
     monkeypatch.setattr(streaming_vocoder, "_COMPLETED_STREAM_REQUEST_ID_RETAINED", 2)
     scheduler = _FakeStreamingVocoder(threshold=1)
     for rid in ("r0", "r1", "r2", "r3"):
-        scheduler._record_completed_stream_request_id(rid)
+        scheduler.record_completed_stream_request_id(rid)
     assert list(scheduler._completed_stream_request_ids) == ["r2", "r3"]
 
 
@@ -552,8 +552,8 @@ def test_coalesced_step_emits_for_all_participants_in_order() -> None:
     ]
     np.testing.assert_array_equal(_waveform(messages[0].data), [1.0, 2.0])
     np.testing.assert_array_equal(_waveform(messages[1].data), [10.0, 20.0])
-    assert scheduler._stream_has_emitted("a")
-    assert scheduler._stream_has_emitted("b")
+    assert scheduler.stream_has_emitted("a")
+    assert scheduler.stream_has_emitted("b")
 
 
 def test_step_omitting_a_participant_keeps_nothing_emitted_fallback() -> None:
@@ -579,8 +579,8 @@ def test_step_omitting_a_participant_keeps_nothing_emitted_fallback() -> None:
     scheduler.on_stream_chunk_batch([("a", _item([1])), ("b", _item([2]))])
     messages = _drain(scheduler)
     assert [(m.request_id, m.type) for m in messages] == [("a", "stream")]
-    assert scheduler._stream_has_emitted("a")
-    assert not scheduler._stream_has_emitted("b")
+    assert scheduler.stream_has_emitted("a")
+    assert not scheduler.stream_has_emitted("b")
 
     scheduler.handle_stream_done("b")
     scheduler.handle_streaming_new_request("b", _payload("b"))
@@ -606,18 +606,18 @@ def test_coalescing_single_chunk_path_pumps_same_backbone() -> None:
 
 def test_pump_one_step_reports_nothing_ready_then_runs_one_step() -> None:
     scheduler = _CoalescingFakeVocoder(threshold=1)
-    assert scheduler._pump_one_step() is None
+    assert scheduler.pump_one_step() is None
     scheduler.run_ready_step()
     assert _drain(scheduler) == []
 
-    scheduler._ingest_stream_item("a", _item([1]))
-    scheduler._ingest_stream_item("b", _item([2]))
+    scheduler.ingest_stream_item("a", _item([1]))
+    scheduler.ingest_stream_item("b", _item([2]))
     scheduler.run_ready_step()
     assert [(m.request_id, m.type) for m in _drain(scheduler)] == [
         ("a", "stream"),
         ("b", "stream"),
     ]
-    assert scheduler._pump_one_step() is None
+    assert scheduler.pump_one_step() is None
 
 
 def test_run_ready_step_failure_aborts_participants_off_the_lock() -> None:
@@ -625,7 +625,7 @@ def test_run_ready_step_failure_aborts_participants_off_the_lock() -> None:
     scheduler = _CoalescingFakeVocoder(
         threshold=1, fail_steps=True, abort_callback=cleaned.append
     )
-    scheduler._ingest_stream_item("a", _item([1]))
+    scheduler.ingest_stream_item("a", _item([1]))
 
     scheduler.run_ready_step()
 
@@ -727,11 +727,11 @@ def test_stream_chunk_accepts_bool_false_stream_flag() -> None:
     a valid transport value and must not be rejected (see qwen3
     talker_model_runner metadata={'stream': is_streaming})."""
     scheduler = _FakeStreamingVocoder(threshold=10)
-    state = scheduler._ingest_stream_item("r", _item([1], {"stream": False}))
+    state = scheduler.ingest_stream_item("r", _item([1], {"stream": False}))
     assert state is not None
 
 
 def test_stream_chunk_rejects_non_bool_stream_flag() -> None:
     scheduler = _FakeStreamingVocoder(threshold=10)
     with pytest.raises(RuntimeError, match=r"bool metadata\['stream'\]"):
-        scheduler._ingest_stream_item("r", _item([1], {"stream": "yes"}))
+        scheduler.ingest_stream_item("r", _item([1], {"stream": "yes"}))

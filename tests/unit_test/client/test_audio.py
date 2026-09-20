@@ -6,12 +6,12 @@ import pytest
 from sglang_omni.client.audio import (
     FORMAT_MIME_TYPES,
     PYAV_ENCODE_CONFIGS,
-    _encode_with_pyav,
-    _resample_linear,
     audio_to_base64,
     encode_audio,
     encode_pcm,
     encode_wav,
+    encode_with_pyav,
+    resample_linear,
     to_numpy,
 )
 
@@ -117,7 +117,7 @@ def test_resample_linear_preserves_stereo_channels():
         ]
     )
 
-    resampled = _resample_linear(audio, orig_sr, target_sr)
+    resampled = resample_linear(audio, orig_sr, target_sr)
 
     expected_samples = 24
     assert resampled.shape == (2, expected_samples)
@@ -137,7 +137,7 @@ def test_pyav_encode_preserves_stereo_content(response_format: str):
     audio, sample_rate = _stereo_test_signal()
     config = PYAV_ENCODE_CONFIGS[response_format]
 
-    encoded = _encode_with_pyav(
+    encoded = encode_with_pyav(
         audio,
         sample_rate,
         container_format=config["container"],

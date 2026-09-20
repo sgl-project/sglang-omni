@@ -10,7 +10,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMo
 from sglang_omni.models.qwen3_asr import mrope_fast_path
 
 _RUNNER = SimpleNamespace(device="cpu")
-_FAST = mrope_fast_path._fast_compute_mrope_positions
+_FAST = mrope_fast_path.fast_compute_mrope_positions
 _ORIG = ForwardBatch._compute_mrope_positions
 
 

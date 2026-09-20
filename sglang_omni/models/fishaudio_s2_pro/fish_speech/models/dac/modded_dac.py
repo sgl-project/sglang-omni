@@ -226,7 +226,7 @@ class Attention(nn.Module):
             )
             nn.init.normal_(self.rel_pos_embeddings, mean=0.0, std=0.02)
 
-    def _compute_conformer_pos_scores(self, q: Tensor, seqlen: int) -> Tensor:
+    def compute_conformer_pos_scores(self, q: Tensor, seqlen: int) -> Tensor:
         # q: [B, H, S, D]
         # Returns: [B, H, S, S]
         positions = torch.arange(seqlen, device=q.device)
@@ -279,7 +279,7 @@ class Attention(nn.Module):
             scores = torch.matmul(q, k.transpose(-2, -1)) * scale
 
             # Add relative position embeddings for conformer-style
-            rel_scores = self._compute_conformer_pos_scores(q, seqlen)
+            rel_scores = self.compute_conformer_pos_scores(q, seqlen)
             scores = scores + rel_scores
 
             # Apply attention
@@ -327,11 +327,11 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
+    def norm(self, x):
         return x * torch.rsqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
 
     def forward(self, x: Tensor) -> Tensor:
-        output = self._norm(x.float()).type_as(x)
+        output = self.norm(x.float()).type_as(x)
         return output * self.weight
 
 

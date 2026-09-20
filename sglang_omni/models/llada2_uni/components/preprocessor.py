@@ -92,7 +92,7 @@ def validate_prompt_seq_len(
         )
 
 
-def _compute_target_dims(
+def compute_target_dims(
     height: int,
     width: int,
     min_pixels: int,
@@ -115,7 +115,7 @@ def _compute_target_dims(
     return new_h, new_w
 
 
-def _resize_and_center_crop(
+def resize_and_center_crop(
     img: Image.Image,
     target_h: int,
     target_w: int,
@@ -135,7 +135,7 @@ def _resize_and_center_crop(
     return img.crop((left, top, left + crop_w, top + crop_h))
 
 
-def _resize_images(
+def resize_images(
     images: list[Image.Image],
     factor: int,
 ) -> list[Image.Image]:
@@ -148,10 +148,10 @@ def _resize_images(
     result = []
     for img in images:
         width, height = img.size
-        target_h, target_w = _compute_target_dims(
+        target_h, target_w = compute_target_dims(
             height, width, min_pixels, max_pixels, factor
         )
-        result.append(_resize_and_center_crop(img, target_h, target_w, factor))
+        result.append(resize_and_center_crop(img, target_h, target_w, factor))
     return result
 
 
@@ -199,16 +199,16 @@ class LLaDA2Preprocessor:
         raw_inputs = request.inputs
         if isinstance(raw_inputs, list):
             messages = raw_inputs
-            raw_images, image_counts_per_msg = self._extract_raw_images(messages)
+            raw_images, image_counts_per_msg = self.extract_raw_images(messages)
         else:
             messages = raw_inputs.get("messages", [])
             raw_images = raw_inputs.get("images")
             if raw_images is None:
-                raw_images, image_counts_per_msg = self._extract_raw_images(messages)
+                raw_images, image_counts_per_msg = self.extract_raw_images(messages)
             else:
                 image_counts_per_msg = None
 
-        self._validate_messages(messages)
+        self.validate_messages(messages)
         image_cache_key = compute_image_cache_key(raw_images)
 
         images = await ensure_image_list_async(raw_images) if raw_images else []
@@ -218,7 +218,7 @@ class LLaDA2Preprocessor:
         image_parts_by_msg: dict[int, list[str]] = {}
 
         if images:
-            cropped = _resize_images(images, self._factor)
+            cropped = resize_images(images, self._factor)
             img_result = self._image_processor(images=cropped, return_tensors="pt")
             pixel_values = img_result["pixel_values"]
             image_grid_thw = img_result["image_grid_thw"]
@@ -254,13 +254,11 @@ class LLaDA2Preprocessor:
         else:
             encoder_inputs[IMAGE_STAGE] = {"_skip": True, "_result": {}}
 
-        text_prompt = self._build_prompt(
-            messages, image_parts_by_msg=image_parts_by_msg
-        )
+        text_prompt = self.build_prompt(messages, image_parts_by_msg=image_parts_by_msg)
         input_ids = self._tokenizer.encode(text_prompt, add_special_tokens=False)
 
         if image_token_counts:
-            input_ids = self._insert_image_placeholders(input_ids, image_token_counts)
+            input_ids = self.insert_image_placeholders(input_ids, image_token_counts)
 
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
 
@@ -286,7 +284,7 @@ class LLaDA2Preprocessor:
         )
 
     @staticmethod
-    def _extract_raw_images(
+    def extract_raw_images(
         messages: list[dict[str, Any]],
     ) -> tuple[list[Any], list[tuple[int, int]]]:
         """Return (images, image_counts_per_msg) with per-message image counts."""
@@ -316,14 +314,14 @@ class LLaDA2Preprocessor:
         return raw_images, image_counts_per_msg
 
     @staticmethod
-    def _validate_messages(messages: list[dict[str, Any]]) -> None:
+    def validate_messages(messages: list[dict[str, Any]]) -> None:
         if not isinstance(messages, list):
             raise ValueError("Preprocessing expects a list of chat messages")
         for message in messages:
             if not isinstance(message, dict):
                 raise ValueError("Each message must be a dict with role/content")
 
-    def _build_prompt(
+    def build_prompt(
         self,
         messages: list[dict[str, Any]],
         image_parts_by_msg: dict[int, list[str]] | None = None,
@@ -368,7 +366,7 @@ class LLaDA2Preprocessor:
         parts.append(ROLE_ASSISTANT)
         return "".join(parts)
 
-    def _insert_image_placeholders(
+    def insert_image_placeholders(
         self,
         input_ids: list[int],
         image_token_counts: list[int],

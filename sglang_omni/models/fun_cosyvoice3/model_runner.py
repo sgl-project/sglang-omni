@@ -57,8 +57,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         requests: list,
     ) -> GenerationBatchResult | None:
         del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(forward_batch, input_embeds)
+        input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
+        return self.forward_with_input_embeds(forward_batch, input_embeds)
 
     def post_prefill(
         self,
@@ -67,7 +67,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_tokens(result, forward_batch, schedule_batch, requests)
+        self.collect_tokens(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -76,7 +76,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_tokens(result, forward_batch, schedule_batch, requests)
+        self.collect_tokens(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
         self,
@@ -98,7 +98,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
+    def apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
         """Leave repetition-penalty ownership to SGLang's forward snapshot.
 
         SGLangExecutionBridge copies SamplingBatchInfo with the
@@ -107,7 +107,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         """
         del logits_output, requests
 
-    def _sample_next_token_ids(
+    def sample_next_token_ids(
         self,
         logits_output: Any,
         forward_batch: Any,
@@ -118,7 +118,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             logits_output.next_token_logits.device.type != "mps"
             or current_platform.is_float64_supported()
         ):
-            return super()._sample_next_token_ids(
+            return super().sample_next_token_ids(
                 logits_output,
                 forward_batch,
                 schedule_batch,
@@ -129,9 +129,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 "Fun-CosyVoice3 Torch MPS currently requires " "max_running_requests=1"
             )
 
-        self._apply_repetition_penalty(logits_output, requests)
-        self._apply_codec_suppress_tokens(logits_output, requests)
-        self._install_sampling_seeds(forward_batch, requests)
+        self.apply_repetition_penalty(logits_output, requests)
+        self.apply_codec_suppress_tokens(logits_output, requests)
+        self.install_sampling_seeds(forward_batch, requests)
         sampling_info = forward_batch.sampling_info
         installed_seeds = sampling_info.sampling_seed
         rng_context = nullcontext()
@@ -157,7 +157,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
-            self._enable_sampler_logprobs(forward_batch, len(requests))
+            self.enable_sampler_logprobs(forward_batch, len(requests))
         try:
             with rng_context:
                 if installed_seeds is not None:
@@ -169,7 +169,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                         logits_output,
                         forward_batch,
                     )
-                next_token_ids = self._apply_ras_fallback(
+                next_token_ids = self.apply_ras_fallback(
                     logits_output,
                     next_token_ids,
                     sampling_info,
@@ -184,14 +184,14 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     "Sampler did not populate next_token_logprobs when "
                     "return_logprob is enabled"
                 )
-            self._record_rollout_logprobs(
+            self.record_rollout_logprobs(
                 next_token_logprobs,
                 next_token_ids,
                 requests,
             )
         return next_token_ids
 
-    def _apply_ras_fallback(
+    def apply_ras_fallback(
         self,
         logits_output: Any,
         next_token_ids: torch.Tensor,
@@ -262,12 +262,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
-            self._flush_code_chunks(request_id, req_data, force=True)
+            self.flush_code_chunks(request_id, req_data, force=True)
         recent_tokens = getattr(self, "_cosyvoice3_recent_tokens", None)
         if recent_tokens is not None:
             recent_tokens.pop(str(request_id), None)
 
-    def _collect_tokens(
+    def collect_tokens(
         self,
         result: Any,
         forward_batch: Any,
@@ -287,9 +287,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 continue
             token = torch.tensor([token_id], dtype=torch.long)
             sched_req.data.output_codes.append(token)
-            self._queue_or_emit_code_chunk(sched_req, token)
+            self.queue_or_emit_code_chunk(sched_req, token)
 
-    def _queue_or_emit_code_chunk(
+    def queue_or_emit_code_chunk(
         self,
         sched_req: Any,
         token: torch.Tensor,
@@ -309,9 +309,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 hop_len=self._token_hop_len,
             )
         if data.stream_code_seen >= data.stream_code_next_flush:
-            self._flush_code_chunks(sched_req.request_id, data, force=False)
+            self.flush_code_chunks(sched_req.request_id, data, force=False)
 
-    def _flush_code_chunks(
+    def flush_code_chunks(
         self,
         request_id: str,
         data: Any,
@@ -327,9 +327,9 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             data.stream_code_next_flush = (
                 int(data.stream_code_seen) + self._ar_followup_flush_tokens
             )
-        self._emit_code_chunk(request_id, data, payload)
+        self.emit_code_chunk(request_id, data, payload)
 
-    def _emit_code_chunk(
+    def emit_code_chunk(
         self,
         request_id: str,
         data: Any,
@@ -358,7 +358,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             )
         )
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -380,7 +380,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             dtype=next(self.model.parameters()).dtype,
         )
 
-    def _forward_with_input_embeds(
+    def forward_with_input_embeds(
         self,
         forward_batch: Any,
         input_embeds: torch.Tensor,
@@ -437,7 +437,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
-            self._flush_code_chunks(request_id, req_data, force=True)
+            self.flush_code_chunks(request_id, req_data, force=True)
 
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1 or batch.has_grammar:
@@ -480,9 +480,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             if 0 <= token_id < VOCAB_SIZE:
                 token = torch.tensor([token_id], dtype=torch.long)
                 sched_req.data.output_codes.append(token)
-                self._queue_or_emit_code_chunk(sched_req, token)
+                self.queue_or_emit_code_chunk(sched_req, token)
 
-    def _queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
+    def queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
         data = sched_req.data
         if getattr(self, "_outbox", None) is None or data.stream_metadata is None:
             return
@@ -496,9 +496,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 hop_len=getattr(self, "_token_hop_len", TOKEN_HOP_LEN),
             )
         if data.stream_code_seen >= data.stream_code_next_flush:
-            self._flush_code_chunks(sched_req.request_id, data, force=False)
+            self.flush_code_chunks(sched_req.request_id, data, force=False)
 
-    def _flush_code_chunks(self, request_id: str, data: Any, *, force: bool) -> None:
+    def flush_code_chunks(self, request_id: str, data: Any, *, force: bool) -> None:
         pending = data.stream_code_buffer
         if not pending:
             return
@@ -508,9 +508,9 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             data.stream_code_next_flush = int(data.stream_code_seen) + getattr(
                 self, "_token_hop_len", TOKEN_HOP_LEN
             )
-        self._emit_code_chunk(request_id, data, payload)
+        self.emit_code_chunk(request_id, data, payload)
 
-    def _emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
+    def emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
         outbox = getattr(self, "_outbox", None)
         if outbox is None or data.stream_metadata is None:
             return

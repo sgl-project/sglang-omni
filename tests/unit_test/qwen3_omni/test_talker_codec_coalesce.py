@@ -9,7 +9,7 @@ import torch
 
 from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
-    _serial_threshold_graph_keys,
+    serial_threshold_graph_keys,
 )
 from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
@@ -76,7 +76,7 @@ def _run_steps(runner, requests, batch, steps: int) -> list[torch.Tensor]:
         runner.model._output_codes += 1
         runner.model._output_embeds += 1.0
         seen.append(runner.model._output_codes[0].clone())
-        runner._emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
+        runner.emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
     return seen
 
 
@@ -118,7 +118,7 @@ def test_default_coalescing_preserves_serial_vocoder_graph_windows(pipeline_type
 
     assert [shape[-1] for shape in model.calls] == [10, 20, 30, 35]
     assert decode_steps == [10, 21, 31, 41]
-    captured_frames = {key.frames for key in _serial_threshold_graph_keys(10, 25)}
+    captured_frames = {key.frames for key in serial_threshold_graph_keys(10, 25)}
     assert all(shape[-1] in captured_frames for shape in model.calls)
 
 
@@ -192,7 +192,7 @@ def test_coalesced_rows_survive_next_step_inplace_write() -> None:
     n, k = 2, 2
     runner = _runner(_fake_model(n, 4, 2), coalesce=k)
     requests, batch = _requests(n), _sched_batch(n)
-    runner._emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
+    runner.emit_code_chunks_and_feedback(schedule_batch=batch, requests=requests)
     buffered = requests[0].data.pending_codec_rows[0].clone()
     runner.model._output_codes.copy_(runner.model._output_codes + 999)
     assert torch.equal(requests[0].data.pending_codec_rows[0], buffered)

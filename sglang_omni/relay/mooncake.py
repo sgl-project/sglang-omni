@@ -306,7 +306,7 @@ class PutOperation(MooncakeOperation):
 
         try:
             # Wait for receiver to send completion notification via Mooncake
-            await MooncakeRelay._wait_for_mooncake_notification(
+            await MooncakeRelay.wait_for_mooncake_notification(
                 self._transfer_id, timeout
             )
         finally:
@@ -503,7 +503,7 @@ class MooncakeRelay(Relay):
             PutOperation handle with metadata
         """
         # Ensure notification listener is running
-        self._ensure_listener_started()
+        self.ensure_listener_started()
 
         size_bytes = tensor.numel() * tensor.element_size()
         if size_bytes > self.slot_size:
@@ -518,7 +518,7 @@ class MooncakeRelay(Relay):
         )
 
         # Register notification event for this transfer
-        await self._register_notification(transfer_id)
+        await self.register_notification(transfer_id)
 
         # Acquire credit for flow control and buffer slot allocation
         credit_id = await self.allocator.acquire_async()
@@ -584,7 +584,7 @@ class MooncakeRelay(Relay):
             GetOperation handle
         """
         # Ensure notification listener is running
-        self._ensure_listener_started()
+        self.ensure_listener_started()
 
         # Parse metadata
         remote_session_id = metadata["session_id"]  # For P2P handshake
@@ -645,13 +645,13 @@ class MooncakeRelay(Relay):
             self.allocator.release(local_credit_id)
             raise e
 
-    def _ensure_listener_started(self) -> None:
+    def ensure_listener_started(self) -> None:
         """Ensure the notification listener task is running."""
         if self._listener_task is None or self._listener_task.done():
             try:
                 loop = asyncio.get_event_loop()
                 self._listener_task = loop.create_task(
-                    self._notification_listener_loop()
+                    self.notification_listener_loop()
                 )
                 logger.debug(
                     f"[{self.engine_id}] Mooncake notification listener started"
@@ -661,7 +661,7 @@ class MooncakeRelay(Relay):
                     f"[{self.engine_id}] Failed to start notification listener: {e}"
                 )
 
-    async def _notification_listener_loop(self) -> None:
+    async def notification_listener_loop(self) -> None:
         """
         Background task that polls Mooncake for transfer completion notifications.
         Receives notifications sent by remote peers via get_notifies().
@@ -703,7 +703,7 @@ class MooncakeRelay(Relay):
         logger.debug(f"[{self.engine_id}] Notification listener loop stopped")
 
     @classmethod
-    async def _register_notification(cls, transfer_id: str) -> asyncio.Event:
+    async def register_notification(cls, transfer_id: str) -> asyncio.Event:
         """Register a notification event for a transfer."""
         async with cls._registry_lock:
             event = asyncio.Event()
@@ -711,7 +711,7 @@ class MooncakeRelay(Relay):
             return event
 
     @classmethod
-    async def _wait_for_mooncake_notification(
+    async def wait_for_mooncake_notification(
         cls, transfer_id: str, timeout: float
     ) -> None:
         """
@@ -719,7 +719,7 @@ class MooncakeRelay(Relay):
         The notification will be received via get_notifies() in the listener loop.
         """
         # Register event for this transfer
-        event = await cls._register_notification(transfer_id)
+        event = await cls.register_notification(transfer_id)
 
         logger.debug(f"Waiting for Mooncake notification: {transfer_id}")
 

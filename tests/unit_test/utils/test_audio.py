@@ -53,7 +53,7 @@ def test_load_audio_raises_typed_error_for_undecodable_bytes(
     )
     monkeypatch.setattr(
         audio,
-        "_is_invalid_audio_source",
+        "is_invalid_audio_source",
         lambda source: True,
         raising=False,
     )
@@ -113,7 +113,7 @@ def test_load_audio_preserves_wrapped_decoder_oom(monkeypatch) -> None:
     monkeypatch.setattr(audio, "check_torchcodec_ready", lambda: True)
     monkeypatch.setattr(
         audio,
-        "_is_invalid_audio_source",
+        "is_invalid_audio_source",
         lambda source: pytest.fail("OOM must not be classified as invalid media"),
         raising=False,
     )
@@ -364,7 +364,7 @@ def test_load_audio_falls_back_for_24bit_pcm() -> None:
 
 
 def test_load_audio_falls_back_for_non_wav_bytes() -> None:
-    assert audio._try_fast_wav_decode(b"\xffnot a wav" * 10, 16000) is None
+    assert audio.try_fast_wav_decode(b"\xffnot a wav" * 10, 16000) is None
     assert not audio.is_riff_wav(b"ID3\x04" + b"\x00" * 20)
 
 

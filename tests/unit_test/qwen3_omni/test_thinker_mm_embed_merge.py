@@ -100,7 +100,7 @@ def test_plan_modality_chunk_is_pure_and_uses_half_open_bounds():
     positions = torch.tensor([0, 2, 4], dtype=torch.long)
     consumed = {"audio": 1}
 
-    relative_positions, offset, count = runner._plan_modality_chunk(
+    relative_positions, offset, count = runner.plan_modality_chunk(
         positions,
         consumed,
         "audio",
@@ -118,7 +118,7 @@ def test_text_only_batch_returns_none():
     runner = _runner()
     req = _req([TEXT, TEXT, TEXT], None)
     fb, sb = _batches([req])
-    assert runner._inject_multimodal_embeds(fb, sb) is None
+    assert runner.inject_multimodal_embeds(fb, sb) is None
 
 
 def test_single_request_image_merge():
@@ -128,7 +128,7 @@ def test_single_request_image_merge():
     req = _req(ids, {"image_embeds": image_embeds})
     fb, sb = _batches([req])
 
-    out, ds, masks = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, masks = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:4] = image_embeds
@@ -150,7 +150,7 @@ def test_mixed_batch_image_audio_and_audio_only_and_text():
     ]
     fb, sb = _batches(reqs)
 
-    out, ds, masks = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, masks = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:3] = img0
@@ -170,7 +170,7 @@ def test_pad_values_replace_hashed_token_ids():
     req = _req(ids, {"image_embeds": image_embeds, "pad_values": {"image": pad_img}})
     fb, sb = _batches([req])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:3] = image_embeds
@@ -184,7 +184,7 @@ def test_modality_with_embeds_but_no_tokens_in_chunk_is_skipped():
     req = _req(ids, {"image_embeds": _rand(2), "audio_embeds": audio_embeds})
     fb, sb = _batches([req])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:2] = audio_embeds
@@ -199,7 +199,7 @@ def test_chunked_prefill_advances_consumed_offsets():
 
     req = _req(prompt, inputs, inflight_middle_chunks=1)
     fb1, sb1 = _batches([req], chunk_ids=[prompt[:4]], prefix_lens=[0])
-    out1, _, _ = runner._inject_multimodal_embeds(fb1, sb1)
+    out1, _, _ = runner.inject_multimodal_embeds(fb1, sb1)
 
     expected1 = _base_embeds(runner, fb1)
     expected1[1:4] = image_embeds[0:3]
@@ -209,7 +209,7 @@ def test_chunked_prefill_advances_consumed_offsets():
 
     req.inflight_middle_chunks = 0
     fb2, sb2 = _batches([req], chunk_ids=[prompt[4:]], prefix_lens=[4])
-    out2, _, _ = runner._inject_multimodal_embeds(fb2, sb2)
+    out2, _, _ = runner.inject_multimodal_embeds(fb2, sb2)
 
     expected2 = _base_embeds(runner, fb2)
     expected2[1:2] = image_embeds[3:4]
@@ -230,7 +230,7 @@ def test_cached_prefix_mixed_audio_image_selects_live_embedding_rows():
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], audio_embeds[1])
     torch.testing.assert_close(out[1], image_embeds[1])
@@ -251,7 +251,7 @@ def test_cached_prefix_reconstructs_missing_cursors_in_empty_existing_dict():
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], audio_embeds[1])
     torch.testing.assert_close(out[1], image_embeds[1])
@@ -272,7 +272,7 @@ def test_cached_prefix_reconstructs_audio_preserving_unrelated_cursor():
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], audio_embeds[1])
     assert req._omni_consumed is existing
@@ -296,7 +296,7 @@ def test_cached_prefix_reconstructs_missing_cursor_for_each_modality(
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], embeds[1])
     assert req._omni_consumed == {modality: 2}
@@ -315,7 +315,7 @@ def test_existing_cursor_is_authoritative_over_prefix_derived_offset():
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], audio_embeds[0])
     assert req._omni_consumed is existing
@@ -344,7 +344,7 @@ def test_invalid_modality_cursor_fails_before_embedding_scatter(cursor, error_ty
     fb, sb = _batches([req])
 
     with pytest.raises(error_type, match="audio multimodal cursor"):
-        runner._inject_multimodal_embeds(fb, sb)
+        runner.inject_multimodal_embeds(fb, sb)
 
     assert req._omni_consumed == {"audio": cursor}
     assert req.omni_model_inputs is audio_inputs
@@ -357,7 +357,7 @@ def test_invalid_cursor_container_fails_before_embedding_scatter():
     fb, sb = _batches([req])
 
     with pytest.raises(TypeError, match="must be None or a dict"):
-        runner._inject_multimodal_embeds(fb, sb)
+        runner.inject_multimodal_embeds(fb, sb)
 
     assert req._omni_consumed == []
 
@@ -379,7 +379,7 @@ def test_cached_prefix_mixed_visual_audio_deepstack_stays_aligned():
     )
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
-    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, mask = runner.inject_multimodal_embeds(fb, sb)
 
     torch.testing.assert_close(out[0], audio_embeds[1])
     torch.testing.assert_close(out[1], image_embeds[1])
@@ -399,7 +399,7 @@ def test_cached_prefix_reconstruction_rejects_ambiguous_embedding_rows():
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
     with pytest.raises(ValueError, match="Cannot reconstruct audio multimodal cursor"):
-        runner._inject_multimodal_embeds(fb, sb)
+        runner.inject_multimodal_embeds(fb, sb)
 
     assert req._omni_consumed == {}
 
@@ -415,7 +415,7 @@ def test_image_deepstack_slice_and_mask():
     )
     fb, sb = _batches([req])
 
-    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, mask = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:3] = image_embeds
@@ -445,7 +445,7 @@ def test_merged_image_video_deepstack_interleave():
     )
     fb, sb = _batches([req])
 
-    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, mask = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[0] = vid_e[0]
@@ -477,7 +477,7 @@ def test_precombined_deepstack_uses_visual_offset():
     )
     fb, sb = _batches([req])
 
-    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, mask = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[0] = img_e[0]
@@ -500,7 +500,7 @@ def test_multi_request_deepstack_concat_and_combined_mask():
     ]
     fb, sb = _batches(reqs)
 
-    out, ds, mask = runner._inject_multimodal_embeds(fb, sb)
+    out, ds, mask = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[0] = img_e[0]
@@ -529,7 +529,7 @@ def test_build_time_positions_take_precedence_over_prompt_scan():
     req.origin_input_ids = None
     fb, sb = _batches([req], chunk_ids=[ids])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:3] = image_embeds
@@ -548,7 +548,7 @@ def test_prompt_scan_fallback_when_positions_missing():
     assert not hasattr(req, "_omni_mm_positions")
     fb, sb = _batches([req])
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[1:2] = image_embeds
@@ -569,7 +569,7 @@ def test_prefix_lens_as_cpu_tensor():
     fb, sb = _batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
     fb.extend_prefix_lens_cpu = torch.tensor([2], dtype=torch.int64)
 
-    out, _, _ = runner._inject_multimodal_embeds(fb, sb)
+    out, _, _ = runner.inject_multimodal_embeds(fb, sb)
 
     expected = _base_embeds(runner, fb)
     expected[0:1] = image_embeds[1:2]
@@ -602,7 +602,7 @@ def _count_sync_ops(monkeypatch, runner, fb, sb):
     for name in ("item", "any", "nonzero"):
         monkeypatch.setattr(torch.Tensor, name, counting(name))
     monkeypatch.setattr(torch, "where", counting("where"))
-    runner._inject_multimodal_embeds(fb, sb)
+    runner.inject_multimodal_embeds(fb, sb)
     return calls
 
 

@@ -7,7 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 kaldi = pytest.importorskip("torchaudio.compliance.kaldi")
 
-from sglang_omni.utils.audio_features import _mel_banks, cached_fbank
+from sglang_omni.utils.audio_features import cached_fbank, mel_banks
 
 N_MELS = 80
 FRAME_SHIFT = 10.0
@@ -71,7 +71,7 @@ def test_short_audio_caps_frame_length_like_the_caller():
 
 
 def test_mel_table_is_reused_across_calls():
-    _mel_banks.cache_clear()
+    mel_banks.cache_clear()
     for i in range(4):
         cached_fbank(
             _wav(1.0, 16000, seed=i),
@@ -81,7 +81,7 @@ def test_mel_table_is_reused_across_calls():
             window_type=WINDOW,
             sample_frequency=16000,
         )
-    info = _mel_banks.cache_info()
+    info = mel_banks.cache_info()
     assert info.misses == 1
     assert info.hits == 3
 

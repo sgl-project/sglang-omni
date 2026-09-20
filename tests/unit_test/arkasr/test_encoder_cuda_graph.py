@@ -15,45 +15,45 @@ from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
 from sglang_omni.models.arkasr.encoder_cuda_graph import (
     _PRECAPTURE_MEL_FRAMES,
     ArkasrEncoderCudaGraphRunner,
-    _batch_buckets,
-    _fit_bucket,
-    _t_buckets_upto,
+    batch_buckets,
+    fit_bucket,
+    t_buckets_upto,
 )
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 
 
 def test_batch_buckets_are_powers_of_two_plus_limit() -> None:
-    assert _batch_buckets(8) == (1, 2, 4, 8)
-    assert _batch_buckets(6) == (1, 2, 4, 6)
-    assert _batch_buckets(16) == (1, 2, 4, 8, 16)
-    assert _batch_buckets(1) == (1,)
+    assert batch_buckets(8) == (1, 2, 4, 8)
+    assert batch_buckets(6) == (1, 2, 4, 6)
+    assert batch_buckets(16) == (1, 2, 4, 8, 16)
+    assert batch_buckets(1) == (1,)
 
 
 def test_fit_bucket_rounds_up_within_captured_set() -> None:
-    batch8 = _batch_buckets(8)
-    assert _fit_bucket(1, batch8) == 1
-    assert _fit_bucket(3, batch8) == 4
-    assert _fit_bucket(5, batch8) == 8
-    assert _fit_bucket(9, batch8) is None
-    assert _fit_bucket(5, _batch_buckets(6)) == 6
-    assert _fit_bucket(9, _batch_buckets(16)) == 16
-    t_working = _t_buckets_upto(_PRECAPTURE_MEL_FRAMES, merge_factor=4)
-    assert _fit_bucket(1, t_working) == 64
-    assert _fit_bucket(64, t_working) == 64
-    assert _fit_bucket(65, t_working) == 128
-    assert _fit_bucket(1024, t_working) == 1024
-    assert _fit_bucket(1025, t_working) is None
+    batch8 = batch_buckets(8)
+    assert fit_bucket(1, batch8) == 1
+    assert fit_bucket(3, batch8) == 4
+    assert fit_bucket(5, batch8) == 8
+    assert fit_bucket(9, batch8) is None
+    assert fit_bucket(5, batch_buckets(6)) == 6
+    assert fit_bucket(9, batch_buckets(16)) == 16
+    t_working = t_buckets_upto(_PRECAPTURE_MEL_FRAMES, merge_factor=4)
+    assert fit_bucket(1, t_working) == 64
+    assert fit_bucket(64, t_working) == 64
+    assert fit_bucket(65, t_working) == 128
+    assert fit_bucket(1024, t_working) == 1024
+    assert fit_bucket(1025, t_working) is None
 
 
 def test_t_buckets_upto_covers_working_set() -> None:
-    buckets = _t_buckets_upto(_PRECAPTURE_MEL_FRAMES, merge_factor=4)
+    buckets = t_buckets_upto(_PRECAPTURE_MEL_FRAMES, merge_factor=4)
     assert buckets[0] == 64
     assert buckets[-1] == _PRECAPTURE_MEL_FRAMES
     assert all(b % 64 == 0 for b in buckets)
     assert buckets == tuple(range(64, _PRECAPTURE_MEL_FRAMES + 1, 64))
     # T_down = T/2 must be divisible by merge_factor so the adapter reshape
     # captured in the graph matches the eager path.
-    for t in _t_buckets_upto(3000, merge_factor=4):
+    for t in t_buckets_upto(3000, merge_factor=4):
         assert t % 8 == 0
 
 

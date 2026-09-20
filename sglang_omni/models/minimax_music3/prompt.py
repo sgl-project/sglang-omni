@@ -23,7 +23,7 @@ _SPECIAL_TAG_RE = re.compile(r"<\|([^|]*)\|>")
 _LEADING_TAGS_RE = re.compile(r"^[ \t]*((?:\[[^\]]+\][ \t]*)+)")
 
 
-def _strip_markdown_residuals(text: str) -> str:
+def strip_markdown_residuals(text: str) -> str:
     """Deterministically strip Markdown syntax left after optional HTML parsing."""
 
     if not text:
@@ -45,10 +45,10 @@ def _strip_markdown_residuals(text: str) -> str:
     return re.sub(r"^\s*[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
 
 
-def _remove_markdown_format(text: str) -> str:
+def remove_markdown_format(text: str) -> str:
     """Remove the Markdown forms accepted by the model input contract."""
 
-    return _strip_markdown_residuals(text).replace("• ", "").replace("    ", "")
+    return strip_markdown_residuals(text).replace("• ", "").replace("    ", "")
 
 
 def clean_caption(caption: str) -> str:
@@ -60,12 +60,12 @@ def clean_caption(caption: str) -> str:
         return f"{parts[0]} is {parts[1]}" if len(parts) == 2 else inner
 
     text = _SPECIAL_TAG_RE.sub(_special, caption)
-    text = _remove_markdown_format(text)
+    text = remove_markdown_format(text)
     # The source uses {2,}, not {3,}; this affects blank-line token positions.
     return re.sub(r"\n{2,}", "\n", text)
 
 
-def _strip_text_after_leading_tags(text: str) -> str:
+def strip_text_after_leading_tags(text: str) -> str:
     """Keep only consecutive structural tags at the start of a line."""
 
     if not text:
@@ -79,7 +79,7 @@ def _strip_text_after_leading_tags(text: str) -> str:
 
 def normalize_lyrics(lyrics: str) -> str:
     """Apply source _normalize_lyrics_text byte-for-byte for strings."""
-    text = _strip_text_after_leading_tags(lyrics)
+    text = strip_text_after_leading_tags(lyrics)
     text = text.replace("] ", "]\n")
     text = text.replace(" [", "\n[")
     text = text.replace(" ^ ", "\n")

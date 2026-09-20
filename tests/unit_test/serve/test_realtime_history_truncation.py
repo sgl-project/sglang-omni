@@ -32,7 +32,7 @@ def test_cancelled_assistant_item_tombstones_are_bounded(
     session, _, _ = _session(monkeypatch, [])
 
     for index in range(65):
-        session._remember_cancelled_assistant_item(f"assistant-{index}")
+        session.remember_cancelled_assistant_item(f"assistant-{index}")
 
     assert list(session.cancelled_assistant_item_ids) == [
         f"assistant-{index}" for index in range(1, 65)

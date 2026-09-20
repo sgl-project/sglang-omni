@@ -68,12 +68,12 @@ class ShmPutOperation(ShmOperation):
         try:
             await asyncio.wait_for(self._receiver_done, timeout=timeout)
         except TimeoutError as exc:
-            self._unlink_if_present()
+            self.unlink_if_present()
             raise TimeoutError(
                 f"SHM block {self._shm_name} was not consumed in time"
             ) from exc
         except Exception:
-            self._unlink_if_present()
+            self.unlink_if_present()
             raise
         finally:
             self._completed = True
@@ -87,7 +87,7 @@ class ShmPutOperation(ShmOperation):
         if not self._receiver_done.done():
             self._receiver_done.set_exception(exc)
 
-    def _unlink_if_present(self) -> None:
+    def unlink_if_present(self) -> None:
         try:
             shm = _shm.SharedMemory(name=self._shm_name)
         except FileNotFoundError:

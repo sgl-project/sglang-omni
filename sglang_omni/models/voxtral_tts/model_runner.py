@@ -25,7 +25,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self._build_prefill_input_embeds(
+        forward_batch.input_embeds = self.build_prefill_input_embeds(
             forward_batch, requests
         )
 
@@ -39,9 +39,9 @@ class VoxtralTTSModelRunner(ModelRunner):
     ) -> None:
         del is_lookahead
         del forward_batch, schedule_batch
-        self._write_decode_input_embed_buffer(requests)
+        self.write_decode_input_embed_buffer(requests)
 
-    def _write_decode_input_embed_buffer(self, requests: list) -> None:
+    def write_decode_input_embed_buffer(self, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -67,7 +67,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del forward_batch
-        self._collect_audio_step(result, schedule_batch, requests)
+        self.collect_audio_step(result, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -77,9 +77,9 @@ class VoxtralTTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del forward_batch
-        self._collect_audio_step(result, schedule_batch, requests)
+        self.collect_audio_step(result, schedule_batch, requests)
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -118,7 +118,7 @@ class VoxtralTTSModelRunner(ModelRunner):
             offset += req_len
         return input_embeds
 
-    def _collect_audio_step(
+    def collect_audio_step(
         self,
         result: Any,
         schedule_batch: Any,

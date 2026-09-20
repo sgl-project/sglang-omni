@@ -18,7 +18,7 @@ def test_fish_vocoder_batches_and_trims_audio_by_code_length(
     """Preserves batched vocoder decode and per-request trim by code length."""
     codec = FakeFishCodec(frame_length=4)
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
-    monkeypatch.setattr(stages, "_load_codec", lambda checkpoint, device: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda checkpoint, device: codec)
     scheduler = stages.create_vocoder_executor(
         "unused",
         device="cpu",

@@ -223,9 +223,9 @@ def _production_seeded_tokens(
     layer_idx: int,
     semantic_positions: torch.Tensor,
 ) -> torch.Tensor:
-    return talker._sample_subtalker_token_seeded(
+    return talker.sample_subtalker_token_seeded(
         logits,
-        sub_positions=talker._sub_seed_positions(semantic_positions)[layer_idx],
+        sub_positions=talker.sub_seed_positions(semantic_positions)[layer_idx],
     )
 
 

@@ -49,7 +49,7 @@ class _FakeP2PNVML(ModuleType):
 
 
 def _patch_pynvml(monkeypatch, fake: ModuleType | None) -> None:
-    monkeypatch.setattr(gpu_compat, "_try_import_pynvml", lambda: fake)
+    monkeypatch.setattr(gpu_compat, "try_import_pynvml", lambda: fake)
 
 
 def test_should_disable_with_no_or_single_gpu(monkeypatch) -> None:

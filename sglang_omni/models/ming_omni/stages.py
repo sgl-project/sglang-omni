@@ -16,11 +16,11 @@ from sglang_omni.proto import StagePayload
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
 
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
@@ -28,27 +28,27 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
     projected = MingOmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=dict(state.mm_inputs),
-        encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
+        encoder_inputs=project_encoder_input_metadata(state.encoder_inputs),
         stream_state=dict(state.stream_state),
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     state = MingOmniPipelineState.from_dict(payload.data)
-    stage_name = _single_encoder_stage_name(state)
+    stage_name = single_encoder_stage_name(state)
     projected = MingOmniPipelineState(
         encoder_outs={stage_name: state.encoder_outs.get(stage_name, {})}
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
-    return _project_thinker_output(payload, keep_stream_state=True)
+    return project_thinker_output(payload, keep_stream_state=True)
 
 
 def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
-    return _project_thinker_output(payload, keep_stream_state=False)
+    return project_thinker_output(payload, keep_stream_state=False)
 
 
 def project_thinker_to_segmenter(payload: StagePayload) -> StagePayload:
@@ -59,23 +59,23 @@ def project_thinker_to_segmenter(payload: StagePayload) -> StagePayload:
     )
 
 
-def _project_thinker_output(
+def project_thinker_output(
     payload: StagePayload,
     *,
     keep_stream_state: bool,
 ) -> StagePayload:
     state = MingOmniPipelineState.from_dict(payload.data)
     projected = MingOmniPipelineState(
-        prompt=_project_prompt_for_usage(state.prompt),
-        thinker_out=_slim_thinker_out(state.thinker_out),
+        prompt=project_prompt_for_usage(state.prompt),
+        thinker_out=slim_thinker_out(state.thinker_out),
         stream_state=(
-            _copy_mutable_containers(state.stream_state) if keep_stream_state else {}
+            copy_mutable_containers(state.stream_state) if keep_stream_state else {}
         ),
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
-def _project_preprocessing_to_encoder(
+def project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
     stage_name: str,
@@ -85,12 +85,12 @@ def _project_preprocessing_to_encoder(
     projected_inputs = (
         {stage_name: dict(stage_inputs)} if isinstance(stage_inputs, dict) else {}
     )
-    return _payload_with_state(
+    return payload_with_state(
         payload, MingOmniPipelineState(encoder_inputs=projected_inputs)
     )
 
 
-def _payload_with_state(
+def payload_with_state(
     payload: StagePayload, state: MingOmniPipelineState
 ) -> StagePayload:
     return StagePayload(
@@ -100,7 +100,7 @@ def _payload_with_state(
     )
 
 
-def _project_encoder_input_metadata(
+def project_encoder_input_metadata(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     projected: dict[str, dict[str, Any]] = {}
@@ -118,43 +118,43 @@ def _project_encoder_input_metadata(
     return projected
 
 
-def _project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
+def project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
     if not isinstance(prompt, dict):
         return None
     input_ids = prompt.get("input_ids")
     if input_ids is None:
         return None
-    return {"input_ids": _copy_mutable_containers(input_ids)}
+    return {"input_ids": copy_mutable_containers(input_ids)}
 
 
-def _slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
+def slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
     if not isinstance(thinker_out, dict):
         return None
 
     projected = {}
     for key in ("output_ids", "step", "is_final", "finish_reason"):
         if key in thinker_out:
-            projected[key] = _copy_mutable_containers(thinker_out[key])
+            projected[key] = copy_mutable_containers(thinker_out[key])
 
     projected["extra_model_outputs"] = {}
     return projected
 
 
-def _copy_mutable_containers(value: Any) -> Any:
+def copy_mutable_containers(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+        return {key: copy_mutable_containers(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_copy_mutable_containers(item) for item in value]
+        return [copy_mutable_containers(item) for item in value]
     if isinstance(value, tuple):
-        return tuple(_copy_mutable_containers(item) for item in value)
+        return tuple(copy_mutable_containers(item) for item in value)
     if isinstance(value, set):
-        return {_copy_mutable_containers(item) for item in value}
+        return {copy_mutable_containers(item) for item in value}
     if isinstance(value, bytearray):
         return bytearray(value)
     return value
 
 
-def _single_encoder_stage_name(state: MingOmniPipelineState) -> str:
+def single_encoder_stage_name(state: MingOmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"

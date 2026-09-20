@@ -188,7 +188,7 @@ class StageBreakdownRow:
         }
 
 
-def _percentile(values: list[float], q: float) -> float:
+def percentile(values: list[float], q: float) -> float:
     """Linear-interpolation percentile. q in [0, 1]. ``values`` is sorted."""
     if not values:
         return 0.0
@@ -273,8 +273,8 @@ def stage_breakdown(
                 count=len(durations),
                 total_ms=sum(durations),
                 avg_ms=sum(durations) / len(durations),
-                p50_ms=_percentile(durations, 0.50),
-                p95_ms=_percentile(durations, 0.95),
+                p50_ms=percentile(durations, 0.50),
+                p95_ms=percentile(durations, 0.95),
                 max_ms=durations[-1],
             )
         )
@@ -376,8 +376,8 @@ def hop_breakdown(
                 count=len(values),
                 total_ms=sum(values),
                 avg_ms=sum(values) / len(values),
-                p50_ms=_percentile(values, 0.50),
-                p95_ms=_percentile(values, 0.95),
+                p50_ms=percentile(values, 0.50),
+                p95_ms=percentile(values, 0.95),
                 max_ms=values[-1],
             )
         )

@@ -39,7 +39,7 @@ def test_runtime_configuration_reports_global_backend_for_each_phase(
         sampling_backend="pytorch",
     )
 
-    description = bootstrap._describe_sglang_runtime_configuration(
+    description = bootstrap.describe_sglang_runtime_configuration(
         server_args,
         gpu_id=0,
     )
@@ -67,7 +67,7 @@ def test_runtime_configuration_reports_explicit_phase_backends(
         sampling_backend="pytorch",
     )
 
-    description = bootstrap._describe_sglang_runtime_configuration(
+    description = bootstrap.describe_sglang_runtime_configuration(
         server_args,
         gpu_id=1,
     )
@@ -85,7 +85,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     events: list[str] = []
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: events.append("runtime_configuration")
         or "runtime configuration",
     )
@@ -150,7 +150,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
     events: list[object] = []
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda *_args: "runtime configuration",
     )
 
@@ -224,7 +224,7 @@ def test_an_engine_is_refused_in_a_process_with_a_published_context(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
     monkeypatch.setattr(model_worker_module, "ModelWorker", constructed)
@@ -253,7 +253,7 @@ def test_a_construction_that_failed_after_publishing_is_not_retried(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
     monkeypatch.setattr(model_worker_module, "ModelWorker", publish_then_fail)
@@ -339,7 +339,7 @@ def test_hidden_capture_max_tokens_covers_eager_and_graph_forwards(
     expected: int,
 ) -> None:
     with get_context().override_server_args(**fields):
-        assert bootstrap._hidden_capture_max_tokens() == expected
+        assert bootstrap.hidden_capture_max_tokens() == expected
 
 
 def test_hidden_capture_max_tokens_covers_non_chunked_context_length() -> None:
@@ -353,7 +353,7 @@ def test_hidden_capture_max_tokens_covers_non_chunked_context_length() -> None:
             prefill=PhaseConfig(max_bs=None),
         ),
     ):
-        assert bootstrap._hidden_capture_max_tokens() == 32768
+        assert bootstrap.hidden_capture_max_tokens() == 32768
 
 
 def test_hidden_capture_max_tokens_rejects_missing_capacity_sources() -> None:
@@ -368,7 +368,7 @@ def test_hidden_capture_max_tokens_rejects_missing_capacity_sources() -> None:
         ),
     ):
         with pytest.raises(ValueError, match="hidden capture capacity"):
-            bootstrap._hidden_capture_max_tokens()
+            bootstrap.hidden_capture_max_tokens()
 
 
 def test_hidden_capture_is_installed_before_graph_initialization(
@@ -420,7 +420,7 @@ def test_hidden_capture_is_installed_before_graph_initialization(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda *_args: "runtime configuration",
     )
     monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
@@ -531,7 +531,7 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
 

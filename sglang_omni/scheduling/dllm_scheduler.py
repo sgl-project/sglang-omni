@@ -87,8 +87,8 @@ class DllmScheduler:
 
     def _event_loop(self) -> None:
         while self._running:
-            self._drain_and_purge()
-            batch = self._schedule_next_batch()
+            self.drain_and_purge()
+            batch = self.schedule_next_batch()
 
             if batch is None:
                 time.sleep(0.001)
@@ -105,10 +105,10 @@ class DllmScheduler:
                 batch=batch,
             )
 
-            self._apply_results(batch, batch_result)
-            self._post_step(batch)
+            self.apply_results(batch, batch_result)
+            self.post_step(batch)
 
-    def _drain_and_purge(self) -> None:
+    def drain_and_purge(self) -> None:
         with self._abort_lock:
             aborted = self._aborted_request_ids
             self._aborted_request_ids = set()
@@ -148,7 +148,7 @@ class DllmScheduler:
         for rid in aborted:
             self._rid_to_req_data.pop(rid, None)
 
-    def _schedule_next_batch(self) -> ScheduleBatch | None:
+    def schedule_next_batch(self) -> ScheduleBatch | None:
         if not self._waiting_queue and not self._staging_queue:
             return None
 
@@ -218,7 +218,7 @@ class DllmScheduler:
         new_batch.prepare_for_extend()
         return new_batch
 
-    def _apply_results(self, batch: Any, batch_result: Any) -> None:
+    def apply_results(self, batch: Any, batch_result: Any) -> None:
         next_token_ids = batch_result.next_token_ids
         if next_token_ids is None:
             return
@@ -335,7 +335,7 @@ class DllmScheduler:
                     )
                 )
 
-    def _post_step(self, batch: Any) -> None:
+    def post_step(self, batch: Any) -> None:
         exclude = set()
         for req in batch.reqs:
             if req.finished():

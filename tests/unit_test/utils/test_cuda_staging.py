@@ -79,7 +79,7 @@ def _install_fake_pinned_alloc(
         calls.append((numel, dtype))
         return torch.empty(numel, dtype=dtype)
 
-    monkeypatch.setattr(cuda_staging, "_allocate_pinned", allocate)
+    monkeypatch.setattr(cuda_staging, "allocate_pinned", allocate)
     return calls
 
 

@@ -44,6 +44,8 @@ DATASETS: dict[str, str] = {
     "longlibriheavy-30": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_30",
     "longlibriheavy-60": f"{LONGLIBRIHEAVY_DATASET_ID}:llh_test_60",
     "meanwhile": f"{MEANWHILE_DATASET_ID}:test",
+    "librispeech-clean": "openslr/librispeech_asr:clean",
+    "librispeech-other": "openslr/librispeech_asr:other",
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -64,7 +66,7 @@ def download_dataset(
     revision: str | None = None,
     quiet: bool = False,
 ) -> None:
-    """Pre-warm the HuggingFace ``datasets`` cache for *repo_id*."""
+    """Pre-warm the HuggingFace datasets cache for *repo_id*."""
     from datasets import get_dataset_config_names, load_dataset
     from huggingface_hub import hf_hub_download
 
@@ -80,10 +82,9 @@ def download_dataset(
     revision_kwargs = {"revision": revision} if revision else {}
     if not quiet:
         logger.info(
-            "Pre-warming HuggingFace cache for %s split=%s revision=%s ...",
-            dataset_id,
-            split if separator else "all",
-            revision or "default",
+            f"Pre-warming HuggingFace cache for {dataset_id} "
+            f"split={split if separator else 'all'} "
+            f"revision={revision or 'default'} ..."
         )
 
     if dataset_id == "MMMU/MMMU":
@@ -101,6 +102,16 @@ def download_dataset(
             dataset_id,
             "mmar-audio.tar.gz",
             repo_type="dataset",
+            **revision_kwargs,
+        )
+    elif dataset_id == "openslr/librispeech_asr" and separator:
+        # note (MayDomine): selecting files avoids downloading unused train splits.
+        config_name = split
+        load_dataset(
+            dataset_id,
+            data_files={"test": f"{config_name}/test/*.parquet"},
+            split="test",
+            verification_mode="no_checks",
             **revision_kwargs,
         )
     elif dataset_id == "lmms-lab/mmau" and separator:

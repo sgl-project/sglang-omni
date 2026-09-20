@@ -195,7 +195,7 @@ def test_streaming_kv_grad_and_missing_triton_use_fallback(monkeypatch):
     assert not kernels.can_fuse_streaming_kv(*inputs[:6])
     with torch.no_grad():
         assert kernels.can_fuse_streaming_kv(*inputs[:6])
-        monkeypatch.setattr(kernels, "_streaming_kv_gather_kernel", None)
+        monkeypatch.setattr(kernels, "streaming_kv_gather_kernel", None)
         assert not kernels.can_fuse_streaming_kv(*inputs[:6])
 
 
@@ -296,7 +296,7 @@ def test_indexed_attention_commits_only_after_output_projection(monkeypatch):
     monkeypatch.setattr(model.out_proj, "forward", fail_projection)
     with model.streaming(4):
         state = model._streaming_state
-        model._ensure_streaming_cache(state, 4, torch.device("cuda"), torch.bfloat16)
+        model.ensure_streaming_cache(state, 4, torch.device("cuda"), torch.bfloat16)
         names = ["offset", "cached_keys", "cached_values", "cached_positions"]
         before = {name: getattr(state, name).clone() for name in names}
         with pytest.raises(RuntimeError, match="projection failed"):

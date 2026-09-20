@@ -15,8 +15,8 @@ import pytest
 from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import (
     _ABORTED_REQUEST_ID_LIMIT,
+    CountingInbox,
     ThreadedSimpleScheduler,
-    _CountingInbox,
 )
 
 
@@ -69,7 +69,7 @@ def test_abort_suppresses_unseen_or_queued_request(
             scheduler.outbox.get(timeout=0.2)
 
     assert executed == ["must-run"]
-    assert not scheduler._has_tombstone("drop")
+    assert not scheduler.has_tombstone("drop")
 
 
 def test_non_request_message_is_not_tracked_as_queued() -> None:
@@ -87,14 +87,14 @@ def test_abort_cancels_pending_future() -> None:
     scheduler = ThreadedSimpleScheduler(lambda payload: payload, max_concurrency=1)
     future: Future = Future()
     scheduler._pending["running"] = future
-    future.add_done_callback(lambda fut: scheduler._finish("running", fut))
+    future.add_done_callback(lambda fut: scheduler.finish("running", fut))
 
     scheduler.abort("running")
 
     assert future.cancelled()
     assert "running" not in scheduler._pending
     assert future not in scheduler._aborted_futures
-    assert not scheduler._has_tombstone("running")
+    assert not scheduler.has_tombstone("running")
 
 
 def test_enqueue_promotes_speculative_abort_beyond_cap_reach() -> None:
@@ -122,7 +122,7 @@ def test_enqueue_promotes_speculative_abort_beyond_cap_reach() -> None:
             scheduler.outbox.get(timeout=0.2)
 
     assert executed == ["must-run"]
-    assert not scheduler._has_tombstone("victim")
+    assert not scheduler.has_tombstone("victim")
 
 
 def test_enqueue_migration_is_atomic_with_inbox_put() -> None:
@@ -130,7 +130,7 @@ def test_enqueue_migration_is_atomic_with_inbox_put() -> None:
     release_put = threading.Event()
     executed: list[str] = []
 
-    class PausingInbox(_CountingInbox):
+    class PausingInbox(CountingInbox):
         def put(self, *args, **kwargs):
             super().put(*args, **kwargs)
             put_registered.set()
@@ -176,7 +176,7 @@ def test_enqueue_migration_is_atomic_with_inbox_put() -> None:
             scheduler.outbox.get(timeout=0.2)
 
     assert executed == ["must-run"]
-    assert not scheduler._has_tombstone("victim")
+    assert not scheduler.has_tombstone("victim")
 
 
 def test_queued_aborts_past_cap_are_not_evicted() -> None:
@@ -204,7 +204,7 @@ def test_claimed_abort_survives_speculative_eviction() -> None:
     release_get = threading.Event()
     executed = threading.Event()
 
-    class PausingInbox(_CountingInbox):
+    class PausingInbox(CountingInbox):
         def get(self, *args, **kwargs):
             item = super().get(*args, **kwargs)
             claimed.set()
@@ -229,7 +229,7 @@ def test_claimed_abort_survives_speculative_eviction() -> None:
             with pytest.raises(queue.Empty):
                 scheduler.outbox.get(timeout=0.3)
             assert not executed.is_set()
-            assert not scheduler._has_tombstone("claimed")
+            assert not scheduler.has_tombstone("claimed")
         finally:
             release_get.set()
 
@@ -253,17 +253,17 @@ def test_abort_for_reused_id_survives_old_future_completion() -> None:
             assert started.wait(timeout=5.0)
             scheduler.abort("reused")
             scheduler.abort("reused")
-            assert scheduler._has_tombstone("reused")
+            assert scheduler.has_tombstone("reused")
 
             release.set()
             _wait_until(lambda: not scheduler._aborted_futures)
-            assert scheduler._has_tombstone("reused")
+            assert scheduler.has_tombstone("reused")
 
             scheduler.inbox.put(_request("reused", "new"))
             scheduler.inbox.put(_request("live", "live"))
             assert scheduler.outbox.get(timeout=5.0).data == "live"
             assert executed == ["old", "live"]
-            assert not scheduler._has_tombstone("reused")
+            assert not scheduler.has_tombstone("reused")
         finally:
             release.set()
 
@@ -276,8 +276,8 @@ def test_stale_aborted_future_does_not_clear_newer_abort() -> None:
     assert new_future.set_running_or_notify_cancel()
 
     scheduler._pending["reused"] = old_future
-    old_future.add_done_callback(lambda fut: scheduler._finish("reused", fut))
-    new_future.add_done_callback(lambda fut: scheduler._finish("reused", fut))
+    old_future.add_done_callback(lambda fut: scheduler.finish("reused", fut))
+    new_future.add_done_callback(lambda fut: scheduler.finish("reused", fut))
 
     scheduler.abort("reused")
     scheduler._pending["reused"] = new_future
@@ -297,7 +297,7 @@ def test_stale_finish_keeps_newer_pending_future() -> None:
     scheduler._pending["reused"] = new_future
 
     old_future.set_result("old-result")
-    scheduler._finish("reused", old_future)
+    scheduler.finish("reused", old_future)
 
     assert scheduler._pending["reused"] is new_future
     assert scheduler.outbox.get(timeout=2.0).data == "old-result"

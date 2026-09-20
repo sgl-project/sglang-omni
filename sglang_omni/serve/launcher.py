@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
 
-class _PipelineUvicornServer(uvicorn.Server):
+class PipelineUvicornServer(uvicorn.Server):
     """Keep Uvicorn's graceful handling without re-raising process signals.
 
     Uvicorn re-raises a captured SIGTERM after HTTP shutdown. That terminates
@@ -90,7 +90,7 @@ class _PipelineUvicornServer(uvicorn.Server):
 # ---------------------------------------------------------------------------
 
 
-def _find_available_port(host: str, port: int) -> int:
+def find_available_port(host: str, port: int) -> int:
     """Return *port* if available, otherwise find a free port and warn.
 
     SGLANG_OMNI_STRICT_PORT=1 turns the fallback into a hard error: a
@@ -115,16 +115,16 @@ def _find_available_port(host: str, port: int) -> int:
     return free_port
 
 
-def _default_run_id() -> str:
+def default_run_id() -> str:
     return time.strftime("run_%Y%m%d_%H%M%S")
 
 
-def _default_template(profiler_dir: str, run_id: str) -> str:
+def default_template(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "trace")
 
 
 # ---------------------------------------------------------------------------
-def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
+def stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any]:
     """Build stage placement and runtime budget fields for startup logs."""
 
     summary: dict[str, Any] = {}
@@ -148,7 +148,7 @@ def _stage_runtime_log_summary(pipeline_config: PipelineConfig) -> dict[str, Any
     return summary
 
 
-def _format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
+def format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
     return {
         "device_id": info.device_id,
         "name": info.name or "unknown",
@@ -160,7 +160,7 @@ def _format_gpu_device_info(info: GpuDeviceInfo) -> dict[str, Any]:
     }
 
 
-def _placement_log_summary(
+def placement_log_summary(
     placement_plan,
     process_plan,
     pipeline_config: PipelineConfig,
@@ -172,7 +172,7 @@ def _placement_log_summary(
     """
 
     hardware = {
-        gpu_id: _format_gpu_device_info(get_gpu_device_info(gpu_id))
+        gpu_id: format_gpu_device_info(get_gpu_device_info(gpu_id))
         for gpu_id in sorted(placement_plan.gpus)
     }
     return {
@@ -186,7 +186,7 @@ def _placement_log_summary(
             stage_name: list(process_names)
             for stage_name, process_names in process_plan.tp_stage_to_processes.items()
         },
-        "stage_runtime": _stage_runtime_log_summary(pipeline_config),
+        "stage_runtime": stage_runtime_log_summary(pipeline_config),
         "gpus": {
             gpu_id: {
                 "hardware": hardware[gpu_id],
@@ -201,7 +201,7 @@ def _placement_log_summary(
     }
 
 
-def _model_capabilities_log_summary(
+def model_capabilities_log_summary(
     pipeline_config: PipelineConfig,
 ) -> dict[str, Any] | None:
     architecture = getattr(type(pipeline_config), "architecture", None)
@@ -223,9 +223,9 @@ def _model_capabilities_log_summary(
     }
 
 
-def _log_model_capabilities(pipeline_config: PipelineConfig) -> None:
+def log_model_capabilities(pipeline_config: PipelineConfig) -> None:
     try:
-        summary = _model_capabilities_log_summary(pipeline_config)
+        summary = model_capabilities_log_summary(pipeline_config)
     except Exception:
         logger.warning(
             "Failed to resolve model capabilities for startup log",
@@ -253,26 +253,26 @@ class StartRequestProfileReq(BaseModel):
     event_dir: str | None = None
 
 
-def _default_event_dir(profiler_dir: str, run_id: str) -> str:
+def default_event_dir(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "events")
 
 
-def _mount_profiler_routes(
+def mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
     router = APIRouter()
 
     @router.post("/start_profile")
     async def start(req: StartReq):
-        run_id = req.run_id or _default_run_id()
+        run_id = req.run_id or default_run_id()
         event_dir = req.event_dir
         if event_dir is None and profiler_dir is not None:
-            event_dir = _default_event_dir(profiler_dir, run_id)
+            event_dir = default_event_dir(profiler_dir, run_id)
         if req.enable_torch:
             if req.trace_path_template is not None:
                 tpl = req.trace_path_template
             elif profiler_dir is not None:
-                tpl = _default_template(profiler_dir, run_id)
+                tpl = default_template(profiler_dir, run_id)
             else:
                 raise HTTPException(
                     status_code=400,
@@ -318,7 +318,7 @@ def _mount_profiler_routes(
     @router.post("/start_request_profile")
     async def start_request(req: StartRequestProfileReq):
         """Start request-level (JSONL) event profiling only (no torch trace)."""
-        run_id = req.run_id or _default_run_id()
+        run_id = req.run_id or default_run_id()
         event_dir = req.event_dir
         if event_dir is None:
             if profiler_dir is None:
@@ -329,7 +329,7 @@ def _mount_profiler_routes(
                         "SGLANG_TORCH_PROFILER_DIR is not set"
                     ),
                 )
-            event_dir = _default_event_dir(profiler_dir, run_id)
+            event_dir = default_event_dir(profiler_dir, run_id)
         try:
             _get_event_recorder().start(
                 run_id=run_id, event_dir=event_dir, stage="coordinator"
@@ -372,7 +372,7 @@ def _mount_profiler_routes(
     app.include_router(router)
 
 
-async def _run_server(
+async def run_server(
     pipeline_config: PipelineConfig,
     *,
     host: str = "0.0.0.0",
@@ -390,7 +390,7 @@ async def _run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     # 0. Check port availability before loading models
-    port = _find_available_port(host, port)
+    port = find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -403,7 +403,7 @@ async def _run_server(
     placement_plan = mp_runner.prep.placement_plan
     process_plan = mp_runner.prep.process_plan
     gpu_ids = set(placement_plan.gpus)
-    placement_summary = _placement_log_summary(
+    placement_summary = placement_log_summary(
         placement_plan,
         process_plan,
         pipeline_config,
@@ -411,7 +411,7 @@ async def _run_server(
     logger.info(
         f"Resolved placement/topology plan: placement={placement_summary}",
     )
-    _log_model_capabilities(pipeline_config)
+    log_model_capabilities(pipeline_config)
     logger.info(
         "Pipeline '%s' started (%d GPU(s))",
         pipeline_config.name,
@@ -456,7 +456,7 @@ async def _run_server(
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
-        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
         config = uvicorn.Config(
             app,
@@ -465,15 +465,15 @@ async def _run_server(
             log_level=log_level,
             timeout_keep_alive=120,
         )
-        server = _PipelineUvicornServer(config)
-        await _serve_with_failure_watch(server, [mp_runner.wait_failed()])
+        server = PipelineUvicornServer(config)
+        await serve_with_failure_watch(server, [mp_runner.wait_failed()])
     finally:
         logger.info("Shutting down pipeline …")
         await mp_runner.stop()
         logger.info("Pipeline stopped.")
 
 
-async def _serve_with_failure_watch(
+async def serve_with_failure_watch(
     server: uvicorn.Server,
     runtime_watchers,
 ) -> None:
@@ -547,7 +547,7 @@ def launch_server(
     """
     apply_gpu_compat_env_defaults()
     asyncio.run(
-        _run_server(
+        run_server(
             pipeline_config,
             host=host,
             port=port,

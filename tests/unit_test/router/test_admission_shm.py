@@ -57,9 +57,9 @@ def test_soft_bound_overshoot_is_at_most_n_minus_one() -> None:
     c = _admission(buf, 2, bound=3)
 
     assert a.try_acquire() and a.try_acquire()  # sum = 2 = bound - 1
-    stale_total = b._total_inflight()
+    stale_total = b.total_inflight()
     assert a.try_acquire() is True  # sum = 3 = bound
-    b._total_inflight = lambda: stale_total  # type: ignore[method-assign]
+    b.total_inflight = lambda: stale_total  # type: ignore[method-assign]
     assert b.try_acquire() is True  # stale check admits: sum = 4 = bound + 1
 
     # Note (Jiaxin Deng): overshoot is bounded by N-1 and a fresh reader immediately

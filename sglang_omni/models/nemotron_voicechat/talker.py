@@ -128,7 +128,7 @@ class EarTtsTalker(nn.Module):
         self.embed_code = nn.Linear(int(config["latent_size"]), hidden_size, bias=False)
 
     def embed_codes(self, codes_TQ):
-        return self.embed_code(self._depth_sum(codes_TQ, self.num_quantizers))
+        return self.embed_code(self.depth_sum(codes_TQ, self.num_quantizers))
 
     def quantise(self, latent_TD, codes_TQ, first_level: int, count: int):
         residual_TD = latent_TD
@@ -166,7 +166,7 @@ class EarTtsTalker(nn.Module):
         for count in counts.tolist():
             if count == 0:
                 continue
-            depth_TD = self.embed_code(self._depth_sum(codes_TQ, assigned))
+            depth_TD = self.embed_code(self.depth_sum(codes_TQ, assigned))
             fed_TD = depth_TD + hidden_TD
             if guidance_scale > 0:
                 fed_TD = torch.cat([fed_TD, depth_TD + uncond_TD])
@@ -181,7 +181,7 @@ class EarTtsTalker(nn.Module):
             assigned += count
         return codes_TQ
 
-    def _depth_sum(self, codes_TQ, levels: int):
+    def depth_sum(self, codes_TQ, levels: int):
         if levels == 0:
             return torch.zeros(
                 codes_TQ.shape[0],

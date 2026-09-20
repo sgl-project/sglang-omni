@@ -54,11 +54,11 @@ _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
 
 
-def _perf_counter() -> float:
+def perf_counter() -> float:
     return time.perf_counter()
 
 
-def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
+def ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
     """Stable hash of the full N-codebook ref-audio sequence.
 
     Returned as a short hex string used as ``Req.extra_key``. ``None`` for
@@ -109,7 +109,7 @@ def build_sglang_higgs_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=ref_audio_fingerprint(state.reference_codes_delayed),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
     req._codec_suppress_tokens = None
@@ -215,7 +215,7 @@ def make_higgs_scheduler_adapters(
                 int(max_new_tokens_cap),
             )
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
-        data.engine_start_s = _perf_counter()
+        data.engine_start_s = perf_counter()
         data.stage_payload = payload
         data.stream_metadata = build_higgs_stream_metadata(
             payload,
@@ -231,7 +231,7 @@ def make_higgs_scheduler_adapters(
         state = HiggsTtsState.from_dict(payload.data)
         apply_higgs_result(state, data)
         if data.engine_start_s:
-            state.engine_time_s = _perf_counter() - data.engine_start_s
+            state.engine_time_s = perf_counter() - data.engine_start_s
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

@@ -11,10 +11,10 @@ from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.stages import (
-    _condition_batch,
-    _decode_batch,
-    _sample_batch,
+    condition_batch,
     create_auk_engine_executor,
+    decode_batch,
+    sample_batch,
 )
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
@@ -65,18 +65,16 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
     ]
 
     rng = torch.random.get_rng_state()
-    conditioned = _condition_batch(
-        payloads, encoder, vae, fusion, device, torch.float32
-    )
+    conditioned = condition_batch(payloads, encoder, vae, fusion, device, torch.float32)
     states = [AuKState.from_dict(payload.data) for payload in conditioned]
     assert torch.equal(states[0].ref_latent, states[1].ref_latent)
     assert not torch.equal(states[0].ref_latent, states[2].ref_latent)
     assert torch.equal(torch.random.get_rng_state(), rng)
     assert states[0].ref_length == 50
     assert states[0].ref_latent.stride() == (1, 51)
-    sampled = _sample_batch(conditioned, flow, device, torch.float32, 1500, {})
+    sampled = sample_batch(conditioned, flow, device, torch.float32, 1500, {})
     assert len(flow.sample_batch.call_args.args[0]) == 3
-    results = _decode_batch(sampled, vae, device)
+    results = decode_batch(sampled, vae, device)
 
     assert [
         call.args[0].shape[0] for call in vae.inference_from_latents.call_args_list
@@ -108,7 +106,7 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
     monkeypatch.setattr(stages, "make_runtime_config", lambda path: config)
     flow = Mock()
     flow.sample_batch.return_value = [torch.zeros(10, 64)]
-    monkeypatch.setattr(stages, "_load_flow", lambda *args: flow)
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
     scheduler = create_auk_engine_executor("stub", device="cpu", nfe=8, cfg_strength=3)
     state = AuKState(
         gen_frames=10,
@@ -166,7 +164,7 @@ def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
         flow.sample_batch.side_effect = sample_batch
         return flow
 
-    monkeypatch.setattr(stages, "_load_flow", load_flow)
+    monkeypatch.setattr(stages, "load_flow", load_flow)
     for weight_dtype in ("bfloat16", "float32"):
         scheduler = create_auk_engine_executor(
             "stub", device="cpu", dtype="bfloat16", weight_dtype=weight_dtype

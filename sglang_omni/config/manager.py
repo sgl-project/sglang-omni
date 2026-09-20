@@ -88,7 +88,7 @@ class ConfigManager:
                 raise ValueError(f"Invalid argument: {arg}")
 
             if cur_key is not None and cur_value is not None:
-                extra_args.append((_normalize_flag_key(cur_key), cur_value))
+                extra_args.append((normalize_flag_key(cur_key), cur_value))
                 cur_key, cur_value = None, None
         if cur_key is not None and cur_value is None:
             raise ValueError(f"Missing value for argument: {cur_key}")
@@ -116,7 +116,7 @@ class ConfigManager:
         if extra_patches is not None:
             patches = patches.merge(extra_patches)
         resolved = ConfigResolver(self.config).resolve(patches)
-        _validate_dotted_gpu_override_conflicts(
+        validate_dotted_gpu_override_conflicts(
             resolved.config, {patch.key for patch in patches.ordered()}
         )
         return resolved.config
@@ -159,7 +159,7 @@ class ConfigManager:
         return ConfigManager(resolved.config)
 
 
-def _validate_dotted_gpu_override_conflicts(
+def validate_dotted_gpu_override_conflicts(
     config: PipelineConfig,
     override_keys: set[str],
 ) -> None:
@@ -185,7 +185,7 @@ def _validate_dotted_gpu_override_conflicts(
         )
 
 
-def _normalize_flag_key(key: str) -> str:
+def normalize_flag_key(key: str) -> str:
     """Strip the leading dashes and normalize the flag's first segment.
 
     Only the first dotted segment gets its dashes rewritten to underscores:

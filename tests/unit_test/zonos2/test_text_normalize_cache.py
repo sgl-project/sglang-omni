@@ -23,7 +23,7 @@ class _CountingNormalizer:
 def _install(monkeypatch):
     text_frontend._NORMALIZE_CACHE.clear()
     norm = _CountingNormalizer()
-    monkeypatch.setattr(text_frontend, "_get_normalizer", lambda: norm)
+    monkeypatch.setattr(text_frontend, "get_normalizer", lambda: norm)
     return norm
 
 

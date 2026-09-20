@@ -26,18 +26,18 @@ def _make_stub(rows: int = 8, hidden: int = 4, n_audio: int = 3) -> SimpleNamesp
         ],
         _fused_audio_heads_enabled=True,
     )
-    stub._ensure_stacked_audio_heads = MethodType(
+    stub.ensure_stacked_audio_heads = MethodType(
         lambda self: self._stacked_audio_head_weight is not None, stub
     )
-    stub._fused_audio_heads_ready = MethodType(
-        MossTTSDelaySGLangModel._fused_audio_heads_ready, stub
+    stub.fused_audio_heads_ready = MethodType(
+        MossTTSDelaySGLangModel.fused_audio_heads_ready, stub
     )
     return stub
 
 
 def test_fused_audio_heads_ready_when_aliased() -> None:
     stub = _make_stub()
-    assert stub._fused_audio_heads_ready() is True
+    assert stub.fused_audio_heads_ready() is True
 
 
 @pytest.mark.parametrize("replaced_index", [1, 2, 3])
@@ -46,7 +46,7 @@ def test_replacing_any_audio_head_disables_fused_path(replaced_index: int) -> No
     stub.lm_heads[replaced_index].weight = torch.randn_like(
         stub.lm_heads[replaced_index].weight
     )
-    assert stub._fused_audio_heads_ready() is False
+    assert stub.fused_audio_heads_ready() is False
     assert stub._stacked_audio_head_weight is None
     assert stub._fused_audio_heads_enabled is False
 
@@ -58,10 +58,10 @@ def test_ready_never_stacks_lazily() -> None:
         _stacked_audio_head_weight=None,
         _fused_audio_heads_enabled=None,
     )
-    stub._fused_audio_heads_ready = MethodType(
-        MossTTSDelaySGLangModel._fused_audio_heads_ready, stub
+    stub.fused_audio_heads_ready = MethodType(
+        MossTTSDelaySGLangModel.fused_audio_heads_ready, stub
     )
-    assert stub._fused_audio_heads_ready() is False
+    assert stub.fused_audio_heads_ready() is False
 
 
 def _plain_mode_stub(n_audio: int = 2) -> SimpleNamespace:
@@ -72,33 +72,33 @@ def _plain_mode_stub(n_audio: int = 2) -> SimpleNamespace:
         for _ in range(n_audio + 1)
     ]
     stub = SimpleNamespace(lm_heads=heads, logits_processors=processors)
-    stub._audio_heads_use_plain_lm_head = MethodType(
-        MossTTSDelaySGLangModel._audio_heads_use_plain_lm_head, stub
+    stub.audio_heads_use_plain_lm_head = MethodType(
+        MossTTSDelaySGLangModel.audio_heads_use_plain_lm_head, stub
     )
     return stub
 
 
 def test_plain_mode_gate_accepts_default_configuration() -> None:
-    assert _plain_mode_stub()._audio_heads_use_plain_lm_head() is True
+    assert _plain_mode_stub().audio_heads_use_plain_lm_head() is True
 
 
 def test_plain_mode_gate_rejects_fp32_lm_head() -> None:
     stub = _plain_mode_stub()
     stub.logits_processors[1].use_fp32_lm_head = True
-    assert stub._audio_heads_use_plain_lm_head() is False
+    assert stub.audio_heads_use_plain_lm_head() is False
 
 
 def test_plain_mode_gate_rejects_rl_on_policy_target() -> None:
     stub = _plain_mode_stub()
     stub.logits_processors[2].rl_on_policy_target = "actor"
-    assert stub._audio_heads_use_plain_lm_head() is False
+    assert stub.audio_heads_use_plain_lm_head() is False
 
 
 def test_plain_mode_gate_rejects_lora_wrapped_head() -> None:
     stub = _plain_mode_stub()
     stub.lm_heads[1].set_lora = lambda *a: None
     stub.lm_heads[1].apply_lora = lambda *a: None
-    assert stub._audio_heads_use_plain_lm_head() is False
+    assert stub.audio_heads_use_plain_lm_head() is False
 
 
 class ParallelLMHead:
@@ -148,15 +148,15 @@ def _share_stub(
         _fused_audio_heads_enabled=None,
     )
     for name in (
-        "_audio_heads_use_plain_lm_head",
-        "_fused_audio_heads_eligible",
-        "_fused_audio_heads_ready",
-        "_fused_audio_heads_requested",
-        "_record_stacked_audio_heads",
+        "audio_heads_use_plain_lm_head",
+        "fused_audio_heads_eligible",
+        "fused_audio_heads_ready",
+        "fused_audio_heads_requested",
+        "record_stacked_audio_heads",
         "on_weight_share_attached",
     ):
         setattr(stub, name, MethodType(getattr(MossTTSDelaySGLangModel, name), stub))
-    stub._stacked_view_over_heads = MossTTSDelaySGLangModel._stacked_view_over_heads
+    stub.stacked_view_over_heads = MossTTSDelaySGLangModel.stacked_view_over_heads
     return stub, shared
 
 
@@ -165,7 +165,7 @@ def test_weight_share_attach_adopts_the_shared_stack(monkeypatch) -> None:
 
     stub.on_weight_share_attached()
 
-    assert stub._fused_audio_heads_ready() is True
+    assert stub.fused_audio_heads_ready() is True
     # A view over the leader's storage, not a second copy of it.
     assert stub._stacked_audio_head_weight.data_ptr() == shared.data_ptr()
     assert torch.equal(stub._stacked_audio_head_weight, shared)
@@ -188,7 +188,7 @@ def test_weight_share_attach_honors_the_disable_switch(monkeypatch) -> None:
     stub.on_weight_share_attached()
 
     assert stub._fused_audio_heads_enabled is False
-    assert stub._fused_audio_heads_ready() is False
+    assert stub.fused_audio_heads_ready() is False
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
@@ -211,11 +211,11 @@ def test_fused_audio_logits_match_the_per_head_gemm(dtype: torch.dtype) -> None:
         _stacked_audio_head_weight=stacked,
         _audio_head_padded_vocab=rows,
     )
-    stub._compute_fused_audio_logits = MethodType(
-        MossTTSDelaySGLangModel._compute_fused_audio_logits, stub
+    stub.compute_fused_audio_logits = MethodType(
+        MossTTSDelaySGLangModel.compute_fused_audio_logits, stub
     )
 
-    fused = stub._compute_fused_audio_logits(hidden_states)
+    fused = stub.compute_fused_audio_logits(hidden_states)
     per_head = torch.stack(
         [
             torch.nn.functional.linear(

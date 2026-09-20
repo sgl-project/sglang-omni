@@ -136,15 +136,15 @@ class StreamingVocoderBase(
             self.on_serving_start()
             super().start()
         finally:
-            self._shutdown_stream_states()
+            self.shutdown_stream_states()
 
     def stop(self) -> None:
         was_running = self.running
         super().stop()
         if not was_running:
-            self._shutdown_stream_states()
+            self.shutdown_stream_states()
 
-    def _shutdown_stream_states(self) -> None:
+    def shutdown_stream_states(self) -> None:
         """Release every live state through ``clear_stream_state`` (the same
         path as completion/abort, so ``release_stream_resources`` runs), then
         let the subclass tear down session-level resources. A failing release
@@ -190,10 +190,10 @@ class StreamingVocoderBase(
                 f"{type(self).__name__} coalesces stream chunks; deliver them "
                 "through on_stream_chunk_batch"
             )
-        state = self._ingest_stream_item(request_id, item)
+        state = self.ingest_stream_item(request_id, item)
         if state is None:
             return []
-        return self._decode_and_emit(request_id, state)
+        return self.decode_and_emit(request_id, state)
 
     def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
         """Ingest every chunk then run one coalesced pump under ``state_lock``;
@@ -205,13 +205,13 @@ class StreamingVocoderBase(
                 if self.is_aborted(request_id):
                     continue
                 try:
-                    self._ingest_stream_item(request_id, item)
+                    self.ingest_stream_item(request_id, item)
                 except Exception as exc:
                     self.emit_error(request_id, exc)
                     self.abort_state(request_id)
                     failed.append(request_id)
             if self.pump_on_chunk_batch:
-                failed.extend(self._pump_streams())
+                failed.extend(self.pump_streams())
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 
@@ -236,12 +236,12 @@ class StreamingVocoderBase(
         if state is None:
             return []
         waveform = self.decode_delta(request_id, state, is_final=True)
-        if waveform is None and not self._stream_has_emitted(request_id):
+        if waveform is None and not self.stream_has_emitted(request_id):
             waveform = self.fallback_full_decode(request_id, payload, state)
         messages: list[OutgoingMessage] = []
         if waveform is not None:
-            self._mark_stream_emitted(request_id)
-            messages.append(self._stream_chunk_message(request_id, waveform))
+            self.mark_stream_emitted(request_id)
+            messages.append(self.stream_chunk_message(request_id, waveform))
         messages.append(
             OutgoingMessage(
                 request_id=request_id,
@@ -253,7 +253,7 @@ class StreamingVocoderBase(
                 ),
             )
         )
-        self._record_completed_stream_request_id(request_id)
+        self.record_completed_stream_request_id(request_id)
         return messages
 
     def clear_stream_state(self, request_id: str) -> None:
@@ -286,13 +286,13 @@ class StreamingVocoderBase(
     def stream_state_items(self) -> list[tuple[str, StreamStateT]]:
         return list(self.stream_states.items())
 
-    def _stream_has_emitted(self, request_id: str) -> bool:
+    def stream_has_emitted(self, request_id: str) -> bool:
         return request_id in self._emitted_stream_ids
 
-    def _mark_stream_emitted(self, request_id: str) -> None:
+    def mark_stream_emitted(self, request_id: str) -> None:
         self._emitted_stream_ids.add(request_id)
 
-    def _record_completed_stream_request_id(self, request_id: str) -> None:
+    def record_completed_stream_request_id(self, request_id: str) -> None:
         self._completed_stream_request_ids[request_id] = None
         if (
             len(self._completed_stream_request_ids)
@@ -306,7 +306,7 @@ class StreamingVocoderBase(
         for stale_request_id in list(self._completed_stream_request_ids)[:excess]:
             del self._completed_stream_request_ids[stale_request_id]
 
-    def _ingest_stream_item(
+    def ingest_stream_item(
         self, request_id: str, item: StreamItem
     ) -> StreamStateT | None:
         state = self.get_or_create_stream_state(request_id)
@@ -341,7 +341,7 @@ class StreamingVocoderBase(
         self.ingest(request_id, state, codes)
         return state
 
-    def _decode_and_emit(
+    def decode_and_emit(
         self, request_id: str, state: StreamStateT
     ) -> list[OutgoingMessage]:
         if not self.should_decode(state, is_final=False):
@@ -349,10 +349,10 @@ class StreamingVocoderBase(
         waveform = self.decode_delta(request_id, state, is_final=False)
         if waveform is None:
             return []
-        self._mark_stream_emitted(request_id)
-        return [self._stream_chunk_message(request_id, waveform)]
+        self.mark_stream_emitted(request_id)
+        return [self.stream_chunk_message(request_id, waveform)]
 
-    def _stream_chunk_message(
+    def stream_chunk_message(
         self, request_id: str, waveform: torch.Tensor
     ) -> OutgoingMessage:
         return OutgoingMessage(
@@ -362,7 +362,7 @@ class StreamingVocoderBase(
             metadata={"modality": "audio"},
         )
 
-    def _pump_one_step(self) -> list[str] | None:
+    def pump_one_step(self) -> list[str] | None:
         """Returns None when no stream is ready, otherwise the request ids
         on_step_failure aborted (empty after a successful step)."""
         participants = self.select_step_participants()
@@ -376,16 +376,16 @@ class StreamingVocoderBase(
         for request_id, _ in participants:
             waveform = decoded.get(request_id)
             if waveform is not None and not self.is_aborted(request_id):
-                self._mark_stream_emitted(request_id)
-                self.outbox.put(self._stream_chunk_message(request_id, waveform))
+                self.mark_stream_emitted(request_id)
+                self.outbox.put(self.stream_chunk_message(request_id, waveform))
         return []
 
-    def _pump_streams(self) -> list[str]:
+    def pump_streams(self) -> list[str]:
         """Coalesced decode loop: steps run until no participants remain, so
         capped-step backlogs drain within one pump; a failed step ends the
         pump and returns the aborted request ids."""
         while True:
-            failed = self._pump_one_step()
+            failed = self.pump_one_step()
             if failed is None:
                 return []
             if failed:
@@ -393,7 +393,7 @@ class StreamingVocoderBase(
 
     def run_ready_step(self) -> None:
         with self.state_lock:
-            failed = self._pump_one_step() or []
+            failed = self.pump_one_step() or []
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
 

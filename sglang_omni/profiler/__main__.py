@@ -16,7 +16,7 @@ import sys
 from sglang_omni.profiler.views import build_report, format_table
 
 
-def _main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m sglang_omni.profiler",
         description="Render request-level profiler views",
@@ -67,4 +67,4 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(_main())
+    raise SystemExit(main())

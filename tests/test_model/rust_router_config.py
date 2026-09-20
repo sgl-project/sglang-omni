@@ -25,6 +25,7 @@ def render_router_config(
     router_port: int,
     worker_urls: list[str],
     model_name: str,
+    generation_streaming: bool = True,
 ) -> str:
     """Render one current-schema router config for a homogeneous CI worker pool."""
     preamble = _router_preamble(topology, router_port)
@@ -34,6 +35,7 @@ def render_router_config(
             ordinal=ordinal,
             worker_url=worker_url,
             model_name=model_name,
+            generation_streaming=generation_streaming,
         )
         for ordinal, worker_url in enumerate(worker_urls, start=1)
     ]
@@ -126,6 +128,7 @@ def _worker_block(
     ordinal: int,
     worker_url: str,
     model_name: str,
+    generation_streaming: bool,
 ) -> str:
     prefix = {
         CiRouterTopology.ASR: "asr",
@@ -150,11 +153,20 @@ def _worker_block(
                 f"speech_websocket = {CI_ROUTER_MAX_INFLIGHT}",
             ]
         )
-    lines.extend(["", _service_profiles(topology, model_name)])
+    lines.extend(
+        [
+            "",
+            _service_profiles(
+                topology, model_name, generation_streaming=generation_streaming
+            ),
+        ]
+    )
     return "\n".join(lines)
 
 
-def _service_profiles(topology: CiRouterTopology, model_name: str) -> str:
+def _service_profiles(
+    topology: CiRouterTopology, model_name: str, *, generation_streaming: bool
+) -> str:
     model_ids = _toml_array([model_name])
     if topology is CiRouterTopology.ASR:
         return _transcription_profile(
@@ -220,6 +232,7 @@ def _service_profiles(topology: CiRouterTopology, model_name: str) -> str:
     return _generation_profile(
         model_ids=model_ids,
         audio_output=topology is CiRouterTopology.OMNI_AUDIO,
+        streaming=generation_streaming,
     )
 
 
@@ -280,9 +293,10 @@ def _speech_batch_profile(model_ids: str) -> str:
     )
 
 
-def _generation_profile(*, model_ids: str, audio_output: bool) -> str:
+def _generation_profile(*, model_ids: str, audio_output: bool, streaming: bool) -> str:
     output_modalities = ["text", "audio"] if audio_output else ["text"]
     audio_formats = ["wav", "mp3", "flac", "pcm", "aac", "opus"] if audio_output else []
+    stream_modes = ["non_streaming", "streaming"] if streaming else ["non_streaming"]
     return "\n".join(
         [
             "[[workers.service_profiles]]",
@@ -293,7 +307,7 @@ def _generation_profile(*, model_ids: str, audio_output: bool) -> str:
             'input_modalities = ["text", "image", "audio", "video"]',
             f"output_modalities = {_toml_array(output_modalities)}",
             f"chat_audio_formats = {_toml_array(audio_formats)}",
-            'stream_modes = ["non_streaming", "streaming"]',
+            f"stream_modes = {_toml_array(stream_modes)}",
         ]
     )
 

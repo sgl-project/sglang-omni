@@ -38,7 +38,7 @@ _ATTENTION_BACKENDS: dict[str, AttentionBackendEnum | None] = {
 }
 
 
-def _resolve_attention_backend(value: str) -> AttentionBackendEnum | None:
+def resolve_attention_backend(value: str) -> AttentionBackendEnum | None:
     name = value.strip().lower()
     if name not in _ATTENTION_BACKENDS:
         raise ValueError(
@@ -82,17 +82,17 @@ class RotaryEmbedding(nn.Module):
         return torch.cat((freqs, freqs), dim=-1), 1.0
 
 
-def _rotate_half(x: Tensor) -> Tensor:
+def rotate_half(x: Tensor) -> Tensor:
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
 
-def _apply_rope(x: Tensor, rope_cos: Tensor, rope_sin: Tensor) -> Tensor:
+def apply_rope(x: Tensor, rope_cos: Tensor, rope_sin: Tensor) -> Tensor:
     rot_dim = rope_cos.shape[-1]
     rotated = x[..., :rot_dim]
     rope_cos = rope_cos[-x.shape[-2] :].to(dtype=rotated.dtype, device=x.device)
     rope_sin = rope_sin[-x.shape[-2] :].to(dtype=rotated.dtype, device=x.device)
-    rotated = rotated * rope_cos + _rotate_half(rotated) * rope_sin
+    rotated = rotated * rope_cos + rotate_half(rotated) * rope_sin
     return torch.cat((rotated, x[..., rot_dim:]), dim=-1)
 
 
@@ -110,7 +110,7 @@ class Attention(nn.Module):
         self.dim_heads = dim_heads
         self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
         self.to_out = nn.Linear(dim, dim, bias=False)
-        resolved_backend = _resolve_attention_backend(attention_backend)
+        resolved_backend = resolve_attention_backend(attention_backend)
         selected_backend = resolved_backend or AttentionBackendEnum.FA
         supported_backends = None if resolved_backend is None else {resolved_backend}
         with component_attn_backend_context_manager(
@@ -140,8 +140,8 @@ class Attention(nn.Module):
         q = q.reshape(bsz, seq, self.num_heads, self.dim_heads).transpose(1, 2)
         k = k.reshape(bsz, seq, self.num_heads, self.dim_heads).transpose(1, 2)
         v = v.reshape(bsz, seq, self.num_heads, self.dim_heads).transpose(1, 2)
-        q = _apply_rope(q, rope_cos, rope_sin)
-        k = _apply_rope(k, rope_cos, rope_sin)
+        q = apply_rope(q, rope_cos, rope_sin)
+        k = apply_rope(k, rope_cos, rope_sin)
         out = self.backend(
             q.transpose(1, 2),
             k.transpose(1, 2),
@@ -222,7 +222,7 @@ class ContinuousTransformer(nn.Module):
             ]
         )
 
-    def _rotary_cos_sin(
+    def rotary_cos_sin(
         self, seq_len: int, *, dtype: torch.dtype, device: torch.device
     ) -> tuple[Tensor, Tensor]:
         key = (seq_len, dtype, device)
@@ -237,7 +237,7 @@ class ContinuousTransformer(nn.Module):
     def forward(self, x: Tensor, timestep_embed: Tensor) -> Tensor:
         x = self.project_in(x)
         x = torch.cat((timestep_embed.unsqueeze(1), x), dim=1)
-        rope_cos, rope_sin = self._rotary_cos_sin(
+        rope_cos, rope_sin = self.rotary_cos_sin(
             x.shape[1], dtype=x.dtype, device=x.device
         )
         for layer in self.layers:
@@ -264,7 +264,7 @@ class DiffusionTransformer(nn.Module):
             tuple[tuple[int, ...], torch.dtype, torch.device], Tensor
         ] = {}
 
-    def _latent_zeros(self, x: Tensor) -> Tensor:
+    def latent_zeros(self, x: Tensor) -> Tensor:
         key = (tuple(x.shape), x.dtype, x.device)
         zeros = self._latent_zeros_cache.get(key)
         if zeros is None:
@@ -273,7 +273,7 @@ class DiffusionTransformer(nn.Module):
         return zeros
 
     def _transformer(self, x: Tensor, t: Tensor, align_cond: Tensor) -> Tensor:
-        zeros = self._latent_zeros(x)
+        zeros = self.latent_zeros(x)
         full = torch.cat((x, zeros, align_cond), dim=1)
         full = self.preprocess_conv(full) + full
         tfeat = self.timestep_features(t[:, None])
@@ -322,7 +322,7 @@ class MiniMaxMusic3DIT(nn.Module):
         dtype = next(self.parameters()).dtype
         shape = (2, 2048, warmup_mel_length)
         with torch.inference_mode(), set_forward_context(0, None):
-            self.diffusion_transformer._transformer(
+            self.diffusion_transformer.transformer(
                 torch.zeros((2, 128, warmup_mel_length), device=device, dtype=dtype),
                 torch.zeros((2,), device=device, dtype=dtype),
                 torch.zeros(shape, device=device, dtype=dtype),
@@ -494,4 +494,4 @@ class MiniMaxMusic3DIT(nn.Module):
         return x
 
 
-__all__ = ["MiniMaxMusic3DIT", "_resolve_attention_backend"]
+__all__ = ["MiniMaxMusic3DIT", "resolve_attention_backend"]

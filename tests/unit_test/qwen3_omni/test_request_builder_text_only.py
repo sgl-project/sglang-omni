@@ -14,9 +14,9 @@ pytest.importorskip("xxhash")
 from sglang_omni.models.qwen3_omni.merge import merge_for_thinker
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
-    _compute_mrope_positions,
     build_sglang_thinker_request,
     build_thinker_request,
+    compute_mrope_positions,
 )
 from tests.unit_test.fixtures.qwen_fakes import (
     FakeQwenTokenizer,
@@ -117,7 +117,7 @@ def test_pure_text_qwen_mrope_is_ordinary_sequential_positions():
         position_id_per_seconds=25,
     )
 
-    positions, _delta = _compute_mrope_positions(
+    positions, _delta = compute_mrope_positions(
         torch.arange(sequence_length, dtype=torch.long),
         {},
         config,

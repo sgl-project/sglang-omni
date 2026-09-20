@@ -12,7 +12,7 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
-def _check_rows(num_rows: int, max_tokens: int) -> None:
+def check_rows(num_rows: int, max_tokens: int) -> None:
     if num_rows > max_tokens:
         raise RuntimeError(
             "Static aux hidden capture received "
@@ -35,11 +35,11 @@ class StaticAuxHiddenCapture:
     def views(self, num_rows: int) -> list[torch.Tensor]:
         # The caller owns forward freshness: graph replay refreshes these
         # buffers without executing Python-side row bookkeeping.
-        _check_rows(num_rows, self.max_tokens)
+        check_rows(num_rows, self.max_tokens)
         return [buffer[:num_rows] for buffer in self.buffers]
 
 
-def _layer_input_capture_hook(buffer: torch.Tensor, max_tokens: int):
+def layer_input_capture_hook(buffer: torch.Tensor, max_tokens: int):
     buffer_dtype = buffer.dtype
 
     def _capture(
@@ -62,7 +62,7 @@ def _layer_input_capture_hook(buffer: torch.Tensor, max_tokens: int):
             residual = None
 
         num_rows = hidden_states.shape[0]
-        _check_rows(num_rows, max_tokens)
+        check_rows(num_rows, max_tokens)
         layer_input = hidden_states if residual is None else hidden_states + residual
         if layer_input.dtype != buffer_dtype:
             raise RuntimeError(
@@ -142,7 +142,7 @@ def install_hidden_capture_hooks(
     for layer_id, buffer in zip(capture_layers, buffers):
         hook_handles.append(
             text_model.layers[layer_id].register_forward_pre_hook(
-                _layer_input_capture_hook(buffer, max_tokens),
+                layer_input_capture_hook(buffer, max_tokens),
                 with_kwargs=True,
             )
         )

@@ -24,7 +24,7 @@ class Qwen3ASRStreamingStrategy:
         return Qwen3ASRStreamingState(model_name=model_name, language=language)
 
     @staticmethod
-    def _state(state: object) -> Qwen3ASRStreamingState:
+    def state(state: object) -> Qwen3ASRStreamingState:
         if not isinstance(state, Qwen3ASRStreamingState):
             raise TypeError("Qwen3-ASR received incompatible streaming state")
         return state
@@ -38,7 +38,7 @@ class Qwen3ASRStreamingStrategy:
         request_id: str,
     ) -> GenerateRequest:
         del is_final, request_id
-        qwen_state = self._state(state)
+        qwen_state = self.state(state)
 
         use_prefix = (
             qwen_state.chunk_id >= _UNFIXED_CHUNK_NUM
@@ -75,7 +75,7 @@ class Qwen3ASRStreamingStrategy:
         language: str | None,
         state: object,
     ) -> str:
-        qwen_state = self._state(state)
+        qwen_state = self.state(state)
         if language:
             qwen_state.language = language
         qwen_state.transcript = generated_text

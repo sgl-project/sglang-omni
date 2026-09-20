@@ -62,7 +62,7 @@ class PipelineStateBase:
             data["engine_time_s"] = float(self.engine_time_s)
 
 
-def _tensor_to_list(value: Any) -> Any:
+def tensor_to_list(value: Any) -> Any:
     try:
         import torch
     except ImportError:
@@ -72,7 +72,7 @@ def _tensor_to_list(value: Any) -> Any:
     return value
 
 
-def _tensor_from_list(value: Any, _default: Any = None) -> Any:
+def tensor_from_list(value: Any, _default: Any = None) -> Any:
     if value is None:
         return None
     import torch
@@ -82,14 +82,14 @@ def _tensor_from_list(value: Any, _default: Any = None) -> Any:
     return torch.tensor(value)
 
 
-def _tensor_items_to_lists(value: Any) -> Any:
-    return [_tensor_to_list(item) for item in value]
+def tensor_items_to_lists(value: Any) -> Any:
+    return [tensor_to_list(item) for item in value]
 
 
-def _tensor_items_from_lists(value: Any, _default: Any = None) -> Any:
+def tensor_items_from_lists(value: Any, _default: Any = None) -> Any:
     if value is None:
         return None
-    return [_tensor_from_list(item) for item in value]
+    return [tensor_from_list(item) for item in value]
 
 
 # note (luojiaxuan): Wire codecs are (encode, decode). Encode runs on the
@@ -113,24 +113,24 @@ _CODECS: dict[str, tuple[Callable[[Any], Any], Callable[[Any, Any], Any]]] = {
     # to CPU before storing.
     "tensor_cpu": (PipelineStateBase.serialize_value, lambda v, d: v),
     # note (luojiaxuan): Tensor flattens to nested lists and stays a list after restore.
-    "tensor_list": (_tensor_to_list, lambda v, d: v),
+    "tensor_list": (tensor_to_list, lambda v, d: v),
     # note (luojiaxuan): Tensor flattens to nested lists and restores back to a tensor.
-    "tensor_restore": (_tensor_to_list, _tensor_from_list),
+    "tensor_restore": (tensor_to_list, tensor_from_list),
     # note (luojiaxuan): Lists of tensors flatten and restore element-wise.
-    "tensor_items": (_tensor_items_to_lists, _tensor_items_from_lists),
+    "tensor_items": (tensor_items_to_lists, tensor_items_from_lists),
 }
 
 
 @dataclass(frozen=True)
-class _WireSpec:
+class WireSpec:
     emit: str | None = None  # always | not_none | truthy
     codec: str = "raw"
 
 
-_DEFAULT_SPEC = _WireSpec()
+_DEFAULT_SPEC = WireSpec()
 
 
-def _validate_emit_mode(emit: str | None) -> None:
+def validate_emit_mode(emit: str | None) -> None:
     if emit is None or emit in _EXPLICIT_EMIT_MODES:
         return
     raise ValueError(f"unknown wire emit mode: {emit!r}")
@@ -149,20 +149,20 @@ def wire(
     not None; everything else always emits. codec="typed_tensor" expands to
     the {name}_bytes/_shape/_dtype key triple via scheduling.typed_tensor.
     """
-    _validate_emit_mode(emit)
+    validate_emit_mode(emit)
     if codec != "typed_tensor" and codec not in _CODECS:
         raise ValueError(f"unknown wire codec: {codec!r}")
-    metadata = {"wire": _WireSpec(emit=emit, codec=codec)}
+    metadata = {"wire": WireSpec(emit=emit, codec=codec)}
     if default_factory is not MISSING:
         return field(default_factory=default_factory, metadata=metadata)
     return field(default=default, metadata=metadata)
 
 
-def _spec_of(f: dataclasses.Field) -> _WireSpec:
+def spec_of(f: dataclasses.Field) -> WireSpec:
     return f.metadata.get("wire", _DEFAULT_SPEC)
 
 
-def _default_of(f: dataclasses.Field) -> Any:
+def default_of(f: dataclasses.Field) -> Any:
     if f.default is not MISSING:
         return f.default
     if f.default_factory is not MISSING:  # type: ignore[misc]
@@ -170,8 +170,8 @@ def _default_of(f: dataclasses.Field) -> Any:
     return None
 
 
-def _emit_kind(f: dataclasses.Field, spec: _WireSpec) -> str:
-    _validate_emit_mode(spec.emit)
+def emit_kind(f: dataclasses.Field, spec: WireSpec) -> str:
+    validate_emit_mode(spec.emit)
     if spec.emit is not None:
         return spec.emit
     if f.default is not MISSING and f.default is None:
@@ -179,7 +179,7 @@ def _emit_kind(f: dataclasses.Field, spec: _WireSpec) -> str:
     return "always"
 
 
-def _has_complete_typed_tensor_payload(data: dict[str, Any], name: str) -> bool:
+def has_complete_typed_tensor_payload(data: dict[str, Any], name: str) -> bool:
     required = {f"{name}_bytes", f"{name}_shape"}
     keys = (*required, f"{name}_dtype")
     specified = {key for key in keys if key in data}
@@ -217,16 +217,16 @@ class DeclarativeStateBase(PipelineStateBase):
         for f in dataclasses.fields(self):
             if f.name in _USAGE_FIELDS:
                 continue
-            spec = _spec_of(f)
-            self._encode_field(data, f, spec, _emit_kind(f, spec))
+            spec = spec_of(f)
+            self.encode_field(data, f, spec, emit_kind(f, spec))
         self.append_usage_fields(data)
         return data
 
-    def _encode_field(
+    def encode_field(
         self,
         data: dict[str, Any],
         f: dataclasses.Field,
-        spec: _WireSpec,
+        spec: WireSpec,
         emit: str,
     ) -> None:
         value = getattr(self, f.name)
@@ -249,9 +249,9 @@ class DeclarativeStateBase(PipelineStateBase):
             data = {}
         kwargs: dict[str, Any] = {}
         for f in dataclasses.fields(cls):
-            spec = _spec_of(f)
+            spec = spec_of(f)
             if spec.codec == "typed_tensor":
-                has_encoded = _has_complete_typed_tensor_payload(data, f.name)
+                has_encoded = has_complete_typed_tensor_payload(data, f.name)
                 if f.name not in data and not has_encoded:
                     continue
                 if f.name in data and data[f.name] is None and not has_encoded:
@@ -275,9 +275,7 @@ class DeclarativeStateBase(PipelineStateBase):
             if f.name not in data:
                 continue
             _, decode = _CODECS[spec.codec]
-            default = (
-                _default_of(f) if spec.codec in _DEFAULT_CONSUMING_CODECS else None
-            )
+            default = default_of(f) if spec.codec in _DEFAULT_CONSUMING_CODECS else None
             kwargs[f.name] = decode(data[f.name], default)
         return cls(**kwargs)
 

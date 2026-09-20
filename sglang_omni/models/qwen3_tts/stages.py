@@ -55,7 +55,7 @@ _NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS = frozenset(
 )
 
 
-def _resolve_qwen3_tts_attn_implementation(
+def resolve_qwen3_tts_attn_implementation(
     device: str | torch.device,
     attn_implementation: str | None,
 ) -> str | None:
@@ -70,7 +70,7 @@ def _resolve_qwen3_tts_attn_implementation(
     return attn_implementation or "sdpa"
 
 
-def _load_qwen3_tts_tokenizer(
+def load_qwen3_tts_tokenizer(
     model_path: str,
     *,
     device: str,
@@ -83,7 +83,7 @@ def _load_qwen3_tts_tokenizer(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
-    attn_implementation = _resolve_qwen3_tts_attn_implementation(
+    attn_implementation = resolve_qwen3_tts_attn_implementation(
         device, attn_implementation
     )
     checkpoint_dir = _resolve_checkpoint(model_path)
@@ -119,7 +119,7 @@ def _load_qwen3_tts_tokenizer(
         return tokenizer
 
 
-def _register_qwen3_tts_hf_config() -> None:
+def register_qwen3_tts_hf_config() -> None:
     apply_qwen_tts_transformers_compatibility_patches()
     try:
         from qwen_tts.core.models import Qwen3TTSConfig
@@ -143,7 +143,7 @@ def _register_qwen3_tts_hf_config() -> None:
         pass
 
 
-def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
+def load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     import json
 
     path = os.path.join(checkpoint_dir, "generation_config.json")
@@ -166,7 +166,7 @@ def create_preprocessing_executor(
     attn_implementation: str | None = None,
 ) -> ThreadedSimpleScheduler:
     if load_frontend:
-        _load_standalone_preprocessing_context(
+        load_standalone_preprocessing_context(
             model_path,
             device=device,
             gpu_id=gpu_id,
@@ -187,7 +187,7 @@ def create_preprocessing_executor(
     )
 
 
-def _load_standalone_preprocessing_context(
+def load_standalone_preprocessing_context(
     model_path: str,
     *,
     device: str | None,
@@ -203,7 +203,7 @@ def _load_standalone_preprocessing_context(
         load_qwen3_tts_prompt_frontend,
     )
 
-    _register_qwen3_tts_hf_config()
+    register_qwen3_tts_hf_config()
     try:
         from qwen_tts import Qwen3TTSModel
     except ImportError as exc:
@@ -219,7 +219,7 @@ def _load_standalone_preprocessing_context(
         checkpoint_dir, device=device, dtype=torch_dtype
     )
     frontend.load_speech_tokenizer(
-        _load_qwen3_tts_tokenizer(
+        load_qwen3_tts_tokenizer(
             checkpoint_dir,
             device=device,
             dtype=dtype,
@@ -230,7 +230,7 @@ def _load_standalone_preprocessing_context(
     wrapper = Qwen3TTSModel(
         model=frontend,
         processor=processor,
-        generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
+        generate_defaults=load_qwen3_tts_generate_defaults(checkpoint_dir),
     )
     request_builders.set_qwen3_tts_preprocessing_context(
         model=frontend, wrapper=wrapper, standalone=True
@@ -295,7 +295,7 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
-    fused_snake_activation: bool = False,
+    fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     incremental_codec_cuda_graph: bool | None = None,
@@ -316,7 +316,7 @@ def create_vocoder_executor(
         incremental_codec_cuda_graph = enable_stateful_codec_decoder
     if incremental_codec_compile is None:
         incremental_codec_compile = enable_stateful_codec_decoder
-    tokenizer = _load_qwen3_tts_tokenizer(
+    tokenizer = load_qwen3_tts_tokenizer(
         model_path,
         device=device,
         dtype=dtype,

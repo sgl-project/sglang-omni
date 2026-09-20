@@ -59,7 +59,7 @@ def new_speech_ws_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
-async def _cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
+async def cancel_tasks(*tasks: asyncio.Task[Any]) -> None:
     for task in tasks:
         if not task.done():
             task.cancel()
@@ -93,31 +93,31 @@ class SpeechWebSocketSession:
 
     async def run(self) -> None:
         try:
-            configured = await self._receive_config()
+            configured = await self.receive_config()
             if not configured:
                 return
-            await self._message_loop()
+            await self.message_loop()
         finally:
             await self.teardown()
 
-    async def _receive_config(self) -> bool:
+    async def receive_config(self) -> bool:
         try:
-            raw = await self._receive_text_frame(
+            raw = await self.receive_text_frame(
                 timeout_s=CONFIG_TIMEOUT_S,
                 max_bytes=MAX_CONFIG_MESSAGE_BYTES,
                 message_kind="session",
             )
-            payload = self._parse_message(raw)
+            payload = self.parse_message(raw)
             if payload.get("type") != "session.config":
-                await self._send_error(
+                await self.send_error(
                     bad_request(
                         "first WebSocket message must be session.config",
                         param="type",
                     )
                 )
                 return False
-            self.config = await self._parse_config(payload)
-            await self._send_json(
+            self.config = await self.parse_config(payload)
+            await self.send_json(
                 {
                     "type": "session.configured",
                     "session_id": self.session_id,
@@ -128,64 +128,64 @@ class SpeechWebSocketSession:
             )
             return True
         except asyncio.TimeoutError:
-            await self._send_error(
+            await self.send_error(
                 bad_request("session.config was not received before timeout")
             )
         except (SpeechAPIError, ValidationError) as exc:
-            await self._send_error(_speech_error_from_exception(exc))
+            await self.send_error(speech_error_from_exception(exc))
         except (json.JSONDecodeError, ValueError) as exc:
-            await self._send_error(bad_request(str(exc)))
+            await self.send_error(bad_request(str(exc)))
         except WebSocketDisconnect:
             pass
         return False
 
-    async def _message_loop(self) -> None:
+    async def message_loop(self) -> None:
         while not self.closed:
             try:
-                raw = await self._receive_text_frame(
+                raw = await self.receive_text_frame(
                     timeout_s=IDLE_TIMEOUT_S,
                     max_bytes=MAX_TEXT_MESSAGE_BYTES,
                     message_kind="text",
                 )
-                payload = self._parse_message(raw)
+                payload = self.parse_message(raw)
             except asyncio.TimeoutError:
-                await self._send_error(bad_request("speech WebSocket idle timeout"))
+                await self.send_error(bad_request("speech WebSocket idle timeout"))
                 return
             except json.JSONDecodeError as exc:
-                await self._send_error(bad_request(str(exc)))
+                await self.send_error(bad_request(str(exc)))
                 continue
             except ValueError as exc:
-                await self._send_error(bad_request(str(exc)))
+                await self.send_error(bad_request(str(exc)))
                 continue
             except WebSocketDisconnect:
                 return
 
             message_type = payload.get("type")
             if message_type == "input.text":
-                await self._handle_input_text(payload)
+                await self.handle_input_text(payload)
             elif message_type == "input.commit":
-                await self._handle_input_commit()
+                await self.handle_input_commit()
             elif message_type == "input.done":
-                await self._handle_input_done()
+                await self.handle_input_done()
                 return
             else:
-                await self._send_error(
+                await self.send_error(
                     bad_request(
                         f"unsupported speech WebSocket message type: {message_type!r}",
                         param="type",
                     )
                 )
 
-    async def _handle_input_text(self, payload: dict[str, Any]) -> None:
+    async def handle_input_text(self, payload: dict[str, Any]) -> None:
         text = payload.get("text")
         if not isinstance(text, str):
-            await self._send_error(bad_request("input.text text must be a string"))
+            await self.send_error(bad_request("input.text text must be a string"))
             return
         if not text:
             return
         if len(self.buffer) + len(text) > MAX_BUFFERED_TEXT_CHARS:
             self.buffer = ""
-            await self._send_error(
+            await self.send_error(
                 bad_request(
                     f"buffered speech text exceeds {MAX_BUFFERED_TEXT_CHARS} characters",
                     param="text",
@@ -194,20 +194,20 @@ class SpeechWebSocketSession:
             self.closed = True
             return
         self.buffer += text
-        for sentence in self._pop_complete_segments():
-            await self._generate_sentence(sentence)
+        for sentence in self.pop_complete_segments():
+            await self.generate_sentence(sentence)
 
-    async def _flush_buffer(self) -> None:
+    async def flush_buffer(self) -> None:
         remaining = self.buffer.strip()
         self.buffer = ""
         if remaining:
-            await self._generate_sentence(remaining)
+            await self.generate_sentence(remaining)
 
-    async def _handle_input_commit(self) -> None:
-        await self._flush_buffer()
+    async def handle_input_commit(self) -> None:
+        await self.flush_buffer()
         segment_sentences = self.sentence_index - self.committed_sentence_count
         self.committed_sentence_count = self.sentence_index
-        await self._send_json(
+        await self.send_json(
             {
                 "type": "input.committed",
                 "session_id": self.session_id,
@@ -218,9 +218,9 @@ class SpeechWebSocketSession:
         )
         self.segment_index += 1
 
-    async def _handle_input_done(self) -> None:
-        await self._flush_buffer()
-        await self._send_json(
+    async def handle_input_done(self) -> None:
+        await self.flush_buffer()
+        await self.send_json(
             {
                 "type": "session.done",
                 "session_id": self.session_id,
@@ -228,7 +228,7 @@ class SpeechWebSocketSession:
             }
         )
 
-    async def _parse_config(
+    async def parse_config(
         self,
         payload: dict[str, Any],
     ) -> SpeechStreamSessionConfig:
@@ -241,7 +241,7 @@ class SpeechWebSocketSession:
                 param="session",
             )
         self.speech_service.validate_raw_speech_fields(raw_config)
-        _validate_raw_session_fields(raw_config)
+        validate_raw_session_fields(raw_config)
         config = SpeechStreamSessionConfig.model_validate(raw_config)
         if config.split_granularity not in SUPPORTED_SPLIT_GRANULARITIES:
             supported = ", ".join(sorted(SUPPORTED_SPLIT_GRANULARITIES))
@@ -256,7 +256,7 @@ class SpeechWebSocketSession:
             )
         prepared = await asyncio.to_thread(
             self.speech_service.parse_generation_request,
-            self._speech_payload_from_config(config, "probe"),
+            self.speech_payload_from_config(config, "probe"),
         )
         config_fields = set(SpeechStreamSessionConfig.model_fields)
         prepared_updates = {
@@ -268,7 +268,7 @@ class SpeechWebSocketSession:
         config = config.model_copy(update=prepared_updates)
         return config
 
-    async def _generate_sentence(self, sentence: str) -> None:
+    async def generate_sentence(self, sentence: str) -> None:
         assert self.config is not None
         sentence_index = self.sentence_index
         self.sentence_index += 1
@@ -278,16 +278,16 @@ class SpeechWebSocketSession:
         failed = False
         try:
             if self.config.stream_audio:
-                total_bytes = await self._run_generation_until_disconnect(
-                    self._stream_sentence_audio(
+                total_bytes = await self.run_generation_until_disconnect(
+                    self.stream_sentence_audio(
                         sentence,
                         request_id=request_id,
                         sentence_index=sentence_index,
                     )
                 )
             else:
-                total_bytes = await self._run_generation_until_disconnect(
-                    self._send_sentence_audio(
+                total_bytes = await self.run_generation_until_disconnect(
+                    self.send_sentence_audio(
                         sentence,
                         request_id=request_id,
                         sentence_index=sentence_index,
@@ -295,15 +295,15 @@ class SpeechWebSocketSession:
                 )
         except asyncio.CancelledError:
             failed = True
-            await self._abort_request(request_id)
+            await self.abort_request(request_id)
             raise
         except WebSocketDisconnect:
             failed = True
-            await self._abort_request(request_id)
+            await self.abort_request(request_id)
             raise
         except Exception as exc:
             failed = True
-            await self._abort_request(request_id)
+            await self.abort_request(request_id)
             error = speech_generation_error(exc)
             if error.status_code == 500:
                 logger.exception("TTS WebSocket sentence failed: %s", request_id)
@@ -313,11 +313,11 @@ class SpeechWebSocketSession:
                     request_id,
                     error.message,
                 )
-            await self._send_error(error)
+            await self.send_error(error)
         finally:
             if self.active_request_id == request_id:
                 self.active_request_id = None
-            await self._send_json(
+            await self.send_json(
                 {
                     "type": "audio.done",
                     "id": request_id,
@@ -327,7 +327,7 @@ class SpeechWebSocketSession:
                 }
             )
 
-    async def _stream_sentence_audio(
+    async def stream_sentence_audio(
         self,
         sentence: str,
         *,
@@ -335,12 +335,12 @@ class SpeechWebSocketSession:
         sentence_index: int,
     ) -> int:
         assert self.config is not None
-        request = self._speech_request_from_config(sentence=sentence, stream=True)
+        request = self.speech_request_from_config(sentence=sentence, stream=True)
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self._config_reference_descriptors(),
-            uploaded_voice=self._config_uploaded_voice(),
+            reference_descriptors=self.config_reference_descriptors(),
+            uploaded_voice=self.config_uploaded_voice(),
         )
         emitted_samples = 0
         total_bytes = 0
@@ -365,21 +365,21 @@ class SpeechWebSocketSession:
             if not audio_bytes:
                 continue
             if not started:
-                await self._send_audio_start(
+                await self.send_audio_start(
                     request_id=request_id,
                     sentence_index=sentence_index,
                     sentence=sentence,
                     sample_rate=sample_rate,
                 )
                 started = True
-            await self._send_audio_frame(audio_bytes, active_request_id=request_id)
+            await self.send_audio_frame(audio_bytes, active_request_id=request_id)
             total_bytes += len(audio_bytes)
             chunk_count += 1
         if chunk_count == 0:
             raise ClientError("No audio output generated from the pipeline.")
         return total_bytes
 
-    async def _send_sentence_audio(
+    async def send_sentence_audio(
         self,
         sentence: str,
         *,
@@ -387,12 +387,12 @@ class SpeechWebSocketSession:
         sentence_index: int,
     ) -> int:
         assert self.config is not None
-        request = self._speech_request_from_config(sentence=sentence, stream=False)
+        request = self.speech_request_from_config(sentence=sentence, stream=False)
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
-            reference_descriptors=self._config_reference_descriptors(),
-            uploaded_voice=self._config_uploaded_voice(),
+            reference_descriptors=self.config_reference_descriptors(),
+            uploaded_voice=self.config_uploaded_voice(),
         )
         result = await self.client.speech(
             gen_req,
@@ -403,16 +403,16 @@ class SpeechWebSocketSession:
         )
         if self.active_request_id == request_id:
             self.active_request_id = None
-        await self._send_audio_start(
+        await self.send_audio_start(
             request_id=request_id,
             sentence_index=sentence_index,
             sentence=sentence,
             sample_rate=result.sample_rate or DEFAULT_SAMPLE_RATE,
         )
-        await self._send_audio_frame(result.audio_bytes)
+        await self.send_audio_frame(result.audio_bytes)
         return len(result.audio_bytes)
 
-    def _speech_request_from_config(
+    def speech_request_from_config(
         self,
         config: SpeechStreamSessionConfig | None = None,
         sentence: str = "",
@@ -420,12 +420,12 @@ class SpeechWebSocketSession:
         stream: bool | None = None,
     ) -> CreateSpeechRequest:
         request = CreateSpeechRequest.model_validate(
-            self._speech_payload_from_config(config, sentence, stream=stream)
+            self.speech_payload_from_config(config, sentence, stream=stream)
         )
         self.speech_service.validate_input_text(request.input)
         return request
 
-    def _speech_payload_from_config(
+    def speech_payload_from_config(
         self,
         config: SpeechStreamSessionConfig | None = None,
         sentence: str = "",
@@ -442,17 +442,17 @@ class SpeechWebSocketSession:
         payload["stream"] = config.stream_audio if stream is None else stream
         return payload
 
-    def _config_reference_descriptors(self) -> list[dict[str, Any]]:
+    def config_reference_descriptors(self) -> list[dict[str, Any]]:
         if self.config_prepared_request is None:
             return []
         return self.config_prepared_request.reference_descriptors
 
-    def _config_uploaded_voice(self) -> Any:
+    def config_uploaded_voice(self) -> Any:
         if self.config_prepared_request is None:
             return None
         return self.config_prepared_request.uploaded_voice
 
-    def _pop_complete_segments(self) -> list[str]:
+    def pop_complete_segments(self) -> list[str]:
         assert self.config is not None
         boundaries = (
             CLAUSE_BOUNDARIES
@@ -470,15 +470,15 @@ class SpeechWebSocketSession:
         self.buffer = self.buffer[start:]
         return segments
 
-    def _parse_message(self, raw: str) -> dict[str, Any]:
+    def parse_message(self, raw: str) -> dict[str, Any]:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("speech WebSocket messages must be JSON objects")
         return payload
 
-    async def _run_generation_until_disconnect(self, generation: Awaitable[int]) -> int:
+    async def run_generation_until_disconnect(self, generation: Awaitable[int]) -> int:
         generation_task = asyncio.ensure_future(generation)
-        disconnect_task = asyncio.create_task(self._watch_client_disconnect())
+        disconnect_task = asyncio.create_task(self.watch_client_disconnect())
         try:
             done, _ = await asyncio.wait(
                 {generation_task, disconnect_task},
@@ -489,25 +489,25 @@ class SpeechWebSocketSession:
                 await asyncio.sleep(0)
                 if disconnect_task.done():
                     disconnect_task.result()
-                await _cancel_tasks(disconnect_task)
+                await cancel_tasks(disconnect_task)
                 return generation_task.result()
 
-            await _cancel_tasks(generation_task)
+            await cancel_tasks(generation_task)
             disconnect_task.result()
             raise WebSocketDisconnect
         except asyncio.CancelledError:
-            await _cancel_tasks(generation_task, disconnect_task)
+            await cancel_tasks(generation_task, disconnect_task)
             raise
         except Exception:
-            await _cancel_tasks(generation_task, disconnect_task)
+            await cancel_tasks(generation_task, disconnect_task)
             raise
 
-    async def _watch_client_disconnect(self) -> None:
+    async def watch_client_disconnect(self) -> None:
         while True:
             message = await self.websocket.receive()
             if message.get("type") == "websocket.disconnect":
                 raise WebSocketDisconnect
-            message_size = self._receive_message_size(message)
+            message_size = self.receive_message_size(message)
             if (
                 len(self.buffered_receive_messages)
                 >= MAX_BUFFERED_RECEIVE_MESSAGES_DURING_GENERATION
@@ -520,7 +520,7 @@ class SpeechWebSocketSession:
             self.buffered_receive_messages.append(message)
             self.buffered_receive_message_bytes += message_size
 
-    async def _receive_text_frame(
+    async def receive_text_frame(
         self,
         *,
         timeout_s: float,
@@ -532,7 +532,7 @@ class SpeechWebSocketSession:
             self.buffered_receive_message_bytes = max(
                 0,
                 self.buffered_receive_message_bytes
-                - self._receive_message_size(message),
+                - self.receive_message_size(message),
             )
         else:
             message = await asyncio.wait_for(
@@ -554,11 +554,11 @@ class SpeechWebSocketSession:
                     f"{message_kind} WebSocket message exceeds {max_bytes} bytes"
                 )
             raise ValueError("speech WebSocket client messages must be text frames")
-        self._validate_message_size(raw, max_bytes, message_kind)
+        self.validate_message_size(raw, max_bytes, message_kind)
         return raw
 
     @staticmethod
-    def _receive_message_size(message: dict[str, Any]) -> int:
+    def receive_message_size(message: dict[str, Any]) -> int:
         text = message.get("text")
         if isinstance(text, str):
             return len(text.encode("utf-8"))
@@ -568,21 +568,21 @@ class SpeechWebSocketSession:
         return 0
 
     @staticmethod
-    def _validate_message_size(raw: str, max_bytes: int, message_kind: str) -> None:
+    def validate_message_size(raw: str, max_bytes: int, message_kind: str) -> None:
         if len(raw.encode("utf-8")) > max_bytes:
             raise ValueError(
                 f"{message_kind} WebSocket message exceeds {max_bytes} bytes"
             )
 
-    async def _send_json(self, payload: dict[str, Any]) -> None:
-        if not self._can_send():
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        if not self.can_send():
             return
         await self.websocket.send_text(json.dumps(payload))
 
-    async def _send_error(self, error: SpeechAPIError) -> None:
-        await self._send_json(speech_websocket_error_payload(error))
+    async def send_error(self, error: SpeechAPIError) -> None:
+        await self.send_json(speech_websocket_error_payload(error))
 
-    async def _send_audio_start(
+    async def send_audio_start(
         self,
         *,
         request_id: str,
@@ -591,7 +591,7 @@ class SpeechWebSocketSession:
         sample_rate: int,
     ) -> None:
         assert self.config is not None
-        await self._send_json(
+        await self.send_json(
             {
                 "type": "audio.start",
                 "id": request_id,
@@ -602,31 +602,31 @@ class SpeechWebSocketSession:
             }
         )
 
-    async def _send_audio_frame(
+    async def send_audio_frame(
         self, audio_bytes: bytes, *, active_request_id: str | None = None
     ) -> None:
         try:
             await self.websocket.send_bytes(audio_bytes)
         except WebSocketDisconnect:
             if active_request_id is not None:
-                await self._abort_request(active_request_id)
+                await self.abort_request(active_request_id)
             raise
         except Exception as exc:
             if active_request_id is not None:
-                await self._abort_request(active_request_id)
+                await self.abort_request(active_request_id)
             raise WebSocketDisconnect from exc
 
-    async def _abort_request(self, request_id: str) -> None:
+    async def abort_request(self, request_id: str) -> None:
         if self.active_request_id != request_id:
             return
         self.active_request_id = None
         await self.client.abort(request_id)
 
-    async def _abort_active_request(self) -> None:
+    async def abort_active_request(self) -> None:
         if self.active_request_id is not None:
-            await self._abort_request(self.active_request_id)
+            await self.abort_request(self.active_request_id)
 
-    def _can_send(self) -> bool:
+    def can_send(self) -> bool:
         return (
             not self.closed
             and self.websocket.application_state == WebSocketState.CONNECTED
@@ -635,7 +635,7 @@ class SpeechWebSocketSession:
 
     async def teardown(self) -> None:
         self.closed = True
-        await self._abort_active_request()
+        await self.abort_active_request()
         if (
             self.websocket.application_state == WebSocketState.CONNECTED
             and self.websocket.client_state == WebSocketState.CONNECTED
@@ -643,7 +643,7 @@ class SpeechWebSocketSession:
             await self.websocket.close()
 
 
-def _speech_error_from_exception(exc: Exception) -> SpeechAPIError:
+def speech_error_from_exception(exc: Exception) -> SpeechAPIError:
     if isinstance(exc, SpeechAPIError):
         return exc
     if isinstance(exc, ValidationError):
@@ -654,7 +654,7 @@ def _speech_error_from_exception(exc: Exception) -> SpeechAPIError:
     return bad_request(str(exc))
 
 
-def _validate_raw_session_fields(payload: dict[str, Any]) -> None:
+def validate_raw_session_fields(payload: dict[str, Any]) -> None:
     if "stream_audio" in payload and payload["stream_audio"] is not None:
         if not isinstance(payload["stream_audio"], bool):
             raise bad_request(

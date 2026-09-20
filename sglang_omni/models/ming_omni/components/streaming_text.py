@@ -95,7 +95,7 @@ class SegmenterState:
 
         tokens = self.token_count_fn(self._buffer)
         if tokens >= self.config.segment_max_tokens:
-            return [self._emit_max_window(now_ms=now_ms)]
+            return [self.emit_max_window(now_ms=now_ms)]
 
         first_timeout_ready = (
             self._segment_id == 0
@@ -105,12 +105,12 @@ class SegmenterState:
         )
         should_emit = (
             tokens >= self.config.segment_min_tokens
-            and self._has_segment_end_punctuation()
+            and self.has_segment_end_punctuation()
         ) or first_timeout_ready
         if not should_emit:
             return []
 
-        return [self._emit(is_final_segment=False)]
+        return [self.emit(is_final_segment=False)]
 
     def buffer_token_count(self) -> int:
         return self.token_count_fn(self._buffer) if self._buffer else 0
@@ -118,31 +118,31 @@ class SegmenterState:
     def flush(self) -> list[TextSegment]:
         if not self._buffer:
             return []
-        return [self._emit(is_final_segment=True)]
+        return [self.emit(is_final_segment=True)]
 
-    def _has_segment_end_punctuation(self) -> bool:
+    def has_segment_end_punctuation(self) -> bool:
         return self._buffer.rstrip().endswith(_SEGMENT_END_PUNCTUATION)
 
-    def _emit_max_window(self, *, now_ms: int) -> TextSegment:
+    def emit_max_window(self, *, now_ms: int) -> TextSegment:
         text, remainder = split_whitespace_tokens(
             self._buffer, self.config.segment_max_tokens
         )
-        return self._emit_text(
+        return self.emit_text(
             text=text,
             remainder=remainder,
             is_final_segment=False,
             remainder_start_ms=now_ms if remainder else None,
         )
 
-    def _emit(self, *, is_final_segment: bool) -> TextSegment:
-        return self._emit_text(
+    def emit(self, *, is_final_segment: bool) -> TextSegment:
+        return self.emit_text(
             text=self._buffer,
             remainder="",
             is_final_segment=is_final_segment,
             remainder_start_ms=None,
         )
 
-    def _emit_text(
+    def emit_text(
         self,
         *,
         text: str,

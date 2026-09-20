@@ -94,7 +94,7 @@ class MingTTSTailOutputs:
     stop_prob: torch.Tensor
 
 
-class _MingTTSTailGraph:
+class MingTTSTailGraph:
     def __init__(self, model: Any, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
@@ -131,7 +131,7 @@ class _MingTTSTailGraph:
             temperature=torch.zeros(batch_size, device=device, dtype=float_dtype),
         )
         self.noise, self.timesteps, self.sde_random = (
-            self.model._make_tail_sampling_inputs(
+            self.model.make_tail_sampling_inputs(
                 batch_size=batch_size,
                 device=device,
             )
@@ -141,7 +141,7 @@ class _MingTTSTailGraph:
         warmup_stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(warmup_stream):
             for _ in range(2):
-                self.model._compute_tail_step(
+                self.model.compute_tail_step(
                     self.inputs,
                     noise=self.noise,
                     timesteps=self.timesteps,
@@ -152,7 +152,7 @@ class _MingTTSTailGraph:
 
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            self.outputs = self.model._compute_tail_step(
+            self.outputs = self.model.compute_tail_step(
                 self.inputs,
                 noise=self.noise,
                 timesteps=self.timesteps,
@@ -192,16 +192,16 @@ class _MingTTSTailGraph:
         )
 
 
-class _MingTTSTailGraphCache:
+class MingTTSTailGraphCache:
     def __init__(self, model: Any) -> None:
         self.model = model
-        self.graphs: dict[int, _MingTTSTailGraph] = {}
+        self.graphs: dict[int, MingTTSTailGraph] = {}
         self.buckets: tuple[int, ...] = ()
 
     def capture(self, batch_sizes: list[int]) -> None:
         self.buckets = tuple(sorted({int(batch_size) for batch_size in batch_sizes}))
         for batch_size in reversed(self.buckets):
-            graph = _MingTTSTailGraph(self.model, batch_size)
+            graph = MingTTSTailGraph(self.model, batch_size)
             graph.capture()
             self.graphs[batch_size] = graph
 
@@ -309,7 +309,7 @@ class MingBailingMoeAttention(nn.Module):
             prefix=add_prefix("attn", prefix),
         )
 
-    def _prepare_positions(self, positions: torch.Tensor) -> torch.Tensor:
+    def prepare_positions(self, positions: torch.Tensor) -> torch.Tensor:
         if isinstance(self.rotary_emb, MRotaryEmbedding):
             if positions.dim() == 1:
                 return positions.unsqueeze(0).expand(3, -1)
@@ -329,7 +329,7 @@ class MingBailingMoeAttention(nn.Module):
 
         qkv, _ = self.query_key_value(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        positions = self._prepare_positions(positions)
+        positions = self.prepare_positions(positions)
         rotary_dim = int(getattr(self.rotary_emb, "rotary_dim", self.head_dim))
         can_fuse_set_kv = (
             not isinstance(self.rotary_emb, MRotaryEmbedding)
@@ -621,7 +621,7 @@ class MingBailingMoeTextModel(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
-        self._check_supported_bailing_moe_config(config)
+        self.check_supported_bailing_moe_config(config)
         self.vocab_size = int(config.vocab_size)
         self.hidden_size = int(config.hidden_size)
         self.word_embeddings = VocabParallelEmbedding(
@@ -646,7 +646,7 @@ class MingBailingMoeTextModel(nn.Module):
         self.norm = RMSNorm(self.hidden_size, eps=float(config.rms_norm_eps))
 
     @staticmethod
-    def _check_supported_bailing_moe_config(config: Any) -> None:
+    def check_supported_bailing_moe_config(config: Any) -> None:
         hidden_act = getattr(config, "hidden_act", "silu")
         if hidden_act != "silu":
             raise ValueError(
@@ -885,7 +885,7 @@ class MingTTSSGLangModel(nn.Module):
 
     @torch.no_grad()
     def init_tail_graphs(self, batch_sizes: list[int]) -> None:
-        graphs = _MingTTSTailGraphCache(self)
+        graphs = MingTTSTailGraphCache(self)
         graphs.capture(batch_sizes)
         self._tail_graphs = graphs
         logger.info(
@@ -895,7 +895,7 @@ class MingTTSSGLangModel(nn.Module):
 
     @torch.no_grad()
     def run_tail_step(self, inputs: MingTTSTailInputs) -> MingTTSTailOutputs:
-        noise, timesteps, sde_random = self._make_tail_sampling_inputs(
+        noise, timesteps, sde_random = self.make_tail_sampling_inputs(
             batch_size=int(inputs.hidden_states.shape[0]),
             device=inputs.hidden_states.device,
         )
@@ -906,14 +906,14 @@ class MingTTSSGLangModel(nn.Module):
                 noise=noise,
                 sde_random=sde_random,
             )
-        return self._compute_tail_step(
+        return self.compute_tail_step(
             inputs,
             noise=noise,
             timesteps=timesteps,
             sde_random=sde_random,
         )
 
-    def _compute_tail_step(
+    def compute_tail_step(
         self,
         inputs: MingTTSTailInputs,
         *,
@@ -950,7 +950,7 @@ class MingTTSSGLangModel(nn.Module):
             stop_prob=stop_prob,
         )
 
-    def _make_tail_sampling_inputs(
+    def make_tail_sampling_inputs(
         self,
         *,
         batch_size: int,

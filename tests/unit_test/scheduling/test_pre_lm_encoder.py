@@ -34,7 +34,7 @@ class _Service(PreLMEncoderService[int, list[int], int]):
             self._queue.put(_STOP)
             self._thread.join(timeout=2)
 
-    def _next_batch(self) -> tuple[list[QueueEntry[int]], bool]:
+    def next_batch(self) -> tuple[list[QueueEntry[int]], bool]:
         first = self._queue.get()
         if first is _STOP:
             return [], True
@@ -49,7 +49,7 @@ class _Service(PreLMEncoderService[int, list[int], int]):
         return batch, False
 
     @contextlib.contextmanager
-    def _batch_context(self) -> Iterator[None]:
+    def batch_context(self) -> Iterator[None]:
         self.context_events.append("enter")
         try:
             yield
@@ -84,12 +84,12 @@ class _Service(PreLMEncoderService[int, list[int], int]):
     ) -> None:
         self.cached.append((item, embedding, host_copy))
 
-    def _retry_batch(self, batch, exc):  # noqa: ANN001, ANN202
+    def retry_batch(self, batch, exc):  # noqa: ANN001, ANN202
         if self.retry_hook_error:
             raise RuntimeError("retry policy failed")
         return self.retry
 
-    def _on_batch_start(self, batch):  # noqa: ANN001, ANN202
+    def on_batch_start(self, batch):  # noqa: ANN001, ANN202
         if self.start_hook_error:
             raise RuntimeError("start hook failed")
 
@@ -97,7 +97,7 @@ class _Service(PreLMEncoderService[int, list[int], int]):
 def test_successful_dispatch_attaches_and_caches() -> None:
     service = _Service()
     try:
-        future = service._submit(3)
+        future = service.submit(3)
 
         assert future.result(timeout=2) == 6
         assert service.attachments == [(3, 6)]
@@ -110,7 +110,7 @@ def test_stage_host_copy_runs_in_batch_context_and_reaches_cache() -> None:
     service = _Service()
     service.stage_host_copies = True
     try:
-        future = service._submit(4)
+        future = service.submit(4)
 
         assert future.result(timeout=2) == 8
         # note (Jeffro): staged inside the batch context (before its exit), delivered to
@@ -126,8 +126,8 @@ def test_batch_failure_recovers_each_item() -> None:
     service.fail_multi = True
     service.retry = True
     try:
-        first = service._submit(1)
-        second = service._submit(2)
+        first = service.submit(1)
+        second = service.submit(2)
         service.drain_gate.set()
 
         assert first.result(timeout=2) == 2
@@ -141,7 +141,7 @@ def test_wrong_embedding_cardinality_fails_future(split_mode: str) -> None:
     service = _Service()
     service.split_mode = split_mode
     try:
-        future = service._submit(1)
+        future = service.submit(1)
 
         with pytest.raises(RuntimeError, match="split_embeddings returned"):
             future.result(timeout=2)
@@ -154,9 +154,9 @@ def test_statistics_hook_failure_does_not_kill_worker() -> None:
     service = _Service()
     service.start_hook_error = True
     try:
-        assert service._submit(1).result(timeout=2) == 2
+        assert service.submit(1).result(timeout=2) == 2
         service.start_hook_error = False
-        assert service._submit(2).result(timeout=2) == 4
+        assert service.submit(2).result(timeout=2) == 4
     finally:
         service.close()
 
@@ -165,8 +165,8 @@ def test_fatal_policy_failure_completes_current_future_and_rejects_submits() -> 
     service = _Service(controlled_drain=True)
     service.fail_items.add(1)
     service.retry_hook_error = True
-    first = service._submit(1)
-    second = service._submit(2)
+    first = service.submit(1)
+    second = service.submit(2)
     service.drain_gate.set()
 
     with pytest.raises(RuntimeError, match="retry policy failed"):
@@ -174,6 +174,6 @@ def test_fatal_policy_failure_completes_current_future_and_rejects_submits() -> 
     with pytest.raises(RuntimeError, match="retry policy failed"):
         second.result(timeout=2)
     with pytest.raises(RuntimeError, match="worker has failed"):
-        service._submit(3)
+        service.submit(3)
 
     service.close()

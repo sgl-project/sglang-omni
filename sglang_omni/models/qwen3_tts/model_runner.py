@@ -16,7 +16,7 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 from sglang_omni.scheduling.types import RequestOutput
 
 
-def _ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) -> None:
+def ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) -> None:
     """Give a graph-replayed batch MRoPE positions mirroring its plain ones.
 
     The Talker declares ``is_mrope_enabled``, so a captured prefill graph binds
@@ -59,7 +59,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         del schedule_batch
-        _ensure_mrope_positions(
+        ensure_mrope_positions(
             forward_batch,
             prefill_graph_runner=self.tp_worker.model_runner.prefill_cuda_graph_runner,
         )
@@ -67,7 +67,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
-                input_embeds=self._build_prefill_input_embeds(
+                input_embeds=self.build_prefill_input_embeds(
                     forward_batch,
                     requests,
                 ),
@@ -85,7 +85,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         del is_lookahead
         del schedule_batch
         self.model.prepare_decode_buffers(requests)
-        self._write_feedback_buffers(forward_batch, requests)
+        self.write_feedback_buffers(forward_batch, requests)
 
     def post_prefill(
         self,
@@ -94,7 +94,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_codes(result, forward_batch, schedule_batch, requests)
+        self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -103,7 +103,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_codes(result, forward_batch, schedule_batch, requests)
+        self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
@@ -123,15 +123,15 @@ class Qwen3TTSModelRunner(ModelRunner):
         del batch
         return False
 
-    def _sample_next_token_ids(
+    def sample_next_token_ids(
         self,
         logits_output: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._install_semantic_sampling_seeds(forward_batch, requests)
-        return super()._sample_next_token_ids(
+        self.install_semantic_sampling_seeds(forward_batch, requests)
+        return super().sample_next_token_ids(
             logits_output,
             forward_batch,
             schedule_batch,
@@ -142,7 +142,7 @@ class Qwen3TTSModelRunner(ModelRunner):
     # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
 
-    def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
+    def apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2 or not requests:
             return
@@ -163,7 +163,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         else:
             active_logits[:, suppress_start:suppress_stop] = float("-inf")
 
-    def _install_semantic_sampling_seeds(
+    def install_semantic_sampling_seeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -173,7 +173,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             self.model._semantic_sampling_seed_tensor[:batch_size]
         )
 
-    def _collect_codes(
+    def collect_codes(
         self,
         result: Any,
         forward_batch: Any,
@@ -188,12 +188,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             layer0_codes = layer0_codes.unsqueeze(1)
         # note(ratish): the layer 0 id is the step's only host read, staged ahead
         # of the predictor so the finalize wait covers the sample, not the predictor.
-        self._stage_token_ids(result, result.next_token_ids)
+        self.stage_token_ids(result, result.next_token_ids)
 
         hidden = result.logits_output.hidden_states
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
             hidden = hidden.unsqueeze(1)
-        semantic_positions = self._sample_positions(forward_batch, layer0_codes.device)
+        semantic_positions = self.sample_positions(forward_batch, layer0_codes.device)
         self.model.code_predictor_forward(
             layer0_codes,
             hidden,
@@ -231,7 +231,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
 
-    def _sample_positions(
+    def sample_positions(
         self, forward_batch: Any, device: torch.device
     ) -> torch.Tensor:
         forward_mode = getattr(forward_batch, "forward_mode", None)
@@ -255,7 +255,7 @@ class Qwen3TTSModelRunner(ModelRunner):
 
         raise RuntimeError("Qwen3-TTS subtalker sampling requires semantic positions")
 
-    def _write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
+    def write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -269,7 +269,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             raise RuntimeError(
                 "Qwen3-TTS decode batch exceeds staged feedback embedding rows"
             )
-        row_ids = self._decode_row_ids(batch_size, input_ids)
+        row_ids = self.decode_row_ids(batch_size, input_ids)
         weight = decode_feedback_embedding.weight
         device = weight.device
         dtype = weight.dtype
@@ -279,20 +279,20 @@ class Qwen3TTSModelRunner(ModelRunner):
         rows: list[torch.Tensor | None] = [None] * batch_size
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            inputs = QwenTalkerModelRunner._peek_next_decode_inputs(data)
+            inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
             if inputs is None:
                 token_id = input_ids[row_idx : row_idx + 1].to(device=device)
                 rows[row_idx] = self.model.get_input_embeddings()(token_id).reshape(-1)
                 continue
             feedback, text = inputs
             feedback_rows.append(
-                QwenTalkerModelRunner._decode_row(feedback, device=device, dtype=dtype)
+                QwenTalkerModelRunner.decode_row(feedback, device=device, dtype=dtype)
             )
             text_rows.append(
-                QwenTalkerModelRunner._decode_row(text, device=device, dtype=dtype)
+                QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
             )
             batched_row_ids.append(row_idx)
-            QwenTalkerModelRunner._pop_next_decode_inputs(data)
+            QwenTalkerModelRunner.pop_next_decode_inputs(data)
 
         with torch.no_grad():
             target = weight[:batch_size]
@@ -311,13 +311,13 @@ class Qwen3TTSModelRunner(ModelRunner):
             # replays it in its re-prefill.
             history = target.detach().clone()
         for row_idx, sched_req in enumerate(requests):
-            QwenTalkerModelRunner._append_decode_input_history(
+            QwenTalkerModelRunner.append_decode_input_history(
                 sched_req.data, history[row_idx]
             )
         # During graph decode, input_ids carries staged embedding row ids.
         input_ids[:batch_size].copy_(row_ids)
 
-    def _decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
+    def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
         cached = getattr(self, "_row_ids_cache", None)
         if (
             cached is None
@@ -333,7 +333,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             self._row_ids_cache = cached
         return cached[:batch_size]
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -348,7 +348,7 @@ class Qwen3TTSModelRunner(ModelRunner):
                 data.prefill_input_embeds = data.prompt_input_embeds
             if data.prefill_input_embeds is None:
                 raise RuntimeError("Qwen3-TTS prefill requires prompt_input_embeds")
-            piece = QwenTalkerModelRunner._projected_prefill_slice(
+            piece = QwenTalkerModelRunner.projected_prefill_slice(
                 sched_req=sched_req,
                 prefix_len=prefix_len,
                 extend_len=req_len,

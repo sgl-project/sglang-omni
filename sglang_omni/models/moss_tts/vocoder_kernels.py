@@ -21,7 +21,7 @@ _STREAMING_KV_BLOCK_SIZE = 512
 if triton is not None and hasattr(tl, "inline_asm_elementwise"):
 
     @triton.jit
-    def _exact_interleaved_rope_kernel(
+    def exact_interleaved_rope_kernel(
         q,
         k,
         cos_sin,
@@ -93,7 +93,7 @@ if triton is not None and hasattr(tl, "inline_asm_elementwise"):
         tl.store(k_base + 1, koi, mask=mask)
 
 else:
-    _exact_interleaved_rope_kernel = None
+    exact_interleaved_rope_kernel = None
 
 
 def apply_exact_interleaved_rope_inplace(
@@ -105,7 +105,7 @@ def apply_exact_interleaved_rope_inplace(
     """Apply source-equivalent interleaved RoPE in one CUDA kernel if supported."""
 
     if (
-        _exact_interleaved_rope_kernel is None
+        exact_interleaved_rope_kernel is None
         or torch.version.hip is not None
         or q.device.type != "cuda"
         or k.device != q.device
@@ -135,7 +135,7 @@ def apply_exact_interleaved_rope_inplace(
     total_pairs = tokens * num_heads * (head_dim // 2)
     block_size = _EXACT_ROPE_BLOCK_SIZE
     with torch.cuda.device(q.device):
-        _exact_interleaved_rope_kernel[(triton.cdiv(total_pairs, block_size),)](
+        exact_interleaved_rope_kernel[(triton.cdiv(total_pairs, block_size),)](
             q,
             k,
             cos_sin_cache,
@@ -156,7 +156,7 @@ def apply_exact_interleaved_rope_inplace(
 if triton is not None:
 
     @triton.jit
-    def _streaming_kv_gather_kernel(
+    def streaming_kv_gather_kernel(
         cached_k,
         cached_v,
         cached_positions,
@@ -244,7 +244,7 @@ if triton is not None:
         )
 
     @triton.jit
-    def _streaming_kv_commit_kernel(
+    def streaming_kv_commit_kernel(
         cached_k,
         cached_v,
         cached_positions,
@@ -312,8 +312,8 @@ if triton is not None:
             tl.store(offsets + slot, offset + chunk_length, valid)
 
 else:
-    _streaming_kv_gather_kernel = None
-    _streaming_kv_commit_kernel = None
+    streaming_kv_gather_kernel = None
+    streaming_kv_commit_kernel = None
 
 
 def can_fuse_streaming_kv(
@@ -326,7 +326,7 @@ def can_fuse_streaming_kv(
 ) -> bool:
     """Check the inference/layout boundary, independently of execution B and T."""
     if (
-        _streaming_kv_gather_kernel is None
+        streaming_kv_gather_kernel is None
         or torch.version.hip is not None
         or torch.is_grad_enabled()
         or cached_k.device.type != "cuda"
@@ -379,7 +379,7 @@ def gather_streaming_kv(
     key_positions = query_positions.new_empty((batch_size, context + chunk_length))
     block_size = _STREAMING_KV_BLOCK_SIZE
     with torch.cuda.device(current_k.device):
-        _streaming_kv_gather_kernel[
+        streaming_kv_gather_kernel[
             (
                 batch_size,
                 triton.cdiv(
@@ -433,7 +433,7 @@ def commit_streaming_kv_(
     chunk_length = length - context
     block_size = _STREAMING_KV_BLOCK_SIZE
     with torch.cuda.device(all_k.device):
-        _streaming_kv_commit_kernel[
+        streaming_kv_commit_kernel[
             (batch_size, triton.cdiv(num_heads * context * head_dim, block_size))
         ](
             cached_k,

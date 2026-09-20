@@ -14,13 +14,13 @@ import pytest
 from sglang_omni.config import EndpointsConfig, PipelineConfig, StageConfig
 from sglang_omni.mps.manager import MpsError
 from sglang_omni.mps.runtime import MpsPipelineRuntime
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
     StageWorkerProcessSpec,
-    _patched_spawn_env,
-    _prepare_accelerator_environment,
+    patched_spawn_env,
+    prepare_accelerator_environment,
 )
 from tests.unit_test.mps.test_mps_manager import FakeControlClient
 
@@ -65,7 +65,7 @@ def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):
     monkeypatch.delenv("CUDA_MPS_PIPE_DIRECTORY", raising=False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
-    with _patched_spawn_env(
+    with patched_spawn_env(
         spec,
         extra_env={
             "CUDA_MPS_PIPE_DIRECTORY": "/tmp/mps/pipe",
@@ -83,7 +83,7 @@ def test_no_mps_overlay_keeps_existing_stage_default_behavior(monkeypatch):
     spec = _process_spec(_launch_stage(env_defaults={"WORKER_DEFAULT": "stage-value"}))
     monkeypatch.delenv("WORKER_DEFAULT", raising=False)
 
-    with _patched_spawn_env(spec):
+    with patched_spawn_env(spec):
         assert os.environ["WORKER_DEFAULT"] == "stage-value"
 
     assert "WORKER_DEFAULT" not in os.environ
@@ -110,7 +110,7 @@ def _resolved_config_process(*, pipeline_env: dict, stage_env: dict):
         )
         prep = prepare_pipeline_runtime(config)
         try:
-            return _build_stage_groups(
+            return build_stage_groups(
                 config,
                 stages_cfg=prep.stages_cfg,
                 endpoints=prep.endpoints,
@@ -172,6 +172,6 @@ def test_cpu_stage_keeps_none_gpu_id_under_single_device_marker(monkeypatch):
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-abc")
 
-    _prepare_accelerator_environment(spec, logging.getLogger("test"))
+    prepare_accelerator_environment(spec, logging.getLogger("test"))
 
     assert spec.gpu_id is None

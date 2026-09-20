@@ -234,7 +234,7 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
 
     assert scheduler._enable_batching is True
     assert scheduler._cuda_graph_runner is runner
-    assert scheduler._chunk_aligned_dispatch is True
+    assert scheduler.chunk_aligned_dispatch is True
 
 
 def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
@@ -323,7 +323,7 @@ def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     # rebuilds; it only drops batching once the runner is fully disabled.
     assert len(build_calls) == 1
     assert scheduler._enable_batching is False
-    assert scheduler._chunk_aligned_dispatch is False
+    assert scheduler.chunk_aligned_dispatch is False
 
 
 @pytest.mark.parametrize(
@@ -339,7 +339,7 @@ def test_qwen_code2wav_serial_threshold_graph_keys_follow_scheduler_windows(
     left_context_size: int,
     expected_frames: tuple[int, ...],
 ) -> None:
-    assert code2wav_scheduler._serial_threshold_graph_keys(
+    assert code2wav_scheduler.serial_threshold_graph_keys(
         stream_chunk_size,
         left_context_size,
     ) == tuple(GraphKey(batch_size=1, frames=frames) for frames in expected_frames)

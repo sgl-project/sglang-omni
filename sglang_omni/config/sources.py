@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 
-class _DuplicateKeyRefusingLoader(yaml.SafeLoader):
+class DuplicateKeyRefusingLoader(yaml.SafeLoader):
     """SafeLoader that refuses duplicate mapping keys instead of keeping the last.
 
     yaml.safe_load silently collapses ``model_path`` written twice before any
@@ -226,10 +226,10 @@ def patches_from_shared_block(
         body = {key: value for key, value in entry.items() if key != "select"}
         if not body:
             raise ValueError(f"{label} selects stages but writes nothing")
-        matched = _select_stages(entry["select"], config_cls, names, label=label)
+        matched = select_stages(entry["select"], config_cls, names, label=label)
         source = ConfigSource(SourceKind.YAML_FILE, origin, detail=label)
         for stage_name in matched:
-            for path, value in _flatten(f"stages.{stage_name}", dict(body), config_cls):
+            for path, value in flatten(f"stages.{stage_name}", dict(body), config_cls):
                 patches.add(
                     ConfigPatch.create(
                         path,
@@ -242,7 +242,7 @@ def patches_from_shared_block(
     return patches
 
 
-def _select_stages(
+def select_stages(
     select: Any,
     config_cls: type[PipelineConfig],
     stage_names: list[str],
@@ -348,7 +348,7 @@ def patches_from_stages_mapping(
                 f"config class. This pipeline has: {', '.join(known)}"
             )
         prefix = f"stages.{stage_name}"
-        for path, value in _flatten(prefix, dict(body), config_cls):
+        for path, value in flatten(prefix, dict(body), config_cls):
             # coerce applies the same lossless-scalar contract as dotted CLI
             # flags, so ``tp_size: 32.0`` is refused rather than lax-converted.
             patches.add(ConfigPatch.create(path, value, source, root=config_cls))
@@ -374,7 +374,7 @@ def sources_from_config_file(
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             try:
-                data = yaml.load(f, Loader=_DuplicateKeyRefusingLoader)
+                data = yaml.load(f, Loader=DuplicateKeyRefusingLoader)
             except yaml.YAMLError as exc:
                 raise ValueError(
                     f"Config file {file_path!r} is not valid YAML: {exc}"
@@ -424,7 +424,7 @@ def sources_from_config_file(
     source = ConfigSource(SourceKind.YAML_FILE, str(file_path))
     for key, value in overrides.items():
         if isinstance(value, dict) and not ConfigPath.parse(key, config_cls).is_leaf:
-            for leaf_path, leaf_value in _flatten(key, value, config_cls):
+            for leaf_path, leaf_value in flatten(key, value, config_cls):
                 patches.add(
                     ConfigPatch.create(leaf_path, leaf_value, source, root=config_cls)
                 )
@@ -476,7 +476,7 @@ def dump_user_config(config: PipelineConfig) -> dict[str, Any]:
     return data
 
 
-def _flatten(
+def flatten(
     prefix: str,
     value: dict[str, Any],
     root: type[PipelineConfig],
@@ -491,7 +491,7 @@ def _flatten(
     for key, child in value.items():
         path = f"{prefix}.{key}"
         if isinstance(child, dict) and not ConfigPath.parse(path, root).is_leaf:
-            out.extend(_flatten(path, child, root))
+            out.extend(flatten(path, child, root))
         else:
             out.append((path, child))
     return out

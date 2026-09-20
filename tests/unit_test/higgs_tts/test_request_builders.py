@@ -42,7 +42,7 @@ def test_higgs_scheduler_adapters_clamp_cap_and_record_engine_time(
     ticks = iter([10.0, 12.5])
     monkeypatch.setattr(
         request_builders,
-        "_perf_counter",
+        "perf_counter",
         lambda: next(ticks),
     )
     request_builder, result_adapter = request_builders.make_higgs_scheduler_adapters(

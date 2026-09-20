@@ -46,7 +46,7 @@ def test_executor_validate_resolves_paths_when_default_voice_present(tmp_path: P
         talker_model_path=str(talker_dir),
         voice="DB30",
     )
-    executor._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+    executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
     assert voice_dict["DB30"]["prompt_wav_path"] == str(talker_dir / wav_rel)
 
 
@@ -65,7 +65,7 @@ def test_executor_validate_raises_when_default_voice_missing(tmp_path: Path):
         voice="DB30",
     )
     with pytest.raises(ValueError, match="default voice 'DB30' not found"):
-        executor._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_executor_validate_raises_when_wav_missing(tmp_path: Path):
@@ -83,7 +83,7 @@ def test_executor_validate_raises_when_wav_missing(tmp_path: Path):
         voice="DB30",
     )
     with pytest.raises(FileNotFoundError, match="missing prompt wav"):
-        executor._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_executor_validate_raises_value_error_not_key_error_on_bad_manifest(
@@ -103,7 +103,7 @@ def test_executor_validate_raises_value_error_not_key_error_on_bad_manifest(
         voice="DB30",
     )
     with pytest.raises(ValueError, match="missing prompt_wav_path"):
-        executor._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_executor_validate_allows_voice_none_with_unrelated_presets(tmp_path: Path):
@@ -120,7 +120,7 @@ def test_executor_validate_allows_voice_none_with_unrelated_presets(tmp_path: Pa
         talker_model_path=str(talker_dir),
         voice=None,
     )
-    executor._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+    executor.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_scheduler_validate_raises_when_default_voice_missing(tmp_path: Path):
@@ -139,7 +139,7 @@ def test_scheduler_validate_raises_when_default_voice_missing(tmp_path: Path):
         sample_rate=44100,
     )
     with pytest.raises(ValueError, match="default voice 'DB30' not found"):
-        scheduler._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_scheduler_validate_raises_when_wav_missing(tmp_path: Path):
@@ -158,7 +158,7 @@ def test_scheduler_validate_raises_when_wav_missing(tmp_path: Path):
         sample_rate=44100,
     )
     with pytest.raises(FileNotFoundError, match="missing prompt wav"):
-        scheduler._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def test_scheduler_validate_raises_value_error_on_bad_manifest(tmp_path: Path):
@@ -175,7 +175,7 @@ def test_scheduler_validate_raises_value_error_on_bad_manifest(tmp_path: Path):
         sample_rate=44100,
     )
     with pytest.raises(ValueError, match="missing prompt_wav_path"):
-        scheduler._validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
+        scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
 def _bare_talker(voice_json_dict: dict | None = None) -> MingOmniTalker:
@@ -242,7 +242,7 @@ def test_omni_audio_generation_explicit_prompt_wav_overrides_preset(monkeypatch)
         captured["prompt_wav_path"] = prompt_wav_path
         return None, None, None
 
-    monkeypatch.setattr(MingOmniTalker, "_run_tts_segments", fake_run)
+    monkeypatch.setattr(MingOmniTalker, "run_tts_segments", fake_run)
     monkeypatch.setattr(MingOmniTalker, "get_prompt_emb", fake_get_prompt_emb)
     monkeypatch.setattr(
         MingOmniTalker, "initial_graph", lambda self: None, raising=False
@@ -308,7 +308,7 @@ def _run_process_segment_with_chunk_lengths(
 
     talker.tts_job = fake_tts_job
     return list(
-        MingOmniTalker._process_segment(
+        MingOmniTalker.process_segment(
             talker,
             text,
             prompt=None,
@@ -346,7 +346,7 @@ def test_process_segment_streams_every_internal_segment():
     cache_position = {}
 
     first_outputs = list(
-        MingOmniTalker._process_segment(
+        MingOmniTalker.process_segment(
             talker,
             "First segment.",
             prompt=None,
@@ -365,7 +365,7 @@ def test_process_segment_streams_every_internal_segment():
         )
     )
     second_outputs = list(
-        MingOmniTalker._process_segment(
+        MingOmniTalker.process_segment(
             talker,
             "Second segment.",
             prompt=None,
@@ -714,7 +714,7 @@ def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch)
     cache_position = {}
 
     outputs = list(
-        MingOmniTalker._process_segment(
+        MingOmniTalker.process_segment(
             talker,
             "Alpha. Beta.",
             prompt=None,

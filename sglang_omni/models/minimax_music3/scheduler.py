@@ -13,7 +13,7 @@ from .sglang_request_builder import cfg_uncond_rid, is_cfg_uncond_rid
 class MiniMaxMusic3Scheduler(OmniScheduler):
     """Admit, decode and retire every request as a CFG row pair."""
 
-    def _enqueue_built_request(
+    def enqueue_built_request(
         self,
         payload: Any,
         pending_stream_done: bool,
@@ -21,7 +21,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         *,
         request_admission_lock_held: bool = False,
     ) -> None:
-        super()._enqueue_built_request(
+        super().enqueue_built_request(
             payload,
             pending_stream_done,
             req_data,
@@ -31,17 +31,17 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         if uncond is None:
             return
         if request_admission_lock_held:
-            self._enqueue_cfg_uncond(req_data, uncond)
+            self.enqueue_cfg_uncond(req_data, uncond)
             return
         with self._request_admission_lock:
-            self._enqueue_cfg_uncond(req_data, uncond)
+            self.enqueue_cfg_uncond(req_data, uncond)
 
-    def _enqueue_cfg_uncond(self, req_data: Any, uncond: Any) -> None:
+    def enqueue_cfg_uncond(self, req_data: Any, uncond: Any) -> None:
         cond_req = req_data.req
         if not self.waiting_queue or self.waiting_queue[-1] is not cond_req:
             return
         req = uncond.req
-        self._normalize_req_token_arrays(req)
+        self.normalize_req_token_arrays(req)
         req._coalesce_enqueue_t = cond_req._coalesce_enqueue_t
         req._omni_terminal_claimed = False
         req._omni_data = uncond
@@ -49,7 +49,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
 
     def get_new_batch_prefill(self, running_batch: Any) -> Any:
         queue = self.waiting_queue
-        limit = self._pair_admission_limit(queue, running_batch)
+        limit = self.pair_admission_limit(queue, running_batch)
         if limit >= len(queue):
             return super().get_new_batch_prefill(running_batch)
         deferred = queue[limit:]
@@ -59,7 +59,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         finally:
             self.waiting_queue.extend(deferred)
 
-    def _pair_admission_limit(self, queue: list, running_batch: Any) -> int:
+    def pair_admission_limit(self, queue: list, running_batch: Any) -> int:
         """How many leading queue entries the adder may see, always whole pairs."""
         allocatable = int(self.get_num_allocatable_reqs(len(running_batch.reqs)))
         limit = min(len(queue), max(0, allocatable))
@@ -80,11 +80,11 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
     ) -> None:
         conditioned = []
         for req in reqs:
-            if not self._is_cfg_uncond(req):
+            if not self.is_cfg_uncond(req):
                 conditioned.append(req)
                 continue
             if req.finished():
-                self._close_completed_request(req)
+                self.close_completed_request(req)
         super().stream_output(conditioned, return_logprob, skip_req)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
@@ -96,7 +96,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         )
 
     @staticmethod
-    def _is_cfg_uncond(req: Any) -> bool:
+    def is_cfg_uncond(req: Any) -> bool:
         data = getattr(req, "_omni_data", None)
         return data is not None and data.is_cfg_uncond
 

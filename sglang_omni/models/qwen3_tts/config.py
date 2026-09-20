@@ -126,10 +126,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             **resolve_stage_factory_kwargs(engine_stage, self),
             **resolve_stage_typed_kwargs(engine_stage),
         }
-        checkpoint_config = _load_qwen3_tts_checkpoint_config(
+        checkpoint_config = load_qwen3_tts_checkpoint_config(
             engine_factory_kwargs["model_path"]
         )
-        model_type = _normalize_qwen3_tts_model_type(
+        model_type = normalize_qwen3_tts_model_type(
             checkpoint_config.get("tts_model_type")
         )
         if model_type in {"base", "voice_design"}:
@@ -151,7 +151,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return None
 
 
-def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
+def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
     checkpoint_dir = Path(model_path).expanduser()
     if checkpoint_dir.is_dir():
         config_path = checkpoint_dir / "config.json"
@@ -163,27 +163,13 @@ def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
         return json.load(handle)
 
 
-def _normalize_qwen3_tts_model_type(raw: Any) -> str:
+def normalize_qwen3_tts_model_type(raw: Any) -> str:
     normalized = str(raw or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"
     if normalized == "voicedesign":
         return "voice_design"
     return normalized
-
-
-def qwen3_tts_checkpoint_model_type(checkpoint_dir: str) -> str:
-    """Read ``tts_model_type`` from a resolved checkpoint.
-
-    The directory name is not a reliable signal: a Base checkpoint served from
-    a path like ``/srv/checkpoints/current`` carries no marker at all. The
-    config does, and it is the same value the request path validates against.
-    Returns ``"base"`` when the field is absent, matching that path's default.
-    """
-    if not (Path(checkpoint_dir) / "config.json").is_file():
-        return "base"
-    config = _load_qwen3_tts_checkpoint_config(checkpoint_dir)
-    return _normalize_qwen3_tts_model_type(config.get("tts_model_type"))
 
 
 def is_qwen3_tts_base_model(model_path: str) -> bool:

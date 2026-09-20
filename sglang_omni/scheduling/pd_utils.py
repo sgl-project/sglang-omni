@@ -164,7 +164,7 @@ def continuation_from_req(
         req, "_input_embeds_are_projected", False
     ):
         raise NotImplementedError("PD does not support projected input embeddings")
-    sampling = _sampling_params_to_dict(req.sampling_params)
+    sampling = sampling_params_to_dict(req.sampling_params)
     if any(
         sampling.get(key) for key in ("json_schema", "regex", "ebnf", "structural_tag")
     ):
@@ -304,7 +304,7 @@ def req_from_continuation(
     return req
 
 
-def _sampling_params_to_dict(params: Any) -> dict[str, Any]:
+def sampling_params_to_dict(params: Any) -> dict[str, Any]:
     allowed = inspect.signature(type(params)).parameters
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
@@ -417,7 +417,7 @@ class DecodeKVReceiver:
         self._accepting_reservations = True
         self._closed = False
 
-    def _remember_finished_transfer(self, transfer_id: str) -> None:
+    def remember_finished_transfer(self, transfer_id: str) -> None:
         self._transfer_tombstones[transfer_id] = None
         if len(self._transfer_tombstones) > _TRANSFER_TOMBSTONE_LIMIT:
             del self._transfer_tombstones[next(iter(self._transfer_tombstones))]
@@ -486,7 +486,7 @@ class DecodeKVReceiver:
                 raise RuntimeError(
                     f"commit for unknown KV transfer {request.transfer_id!r}"
                 )
-            self._remember_finished_transfer(request.transfer_id)
+            self.remember_finished_transfer(request.transfer_id)
             if (
                 self._closed
                 or request.request_id != reservation.continuation.request_id
@@ -508,7 +508,7 @@ class DecodeKVReceiver:
         with self._lock:
             reservation = self._reservations.pop(request.transfer_id, None)
             if reservation is not None:
-                self._remember_finished_transfer(request.transfer_id)
+                self.remember_finished_transfer(request.transfer_id)
         if reservation is not None:
             self._allocator.free(reservation.allocation.slots)
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)

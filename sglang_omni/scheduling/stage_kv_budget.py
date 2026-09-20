@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class _StageKvBudget:
+class StageKvBudget:
     stage_name: str
     kv_cache_bytes: int
     consumed: bool = False
@@ -27,7 +27,7 @@ class _StageKvBudget:
 _local = threading.local()
 
 
-def _current() -> _StageKvBudget | None:
+def current() -> StageKvBudget | None:
     return getattr(_local, "budget", None)
 
 
@@ -40,13 +40,13 @@ def stage_kv_cache_budget(stage_name: str, kv_cache_bytes: int):
     SGLang engine, so honoring the budget is impossible and silently ignoring
     it would fake a guarantee the deployment relies on.
     """
-    active = _current()
+    active = current()
     if active is not None:
         raise RuntimeError(
             f"stage_kv_cache_budget for stage {stage_name!r} cannot nest inside "
             f"the active scope for stage {active.stage_name!r}"
         )
-    budget = _StageKvBudget(stage_name=stage_name, kv_cache_bytes=kv_cache_bytes)
+    budget = StageKvBudget(stage_name=stage_name, kv_cache_bytes=kv_cache_bytes)
     _local.budget = budget
     try:
         yield
@@ -66,7 +66,7 @@ def consume_stage_kv_cache_bytes() -> int | None:
     A second consumption in the same scope raises: two engines each sized to
     the full stage budget would silently commit twice the declared bytes.
     """
-    budget = _current()
+    budget = current()
     if budget is None:
         return None
     if budget.consumed:
@@ -82,7 +82,7 @@ def consume_stage_kv_cache_bytes() -> int | None:
 
 def peek_stage_kv_cache_bytes() -> int | None:
     """Return the scoped budget without consuming it."""
-    budget = _current()
+    budget = current()
     if budget is None:
         return None
     return budget.kv_cache_bytes

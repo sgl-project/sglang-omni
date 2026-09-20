@@ -6,10 +6,13 @@ Loader for the pipecat-ai/stt-benchmark-data dataset.
 from __future__ import annotations
 
 import atexit
+import io
 import logging
 import shutil
 import tempfile
 from pathlib import Path
+
+import soundfile as sf
 
 from benchmarks.dataset.prepare import (
     STT_BENCHMARK_DATASET_ID,
@@ -23,12 +26,15 @@ STT_BENCHMARK_SPLIT = "train"
 STT_BENCHMARK_LANG = "en"
 
 _REQUIRED_COLUMNS = {"sample_id", "audio", "transcription"}
+COLUMN_ALIASES = {"id": "sample_id", "text": "transcription"}
 
-_STAGED_CACHE: dict[tuple[str, str, str | None, int | None], list[SampleInput]] = {}
+_STAGED_CACHE: dict[
+    tuple[str, str | None, str, str | None, int | None], list[SampleInput]
+] = {}
 
 
 def _staged_wav_path(staging_root: Path, sample_id: str, *, repo_id: str) -> Path:
-    """Return ``<staging_root>/<sample_id>.wav`` after rejecting unsafe ids."""
+    """Return <staging_root>/<sample_id>.wav after rejecting unsafe ids."""
     error_prefix = f"Invalid sample_id for {repo_id}: {sample_id!r}"
     if not isinstance(sample_id, str) or not sample_id.strip():
         raise ValueError(f"{error_prefix} (empty id)")
@@ -44,6 +50,7 @@ def load_stt_benchmark_samples(
     repo_id: str = STT_BENCHMARK_DATASET_ID,
     max_samples: int | None = None,
     *,
+    config_name: str | None = None,
     split: str = STT_BENCHMARK_SPLIT,
     revision: str | None = None,
 ) -> list[SampleInput]:
@@ -51,25 +58,42 @@ def load_stt_benchmark_samples(
     if revision is None and repo_id == STT_BENCHMARK_DATASET_ID:
         revision = STT_BENCHMARK_DATASET_REVISION
 
-    full_cache_key = (repo_id, split, revision, None)
+    full_cache_key = (repo_id, config_name, split, revision, None)
     if full_cache_key in _STAGED_CACHE:
         samples = _STAGED_CACHE[full_cache_key]
         return samples[:max_samples] if max_samples is not None else list(samples)
 
-    cache_key = (repo_id, split, revision, max_samples)
+    cache_key = (repo_id, config_name, split, revision, max_samples)
     if cache_key in _STAGED_CACHE:
         return list(_STAGED_CACHE[cache_key])
 
     from datasets import Audio, load_dataset
 
     logger.info(
-        "Loading %s split=%s revision=%s from HuggingFace ...",
-        repo_id,
-        split,
-        revision or "default",
+        f"Loading {repo_id} config={config_name or 'default'} "
+        f"split={split} revision={revision or 'default'} from HuggingFace ..."
     )
     load_kwargs = {"revision": revision} if revision else {}
-    ds = load_dataset(repo_id, split=split, **load_kwargs)
+    if repo_id == "openslr/librispeech_asr" and config_name:
+        # note (MayDomine): selecting files avoids downloading unused train splits.
+        ds = load_dataset(
+            repo_id,
+            data_files={split: f"{config_name}/{split}/*.parquet"},
+            split=split,
+            verification_mode="no_checks",
+            **load_kwargs,
+        )
+    else:
+        if config_name:
+            load_kwargs["name"] = config_name
+        ds = load_dataset(repo_id, split=split, **load_kwargs)
+    aliases = {
+        old: new
+        for old, new in COLUMN_ALIASES.items()
+        if old in ds.column_names and new not in ds.column_names
+    }
+    if aliases:
+        ds = ds.rename_columns(aliases)
 
     missing = _REQUIRED_COLUMNS - set(ds.column_names)
     if missing:
@@ -83,7 +107,7 @@ def load_stt_benchmark_samples(
 
     tmpdir = Path(tempfile.mkdtemp(prefix=f"stt_benchmark_{split}_"))
     atexit.register(shutil.rmtree, str(tmpdir), True)
-    logger.info("Staging audio to %s", tmpdir)
+    logger.info(f"Staging audio to {tmpdir}")
     staging_root = tmpdir.resolve()
 
     samples: list[SampleInput] = []
@@ -105,11 +129,10 @@ def load_stt_benchmark_samples(
             audio_bytes = Path(audio_path).read_bytes()
 
         if audio_bytes[:4] != b"RIFF" or audio_bytes[8:12] != b"WAVE":
-            raise ValueError(
-                f"Non-WAV audio bytes for {repo_id}/{split}/{sample_id}; "
-                "missing RIFF/WAVE magic"
-            )
-        wav_path.write_bytes(audio_bytes)
+            waveform, sample_rate = sf.read(io.BytesIO(audio_bytes))
+            sf.write(str(wav_path), waveform, sample_rate, format="WAV")
+        else:
+            wav_path.write_bytes(audio_bytes)
 
         transcription = str(row["transcription"] or "").strip()
         samples.append(
@@ -122,5 +145,5 @@ def load_stt_benchmark_samples(
         )
 
     _STAGED_CACHE[cache_key] = samples
-    logger.info("Loaded %d samples from %s/%s", len(samples), repo_id, split)
+    logger.info(f"Loaded {len(samples)} samples from {repo_id}/{split}")
     return list(samples)

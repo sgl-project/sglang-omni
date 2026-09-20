@@ -70,7 +70,7 @@ class MpsGpuPaths:
         return self.pipe_dir / "control"
 
 
-def _ensure_private_state_root(root: Path) -> None:
+def ensure_private_state_root(root: Path) -> None:
     """Create a private state root, or validate an existing caller path."""
 
     try:
@@ -103,7 +103,7 @@ def state_root_lock(root: Path, lock_name: str = ".lock"):
 
     No-op where flock is unavailable (non-POSIX unit-test hosts).
     """
-    _ensure_private_state_root(root)
+    ensure_private_state_root(root)
     if fcntl is None:
         yield
         return

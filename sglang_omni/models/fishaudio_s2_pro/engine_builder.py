@@ -23,7 +23,7 @@ _VALIDATED_AUTO_ATTENTION_BACKENDS = {
 }
 
 
-def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
     if current_platform.is_npu():
         # Ascend NPU uses the built-in "ascend" attention backend.
         return "ascend"
@@ -109,7 +109,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
+        fast_ar_backend = resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
         if current_platform.is_npu():
@@ -163,13 +163,13 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         )
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
-        return fish_stages._resolve_s2pro_model_buffer_bs(model)
+        return fish_stages.resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
         from sglang.srt.runtime_context import get_exec
 
         if bool(get_exec().graph.enable_torch_compile):
-            fish_stages._compile_s2pro_codebook_decoder(
+            fish_stages.compile_s2pro_codebook_decoder(
                 model,
                 max_batch_size=get_exec().graph.torch_compile_max_bs,
             )

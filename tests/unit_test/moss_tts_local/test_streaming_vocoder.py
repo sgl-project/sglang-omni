@@ -27,8 +27,8 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     build_moss_tts_local_stream_metadata,
 )
 from sglang_omni.models.moss_tts_local.streaming_vocoder import (
+    CodecStreamSession,
     MossTTSLocalStreamingVocoderScheduler,
-    _CodecStreamSession,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -176,7 +176,7 @@ def _patch_vocoder_factory_loaders(
 ) -> None:
     monkeypatch.setattr(
         stages,
-        "_load_moss_tts_local_processor",
+        "load_moss_tts_local_processor",
         lambda model_path: processor,
     )
     monkeypatch.setattr(
@@ -351,7 +351,7 @@ def test_stream_concatenates_to_offline_decode(monkeypatch) -> None:
 
 def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, FakeProcessor())
-    session = scheduler._ensure_session()
+    session = scheduler.ensure_session()
 
     assert scheduler.max_batch_size == 8
     # note (Zhang Yiyang): 15 streaming lanes + the 1 lane freed by removing the
@@ -359,12 +359,12 @@ def test_default_session_streaming_lane_capacity(monkeypatch) -> None:
     assert scheduler._stream_slots == 16
     assert not hasattr(session, "_offline_slots")
     assert session._stream_slots == 16
-    assert session._graph_batch_sizes() == [1, 2, 4, 8, 12, 16]
+    assert session.graph_batch_sizes() == [1, 2, 4, 8, 12, 16]
 
 
 def test_streaming_session_initializes_and_closes_codec_state() -> None:
     codec = FakeCodec()
-    session = _CodecStreamSession(codec, stream_slots=2, n_vq=N_VQ)
+    session = CodecStreamSession(codec, stream_slots=2, n_vq=N_VQ)
     assert codec.offsets.tolist() == [0, 0, 0, 0]
     session.close()
     assert codec.offsets is None
@@ -372,7 +372,7 @@ def test_streaming_session_initializes_and_closes_codec_state() -> None:
 
 def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> None:
     codec = FakeCodec()
-    session = _CodecStreamSession(
+    session = CodecStreamSession(
         codec,
         stream_slots=2,
         n_vq=N_VQ,
@@ -405,7 +405,7 @@ def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> N
 
 def test_compact_native_session_replays_graph_and_slices_bucket() -> None:
     codec = FakeCodec()
-    session = _CodecStreamSession(
+    session = CodecStreamSession(
         codec,
         stream_slots=3,
         n_vq=N_VQ,
@@ -463,7 +463,7 @@ def test_runner_skips_capture_on_cpu() -> None:
 @pytest.mark.parametrize("graph_miss", [False, True])
 def test_streaming_session_padding_preserves_inactive_slots(graph_miss) -> None:
     codec = FakeCodec()
-    session = _CodecStreamSession(
+    session = CodecStreamSession(
         codec,
         stream_slots=8,
         n_vq=N_VQ,
@@ -1108,12 +1108,12 @@ def test_abort_releases_slot(monkeypatch) -> None:
 def test_non_streaming_path_leaves_startup_session_untouched(monkeypatch) -> None:
     processor = FakeProcessor()
     scheduler = _make_scheduler(monkeypatch, processor)
-    startup_session = scheduler._ensure_session()
+    startup_session = scheduler.ensure_session()
     assert scheduler._codec.offsets is not None
 
     rows = _rows(11, seed=59)
     original_decoder = scheduler._codec.decoder
-    (result,) = scheduler._vocode_batch([_offline_payload(rows, "r1")])
+    (result,) = scheduler.vocode_batch([_offline_payload(rows, "r1")])
 
     assert processor.decode_calls == 0
     # note (Zhang Yiyang): the batched path bypasses codec.decode entirely (no
@@ -1134,7 +1134,7 @@ def test_non_streaming_empty_audio_codes_skip_decode(monkeypatch) -> None:
     scheduler = _make_scheduler(monkeypatch, processor)
     rows = torch.empty(0, N_VQ + 1, dtype=torch.long)
 
-    (result,) = scheduler._vocode_batch([_offline_payload(rows, "empty")])
+    (result,) = scheduler.vocode_batch([_offline_payload(rows, "empty")])
 
     assert processor.decode_calls == 0
     assert scheduler._codec.decode_calls == 0
@@ -1152,7 +1152,7 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
 
     # note (Zhang Yiyang): before any stream, use the batched full-sequence
     # path (quantizer + batched decoder), never codec.decode.
-    results = scheduler._vocode_batch(
+    results = scheduler.vocode_batch(
         [_offline_payload(rows_1, "r1"), _offline_payload(rows_2, "r2")]
     )
     assert processor.decode_calls == 0
@@ -1172,7 +1172,7 @@ def test_non_streaming_path_with_and_without_live_session(monkeypatch) -> None:
     # note (Zhang Yiyang): ...after which offline decodes still use the batched
     # full-sequence path (non-streaming work never enters the streaming
     # session), producing identical audio.
-    results = scheduler._vocode_batch(
+    results = scheduler.vocode_batch(
         [_offline_payload(rows_1, "r3"), _offline_payload(rows_2, "r4")]
     )
     assert processor.decode_calls == 0
@@ -1210,7 +1210,7 @@ def test_offline_batch_uses_batched_path_with_live_session(monkeypatch) -> None:
                 data=state.to_dict(),
             )
         )
-    results = scheduler._vocode_batch(payloads)
+    results = scheduler.vocode_batch(payloads)
     codec = processor.audio_tokenizer
     # note (Zhang Yiyang): two batched waves (3 items, max_batch_size=2); no
     # session stepping.
@@ -1246,7 +1246,7 @@ def test_offline_batch_leaves_stream_slots_untouched(monkeypatch) -> None:
     assert len(session._free_stream_slots) == 1
 
     offline_rows = [_rows(2, seed=82), _rows(2, seed=83)]
-    results = scheduler._vocode_batch(
+    results = scheduler.vocode_batch(
         [
             _offline_payload(offline_rows[0], "offline-a"),
             _offline_payload(offline_rows[1], "offline-b"),
@@ -1458,7 +1458,7 @@ def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> Non
     that records each call (so re-probe is observable) and, when seal=True, attaches a runner.
     """
     monkeypatch.setattr(
-        MossTTSLocalStreamingVocoderScheduler, "_codec_on_cuda", lambda self: True
+        MossTTSLocalStreamingVocoderScheduler, "codec_on_cuda", lambda self: True
     )
 
     def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list:
@@ -1467,7 +1467,7 @@ def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> Non
         self._cg_runner = _FakeCudaGraphRunner(frames) if seal else None
         return self._cg_runner.captured_frames() if seal else []
 
-    monkeypatch.setattr(_CodecStreamSession, "warmup_cuda_graph", fake_warmup)
+    monkeypatch.setattr(CodecStreamSession, "warmup_cuda_graph", fake_warmup)
 
 
 def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
@@ -1502,7 +1502,7 @@ def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> No
     monkeypatch.setattr(stages, "resolve_vocoder_cuda_graph", resolve)
     monkeypatch.setattr(
         stages,
-        "_load_moss_tts_local_processor",
+        "load_moss_tts_local_processor",
         lambda model_path: (_ for _ in ()).throw(AssertionError("loaded codec")),
     )
 
@@ -1525,7 +1525,7 @@ def test_default_cuda_graph_frames_cover_stream_chunk_exactly(
 ) -> None:
     captured: list[list[int]] = []
     monkeypatch.setattr(
-        MossTTSLocalStreamingVocoderScheduler, "_codec_on_cuda", lambda self: True
+        MossTTSLocalStreamingVocoderScheduler, "codec_on_cuda", lambda self: True
     )
 
     def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list[int]:
@@ -1534,7 +1534,7 @@ def test_default_cuda_graph_frames_cover_stream_chunk_exactly(
         self._cg_runner = _FakeCudaGraphRunner(frames)
         return self._cg_runner.captured_frames()
 
-    monkeypatch.setattr(_CodecStreamSession, "warmup_cuda_graph", fake_warmup)
+    monkeypatch.setattr(CodecStreamSession, "warmup_cuda_graph", fake_warmup)
 
     scheduler = _make_scheduler(monkeypatch, FakeProcessor(), **kwargs)
     try:
@@ -1556,7 +1556,7 @@ def test_create_vocoder_executor_uses_separate_codec(monkeypatch) -> None:
     assert scheduler._codec is not processor.audio_tokenizer
 
     rows = _rows(7, seed=98)
-    (result,) = scheduler._vocode_batch([_offline_payload(rows, "separate-codec")])
+    (result,) = scheduler.vocode_batch([_offline_payload(rows, "separate-codec")])
 
     assert processor.decode_calls == 0
     assert processor.audio_tokenizer.decode_calls == 0
@@ -1576,7 +1576,7 @@ def test_create_vocoder_executor_validates_process_memory_after_warmup(
     validations: list[dict] = []
     monkeypatch.setattr(
         stages,
-        "_validate_loaded_process_memory_budget",
+        "validate_loaded_process_memory_budget",
         lambda **kwargs: validations.append(kwargs),
     )
 
@@ -1609,7 +1609,7 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
 
     monkeypatch.setattr(
         stages,
-        "_load_moss_tts_local_processor",
+        "load_moss_tts_local_processor",
         lambda model_path: processor,
     )
     monkeypatch.setattr(
@@ -1722,7 +1722,7 @@ def test_streaming_reuses_graphed_session_after_nonstreaming(
     # note (Zhang Yiyang): non-streaming decode uses the batched path and
     # leaves the startup session untouched.
     nonstream_rows = _rows(5, seed=1)
-    (result,) = scheduler._vocode_batch([_offline_payload(nonstream_rows, "n1")])
+    (result,) = scheduler.vocode_batch([_offline_payload(nonstream_rows, "n1")])
     assert scheduler._session is startup_session
     assert not startup_session._closed
     assert len(calls) == 1

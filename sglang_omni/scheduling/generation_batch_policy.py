@@ -74,7 +74,7 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     return values
 
 
-def _explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
+def explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
     """The cap SGLang derives inside ServerArgs once its inputs are explicit."""
     declared = overrides.get("cuda_graph_max_bs_prefill")
     if declared is not None:
@@ -140,21 +140,21 @@ def build_generation_batch_overrides(
                 f"{incoming[flat_key]!r} != {nested_value!r}"
             )
         incoming[flat_key] = nested_value
-    max_running_requests = _normalize_positive_int(
+    max_running_requests = normalize_positive_int(
         "max_running_requests",
         incoming.pop("max_running_requests", max_running_requests),
     )
     cuda_graph_max_bs = (
         max_running_requests if cuda_graph_max_bs is None else cuda_graph_max_bs
     )
-    cuda_graph_max_bs = _normalize_positive_int(
+    cuda_graph_max_bs = normalize_positive_int(
         "cuda_graph_max_bs",
         incoming.pop("cuda_graph_max_bs", cuda_graph_max_bs),
     )
     torch_compile_max_bs = (
         max_running_requests if torch_compile_max_bs is None else torch_compile_max_bs
     )
-    torch_compile_max_bs = _normalize_positive_int(
+    torch_compile_max_bs = normalize_positive_int(
         "torch_compile_max_bs",
         incoming.pop("torch_compile_max_bs", torch_compile_max_bs),
     )
@@ -190,7 +190,7 @@ def build_generation_batch_overrides(
     ):
         # note (ratish): SGLang's prefill generator omits an off-grid cap, and
         # an unset chunk is only known inside ServerArgs.
-        cap = _explicit_prefill_cap(overrides)
+        cap = explicit_prefill_cap(overrides)
         if cap is not None:
             prefill_bs = build_default_prefill_cuda_graph_bs(cap)
             prefill_max_bs = cap
@@ -243,7 +243,7 @@ def validate_generation_batch_policy(
     errors: list[str] = []
     cfg = resolved_view(server_args)
 
-    max_running_requests = _validate_positive_int(
+    max_running_requests = validate_positive_int(
         "max_running_requests",
         cfg.max_running_requests,
         errors,
@@ -253,7 +253,7 @@ def validate_generation_batch_policy(
     cuda_graph_max_bs: int | None = None
     cuda_graph_bs: tuple[int, ...] | None = None
     if cuda_graph_enabled:
-        cuda_graph_max_bs = _validate_positive_int(
+        cuda_graph_max_bs = validate_positive_int(
             "cuda_graph_max_bs",
             get_decode_cuda_graph_max_bs(server_args),
             errors,
@@ -263,7 +263,7 @@ def validate_generation_batch_policy(
         if cuda_graph_bs_value is None:
             errors.append("cuda_graph_bs must be explicit when CUDA graph is enabled")
         else:
-            cuda_graph_bs = _normalize_cuda_graph_bs(
+            cuda_graph_bs = normalize_cuda_graph_bs(
                 cuda_graph_bs_value, errors, field="cuda_graph_bs"
             )
 
@@ -284,10 +284,10 @@ def validate_generation_batch_policy(
                 f"({cuda_graph_max_bs} < {max_running_requests})"
             )
 
-    _validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
+    validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
 
     torch_compile_enabled = bool(cfg.enable_torch_compile)
-    torch_compile_max_bs = _validate_positive_int(
+    torch_compile_max_bs = validate_positive_int(
         "torch_compile_max_bs",
         cfg.torch_compile_max_bs,
         errors,
@@ -313,7 +313,7 @@ def validate_generation_batch_policy(
         )
 
 
-def _validate_prefill_graph_policy(
+def validate_prefill_graph_policy(
     server_args: Any,
     cuda_graph_enabled: bool,
     errors: list[str],
@@ -360,7 +360,7 @@ def _validate_prefill_graph_policy(
             "no prefill graphs"
         )
         return
-    buckets = _normalize_cuda_graph_bs(
+    buckets = normalize_cuda_graph_bs(
         prefill_cfg.bs, errors, field="cuda_graph_bs_prefill"
     )
     if buckets is None:
@@ -393,7 +393,7 @@ def _validate_prefill_graph_policy(
         )
 
 
-def _validate_positive_int(
+def validate_positive_int(
     field: str,
     value: Any,
     errors: list[str],
@@ -415,7 +415,7 @@ def _validate_positive_int(
     return normalized
 
 
-def _normalize_positive_int(field: str, value: Any) -> int:
+def normalize_positive_int(field: str, value: Any) -> int:
     try:
         normalized = int(value)
     except (TypeError, ValueError) as exc:
@@ -425,7 +425,7 @@ def _normalize_positive_int(field: str, value: Any) -> int:
     return normalized
 
 
-def _normalize_cuda_graph_bs(
+def normalize_cuda_graph_bs(
     value: Iterable[Any],
     errors: list[str],
     *,

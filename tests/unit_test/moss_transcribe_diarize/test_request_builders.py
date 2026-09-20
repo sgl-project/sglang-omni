@@ -17,7 +17,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     DEFAULT_TOP_K,
     DEFAULT_TOP_P,
     DEFAULT_TRANSCRIBE_DIARIZE_PROMPT,
-    _audio_feature_lengths_from_waveform,
+    audio_feature_lengths_from_waveform,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, OmniRequest, StagePayload
@@ -397,7 +397,7 @@ def test_audio_feature_lengths_match_processor_chunk_boundaries(
     processor = FakeProcessor()
     processor.feature_extractor.n_samples = 480000
 
-    assert _audio_feature_lengths_from_waveform(processor, num_samples).tolist() == (
+    assert audio_feature_lengths_from_waveform(processor, num_samples).tolist() == (
         expected
     )
 

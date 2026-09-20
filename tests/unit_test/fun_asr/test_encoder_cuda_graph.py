@@ -7,29 +7,29 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from sglang_omni.models.fun_asr.encoder_cuda_graph import _bucket_batch, _bucket_t
+from sglang_omni.models.fun_asr.encoder_cuda_graph import bucket_batch, bucket_t
 from sglang_omni.models.fun_asr.sglang_model import FunAsrNanoForConditionalGeneration
 
 
 def test_bucket_batch_rounds_up_within_max() -> None:
-    assert _bucket_batch(1, 8) == 1
-    assert _bucket_batch(2, 8) == 2
-    assert _bucket_batch(3, 8) == 4
-    assert _bucket_batch(5, 8) == 8
-    assert _bucket_batch(8, 8) == 8
+    assert bucket_batch(1, 8) == 1
+    assert bucket_batch(2, 8) == 2
+    assert bucket_batch(3, 8) == 4
+    assert bucket_batch(5, 8) == 8
+    assert bucket_batch(8, 8) == 8
     # max_batch not a power of two: fall through to max itself
-    assert _bucket_batch(5, 6) == 6
+    assert bucket_batch(5, 6) == 6
     # over the max -> no bucket
-    assert _bucket_batch(9, 8) is None
+    assert bucket_batch(9, 8) is None
 
 
 def test_bucket_t_rounds_up_to_step() -> None:
-    assert _bucket_t(1) == 64
-    assert _bucket_t(64) == 64
-    assert _bucket_t(65) == 128
-    assert _bucket_t(500) == 512
+    assert bucket_t(1) == 64
+    assert bucket_t(64) == 64
+    assert bucket_t(65) == 128
+    assert bucket_t(500) == 512
     # beyond the 30s ceiling -> no bucket
-    assert _bucket_t(513) is None
+    assert bucket_t(513) is None
 
 
 class _EagerTower(nn.Module):

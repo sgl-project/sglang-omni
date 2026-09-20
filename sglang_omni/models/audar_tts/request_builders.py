@@ -31,7 +31,7 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
     if not isinstance(tts_params, dict):
         tts_params = {}
 
-    target_text, references = _normalize_inputs(inputs)
+    target_text, references = normalize_inputs(inputs)
     if not target_text.strip():
         raise ValueError("Audar-TTS requires non-empty target text")
     if len(references) > 1:
@@ -39,7 +39,7 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
 
     reference = references[0] if references else None
     if reference is None and tts_params.get("ref_audio") is not None:
-        reference = _reference_from_value(tts_params["ref_audio"])
+        reference = reference_from_value(tts_params["ref_audio"])
     if reference is None:
         raise ValueError("Audar-TTS requires reference audio")
 
@@ -50,7 +50,7 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
     return AudarTTSState(
         target_text=target_text,
         reference_text=reference_text,
-        reference_audio=_normalize_reference_audio(reference),
+        reference_audio=normalize_reference_audio(reference),
         generation_kwargs=build_generation_kwargs(params, tts_params=tts_params),
     )
 
@@ -82,11 +82,11 @@ def build_generation_kwargs(
         seed = params.get("seed")
     if seed is not None:
         generation["seed"] = int(seed)
-    _validate_generation_kwargs(generation)
+    validate_generation_kwargs(generation)
     return generation
 
 
-def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
+def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
     if isinstance(inputs, str):
         return inputs, []
     if not isinstance(inputs, dict):
@@ -101,7 +101,7 @@ def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
     ]
 
 
-def _reference_from_value(value: Any) -> dict[str, Any]:
+def reference_from_value(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     if isinstance(value, str) and value.startswith("data:"):
@@ -113,12 +113,12 @@ def _reference_from_value(value: Any) -> dict[str, Any]:
     return {"audio_path": str(value)}
 
 
-def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
+def normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
     if reference.get("audio_path") is not None:
         return {"audio_path": str(reference["audio_path"])}
     for key in ("ref_audio", "audio"):
         if reference.get(key) is not None:
-            return _reference_from_value(reference[key])
+            return reference_from_value(reference[key])
     if reference.get("bytes") is not None:
         return {"bytes": bytes(reference["bytes"])}
     data = reference.get("base64") or reference.get("data")
@@ -130,7 +130,7 @@ def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("Audar-TTS reference has no audio payload")
 
 
-def _validate_generation_kwargs(generation: dict[str, Any]) -> None:
+def validate_generation_kwargs(generation: dict[str, Any]) -> None:
     if generation["max_new_tokens"] <= 0:
         raise ValueError("Audar-TTS max_new_tokens must be positive")
     if generation["temperature"] < 0:

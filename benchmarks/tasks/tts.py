@@ -19,7 +19,7 @@ import logging
 import os
 import time
 import wave
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterator, Literal, Protocol
 
 import aiohttp
 import numpy as np
@@ -69,6 +69,7 @@ MOSS_TTS_ZH_TOKENS_PER_CHAR = 3.098411951313033
 MOSS_TTS_EN_TOKENS_PER_CHAR = 0.8673376262755219
 MOSS_TTS_MIN_AUTO_TOKEN_COUNT = 32
 UTMOS_BATCH_SIZE = 8
+ReferenceAudioField = Literal["audios", "audio.ref_audio"]
 
 
 # ---------------------------------------------------------------------------
@@ -793,11 +794,12 @@ class VoiceCloneOmni:
         system_prompt: str | None = None,
         chunk_times_out: list[float] | None = None,
         text_first_time_holder: list[float] | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
     ) -> tuple[bytes, float, dict]:
         if max_tokens is None:
             max_tokens = self.THINKER_MAX_NEW_TOKENS
 
-        if voice_clone:
+        if voice_clone and reference_audio_field == "audios":
             if lang == "en":
                 prompt_text = (
                     f'Listen to the audio above. The speaker is reading: "{sample.ref_text}". '
@@ -833,7 +835,16 @@ class VoiceCloneOmni:
             "stream": stream,
         }
         if voice_clone:
-            payload["audios"] = [sample.ref_audio]
+            if reference_audio_field == "audios":
+                payload["audios"] = [sample.ref_audio]
+            elif reference_audio_field == "audio.ref_audio":
+                with open(sample.ref_audio, "rb") as reference:
+                    encoded = base64.b64encode(reference.read()).decode("ascii")
+                payload["audio"]["ref_audio"] = f"data:audio/wav;base64,{encoded}"
+            else:
+                raise ValueError(
+                    f"Unsupported reference audio field: {reference_audio_field}"
+                )
 
         t0 = time.perf_counter()
         async with session.post(api_url, json=payload) as response:
@@ -927,6 +938,7 @@ class VoiceCloneOmni:
         voice_clone: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        reference_audio_field: ReferenceAudioField = "audios",
     ) -> SampleOutput:
         output = SampleOutput(
             sample_id=sample.sample_id,
@@ -946,6 +958,7 @@ class VoiceCloneOmni:
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                reference_audio_field=reference_audio_field,
             )
             with open(wav_path, "wb") as f:
                 f.write(wav_bytes)

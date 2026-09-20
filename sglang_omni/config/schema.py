@@ -174,7 +174,7 @@ class EngineArgs(BaseModel):
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
-    def _parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
+    def parse_kv_cache_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -284,7 +284,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices", mode="before")
     @classmethod
-    def _parse_replica_devices(cls, value: Any) -> Any:
+    def parse_replica_devices(cls, value: Any) -> Any:
         if value is None:
             return None
         if isinstance(value, int):
@@ -303,7 +303,7 @@ class ProcessConfig(BaseModel):
 
     @field_validator("replica_devices")
     @classmethod
-    def _validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
+    def validate_replica_devices(cls, value: list[int] | None) -> list[int] | None:
         if value is None:
             return None
         if not value:
@@ -392,7 +392,7 @@ class StageConfig(BaseModel):
 
     @field_validator("total_reserve_bytes", mode="before")
     @classmethod
-    def _parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
+    def parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("total_reserve_bytes", value)
 
     # --- Consumer groups ---
@@ -667,7 +667,7 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _materialize_stage_types(cls, data: Any) -> Any:
+    def materialize_stage_types(cls, data: Any) -> Any:
         """Validate stage documents against their declared per-stage types."""
         if not isinstance(data, dict) or not isinstance(data.get("stages"), list):
             return data
@@ -684,8 +684,8 @@ class PipelineConfig(BaseModel):
         return {**data, "stages": stages}
 
     def model_post_init(self, __context: Any = None) -> None:
-        self._validate_general()
-        self._validate_processes()
+        self.validate_general()
+        self.validate_processes()
 
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
@@ -705,9 +705,9 @@ class PipelineConfig(BaseModel):
         self.config_cls = self.__class__.__name__
         if self.name is None:
             self.name = self.model_path
-        self._warn_long_audio_admission_exceeds_engine()
+        self.warn_long_audio_admission_exceeds_engine()
 
-    def _warn_long_audio_admission_exceeds_engine(self) -> None:
+    def warn_long_audio_admission_exceeds_engine(self) -> None:
         """Warn when long audio alone can fill every engine running slot."""
         if not type(self).allow_audio_chunking:
             return
@@ -871,7 +871,7 @@ class PipelineConfig(BaseModel):
                 out[s.name] = s.gpu
         return out
 
-    def _validate_general(self) -> None:
+    def validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
 
@@ -955,7 +955,7 @@ class PipelineConfig(BaseModel):
                 f"missing process for {missing_process}"
             )
 
-    def _validate_processes(self) -> None:
+    def validate_processes(self) -> None:
         """Check Process Names and the sparse ``processes`` replica policy.
 
         Membership grouping, cross-process edges, and device counts belong to

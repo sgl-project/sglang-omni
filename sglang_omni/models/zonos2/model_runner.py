@@ -93,7 +93,7 @@ class Zonos2ModelRunner(ModelRunner):
             self, forward_batch, schedule_batch, requests, is_lookahead=is_lookahead
         )
 
-    def _build_prefill_embeds(self, forward_batch, requests) -> torch.Tensor:
+    def build_prefill_embeds(self, forward_batch, requests) -> torch.Tensor:
         model = self.model
         pieces = []
         for sr in requests:
@@ -123,16 +123,16 @@ class Zonos2ModelRunner(ModelRunner):
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
-        buf = self._collect_launch(
+        buf = self.collect_launch(
             result, forward_batch, schedule_batch, requests, is_prefill=True
         )
-        self._collect_resolve(buf, result)
+        self.collect_resolve(buf, result)
 
     def post_decode(self, result, forward_batch, schedule_batch, requests):
-        buf = self._collect_launch(
+        buf = self.collect_launch(
             result, forward_batch, schedule_batch, requests, is_prefill=False
         )
-        self._collect_resolve(buf, result)
+        self.collect_resolve(buf, result)
 
     # note (Yue Yin): async-decode lookahead splits post_decode into a GPU launch
     # half (publishes next_ids on-device, no host sync) and a host resolve half
@@ -140,23 +140,23 @@ class Zonos2ModelRunner(ModelRunner):
     # decode forward. No lookahead_eligible gate needed: the rep-history ring is
     # updated on-device IN launch, so there is no one-step lag (default True holds).
     def post_decode_launch(self, result, forward_batch, requests):
-        return self._collect_launch(
+        return self.collect_launch(
             result, forward_batch, None, requests, is_prefill=False
         )
 
     def post_decode_resolve(
         self, launch_buf, result, forward_batch, schedule_batch, requests
     ):
-        self._collect_resolve(launch_buf, result)
+        self.collect_resolve(launch_buf, result)
 
-    def _last_token_hidden(self, hidden, forward_batch, is_prefill) -> torch.Tensor:
+    def last_token_hidden(self, hidden, forward_batch, is_prefill) -> torch.Tensor:
         if not is_prefill:
             return hidden
         lens = forward_batch.extend_seq_lens
         idx = torch.cumsum(lens.to(hidden.device, torch.long), dim=0) - 1
         return hidden[idx]
 
-    def _collect_launch(
+    def collect_launch(
         self, result, forward_batch, schedule_batch, requests, *, is_prefill
     ):
         model = self.model
@@ -166,7 +166,7 @@ class Zonos2ModelRunner(ModelRunner):
         cb_size = model.config.codebook_size
 
         b = len(requests)
-        hidden = self._last_token_hidden(
+        hidden = self.last_token_hidden(
             result.logits_output.hidden_states, forward_batch, is_prefill
         )
         if hidden.shape[0] < b:
@@ -191,13 +191,13 @@ class Zonos2ModelRunner(ModelRunner):
             and not is_prefill
             and model._tail_buckets
             and b <= model._tail_buckets[-1]
-            and all(self._params_match(x, model._tail_params) for x in p)
+            and all(self.params_match(x, model._tail_params) for x in p)
         )
         if use_graph:
-            rep_ids = self._rep_window_ring(
+            rep_ids = self.rep_window_ring(
                 row_t, n, int(params.repetition_window), cb_size, dev
             )
-            break_mask = self._break_mask_ring(row_t, model.audio_vocab, dev)
+            break_mask = self.break_mask_ring(row_t, model.audio_vocab, dev)
             codes, keys, feedback = model.run_tail_graph(
                 hidden,
                 torch.tensor([x.temperature for x in p], device=dev),
@@ -210,8 +210,8 @@ class Zonos2ModelRunner(ModelRunner):
             )
         else:
             logits = model.compute_logits(hidden).float()  # [B, 9, 1026]
-            rep_ids = self._rep_window(row_t, n, cb_size, params)
-            self._break_frame_loops(logits, row_t)
+            rep_ids = self.rep_window(row_t, n, cb_size, params)
+            self.break_frame_loops(logits, row_t)
             top_k_max = max(
                 (x.top_k for x in p if 0 < x.top_k < model.audio_vocab), default=0
             )
@@ -294,7 +294,7 @@ class Zonos2ModelRunner(ModelRunner):
         ev.record()
         return (requests, packed, n, next_ids.clone(), ev)
 
-    def _collect_resolve(self, launch_buf, result) -> None:
+    def collect_resolve(self, launch_buf, result) -> None:
         # Host half (runs lagged under async, overlapping the next decode forward):
         # the deferred codes.to('cpu') -> per-request output_codes + eos_frame.
         # Restores next_ids to the launch-time (un-clobbered) value for the
@@ -323,7 +323,7 @@ class Zonos2ModelRunner(ModelRunner):
             data.output_codes.append(codes_cpu[i].clone())
             data.eos_frame = int(eos_val_cpu[i]) if bool(eos_set_cpu[i]) else None
 
-    def _rep_window(self, row_t, n, cb_size, params):
+    def rep_window(self, row_t, n, cb_size, params):
         # Vectorized rep-penalty token window from the on-device history ring.
         # Byte-exact to the old per-request build (unit-tested): an all -1 window
         # is a no-op penalty == None, so no special first-step handling is needed.
@@ -337,7 +337,7 @@ class Zonos2ModelRunner(ModelRunner):
         rep[:, :rc] = torch.where(t[:, :rc] < cb_size, t[:, :rc], rep[:, :rc])
         return rep
 
-    def _break_frame_loops(self, logits, row_t, run: int = 8):
+    def break_frame_loops(self, logits, row_t, run: int = 8):
         # Loop-collapse guard (vectorized over the on-device history ring): mask
         # the primary-codebook token where a request's full 9-codebook frame has
         # repeated identically for `run` steps -- a degenerate loop the windowed
@@ -354,7 +354,7 @@ class Zonos2ModelRunner(ModelRunner):
         logits[bi, 0, tok] = torch.where(mask, torch.full_like(cur, float("-inf")), cur)
 
     @staticmethod
-    def _params_match(a, b) -> bool:
+    def params_match(a, b) -> bool:
         # The tail graph bakes the structural sampler flags (top_k_max/any_top_p/
         # any_min_p), so only replay when the request's params match those captured.
         if b is None:
@@ -369,7 +369,7 @@ class Zonos2ModelRunner(ModelRunner):
             and a.repetition_codebooks == b.repetition_codebooks
         )
 
-    def _rep_window_ring(self, row_t, n, w, cb_size, device):
+    def rep_window_ring(self, row_t, n, w, cb_size, device):
         # Fixed-shape [B, n, w] rep window from the on-device ring, feeding the
         # tail graph's captured rep_ids input (mirrors _rep_window_graph but reads
         # the GPU ring -- no host rep_hist build). Params are uniform here (graph
@@ -381,7 +381,7 @@ class Zonos2ModelRunner(ModelRunner):
         rep[:, :rc] = torch.where(t[:, :rc] < cb_size, t[:, :rc], rep[:, :rc])
         return rep
 
-    def _break_mask_ring(self, row_t, vocab, device, run: int = 8):
+    def break_mask_ring(self, row_t, vocab, device, run: int = 8):
         # Additive [B, vocab] codebook-0 mask (-inf at a looping token) from the
         # on-device ring, feeding the tail graph's break_mask input (mirrors
         # _break_mask_graph + _break_frame_loops, vectorized on the GPU ring).

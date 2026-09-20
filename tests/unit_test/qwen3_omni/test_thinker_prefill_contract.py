@@ -107,7 +107,7 @@ def test_custom_prefill_forward_records_eager_fallback(
     runner.tp_worker = SimpleNamespace(
         record_custom_prefill_eager=lambda: calls.append("recorded")
     )
-    runner._classify_prefill = lambda *_args: SimpleNamespace(kind="custom")
+    runner.classify_prefill = lambda *_args: SimpleNamespace(kind="custom")
     expected = object()
     monkeypatch.setattr(
         ThinkerModelRunner,
@@ -180,7 +180,7 @@ def test_text_only_prefill_skips_chunk_span_normalization(monkeypatch):
         pytest.fail("text-only prefill should not normalize multimodal spans")
 
     monkeypatch.setattr(
-        runner, "_batch_chunk_spans", unexpected_chunk_span_normalization
+        runner, "batch_chunk_spans", unexpected_chunk_span_normalization
     )
 
     runner.before_prefill(forward_batch, schedule_batch, [request])
@@ -227,13 +227,13 @@ def test_multi_audio_batch_normalizes_chunk_spans_once(monkeypatch):
     ]
     forward_batch, schedule_batch = _batch(requests)
     calls = []
-    original = runner._batch_chunk_spans
+    original = runner.batch_chunk_spans
 
     def wrapped_batch_chunk_spans(batch, expected_batch_size):
         calls.append(expected_batch_size)
         return original(batch, expected_batch_size)
 
-    monkeypatch.setattr(runner, "_batch_chunk_spans", wrapped_batch_chunk_spans)
+    monkeypatch.setattr(runner, "batch_chunk_spans", wrapped_batch_chunk_spans)
 
     runner.before_prefill(forward_batch, schedule_batch, requests)
 
@@ -299,7 +299,7 @@ def test_audio_sidecar_preserves_composed_embedding_identity(monkeypatch):
     composed = torch.full((3, HIDDEN), 29.0)
     monkeypatch.setattr(
         runner,
-        "_inject_multimodal_embeds",
+        "inject_multimodal_embeds",
         lambda *_args: (composed, None, None),
     )
 

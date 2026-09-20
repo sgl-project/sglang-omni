@@ -40,7 +40,7 @@ def _make_encoder(max_items: int = 256):
     enc = SpeakerEncoder(device="cpu", cache_max_items=max_items)
     fake = _CountingEmbedder()
     # Shadow the lazy loader so encode() never touches the real model / GPU.
-    enc._get_embedder = lambda: fake  # type: ignore[assignment]
+    enc.get_embedder = lambda: fake  # type: ignore[assignment]
     return enc, fake
 
 
@@ -71,7 +71,7 @@ def test_concurrent_references_keep_their_own_fingerprints() -> None:
                 release_first.set()
             return torch.full((1, SPEAKER_EMBEDDING_DIM), float(marker + 1))
 
-    enc._get_embedder = lambda: _InterleavingEmbedder()  # type: ignore[assignment]
+    enc.get_embedder = lambda: _InterleavingEmbedder()  # type: ignore[assignment]
     first_ref = (torch.zeros(1, 100), 16000)
     second_ref = (torch.ones(1, 100), 16000)
 

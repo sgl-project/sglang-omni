@@ -44,7 +44,7 @@ class MossTTSModelRunner(ModelRunner):
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
-                input_embeds=self._build_prefill_input_embeds(forward_batch, requests),
+                input_embeds=self.build_prefill_input_embeds(forward_batch, requests),
             ),
         )
         return None
@@ -59,7 +59,7 @@ class MossTTSModelRunner(ModelRunner):
     ) -> None:
         del is_lookahead
         del schedule_batch
-        self._write_decode_input_embedding(forward_batch, requests)
+        self.write_decode_input_embedding(forward_batch, requests)
 
     def post_prefill(
         self,
@@ -70,7 +70,7 @@ class MossTTSModelRunner(ModelRunner):
     ) -> None:
         if schedule_batch.is_prefill_only:
             return
-        self._collect_moss_step(result, forward_batch, schedule_batch, requests)
+        self.collect_moss_step(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -79,9 +79,9 @@ class MossTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_moss_step(result, forward_batch, schedule_batch, requests)
+        self.collect_moss_step(result, forward_batch, schedule_batch, requests)
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -110,7 +110,7 @@ class MossTTSModelRunner(ModelRunner):
             if data.output_rows:
                 # note (Richard Wang): leftover row would decode instead of new sample
                 data.pending_feedback_queue.clear()
-            embeds = self.model._prepare_multi_modal_inputs(
+            embeds = self.model.prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
             pieces.append(embeds)
@@ -125,7 +125,7 @@ class MossTTSModelRunner(ModelRunner):
             dtype=self.model.dtype,
         )
 
-    def _write_decode_input_embedding(
+    def write_decode_input_embedding(
         self,
         forward_batch: Any,
         requests: list,
@@ -165,7 +165,7 @@ class MossTTSModelRunner(ModelRunner):
         )
         forward_batch.input_ids[:batch_size].copy_(row_ids)
 
-    def _collect_moss_step(
+    def collect_moss_step(
         self,
         result: Any,
         forward_batch: Any,
@@ -174,7 +174,7 @@ class MossTTSModelRunner(ModelRunner):
     ) -> None:
         datas = [sched_req.data for sched_req in requests]
         is_audio = bool(datas) and all(data.is_audio for data in datas)
-        channel_logits = self._channel_logits_from_result(
+        channel_logits = self.channel_logits_from_result(
             result,
             forward_batch,
             is_audio=is_audio,
@@ -185,10 +185,10 @@ class MossTTSModelRunner(ModelRunner):
         if not requests:
             return
 
-        if self._can_use_sampling_cuda_graph(datas, is_audio=is_audio):
-            rows = self._sample_rows_graphed(channel_logits, datas)
+        if self.can_use_sampling_cuda_graph(datas, is_audio=is_audio):
+            rows = self.sample_rows_graphed(channel_logits, datas)
         else:
-            rows = self._sample_rows(
+            rows = self.sample_rows(
                 channel_logits,
                 datas,
                 n_vq=n_vq,
@@ -197,13 +197,13 @@ class MossTTSModelRunner(ModelRunner):
 
         next_token_ids = rows[:, 0].contiguous()
         result.next_token_ids = next_token_ids
-        embeds = self.model._prepare_multi_modal_inputs(
+        embeds = self.model.prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
         )
         self._pending_rows = rows
         self._pending_embeds = embeds.detach()
 
-    def _can_use_sampling_cuda_graph(
+    def can_use_sampling_cuda_graph(
         self,
         datas: list,
         *,
@@ -220,13 +220,13 @@ class MossTTSModelRunner(ModelRunner):
             return False
         return all(
             is_compatible(data) for data in datas
-        ) and self._sampling_graph_available(len(datas))
+        ) and self.sampling_graph_available(len(datas))
 
-    def _sampling_graph_available(self, batch_size: int) -> bool:
+    def sampling_graph_available(self, batch_size: int) -> bool:
         available = getattr(self.model, "sampling_graph_available", None)
         return bool(callable(available) and available(batch_size))
 
-    def _sample_rows_graphed(
+    def sample_rows_graphed(
         self,
         channel_logits: list[torch.Tensor],
         datas: list,
@@ -235,7 +235,7 @@ class MossTTSModelRunner(ModelRunner):
         batch_size = len(datas)
         n_vq = len(channel_logits) - 1
         delay_state = torch.stack(
-            [self._delay_state_tensor(data, device) for data in datas], dim=0
+            [self.delay_state_tensor(data, device) for data in datas], dim=0
         )
         seeds = torch.tensor(
             [int(data.sampling_seed) for data in datas],
@@ -272,7 +272,7 @@ class MossTTSModelRunner(ModelRunner):
             data.delay_state = next_state[index]
         return rows
 
-    def _channel_logits_from_result(
+    def channel_logits_from_result(
         self,
         result: Any,
         forward_batch: Any,
@@ -304,7 +304,7 @@ class MossTTSModelRunner(ModelRunner):
         raise RuntimeError("MOSS-TTS model output did not include channel logits")
 
     @staticmethod
-    def _delay_state_tensor(data: Any, device: torch.device) -> torch.Tensor:
+    def delay_state_tensor(data: Any, device: torch.device) -> torch.Tensor:
         state = getattr(data, "delay_state", None)
         if isinstance(state, torch.Tensor) and tuple(state.shape) == (3,):
             state = state.to(device=device, dtype=torch.long)
@@ -326,7 +326,7 @@ class MossTTSModelRunner(ModelRunner):
         data.delay_state = state
         return state
 
-    def _sample_rows(
+    def sample_rows(
         self,
         channel_logits: list[torch.Tensor],
         datas: list,
@@ -352,7 +352,7 @@ class MossTTSModelRunner(ModelRunner):
         audio_pad_code = int(cfg.audio_pad_code)
 
         delay_state = torch.stack(
-            [self._delay_state_tensor(d, device) for d in datas], dim=0
+            [self.delay_state_tensor(d, device) for d in datas], dim=0
         )
         audio_lengths = delay_state[:, 0]
         delayed = delay_state[:, 1]
@@ -450,7 +450,7 @@ class MossTTSModelRunner(ModelRunner):
 
         if bool(sampling_text_mask.any()):
             idx = sampling_text_mask.nonzero(as_tuple=False).squeeze(1)
-            next_text[idx] = self._sample_tokens(
+            next_text[idx] = self.sample_tokens(
                 text_logits[idx],
                 temperature=text_temp[idx],
                 top_p=text_top_p[idx],
@@ -479,14 +479,14 @@ class MossTTSModelRunner(ModelRunner):
             if 0 <= audio_pad_code < audio_logits.shape[-1]:
                 audio_logits[..., audio_pad_code:] = _NEG_INF
             if bool((audio_rep != 1.0).any()):
-                self._apply_audio_repetition_penalty(audio_logits, datas, n_vq=n_vq)
+                self.apply_audio_repetition_penalty(audio_logits, datas, n_vq=n_vq)
             audio_temp_full = audio_temp.unsqueeze(1).expand(batch_size, n_vq)
             audio_top_p_full = audio_top_p.unsqueeze(1).expand(batch_size, n_vq)
             audio_top_k_full = audio_top_k.unsqueeze(1).expand(batch_size, n_vq)
             mask_idx = sampling_audio_mask.nonzero(as_tuple=False)
             audio_rows = mask_idx[:, 0]
             audio_chans = mask_idx[:, 1]
-            next_audio[sampling_audio_mask] = self._sample_tokens(
+            next_audio[sampling_audio_mask] = self.sample_tokens(
                 audio_logits[sampling_audio_mask],
                 temperature=audio_temp_full[sampling_audio_mask],
                 top_p=audio_top_p_full[sampling_audio_mask],
@@ -524,7 +524,7 @@ class MossTTSModelRunner(ModelRunner):
         return rows
 
     @staticmethod
-    def _as_row_tensor(
+    def as_row_tensor(
         value: torch.Tensor | float | int,
         num_rows: int,
         dtype: torch.dtype,
@@ -536,7 +536,7 @@ class MossTTSModelRunner(ModelRunner):
         return torch.full((num_rows,), value, dtype=dtype, device=device)
 
     @staticmethod
-    def _sample_tokens(
+    def sample_tokens(
         logits: torch.Tensor,
         *,
         temperature: torch.Tensor | float,
@@ -568,43 +568,43 @@ class MossTTSModelRunner(ModelRunner):
                     "MOSS-TTS compact candidate sampling requires exactly two tokens"
                 )
 
-        temp = MossTTSModelRunner._as_row_tensor(
+        temp = MossTTSModelRunner.as_row_tensor(
             temperature, num_rows, torch.float32, device
         )
-        top_p_row = MossTTSModelRunner._as_row_tensor(
+        top_p_row = MossTTSModelRunner.as_row_tensor(
             top_p, num_rows, torch.float32, device
         )
-        top_k_row = MossTTSModelRunner._as_row_tensor(
+        top_k_row = MossTTSModelRunner.as_row_tensor(
             top_k, num_rows, torch.long, device
         )
         do_sample = temp > 0
         safe_temp = torch.where(do_sample, temp, torch.ones_like(temp))
         scores = logits / safe_temp.unsqueeze(1)
         if candidate_token_ids is not None:
-            scores = MossTTSModelRunner._apply_two_token_top_k(scores, top_k_row)
-            scores = MossTTSModelRunner._apply_top_p(
+            scores = MossTTSModelRunner.apply_two_token_top_k(scores, top_k_row)
+            scores = MossTTSModelRunner.apply_top_p(
                 scores,
                 top_p_row,
                 skip_inactive_check=True,
             )
         else:
-            scores = MossTTSModelRunner._apply_top_k(scores, top_k_row)
-            scores = MossTTSModelRunner._apply_top_p(scores, top_p_row)
+            scores = MossTTSModelRunner.apply_top_k(scores, top_k_row)
+            scores = MossTTSModelRunner.apply_top_p(scores, top_p_row)
 
         probs = torch.softmax(scores, dim=-1)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
 
-        seeds_row = MossTTSModelRunner._as_row_tensor(
+        seeds_row = MossTTSModelRunner.as_row_tensor(
             seeds, num_rows, torch.long, device
         )
-        positions_row = MossTTSModelRunner._as_row_tensor(
+        positions_row = MossTTSModelRunner.as_row_tensor(
             positions, num_rows, torch.long, device
         )
         fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
         sampled = torch.argmax(logits, dim=-1)
         if candidate_token_ids is not None:
             if device.type == "cpu":
-                candidate_sampled = MossTTSModelRunner._multinomial_with_seed_cpu(
+                candidate_sampled = MossTTSModelRunner.multinomial_with_seed_cpu(
                     probs,
                     seeds_row,
                     positions_row,
@@ -622,7 +622,7 @@ class MossTTSModelRunner(ModelRunner):
         sample_mask = ~fallback
         if bool(sample_mask.any()):
             if device.type == "cpu":
-                sampled[sample_mask] = MossTTSModelRunner._multinomial_with_seed_cpu(
+                sampled[sample_mask] = MossTTSModelRunner.multinomial_with_seed_cpu(
                     probs[sample_mask],
                     seeds_row[sample_mask],
                     positions_row[sample_mask],
@@ -639,7 +639,7 @@ class MossTTSModelRunner(ModelRunner):
         return sampled.to(torch.long)
 
     @staticmethod
-    def _apply_two_token_top_k(
+    def apply_two_token_top_k(
         scores: torch.Tensor,
         top_k_row: torch.Tensor,
     ) -> torch.Tensor:
@@ -651,7 +651,7 @@ class MossTTSModelRunner(ModelRunner):
         )
 
     @staticmethod
-    def _multinomial_with_seed_cpu(
+    def multinomial_with_seed_cpu(
         probs: torch.Tensor,
         seeds: torch.Tensor,
         positions: torch.Tensor,
@@ -678,7 +678,7 @@ class MossTTSModelRunner(ModelRunner):
         return sampled
 
     @staticmethod
-    def _apply_top_k(scores: torch.Tensor, top_k_row: torch.Tensor) -> torch.Tensor:
+    def apply_top_k(scores: torch.Tensor, top_k_row: torch.Tensor) -> torch.Tensor:
         """Per-row top-k mask; rows with k <= 0 or k >= vocab are left untouched."""
         vocab = scores.shape[-1]
         active = (top_k_row > 0) & (top_k_row < vocab)
@@ -696,7 +696,7 @@ class MossTTSModelRunner(ModelRunner):
         return scores.masked_fill(scores < threshold, _NEG_INF)
 
     @staticmethod
-    def _apply_top_p(
+    def apply_top_p(
         scores: torch.Tensor,
         top_p_row: torch.Tensor,
         *,
@@ -728,7 +728,7 @@ class MossTTSModelRunner(ModelRunner):
         return scores.masked_fill(remove_scattered, _NEG_INF)
 
     @staticmethod
-    def _apply_audio_repetition_penalty(
+    def apply_audio_repetition_penalty(
         audio_logits: torch.Tensor,
         datas: list,
         *,
