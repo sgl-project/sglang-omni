@@ -18,7 +18,8 @@ final class AppModel: ObservableObject {
     @Published var liveText = ""
     @Published var liveStatus = ""
     @Published var notice = ""
-    @Published var error = ""
+    @Published private(set) var error = ""
+    @Published private(set) var lastErrorCode: String?
     @Published var lastApp = ""
     // ponytail: keys stay in memory for this session; use Keychain if persistence is needed.
     @Published var textAPIKey = ""
@@ -84,6 +85,38 @@ final class AppModel: ObservableObject {
     }
 
     var isBusy: Bool { phase != .idle }
+
+    var canApplyHuggingFaceMirror: Bool {
+        guard phase == .idle, lastErrorCode == "model.download" else { return false }
+        return !Preferences.isRecommendedHuggingFaceMirror(store.preferences.huggingFaceEndpoint)
+    }
+
+    func dismissError() {
+        error = ""
+        lastErrorCode = nil
+    }
+
+    func showError(_ message: String) {
+        error = message
+        lastErrorCode = nil
+    }
+
+    func applyHuggingFaceMirrorAndRetry() {
+        guard canApplyHuggingFaceMirror else { return }
+        store.preferences.huggingFaceEndpoint = Preferences.recommendedHuggingFaceMirror
+        prepareModels()
+    }
+
+    func recordError(_ err: Error) {
+        if let failure = err as? WorkerFailure {
+            error = failure.message
+            lastErrorCode = failure.code
+        } else {
+            error = err.localizedDescription
+            lastErrorCode = nil
+        }
+    }
+
     var shortcutLabel: String {
         let p = store.preferences
         var label = ""
@@ -141,14 +174,14 @@ final class AppModel: ObservableObject {
     }
 
     private func start() {
-        error = ""; notice = ""; target = nil; liveText = ""; liveStatus = L("status.loadingModel")
+        dismissError(); notice = ""; target = nil; liveText = ""; liveStatus = L("status.loadingModel")
         sessionPreferences = store.preferences
         sessionAPIKey = textAPIKey
         do {
             let captured = try TextInsertion.capture()
             if captured.bundleID != Bundle.main.bundleIdentifier { target = captured }
         } catch TextInsertionError.secureField {
-            error = L("sys.secureField")
+            showError(L("sys.secureField"))
             showMainWindow?()
             return
         } catch {
@@ -159,20 +192,20 @@ final class AppModel: ObservableObject {
                                                   "accessibility": String(accessibilityAllowed)])
         }
         if mode == .edit && (target?.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
-            error = L("error.editNeedsSelection")
+            showError(L("error.editNeedsSelection"))
             showMainWindow?()
             return
         }
         lastApp = target?.applicationName ?? "OmniTyper"
         do { _ = try payload(audio: nil) }
-        catch { self.error = error.localizedDescription; showMainWindow?(); return }
+        catch { recordError(error); showMainWindow?(); return }
+        let prepare = preparePayload(sessionPreferences)
         phase = .starting
         showVoicePanel?()
         let token = UUID(); generation = token
         task = Task { [self] in
             do {
-                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
-                                                        python: sessionPreferences.pythonExecutable)
+                let response = try await worker.request(prepare, python: sessionPreferences.pythonExecutable)
                 guard generation == token, !Task.isCancelled else { return }
                 do {
                     let stream = try ASRStream(url: response["realtime_url"] as? String ?? "", onPartial: { [weak self] text in
@@ -198,7 +231,7 @@ final class AppModel: ObservableObject {
             } catch {
                 guard generation == token else { return }
                 speechStream?.cancel(); speechStream = nil
-                target = nil; phase = .idle; hideVoicePanel?(); self.error = error.localizedDescription; refreshPermissions(); showMainWindow?()
+                target = nil; phase = .idle; hideVoicePanel?(); recordError(error); refreshPermissions(); showMainWindow?()
             }
         }
     }
@@ -212,8 +245,18 @@ final class AppModel: ObservableObject {
             run(audio: audio, duration: duration, allowInsertion: true)
         } catch {
             speechStream?.cancel(); speechStream = nil
-            target = nil; phase = .idle; self.error = error.localizedDescription; hideVoicePanel?(); showMainWindow?()
+            target = nil; phase = .idle; recordError(error); hideVoicePanel?(); showMainWindow?()
         }
+    }
+
+    private func preparePayload(_ preferences: Preferences) -> [String: Any] {
+        var request: [String: Any] = ["op": "prepare", "asr_model": preferences.asrModel]
+        // Note (Codex): A mistyped mirror blocks the explicit download action, not dictation.
+        if let endpoint = try? Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint),
+           !endpoint.isEmpty {
+            request["hf_endpoint"] = endpoint
+        }
+        return request
     }
 
     private func payload(audio: URL?, text: String? = nil) throws -> [String: Any] {
@@ -236,6 +279,10 @@ final class AppModel: ObservableObject {
             "dictionary": store.dictionary.map { ["spoken": $0.spoken, "written": $0.written] },
             "selected_text": selectedText, "app_name": lastApp
         ]
+        if let endpoint = try? Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint),
+           !endpoint.isEmpty {
+            request["hf_endpoint"] = endpoint
+        }
         if mode != .dictate || (rule?.style ?? preferences.style) != "verbatim" {
             request.merge(try preferences.textSettings.payload(apiKey: sessionAPIKey)) { _, new in new }
         }
@@ -245,7 +292,7 @@ final class AppModel: ObservableObject {
     }
 
     private func run(audio: URL, duration: Double, allowInsertion: Bool) {
-        phase = .processing; error = ""; notice = ""
+        phase = .processing; dismissError(); notice = ""
         let token = UUID(); generation = token
         let request = Result { try payload(audio: audio) }
         let requestMode = mode
@@ -286,7 +333,7 @@ final class AppModel: ObservableObject {
                                              duration: duration, warning: warning.isEmpty ? nil : warning)
                     if let retentionError = store.add(entry, recording: audio) {
                         retryRecording = recording
-                        self.error = retentionError
+                        self.showError(retentionError)
                     }
                     notice = warning
                     if allowInsertion, preferences.autoPaste, requestMode != .ask, let capturedTarget {
@@ -314,7 +361,7 @@ final class AppModel: ObservableObject {
                 speechStream?.cancel(); speechStream = nil
                 retryRecording = recording
                 target = nil; phase = .idle; hideVoicePanel?()
-                self.error = error.localizedDescription
+                recordError(error)
                 Diagnostics.record("dictation.failed", ["reason": Diagnostics.code(of: error)])
                 if let raw = (error as? WorkerFailure)?.rawText, !raw.isEmpty {
                     rawText = raw; resultText = raw
@@ -338,7 +385,7 @@ final class AppModel: ObservableObject {
     func retry(_ entry: HistoryEntry) {
         guard phase == .idle, let audio = store.audioURL(for: entry) else { return }
         if entry.mode == .edit || entry.mode == .ask {
-            error = L("error.retryNeedsRecording")
+            showError(L("error.retryNeedsRecording"))
             return
         }
         do {
@@ -348,22 +395,25 @@ final class AppModel: ObservableObject {
             target = nil; mode = entry.mode; lastApp = entry.appName; sessionPreferences = store.preferences
             sessionAPIKey = textAPIKey
             run(audio: copy, duration: entry.duration, allowInsertion: false)
-        } catch { self.error = error.localizedDescription }
+        } catch { recordError(error) }
     }
 
     func prepareModels() {
         guard phase == .idle else { return }
-        phase = .preparing; error = ""; notice = ""
         let preferences = store.preferences
+        do { _ = try Preferences.validatedHuggingFaceEndpoint(preferences.huggingFaceEndpoint) }
+        catch { recordError(error); return }
+        let request = preparePayload(preferences)
+        phase = .preparing; dismissError(); notice = ""
         let token = UUID(); generation = token
         task = Task {
             do {
-                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
+                _ = try await worker.request(request, python: preferences.pythonExecutable)
                 guard generation == token else { return }
                 notice = L("notice.modelReady")
             } catch {
                 guard generation == token else { return }
-                self.error = error.localizedDescription
+                recordError(error)
             }
             phase = .idle
         }
@@ -371,7 +421,7 @@ final class AppModel: ObservableObject {
 
     func loadTextModels() {
         guard phase == .idle else { return }
-        error = ""; notice = ""
+        dismissError(); notice = ""
         do {
             var request = try store.preferences.textSettings.payload(apiKey: textAPIKey, requireModel: false)
             request["op"] = "models"
@@ -386,11 +436,11 @@ final class AppModel: ObservableObject {
                     notice = textModels.isEmpty ? L("notice.modelsEmpty") : L("notice.modelsListed")
                 } catch {
                     guard generation == token else { return }
-                    self.error = error.localizedDescription
+                    recordError(error)
                 }
                 phase = .idle
             }
-        } catch { self.error = error.localizedDescription }
+        } catch { recordError(error) }
     }
 
     func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
