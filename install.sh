@@ -10,7 +10,7 @@ IFS=$'\n\t'
 readonly DEFAULT_OMNI_REPO="https://github.com/sgl-project/sglang-omni.git"
 readonly DEFAULT_OMNI_REF="main"
 readonly DEFAULT_SGLANG_REPO="https://github.com/sgl-project/sglang.git"
-readonly DEFAULT_SGLANG_REF="v0.5.18"
+readonly DEFAULT_SGLANG_REF="v0.5.19"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
@@ -77,7 +77,7 @@ Environment:
   SGLANG_OMNI_VENV         Virtual environment path.
   SGLANG_OMNI_CACHE        Cache root for source checkouts.
   SGLANG_SOURCE_DIR        SGLang source checkout path.
-  SGLANG_VERSION            SGLang git tag/branch (default: v0.5.18).
+  SGLANG_VERSION            SGLang git tag/branch (default: v0.5.19).
   SGLANG_REPO               SGLang repository URL.
   SGLANG_OMNI_REPO          sglang-omni repository URL for hosted use.
   SGLANG_OMNI_REF           sglang-omni branch/tag (default: main).
@@ -209,6 +209,35 @@ fi
   || die "the virtual environment must use Python 3.12"
 UV_PIP_INSTALL=(uv pip install --python "$PYTHON_BIN")
 
+fetch_checkout_ref() {
+  local destination="$1"
+  local ref="$2"
+  local fetch_spec="$ref"
+  local tag_ref remote_tag
+
+  case "$ref" in
+    refs/tags/*)
+      fetch_spec="$ref:$ref"
+      ;;
+    refs/*)
+      ;;
+    *)
+      # Full object IDs must keep their meaning even if a tag has the same name.
+      if [[ ! "$ref" =~ ^[[:xdigit:]]{40}$ && ! "$ref" =~ ^[[:xdigit:]]{64}$ ]]; then
+        tag_ref="refs/tags/$ref"
+        # ls-remote also matches ref-name suffixes; require the exact tag ref.
+        remote_tag="$(git -C "$destination" ls-remote --refs origin "$tag_ref" \
+          | awk -v ref="$tag_ref" '$2 == ref { print $2 }')"
+        if [[ -n "$remote_tag" ]]; then
+          fetch_spec="$tag_ref:$tag_ref"
+        fi
+      fi
+      ;;
+  esac
+  # FETCH_HEAD alone does not preserve the release tag used by setuptools-scm.
+  git -C "$destination" fetch --depth 1 origin "$fetch_spec"
+}
+
 clone_or_reuse() {
   local destination="$1"
   local ref="$2"
@@ -226,7 +255,7 @@ clone_or_reuse() {
     [[ -z "$(git -C "$destination" status --porcelain)" ]] \
       || die "$label checkout has local changes; clean it or choose another path: $destination"
     log "Refreshing $label $ref: $destination"
-    git -C "$destination" fetch --depth 1 origin "$ref"
+    fetch_checkout_ref "$destination" "$ref"
     current_commit="$(git -C "$destination" rev-parse HEAD)"
     target_commit="$(git -C "$destination" rev-parse 'FETCH_HEAD^{commit}')"
     if [[ "$current_commit" != "$target_commit" ]]; then
@@ -240,7 +269,7 @@ clone_or_reuse() {
   CHECKOUT_TMP_DIR="$(mktemp -d "${destination}.tmp.XXXXXX")"
   git -C "$CHECKOUT_TMP_DIR" init --quiet
   git -C "$CHECKOUT_TMP_DIR" remote add origin "$repository"
-  git -C "$CHECKOUT_TMP_DIR" fetch --depth 1 origin "$ref"
+  fetch_checkout_ref "$CHECKOUT_TMP_DIR" "$ref"
   git -C "$CHECKOUT_TMP_DIR" checkout --detach --quiet FETCH_HEAD
   [[ ! -e "$destination" ]] || die "$label destination appeared during installation: $destination"
   mv "$CHECKOUT_TMP_DIR" "$destination"

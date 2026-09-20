@@ -19,8 +19,8 @@ MODEL_PATH="$(
 
 ### Apple Silicon (MLX)
 
-The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang's MLX
-runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
 ```bash
 brew install ffmpeg@7
@@ -28,7 +28,7 @@ export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DY
 ```
 
 Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
 supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
 directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
 
@@ -43,7 +43,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.18 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.19 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -145,6 +145,19 @@ This qualified profile keeps the model in BF16, limits the stage to 16 running
 requests, and sets `mem_fraction_static` to `0.65`. Its bounds are specific to
 the validated RTX 4090 layout; use the default configuration or a separately
 qualified profile on other GPU architectures.
+
+For a single 32 GB RTX 5090, use:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_rtx5090.yaml \
+  --port 8000
+```
+
+This profile uses BF16, allows up to 16 running requests, and sets
+`mem_fraction_static=0.65`. See the
+[RTX 5090 benchmark report](https://github.com/sgl-project/sglang-omni/issues/1212)
+for results measured on an earlier release.
 
 For example, force synchronous decode when comparing modes:
 
@@ -333,7 +346,26 @@ YAML keys:
 |---|---|---|
 | `--audio_chunking.max_audio_clip_s` | `30` | Longest clip we send to the engine in one request, and therefore the chunk length. It sits well below the model's native 1,200s on purpose: shorter chunks batch better, and the output-token budget scales with clip length on its own. Capped at the native clip limit. |
 | `--audio_chunking.max_concurrent_chunks` | `8` | How many chunks of one request run in the engine at once. A per-request cap so one long upload can't crowd out everyone else's requests. |
-| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on the whole upload; you get HTTP 400 above it. This is a memory guard: we keep the decoded waveform in memory while its chunks run. |
+| `--audio_chunking.max_total_audio_s` | `3600` | Upper limit on one upload; you get HTTP 400 above it. It bounds a single decoded waveform, not the total across uploads; that is the next knob's job. |
+| `--audio_chunking.max_concurrent_long_audio_requests` | `max_running_requests // (2 × max_concurrent_chunks)`, at least 1; `4` with the stock defaults | How many long uploads the server admits at once. A long upload past the cap gets HTTP 503 instead of queueing; short uploads are never gated. The slot is taken before the upload is decoded and returned when its chunks are done. |
+
+The last knob is the aggregate guard. Each admitted upload holds its decoded
+waveform (float32 at 16 kHz, about 230 MB for an hour) and drives up to
+`max_concurrent_chunks` engine requests, so:
+
+- decoded waveforms held at once are at most
+  `max_concurrent_long_audio_requests × max_total_audio_s × 16000 × 4` bytes
+  (decoding itself has transient peaks above that);
+- engine slots long audio can take together are at most
+  `max_concurrent_long_audio_requests × max_concurrent_chunks`.
+
+The default keeps that product at half of `--asr.engine.max_running_requests`
+so short requests always have slots left. Setting the knob explicitly to a
+value whose product reaches `max_running_requests` logs a warning at startup:
+it is not an error, since extra chunks only queue in the engine, but short
+requests then wait behind long audio whenever it is saturated. Raising
+`max_running_requests` instead also resizes CUDA graph capture, so treat it
+as the GPU capacity knob and this one as the long-audio share of it.
 
 The model properties are ClassVars on `Qwen3ASRPipelineConfig`; no
 configuration path reaches them:

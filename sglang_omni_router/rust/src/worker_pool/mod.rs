@@ -5,7 +5,7 @@ mod resolver;
 mod selection;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::{Notify, Semaphore};
 
@@ -75,6 +75,8 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) probe: ProbeSnapshot,
     pub(crate) routable: bool,
     pub(crate) active_requests: usize,
+    pub(crate) dispatches: [u64; CAPACITY_CLASS_COUNT],
+    pub(crate) voice_control_dispatches: u64,
     pub(crate) session_capacity: Vec<SessionCapacitySnapshot>,
 }
 
@@ -93,6 +95,8 @@ pub(super) struct WorkerRecord {
     trust_domain: TrustDomain,
     profiles: Vec<ServiceProfile>,
     active_requests: AtomicUsize,
+    dispatches: [AtomicU64; CAPACITY_CLASS_COUNT],
+    voice_control_dispatches: AtomicU64,
     session_capacity: [Option<SessionCapacity>; 2],
     health: AtomicHealth,
     probe: ProbeState,
@@ -136,6 +140,19 @@ impl WorkerRecord {
                     current.checked_sub(weight)
                 });
         debug_assert!(previous.is_ok(), "worker load cannot underflow");
+    }
+
+    fn record_dispatch(&self, class: CapacityClass) {
+        self.dispatches[class.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_voice_control_dispatch(&self) {
+        self.voice_control_dispatches
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn dispatches(&self) -> [u64; CAPACITY_CLASS_COUNT] {
+        std::array::from_fn(|index| self.dispatches[index].load(Ordering::Relaxed))
     }
 
     fn session_capacity(&self, class: CapacityClass) -> Option<&SessionCapacity> {
@@ -231,6 +248,8 @@ impl WorkerPool {
                 trust_domain: TrustDomain::new(worker.trust_domain.clone()),
                 profiles: worker.service_profiles.clone(),
                 active_requests: AtomicUsize::new(0),
+                dispatches: std::array::from_fn(|_| AtomicU64::new(0)),
+                voice_control_dispatches: AtomicU64::new(0),
                 session_capacity: build_session_capacity(&worker.capacity)?,
                 health: AtomicHealth::unknown(),
                 probe: ProbeState::pending(),
@@ -634,6 +653,10 @@ impl WorkerPool {
                     probe: record.probe.snapshot(),
                     routable: health == WorkerHealth::Healthy,
                     active_requests: record.load(),
+                    dispatches: record.dispatches(),
+                    voice_control_dispatches: record
+                        .voice_control_dispatches
+                        .load(Ordering::Relaxed),
                     session_capacity: SESSION_CAPACITY_CLASSES
                         .into_iter()
                         .filter_map(|class| {
@@ -1029,6 +1052,8 @@ mod tests {
             trust_domain: TrustDomain::new(trust.to_owned()),
             profiles: vec![service_profile],
             active_requests: AtomicUsize::new(0),
+            dispatches: std::array::from_fn(|_| AtomicU64::new(0)),
+            voice_control_dispatches: AtomicU64::new(0),
             session_capacity: [None, None],
             health,
             probe: ProbeState::pending(),
@@ -1740,6 +1765,10 @@ mod tests {
         assert_eq!(record.load(), 1);
         let snapshot = pool.operations_snapshot();
         assert_eq!(snapshot.workers[0].active_requests, 1);
+        assert_eq!(
+            snapshot.workers[0].dispatches[CapacityClass::RealtimeWebsocket.index()],
+            1
+        );
         assert_eq!(snapshot.workers[0].session_capacity.len(), 1);
         assert_eq!(
             snapshot.workers[0].session_capacity[0].class,
@@ -1855,6 +1884,8 @@ mod tests {
         assert_eq!(initial.workers[0].health, WorkerHealth::Healthy);
         assert!(initial.workers[0].routable);
         assert_eq!(initial.workers[0].active_requests, 0);
+        assert_eq!(initial.workers[0].dispatches, [0; CAPACITY_CLASS_COUNT]);
+        assert_eq!(initial.workers[0].voice_control_dispatches, 0);
         assert!(initial.workers[0].session_capacity.is_empty());
 
         let lease = pool
@@ -1868,12 +1899,20 @@ mod tests {
         assert_eq!(occupied.admission[0].in_flight, 1);
         assert_eq!(occupied.admission[1].in_flight, 1);
         assert_eq!(occupied.workers[0].active_requests, 1);
+        assert_eq!(
+            occupied.workers[0].dispatches[CapacityClass::GenerationHttp.index()],
+            1
+        );
 
         drop(lease);
         let released = pool.operations_snapshot();
         assert_eq!(released.admission[0].in_flight, 0);
         assert_eq!(released.admission[1].in_flight, 0);
         assert_eq!(released.workers[0].active_requests, 0);
+        assert_eq!(
+            released.workers[0].dispatches[CapacityClass::GenerationHttp.index()],
+            1
+        );
 
         pool.records[0].health.store(WorkerHealth::Unhealthy);
         pool.drain();
@@ -1934,6 +1973,8 @@ mod tests {
             trust_domain: TrustDomain::new(String::from("local")),
             profiles: vec![profile],
             active_requests: AtomicUsize::new(0),
+            dispatches: std::array::from_fn(|_| AtomicU64::new(0)),
+            voice_control_dispatches: AtomicU64::new(0),
             session_capacity: [None, None],
             health,
             probe: ProbeState::pending(),
@@ -2051,6 +2092,8 @@ mod tests {
                 },
             ],
             active_requests: AtomicUsize::new(0),
+            dispatches: std::array::from_fn(|_| AtomicU64::new(0)),
+            voice_control_dispatches: AtomicU64::new(0),
             session_capacity: [
                 Some(SessionCapacity {
                     limit: 1,
@@ -2239,6 +2282,10 @@ mod tests {
             assert_eq!(owner.load(), 1);
             drop(control);
             assert_eq!(owner.load(), 0);
+            assert_eq!(
+                pool.operations_snapshot().workers[0].voice_control_dispatches,
+                1
+            );
 
             owner.health.store(WorkerHealth::Unhealthy);
             assert!(!pool.voice_owner_ready());
@@ -2449,6 +2496,7 @@ mod tests {
             )
             .expect("batch dispatch");
         assert_eq!(record.load(), 3);
+        assert_eq!(record.dispatches()[CapacityClass::SpeechBatch.index()], 1);
         drop(lease);
         assert_eq!(record.load(), 0);
         let oversized = RouteRequirement::new(
@@ -2470,6 +2518,7 @@ mod tests {
             )
             .expect("five-item batch dispatch");
         assert_eq!(record.load(), 5);
+        assert_eq!(record.dispatches()[CapacityClass::SpeechBatch.index()], 2);
         drop(lease);
         assert_eq!(record.load(), 0);
     }

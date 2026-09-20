@@ -20,7 +20,6 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
     monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: True)
-    monkeypatch.setattr("sglang.srt.utils.get_device", lambda device_id=None: "cpu")
 
     build_kwargs: dict[str, Any] = {}
     events: list[str] = []
@@ -100,7 +99,7 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
             }
 
         def setup_model(self, **kwargs: Any) -> None:
-            build_kwargs["_device"] = kwargs["device"]
+            build_kwargs["device"] = kwargs["device"]
 
         def get_model_buffer_bs(self, model: Any) -> int | None:
             # Must cover max_running_requests above or the policy check rejects it.
@@ -183,8 +182,11 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
 
     monkeypatch.setattr("sglang.srt.runtime_context.get_context", lambda: FakeContext())
     monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule", lambda: SimpleNamespace(page_size=1)
+    )
+    monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda server_args, gpu_id: "CPU test runtime",
     )
     monkeypatch.setattr(model_worker_mod, "ModelWorker", lambda **kwargs: FakeWorker())
@@ -193,7 +195,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
 
     want_cuda_graph, infrastructure = (
         bootstrap.create_sglang_infrastructure_defer_cuda_graph(
-            SimpleNamespace(disable_cuda_graph=True, page_size=1),
+            SimpleNamespace(disable_cuda_graph=True),
             gpu_id=0,
         )
     )
@@ -213,5 +215,5 @@ def test_a_cpu_stage_drops_its_placement_index(monkeypatch):
     """
     build_kwargs = _build_on(monkeypatch, device="cpu")
 
-    assert build_kwargs["_device"] == "cpu"
+    assert build_kwargs["device"] == "cpu"
     assert build_kwargs["_gpu_id"] == 0

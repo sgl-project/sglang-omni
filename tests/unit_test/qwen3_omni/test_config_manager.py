@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -286,17 +287,22 @@ def test_qwen3_omni_gfx950_bf16_config_uses_colocated_budgets() -> None:
 @pytest.mark.parametrize(
     ("is_rocm", "expected_env"),
     [
-        (True, {"SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1"}),
-        (False, {}),
+        (
+            True,
+            {
+                "SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0",
+                "SGLANG_DISABLE_AITER_GREEDY_SAMPLE": "1",
+            },
+        ),
+        (False, {"SGLANG_FLASHINFER_MOE_FUSED_FINALIZE": "0"}),
     ],
 )
-def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
+def test_qwen3_omni_talker_stage_env_defaults(
     monkeypatch: pytest.MonkeyPatch,
     is_rocm: bool,
     expected_env: dict[str, str],
 ) -> None:
-    """aiter's greedy_sample is wrong below 16384 vocab entries; the Talker
-    codec head has 3072, so the ROCm Talker process falls back to torch.argmax."""
+    """Talker disables fused atomic MoE finalize; ROCm also disables aiter greedy."""
     monkeypatch.setattr(qwen3_omni_config.current_platform, "is_rocm", lambda: is_rocm)
 
     for config_cls in (
@@ -340,3 +346,35 @@ def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
     assert plan.stages["thinker"].gpu_ids == tuple(range(8))
     assert plan.stages["talker_ar"].gpu_ids == (6,)
     assert plan.stages["code2wav"].gpu_ids == (7,)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_talker_start_topology_reaches_bootstrap(monkeypatch, enabled):
+    from sglang.srt import runtime_context
+
+    from sglang_omni.models.qwen3_omni import bootstrap, stages
+
+    manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
+    config = manager.merge_config(
+        {
+            "talker_ar.factory.enable_talker_start_topology": enabled,
+            "talker_ar.factory.enable_partial_start": True,
+            "talker_ar.engine.disable_cuda_graph": True,
+        }
+    )
+    args = resolve_stage_factory_args(_stage(config, "talker_ar"), config)
+    monkeypatch.setattr(stages, "avail_gpu_mem", lambda *_: 0)
+    monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", lambda *_: 0)
+    monkeypatch.setattr(stages, "validate_generation_batch_policy", lambda **_: None)
+    monkeypatch.setattr(
+        bootstrap, "create_talker_scheduler", lambda *_, **kwargs: kwargs
+    )
+    monkeypatch.setattr(
+        runtime_context,
+        "get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.5),
+    )
+    received = stages.create_talker_ar_executor_from_config(**args)
+    assert received["enable_talker_start_topology"] is enabled
+    assert received["enable_partial_start"] is True
+    assert received["partial_start_min_chunks"] == 5

@@ -140,9 +140,12 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
+    # note (Dayuxiaoshui): root logger level for the spawned process. The
+    # launcher passes its own root level so --log-level reaches every stage.
+    log_level: int = logging.INFO
 
 
-def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
+def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
     Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
@@ -163,7 +166,7 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 
 
 @contextmanager
-def _patched_spawn_env(
+def patched_spawn_env(
     spec: StageWorkerProcessSpec,
     extra_env: Mapping[str, str] | None = None,
 ):
@@ -179,7 +182,7 @@ def _patched_spawn_env(
             if key not in os.environ:
                 env_default_updates[key] = value
 
-    worker_process_env = _get_worker_process_env(spec)
+    worker_process_env = get_worker_process_env(spec)
     compat_env_defaults = get_gpu_compat_env_defaults(
         {
             **os.environ,
@@ -275,7 +278,7 @@ class StageGroup:
         for spec in self.process_specs:
             event = ctx.Event()
             startup_error_channel = ctx.Queue()
-            proc_name = _process_name(spec)
+            proc_name = process_name(spec)
             proc = ctx.Process(
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
@@ -288,11 +291,11 @@ class StageGroup:
                     if process_env_overrides is not None
                     else None
                 )
-                with _patched_spawn_env(spec, extra_env=extra_env):
+                with patched_spawn_env(spec, extra_env=extra_env):
                     self._process_start_attempts.add(spec.process_name)
                     proc.start()
             except Exception:
-                _close_queue(startup_error_channel)
+                close_queue(startup_error_channel)
                 raise
             self._processes.append(proc)
             self._ready_events.append(event)
@@ -363,14 +366,14 @@ class StageGroup:
 
     def close_control_channels(self) -> None:
         for q in self._startup_error_channels:
-            _close_queue(q)
+            close_queue(q)
         for stage_spec in self.specs:
             for q in (
                 stage_spec.follower_work_queues
                 + stage_spec.follower_abort_queues
                 + stage_spec.follower_admin_result_queues
             ):
-                _close_queue(q)
+                close_queue(q)
 
     async def shutdown(
         self,
@@ -406,21 +409,26 @@ def stage_process_main(
     startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    # note (Dayuxiaoshui): a spawned process starts with fresh logging, and
+    # importing sglang already installs a root handler at INFO, which turns
+    # basicConfig into a no-op. Set the level explicitly so the stage follows
+    # the launcher's --log-level.
+    logging.basicConfig(level=spec.log_level, stream=sys.stdout)
+    logging.getLogger().setLevel(spec.log_level)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
         for stage_spec in spec.stage_specs:
-            _prepare_accelerator_environment(stage_spec, log)
+            prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         prepare_weight_share_process_compat()
-        _run_process(spec, ready_event, log)
+        run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
+        destroy_torch_distributed_process_group(log)
+        reclaim_process_cuda_memory(
+            stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
@@ -434,9 +442,9 @@ def stage_process_main(
         with suppress(Exception):
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
+        destroy_torch_distributed_process_group(log)
+        reclaim_process_cuda_memory(
+            stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
@@ -445,7 +453,7 @@ def stage_process_main(
         sys.exit(1)
 
 
-def _run_process(
+def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
     log: logging.Logger,
@@ -492,7 +500,7 @@ def _run_process(
     try:
         for stage_spec in spec.stage_specs:
             stages.append(
-                _construct_stage(
+                construct_stage(
                     stage_spec,
                     log,
                     local_dispatcher=local_dispatcher,
@@ -501,7 +509,7 @@ def _run_process(
         local_dispatcher.register_many(stages)
         asyncio.run(_start_and_run())
     except BaseException:
-        _cleanup_constructed_stages(
+        cleanup_constructed_stages(
             stages,
             log,
             reason=f"stage process {spec.process_name} failure",
@@ -509,7 +517,7 @@ def _run_process(
         raise
 
 
-def _cleanup_constructed_stages(
+def cleanup_constructed_stages(
     stages: list[Stage],
     log: logging.Logger,
     *,
@@ -535,7 +543,7 @@ def _cleanup_constructed_stages(
             stage.scheduler = None
 
 
-def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
+def stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     return sorted(
         {
             int(stage_spec.gpu_id)
@@ -545,7 +553,7 @@ def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     )
 
 
-def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
+def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
     try:
         import torch.distributed as dist
 
@@ -560,7 +568,7 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         )
 
 
-def _reclaim_process_cuda_memory(
+def reclaim_process_cuda_memory(
     gpu_ids: Iterable[int],
     log: logging.Logger,
     *,
@@ -611,7 +619,7 @@ def _reclaim_process_cuda_memory(
         )
 
 
-def _construct_stage(
+def construct_stage(
     spec: StageLaunchConfig,
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
@@ -629,7 +637,7 @@ def _construct_stage(
         spec.tp_size,
     )
 
-    scheduler = _construct_scheduler(spec, gpu_id, log)
+    scheduler = construct_scheduler(spec, gpu_id, log)
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -807,7 +815,7 @@ def _construct_stage(
 _process_reserve_bytes: dict[int, int] = {}
 
 
-def _apply_total_reserve_cap(
+def apply_total_reserve_cap(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
@@ -845,7 +853,7 @@ def _apply_total_reserve_cap(
     )
 
 
-def _construct_scheduler(
+def construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
@@ -854,7 +862,7 @@ def _construct_scheduler(
 
     from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 
-    _apply_total_reserve_cap(spec, gpu_id, log)
+    apply_total_reserve_cap(spec, gpu_id, log)
     factory = import_string(spec.factory)
     factory_args = apply_typed_stage_kwargs(
         factory,
@@ -885,7 +893,7 @@ def _construct_scheduler(
         return _invoke()
 
 
-def _prepare_accelerator_environment(
+def prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
 ) -> None:
@@ -904,7 +912,7 @@ def _prepare_accelerator_environment(
             # identity; normalizing it would bind it to the local device.
             return
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
-        _normalize_spec_gpu_id_to_local_device(spec)
+        normalize_spec_gpu_id_to_local_device(spec)
         log.info(
             "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
             spec.stage_name,
@@ -930,7 +938,7 @@ def _prepare_accelerator_environment(
         )
         return
 
-    _normalize_spec_gpu_id_to_local_device(spec)
+    normalize_spec_gpu_id_to_local_device(spec)
     log.info(
         "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
         spec.stage_name,
@@ -939,7 +947,7 @@ def _prepare_accelerator_environment(
     )
 
 
-def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
+def normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     if spec.placement_gpu_id is None:
         spec.placement_gpu_id = spec.gpu_id
     spec.gpu_id = 0
@@ -952,7 +960,7 @@ def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
             kwargs["gpu_id"] = 0
 
 
-def _process_name(spec: StageWorkerProcessSpec) -> str:
+def process_name(spec: StageWorkerProcessSpec) -> str:
     if len(spec.stage_specs) > 1:
         return f"process-{spec.process_name}"
     stage_spec = spec.stage_specs[0]
@@ -963,7 +971,7 @@ def _process_name(spec: StageWorkerProcessSpec) -> str:
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
 
 
-def _close_queue(q: object) -> None:
+def close_queue(q: object) -> None:
     q.close()
     join_thread = getattr(q, "join_thread", None)
     if callable(join_thread):

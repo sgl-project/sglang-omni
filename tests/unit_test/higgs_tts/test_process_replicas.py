@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-import sglang_omni.utils.device as device_mod
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
     resolve_factory_signature_args,
@@ -15,9 +14,8 @@ from sglang_omni.config.runtime import (
 from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
-from sglang_omni.platforms import current_platform
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
@@ -48,7 +46,7 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
     config = _same_gpu_frontend_replica_config(tmp_path)
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,
@@ -86,7 +84,7 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
             require_gpu_id=audio_encoder.require_factory_gpu_id,
             stage_name=audio_encoder.stage_name,
         )
-        assert factory_args["device"] == current_platform.device_type
+        assert "device" not in factory_args
         assert factory_args["gpu_id"] == 0
 
     gpu_plan = prep.placement_plan.gpus[0]
@@ -120,6 +118,8 @@ def test_higgs_audio_encoder_resolves_placement_gpu_id(monkeypatch) -> None:
     def load_codec(checkpoint: str, device: str, dtype: str) -> FakeCodec:
         codec_loads.append((checkpoint, device, dtype))
         return fake_codec
+
+    import sglang_omni.utils.device as device_mod
 
     monkeypatch.setattr(device_mod, "resolve_device_spec", resolve)
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)

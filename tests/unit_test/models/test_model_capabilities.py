@@ -225,10 +225,10 @@ def test_model_capabilities_are_static_architecture_metadata() -> None:
 
 
 def test_launcher_model_capabilities_log_summary() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
+    from sglang_omni.serve.launcher import model_capabilities_log_summary
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
+    summary = model_capabilities_log_summary(
         config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
     )
 
@@ -244,10 +244,10 @@ def test_launcher_model_capabilities_log_summary() -> None:
 
 
 def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> None:
-    from sglang_omni.serve.launcher import _model_capabilities_log_summary
+    from sglang_omni.serve.launcher import model_capabilities_log_summary
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
-    summary = _model_capabilities_log_summary(
+    summary = model_capabilities_log_summary(
         config_cls(model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     )
 
@@ -259,13 +259,13 @@ def test_launcher_model_capabilities_log_summary_uses_static_architecture() -> N
 def test_launcher_emits_model_capabilities_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from sglang_omni.serve.launcher import _log_model_capabilities
+    from sglang_omni.serve.launcher import log_model_capabilities
 
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config(
         "VoxtralTTSForConditionalGeneration"
     )
     with caplog.at_level("INFO", logger="sglang_omni.serve.launcher"):
-        _log_model_capabilities(config_cls(model_path="dummy"))
+        log_model_capabilities(config_cls(model_path="dummy"))
 
     assert "Model capabilities:" in caplog.text
     assert '"architecture": "VoxtralTTSForConditionalGeneration"' in caplog.text
@@ -282,10 +282,10 @@ def test_launcher_model_capabilities_warning_isolated(
     def fail_summary(_pipeline_config: object) -> None:
         raise RuntimeError("capability lookup failed")
 
-    monkeypatch.setattr(launcher, "_model_capabilities_log_summary", fail_summary)
+    monkeypatch.setattr(launcher, "model_capabilities_log_summary", fail_summary)
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
 
     with caplog.at_level("WARNING", logger="sglang_omni.serve.launcher"):
-        launcher._log_model_capabilities(config_cls(model_path="dummy"))
+        launcher.log_model_capabilities(config_cls(model_path="dummy"))
 
     assert "Failed to resolve model capabilities for startup log" in caplog.text

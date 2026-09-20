@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 _AUDIO_WEIGHT_PREFIXES = ("model.audio_decoder.", "model.audio_extra_embedding.")
 
 
-def _rvq_graph_buckets(max_running_requests: int) -> list[int]:
+def rvq_graph_buckets(max_running_requests: int) -> list[int]:
     """Batch buckets to capture the RVQ depth pass at."""
     buckets, size = [], 2
     while size < 2 * max_running_requests:
@@ -46,8 +46,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         return str(paths.qwen_dir)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        self._normalize_backbone_config(Path(checkpoint_dir) / "config.json")
-        self._filter_audio_weights()
+        self.normalize_backbone_config(Path(checkpoint_dir) / "config.json")
+        self.filter_audio_weights()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -90,6 +90,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del checkpoint_dir, device, gpu_id
+        from sglang.srt.runtime_context import get_exec, get_schedule
+
         from sglang_omni.scheduling.generation_batch_policy import (
             get_decode_cuda_graph_max_bs,
         )
@@ -99,11 +101,11 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         assert self._checkpoint_root is not None
         model = model_worker.model_runner.model
         attach_minimax_modules(model, self._checkpoint_root)
-        if not bool(server_args.disable_cuda_graph):
+        if not bool(get_exec().graph.disable_cuda_graph):
             enable_graph_feedback(
                 model,
                 max(
-                    int(server_args.max_running_requests),
+                    int(get_schedule().max_running_requests),
                     int(get_decode_cuda_graph_max_bs(server_args) or 0),
                 ),
             )
@@ -116,9 +118,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         from .sglang_model import enable_rvq_depth_cuda_graph
 
         del server_args
-        enable_rvq_depth_cuda_graph(
-            model, _rvq_graph_buckets(self.max_running_requests)
-        )
+        enable_rvq_depth_cuda_graph(model, rvq_graph_buckets(self.max_running_requests))
 
     def make_scheduler(self, **kwargs: Any) -> Any:
         from .scheduler import MiniMaxMusic3Scheduler
@@ -173,7 +173,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         }
 
     @staticmethod
-    def _normalize_backbone_config(config_path: Path) -> None:
+    def normalize_backbone_config(config_path: Path) -> None:
         """Rewrite the backbone config so HuggingFace resolves a Qwen3 config."""
         config = json.loads(config_path.read_text())
         if config.get("model_type") == "qwen3":
@@ -189,7 +189,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         )
 
     @staticmethod
-    def _filter_audio_weights() -> None:
+    def filter_audio_weights() -> None:
         from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 
         if getattr(Qwen3ForCausalLM.load_weights, "_minimax_filtered", False):

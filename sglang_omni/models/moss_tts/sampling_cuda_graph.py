@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _MIN_CAPTURE_FREE_BYTES = 512 * 1024**2
 
 
-class _StaticSamplingInputs(NamedTuple):
+class StaticSamplingInputs(NamedTuple):
     control_logits: torch.Tensor
     audio_logits: torch.Tensor
     delay_state: torch.Tensor
@@ -26,7 +26,7 @@ class _StaticSamplingInputs(NamedTuple):
     audio_sample_output: torch.Tensor
 
 
-class _CapturedSamplingGraph(NamedTuple):
+class CapturedSamplingGraph(NamedTuple):
     graph: torch.cuda.CUDAGraph
     rows: torch.Tensor
     next_delay_state: torch.Tensor
@@ -58,8 +58,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self.model = model
         self.capture_bs = tuple(int(batch_size) for batch_size in capture_bs)
         self.disable_padding = bool(disable_padding)
-        self.graphs: dict[int, _CapturedSamplingGraph] = {}
-        self._inputs: _StaticSamplingInputs | None = None
+        self.graphs: dict[int, CapturedSamplingGraph] = {}
+        self._inputs: StaticSamplingInputs | None = None
         self._graph_pool = None
         self._warmup_stream: torch.cuda.Stream | None = None
         self._capture_stream: torch.cuda.Stream | None = None
@@ -81,10 +81,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
         try:
             with torch.cuda.device(model.device):
                 torch.cuda.synchronize()
-                runner._capture_all()
+                runner.capture_all()
         except Exception as exc:
             capture_failed = True
-            failure = "OOM" if runner._is_cuda_oom(exc) else "failure"
+            failure = "OOM" if runner.is_cuda_oom(exc) else "failure"
             logger.exception(
                 "MOSS-TTS Delay sampling CUDA graph initialization %s; "
                 "discarding partial graphs and using eager sampling",
@@ -102,11 +102,11 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 )
         return runner
 
-    def _capture_all(self) -> None:
+    def capture_all(self) -> None:
         buckets = self.capture_buckets
         if not buckets:
             return
-        self._inputs = self._make_static_inputs(buckets[-1])
+        self._inputs = self.make_static_inputs(buckets[-1])
 
         for bucket in reversed(buckets):
             free_bytes, _ = torch.cuda.mem_get_info(self.model.device)
@@ -122,14 +122,14 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 return
 
             try:
-                self.graphs[bucket] = self._capture_bucket(bucket)
+                self.graphs[bucket] = self.capture_bucket(bucket)
                 logger.info(
                     "Captured MOSS-TTS Delay sampling CUDA graph backbone_bucket=%s",
                     bucket,
                 )
             except Exception as exc:
                 self.graphs.pop(bucket, None)
-                if self._is_cuda_oom(exc):
+                if self.is_cuda_oom(exc):
                     logger.exception(
                         "MOSS-TTS Delay sampling CUDA graph OOM for "
                         "backbone_bucket=%s; discarding partial graphs",
@@ -144,7 +144,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 )
 
     @staticmethod
-    def _is_cuda_oom(exc: BaseException) -> bool:
+    def is_cuda_oom(exc: BaseException) -> bool:
         return (
             isinstance(exc, torch.OutOfMemoryError)
             or "out of memory" in str(exc).lower()
@@ -163,11 +163,11 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 with device_module.device(self.model.device):
                     device_module.empty_cache()
 
-    def _make_static_inputs(self, max_bs: int) -> _StaticSamplingInputs:
+    def make_static_inputs(self, max_bs: int) -> StaticSamplingInputs:
         device = self.model.device
         n_vq = int(self.model.config.n_vq)
         audio_vocab = int(self.model.config.vocab_size_list[1])
-        return _StaticSamplingInputs(
+        return StaticSamplingInputs(
             control_logits=torch.zeros(
                 max_bs,
                 2,
@@ -196,16 +196,16 @@ class MossTTSDelaySamplingCudaGraphRunner:
             ),
         )
 
-    def _require_inputs(self) -> _StaticSamplingInputs:
+    def require_inputs(self) -> StaticSamplingInputs:
         if self._inputs is None:
             raise RuntimeError("MOSS-TTS Delay sampling CUDA graph is not captured")
         return self._inputs
 
-    def _run_static(
+    def run_static(
         self,
         bucket: int,
     ) -> DelaySamplingOutput:
-        inputs = self._require_inputs()
+        inputs = self.require_inputs()
         batch = DelayGraphBatch(
             delay_state=inputs.delay_state[:bucket],
             seeds=inputs.seeds[:bucket],
@@ -218,10 +218,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
             audio_sample_output=inputs.audio_sample_output,
         )
 
-    def _capture_bucket(
+    def capture_bucket(
         self,
         bucket: int,
-    ) -> _CapturedSamplingGraph:
+    ) -> CapturedSamplingGraph:
         device = self.model.device
         if self._warmup_stream is None:
             self._warmup_stream = torch.cuda.Stream(device=device)
@@ -229,7 +229,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         warmup_stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(warmup_stream):
             for _ in range(2):
-                self._run_static(bucket)
+                self.run_static(bucket)
         torch.cuda.current_stream(device).wait_stream(warmup_stream)
         torch.cuda.synchronize(device)
 
@@ -247,9 +247,9 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 stream=capture_stream,
                 capture_error_mode="thread_local",
             ):
-                output = self._run_static(bucket)
+                output = self.run_static(bucket)
         torch.cuda.current_stream(device).wait_stream(capture_stream)
-        return _CapturedSamplingGraph(
+        return CapturedSamplingGraph(
             graph=graph,
             rows=output.rows,
             next_delay_state=output.next_delay_state,
@@ -265,14 +265,14 @@ class MossTTSDelaySamplingCudaGraphRunner:
     def capture_buckets(self) -> tuple[int, ...]:
         return self.capture_bs
 
-    def _graph_key(self, batch_size: int) -> int | None:
+    def graph_key(self, batch_size: int) -> int | None:
         bucket = self.canonical_bucket(batch_size)
         if bucket is None or (self.disable_padding and bucket != int(batch_size)):
             return None
         return bucket
 
     def can_replay(self, batch_size: int) -> bool:
-        key = self._graph_key(batch_size)
+        key = self.graph_key(batch_size)
         return key is not None and key in self.graphs
 
     @torch.no_grad()
@@ -284,14 +284,14 @@ class MossTTSDelaySamplingCudaGraphRunner:
     ) -> DelaySamplingOutput:
         batch_size = int(control_logits.shape[0])
         bucket = self.canonical_bucket(batch_size)
-        key = self._graph_key(batch_size)
+        key = self.graph_key(batch_size)
         if key is None or key not in self.graphs:
             raise RuntimeError(
                 "MOSS-TTS Delay sampling CUDA graph is unavailable for "
                 f"raw_bs={batch_size} backbone_bucket={bucket}"
             )
 
-        inputs = self._require_inputs()
+        inputs = self.require_inputs()
         expected_audio_shape = (
             batch_size,
             int(inputs.audio_logits.shape[1]),

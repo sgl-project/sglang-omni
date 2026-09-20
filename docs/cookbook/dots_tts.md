@@ -26,14 +26,18 @@ dots.tts is a continuous-latent model, not a codec model. The backbone emits no 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download and launch the server:
 
 ```bash
-hf download dots-studio/dots.tts-mf
+hf download dots-studio/dots.tts-mf --revision c28105adc8228143392b4e346994ff613ee48a06
 
 sgl-omni serve \
-  --model-path dots-studio/dots.tts-mf \
   --config examples/configs/dots_tts.yaml \
   --allowed-local-media-path docs/_static/audio \
   --port 8000
 ```
+
+`examples/configs/dots_tts.yaml` pins the checkpoint to the snapshot it was
+validated against, so the launch above takes `model_path` from the config.
+`--model-path` overrides that pin, pass it only to serve a different checkpoint
+or revision.
 
 To serve SOAR instead, swap both the checkpoint and the config:
 

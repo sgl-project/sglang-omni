@@ -13,6 +13,7 @@ from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -29,7 +30,7 @@ _PREFILL_RUNNER_DISPATCH_LOCK = Lock()
 _PREFILL_RUNNER_DISPATCH_DEFAULT: type | None = None
 
 
-def _install_prefill_runner_dispatch() -> None:
+def install_prefill_runner_dispatch() -> None:
     """Let each model runner pick its own prefill graph runner class."""
     global _PREFILL_RUNNER_DISPATCH_DEFAULT
     from sglang.srt.model_executor.model_runner_components import cuda_graph_setup
@@ -40,7 +41,7 @@ def _install_prefill_runner_dispatch() -> None:
         default_cls = cuda_graph_setup.PrefillCudaGraphRunner
 
         def _dispatch_prefill_runner(model_runner):
-            select = getattr(model_runner, "_prefill_cuda_graph_runner_cls", None)
+            select = getattr(model_runner, "prefill_cuda_graph_runner_cls", None)
             runner_cls = select() if select is not None else None
             return (runner_cls or default_cls)(model_runner)
 
@@ -61,7 +62,7 @@ def filter_weights_by_prefix(
             yield name[len(prefix) :], tensor
 
 
-def _free_gpu_memory_bytes(device: Any, gpu_id: int) -> int:
+def free_gpu_memory_bytes(device: Any, gpu_id: int) -> int:
     """Currently free GPU memory in bytes, min-reduced across the world group."""
     from sglang.srt.distributed.parallel_state import get_world_group
     from sglang.srt.utils.common import get_available_gpu_memory
@@ -77,7 +78,7 @@ def _free_gpu_memory_bytes(device: Any, gpu_id: int) -> int:
 
 
 @dataclass(slots=True, kw_only=True)
-class _OmniKVCacheConfigurator(KVCacheConfigurator):
+class OmniKVCacheConfigurator(KVCacheConfigurator):
     """KV-cache configurator that honors an Omni colocated-stage memory budget.
 
     ``super()`` is deliberately spelled out below: ``@dataclass(slots=True)``
@@ -123,7 +124,7 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
                     "engine.kv_cache_bytes does not support "
                     "mamba/hybrid models yet; use fraction-based sizing"
                 )
-            free_bytes = self._free_gpu_memory_bytes()
+            free_bytes = self.free_gpu_memory_bytes()
             if free_bytes < self.kv_cache_bytes:
                 raise ValueError(
                     "Insufficient free GPU memory for the declared KV byte "
@@ -159,20 +160,20 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
             )
 
         if process_memory is None or process_memory <= 0:
-            return self._profile_available_bytes_from_stage_load_delta(
+            return self.profile_available_bytes_from_stage_load_delta(
                 pre_model_load_memory,
                 total_memory,
             )
 
-        return self._profile_available_bytes_from_process_memory(
+        return self.profile_available_bytes_from_process_memory(
             total_memory,
             process_memory,
         )
 
-    def _free_gpu_memory_bytes(self) -> int:
-        return _free_gpu_memory_bytes(self.device, self.gpu_id)
+    def free_gpu_memory_bytes(self) -> int:
+        return free_gpu_memory_bytes(self.device, self.gpu_id)
 
-    def _profile_available_bytes_from_stage_load_delta(
+    def profile_available_bytes_from_stage_load_delta(
         self,
         pre_model_load_memory: float,
         total_memory: int,
@@ -202,14 +203,14 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
             f"SGLang AR memory profile: gpu_mem_accounting=stage_load_fallback "
             f"gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction:.3f} "
-            f"mem_fraction_static={self.server_args.mem_fraction_static:.3f} "
+            f"mem_fraction_static={get_schedule().mem_fraction_static:.3f} "
             f"total={format_bytes_gib(total_memory)} "
             f"stage_load_used={format_bytes_gib(stage_load_bytes)} "
             f"available_for_kv={format_bytes_gib(available_bytes)}"
         )
         return available_bytes
 
-    def _profile_available_bytes_from_process_memory(
+    def profile_available_bytes_from_process_memory(
         self,
         total_memory: int,
         process_memory: int,
@@ -224,7 +225,7 @@ class _OmniKVCacheConfigurator(KVCacheConfigurator):
             f"SGLang AR memory profile: gpu_mem_accounting=nvml_process "
             f"gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction:.3f} "
-            f"mem_fraction_static={self.server_args.mem_fraction_static:.3f} "
+            f"mem_fraction_static={get_schedule().mem_fraction_static:.3f} "
             f"total={format_bytes_gib(total_memory)} "
             f"process_used={format_bytes_gib(process_memory)} "
             f"available_for_kv={format_bytes_gib(available_bytes)}"
@@ -258,10 +259,10 @@ class SGLModelRunner(ModelRunner):
         self._weight_share_config = None
         self._weight_share_record = None
         self._weight_ipc_leader_monitor = None
-        self._register_omni_model()
+        self.register_omni_model()
 
         port_args = PortArgs.init_new(server_args)
-        tp_size = server_args.tp_size
+        tp_size = get_parallel().tp_size
         self.nccl_port = port_args.nccl_port
 
         # model_config is already fully configured by ModelWorker._init_model_config()
@@ -269,11 +270,11 @@ class SGLModelRunner(ModelRunner):
 
         attn_tp_rank, attn_tp_size, attn_dp_rank, attn_dp_size = (
             compute_dp_attention_world_info(
-                server_args.enable_dp_attention,
+                get_parallel().enable_dp_attention,
                 tp_rank,
                 tp_size,
-                server_args.dp_size,
-                server_args.attn_cp_size,
+                get_parallel().dp_size,
+                get_parallel().attn_cp_size,
             )
         )
         ps = ParallelState(
@@ -282,25 +283,25 @@ class SGLModelRunner(ModelRunner):
             pp_rank=pp_rank,
             pp_size=pp_size,
             dp_rank=None,
-            dp_size=server_args.dp_size,
+            dp_size=get_parallel().dp_size,
             attn_tp_rank=attn_tp_rank,
             attn_tp_size=attn_tp_size,
             attn_cp_rank=0,
-            attn_cp_size=server_args.attn_cp_size,
-            attn_dcp_rank=tp_rank % server_args.dcp_size,
-            attn_dcp_size=server_args.dcp_size,
+            attn_cp_size=get_parallel().attn_cp_size,
+            attn_dcp_rank=tp_rank % get_parallel().dcp_size,
+            attn_dcp_size=get_parallel().dcp_size,
             attn_dp_rank=attn_dp_rank,
             attn_dp_size=attn_dp_size,
             moe_ep_rank=moe_ep_rank,
             moe_ep_size=moe_ep_size,
             moe_dp_rank=None,
-            moe_dp_size=server_args.moe_dp_size,
+            moe_dp_size=get_parallel().moe_dp_size,
             gpu_id=gpu_id,
         )
 
         super().__init__(
             model_config=model_config,
-            mem_fraction_static=server_args.mem_fraction_static,
+            mem_fraction_static=get_schedule().mem_fraction_static,
             gpu_id=gpu_id,
             ps=ps,
             nccl_port=nccl_port,
@@ -377,10 +378,10 @@ class SGLModelRunner(ModelRunner):
         # env var, and their shards share names/shapes/dtypes across ranks, so
         # the handle file would collide and followers would silently attach
         # another rank's shard. Refuse until the handle path is rank-qualified.
-        if self.server_args.tp_size != 1 or self.server_args.pp_size != 1:
+        if get_parallel().tp_size != 1 or get_parallel().pp_size != 1:
             raise ipc_weights.WeightShareError(
                 "SGLANG_OMNI_WEIGHT_SHARE requires tp_size == pp_size == 1, got "
-                f"tp={self.server_args.tp_size} pp={self.server_args.pp_size}"
+                f"tp={get_parallel().tp_size} pp={get_parallel().pp_size}"
             )
 
         architectures = (
@@ -466,7 +467,7 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.runtime_context import get_exec, get_flags
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
-        _install_prefill_runner_dispatch()
+        install_prefill_runner_dispatch()
 
         from sglang_omni.platforms import current_platform
 
@@ -481,7 +482,7 @@ class SGLModelRunner(ModelRunner):
     def post_capture_resize_kv_pool(self):
         """Back the KV pool post-capture without silently shrinking a byte budget.
 
-        SGLang 0.5.16's post-capture sizing re-derives the pool from live free
+        Upstream's post-capture sizing re-derives the pool from live free
         memory, which can only shrink the pool below the declared
         ``kv_cache_bytes`` when capture-time allocations ate into it. A byte
         budget is authoritative, so a shrink must fail loudly instead of
@@ -493,7 +494,7 @@ class SGLModelRunner(ModelRunner):
         tokens_before = self.max_total_num_tokens
         result = super().post_capture_resize_kv_pool()
         if self.max_total_num_tokens < tokens_before:
-            free_bytes = _free_gpu_memory_bytes(self.device, self.gpu_id)
+            free_bytes = free_gpu_memory_bytes(self.device, self.gpu_id)
             raise RuntimeError(
                 "Post-capture KV sizing cannot honor the declared byte budget: "
                 f"kv_cache_bytes={format_bytes_gib(self._kv_cache_bytes)} sized "
@@ -506,14 +507,14 @@ class SGLModelRunner(ModelRunner):
             )
         return result
 
-    def _prefill_cuda_graph_runner_cls(self):
+    def prefill_cuda_graph_runner_cls(self):
         from sglang.srt.model_executor.cuda_graph_config import (
             Backend as CudaGraphBackend,
         )
 
         if (
             self._model_arch_override == "WhisperForConditionalGeneration"
-            and self.server_args.cuda_graph_config.prefill.backend
+            and get_exec().graph.cuda_graph_config.prefill.backend
             == CudaGraphBackend.BREAKABLE
         ):
             from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
@@ -523,7 +524,7 @@ class SGLModelRunner(ModelRunner):
             return WhisperPrefillCudaGraphRunner
         return None
 
-    def _weight_update_blocked_reason(self) -> str | None:
+    def weight_update_blocked_reason(self) -> str | None:
         ws = self._weight_share_config
         if ws is None:
             return None
@@ -537,19 +538,19 @@ class SGLModelRunner(ModelRunner):
     # Kept on the runner so ModelWorker has one call target and the weight-share
     # guard applies to every update path.
     def update_weights_from_disk(self, *args, **kwargs):
-        reason = self._weight_update_blocked_reason()
+        reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
         return self.weight_updater.update_weights_from_disk(*args, **kwargs)
 
     def update_weights_from_tensor(self, *args, **kwargs):
-        reason = self._weight_update_blocked_reason()
+        reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
         return self.weight_updater.update_weights_from_tensor(*args, **kwargs)
 
     def update_weights_from_distributed(self, *args, **kwargs):
-        reason = self._weight_update_blocked_reason()
+        reason = self.weight_update_blocked_reason()
         if reason is not None:
             return False, reason
         return self.weight_updater.update_weights_from_distributed(*args, **kwargs)
@@ -561,7 +562,7 @@ class SGLModelRunner(ModelRunner):
     def destroy_weights_update_group(self, *args, **kwargs):
         return self.weight_updater.destroy_weights_update_group(*args, **kwargs)
 
-    def _register_omni_model(self):
+    def register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
         import importlib
 
@@ -574,6 +575,7 @@ class SGLModelRunner(ModelRunner):
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
             "HiggsMultimodalQwen3ForConditionalGeneration": "sglang_omni.models.higgs_tts.model:HiggsTTSModel",
             "Qwen3TTSTalker": "sglang_omni.models.qwen3_tts.sglang_model:Qwen3TTSTalker",
+            "MiniCPMOTalkerForCausalLM": "sglang_omni.models.minicpm_o.components.sglang_talker:MiniCPMOTalkerForCausalLM",
             "MingTTSSGLangModel": "sglang_omni.models.ming_tts.sglang_model:MingTTSSGLangModel",
             "MossTTSDelaySGLangModel": "sglang_omni.models.moss_tts.sglang_model:MossTTSDelaySGLangModel",
             "MossTTSLocalSGLangModel": "sglang_omni.models.moss_tts_local.sglang_model:MossTTSLocalSGLangModel",
@@ -587,6 +589,9 @@ class SGLModelRunner(ModelRunner):
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
+            "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
+            "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
+            "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")
@@ -618,7 +623,7 @@ class SGLModelRunner(ModelRunner):
         """
         super().init_kv_cache_configurator()
         base = self.kv_cache_configurator
-        self.kv_cache_configurator = _OmniKVCacheConfigurator(
+        self.kv_cache_configurator = OmniKVCacheConfigurator(
             **{
                 field.name: getattr(base, field.name)
                 for field in dataclasses.fields(base)

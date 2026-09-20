@@ -28,7 +28,7 @@ from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
 from sglang_omni.quantization import get_weight_preprocessor
 
 
-def _config_uses_mrope(config: Any) -> bool:
+def config_uses_mrope(config: Any) -> bool:
     """Return whether the exact Qwen text config declares M-RoPE."""
     for field in ("rope_parameters", "rope_scaling"):
         value = getattr(config, field, None)
@@ -50,13 +50,16 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         self.root_config = config
         self.thinker_config = getattr(config, "thinker_config", config)
         self.config = getattr(self.thinker_config, "text_config", self.thinker_config)
-        self.is_mrope_enabled = _config_uses_mrope(self.config)
+        self.is_mrope_enabled = config_uses_mrope(self.config)
 
         self.model = Qwen3MoeLLMModel(
             config=self.config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
+        # sglang v0.5.19's default deepstack order regresses omni visual accuracy;
+        # remove this override once the upstream default passes omni's visual checks.
+        self.model.use_hf_deepstack_order = True
         if getattr(self.config, "tie_word_embeddings", False):
             self.lm_head = self.model.embed_tokens
         else:

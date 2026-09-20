@@ -16,7 +16,7 @@ from sglang_omni.client.types import (
 )
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _build_rollout_generate_request
+from sglang_omni.serve.openai_api import build_rollout_generate_request
 from sglang_omni.serve.protocol import RolloutGenerateRequest as RolloutRequest
 
 
@@ -198,7 +198,7 @@ def test_generate_rejects_missing_logprobs_when_requested() -> None:
     assert "output_token_logprobs" in resp.text
 
 
-def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
+def test_generate_audio_requires_logprob_opt_out_without_omni_rollout() -> None:
     result = _text_result()
     result.output_token_logprobs = None
     result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
@@ -216,6 +216,17 @@ def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
 
     assert resp.status_code == 501
     assert "return_omni_rollout=true" in resp.text
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "hi",
+            "output_modalities": ["audio"],
+            "return_logprob": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["audio"]["data"] == "QUJD"
 
 
 def test_generate_rejects_logprob_length_mismatch() -> None:
@@ -404,7 +415,7 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
         sampling_params={"temperature": 0.5, "max_new_tokens": 8},
         return_logprob=True,
     )
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.prompt_token_ids == [1, 2, 3]
     assert gen.prompt is None
@@ -418,7 +429,7 @@ def test_converter_maps_input_ids_to_prompt_token_ids() -> None:
 def test_converter_omits_explicit_params_when_sampling_omitted() -> None:
     req = RolloutRequest(prompt="hi", sampling_params={})
 
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.sampling.temperature == 1.0
     assert gen.sampling.top_p == 1.0
@@ -432,7 +443,7 @@ def test_converter_preserves_explicit_rollout_sampling_default_values() -> None:
         sampling_params={"temperature": 1.0, "top_p": 1.0, "top_k": -1},
     )
 
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.sampling.temperature == 1.0
     assert gen.sampling.top_p == 1.0
@@ -450,7 +461,7 @@ def test_converter_does_not_mark_null_rollout_sampling_params_explicit() -> None
         sampling_params={"temperature": None, "top_p": None, "top_k": None},
     )
 
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.sampling.temperature == 1.0
     assert gen.sampling.top_p == 1.0
@@ -465,7 +476,7 @@ def test_converter_preserves_rollout_metadata() -> None:
         metadata={"rollout_id": 1},
     )
 
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.metadata == {"rollout_id": 1}
 
@@ -474,8 +485,8 @@ def test_converter_preserves_prompt_as_raw_rollout_input() -> None:
     from sglang_omni.client import Client
 
     req = RolloutRequest(prompt="hi", sampling_params={})
-    gen = _build_rollout_generate_request(req)
-    omni = Client._build_omni_request(gen)
+    gen = build_rollout_generate_request(req)
+    omni = Client.build_omni_request(gen)
 
     assert gen.prompt == "hi"
     assert gen.prompt_token_ids is None
@@ -490,8 +501,8 @@ def test_converter_preserves_messages_as_chat_rollout_input() -> None:
         messages=[{"role": "user", "content": "hi"}],
         sampling_params={},
     )
-    gen = _build_rollout_generate_request(req)
-    omni = Client._build_omni_request(gen)
+    gen = build_rollout_generate_request(req)
+    omni = Client.build_omni_request(gen)
 
     assert gen.prompt is None
     assert gen.prompt_token_ids is None
@@ -503,7 +514,7 @@ def test_converter_preserves_messages_as_chat_rollout_input() -> None:
 
 def test_converter_defaults_rollout_to_text_output_modality() -> None:
     req = RolloutRequest(prompt="hi", sampling_params={})
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.output_modalities == ["text"]
 
@@ -514,7 +525,7 @@ def test_converter_preserves_explicit_output_modalities() -> None:
         sampling_params={},
         output_modalities=["text", "audio"],
     )
-    gen = _build_rollout_generate_request(req)
+    gen = build_rollout_generate_request(req)
 
     assert gen.output_modalities == ["text", "audio"]
 
@@ -523,8 +534,8 @@ def test_converter_threads_return_logprob_into_omni_params() -> None:
     from sglang_omni.client import Client
 
     req = RolloutRequest(prompt="hi", sampling_params={}, return_logprob=True)
-    gen = _build_rollout_generate_request(req)
-    omni = Client._build_omni_request(gen)
+    gen = build_rollout_generate_request(req)
+    omni = Client.build_omni_request(gen)
 
     assert omni.params.get("return_logprob") is True
 

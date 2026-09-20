@@ -91,9 +91,10 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.18   # the pinned release
+git checkout v0.5.19   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+pip install --no-deps xgrammar==0.1.33
 ```
 
 Use that commit: the XPU port targets this SGLang revision's APIs and does not carry

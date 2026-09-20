@@ -10,7 +10,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 
-from sglang_omni.model_runner.model_worker import ModelWorker, _PrefillCudaGraphUsage
+from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 
 
 def _forward_batch(
@@ -25,8 +25,8 @@ def _forward_batch(
 
 
 def test_prefill_cuda_graph_usage_instances_do_not_share_buckets() -> None:
-    first = _PrefillCudaGraphUsage()
-    second = _PrefillCudaGraphUsage()
+    first = PrefillCudaGraphUsage()
+    second = PrefillCudaGraphUsage()
 
     first.replay_buckets[16] += 1
 
@@ -87,7 +87,7 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     worker = object.__new__(ModelWorker)
     worker.dllm_algorithm = None
     worker.model_runner = runner
-    worker._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
+    worker._prefill_cuda_graph_usage = PrefillCudaGraphUsage()
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_model",
         lambda: SimpleNamespace(model_path="model", load_format="auto"),
@@ -96,14 +96,19 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
         "sglang.srt.runtime_context.get_serving",
         lambda: SimpleNamespace(weight_version=None),
     )
-    worker.server_args = SimpleNamespace(
-        tp_size=1,
-        cuda_graph_config=SimpleNamespace(
-            prefill=SimpleNamespace(
-                backend="breakable",
-                bs=[16, 32],
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_exec",
+        lambda: SimpleNamespace(
+            graph=SimpleNamespace(
+                cuda_graph_config=SimpleNamespace(
+                    prefill=SimpleNamespace(backend="breakable", bs=[16, 32])
+                )
             )
         ),
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_parallel",
+        lambda: SimpleNamespace(tp_size=1),
     )
     worker.tp_rank = 0
     worker.model_arch_override = None

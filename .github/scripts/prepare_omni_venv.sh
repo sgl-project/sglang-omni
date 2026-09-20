@@ -36,13 +36,15 @@ rm -f "${OMNI_CI_HOME}/.omni-env-complete"
 rm -rf "${OMNI_CI_HOME}"
 mkdir -p "${OMNI_CI_HOME}"
 uv venv --system-site-packages "${HOST}" -p /usr/bin/python3.12
+# Process the image's .pth files too: SGLang is installed editable upstream.
+echo 'import site; site.addsitedir("/opt/sglang/lib/python3.12/site-packages")' > "${HOST}/lib/python3.12/site-packages/sglang-image.pth"
 
 rm -rf "./${VENV_NAME}"
 ln -sfn "${HOST}" "./${VENV_NAME}"
 source "${VENV_NAME}/bin/activate"
 
 mapfile -t MISSING_REQUIREMENTS < <(
-  python "${SCRIPT_DIR}/omni_missing_dependencies.py" pyproject.toml
+  python "${SCRIPT_DIR}/omni_missing_dependencies.py" --extra minicpm-o pyproject.toml
 )
 if [ "${#MISSING_REQUIREMENTS[@]}" -gt 0 ]; then
   echo "Installing dependencies missing from the image:"

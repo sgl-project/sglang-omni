@@ -32,6 +32,15 @@ from sglang_omni.utils import ipc_weights  # noqa: E402
 SGLModelRunner = sglang_model_runner.SGLModelRunner
 
 
+@pytest.fixture(autouse=True)
+def _parallel_bag(monkeypatch):
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=1, pp_size=1),
+    )
+
+
 class SmallModel(nn.Module):
     def __init__(self, fill: float):
         super().__init__()
@@ -46,8 +55,6 @@ def _bare_runner(load_format="auto"):
     runner.server_args = SimpleNamespace(
         load_format=load_format,
         max_total_tokens=1000,
-        tp_size=1,
-        pp_size=1,
         model_path="m",
         revision="r",
         enable_torch_compile=False,
@@ -87,7 +94,7 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
     assert runner._weight_share_record is None
     assert not os.listdir(tmp_path)  # nothing exported anywhere
     # Weight updates stay allowed on the stock path.
-    assert runner._weight_update_blocked_reason() is None
+    assert runner.weight_update_blocked_reason() is None
 
 
 def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
@@ -104,7 +111,7 @@ def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
     # Leader-side record kept for the pre-capture identity check (empty here:
     # a CPU model has no IPC-shareable tensors, everything rode the value path).
     assert runner._weight_share_record is not None
-    assert runner._weight_update_blocked_reason() is not None
+    assert runner.weight_update_blocked_reason() is not None
 
 
 def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
@@ -131,7 +138,7 @@ def test_follower_dummy_loads_waits_and_attaches(tmp_path, monkeypatch):
     # Values came from the leader export, not the dummy init.
     assert torch.all(runner.model.linear.weight == 7.0)
     assert runner._weight_share_record is not None
-    assert runner._weight_update_blocked_reason() is not None
+    assert runner.weight_update_blocked_reason() is not None
 
 
 def test_follower_runs_post_attach_hook_after_aliasing(tmp_path, monkeypatch):

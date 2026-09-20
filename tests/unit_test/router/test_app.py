@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from sglang_omni_router.python import proxy as proxy_module
 from sglang_omni_router.python import websocket_proxy as websocket_proxy_module
-from sglang_omni_router.python.app import _broadcast_admin_request, create_app
+from sglang_omni_router.python.app import broadcast_admin_request, create_app
 from sglang_omni_router.python.config import (
     DEFAULT_CAPABILITIES,
     Capability,
@@ -3349,7 +3349,7 @@ def test_router_admin_update_lock_timeout_returns_503(monkeypatch) -> None:
                     return {"type": "http.request", "body": b"{}", "more_body": False}
 
                 fake_request = Request(scope, receive)
-                result = await _broadcast_admin_request(
+                result = await broadcast_admin_request(
                     app, fake_request, "/update_weights_from_disk"
                 )
                 return result
@@ -4012,7 +4012,7 @@ async def test_registry_lock_rejects_while_an_update_is_queued() -> None:
     # update it never saw.
     from fastapi import FastAPI as _FastAPI
 
-    from sglang_omni_router.python.app import _registry_lock_or_reject
+    from sglang_omni_router.python.app import registry_lock_or_reject
 
     app = _FastAPI()
     app.state.admin_update_lock = asyncio.Lock()
@@ -4023,7 +4023,7 @@ async def test_registry_lock_rejects_while_an_update_is_queued() -> None:
     lock.release()
 
     assert lock.locked() is False  # the window locked() alone misses
-    _, rejected = _registry_lock_or_reject(app)
+    _, rejected = registry_lock_or_reject(app)
     assert rejected is not None and rejected.status_code == 409
 
     queued.cancel()
@@ -4116,10 +4116,10 @@ async def test_a_cancelled_upstream_send_returns_the_active_gauge() -> None:
         service_class="generation",
         voice_names_requiring_registry=set(),
     )
-    release = proxy_module._ReleaseOnce(proxy.admission)
+    release = proxy_module.ReleaseOnce(proxy.admission)
 
     with pytest.raises(asyncio.CancelledError):
-        await proxy._forward_relay(
+        await proxy.forward_relay(
             _request_without_content_length([b"{}"]),
             "/generate",
             b"{}",

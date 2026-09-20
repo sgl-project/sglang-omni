@@ -68,7 +68,7 @@ def matches_graph_profile(data: Any) -> bool:
     )
 
 
-def _sample_default_audio_tokens(
+def sample_default_audio_tokens(
     logits: torch.Tensor,
     *,
     seeds: torch.Tensor,
@@ -223,7 +223,7 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
             (audio_positions + self.channel_indices + 1).reshape(-1).contiguous()
         )
         audio_seeds = seeds.unsqueeze(1).expand(batch_size, self.n_vq).reshape(-1)
-        sampled_audio = _sample_default_audio_tokens(
+        sampled_audio = sample_default_audio_tokens(
             flat_audio_logits,
             seeds=audio_seeds,
             positions=audio_positions,

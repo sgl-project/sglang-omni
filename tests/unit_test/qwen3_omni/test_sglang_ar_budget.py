@@ -7,12 +7,41 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.runtime_context import get_context
 
 import sglang_omni.model_runner.sglang_model_runner as runner_mod
 import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.platforms import current_platform
+
+
+@pytest.fixture(autouse=True)
+def _schedule_bag(monkeypatch):
+    monkeypatch.setattr(
+        runner_mod, "get_schedule", lambda: SimpleNamespace(mem_fraction_static=0.9)
+    )
+
+
+_PUBLISHED: list = []
+
+
+@pytest.fixture(autouse=True)
+def _restore_published_context():
+    yield
+    while _PUBLISHED:
+        _PUBLISHED.pop().restore()
+
+
+def _publish_for(server_args) -> object:
+    """Stand in for the scheduler construction, which publishes the record."""
+    published = get_context().override_server_args(
+        mem_fraction_static=resolved_view(server_args).mem_fraction_static
+    )
+    published.install()
+    _PUBLISHED.append(published)
+    return object()
 
 
 def _configurator(
@@ -23,12 +52,11 @@ def _configurator(
     ``_OmniKVCacheConfigurator`` is a slots dataclass with ~25 required fields,
     so populate only the attributes ``_profile_available_bytes`` reads.
     """
-    configurator = runner_mod._OmniKVCacheConfigurator.__new__(
-        runner_mod._OmniKVCacheConfigurator
+    configurator = runner_mod.OmniKVCacheConfigurator.__new__(
+        runner_mod.OmniKVCacheConfigurator
     )
     configurator.gpu_id = 0
     configurator.device = "cuda"
-    configurator.server_args = SimpleNamespace(mem_fraction_static=0.9)
     configurator.total_gpu_memory_fraction = total_gpu_memory_fraction
     configurator.kv_cache_bytes = kv_cache_bytes
     configurator.mambaish_config = None
@@ -40,7 +68,7 @@ def test_kv_cache_bytes_budget_is_returned_verbatim(monkeypatch) -> None:
         total_gpu_memory_fraction=None, kv_cache_bytes=2 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
     )
 
     assert configurator._profile_available_bytes(0) == 2 * 1024**3
@@ -51,7 +79,7 @@ def test_kv_cache_bytes_budget_wins_over_stage_fraction(monkeypatch) -> None:
         total_gpu_memory_fraction=0.4, kv_cache_bytes=2 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 50 * 1024**3
     )
 
     assert configurator._profile_available_bytes(0) == 2 * 1024**3
@@ -74,7 +102,7 @@ def test_kv_cache_bytes_over_free_memory_raises_actionable_error(monkeypatch) ->
         total_gpu_memory_fraction=None, kv_cache_bytes=8 * 1024**3
     )
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 3 * 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 3 * 1024**3
     )
 
     with pytest.raises(ValueError) as exc_info:
@@ -100,7 +128,7 @@ def test_post_capture_resize_shrinking_a_byte_budget_raises(monkeypatch) -> None
 
     monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", _shrinking_resize)
     monkeypatch.setattr(
-        runner_mod, "_free_gpu_memory_bytes", lambda device, gpu_id: 1024**3
+        runner_mod, "free_gpu_memory_bytes", lambda device, gpu_id: 1024**3
     )
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -177,7 +205,7 @@ def _patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
                 "total_gpu_memory_fraction": kwargs["total_gpu_memory_fraction"],
             }
         )
-        return object()
+        return _publish_for(server_args)
 
     monkeypatch.setattr(
         qwen_stages,
@@ -239,8 +267,8 @@ def test_colocated_ar_budget_uses_stage_load_delta_when_process_memory_unavailab
         return 7 * 1024**3
 
     monkeypatch.setattr(
-        runner_mod._OmniKVCacheConfigurator,
-        "_profile_available_bytes_from_stage_load_delta",
+        runner_mod.OmniKVCacheConfigurator,
+        "profile_available_bytes_from_stage_load_delta",
         _fake_stage_load_delta,
     )
 
@@ -268,7 +296,7 @@ def test_non_colocated_ar_delegates_to_upstream_available_bytes(
 def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
     overrides = {"disable_cuda_graph": False}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.78,
@@ -282,7 +310,7 @@ def test_qwen_ar_factory_derives_mem_fraction_from_total_budget() -> None:
 def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
     overrides = {"disable_cuda_graph": False}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.75,
@@ -297,7 +325,7 @@ def test_qwen_colocated_thinker_reserve_reduces_effective_ar_budget() -> None:
 def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -> None:
     overrides = {"mem_fraction_static": 0.75}
 
-    contract = qwen_stages._apply_colocated_ar_memory_contract(
+    contract = qwen_stages.apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=0.75,
@@ -310,7 +338,7 @@ def test_qwen_colocated_ar_explicit_matching_mem_fraction_keeps_stage_budget() -
 
 def test_qwen_ar_factory_rejects_conflicting_memory_contract() -> None:
     with pytest.raises(ValueError, match="conflicting colocated memory contracts"):
-        qwen_stages._apply_colocated_ar_memory_contract(
+        qwen_stages.apply_colocated_ar_memory_contract(
             {"mem_fraction_static": 0.7},
             stage_name="thinker",
             total_gpu_memory_fraction=0.78,
@@ -425,7 +453,7 @@ def test_qwen_thinker_threads_explicit_generation_batch_policy(
     monkeypatch.setattr(
         qwen_stages,
         "create_thinker_scheduler",
-        lambda *args, **kwargs: object(),
+        lambda server_args, *args, **kwargs: _publish_for(server_args),
     )
     monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
     monkeypatch.setattr(
@@ -485,7 +513,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
                 "weight_prefix": kwargs["weight_prefix"],
             }
         )
-        return object()
+        return _publish_for(server_args)
 
     monkeypatch.setattr(
         qwen_stages,
@@ -510,6 +538,7 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
         {
             "cuda_graph_bs": [1, 2, 4, 8, 12, 16, 24, 32],
             "cuda_graph_max_bs": 32,
+            "device": current_platform.device_type,
             "disable_cuda_graph": not current_platform.enable_talker_graph(),
             "max_running_requests": 32,
             "sampling_backend": "pytorch",
@@ -555,7 +584,9 @@ def test_talker_ar_default_running_batch_width_is_32(monkeypatch) -> None:
 
     monkeypatch.setattr(qwen_stages, "build_sglang_server_args", _fake_builder)
     monkeypatch.setattr(
-        qwen_bootstrap, "create_talker_scheduler", lambda *a, **k: object()
+        qwen_bootstrap,
+        "create_talker_scheduler",
+        lambda server_args, *a, **k: _publish_for(server_args),
     )
     monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
     monkeypatch.setattr(
@@ -651,7 +682,9 @@ def _talker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, objec
 
     monkeypatch.setattr(qwen_stages, "build_sglang_server_args", _recording_builder)
     monkeypatch.setattr(
-        qwen_bootstrap, "create_talker_scheduler", lambda *a, **k: object()
+        qwen_bootstrap,
+        "create_talker_scheduler",
+        lambda server_args, *a, **k: _publish_for(server_args),
     )
     monkeypatch.setattr(qwen_stages, "avail_gpu_mem", lambda gpu_id: 90.0)
     monkeypatch.setattr(

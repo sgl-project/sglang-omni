@@ -7,6 +7,7 @@ pass, sampling, logit post-processing, and output extraction.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -27,16 +28,16 @@ from sglang_omni.scheduling.types import (
 )
 
 
-def _current_sglang_sampling_backend() -> str | None:
+def current_sglang_sampling_backend() -> str | None:
     try:
-        from sglang.srt.server_args import get_global_server_args
+        from sglang.srt.runtime_context import get_exec
 
-        return get_global_server_args().sampling_backend
+        return get_exec().kernel.sampling_backend
     except ValueError:
         return None
 
 
-def _rank_shared_unseeded_sampling_seed(request: SchedulerRequest, row_idx: int) -> int:
+def rank_shared_unseeded_sampling_seed(request: SchedulerRequest, row_idx: int) -> int:
     request_id = request.request_id or f"row-{row_idx}"
     return derive_sampling_seed("sglang-omni-unseeded-row", request_id)
 
@@ -62,7 +63,7 @@ def resolve_deferred_prefill_inputs(schedule_batch: Any, device: torch.device) -
 
 
 @dataclass
-class _PendingStep:
+class PendingStep:
     """One decode step launched on the GPU but not yet consumed on the host.
 
     Async-decode (one-step lookahead) bookkeeping: a launched step has its
@@ -118,7 +119,7 @@ class ModelRunner:
         self._token_id_host_slot: int = 0
         self._suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
 
-    def _stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
+    def stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
         # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
         if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
@@ -126,17 +127,17 @@ class ModelRunner:
             result._host_token_ids_event = None
             return
         n = ids.shape[0]
-        buf = self._next_token_id_host_buf(ids, n)
+        buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
         event = torch.cuda.Event()
         event.record()
         result._host_token_ids = buf[:n]
         result._host_token_ids_event = event
 
-    def _next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+    def next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
         # Note (wenyao): two buffers ping-ponged so a step's host read never races
         # the next step's async copy
-        return self._pinned_pingpong(
+        return self.pinned_pingpong(
             "_token_id_host_bufs",
             "_token_id_host_slot",
             (n,),
@@ -144,7 +145,7 @@ class ModelRunner:
             realloc_on_grow=True,
         )
 
-    def _pinned_pingpong(
+    def pinned_pingpong(
         self,
         bufs_attr: str,
         slot_attr: str,
@@ -179,7 +180,7 @@ class ModelRunner:
         setattr(self, slot_attr, slot ^ 1)
         return buf
 
-    def _resolve_host_token_ids(self, result: Any) -> Any:
+    def resolve_host_token_ids(self, result: Any) -> Any:
         event = getattr(result, "_host_token_ids_event", None)
         if event is not None:
             event.synchronize()
@@ -190,18 +191,85 @@ class ModelRunner:
         """Bind the scheduler-owned SGLang execution-contract adapter."""
         self._execution_bridge = bridge
 
-    def _execution_context(
+    def execution_context(
         self,
         schedule_batch: Any,
         *,
         isolate_sampling: bool = False,
     ):
+        if schedule_batch.forward_mode.is_extend():
+            self.restore_output_penalty_history(schedule_batch)
         return self._execution_bridge.forward_context(
             schedule_batch,
             isolate_sampling=isolate_sampling,
         )
 
-    def _next_host_staging(
+    @staticmethod
+    def restore_output_penalty_history(schedule_batch: Any) -> None:
+        """Re-seed retained output history into the prepared penalizers."""
+        sampling_info = schedule_batch.sampling_info
+        if sampling_info.penalizer_orchestrator is None:
+            return
+        from sglang.srt.sampling.penaltylib import (
+            BatchedFrequencyPenalizer,
+            BatchedPresencePenalizer,
+            BatchedRepetitionPenalizer,
+        )
+
+        orchestrator = sampling_info.penalizer_orchestrator
+        prepared = []
+        for cls, state_name, param_name in (
+            (
+                BatchedRepetitionPenalizer,
+                "cumulated_repetition_penalties",
+                "repetition_penalty",
+            ),
+            (
+                BatchedFrequencyPenalizer,
+                "cumulated_frequency_penalties",
+                "frequency_penalty",
+            ),
+            (
+                BatchedPresencePenalizer,
+                "cumulated_presence_penalties",
+                "presence_penalty",
+            ),
+        ):
+            penalizer = orchestrator.penalizers.get(cls)
+            if penalizer is not None and penalizer.is_prepared():
+                prepared.append((getattr(penalizer, state_name), param_name))
+        if not prepared:
+            return
+
+        rows, token_ids, counts = [], [], []
+        for row, req in enumerate(schedule_batch.reqs):
+            # Note: (Junnan Li) prepare_for_extend clears req.is_retracted, so
+            # the retained output_ids are the only record of emitted tokens.
+            retained = Counter(
+                token_id
+                for token_id in req.output_ids
+                if 0 <= token_id < orchestrator.vocab_size
+            )
+            rows.extend([row] * len(retained))
+            token_ids.extend(retained)
+            counts.extend(retained.values())
+        if not rows:
+            return
+
+        device = prepared[0][0].device
+        row_indices = torch.tensor(rows, dtype=torch.long, device=device)
+        token_indices = torch.tensor(token_ids, dtype=torch.long, device=device)
+        for state, param_name in prepared:
+            values = [
+                float(getattr(schedule_batch.reqs[row].sampling_params, param_name))
+                * (count if param_name == "frequency_penalty" else 1)
+                for row, count in zip(rows, counts)
+            ]
+            state[row_indices, token_indices] = torch.tensor(
+                values, dtype=state.dtype, device=device
+            )
+
+    def next_host_staging(
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
     ) -> torch.Tensor:
         """Return a pinned host staging buffer covering ``shape``/``dtype``,
@@ -218,7 +286,7 @@ class ModelRunner:
         resolve still holding the previous buffer keeps it alive, so
         replacement cannot alias an in-flight snapshot.
         """
-        return self._pinned_pingpong(
+        return self.pinned_pingpong(
             "_host_staging_buffers",
             "_staging_slot",
             tuple(shape),
@@ -239,12 +307,12 @@ class ModelRunner:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
-        with self._execution_context(schedule_batch, isolate_sampling=True):
-            built = self._build_forward_batch(scheduler_output)
+        with self.execution_context(schedule_batch, isolate_sampling=True):
+            built = self.build_forward_batch(scheduler_output)
             if built is None:
                 return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
             forward_batch, schedule_batch, is_prefill = built
-            batch_result = self._prepare_and_forward(
+            batch_result = self.prepare_and_forward(
                 forward_batch, schedule_batch, scheduler_output.requests, is_prefill
             )
             if is_prefill:
@@ -261,26 +329,26 @@ class ModelRunner:
                     schedule_batch,
                     scheduler_output.requests,
                 )
-            self._ensure_next_token_ids(
+            self.ensure_next_token_ids(
                 batch_result,
                 forward_batch,
                 schedule_batch,
                 scheduler_output,
             )
-            self._publish_next_tokens(
+            self.publish_next_tokens(
                 batch_result,
                 forward_batch,
                 schedule_batch,
                 scheduler_output.requests,
             )
-        return self._finalize(
+        return self.finalize(
             batch_result,
             forward_batch,
             schedule_batch,
             scheduler_output,
         )
 
-    def execute_launch(self, scheduler_output: Any) -> "_PendingStep | None":
+    def execute_launch(self, scheduler_output: Any) -> "PendingStep | None":
         """Enqueue a decode step's forward + on-GPU sample, call
         ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
@@ -299,13 +367,13 @@ class ModelRunner:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
-        with self._execution_context(schedule_batch, isolate_sampling=True):
-            built = self._build_forward_batch(scheduler_output)
+        with self.execution_context(schedule_batch, isolate_sampling=True):
+            built = self.build_forward_batch(scheduler_output)
             if built is None:
                 return None
             forward_batch, schedule_batch, is_prefill = built
             assert not is_prefill, "async lookahead launch is decode-only"
-            batch_result = self._prepare_and_forward(
+            batch_result = self.prepare_and_forward(
                 forward_batch,
                 schedule_batch,
                 scheduler_output.requests,
@@ -315,13 +383,13 @@ class ModelRunner:
             launch_buf = self.post_decode_launch(
                 batch_result, forward_batch, scheduler_output.requests
             )
-            self._ensure_next_token_ids(
+            self.ensure_next_token_ids(
                 batch_result,
                 forward_batch,
                 schedule_batch,
                 scheduler_output,
             )
-            self._publish_next_tokens(
+            self.publish_next_tokens(
                 batch_result,
                 forward_batch,
                 schedule_batch,
@@ -334,7 +402,7 @@ class ModelRunner:
             resolve_scheduler_output = replace(
                 scheduler_output, batch_data=resolve_batch
             )
-        return _PendingStep(
+        return PendingStep(
             event=event,
             launch_buf=launch_buf,
             scheduler_output=resolve_scheduler_output,
@@ -344,7 +412,7 @@ class ModelRunner:
         )
 
     def execute_resolve(
-        self, pending: "_PendingStep | None"
+        self, pending: "PendingStep | None"
     ) -> ModelRunnerOutput | None:
         """Consume a launched decode step: wait on its event (non-blocking
         ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
@@ -365,7 +433,7 @@ class ModelRunner:
         skip_rids = {
             req.request_id
             for req in pending.scheduler_output.requests
-            if req.data.req.finished() or self._req_is_retracted(req.data.req)
+            if req.data.req.finished() or self.req_is_retracted(req.data.req)
         }
         self.post_decode_resolve(
             pending.launch_buf,
@@ -374,7 +442,7 @@ class ModelRunner:
             pending.schedule_batch,
             pending.scheduler_output.requests,
         )
-        return self._finalize(
+        return self.finalize(
             pending.batch_result,
             pending.forward_batch,
             pending.schedule_batch,
@@ -382,7 +450,7 @@ class ModelRunner:
             skip_rids=skip_rids,
         )
 
-    def _build_forward_batch(self, scheduler_output: Any):
+    def build_forward_batch(self, scheduler_output: Any):
         """Build the ForwardBatch + capture-hidden mode. Returns
         ``(forward_batch, schedule_batch, is_prefill)``, or
         None when there is no batch to run."""
@@ -422,7 +490,7 @@ class ModelRunner:
         )
         return forward_batch, schedule_batch, is_prefill
 
-    def _prepare_and_forward(
+    def prepare_and_forward(
         self,
         forward_batch,
         schedule_batch,
@@ -465,7 +533,7 @@ class ModelRunner:
                     )
                 )
             ):
-                batch_result.next_token_ids = self._sample_next_token_ids(
+                batch_result.next_token_ids = self.sample_next_token_ids(
                     batch_result.logits_output,
                     forward_batch,
                     schedule_batch,
@@ -504,7 +572,7 @@ class ModelRunner:
         for sched_req, generation_steps in advanced_steps:
             self.on_generation_step_advanced(sched_req, generation_steps)
 
-    def _finalize(
+    def finalize(
         self,
         batch_result,
         forward_batch,
@@ -517,7 +585,7 @@ class ModelRunner:
         _ensure_next_token_ids before the launch is considered complete. The
         next-forward GPU token rail is published through SGLangExecutionBridge;
         async resolve must never stamp its lagged result onto a live batch."""
-        host_token_ids = self._resolve_host_token_ids(batch_result)
+        host_token_ids = self.resolve_host_token_ids(batch_result)
         if host_token_ids is None:
             outputs = self.output_processor.process(batch_result, scheduler_output)
         else:
@@ -551,7 +619,7 @@ class ModelRunner:
             host_token_ids=host_token_ids,
         )
 
-    def _ensure_next_token_ids(
+    def ensure_next_token_ids(
         self,
         batch_result: Any,
         forward_batch: Any,
@@ -567,7 +635,7 @@ class ModelRunner:
                     device=schedule_batch.input_ids.device,
                 )
         elif batch_result.next_token_ids is None:
-            batch_result.next_token_ids = self._sample_next_token_ids(
+            batch_result.next_token_ids = self.sample_next_token_ids(
                 batch_result.logits_output,
                 forward_batch,
                 schedule_batch,
@@ -588,7 +656,7 @@ class ModelRunner:
             else None
         )
 
-    def _publish_next_tokens(
+    def publish_next_tokens(
         self,
         result: Any,
         forward_batch: Any,
@@ -712,12 +780,12 @@ class ModelRunner:
         if not requests:
             return None
         if result.next_token_ids is None:
-            result.next_token_ids = self._sample_next_token_ids(
+            result.next_token_ids = self.sample_next_token_ids(
                 result.logits_output, forward_batch, None, requests
             )
         n = len(requests)
         ids = result.next_token_ids
-        host_buf = self._next_host_staging((n,), ids.dtype)
+        host_buf = self.next_host_staging((n,), ids.dtype)
         host_buf[:n].copy_(ids[:n], non_blocking=True)
         return host_buf
 
@@ -763,19 +831,19 @@ class ModelRunner:
     # Shared logit processing
     # ------------------------------------------------------------------
 
-    def _sample_next_token_ids(
+    def sample_next_token_ids(
         self,
         logits_output: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._apply_repetition_penalty(logits_output, requests)
-        self._apply_codec_suppress_tokens(logits_output, requests)
-        self._install_sampling_seeds(forward_batch, requests)
+        self.apply_codec_suppress_tokens(logits_output, requests)
+        self.process_sampling_logits(logits_output, requests)
+        self.install_sampling_seeds(forward_batch, requests)
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
-            self._enable_sampler_logprobs(forward_batch, len(requests))
+            self.enable_sampler_logprobs(forward_batch, len(requests))
         next_token_ids = self.tp_worker.model_runner.sample(
             logits_output, forward_batch
         )
@@ -792,14 +860,17 @@ class ModelRunner:
                     "Sampler did not populate next_token_logprobs when "
                     "return_logprob is enabled"
                 )
-            self._record_rollout_logprobs(
+            self.record_rollout_logprobs(
                 next_token_logprobs,
                 next_token_ids,
                 requests,
             )
         return next_token_ids
 
-    def _install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
+    def process_sampling_logits(self, logits_output: Any, requests: list) -> None:
+        pass
+
+    def install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
         """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
         ``multinomial_with_seed``. No-op when no request set a seed, or when a
         subclass already installed its own (e.g. Qwen3-TTS).
@@ -812,17 +883,17 @@ class ModelRunner:
         """
         sampling_info = forward_batch.sampling_info
         if sampling_info.sampling_seed is not None:
-            self._validate_seeded_sampling_supported(sampling_info)
+            self.validate_seeded_sampling_supported(sampling_info)
             return
         sampling_params = [sr.data.req.sampling_params for sr in requests]
         if all(sp.sampling_seed is None for sp in sampling_params):
             return
-        self._validate_seeded_sampling_supported(sampling_info)
+        self.validate_seeded_sampling_supported(sampling_info)
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed
             if seed is None:
-                seed = _rank_shared_unseeded_sampling_seed(request, row_idx)
+                seed = rank_shared_unseeded_sampling_seed(request, row_idx)
             elif not (0 <= seed <= SAMPLING_SEED_MASK):
                 seed = resolve_row_seed(seed)  # mask and cache user seed
                 sp.sampling_seed = seed
@@ -832,7 +903,7 @@ class ModelRunner:
         )
 
     @staticmethod
-    def _validate_seeded_sampling_supported(sampling_info: Any) -> None:
+    def validate_seeded_sampling_supported(sampling_info: Any) -> None:
         if sampling_info.need_min_p_sampling:
             raise ValueError(
                 "SGLang seeded sampling does not support min_p yet; set min_p=0 "
@@ -842,7 +913,7 @@ class ModelRunner:
         need_top_k_sampling = sampling_info.need_top_k_sampling
         if not (need_top_p_sampling or need_top_k_sampling):
             return
-        if _current_sglang_sampling_backend() == "flashinfer":
+        if current_sglang_sampling_backend() == "flashinfer":
             raise ValueError(
                 "SGLang flashinfer sampling backend does not support request seed "
                 "with top_p/top_k filtering; configure sampling_backend='pytorch' "
@@ -850,14 +921,14 @@ class ModelRunner:
             )
 
     @staticmethod
-    def _enable_sampler_logprobs(forward_batch: Any, batch_size: int) -> None:
+    def enable_sampler_logprobs(forward_batch: Any, batch_size: int) -> None:
         forward_batch.return_logprob = True
         if forward_batch.top_logprobs_nums is None:
             forward_batch.top_logprobs_nums = [0] * batch_size
         if forward_batch.token_ids_logprobs is None:
             forward_batch.token_ids_logprobs = [None] * batch_size
 
-    def _record_rollout_logprobs(
+    def record_rollout_logprobs(
         self, next_token_logprobs, next_token_ids, requests
     ) -> None:
         """Append each rollout request's sampled-token logprob (one per step)."""
@@ -892,67 +963,10 @@ class ModelRunner:
                 )
 
     @staticmethod
-    def _req_is_retracted(req: Any) -> bool:
+    def req_is_retracted(req: Any) -> bool:
         return bool(req.is_retracted)
 
-    @staticmethod
-    def _rep_penalty_unique_tokens(data: Any, output_ids: list, vocab: int) -> set:
-        # Note: (Jiaxin Deng) rebuilding unique(output_ids) every decode step is
-        # quadratic over the generation; track the consumed prefix and fold in
-        # only new tokens. A shrunk output_ids (retract/restart) resets the state.
-        seen_len = getattr(data, "_rep_seen_len", 0)
-        seen: set | None = getattr(data, "_rep_seen_tokens", None)
-        if seen is None or len(output_ids) < seen_len:
-            seen = set()
-            seen_len = 0
-        for t in output_ids[seen_len:]:
-            tok = int(t)
-            if 0 <= tok < vocab:
-                seen.add(tok)
-        data._rep_seen_tokens = seen
-        data._rep_seen_len = len(output_ids)
-        return seen
-
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
-        logits = logits_output.next_token_logits
-        if logits is None or logits.ndim != 2:
-            return
-        vocab = logits.shape[1]
-        device = logits.device
-        rep_rows: list[int] = []
-        rep_toks: list[int] = []
-        rep_penalties: list[float] = []
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            penalty = req.sampling_params.repetition_penalty
-            if penalty == 1.0:
-                continue
-            output_ids = req.output_ids
-            if not output_ids:
-                # Note: (Jiaxin Deng) a retract can replace output_ids with an
-                # empty list; drop the incremental state so a restart does not
-                # inherit stale tokens.
-                if getattr(data, "_rep_seen_len", 0):
-                    data._rep_seen_tokens = set()
-                    data._rep_seen_len = 0
-                continue
-            unique = ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
-            if not unique:
-                continue
-            rep_rows.extend([row_idx] * len(unique))
-            rep_toks.extend(unique)
-            rep_penalties.extend([float(penalty)] * len(unique))
-        if rep_rows:
-            orig_dtype = logits.dtype
-            rows_t = torch.tensor(rep_rows, dtype=torch.long, device=device)
-            toks_t = torch.tensor(rep_toks, dtype=torch.long, device=device)
-            pens_t = torch.tensor(rep_penalties, dtype=torch.float32, device=device)
-            scores = logits[rows_t, toks_t].to(torch.float32)
-            scores = torch.where(scores > 0, scores / pens_t, scores * pens_t)
-            logits[rows_t, toks_t] = scores.to(orig_dtype)
-
-    def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
+    def apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return

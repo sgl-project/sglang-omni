@@ -12,6 +12,7 @@ import torch
 
 from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
+    NpuDeviceGraphBackend,
     XpuDeviceGraphBackend,
 )
 
@@ -75,6 +76,27 @@ def test_xpu_backend_records_into_an_xpu_graph_without_error_mode(monkeypatch) -
     assert module.calls[-1] == {"xpu_graph": graph, "pool": pool, "stream": "s"}
 
 
+@pytest.mark.parametrize("thread_local_errors", [False, True])
+def test_npu_backend_records_into_an_npu_graph(
+    monkeypatch, thread_local_errors
+) -> None:
+    module = _recording_module("NPUGraph")
+    monkeypatch.setattr(torch, "npu", module, raising=False)
+    pool = object()
+    stream = object()
+
+    with NpuDeviceGraphBackend().capture(
+        pool=pool, stream=stream, thread_local_errors=thread_local_errors
+    ) as graph:
+        pass
+
+    assert isinstance(graph, module.NPUGraph)
+    expected = {"npu_graph": graph, "pool": pool, "stream": stream}
+    if thread_local_errors:
+        expected["capture_error_mode"] = "thread_local"
+    assert module.calls == [expected]
+
+
 def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
     """The stub tests above accept any keyword, so pin the real ones here.
 
@@ -88,7 +110,10 @@ def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
     assert "xpu_graph" in xpu and "capture_error_mode" not in xpu
 
 
-@pytest.mark.parametrize("backend", [CudaDeviceGraphBackend(), XpuDeviceGraphBackend()])
+@pytest.mark.parametrize(
+    "backend",
+    [CudaDeviceGraphBackend(), XpuDeviceGraphBackend(), NpuDeviceGraphBackend()],
+)
 def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) -> None:
     """The graph context must exit on the body's exception, not swallow it."""
     exited: list[bool] = []
@@ -104,8 +129,10 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
     module = _recording_module("CUDAGraph")
     module.graph = lambda **kwargs: _Ctx()
     module.XPUGraph = module.CUDAGraph
+    module.NPUGraph = module.CUDAGraph
     monkeypatch.setattr(torch, "cuda", module)
     monkeypatch.setattr(torch, "xpu", module)
+    monkeypatch.setattr(torch, "npu", module, raising=False)
 
     with pytest.raises(ValueError):
         with backend.capture():

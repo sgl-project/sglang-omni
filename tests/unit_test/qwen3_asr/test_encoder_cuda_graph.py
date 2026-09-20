@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
 from sglang_omni.models.qwen3_asr import sglang_model
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
@@ -30,11 +31,11 @@ def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
 @pytest.mark.parametrize("total,windows", [(65, 1), (260, 4), (6240, 64), (104, 1)])
 def test_plan_invariants(total, windows):
     r = _plan_only_runner()
-    bucket_size, dummies = r._plan(total, windows)
+    bucket_size, dummies = r.plan(total, windows)
     assert total + sum(dummies) == bucket_size
     assert all(1 <= d <= r._max_seqlen for d in dummies)
     assert windows + len(dummies) == r._max_windows_for(bucket_size)
-    assert r._plan(r._buckets[-1] + 1, 1) is None
+    assert r.plan(r._buckets[-1] + 1, 1) is None
 
 
 def test_get_audio_feature_routing(monkeypatch):
@@ -47,10 +48,10 @@ def test_get_audio_feature_routing(monkeypatch):
     model = object.__new__(sglang_model.Qwen3ASRForConditionalGeneration)
     torch.nn.Module.__init__(model)
     model.audio_tower = tower
-    item = SimpleNamespace(
+    item = MultimodalDataItem(
+        modality=Modality.AUDIO,
         feature=torch.zeros(1, 128, 500),
-        feature_attention_mask=None,
-        model_specific_data={"num_audio_tokens": 65},
+        model_specific_data={"feature_attention_mask": None, "num_audio_tokens": 65},
     )
     get = sglang_model.Qwen3ASRForConditionalGeneration.get_audio_feature
 
@@ -99,7 +100,7 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     attention_metadata = object()
     runner._capture_attention_metadata = attention_metadata
 
-    output = runner._layer_stack(hidden_states, cu_seqlens)
+    output = runner.layer_stack(hidden_states, cu_seqlens)
 
     assert torch.equal(output, hidden_states)
     assert seen["cu_seqlens"] is cu_seqlens

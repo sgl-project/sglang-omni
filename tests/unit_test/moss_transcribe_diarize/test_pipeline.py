@@ -17,8 +17,8 @@ from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
     MossTranscribeDiarizeEngineBuilder,
 )
 from sglang_omni.models.moss_transcribe_diarize.stages import (
-    _missing_additional_chat_templates_compat,
     create_sglang_moss_transcribe_diarize_executor,
+    missing_additional_chat_templates_compat,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -67,7 +67,7 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     )
     factory = config.stages[0].factory
     engine = config.stages[0].engine
-    assert factory.device == "cuda:0"
+    assert factory.device is None
     assert engine.max_running_requests == 16
     assert engine.enable_torch_compile is True
     assert engine.torch_compile_max_bs == 4
@@ -342,8 +342,8 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "from_pretrained",
         lambda *a, **k: processor,
     )
-    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
-    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+    monkeypatch.setattr(stages, "default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "default_context_length", lambda path: 4096)
     monkeypatch.setattr(
         engine_factory, "build_generation_batch_overrides", lambda **k: {}
     )
@@ -492,7 +492,7 @@ def test_processor_compat_ignores_missing_additional_chat_templates(
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_templates)
     monkeypatch.setattr(hub_utils, "list_repo_templates", missing_templates)
 
-    with _missing_additional_chat_templates_compat():
+    with missing_additional_chat_templates_compat():
         assert (
             processing_utils.list_repo_templates("repo", local_files_only=False) == []
         )
@@ -509,6 +509,6 @@ def test_processor_compat_preserves_non_template_repo_errors(
 
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_repo)
 
-    with _missing_additional_chat_templates_compat():
+    with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)

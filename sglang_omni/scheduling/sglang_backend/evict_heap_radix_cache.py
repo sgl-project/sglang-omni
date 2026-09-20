@@ -24,16 +24,16 @@ class EvictHeapRadixCache(RadixCache):
         self._evict_heap.clear()
         super().reset()
 
-    def _evict_heap_push(self, node: TreeNode) -> None:
+    def evict_heap_push(self, node: TreeNode) -> None:
         self._evict_heap_seq += 1
         heapq.heappush(
             self._evict_heap,
             (self.eviction_strategy.get_priority(node), self._evict_heap_seq, node),
         )
         if len(self._evict_heap) > max(1024, 4 * len(self.evictable_leaves)):
-            self._evict_heap_rebuild()
+            self.evict_heap_rebuild()
 
-    def _evict_heap_rebuild(self) -> None:
+    def evict_heap_rebuild(self) -> None:
         self._evict_heap = [
             (self.eviction_strategy.get_priority(n), i, n)
             for i, n in enumerate(self.evictable_leaves)
@@ -45,7 +45,7 @@ class EvictHeapRadixCache(RadixCache):
         was_evictable = node in self.evictable_leaves
         super()._update_leaf_status(node)
         if not was_evictable and node in self.evictable_leaves:
-            self._evict_heap_push(node)
+            self.evict_heap_push(node)
 
     def evict(self, params: EvictParams) -> EvictResult:
         if self.disable:
@@ -62,7 +62,7 @@ class EvictHeapRadixCache(RadixCache):
                 continue
             current_priority = self.eviction_strategy.get_priority(x)
             if current_priority != priority:
-                self._evict_heap_push(x)
+                self.evict_heap_push(x)
                 continue
 
             # Tree values are page-aligned copies of a kv row: page-exact segment.
@@ -70,7 +70,7 @@ class EvictHeapRadixCache(RadixCache):
             num_evicted += len(x.value)
             # note (Junnan Li): _delete_leaf relands the parent via _update_leaf_status.
             self._delete_leaf(x)
-            self._record_remove_event(x)
+            self.kv_events.record_remove(x)
 
         self.update_eviction_metrics(num_evicted, start_time)
         return EvictResult(num_tokens_evicted=num_evicted)

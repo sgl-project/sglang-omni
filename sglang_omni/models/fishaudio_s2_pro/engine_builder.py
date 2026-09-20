@@ -23,7 +23,7 @@ _VALIDATED_AUTO_ATTENTION_BACKENDS = {
 }
 
 
-def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
+def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
     if current_platform.is_npu():
         # Ascend NPU uses the built-in "ascend" attention backend.
         return "ascend"
@@ -109,7 +109,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         }
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
+        fast_ar_backend = resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
         if current_platform.is_npu():
@@ -135,6 +135,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id
+        from sglang.srt.runtime_context import get_schedule
+
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
@@ -154,20 +156,22 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             semantic_begin_id=self.adapter.semantic_begin_id,
             semantic_end_id=self.adapter.semantic_end_id,
             im_end_token_id=self.adapter.eos_token_ids[0],
-            max_batch_size=server_args.max_running_requests,
+            max_batch_size=get_schedule().max_running_requests,
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
             ras_window=self.ras_window,
         )
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
-        return fish_stages._resolve_s2pro_model_buffer_bs(model)
+        return fish_stages.resolve_s2pro_model_buffer_bs(model)
 
     def compile_model(self, model: Any, server_args: Any) -> None:
-        if bool(server_args.enable_torch_compile):
-            fish_stages._compile_s2pro_codebook_decoder(
+        from sglang.srt.runtime_context import get_exec
+
+        if bool(get_exec().graph.enable_torch_compile):
+            fish_stages.compile_s2pro_codebook_decoder(
                 model,
-                max_batch_size=server_args.torch_compile_max_bs,
+                max_batch_size=get_exec().graph.torch_compile_max_bs,
             )
             override_server_args(
                 server_args,

@@ -7,8 +7,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
-from sglang.srt.server_args import ServerArgs
 from transformers import WhisperConfig
 
 import sglang_omni.model_runner.base as model_runner_base
@@ -25,7 +27,7 @@ from sglang_omni.models.arkasr.audio_lengths import (
 from sglang_omni.models.arkasr.audio_tower import ArkAudioMLPAdapter, ArkAudioTower
 from sglang_omni.models.arkasr.config import ArkasrPipelineConfig
 from sglang_omni.models.arkasr.configuration_arkasr import ArkasrConfig
-from sglang_omni.models.arkasr.request_builders import _build_suppressed_token_ids
+from sglang_omni.models.arkasr.request_builders import build_suppressed_token_ids
 from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
 from sglang_omni.models.arkasr.stages import create_sglang_arkasr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -55,8 +57,7 @@ def _tiny_config():
 
 
 def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 def test_arkasr_config_registered():
@@ -664,7 +665,7 @@ def test_ark_suppressed_token_ids():
                 "</tool_call>": 106,
             }
 
-    ids = _build_suppressed_token_ids(_FakeTok())
+    ids = build_suppressed_token_ids(_FakeTok())
     assert 100 not in ids  # EOS kept
     assert 101 in ids and 102 in ids  # special ids
     assert 103 in ids and 104 in ids and 106 in ids  # <...> added tokens

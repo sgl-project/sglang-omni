@@ -9,7 +9,7 @@ import torch
 
 
 @functools.lru_cache(maxsize=32)
-def _mel_banks(
+def mel_banks(
     num_mel_bins: int,
     padded_window_size: int,
     sample_frequency: float,
@@ -79,9 +79,7 @@ def cached_fbank(
         0.97,
     )
     spectrum = torch.fft.rfft(strided_input).abs().pow(2.0)
-    banks = _mel_banks(
-        num_mel_bins, padded_window_size, sample_frequency, device, dtype
-    )
+    banks = mel_banks(num_mel_bins, padded_window_size, sample_frequency, device, dtype)
     return torch.max(
         torch.mm(spectrum, banks.T), kaldi._get_epsilon(device, dtype)
     ).log()

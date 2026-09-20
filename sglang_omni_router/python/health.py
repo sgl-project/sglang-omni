@@ -52,7 +52,7 @@ class HealthChecker:
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run_loop())
+            self._task = asyncio.create_task(self.run_loop())
 
     async def stop(self) -> None:
         if self._task is None:
@@ -64,7 +64,7 @@ class HealthChecker:
             pass
         self._task = None
 
-    async def _run_loop(self) -> None:
+    async def run_loop(self) -> None:
         while True:
             try:
                 await self.check_all_workers_health()

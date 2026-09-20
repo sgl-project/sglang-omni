@@ -12,12 +12,17 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import (
+    Modality,
+    MultimodalDataItem,
+    MultimodalInputFormat,
+)
 
 from sglang_omni.models.fun_asr import encoder_service
 from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
-    _expected_audio_tokens,
     build_cache_namespace,
+    expected_audio_tokens,
 )
 
 _HIDDEN_SIZE = 4
@@ -68,7 +73,7 @@ class _StubModel(torch.nn.Module):
             raise RuntimeError("multi-item boom")
         parts = []
         for item in items:
-            rows = _expected_audio_tokens(item) + self.row_offset
+            rows = expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
             parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
         return torch.cat(parts, dim=0)
@@ -95,13 +100,15 @@ def _item(
     num_audio_tokens: int,
     *,
     with_feature: bool = True,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> MultimodalDataItem:
+    return MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=audio_hash,
-        audio_fingerprint=str(audio_hash) if audio_hash is not None else None,
-        num_audio_tokens=num_audio_tokens,
         feature=torch.zeros(1, 560, 8) if with_feature else None,
-        precomputed_embeddings=None,
+        model_specific_data={
+            "audio_fingerprint": str(audio_hash) if audio_hash is not None else None,
+            "num_audio_tokens": num_audio_tokens,
+        },
     )
 
 
@@ -146,7 +153,7 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
 
     assert not torch.is_inference_mode_enabled()
     with pytest.raises(RuntimeError, match="stream context failed"):
-        with service._batch_context():
+        with service.batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
 
@@ -207,7 +214,7 @@ def test_concurrent_identical_requests_encode_once() -> None:
     items = [_item(123, 3) for _ in range(n_threads)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -286,7 +293,7 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     items = [_item(123, 3) for _ in range(2)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -364,12 +371,12 @@ def test_execute_batch_commits_item_state_only_after_stream_success(
     features = [item.feature for item in items]
 
     with pytest.raises(torch.OutOfMemoryError, match="test encoder sync OOM"):
-        service._execute_batch(items)
+        service.execute_batch(items)
 
     for item, feature in zip(items, features):
         assert item.feature is feature
         assert item.precomputed_embeddings is None
-        assert not hasattr(item, "format")
+        assert item.format == MultimodalInputFormat.NORMAL
 
 
 def test_singleton_oom_is_not_retried_and_next_request_succeeds(
@@ -419,7 +426,7 @@ def test_oom_recovery_synchronizes_and_clears_selected_encoder_device(
         lambda: cleanup_steps.append("empty_cache"),
     )
 
-    service._recover_after_failure(torch.OutOfMemoryError("test encoder OOM"))
+    service.recover_after_failure(torch.OutOfMemoryError("test encoder OOM"))
 
     assert cleanup_steps == ["synchronize", "empty_cache"]
     assert selected_devices == [torch.device("cuda:7")]
@@ -438,7 +445,7 @@ def test_non_oom_failure_is_detached_before_future_and_logging(
         raise ValueError("unexpected encoder shape")
 
     monkeypatch.setattr(service, "encode_batch", raise_non_oom)
-    future = service._submit(object())
+    future = service.submit(object())
 
     failure = future.exception(timeout=2)
     assert isinstance(failure, ValueError)
@@ -472,7 +479,7 @@ def test_failure_arguments_do_not_retain_tensors_in_future(
         raise error_type("failed tensor", failed_tensor)
 
     monkeypatch.setattr(service, "encode_batch", raise_with_tensor)
-    future = service._submit(object())
+    future = service.submit(object())
 
     failure = future.exception(timeout=2)
     assert isinstance(failure, error_type)
@@ -508,8 +515,8 @@ def test_batched_oom_recovers_before_per_item_fallback(
         poisoned = False
 
     monkeypatch.setattr(service, "encode_batch", encode_batch)
-    monkeypatch.setattr(service, "_recover_after_failure", recover)
-    futures = [service._submit(item) for item in items]
+    monkeypatch.setattr(service, "recover_after_failure", recover)
+    futures = [service.submit(item) for item in items]
     results = [future.result(timeout=5) for future in futures]
 
     assert all(torch.equal(result, torch.ones(1, _HIDDEN_SIZE)) for result in results)
@@ -565,7 +572,7 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     items = [_item(31, 3), _item(32, 3), _item(33, 4)]
     errors: list[BaseException] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             service.encode_item(item)
         except BaseException as exc:  # noqa: BLE001
@@ -618,7 +625,7 @@ def test_invalid_cache_entry_is_evicted_and_reencoded() -> None:
     probe = _item(42, 3)
     service.encode_item(probe)
     assert model.encode_calls == 1
-    key = service._cache_key(probe)
+    key = service.cache_key(probe)
 
     for poison in (
         torch.zeros(5, _HIDDEN_SIZE),
@@ -640,7 +647,7 @@ def test_invalid_cache_reader_preserves_a_valid_replacement(
     model = _StubModel()
     service = _make_service(model)
     item = _item(42, 3)
-    key = service._cache_key(item)
+    key = service.cache_key(item)
     service._cache.put(key, torch.zeros(2, _HIDDEN_SIZE))
     stale_reader = threading.Event()
     release_reader = threading.Event()
@@ -690,7 +697,7 @@ def test_token_count_mismatch_fails_loudly() -> None:
 
 def test_missing_token_count_raises() -> None:
     service = _make_service()
-    item = SimpleNamespace(hash=1, feature=None, precomputed_embeddings=None)
+    item = MultimodalDataItem(modality=Modality.AUDIO, hash=1)
 
     with pytest.raises(RuntimeError, match="num_audio_tokens"):
         service.encode_item(item)
@@ -714,9 +721,13 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
 
 
 def test_expected_audio_tokens_uses_request_metadata() -> None:
-    explicit = SimpleNamespace(num_audio_tokens=5, feature=torch.zeros(1, 560, 17))
-    assert _expected_audio_tokens(explicit) == 5
-    assert _expected_audio_tokens(SimpleNamespace()) is None
+    explicit = MultimodalDataItem(
+        modality=Modality.AUDIO,
+        feature=torch.zeros(1, 560, 17),
+        model_specific_data={"num_audio_tokens": 5},
+    )
+    assert expected_audio_tokens(explicit) == 5
+    assert expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:
@@ -726,8 +737,8 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         sampling_rate=16000,
         frame_length=25,
         frame_shift=10,
-        lfr_m=7,
-        lfr_n=6,
+        num_frames_lfr=7,
+        stride_lfr=6,
         window="hamming",
     )
     base = dict(
@@ -745,10 +756,11 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         model, **{**base, "mm_attention_backend": "triton_attn"}
     )
     assert namespace != build_cache_namespace(_StubModel(dtype=torch.bfloat16), **base)
-    changed_frontend = SimpleNamespace(**{**vars(frontend), "lfr_m": 5})
-    assert namespace != build_cache_namespace(
-        model, **{**base, "feature_extractor": changed_frontend}
-    )
+    for field, value in (("num_frames_lfr", 5), ("stride_lfr", 3)):
+        changed_frontend = SimpleNamespace(**{**vars(frontend), field: value})
+        assert namespace != build_cache_namespace(
+            model, **{**base, "feature_extractor": changed_frontend}
+        )
     changed_config = _StubModel()
     changed_config.config = SimpleNamespace(
         text_config=SimpleNamespace(hidden_size=_HIDDEN_SIZE), marker="other"

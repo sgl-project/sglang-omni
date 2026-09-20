@@ -50,13 +50,13 @@ from sglang_omni.vendor.sglang.utils import make_layers
 logger = logging.getLogger(__name__)
 
 
-def _bind_default_weight_loaders(module: nn.Module) -> None:
+def bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
 
 
-class _PredictorDecodeGraph:
+class PredictorDecodeGraph:
     """CUDA graph for one Qwen3-Omni predictor single-token decode bucket."""
 
     def __init__(
@@ -88,14 +88,14 @@ class _PredictorDecodeGraph:
         self.graph = torch.cuda.CUDAGraph()
         self.result_codes: torch.Tensor | None = None
         self.summed_embeddings: torch.Tensor | None = None
-        self._capture()
+        self.capture()
 
     # Note (zijiecode): capture in the same mode as replay. SGLang registers the
     # CUDA generator from inference mode, so on torch 2.9 (ROCm) a no_grad
     # capture_begin() is refused as an inplace update to an inference tensor
     # and the aborted capture breaks every later graph in the process.
     @torch.inference_mode()
-    def _capture(self) -> None:
+    def capture(self) -> None:
         device = self.layer0_codes.device
         with torch.cuda.device(device):
             warmup_stream = torch.cuda.Stream(device=device)
@@ -103,7 +103,7 @@ class _PredictorDecodeGraph:
             warmup_stream.wait_stream(current_stream)
             with torch.cuda.stream(warmup_stream):
                 for _ in range(2):
-                    self.model._code_predictor_forward_incremental_eager(
+                    self.model.code_predictor_forward_incremental_eager(
                         self.layer0_codes,
                         self.talker_hidden,
                     )
@@ -117,7 +117,7 @@ class _PredictorDecodeGraph:
                 capture_error_mode="thread_local",
             ):
                 self.result_codes, self.summed_embeddings = (
-                    self.model._code_predictor_forward_incremental_eager(
+                    self.model.code_predictor_forward_incremental_eager(
                         self.layer0_codes,
                         self.talker_hidden,
                     )
@@ -654,9 +654,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states: same shape as inputs_embeds
         """
         if forward_batch is None:
-            return self._forward_direct(
-                inputs_embeds=inputs_embeds, positions=positions
-            )
+            return self.forward_direct(inputs_embeds=inputs_embeds, positions=positions)
 
         # SGLang layers expect 2D [total_tokens, hidden]; reshape if 3D
         needs_reshape = inputs_embeds.ndim == 3
@@ -690,7 +688,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states = hidden_states.reshape(batch_size, seq_len, -1)
         return hidden_states
 
-    def _forward_direct(
+    def forward_direct(
         self,
         inputs_embeds: torch.Tensor,
         positions: torch.Tensor,
@@ -708,7 +706,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             hidden_states = inputs_embeds.unsqueeze(0)
 
         batch_size, seq_len, hidden_size = hidden_states.shape
-        flat_positions = self._flatten_positions(
+        flat_positions = self.flatten_positions(
             positions=positions,
             batch_size=batch_size,
             seq_len=seq_len,
@@ -719,7 +717,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             residual = hidden_states
             normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
             normed = normed.reshape(batch_size, seq_len, hidden_size)
-            attn_out = self._direct_self_attention(
+            attn_out = self.direct_self_attention(
                 attn=layer.self_attn,
                 hidden_states=normed,
                 positions=flat_positions,
@@ -739,7 +737,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
             return hidden_states
         return hidden_states.squeeze(0)
 
-    def _flatten_positions(
+    def flatten_positions(
         self,
         *,
         positions: torch.Tensor,
@@ -766,7 +764,7 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         return positions.to(device=device, dtype=torch.long).reshape(-1)
 
     @staticmethod
-    def _direct_self_attention(
+    def direct_self_attention(
         *,
         attn: Qwen3OmniMoeThinkerTextAttention,
         hidden_states: torch.Tensor,
@@ -1002,16 +1000,16 @@ class Qwen3OmniTalker(nn.Module):
             dtype=self.model.codec_embedding.weight.dtype,
         )
         self._predictor_decode_graph_batch_sizes = (
-            self._normalize_predictor_decode_graph_batch_sizes(
+            self.normalize_predictor_decode_graph_batch_sizes(
                 server_args,
                 max_batch_size=max_batch_size,
             )
         )
         self._predictor_decode_graphs: dict[
-            tuple[int, torch.dtype], _PredictorDecodeGraph
+            tuple[int, torch.dtype], PredictorDecodeGraph
         ] = {}
         self._predictor_decode_graph_disabled: set[tuple[int, torch.dtype]] = set()
-        _bind_default_weight_loaders(self)
+        bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
 
@@ -1023,7 +1021,7 @@ class Qwen3OmniTalker(nn.Module):
         return self.model.codec_embedding.weight.dtype
 
     @staticmethod
-    def _sample_code_predictor_token(logits: torch.Tensor) -> torch.Tensor:
+    def sample_code_predictor_token(logits: torch.Tensor) -> torch.Tensor:
         # Match HF generate(do_sample=False, temperature=0.0) behavior for the
         # residual code predictor by taking the highest-logit token directly.
         next_code = torch.argmax(logits[:, -1, :], dim=-1)
@@ -1031,7 +1029,7 @@ class Qwen3OmniTalker(nn.Module):
             next_code = next_code.unsqueeze(-1)
         return next_code
 
-    def _reuse_decode_buffers(self, requests: list) -> bool:
+    def reuse_decode_buffers(self, requests: list) -> bool:
         # Note (akazaakane): sampling params/suppress mask are static per
         # request, so only the repetition mask needs updating here.
         prev_rids = self._decode_prep_rids
@@ -1063,7 +1061,7 @@ class Qwen3OmniTalker(nn.Module):
         if batch_size == 0:
             return
 
-        if self._reuse_decode_buffers(requests):
+        if self.reuse_decode_buffers(requests):
             return
 
         device = self._repetition_mask.device
@@ -1284,10 +1282,10 @@ class Qwen3OmniTalker(nn.Module):
             input_embeds=input_embeds,
         )
         if forward_batch.forward_mode.is_extend() and input_embeds is not None:
-            return self._manual_extend_logits(hidden_states, forward_batch)
-        logits_output = self._manual_decode_logits(hidden_states)
+            return self.manual_extend_logits(hidden_states, forward_batch)
+        logits_output = self.manual_decode_logits(hidden_states)
         if forward_batch.forward_mode.is_decode():
-            sampled_token_ids = self._sample_decode_tokens(
+            sampled_token_ids = self.sample_decode_tokens(
                 logits_output.next_token_logits,
                 forward_batch,
             )
@@ -1299,7 +1297,7 @@ class Qwen3OmniTalker(nn.Module):
             )
         return logits_output
 
-    def _manual_extend_logits(
+    def manual_extend_logits(
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
@@ -1310,7 +1308,7 @@ class Qwen3OmniTalker(nn.Module):
         tiny local implementation avoids the generic SGLang logits processor path
         that currently fails on this extend batch.
         """
-        last_index = self._extend_last_index(forward_batch, hidden_states.device)
+        last_index = self.extend_last_index(forward_batch, hidden_states.device)
         pruned_states = hidden_states[last_index]
         next_token_logits, _ = self.codec_head(pruned_states)
         return LogitsProcessorOutput(
@@ -1318,7 +1316,7 @@ class Qwen3OmniTalker(nn.Module):
             hidden_states=pruned_states,
         )
 
-    def _manual_decode_logits(
+    def manual_decode_logits(
         self,
         hidden_states: torch.Tensor,
     ) -> LogitsProcessorOutput:
@@ -1329,7 +1327,7 @@ class Qwen3OmniTalker(nn.Module):
             hidden_states=hidden_states,
         )
 
-    def _sample_decode_tokens(
+    def sample_decode_tokens(
         self,
         logits: torch.Tensor,
         forward_batch: ForwardBatch,
@@ -1352,7 +1350,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         if self._sampler is None:
             return torch.argmax(logits, dim=-1)
-        sampling_info = self._build_static_sampling_info(batch_size)
+        sampling_info = self.build_static_sampling_info(batch_size)
         sampled = self._sampler(
             logits_output,
             sampling_info,
@@ -1365,7 +1363,7 @@ class Qwen3OmniTalker(nn.Module):
             sampled = sampled.squeeze(-1)
         return sampled
 
-    def _build_static_sampling_info(self, batch_size: int) -> SamplingBatchInfo:
+    def build_static_sampling_info(self, batch_size: int) -> SamplingBatchInfo:
         return SamplingBatchInfo(
             temperatures=self._sampling_temperatures[:batch_size],
             top_ps=self._sampling_top_ps[:batch_size],
@@ -1395,7 +1393,7 @@ class Qwen3OmniTalker(nn.Module):
             logit_bias=None,
         )
 
-    def _extend_last_index(
+    def extend_last_index(
         self,
         forward_batch: ForwardBatch,
         device: torch.device,
@@ -1415,7 +1413,7 @@ class Qwen3OmniTalker(nn.Module):
         logits, _ = self.codec_head(hidden_states)
         return logits
 
-    def _code_predictor_forward_incremental(
+    def code_predictor_forward_incremental(
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
@@ -1432,12 +1430,12 @@ class Qwen3OmniTalker(nn.Module):
                 "talker_hidden shape must align with layer0_codes: "
                 f"{tuple(talker_hidden.shape)} vs {tuple(layer0_codes.shape)}"
             )
-        if self._can_use_predictor_decode_graph(
+        if self.can_use_predictor_decode_graph(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
             seq_len=seq_len,
         ):
-            graph_result = self._code_predictor_forward_single_token_graph(
+            graph_result = self.code_predictor_forward_single_token_graph(
                 layer0_codes=layer0_codes,
                 talker_hidden=talker_hidden,
                 batch_size=batch_size,
@@ -1446,12 +1444,12 @@ class Qwen3OmniTalker(nn.Module):
             if graph_result is not None:
                 return graph_result
 
-        return self._code_predictor_forward_incremental_eager(
+        return self.code_predictor_forward_incremental_eager(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
         )
 
-    def _can_use_predictor_decode_graph(
+    def can_use_predictor_decode_graph(
         self,
         *,
         layer0_codes: torch.Tensor,
@@ -1478,7 +1476,7 @@ class Qwen3OmniTalker(nn.Module):
         return True
 
     @staticmethod
-    def _normalize_predictor_decode_graph_batch_sizes(
+    def normalize_predictor_decode_graph_batch_sizes(
         server_args: object,
         *,
         max_batch_size: int,
@@ -1502,13 +1500,13 @@ class Qwen3OmniTalker(nn.Module):
             normalized.append(int(max_batch_size))
         return tuple(normalized)
 
-    def _predictor_decode_graph_bucket_size(self, batch_size: int) -> int | None:
+    def predictor_decode_graph_bucket_size(self, batch_size: int) -> int | None:
         for bucket_size in self._predictor_decode_graph_batch_sizes:
             if bucket_size >= batch_size:
                 return bucket_size
         return None
 
-    def _code_predictor_forward_single_token_graph(
+    def code_predictor_forward_single_token_graph(
         self,
         *,
         layer0_codes: torch.Tensor,
@@ -1516,7 +1514,7 @@ class Qwen3OmniTalker(nn.Module):
         batch_size: int,
         code_dtype: torch.dtype,
     ) -> Tuple[torch.Tensor, torch.Tensor] | None:
-        bucket_size = self._predictor_decode_graph_bucket_size(batch_size)
+        bucket_size = self.predictor_decode_graph_bucket_size(batch_size)
         if bucket_size is None:
             return None
 
@@ -1527,7 +1525,7 @@ class Qwen3OmniTalker(nn.Module):
         graph = self._predictor_decode_graphs.get(key)
         if graph is None:
             try:
-                graph = _PredictorDecodeGraph(self, bucket_size, code_dtype)
+                graph = PredictorDecodeGraph(self, bucket_size, code_dtype)
             except Exception:
                 self._predictor_decode_graph_disabled.add(key)
                 logger.warning(
@@ -1548,7 +1546,7 @@ class Qwen3OmniTalker(nn.Module):
 
         return graph.replay(layer0_codes, talker_hidden)
 
-    def _code_predictor_forward_incremental_eager(
+    def code_predictor_forward_incremental_eager(
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
@@ -1603,13 +1601,13 @@ class Qwen3OmniTalker(nn.Module):
             pos_summed.add_(layer0_embed[:, 0, :])
 
             cache_len = 0
-            self._predictor_forward_one_token(
+            self.predictor_forward_one_token(
                 token_embeds=predictor_input[:, 0:1, :],
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
             cache_len += 1
-            last_hidden = self._predictor_forward_one_token(
+            last_hidden = self.predictor_forward_one_token(
                 token_embeds=predictor_input[:, 1:2, :],
                 batch_size=batch_size,
                 cache_len=cache_len,
@@ -1618,7 +1616,7 @@ class Qwen3OmniTalker(nn.Module):
 
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self._sample_code_predictor_token(logits)
+                next_code = self.sample_code_predictor_token(logits)
                 pos_codes[:, layer_idx + 1].copy_(next_code[:, 0])
 
                 new_embed = self.code_predictor.model.codec_embedding[layer_idx](
@@ -1627,7 +1625,7 @@ class Qwen3OmniTalker(nn.Module):
                 predictor_input[:, layer_idx + 2, :] = new_embed[:, 0, :]
                 pos_summed.add_(new_embed[:, 0, :])
                 if layer_idx < num_groups - 2:
-                    last_hidden = self._predictor_forward_one_token(
+                    last_hidden = self.predictor_forward_one_token(
                         token_embeds=new_embed,
                         batch_size=batch_size,
                         cache_len=cache_len,
@@ -1636,7 +1634,7 @@ class Qwen3OmniTalker(nn.Module):
 
         return result_codes, summed_embeddings
 
-    def _predictor_forward_one_token(
+    def predictor_forward_one_token(
         self,
         *,
         token_embeds: torch.Tensor,
@@ -1654,7 +1652,7 @@ class Qwen3OmniTalker(nn.Module):
             residual = hidden_states
             normed = layer.input_layernorm(hidden_states.reshape(-1, hidden_size))
             normed = normed.reshape(batch_size, 1, hidden_size)
-            attn_out = self._predictor_cached_self_attention(
+            attn_out = self.predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
                 hidden_states=normed,
@@ -1676,7 +1674,7 @@ class Qwen3OmniTalker(nn.Module):
         )
         return hidden_states.reshape(batch_size, 1, hidden_size)
 
-    def _predictor_cached_self_attention(
+    def predictor_cached_self_attention(
         self,
         *,
         layer_idx: int,
@@ -1744,7 +1742,7 @@ class Qwen3OmniTalker(nn.Module):
         talker_hidden: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Generate residual RVQ codes in batch and mirror outputs into static buffers."""
-        result_codes, summed_embeddings = self._code_predictor_forward_incremental(
+        result_codes, summed_embeddings = self.code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
         )

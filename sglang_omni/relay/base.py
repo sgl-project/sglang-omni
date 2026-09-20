@@ -43,15 +43,15 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
         # Try dynamic import to trigger registration
         try:
             if relay_type == "nccl":
-                from .nccl import NcclRelay  # noqa
+                from .nccl import NcclRelay  # noqa: F401 - Register backend.
             elif relay_type == "cuda_ipc":
-                from .cuda_ipc import CudaIpcRelay  # noqa
+                from .cuda_ipc import CudaIpcRelay  # noqa: F401 - Register backend.
             elif relay_type == "shm":
-                from .shm import ShmRelay  # noqa
+                from .shm import ShmRelay  # noqa: F401 - Register backend.
             elif relay_type == "nixl":
-                from .nixl import NixlRelay  # noqa
+                from .nixl import NixlRelay  # noqa: F401 - Register backend.
             elif relay_type == "mooncake":
-                from .mooncake import MooncakeRelay  # noqa
+                from .mooncake import MooncakeRelay  # noqa: F401 - Register backend.
         except ImportError:
             pass
 

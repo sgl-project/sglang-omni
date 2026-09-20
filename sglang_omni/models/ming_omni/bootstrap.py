@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
+
 from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_params
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -25,7 +27,7 @@ def create_thinker_scheduler(
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
-    if server_args.tp_size != tp_size:
+    if resolved_view(server_args).tp_size != tp_size:
         override_server_args(
             server_args,
             "sglang_omni.ming_omni.tensor_parallel_size",
@@ -87,7 +89,7 @@ def create_thinker_scheduler(
         video_token_id=video_token_id,
     )
 
-    stream_output_builder = _select_stream_output_builder(
+    stream_output_builder = select_stream_output_builder(
         enable_streaming_tts,
         tokenizer=tokenizer,
         eos_token_id=getattr(tokenizer, "eos_token_id", None),
@@ -162,7 +164,7 @@ def make_thinker_scheduler_adapters(
                 for _orig_id, _pad in token_id_map.items():
                     input_ids[input_ids == _orig_id] = _pad
 
-        input_ids_list = input_ids.to(dtype=_torch_long()).flatten().tolist()
+        input_ids_list = input_ids.to(dtype=torch_long()).flatten().tolist()
 
         params = payload.request.params or {}
         sampling_params, max_new_tokens, temperature = build_ming_sampling_params(
@@ -171,7 +173,7 @@ def make_thinker_scheduler_adapters(
             vocab_size=vocab_size,
         )
 
-        eos_token_ids = _collect_eos_token_ids(tokenizer)
+        eos_token_ids = collect_eos_token_ids(tokenizer)
         req = Req(
             rid=payload.request_id,
             origin_input_text="",
@@ -201,7 +203,7 @@ def make_thinker_scheduler_adapters(
 
         attention_mask = prompt.get("attention_mask")
         req_data = SGLangARRequestData(
-            input_ids=input_ids.to(dtype=_torch_long()).flatten(),
+            input_ids=input_ids.to(dtype=torch_long()).flatten(),
             attention_mask=attention_mask if hasattr(attention_mask, "to") else None,
             model_inputs=model_inputs,
             capture_model_output_keys=tuple(capture_keys) if capture_keys else (),
@@ -228,7 +230,7 @@ def make_thinker_scheduler_adapters(
                 data.finish_reason,
                 len(output_ids),
                 output_ids[-8:],
-                _stop_hits(output_ids, tokenizer),
+                stop_hits(output_ids, tokenizer),
             )
         thinker_out: dict[str, Any] = {
             "output_ids": output_ids,
@@ -263,7 +265,7 @@ def make_combined_stream_output_builder(
     return _build_stream_output
 
 
-def _select_stream_output_builder(
+def select_stream_output_builder(
     enable_streaming_tts: bool,
     *,
     tokenizer: Any,
@@ -426,18 +428,18 @@ def make_thinker_stream_output_builder(
     return _build_stream_output
 
 
-def _torch_long():
+def torch_long():
     import torch
 
     return torch.long
 
 
-def _collect_eos_token_ids(tokenizer: Any) -> set[int] | None:
+def collect_eos_token_ids(tokenizer: Any) -> set[int] | None:
     """Match Ming V0: let the SGLang request stop only on tokenizer EOS."""
     eid = getattr(tokenizer, "eos_token_id", None)
     return {int(eid)} if isinstance(eid, int) and eid >= 0 else None
 
 
-def _stop_hits(output_ids: list[int], tokenizer: Any) -> list[int]:
-    stop_ids = _collect_eos_token_ids(tokenizer) or set()
+def stop_hits(output_ids: list[int], tokenizer: Any) -> list[int]:
+    stop_ids = collect_eos_token_ids(tokenizer) or set()
     return [int(token_id) for token_id in output_ids[-8:] if int(token_id) in stop_ids]

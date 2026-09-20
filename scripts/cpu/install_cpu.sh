@@ -44,7 +44,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_CPU="${REPO_ROOT}/pyproject_cpu.toml"
 
 
-SGLANG_VERIFIED_VERSION="v0.5.18"
+SGLANG_VERIFIED_VERSION="v0.5.19"
 
 [[ -f "${PYPROJECT_CPU}" ]] || { echo "ERROR: ${PYPROJECT_CPU} not found" >&2; exit 1; }
 

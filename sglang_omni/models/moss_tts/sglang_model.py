@@ -52,7 +52,7 @@ class ChannelLogitsList(list):
     fused_audio: torch.Tensor | None = None
 
 
-def _as_qwen3_config(config: Any) -> Any:
+def as_qwen3_config(config: Any) -> Any:
     from transformers import Qwen3Config
 
     if isinstance(config, Qwen3Config):
@@ -89,7 +89,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
     ) -> None:
         super().__init__()
         self.pp_group = get_pp_group()
-        self.config = self._normalize_config(config)
+        self.config = self.normalize_config(config)
         self.quant_config = quant_config
         self.hidden_size = int(self.config.hidden_size)
         self.delay_graph_sampler = MossTTSDelayAudioGraphSampler(self.config)
@@ -135,11 +135,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
 
         self.logits_processors = torch.nn.ModuleList(
             [
-                self._make_logits_processor(self.config, idx)
+                self.make_logits_processor(self.config, idx)
                 for idx in range(self.config.channels)
             ]
         )
-        self._pad_token_per_channel = self._compute_pad_token_per_channel()
+        self._pad_token_per_channel = self.compute_pad_token_per_channel()
         self._stacked_audio_head_weight: torch.Tensor | None = None
         self._audio_head_padded_vocab = 0
         self._audio_head_expected_ptrs: list[int] = []
@@ -163,7 +163,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             max_batch_size = get_global_server_args().max_running_requests
         except Exception:
             max_batch_size = max_batch_size or 1
-        weight = self._first_embedding_weight()
+        weight = self.first_embedding_weight()
         self._decode_input_embedding = torch.nn.Embedding(
             int(max_batch_size or 1),
             self.hidden_size,
@@ -173,14 +173,14 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         self._decode_input_embedding.weight.requires_grad_(False)
 
     @staticmethod
-    def _normalize_config(config: Any) -> Any:
-        language_config = _as_qwen3_config(getattr(config, "language_config", None))
+    def normalize_config(config: Any) -> Any:
+        language_config = as_qwen3_config(getattr(config, "language_config", None))
         config.language_config = language_config
         config.hidden_size = int(
-            getattr(config, "hidden_size", getattr(language_config, "hidden_size"))
+            getattr(config, "hidden_size", language_config.hidden_size)
         )
         config.vocab_size = int(
-            getattr(config, "vocab_size", getattr(language_config, "vocab_size"))
+            getattr(config, "vocab_size", language_config.vocab_size)
         )
         config.n_vq = int(getattr(config, "n_vq", 32))
         config.channels = int(getattr(config, "channels", config.n_vq + 1))
@@ -201,7 +201,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         config.language_config.pad_token = list(config.pad_token)
         return config
 
-    def _first_embedding_weight(self) -> torch.Tensor:
+    def first_embedding_weight(self) -> torch.Tensor:
         for layer in self.embedding_list:
             weight = getattr(layer, "weight", None)
             if isinstance(weight, torch.Tensor):
@@ -218,13 +218,13 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
 
     @property
     def device(self) -> torch.device:
-        return self._first_embedding_weight().device
+        return self.first_embedding_weight().device
 
     @property
     def dtype(self) -> torch.dtype:
-        return self._first_embedding_weight().dtype
+        return self.first_embedding_weight().dtype
 
-    def _compute_pad_token_per_channel(self) -> list[int]:
+    def compute_pad_token_per_channel(self) -> list[int]:
         pad = getattr(self.config, "pad_token", None)
         if isinstance(pad, (list, tuple)) and pad:
             pad_ids = [int(value) if value is not None else 0 for value in pad]
@@ -236,9 +236,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         ] * (self.config.channels - 1)
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self._prepare_multi_modal_inputs(input_ids)
+        return self.prepare_multi_modal_inputs(input_ids)
 
-    def _prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
+    def prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
         if input_ids.dim() == 1:
             channels = int(self.config.channels)
             total_tokens = int(input_ids.shape[0])
@@ -267,7 +267,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 f"got {input_ids_2d.shape[-1]}"
             )
 
-        weight = self._first_embedding_weight()
+        weight = self.first_embedding_weight()
         embeds = torch.zeros(
             input_ids_2d.shape[0],
             self.hidden_size,
@@ -301,7 +301,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             if is_decode:
                 input_embeds = self._decode_input_embedding(input_ids)
             elif self.pp_group.is_first_rank:
-                input_embeds = self._prepare_multi_modal_inputs(input_ids)
+                input_embeds = self.prepare_multi_modal_inputs(input_ids)
             else:
                 input_embeds = None
 
@@ -315,7 +315,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         if not self.pp_group.is_last_rank:
             return hidden_states
 
-        sample_hidden_states = self._select_sample_hidden_states(
+        sample_hidden_states = self.select_sample_hidden_states(
             hidden_states,
             forward_batch,
         )
@@ -332,7 +332,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         )
 
     @staticmethod
-    def _make_logits_processor(config: Any, channel: int) -> LogitsProcessor:
+    def make_logits_processor(config: Any, channel: int) -> LogitsProcessor:
         """Per-channel LogitsProcessor sized to that channel's own vocab.
 
         sglang's ``_get_logits`` slices the head output to ``config.vocab_size``
@@ -376,7 +376,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         )
         return outputs
 
-    def _audio_heads_use_plain_lm_head(self) -> bool:
+    def audio_heads_use_plain_lm_head(self) -> bool:
         # Note (Jiaxin Deng): mirror of the pinned _compute_lm_head branch
         # order; the fused GEMM reproduces only its final plain-matmul arm.
         try:
@@ -402,13 +402,13 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 return False
         return True
 
-    def _fused_audio_heads_requested(self) -> bool:
+    def fused_audio_heads_requested(self) -> bool:
         return (
             os.environ.get("MOSS_DELAY_FUSED_AUDIO_HEADS", "1") != "0"
             and self.pp_group.is_last_rank
         )
 
-    def _fused_audio_heads_eligible(self, weights: list[Any]) -> bool:
+    def fused_audio_heads_eligible(self, weights: list[Any]) -> bool:
         # Note (Jiaxin Deng): the fused path bypasses LogitsProcessor, so it is
         # gated to the plain configuration it reproduces: TP1, unquantized
         # same-shape ParallelLMHead weights, one audio vocab, no softcapping.
@@ -427,10 +427,10 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 for w in weights
             )
             and len({int(v) for v in self.config.vocab_size_list[1:]}) == 1
-            and self._audio_heads_use_plain_lm_head()
+            and self.audio_heads_use_plain_lm_head()
         )
 
-    def _record_stacked_audio_heads(self, stacked: torch.Tensor, rows: int) -> None:
+    def record_stacked_audio_heads(self, stacked: torch.Tensor, rows: int) -> None:
         self._stacked_audio_head_weight = stacked
         self._audio_head_padded_vocab = rows
         self._audio_head_expected_ptrs = [
@@ -438,14 +438,14 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             for index in range(len(self.lm_heads) - 1)
         ]
 
-    def _ensure_stacked_audio_heads(self) -> bool:
+    def ensure_stacked_audio_heads(self) -> bool:
         if self._stacked_audio_head_weight is not None:
             return True
         if self._fused_audio_heads_enabled is False:
             return False
         weights = [getattr(head, "weight", None) for head in self.lm_heads[1:]]
-        enabled = self._fused_audio_heads_requested() and (
-            self._fused_audio_heads_eligible(weights)
+        enabled = self.fused_audio_heads_requested() and (
+            self.fused_audio_heads_eligible(weights)
         )
         self._fused_audio_heads_enabled = enabled
         if not enabled:
@@ -460,14 +460,14 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         rows = int(weights[0].shape[0])
         for index, head in enumerate(self.lm_heads[1:]):
             head.weight.data = stacked[index * rows : (index + 1) * rows]
-        self._record_stacked_audio_heads(stacked, rows)
+        self.record_stacked_audio_heads(stacked, rows)
         logger.info(
             "MOSS-TTS fused audio heads enabled (stacked %s)", tuple(stacked.shape)
         )
         return True
 
     @staticmethod
-    def _stacked_view_over_heads(weights: list[torch.Tensor]) -> torch.Tensor | None:
+    def stacked_view_over_heads(weights: list[torch.Tensor]) -> torch.Tensor | None:
         """Return one 2D view spanning the heads, or None if they are not one block."""
 
         first = weights[0]
@@ -504,15 +504,15 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         self._audio_head_expected_ptrs = []
         self._fused_audio_heads_enabled = None
         weights = [getattr(head, "weight", None) for head in self.lm_heads[1:]]
-        if not self._fused_audio_heads_requested() or not (
-            self._fused_audio_heads_eligible(weights)
+        if not self.fused_audio_heads_requested() or not (
+            self.fused_audio_heads_eligible(weights)
         ):
             self._fused_audio_heads_enabled = False
             logger.info(
                 "MOSS-TTS fused audio heads disabled (unsupported configuration)"
             )
             return
-        stacked = self._stacked_view_over_heads(weights)
+        stacked = self.stacked_view_over_heads(weights)
         if stacked is None:
             # Note (Jiaxin Deng): failing closed keeps the contract, since a
             # follower on the per-head path diverges from the leader's GEMM.
@@ -523,13 +523,13 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 "MOSS_DELAY_FUSED_AUDIO_HEADS=0"
             )
         self._fused_audio_heads_enabled = True
-        self._record_stacked_audio_heads(stacked, int(weights[0].shape[0]))
+        self.record_stacked_audio_heads(stacked, int(weights[0].shape[0]))
         logger.info(
             "MOSS-TTS fused audio heads adopted from shared storage (stacked %s)",
             tuple(stacked.shape),
         )
 
-    def _fused_audio_heads_ready(self) -> bool:
+    def fused_audio_heads_ready(self) -> bool:
         # Note (Jiaxin Deng): stacking happens once at load time, before the
         # weight-share IPC export and before KV profiling; the request path
         # only observes the result.
@@ -553,7 +553,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 return False
         return True
 
-    def _compute_fused_audio_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def compute_fused_audio_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         n_audio = int(self.config.channels) - 1
         audio_vocab = int(self.config.vocab_size_list[1])
         flat = torch.nn.functional.linear(
@@ -570,7 +570,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         *,
         is_audio: bool = False,
     ) -> list[torch.Tensor]:
-        if self._fused_audio_heads_ready():
+        if self.fused_audio_heads_ready():
             logits_metadata = LogitsMetadata.from_forward_batch(forward_batch)
             logits_metadata.next_token_logits_buffer = None
             logits_metadata.forward_mode = ForwardMode.DECODE
@@ -580,7 +580,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 lm_head=self.lm_heads[0],
                 logits_metadata=logits_metadata,
             ).next_token_logits
-            fused = self._compute_fused_audio_logits(hidden_states)
+            fused = self.compute_fused_audio_logits(hidden_states)
             logits = ChannelLogitsList([text, *fused.unbind(dim=1)])
             logits.fused_audio = fused
         else:
@@ -603,7 +603,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
 
         return matches_graph_profile(data)
 
-    def _sampling_graph_support_reason(self) -> str | None:
+    def sampling_graph_support_reason(self) -> str | None:
         if not (current_platform.is_cuda() or current_platform.is_musa()):
             return f"{self.device.type.upper()} graph is unavailable"
         if int(self.config.channels) != int(self.config.n_vq) + 1:
@@ -652,7 +652,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             return
         if any(batch_size < 1 for batch_size in buckets):
             raise ValueError("MOSS-TTS Delay sampling CUDA graph bs must be >= 1")
-        reason = self._sampling_graph_support_reason()
+        reason = self.sampling_graph_support_reason()
         if reason is not None:
             logger.warning(
                 "MOSS-TTS Delay sampling CUDA graph disabled: %s. "
@@ -700,7 +700,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         )
 
     @staticmethod
-    def _select_sample_hidden_states(
+    def select_sample_hidden_states(
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
@@ -757,19 +757,19 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 continue
 
             if name.startswith("emb_ext.") and name.endswith(".weight"):
-                mapped = self._map_audio_embedding_name(name)
+                mapped = self.map_audio_embedding_name(name)
                 if mapped is not None and mapped in params_dict:
-                    self._load_param(params_dict[mapped], loaded_weight)
+                    self.load_param(params_dict[mapped], loaded_weight)
                 continue
 
             if name == "model.embed_tokens.weight":
                 mapped = "embedding_list.0.weight"
                 if mapped in params_dict:
-                    self._load_param(params_dict[mapped], loaded_weight)
+                    self.load_param(params_dict[mapped], loaded_weight)
 
             if name.startswith("lm_heads.") and name.endswith(".weight"):
                 if name in params_dict:
-                    self._load_param(params_dict[name], loaded_weight)
+                    self.load_param(params_dict[name], loaded_weight)
                 continue
 
             mapped_stacked = False
@@ -794,17 +794,17 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                 continue
             param = params_dict.get(name)
             if param is not None:
-                self._load_param(param, loaded_weight)
+                self.load_param(param, loaded_weight)
             else:
                 logger.warning(f"MOSS-TTS parameter {original_name} not found")
 
         # Note (Jiaxin Deng): stack here, not on the first request: the
         # weight-share IPC export and KV profiling both run after load, so
         # they must see the final head storage layout and the transient copy.
-        self._ensure_stacked_audio_heads()
+        self.ensure_stacked_audio_heads()
 
     @staticmethod
-    def _map_audio_embedding_name(name: str) -> str | None:
+    def map_audio_embedding_name(name: str) -> str | None:
         try:
             idx = int(name.split(".")[1]) + 1
         except (IndexError, ValueError):
@@ -812,7 +812,7 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         return f"embedding_list.{idx}.weight"
 
     @staticmethod
-    def _load_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
+    def load_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
 

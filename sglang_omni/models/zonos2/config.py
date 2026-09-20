@@ -20,7 +20,7 @@ from sglang_omni.config import (
 _PKG = "sglang_omni.models.zonos2"
 
 
-def _stages(*, auxiliary_gpu: int, auxiliary_process: str) -> list[StageConfig]:
+def stages(*, auxiliary_gpu: int, auxiliary_process: str) -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
@@ -73,7 +73,7 @@ class Zonos2PipelineConfig(PipelineConfig):
 
     model_path: str
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(auxiliary_gpu=0, auxiliary_process="pipeline")
+        default_factory=lambda: stages(auxiliary_gpu=0, auxiliary_process="pipeline")
     )
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
@@ -100,7 +100,7 @@ class Zonos2MultiGPUPipelineConfig(Zonos2PipelineConfig):
     """Offload codec + speaker encoder to cuda:1, leaving the AR engine alone on cuda:0."""
 
     stages: list[StageConfig] = Field(
-        default_factory=lambda: _stages(auxiliary_gpu=1, auxiliary_process="auxiliary")
+        default_factory=lambda: stages(auxiliary_gpu=1, auxiliary_process="auxiliary")
     )
 
 

@@ -3,12 +3,12 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.runtime_context import get_parallel
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
@@ -66,7 +66,7 @@ class MingTTSTPStepUpdate:
 
 
 @dataclass
-class _MingTTSRequestState:
+class MingTTSRequestState:
     prefill_input_embeds: torch.Tensor | None = None
     feedback_embeddings: list[torch.Tensor] = field(default_factory=list)
     latent_history: torch.Tensor | None = None
@@ -80,8 +80,8 @@ class MingTTSModelRunner(ModelRunner):
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
         self._tp_rank = int(tp_worker.tp_rank)
-        self._tp_size = int(tp_worker.server_args.tp_size)
-        self._request_states: dict[str, _MingTTSRequestState] = {}
+        self._tp_size = int(get_parallel().tp_size)
+        self._request_states: dict[str, MingTTSRequestState] = {}
 
     def reset_request(self, request_id: str) -> None:
         self._request_states.pop(request_id, None)
@@ -94,9 +94,9 @@ class MingTTSModelRunner(ModelRunner):
     ) -> None:
         del forward_batch, schedule_batch
         for sched_req in requests:
-            self._materialize_request_state(sched_req)
+            self.materialize_request_state(sched_req)
 
-    def _materialize_request_state(self, sched_req: Any) -> None:
+    def materialize_request_state(self, sched_req: Any) -> None:
         request_id = sched_req.request_id
         if request_id in self._request_states:
             return
@@ -132,16 +132,8 @@ class MingTTSModelRunner(ModelRunner):
                 if prompt_latent is not None:
                     start = state.prompt_latent_start_position
                     token_count = int(state.prompt_latent_token_count)
-                    projected_prompt = self.model.linear_proj_audio(
-                        prompt_latent.to(dtype=dtype).reshape(
-                            -1,
-                            int(self.model.patch_size),
-                            int(self.model.latent_dim),
-                        )
-                    )
-                    projected_prompt = projected_prompt.reshape(
-                        -1,
-                        int(projected_prompt.shape[-1]),
+                    projected_prompt = self.model.project_reference_latents(
+                        prompt_latent
                     )
                     prefill_input_embeds[int(start) : int(start) + token_count] = (
                         projected_prompt.to(dtype=prefill_input_embeds.dtype)
@@ -150,7 +142,7 @@ class MingTTSModelRunner(ModelRunner):
                 prefill_input_embeds = prefill_input_embeds.detach()
 
         latent_history = None
-        if self._is_entry_rank:
+        if self.is_entry_rank:
             latent_history = torch.zeros(
                 1,
                 int(self.model.history_patch_size),
@@ -166,7 +158,7 @@ class MingTTSModelRunner(ModelRunner):
                 else:
                     latent_history[:, -prompt_len:, :].copy_(prompt_latent)
 
-        self._request_states[request_id] = _MingTTSRequestState(
+        self._request_states[request_id] = MingTTSRequestState(
             prefill_input_embeds=prefill_input_embeds,
             latent_history=latent_history,
         )
@@ -178,10 +170,10 @@ class MingTTSModelRunner(ModelRunner):
         requests: list,
     ) -> GenerationBatchResult:
         del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(forward_batch, input_embeds)
+        input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
+        return self.forward_with_input_embeds(forward_batch, input_embeds)
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -229,7 +221,7 @@ class MingTTSModelRunner(ModelRunner):
             batch_parts.append(request_embeds)
         return torch.cat(batch_parts, dim=0)
 
-    def _forward_with_input_embeds(
+    def forward_with_input_embeds(
         self,
         forward_batch: Any,
         input_embeds: torch.Tensor,
@@ -290,7 +282,7 @@ class MingTTSModelRunner(ModelRunner):
     ) -> None:
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
-        self._collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
+        self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -299,7 +291,7 @@ class MingTTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
+        self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
 
     def finalize_skip_rids(self, scheduler_output: Any) -> set[str]:
         batch = getattr(scheduler_output, "batch_data", None)
@@ -307,7 +299,7 @@ class MingTTSModelRunner(ModelRunner):
             return {sched_req.request_id for sched_req in scheduler_output.requests}
         return set()
 
-    def _collect_ming_tts_step(
+    def collect_ming_tts_step(
         self,
         result: Any,
         forward_batch: Any,
@@ -330,142 +322,132 @@ class MingTTSModelRunner(ModelRunner):
             device=hidden_states.device,
             feedback_dtype=weight.dtype,
         )
-        if self._is_entry_rank:
+        if self.is_entry_rank:
             try:
-                self._run_entry_tail_step(hidden_states, requests, step_update)
+                self.run_entry_tail_step(hidden_states, requests, step_update)
             except Exception:
                 step_update.control_tensor.zero_()
                 step_update.tail_failed.fill_(1)
                 step_update.feedback_embeddings.zero_()
                 raise
             finally:
-                self._broadcast_tp_step_update(step_update)
+                self.broadcast_tp_step_update(step_update)
         else:
-            self._broadcast_tp_step_update(step_update)
-            self._apply_follower_step_update(step_update, requests)
+            self.broadcast_tp_step_update(step_update)
+            self.apply_follower_step_update(step_update, requests)
 
         next_token_ids = step_update.next_token_ids
         result.next_token_ids = next_token_ids
 
-    def _run_entry_tail_step(
+    def run_entry_tail_step(
         self,
         hidden_states: torch.Tensor,
         requests: list[Any],
         step_update: MingTTSTPStepUpdate,
     ) -> None:
-        weight = self.model._decode_input_embedding.weight
         device = hidden_states.device
         next_ids = []
 
-        if device.type == "cuda":
-            dtype = weight.dtype
-            if dtype not in (torch.float16, torch.bfloat16):
-                dtype = torch.bfloat16
-            context = torch.autocast(device_type="cuda", dtype=dtype)
-        else:
-            context = nullcontext()
+        request_states = [self._request_states[req.request_id] for req in requests]
+        steps = [int(req.data.generation_steps) for req in requests]
+        max_steps = [int(req.data.max_new_tokens) for req in requests]
+        histories = [state.latent_history for state in request_states]
+        history_batch = torch.cat(histories, dim=0)
+        steps_tensor = torch.tensor(steps, dtype=torch.long, device=device)
+        max_steps_tensor = torch.tensor(
+            max_steps,
+            dtype=torch.long,
+            device=device,
+        )
+        cfg_tensor = torch.tensor(
+            [float(req.data.state.cfg) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
+        sigma_tensor = torch.tensor(
+            [float(req.data.state.sigma) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
+        temperature_tensor = torch.tensor(
+            [float(req.data.state.temperature) for req in requests],
+            dtype=torch.float32,
+            device=device,
+        )
 
-        with context:
-            request_states = [self._request_states[req.request_id] for req in requests]
-            steps = [int(req.data.generation_steps) for req in requests]
-            max_steps = [int(req.data.max_new_tokens) for req in requests]
-            histories = [state.latent_history for state in request_states]
-            history_batch = torch.cat(histories, dim=0)
-            steps_tensor = torch.tensor(steps, dtype=torch.long, device=device)
-            max_steps_tensor = torch.tensor(
-                max_steps,
-                dtype=torch.long,
-                device=device,
+        tail_outputs = self.model.run_tail_step(
+            MingTTSTailInputs(
+                hidden_states=hidden_states,
+                latent_history=history_batch,
+                cfg=cfg_tensor,
+                sigma=sigma_tensor,
+                temperature=temperature_tensor,
             )
-            cfg_tensor = torch.tensor(
-                [float(req.data.state.cfg) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
-            sigma_tensor = torch.tensor(
-                [float(req.data.state.sigma) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
-            temperature_tensor = torch.tensor(
-                [float(req.data.state.temperature) for req in requests],
-                dtype=torch.float32,
-                device=device,
-            )
+        )
+        sampled = tail_outputs.sampled
+        stop_prob = tail_outputs.stop_prob
+        feedback_embeddings = tail_outputs.feedback_embeddings
+        stop_flags = (stop_prob > 0.5) & (steps_tensor > 3)
+        length_flags = steps_tensor + 1 >= max_steps_tensor
+        feedback_mask = ~(stop_flags | length_flags)
+        step_update.feedback_mask.copy_(feedback_mask)
+        decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
+        stop_list, length_list = decision_rows
+        for row_idx, request_state in enumerate(request_states):
+            data = requests[row_idx].data
+            step = steps[row_idx]
+            sampled_row = sampled[row_idx : row_idx + 1]
+            sampled_chunk = sampled_row.squeeze(0).detach()
 
-            tail_outputs = self.model.run_tail_step(
-                MingTTSTailInputs(
-                    hidden_states=hidden_states,
-                    latent_history=history_batch,
-                    cfg=cfg_tensor,
-                    sigma=sigma_tensor,
-                    temperature=temperature_tensor,
+            stop = stop_list[row_idx]
+            length = length_list[row_idx]
+            is_last = stop or length
+            if data.is_streaming:
+                data.pending_stream_patch = MingTTSLatentPatch(
+                    latent=sampled_chunk,
+                    is_last=is_last,
                 )
+            else:
+                request_state.generated_latents.append(sampled_chunk)
+            if stop:
+                request_state.stop_step = step
+                next_ids.append(int(data.audio_eos_token_id))
+                continue
+
+            self.advance_latent_history(
+                request_state.latent_history,
+                sampled_row,
             )
-            sampled = tail_outputs.sampled
-            stop_prob = tail_outputs.stop_prob
-            feedback_embeddings = tail_outputs.feedback_embeddings
-            stop_flags = (stop_prob > 0.5) & (steps_tensor > 3)
-            length_flags = steps_tensor + 1 >= max_steps_tensor
-            feedback_mask = ~(stop_flags | length_flags)
-            step_update.feedback_mask.copy_(feedback_mask)
-            decision_rows = torch.stack((stop_flags, length_flags)).cpu().tolist()
-            stop_list, length_list = decision_rows
-            for row_idx, request_state in enumerate(request_states):
-                data = requests[row_idx].data
-                step = steps[row_idx]
-                sampled_row = sampled[row_idx : row_idx + 1]
-                sampled_chunk = sampled_row.squeeze(0).detach()
-
-                stop = stop_list[row_idx]
-                length = length_list[row_idx]
-                is_last = stop or length
-                if data.is_streaming:
-                    data.pending_stream_patch = MingTTSLatentPatch(
-                        latent=sampled_chunk,
-                        is_last=is_last,
+            next_ids.append(int(data.audio_patch_token_id))
+            if not length:
+                feedback = feedback_embeddings[row_idx].detach()
+                request_state.feedback_embeddings.append(feedback)
+                step_update.feedback_embeddings[row_idx].copy_(
+                    feedback.to(
+                        device=step_update.feedback_embeddings.device,
+                        dtype=step_update.feedback_embeddings.dtype,
                     )
-                else:
-                    request_state.generated_latents.append(sampled_chunk)
-                if stop:
-                    request_state.stop_step = step
-                    next_ids.append(int(data.audio_eos_token_id))
-                    continue
-
-                self._advance_latent_history(
-                    request_state.latent_history,
-                    sampled_row,
                 )
-                next_ids.append(int(data.audio_patch_token_id))
-                if not length:
-                    feedback = feedback_embeddings[row_idx].detach()
-                    request_state.feedback_embeddings.append(feedback)
-                    step_update.feedback_embeddings[row_idx].copy_(
-                        feedback.to(
-                            device=step_update.feedback_embeddings.device,
-                            dtype=step_update.feedback_embeddings.dtype,
-                        )
-                    )
 
-            for row_idx, (stop, length) in enumerate(zip(stop_list, length_list)):
-                if not (stop or length):
-                    continue
-                request_state = request_states[row_idx]
-                data = requests[row_idx].data
-                data.stop_step = request_state.stop_step
-                if data.is_streaming:
-                    continue
-                data.generated_latents = torch.stack(
-                    request_state.generated_latents,
-                    dim=0,
-                ).to(device="cpu", dtype=torch.float32)
+        for row_idx, (stop, length) in enumerate(zip(stop_list, length_list)):
+            if not (stop or length):
+                continue
+            request_state = request_states[row_idx]
+            data = requests[row_idx].data
+            data.stop_step = request_state.stop_step
+            if data.is_streaming:
+                continue
+            data.generated_latents = torch.stack(
+                request_state.generated_latents,
+                dim=0,
+            ).to(device="cpu", dtype=torch.float32)
 
         step_update.next_token_ids.copy_(
             torch.tensor(next_ids, dtype=torch.long, device=device)
         )
 
     @staticmethod
-    def _advance_latent_history(
+    def advance_latent_history(
         latent_history: torch.Tensor,
         sampled_row: torch.Tensor,
     ) -> None:
@@ -481,7 +463,7 @@ class MingTTSModelRunner(ModelRunner):
         latent_history[:, :-patch, :].copy_(latent_history[:, patch:, :].clone())
         latent_history[:, -patch:, :].copy_(sampled_row)
 
-    def _apply_follower_step_update(
+    def apply_follower_step_update(
         self,
         step_update: MingTTSTPStepUpdate,
         requests: list[Any],
@@ -496,24 +478,24 @@ class MingTTSModelRunner(ModelRunner):
                 request_state.feedback_embeddings.append(feedback)
 
     @property
-    def _is_entry_rank(self) -> bool:
+    def is_entry_rank(self) -> bool:
         # Note (yzxiao): FlowLoss is not tensor-parallel, so rank 0 owns
         # acoustic sampling while followers only mirror the next AR input.
         return self._tp_rank == 0
 
-    def _broadcast_tp_step_update(self, step_update: MingTTSTPStepUpdate) -> None:
+    def broadcast_tp_step_update(self, step_update: MingTTSTPStepUpdate) -> None:
         if self._tp_size <= 1:
             return
         for tensor in (
             step_update.control_tensor,
             step_update.feedback_embeddings,
         ):
-            self._broadcast_tensor_from_entry(tensor)
+            self.broadcast_tensor_from_entry(tensor)
 
-    def _broadcast_tensor_from_entry(self, tensor: torch.Tensor) -> None:
+    def broadcast_tensor_from_entry(self, tensor: torch.Tensor) -> None:
         import torch.distributed as dist
 
-        tp_group = self._get_tp_group()
+        tp_group = self.get_tp_group()
         if tp_group is None:
             raise RuntimeError("Ming TTS TP broadcast requires a TP group")
         ranks = getattr(tp_group, "ranks", None)
@@ -523,7 +505,7 @@ class MingTTSModelRunner(ModelRunner):
             dist_group = getattr(tp_group, "group", None)
         dist.broadcast(tensor, src=src_rank, group=dist_group)
 
-    def _get_tp_group(self) -> Any:
+    def get_tp_group(self) -> Any:
         getter = getattr(self.tp_worker, "get_tp_group", None)
         if callable(getter):
             return getter()

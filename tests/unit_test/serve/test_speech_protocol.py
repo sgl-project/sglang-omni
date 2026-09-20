@@ -465,7 +465,7 @@ def test_reference_audio_accepts_allowed_https(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -504,7 +504,7 @@ def test_reference_audio_accepts_public_https_by_default(
     service = SpeechRequestValidator(default_model="tts")
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -596,7 +596,7 @@ def test_reference_audio_rejects_http_status_with_speech_error(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -655,7 +655,7 @@ def test_reference_audio_revalidates_redirect_domains(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -683,7 +683,7 @@ def test_reference_audio_allows_configured_domain_suffix_redirect(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -725,7 +725,7 @@ def test_reference_audio_revalidates_redirect_addresses(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         resolve_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -754,7 +754,7 @@ def test_reference_audio_rejects_oversized_https_response(
     )
     monkeypatch.setattr(
         resource_connector,
-        "_resolve_remote_addresses",
+        "resolve_remote_addresses",
         _public_test_addresses,
     )
     service.reference_connector.connection = _MockHTTPConnection(
@@ -1065,6 +1065,84 @@ def test_file_reference_rejects_symlink_escape(tmp_path: Path) -> None:
 
     with pytest.raises(SpeechAPIError) as exc_info:
         service.parse_request({"input": "hello", "ref_audio": link.as_uri()})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_accepts_bare_path_inside_allowlist(tmp_path: Path) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=tmp_path,
+    )
+
+    request = service.parse_request({"input": "hello", "ref_audio": str(audio_path)})
+
+    assert request.ref_audio == str(audio_path.resolve())
+
+
+def test_reference_audio_rejects_outside_allowlist_bare_path(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=allowed,
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": str(outside)})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_list_rejects_outside_allowlist_bare_path(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    service = SpeechRequestValidator(
+        default_model="tts",
+        allowed_local_media_path=allowed,
+    )
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request(
+            {
+                "input": "hello",
+                "references": [{"audio_path": str(outside)}],
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "references.audio_path"
+
+
+def test_reference_audio_rejects_oversized_bare_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio_path = tmp_path / "reference.wav"
+    audio_path.write_bytes(b"RIFF")
+    monkeypatch.setattr(speech_service, "MAX_REFERENCE_AUDIO_BYTES", 3)
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": str(audio_path)})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == "ref_audio"
+
+
+def test_reference_audio_rejects_missing_bare_path(tmp_path: Path) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+    missing_path = tmp_path / "missing.wav"
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "ref_audio": str(missing_path)})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "ref_audio"

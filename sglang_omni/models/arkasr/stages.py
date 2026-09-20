@@ -9,7 +9,8 @@ from typing import Any
 def create_sglang_arkasr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 32,
     encoder_max_batch_size: int = 8,
@@ -67,6 +68,7 @@ def create_sglang_arkasr_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

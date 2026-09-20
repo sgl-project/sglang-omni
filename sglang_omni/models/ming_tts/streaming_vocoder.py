@@ -26,7 +26,7 @@ from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 logger = logging.getLogger(__name__)
 
 
-class _AudioVAEStreamingSlotBindings:
+class AudioVAEStreamingSlotBindings:
     def __init__(
         self,
         decoder: MingAudioDecoder,
@@ -91,7 +91,7 @@ class _AudioVAEStreamingSlotBindings:
 
 
 @dataclass(slots=True)
-class _StreamState:
+class StreamState:
     expected_chunk_id: int = 0
     pending_patches: list[torch.Tensor] = field(default_factory=list)
     terminal_received: bool = False
@@ -101,18 +101,18 @@ class _StreamState:
 
 
 @dataclass(frozen=True, slots=True)
-class _StreamingStepItem:
+class StreamingStepItem:
     patches: tuple[torch.Tensor, ...]
     terminal: bool
 
 
-_StreamingStepPlan = tuple[_StreamingStepItem, ...]
+_StreamingStepPlan = tuple[StreamingStepItem, ...]
 
 
 class MingTTSStreamingVocoderScheduler(
-    StreamingVocoderBase[_StreamState, _StreamingStepPlan]
+    StreamingVocoderBase[StreamState, _StreamingStepPlan]
 ):
-    _can_batch_stream_chunks = True
+    can_batch_stream_chunks = True
 
     def __init__(
         self,
@@ -125,8 +125,8 @@ class MingTTSStreamingVocoderScheduler(
         keep_latents: bool = False,
     ) -> None:
         self._decoder = decoder
-        self._slot_bindings = _AudioVAEStreamingSlotBindings(decoder)
-        self._stream_chunk_batch_max = decoder.stream_capacity
+        self._slot_bindings = AudioVAEStreamingSlotBindings(decoder)
+        self.stream_chunk_batch_max = decoder.stream_capacity
         self._patch_size = int(patch_size)
         self._latent_dim = int(latent_dim)
         self._initial_chunk_patches = int(initial_chunk_patches)
@@ -149,26 +149,26 @@ class MingTTSStreamingVocoderScheduler(
         self._stop_requested.set()
         super().stop()
 
-    def _next_message(self) -> IncomingMessage | None:
+    def next_message(self) -> IncomingMessage | None:
         if self._stop_requested.is_set():
-            self._running = False
+            self.running = False
             return None
-        msg = super()._next_message()
+        msg = super().next_message()
         if self._stop_requested.is_set():
-            self._running = False
+            self.running = False
             return None
         return msg
 
-    def create_stream_state(self, request_id: str) -> _StreamState:
+    def create_stream_state(self, request_id: str) -> StreamState:
         del request_id
-        return _StreamState()
+        return StreamState()
 
-    def _ingest_stream_item(
+    def ingest_stream_item(
         self,
         request_id: str,
         item: StreamItem,
-    ) -> _StreamState | None:
-        state = self._get_or_create_stream_state(request_id)
+    ) -> StreamState | None:
+        state = self.get_or_create_stream_state(request_id)
         if state is None:
             return None
         metadata = item.metadata
@@ -193,7 +193,7 @@ class MingTTSStreamingVocoderScheduler(
                 f"Ming-Omni-TTS stream chunk for {request_id!r} must include "
                 "boolean metadata['is_last']"
             )
-        super()._ingest_stream_item(request_id, item)
+        super().ingest_stream_item(request_id, item)
         state.expected_chunk_id += 1
         if is_last:
             state.terminal_received = True
@@ -202,7 +202,7 @@ class MingTTSStreamingVocoderScheduler(
     def validate_chunk(
         self,
         request_id: str,
-        state: _StreamState,
+        state: StreamState,
         latents: torch.Tensor,
     ) -> torch.Tensor:
         del request_id, state
@@ -227,31 +227,31 @@ class MingTTSStreamingVocoderScheduler(
     def ingest(
         self,
         request_id: str,
-        state: _StreamState,
+        state: StreamState,
         latents: torch.Tensor,
     ) -> None:
         del request_id
         state.pending_patches.append(latents)
 
-    def _has_executable_work(self, state: _StreamState) -> bool:
+    def has_executable_work(self, state: StreamState) -> bool:
         if state.terminal_committed:
             return False
         if state.terminal_received:
             return bool(state.pending_patches)
-        return len(state.pending_patches) >= self._next_chunk_patches(state)
+        return len(state.pending_patches) >= self.next_chunk_patches(state)
 
-    def _next_chunk_patches(self, state: _StreamState) -> int:
+    def next_chunk_patches(self, state: StreamState) -> int:
         if state.initial_group_consumed:
             return self._steady_chunk_patches
         return self._initial_chunk_patches
 
-    def select_step_participants(self) -> list[tuple[str, _StreamState]]:
+    def select_step_participants(self) -> list[tuple[str, StreamState]]:
         # Note (yzxiao): External abort only marks a binding dirty; the scheduler
         # thread resets its CUDA row before that slot can be reused.
-        self._drain_pending_releases()
+        self.drain_pending_releases()
         participants = []
-        for request_id, state in self._stream_state_items():
-            if self._is_aborted(request_id) or not self._has_executable_work(state):
+        for request_id, state in self.stream_state_items():
+            if self.is_aborted(request_id) or not self.has_executable_work(state):
                 continue
             if self._slot_bindings.try_bind(request_id) is None:
                 continue
@@ -260,12 +260,12 @@ class MingTTSStreamingVocoderScheduler(
 
     def build_step_plan(
         self,
-        participants: list[tuple[str, _StreamState]],
+        participants: list[tuple[str, StreamState]],
     ) -> _StreamingStepPlan:
         plan = []
         for _, state in participants:
             pending_count = len(state.pending_patches)
-            target = self._next_chunk_patches(state)
+            target = self.next_chunk_patches(state)
             if state.terminal_received:
                 consume = min(target, pending_count)
                 terminal = pending_count <= target
@@ -273,7 +273,7 @@ class MingTTSStreamingVocoderScheduler(
                 consume = target
                 terminal = False
             plan.append(
-                _StreamingStepItem(
+                StreamingStepItem(
                     patches=tuple(state.pending_patches[:consume]),
                     terminal=terminal,
                 )
@@ -282,7 +282,7 @@ class MingTTSStreamingVocoderScheduler(
 
     def run_step(
         self,
-        participants: list[tuple[str, _StreamState]],
+        participants: list[tuple[str, StreamState]],
         plan: _StreamingStepPlan,
     ) -> dict[str, torch.Tensor]:
         request_ids = tuple(request_id for request_id, _ in participants)
@@ -318,17 +318,17 @@ class MingTTSStreamingVocoderScheduler(
 
     def on_step_failure(
         self,
-        participants: list[tuple[str, _StreamState]],
+        participants: list[tuple[str, StreamState]],
         exc: BaseException,
     ) -> list[str]:
         failed = super().on_step_failure(participants, exc)
-        self._drain_pending_releases()
+        self.drain_pending_releases()
         return failed
 
     def decode_delta(
         self,
         request_id: str,
-        state: _StreamState,
+        state: StreamState,
         *,
         is_final: bool,
     ) -> torch.Tensor | None:
@@ -355,7 +355,7 @@ class MingTTSStreamingVocoderScheduler(
         self,
         request_id: str,
         payload: StagePayload,
-        state: _StreamState,
+        state: StreamState,
     ) -> torch.Tensor:
         del payload
         latents = torch.stack(state.pending_patches, dim=0)
@@ -368,7 +368,7 @@ class MingTTSStreamingVocoderScheduler(
         state.emitted_samples = sample_count
         return waveform
 
-    def _drain_pending_releases(self) -> None:
+    def drain_pending_releases(self) -> None:
         pending = tuple(self._pending_release_ids)
         if not pending:
             return
@@ -385,7 +385,7 @@ class MingTTSStreamingVocoderScheduler(
     def release_stream_resources(
         self,
         request_id: str,
-        state: _StreamState,
+        state: StreamState,
     ) -> None:
         del state
         if self._slot_bindings.slot_for(request_id) is None:
@@ -417,7 +417,7 @@ class MingTTSStreamingVocoderScheduler(
         self,
         request_id: str,
         payload: StagePayload,
-        state: _StreamState,
+        state: StreamState,
     ) -> dict[str, Any]:
         del request_id
         final_state = load_ming_tts_state(payload)

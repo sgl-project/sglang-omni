@@ -89,7 +89,7 @@ def compute_mel_spectrogram(
         )
 
 
-def _compute_mel_features_for_waveform(
+def compute_mel_features_for_waveform(
     waveform: np.ndarray,
     ds_kernel_size: int,
     ds_stride: int,
@@ -123,7 +123,7 @@ def estimate_audio_feature_length(
     return proj_out_len
 
 
-def _estimate_image_tokens(
+def estimate_image_tokens(
     grid_thw: list[list[int]],
     spatial_merge_size: int = 2,
 ) -> list[int]:
@@ -135,7 +135,7 @@ def _estimate_image_tokens(
     return counts
 
 
-def _inject_top_level_images(
+def inject_top_level_images(
     messages: list[dict[str, Any]],
     images: list[str],
 ) -> list[dict[str, Any]]:
@@ -165,7 +165,7 @@ def _inject_top_level_images(
     return messages
 
 
-def _inject_top_level_audios(
+def inject_top_level_audios(
     messages: list[dict[str, Any]],
     audios: list[str],
 ) -> list[dict[str, Any]]:
@@ -196,7 +196,7 @@ def _inject_top_level_audios(
     return messages
 
 
-def _inject_top_level_videos(
+def inject_top_level_videos(
     messages: list[dict[str, Any]],
     videos: list[str],
 ) -> list[dict[str, Any]]:
@@ -253,10 +253,11 @@ class MingPreprocessor:
         if self._video_patch_id is None:
             self._video_patch_id = self._tokenizer.convert_tokens_to_ids(VIDEO_PATCH)
 
-        # Lazy-init image processor
+        # Lazy-init vision processors
         self._image_processor = None
+        self._video_processor = None
 
-    def _get_image_processor(self):
+    def get_image_processor(self):
         """Lazy-init Qwen2VLImageProcessor (same processor as Ming-Omni uses)."""
         if self._image_processor is None:
             from transformers import Qwen2VLImageProcessor
@@ -271,7 +272,22 @@ class MingPreprocessor:
             )
         return self._image_processor
 
-    def _process_images(
+    def get_video_processor(self):
+        """Lazy-init the video processor from the pinned Transformers version."""
+        if self._video_processor is None:
+            from transformers import Qwen2VLVideoProcessor
+
+            vc = self._vision_config
+            self._video_processor = Qwen2VLVideoProcessor(
+                min_pixels=256 * 28 * 28,
+                max_pixels=1280 * 28 * 28,
+                patch_size=vc.patch_size,
+                temporal_patch_size=vc.temporal_patch_size,
+                merge_size=vc.spatial_merge_size,
+            )
+        return self._video_processor
+
+    def process_images(
         self, images: list[Any]
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
         """Process PIL images into pixel_values, grid_thw, and token counts.
@@ -281,30 +297,30 @@ class MingPreprocessor:
             image_grid_thw: [num_images, 3]
             image_token_counts: number of patch tokens per image
         """
-        processor = self._get_image_processor()
+        processor = self.get_image_processor()
         result = processor(images=images, return_tensors="pt")
         pixel_values = result["pixel_values"]
         image_grid_thw = result["image_grid_thw"]
-        token_counts = _estimate_image_tokens(
+        token_counts = estimate_image_tokens(
             image_grid_thw.tolist(),
             self._vision_config.spatial_merge_size,
         )
         return pixel_values, image_grid_thw, token_counts
 
-    def _process_videos(
+    def process_videos(
         self, videos: list[Any]
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
         """Process video frames into pixel_values_videos, video_grid_thw, token counts.
 
         ``videos`` is a list where each item is the per-video frame stack
         produced by ``ensure_video_list_async`` (torch.Tensor shape ``(T, C, H, W)``
-        of float pixels in 0..255). ``Qwen2VLImageProcessor.preprocess(videos=...)``
+        of float pixels in 0..255). ``Qwen2VLVideoProcessor.preprocess(videos=...)``
         groups consecutive frames by ``temporal_patch_size`` and returns flattened
         patches plus ``video_grid_thw`` with the merged temporal dim.
         """
-        processor = self._get_image_processor()
+        processor = self.get_video_processor()
         # Convert per-video tensors to numpy arrays in (T, H, W, C) uint8 — the
-        # format Qwen2VLImageProcessor expects when ``videos`` is a list of
+        # format Qwen2VLVideoProcessor expects when ``videos`` is a list of
         # per-video frame stacks.
         np_videos: list[np.ndarray] = []
         for v in videos:
@@ -320,14 +336,10 @@ class MingPreprocessor:
             if arr.ndim == 4 and arr.shape[1] in (1, 3):
                 arr = np.transpose(arr, (0, 2, 3, 1))
             np_videos.append(arr)
-        # ``processor.__call__`` requires ``images`` as a positional argument;
-        # call ``preprocess`` directly so we can pass only ``videos``.
-        result = processor.preprocess(
-            images=None, videos=np_videos, return_tensors="pt"
-        )
+        result = processor.preprocess(np_videos, return_tensors="pt")
         pixel_values_videos = result["pixel_values_videos"]
         video_grid_thw = result["video_grid_thw"]
-        token_counts = _estimate_image_tokens(
+        token_counts = estimate_image_tokens(
             video_grid_thw.tolist(),
             self._vision_config.spatial_merge_size,
         )
@@ -363,11 +375,11 @@ class MingPreprocessor:
         # inject them as inline content items in the first user message so that
         # placeholder insertion and image extraction use a single code path.
         if top_level_images:
-            messages = _inject_top_level_images(messages, top_level_images)
+            messages = inject_top_level_images(messages, top_level_images)
         if audio_urls:
-            messages = _inject_top_level_audios(messages, audio_urls)
+            messages = inject_top_level_audios(messages, audio_urls)
         if top_level_videos:
-            messages = _inject_top_level_videos(messages, top_level_videos)
+            messages = inject_top_level_videos(messages, top_level_videos)
 
         # --- Extract image / video URLs/data from messages ---
         raw_images: list[Any] = []
@@ -508,7 +520,7 @@ class MingPreprocessor:
 
         if images:
             pixel_values, image_grid_thw, image_token_counts = await asyncio.to_thread(
-                self._process_images, images
+                self.process_images, images
             )
 
         # --- Process videos ---
@@ -521,7 +533,7 @@ class MingPreprocessor:
                 pixel_values_videos,
                 video_grid_thw,
                 video_token_counts,
-            ) = await asyncio.to_thread(self._process_videos, videos)
+            ) = await asyncio.to_thread(self.process_videos, videos)
 
         # --- Compute mel features FIRST so we know exact placeholder counts ---
         mel_features_list: list[torch.Tensor] = []
@@ -535,7 +547,7 @@ class MingPreprocessor:
             mel_results = await asyncio.gather(
                 *[
                     asyncio.to_thread(
-                        _compute_mel_features_for_waveform,
+                        compute_mel_features_for_waveform,
                         waveform,
                         ds_kernel_size,
                         ds_stride,
@@ -551,7 +563,7 @@ class MingPreprocessor:
                 audio_token_counts.append(audio_token_count)
 
         # Build prompt with placeholder counts and token IDs
-        prompt_text, input_ids, audio_positions = self._build_prompt(
+        prompt_text, input_ids, audio_positions = self.build_prompt(
             messages,
             audio_token_counts=audio_token_counts,
             image_token_counts=image_token_counts,
@@ -625,7 +637,7 @@ class MingPreprocessor:
             data=state.to_dict(),
         )
 
-    def _build_prompt(
+    def build_prompt(
         self,
         messages: list[dict[str, Any]],
         *,

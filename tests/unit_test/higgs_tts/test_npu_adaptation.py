@@ -36,7 +36,7 @@ def test_sampler_renorm_falls_back_to_torch_on_npu(monkeypatch) -> None:
         _FakePlatform("npu", npu=True),
     )
 
-    top_k, top_p = higgs_sampler._resolve_renorm_kernels()
+    top_k, top_p = higgs_sampler.resolve_renorm_kernels()
 
     assert top_k is npu_fallback.top_k_renorm_prob
     assert top_p is npu_fallback.top_p_renorm_prob
@@ -84,7 +84,7 @@ def test_batched_sampler_works_with_torch_renorm_fallback(monkeypatch) -> None:
     logits = torch.randn(B, N, V)
     top_k_buf = torch.tensor([1, 8, 32])
 
-    codes = higgs_sampler._sample_independent_batched(
+    codes = higgs_sampler.sample_independent_batched(
         logits,
         temperature=torch.full((B,), 1.0),
         top_p=torch.tensor([0.0, 0.5, 0.9]),
@@ -145,6 +145,9 @@ def _install_audio_encoder_fakes(
         device_mod, "resolve_device_spec", lambda device, index=None: device
     )
     monkeypatch.setattr(
+        device_mod, "resolve_concrete_device", lambda device, index=None: device
+    )
+    monkeypatch.setattr(
         higgs_stages, "resolve_checkpoint", lambda model_path: "ckpt_dir"
     )
     monkeypatch.setattr(higgs_stages, "Tokenizer", _FakeTokenizer)
@@ -197,6 +200,9 @@ def _install_vocoder_fakes(
     monkeypatch.setattr(platforms_mod, "current_platform", platform)
     monkeypatch.setattr(
         device_mod, "resolve_device_spec", lambda device, index=None: device
+    )
+    monkeypatch.setattr(
+        device_mod, "resolve_concrete_device", lambda device, index=None: device
     )
     monkeypatch.setattr(
         higgs_stages, "resolve_checkpoint", lambda model_path: "ckpt_dir"

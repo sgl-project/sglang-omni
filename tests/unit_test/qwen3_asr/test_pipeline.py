@@ -8,7 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.server_args import ServerArgs
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
@@ -32,16 +34,15 @@ from sglang_omni.scheduling.generation_batch_policy import (
 
 @pytest.fixture(autouse=True)
 def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
     # profile tests independent of the caller's SGLANG_USE_MLX environment.
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
 
 def _sglang_prefill_ladder(max_bs: int) -> list[int]:
-    unresolved = ServerArgs.__new__(ServerArgs)
-    return ServerArgs._generate_prefill_cuda_graph_batch_sizes(unresolved, max_bs)
+    return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
 def _fake_server_args_builder(
@@ -245,7 +246,7 @@ def test_qwen3_asr_explicit_prefill_backend_overrides_rocm_default(
 
 
 def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
-    from sglang.srt.utils.tensor_bridge import use_mlx
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
     if use_mlx():
         pytest.skip("Torch MPS profile requires SGLANG_USE_MLX=0")
@@ -275,9 +276,9 @@ def test_qwen3_asr_torch_mps_uses_eager_native_profile() -> None:
 def test_qwen3_asr_mlx_profile_overrides_typed_torch_compile_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: True)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_mps", lambda: True)
     builder = _make_engine_builder()
     builder.device = "mps"
@@ -515,7 +516,7 @@ def _patch_engine_dependencies(
     )
 
     def _fake_create_infrastructure(server_args, gpu_id, **kwargs):
-        del server_args
+        recorded.server_args = server_args
         recorded.infra_kwargs.append(dict(kwargs))
         model_worker = SimpleNamespace(
             gpu_id=gpu_id,
@@ -544,8 +545,8 @@ def _patch_engine_dependencies(
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda model_runner, server_args: recorded.attest_calls.append(
-            (model_runner, server_args)
+        lambda model_runner, *, operator_selected: recorded.attest_calls.append(
+            (model_runner, operator_selected)
         ),
     )
     return recorded
@@ -646,16 +647,14 @@ def test_qwen3_asr_auto_chunked_prefill_uses_the_sglang_ladder(
             server_args_overrides={"chunked_prefill_size": None},
         )
 
-    _, attested = recorded.attest_calls[-1]
     assert scheduler is not None
     assert recorded.build_kwargs["chunked_prefill_size"] is None
     assert "cuda_graph_bs_prefill" not in recorded.build_kwargs
     assert "cuda_graph_max_bs_prefill" not in recorded.build_kwargs
-    assert ("prefill", "bs") not in attested._cuda_graph_config_locked
-    assert list(attested.cuda_graph_config.prefill.bs) == (
-        _sglang_prefill_ladder(resolved_chunked_prefill_size)
-    )
-    assert attested.cuda_graph_config.prefill.max_bs == resolved_chunked_prefill_size
+    assert recorded.attest_calls[-1][1] is False
+    prefill = recorded.server_args.cuda_graph_config.prefill
+    assert list(prefill.bs) == _sglang_prefill_ladder(resolved_chunked_prefill_size)
+    assert prefill.max_bs == resolved_chunked_prefill_size
     assert (
         "Qwen3-ASR: chunked_prefill_size was unset, SGLang resolved "
         f"{resolved_chunked_prefill_size}, prefill CUDA graph cap "
@@ -674,8 +673,7 @@ def test_qwen3_asr_disabled_chunked_prefill_derives_no_buckets(
             "dummy", server_args_overrides={"chunked_prefill_size": 0}
         )
 
-    _, attested = recorded.attest_calls[-1]
-    assert list(attested.cuda_graph_config.prefill.bs) == []
+    assert list(recorded.server_args.cuda_graph_config.prefill.bs) == []
     assert len(recorded.graph_init_calls) == 1
     assert "require a positive prefill graph cap" in caplog.text
 
@@ -690,10 +688,10 @@ def test_qwen3_asr_operator_buckets_above_the_chunk_start_with_a_warning(
             "dummy", server_args_overrides={"cuda_graph_bs_prefill": [1024, 8192]}
         )
 
-    _, attested = recorded.attest_calls[-1]
+    assert recorded.attest_calls[-1][1] is False
     assert recorded.build_kwargs["cuda_graph_bs_prefill"] == [1024, 8192]
     assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == 8192
-    assert list(attested.cuda_graph_config.prefill.bs) == [1024, 8192]
+    assert list(recorded.server_args.cuda_graph_config.prefill.bs) == [1024, 8192]
     assert "max=8192 exceeds chunked_prefill_size=4096" in caplog.text
 
 
@@ -718,13 +716,13 @@ def test_qwen3_asr_ladder_respects_deployment_cap_overrides(
         "dummy", server_args_overrides=dict(cap_override)
     )
 
-    _, attested = recorded.attest_calls[-1]
+    assert len(recorded.attest_calls) == 1
     assert all(
         recorded.build_kwargs[key] == value for key, value in cap_override.items()
     )
     assert recorded.build_kwargs["cuda_graph_bs_prefill"][-1] == expected_cap
-    assert max(attested.cuda_graph_config.prefill.bs) == expected_cap
-    assert attested.cuda_graph_config.prefill.max_bs == expected_cap
+    assert max(recorded.build_kwargs["cuda_graph_bs_prefill"]) == expected_cap
+    assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == expected_cap
 
 
 @pytest.mark.parametrize(
@@ -763,6 +761,6 @@ def test_qwen3_asr_nested_prefill_override_supersedes_the_derived_ladder(
         },
     )
 
-    _, attested = recorded.attest_calls[-1]
-    assert list(attested.cuda_graph_config.prefill.bs) == [128, 256]
-    assert attested.cuda_graph_config.prefill.max_bs == 256
+    assert recorded.attest_calls[-1][1] is True
+    assert list(recorded.build_kwargs["cuda_graph_bs_prefill"]) == [128, 256]
+    assert recorded.build_kwargs["cuda_graph_max_bs_prefill"] == 256

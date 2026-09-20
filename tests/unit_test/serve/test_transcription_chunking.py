@@ -103,13 +103,13 @@ def test_qwen3_asr_pipeline_declaresResolvedAudioChunking(monkeypatch) -> None:
 
 
 def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "is_mps", lambda: True)
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
     resolved = Qwen3ASRPipelineConfig(
         model_path="Qwen/Qwen3-ASR-0.6B"
@@ -121,13 +121,13 @@ def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
 
 
 def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "is_mps", lambda: True)
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
     with pytest.raises(ValueError, match="up to 60s"):
         Qwen3ASRPipelineConfig(
@@ -140,13 +140,13 @@ def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
 def test_qwen3_asr_non_torch_mps_keeps_native_audio_policy(
     monkeypatch, is_mps: bool, use_mlx: bool
 ) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "is_mps", lambda: is_mps)
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: use_mlx)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: use_mlx)
 
     resolved = Qwen3ASRPipelineConfig(
         model_path="Qwen/Qwen3-ASR-0.6B"
@@ -240,6 +240,89 @@ def test_clip_length_past_the_native_limit_is_rejected_at_config_time() -> None:
         )
 
 
+def test_long_audio_admission_default_leaves_half_the_engine_to_short_clips(
+    monkeypatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+    from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
+
+    # Both ASR pipelines ship max_running_requests=64 and 8 chunks per
+    # upload: 4 admitted uploads x 8 chunks = 32 slots, half the engine.
+    for config_cls in (Qwen3ASRPipelineConfig, WhisperASRPipelineConfig):
+        config = config_cls(model_path="dummy")
+        assert config.audio_chunking.max_concurrent_long_audio_requests is None
+        assert config.resolved_audio_chunking.max_concurrent_long_audio_requests == 4
+
+
+def test_long_audio_admission_default_follows_max_running_requests(
+    monkeypatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+    from sglang_omni.config.manager import ConfigManager
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
+    # The default is a ratio of the engine's running slots, so raising the
+    # engine capacity raises long-audio admission with it...
+    merged = manager.merge_config({"asr.engine.max_running_requests": "128"})
+    assert merged.resolved_audio_chunking.max_concurrent_long_audio_requests == 8
+    # ...and a tiny engine still admits one upload.
+    merged = manager.merge_config({"asr.engine.max_running_requests": "4"})
+    assert merged.resolved_audio_chunking.max_concurrent_long_audio_requests == 1
+    # More chunks per upload means fewer uploads for the same half share.
+    merged = manager.merge_config({"audio_chunking.max_concurrent_chunks": "16"})
+    assert merged.resolved_audio_chunking.max_concurrent_long_audio_requests == 2
+
+
+def test_long_audio_admission_explicit_value_wins(monkeypatch) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+
+    config = Qwen3ASRPipelineConfig(
+        model_path="dummy",
+        audio_chunking=AudioChunkingConfig(max_concurrent_long_audio_requests=2),
+    )
+    assert config.resolved_audio_chunking.max_concurrent_long_audio_requests == 2
+
+
+def test_long_audio_admission_at_engine_capacity_warns(monkeypatch, caplog) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
+    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+
+    # 8 uploads x 8 chunks = 64 = every running slot: short clips would
+    # queue behind long audio whenever it is saturated. Chunks past the
+    # engine cap only queue, so this is a warning, not a config error.
+    with caplog.at_level("WARNING", logger="sglang_omni.config.schema"):
+        Qwen3ASRPipelineConfig(
+            model_path="dummy",
+            audio_chunking=AudioChunkingConfig(max_concurrent_long_audio_requests=8),
+        )
+        assert any(
+            "max_concurrent_long_audio_requests=8" in record.message
+            and "max_running_requests=64" in record.message
+            for record in caplog.records
+        )
+        # The derived default and anything below the cap stay quiet.
+        caplog.clear()
+        Qwen3ASRPipelineConfig(model_path="dummy")
+        Qwen3ASRPipelineConfig(
+            model_path="dummy",
+            audio_chunking=AudioChunkingConfig(max_concurrent_long_audio_requests=7),
+        )
+        assert not [
+            r for r in caplog.records if "max_concurrent_long_audio" in r.message
+        ]
+
+
 def test_stream_clip_limit_falls_back_to_the_chunk_length() -> None:
     assert ResolvedAudioChunking(max_audio_clip_s=60.0).stream_clip_limit_s == 60.0
     assert (
@@ -256,6 +339,7 @@ def test_stream_clip_limit_falls_back_to_the_chunk_length() -> None:
         ("max_audio_clip_s", 0.0),
         ("max_audio_clip_s", -1.0),
         ("max_total_audio_s", 0.0),
+        ("max_concurrent_long_audio_requests", 0),
     ],
 )
 def test_out_of_range_config_values_are_rejected(field: str, value: float) -> None:

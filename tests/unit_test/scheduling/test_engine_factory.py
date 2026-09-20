@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 import sglang_omni.platforms as platforms
-from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -113,25 +112,25 @@ def test_context_length_override_is_capability_gated() -> None:
     [True, False, 1.5, 3.0, float("inf"), float("-inf"), float("nan"), "8192", None],
 )
 def test_normalize_context_length_rejects_non_integral_values(value: Any) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
     with pytest.raises(ValueError, match="context length must be a positive integer"):
-        _normalize_context_length(value, model_name="MOSS-TTS")
+        normalize_context_length(value, model_name="MOSS-TTS")
 
 
 @pytest.mark.parametrize("value", [0, -1])
 def test_normalize_context_length_rejects_non_positive_values(value: int) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
     with pytest.raises(ValueError, match="resolved an invalid context length"):
-        _normalize_context_length(value, model_name="MOSS-TTS")
+        normalize_context_length(value, model_name="MOSS-TTS")
 
 
 @pytest.mark.parametrize("value", [1, 8192])
 def test_normalize_context_length_preserves_integral_values(value: int) -> None:
-    from sglang_omni.scheduling.engine_factory import _normalize_context_length
+    from sglang_omni.scheduling.engine_factory import normalize_context_length
 
-    assert _normalize_context_length(value, model_name="MOSS-TTS") == value
+    assert normalize_context_length(value, model_name="MOSS-TTS") == value
 
 
 def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> None:
@@ -140,9 +139,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
     )
 
     events: list[str] = []
@@ -201,12 +197,15 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
         assert gpu_id == 2
+        before_memory_pool = kwargs.pop("before_memory_pool")
         assert kwargs == {
             "defer_cuda_graph_capture": True,
             "model_arch_override": "TestArch",
         }
+        worker = FakeWorker(server_args)
+        before_memory_pool(worker)
         return (
-            FakeWorker(server_args),
+            worker,
             "tree_cache",
             "req_pool",
             "kv_pool",
@@ -296,6 +295,22 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
             events.append("customize_server_args")
             assert server_args.context_length == 123
 
+        def before_memory_pool(
+            self,
+            *,
+            model_worker: Any,
+            checkpoint_dir: str,
+            device: str,
+            gpu_id: int,
+            server_args: Any,
+        ) -> None:
+            events.append("before_memory_pool")
+            assert isinstance(model_worker.model_runner.model, FakeModel)
+            assert checkpoint_dir == "model-resolved"
+            assert device == "cuda:2"
+            assert gpu_id == 2
+            assert server_args.disable_cuda_graph is False
+
         def setup_model(
             self,
             *,
@@ -371,7 +386,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     scheduler = RecordingBuilder().build(
         "model",
-        device="cuda:0",
+        device="cuda",
         gpu_id=2,
         server_args_overrides={
             "cuda_graph_max_bs": 8,
@@ -397,6 +412,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         "build_server_args",
         "customize_server_args",
         "infrastructure",
+        "before_memory_pool",
         "setup_model",
         "get_model_buffer_bs",
         "compile_model",
@@ -434,9 +450,6 @@ def _build_minimal_tts_builder_harness(monkeypatch):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
-    monkeypatch.setattr(
-        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
-    )
 
     build_kwargs: dict[str, Any] = {}
     consumed: list[int | None] = []
@@ -456,7 +469,7 @@ def _build_minimal_tts_builder_harness(monkeypatch):
         checkpoint_dir: str, *, context_length: int, **kwargs: Any
     ) -> Any:
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=None,
@@ -540,7 +553,7 @@ def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) ->
 
     with caplog.at_level(logging.INFO, logger=engine_factory.logger.name):
         with stage_kv_cache_budget("tts_engine", 2 * 1024**3):
-            MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+            MinimalBuilder().build("model", device="cuda", gpu_id=0)
 
     assert "mem_fraction_static" not in build_kwargs
     assert consumed == [2 * 1024**3]
@@ -554,7 +567,7 @@ def test_without_byte_budget_builder_default_mem_fraction_is_kept(
         monkeypatch
     )
 
-    MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+    MinimalBuilder().build("model", device="cuda", gpu_id=0)
 
     assert build_kwargs["mem_fraction_static"] == 0.2
     assert consumed == [None]
@@ -672,7 +685,7 @@ def test_asr_engine_builder_phase_order_and_failure_cleanup(monkeypatch) -> None
             events.append("extra_scheduler_kwargs")
             return {"stream_output_builder": "stream_builder"}
 
-        def _make_scheduler(self, **kwargs: Any) -> Any:
+        def make_scheduler(self, **kwargs: Any) -> Any:
             assert kwargs["extra_scheduler_kwargs"] == {
                 "stream_output_builder": "stream_builder"
             }

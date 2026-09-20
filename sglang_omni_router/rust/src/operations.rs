@@ -17,7 +17,8 @@ use crate::metrics::{
     StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
 };
 use crate::worker_pool::{
-    OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
+    CapacityClass, OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES,
+    WorkerHealth,
 };
 
 const JSON_CONTENT_TYPE: &str = "application/json";
@@ -645,7 +646,14 @@ struct DiagnosticWorker<'a> {
     probe: DiagnosticProbe,
     routable: bool,
     active_requests: usize,
+    dispatches: Vec<DiagnosticDispatch>,
     capacity: Vec<DiagnosticCapacity>,
+}
+
+#[derive(Serialize)]
+struct DiagnosticDispatch {
+    class: &'static str,
+    requests: u64,
 }
 
 #[derive(Serialize)]
@@ -706,6 +714,17 @@ impl<'a> Diagnostics<'a> {
                     probe: worker.probe.into(),
                     routable: worker.routable,
                     active_requests: worker.active_requests,
+                    dispatches: CapacityClass::ALL
+                        .into_iter()
+                        .map(|class| DiagnosticDispatch {
+                            class: class.label(),
+                            requests: worker.dispatches[class.index()],
+                        })
+                        .chain(std::iter::once(DiagnosticDispatch {
+                            class: "voice_control",
+                            requests: worker.voice_control_dispatches,
+                        }))
+                        .collect(),
                     capacity: worker
                         .session_capacity
                         .iter()
@@ -814,6 +833,8 @@ mod tests {
                     probe: probe(ProbeOutcome::HttpFailure, 2, 3),
                     routable: false,
                     active_requests: 3,
+                    dispatches: [1, 2, 3, 4, 5, 6],
+                    voice_control_dispatches: 7,
                     session_capacity: vec![
                         capacity(CapacityClass::SpeechWebsocket, 10, 0),
                         capacity(CapacityClass::RealtimeWebsocket, 11, 1),
@@ -827,6 +848,8 @@ mod tests {
                     probe: probe(ProbeOutcome::Success, 4, 1),
                     routable: true,
                     active_requests: 1,
+                    dispatches: [8, 9, 10, 11, 12, 13],
+                    voice_control_dispatches: 14,
                     session_capacity: vec![capacity(CapacityClass::RealtimeWebsocket, 2, 1)],
                 },
             ],
@@ -1242,6 +1265,8 @@ mod tests {
                 probe: probe(ProbeOutcome::Success, 1, 0),
                 routable: registration_ordinal % 2 == 0,
                 active_requests: registration_ordinal,
+                dispatches: [registration_ordinal as u64; 6],
+                voice_control_dispatches: registration_ordinal as u64,
                 session_capacity: vec![
                     capacity(CapacityClass::SpeechWebsocket, 1, 0),
                     capacity(CapacityClass::RealtimeWebsocket, 2, 1),
@@ -1276,6 +1301,16 @@ mod tests {
         assert_eq!(value["workers"][1]["voice_owner"], false);
         assert_eq!(value["workers"][0]["probe"]["outcome"], "success");
         assert_eq!(value["workers"][0]["registration_ordinal"], 0);
+        assert_eq!(
+            value["workers"][1]["dispatches"][0]["class"],
+            "generation_http"
+        );
+        assert_eq!(value["workers"][1]["dispatches"][0]["requests"], 1);
+        assert_eq!(
+            value["workers"][1]["dispatches"][6]["class"],
+            "voice_control"
+        );
+        assert_eq!(value["workers"][1]["dispatches"][6]["requests"], 1);
         assert_eq!(value["workers"][255]["registration_ordinal"], 255);
         let text = String::from_utf8(bytes).expect("diagnostics are UTF-8");
         for forbidden in ["base_url", "trust_domain", "health_path", "request_id"] {

@@ -15,9 +15,9 @@ from sglang_omni.platforms.apple import AppleOmniPlatform
 def test_generic_sglang_platform_resolves_to_apple_when_mps_is_available(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(platforms, "_is_apple_silicon_mps_available", lambda: True)
+    monkeypatch.setattr(platforms, "is_apple_silicon_mps_available", lambda: True)
 
-    resolved = platforms._as_omni_platform(SRTPlatform())
+    resolved = platforms.as_omni_platform(SRTPlatform())
 
     assert isinstance(resolved, AppleOmniPlatform)
     assert resolved.is_mps()
@@ -35,11 +35,15 @@ def test_apple_device_binding_is_single_device() -> None:
         apple.set_device(torch.device("cpu"))
 
 
+def test_apple_platform_does_not_claim_float64_support() -> None:
+    assert AppleOmniPlatform.is_float64_supported() is False
+
+
 def test_apple_device_total_memory_uses_torch_without_mlx(monkeypatch) -> None:
-    import sglang.srt.utils.tensor_bridge as tensor_bridge
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
 
     expected = 12_713_115_648
-    monkeypatch.setattr(tensor_bridge, "use_mlx", lambda: False)
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
     monkeypatch.setattr(torch.mps, "recommended_max_memory", lambda: expected)
 
     assert AppleOmniPlatform().get_device_total_memory(0) == expected

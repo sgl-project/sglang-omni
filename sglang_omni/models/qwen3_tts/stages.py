@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,6 +14,10 @@ import torch
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
+)
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+    move_conv_padding_to_host,
 )
 from sglang_omni.models.qwen3_tts.request_builders import (
     cleanup_prepared_qwen3_tts_request,
@@ -25,12 +30,15 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
-from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
+
+_SPEECH_TOKENIZERS: dict[tuple[str, str, str, str | None], Any] = {}
+_SPEECH_TOKENIZERS_LOCK = threading.Lock()
 
 _QWEN_TTS_INSTALL_HINT = (
     "Qwen3-TTS support requires the official `qwen-tts` package:\n"
@@ -42,8 +50,27 @@ _QWEN_TTS_INSTALL_HINT = (
     "docs/cookbook/qwen3_tts.md."
 )
 
+_NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS = frozenset(
+    {"flash_attention_2", "flash_attention_3", "flash_attention_4"}
+)
 
-def _load_qwen3_tts_tokenizer(
+
+def resolve_qwen3_tts_attn_implementation(
+    device: str | torch.device,
+    attn_implementation: str | None,
+) -> str | None:
+    device_type = str(device).strip().partition(":")[0].lower()
+    if not current_platform.is_npu() or device_type != "npu":
+        return attn_implementation
+    if attn_implementation in _NPU_UNSUPPORTED_ATTN_IMPLEMENTATIONS:
+        raise ValueError(
+            "Qwen3-TTS speech tokenizer cannot use "
+            f"attn_implementation={attn_implementation!r} on NPU; use 'sdpa'"
+        )
+    return attn_implementation or "sdpa"
+
+
+def load_qwen3_tts_tokenizer(
     model_path: str,
     *,
     device: str,
@@ -56,21 +83,43 @@ def _load_qwen3_tts_tokenizer(
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
+    attn_implementation = resolve_qwen3_tts_attn_implementation(
+        device, attn_implementation
+    )
     checkpoint_dir = _resolve_checkpoint(model_path)
     tokenizer_path = os.path.join(checkpoint_dir, "speech_tokenizer")
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
-    kwargs: dict[str, Any] = {
-        "device_map": device,
-        "dtype": torch_dtype,
-    }
-    if attn_implementation is not None:
-        kwargs["attn_implementation"] = attn_implementation
+    # note(ratish): one copy per process. The vocoder loads it first and the
+    # engine attaches the same object, so it is resident before the KV pool is sized.
+    key = (tokenizer_path, str(device), str(torch_dtype), attn_implementation)
+    with _SPEECH_TOKENIZERS_LOCK:
+        tokenizer = _SPEECH_TOKENIZERS.get(key)
+        if tokenizer is not None:
+            logger.info(
+                f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
+            )
+            return tokenizer
+        kwargs: dict[str, Any] = {
+            "device_map": device,
+            "dtype": torch_dtype,
+        }
+        if attn_implementation is not None:
+            kwargs["attn_implementation"] = attn_implementation
 
-    logger.info(f"Loading Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}")
-    return Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        logger.info(
+            "Loading Qwen3-TTS speech tokenizer from %s on %s "
+            "with attn_implementation=%s",
+            tokenizer_path,
+            device,
+            attn_implementation or "upstream-default",
+        )
+        tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        move_conv_padding_to_host(tokenizer.model.encoder)
+        _SPEECH_TOKENIZERS[key] = tokenizer
+        return tokenizer
 
 
-def _register_qwen3_tts_hf_config() -> None:
+def register_qwen3_tts_hf_config() -> None:
     apply_qwen_tts_transformers_compatibility_patches()
     try:
         from qwen_tts.core.models import Qwen3TTSConfig
@@ -94,7 +143,7 @@ def _register_qwen3_tts_hf_config() -> None:
         pass
 
 
-def _load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
+def load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, Any]:
     import json
 
     path = os.path.join(checkpoint_dir, "generation_config.json")
@@ -117,7 +166,7 @@ def create_preprocessing_executor(
     attn_implementation: str | None = None,
 ) -> ThreadedSimpleScheduler:
     if load_frontend:
-        _load_standalone_preprocessing_context(
+        load_standalone_preprocessing_context(
             model_path,
             device=device,
             gpu_id=gpu_id,
@@ -138,7 +187,7 @@ def create_preprocessing_executor(
     )
 
 
-def _load_standalone_preprocessing_context(
+def load_standalone_preprocessing_context(
     model_path: str,
     *,
     device: str | None,
@@ -154,21 +203,23 @@ def _load_standalone_preprocessing_context(
         load_qwen3_tts_prompt_frontend,
     )
 
-    _register_qwen3_tts_hf_config()
+    register_qwen3_tts_hf_config()
     try:
         from qwen_tts import Qwen3TTSModel
     except ImportError as exc:
         raise RuntimeError(_QWEN_TTS_INSTALL_HINT) from exc
 
+    from sglang_omni.utils.device import resolve_concrete_device
+
     checkpoint_dir = _resolve_checkpoint(model_path)
-    device = resolve_device_spec(device, gpu_id)
+    device = str(resolve_concrete_device(device, gpu_id))
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
     logger.info(f"Loading Qwen3-TTS prompt frontend from {checkpoint_dir} on {device}")
     frontend = load_qwen3_tts_prompt_frontend(
         checkpoint_dir, device=device, dtype=torch_dtype
     )
     frontend.load_speech_tokenizer(
-        _load_qwen3_tts_tokenizer(
+        load_qwen3_tts_tokenizer(
             checkpoint_dir,
             device=device,
             dtype=dtype,
@@ -179,7 +230,7 @@ def _load_standalone_preprocessing_context(
     wrapper = Qwen3TTSModel(
         model=frontend,
         processor=processor,
-        generate_defaults=_load_qwen3_tts_generate_defaults(checkpoint_dir),
+        generate_defaults=load_qwen3_tts_generate_defaults(checkpoint_dir),
     )
     request_builders.set_qwen3_tts_preprocessing_context(
         model=frontend, wrapper=wrapper, standalone=True
@@ -196,6 +247,9 @@ def create_sglang_tts_engine_executor(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     server_args_overrides: dict[str, Any] | None = None,
+    reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
+        DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+    ),
 ) -> Any:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -203,6 +257,9 @@ def create_sglang_tts_engine_executor(
         attn_implementation=attn_implementation,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        reference_encoder_cuda_graph_bucket_frames=(
+            reference_encoder_cuda_graph_bucket_frames
+        ),
     ).build(
         model_path,
         device=device,
@@ -238,17 +295,20 @@ def create_vocoder_executor(
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
-    fused_snake_activation: bool = False,
+    fused_snake_activation: bool = True,
     enable_stateful_codec_decoder: bool = True,
     codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     incremental_codec_cuda_graph: bool | None = None,
     incremental_codec_compile: bool | None = None,
     incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
+    incremental_codec_cuda_graph_window_frames: Sequence[int] | None = None,
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
-    device = resolve_device_spec(device, gpu_id)
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder
     # off for a rollback is one flag.
@@ -256,7 +316,7 @@ def create_vocoder_executor(
         incremental_codec_cuda_graph = enable_stateful_codec_decoder
     if incremental_codec_compile is None:
         incremental_codec_compile = enable_stateful_codec_decoder
-    tokenizer = _load_qwen3_tts_tokenizer(
+    tokenizer = load_qwen3_tts_tokenizer(
         model_path,
         device=device,
         dtype=dtype,
@@ -289,6 +349,9 @@ def create_vocoder_executor(
         incremental_codec_compile=incremental_codec_compile,
         incremental_codec_cuda_graph_cold_frames=(
             incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_window_frames=(
+            incremental_codec_cuda_graph_window_frames
         ),
         incremental_codec_cuda_graph_min_free_gb=(
             incremental_codec_cuda_graph_min_free_gb

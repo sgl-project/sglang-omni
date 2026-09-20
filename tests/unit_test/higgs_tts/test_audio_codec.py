@@ -59,7 +59,7 @@ def test_capture_safe_quantizer_decode_matches_additive_rvq() -> None:
     )
     codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
 
-    actual = audio_codec._capture_safe_quantizer_decode(quantizer, codes)
+    actual = audio_codec.capture_safe_quantizer_decode(quantizer, codes)
     expected = sum(
         layer.decode(indices) for layer, indices in zip(quantizer.quantizers, codes)
     )
@@ -82,7 +82,7 @@ def test_codec_decode_replays_matching_shape_graph() -> None:
     graph = _FakeGraph()
     codec = object.__new__(audio_codec.HiggsAudioCodec)
     codec._decode_cuda_graphs = {
-        3: audio_codec._DecodeCudaGraph(
+        3: audio_codec.DecodeCudaGraph(
             graph=graph,
             input_codes=graph_input,
             output_audio=graph_output,
@@ -115,7 +115,7 @@ def test_codec_decode_serializes_concurrent_graph_pool_use() -> None:
 
     codec = object.__new__(audio_codec.HiggsAudioCodec)
     codec._decode_cuda_graphs = {
-        1: audio_codec._DecodeCudaGraph(
+        1: audio_codec.DecodeCudaGraph(
             graph=_BlockingGraph(),
             input_codes=torch.zeros((1, 2, 1), dtype=torch.long),
             output_audio=torch.zeros((1, 1, 1), dtype=torch.float32),
@@ -165,7 +165,7 @@ def test_codec_capture_serializes_with_decode() -> None:
     capture_entered = threading.Event()
     codec = object.__new__(audio_codec.HiggsAudioCodec)
     codec._decode_single_flight_lock = threading.Lock()
-    codec._capture_decode_cuda_graphs_locked = (
+    codec.capture_decode_cuda_graphs_locked = (
         lambda _frame_counts: capture_entered.set()
     )
 

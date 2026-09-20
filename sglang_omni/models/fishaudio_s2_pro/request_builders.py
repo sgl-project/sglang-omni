@@ -57,7 +57,7 @@ def validate_s2pro_top_k(top_k: int) -> None:
         )
 
 
-def _ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
+def ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
     # note (Gaokai): only cb0 of the ref VQ codes becomes prompt token ids;
     # cb1..N ride in as embeddings, so extra_key must hash all codebooks to keep
     # same-cb0 prompts from sharing radix KV across different reference audio.
@@ -131,7 +131,8 @@ def build_sglang_tts_request(
         temperature=state.temperature,
         top_p=state.top_p,
         top_k=state.top_k,
-        repetition_penalty=state.repetition_penalty,
+        # note (Junnan Li): the in-model sampler already penalizes semantic history.
+        repetition_penalty=1.0,
         stop_token_ids=[im_end_token_id],
     )
     sampling_params.normalize(tokenizer)
@@ -144,7 +145,7 @@ def build_sglang_tts_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
         eos_token_ids={im_end_token_id},
-        extra_key=_ref_vq_fingerprint(vq_parts),
+        extra_key=ref_vq_fingerprint(vq_parts),
     )
     req.tokenizer = tokenizer
     req._codec_suppress_tokens = None

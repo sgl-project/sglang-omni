@@ -79,6 +79,7 @@ pub(crate) struct RequestLease {
 impl RequestLease {
     pub(super) fn new(admission: AdmissionLease, registration: Arc<WorkerRecord>) -> Self {
         let weight = admission.credits;
+        registration.record_dispatch(admission.class);
         Self {
             _admission: Some(admission),
             _envelope: None,
@@ -93,6 +94,7 @@ impl RequestLease {
         registration: Arc<WorkerRecord>,
     ) -> Self {
         let weight = admission.credits;
+        registration.record_dispatch(admission.class);
         Self {
             _admission: Some(admission),
             _envelope: None,
@@ -102,6 +104,7 @@ impl RequestLease {
     }
 
     pub(super) fn new_owner(envelope: EnvelopeLease, registration: Arc<WorkerRecord>) -> Self {
+        registration.record_voice_control_dispatch();
         Self {
             _admission: None,
             _envelope: Some(envelope),

@@ -17,9 +17,21 @@ from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.zonos2.config import Zonos2PipelineConfig
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
+
+
+def _higgs_with_vocoder_cadence() -> HiggsTtsPipelineConfig:
+    """Higgs's hook mirrors vocoder-set cadence onto tts_engine and supplies the
+    platform-aware vocoder decode defaults (#1721); a cadence set on the
+    vocoder here must reach the engine through it."""
+    config = HiggsTtsPipelineConfig(model_path="model")
+    vocoder = config.stage_named("vocoder")
+    vocoder.factory = type(vocoder.factory)(
+        **(vocoder.factory.model_dump(exclude_none=True)), stream_stride=75
+    )
+    return config
 
 
 @pytest.mark.parametrize(
@@ -44,8 +56,8 @@ from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
             id="dots-tts",
         ),
         pytest.param(
-            HiggsTtsPipelineConfig(model_path="model"),
-            "vocoder",
+            _higgs_with_vocoder_cadence(),
+            "tts_engine",
             id="higgs-tts",
         ),
         pytest.param(
@@ -87,7 +99,7 @@ def test_qwen3_tts_replica_launch_specs_keep_deterministic_factory_kwargs(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "sglang_omni.pipeline.runtime_config._visible_device_count",
+        "sglang_omni.pipeline.runtime_config.visible_device_count",
         lambda: 2,
     )
     config = Qwen3TTSPipelineConfig(
@@ -98,7 +110,7 @@ def test_qwen3_tts_replica_launch_specs_keep_deterministic_factory_kwargs(
     )
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,

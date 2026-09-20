@@ -23,7 +23,7 @@ AUDIO_TOWER_PREFIX = ("thinker.audio_tower.", "audio_tower.")
 AUDIO_TOWER_CLASS = hf_modeling.Qwen3OmniMoeAudioEncoder
 
 
-def _build_audio_tower(
+def build_audio_tower(
     model_path: str,
     *,
     thinker_cfg: object,
@@ -68,7 +68,7 @@ def pack_padded_audio_features(
     ).contiguous()
 
 
-class _SegmentSplits:
+class SegmentSplits:
     """Per-request attention segment sizes, shared by every encoder layer."""
 
     __slots__ = ("value",)
@@ -77,7 +77,7 @@ class _SegmentSplits:
         self.value: list[int] | None = None
 
 
-def _forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
+def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
     splits = self._omni_segment_splits.value
     if splits is None or sum(splits) != hidden_states.shape[0]:
         # Note (wenyao): a stale or mismatched split would silently corrupt
@@ -117,7 +117,7 @@ def _forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
     return self.out_proj(attn_output)
 
 
-def _share_segment_splits(tower: nn.Module, splits: _SegmentSplits) -> None:
+def share_segment_splits(tower: nn.Module, splits: SegmentSplits) -> None:
     # Note (wenyao): the stock attention derives its split sizes with a
     # device-to-host copy, so every one of the 32 layers stalls on the same
     # value; that sync is also what makes the stack uncapturable.
@@ -125,13 +125,13 @@ def _share_segment_splits(tower: nn.Module, splits: _SegmentSplits) -> None:
         attention = layer.self_attn
         attention._omni_segment_splits = splits
         attention._omni_unshared_forward = attention.forward
-        attention.forward = MethodType(_forward_with_shared_segments, attention)
+        attention.forward = MethodType(forward_with_shared_segments, attention)
 
 
-class _GraphedLayerStack(nn.Module):
+class GraphedLayerStack(nn.Module):
     """Stands in for the whole layer list so the tower's loop runs once."""
 
-    def __init__(self, layers: nn.ModuleList, runner, splits: _SegmentSplits) -> None:
+    def __init__(self, layers: nn.ModuleList, runner, splits: SegmentSplits) -> None:
         super().__init__()
         self._layers = layers
         self._runner = runner
@@ -169,20 +169,20 @@ class Qwen3OmniAudioEncoder(nn.Module):
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
         self._device = torch.device(device)
-        self.audio_tower = _build_audio_tower(
+        self.audio_tower = build_audio_tower(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
             device=device,
         )
-        self._downsample_lengths = hf_modeling._get_feat_extract_output_lengths
-        self._segment_splits = _SegmentSplits()
-        _share_segment_splits(self.audio_tower, self._segment_splits)
+        self._downsample_lengths = hf_modeling.get_feat_extract_output_lengths
+        self._segment_splits = SegmentSplits()
+        share_segment_splits(self.audio_tower, self._segment_splits)
         self._layer_graph_runner = None
         if enable_layer_cuda_graph and self._device.type == "cuda":
-            self._enable_layer_cuda_graph()
+            self.enable_layer_cuda_graph()
 
-    def _enable_layer_cuda_graph(self) -> None:
+    def enable_layer_cuda_graph(self) -> None:
         tower = self.audio_tower
         chunk_tokens = int(
             self._downsample_lengths(torch.tensor([tower.n_window * 2])).item()
@@ -194,7 +194,7 @@ class Qwen3OmniAudioEncoder(nn.Module):
             logger.warning("audio layer CUDA graphs unavailable; staying eager")
             return
         self._layer_graph_runner = runner
-        tower.layers = _GraphedLayerStack(tower.layers, runner, self._segment_splits)
+        tower.layers = GraphedLayerStack(tower.layers, runner, self._segment_splits)
 
     def forward(
         self,
@@ -215,22 +215,25 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 "audio_feature_lengths or feature_attention_mask is required"
             )
 
-        audio_feature_lengths = audio_feature_lengths.to(self._device, dtype=torch.long)
+        lengths_cpu = audio_feature_lengths.to("cpu", dtype=torch.long)
+        audio_feature_lengths = lengths_cpu.to(self._device, non_blocking=True)
         input_features = input_features.to(
             device=self._device, dtype=self.audio_tower.dtype
         )
         tower = self.audio_tower
         padded_feature, chunk_lengths = hf_modeling.chunk_and_pad_features(
-            input_features, audio_feature_lengths, tower.n_window
+            input_features, lengths_cpu, tower.n_window
         )
         valid_indices = hf_modeling.get_valid_indices(chunk_lengths)
         cu_seqlens = hf_modeling.get_audio_cu_seqlens(
             chunk_lengths,
-            audio_feature_lengths,
+            lengths_cpu,
             tower.n_window_infer,
             tower.n_window,
         )
         self._segment_splits.value = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        valid_indices = valid_indices.to(self._device, non_blocking=True)
+        cu_seqlens = cu_seqlens.to(self._device, non_blocking=True)
         try:
             outputs = tower(
                 input_features,

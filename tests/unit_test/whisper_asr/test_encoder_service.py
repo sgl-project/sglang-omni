@@ -8,12 +8,16 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.managers.schedule_batch import (
+    Modality,
+    MultimodalDataItem,
+    MultimodalInputFormat,
+)
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
-    _expected_audio_tokens,
     build_cache_namespace,
+    expected_audio_tokens,
 )
 
 _HIDDEN_SIZE = 8
@@ -84,17 +88,14 @@ class _StubModel(torch.nn.Module):
         return self._encoder(torch.cat(features, dim=0))
 
 
-def _make_item(*, fingerprint: str = "fp", fill: float = 1.0) -> SimpleNamespace:
-    return SimpleNamespace(
+def _make_item(*, fingerprint: str = "fp", fill: float = 1.0) -> MultimodalDataItem:
+    return MultimodalDataItem(
+        modality=Modality.AUDIO,
         feature=torch.full((1, 80, 16), fill),
-        precomputed_embeddings=None,
-        format=MultimodalInputFormat.NORMAL,
         model_specific_data={
             "audio_fingerprint": fingerprint,
             "num_audio_tokens": _TOKENS,
         },
-        audio_fingerprint=fingerprint,
-        num_audio_tokens=_TOKENS,
     )
 
 
@@ -203,7 +204,7 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
     def _boom(_tokens: int) -> torch.Tensor:
         raise RuntimeError("cudaHostAlloc failed")
 
-    monkeypatch.setattr(service, "_new_pinned_host", _boom)
+    monkeypatch.setattr(service, "new_pinned_host", _boom)
     item = _make_item(fingerprint="fallback", fill=4.0)
     service.encode_item(item)
     # note (Jeffro): the entry is still cached, just in pageable memory, and the service
@@ -221,13 +222,13 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
 @_requires_cuda
 def test_prewarm_covers_cache_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
     allocations: list[int] = []
-    original = WhisperPreLMEncoderService._new_pinned_host
+    original = WhisperPreLMEncoderService.new_pinned_host
 
     def _counting(self: WhisperPreLMEncoderService, tokens: int) -> torch.Tensor:
         allocations.append(tokens)
         return original(self, tokens)
 
-    monkeypatch.setattr(WhisperPreLMEncoderService, "_new_pinned_host", _counting)
+    monkeypatch.setattr(WhisperPreLMEncoderService, "new_pinned_host", _counting)
     service = _make_service(_cuda_model(), cache_max_entries=5)
     assert allocations == [_TOKENS] * 5
     assert service.stats()["pin_prewarm_s"] >= 0.0
@@ -282,8 +283,14 @@ def test_zero_entries_disables_cache() -> None:
 
 
 def test_expected_audio_tokens() -> None:
-    assert _expected_audio_tokens(SimpleNamespace(num_audio_tokens=12)) == 12
-    assert _expected_audio_tokens(SimpleNamespace(num_audio_tokens=None)) is None
+    def item(num_audio_tokens: int | None) -> MultimodalDataItem:
+        return MultimodalDataItem(
+            modality=Modality.AUDIO,
+            model_specific_data={"num_audio_tokens": num_audio_tokens},
+        )
+
+    assert expected_audio_tokens(item(12)) == 12
+    assert expected_audio_tokens(item(None)) is None
 
 
 def test_build_cache_namespace_is_stable() -> None:
@@ -354,7 +361,6 @@ def test_no_fingerprint_does_not_cache() -> None:
     service = _make_service(model)
     item = _make_item(fingerprint="ignored")
     item.audio_fingerprint = None
-    item.model_specific_data["audio_fingerprint"] = None
     service.encode_item(item)
     assert item.precomputed_embeddings is not None
     assert service.stats()["misses"] == 0

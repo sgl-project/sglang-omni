@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import builtins
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
@@ -13,6 +17,7 @@ from sglang.srt.platforms.xpu import XpuSRTPlatform
 
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
@@ -36,10 +41,66 @@ class _VendorSRTPlatform(SRTPlatform, _VendorDeviceMixin):
     pass
 
 
+@pytest.mark.parametrize(
+    "platform_type",
+    [
+        OmniPlatform,
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ],
+)
+def test_joint_rope_is_unavailable_without_a_platform_provider(
+    monkeypatch: pytest.MonkeyPatch, platform_type
+) -> None:
+    cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
+    monkeypatch.setattr(
+        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", cuda_provider
+    )
+
+    assert platform_type().get_joint_rope_inplace_kernel() is None
+    cuda_provider.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "sglang.kernels.ops.attention.rope"
+    rope_module = ModuleType(module_name)
+    kernel = Mock(side_effect=AssertionError("Getter must not execute the kernel"))
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, module_name, rope_module)
+
+    assert CUDAOmniPlatform().get_joint_rope_inplace_kernel() is kernel
+    kernel.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_propagates_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+    error = ImportError("Joint RoPE provider is unavailable")
+
+    def import_without_rope(name, *args, **kwargs):
+        if name == "sglang.kernels.ops.attention.rope":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_rope)
+
+    with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
+        CUDAOmniPlatform().get_joint_rope_inplace_kernel()
+
+    assert raised.value is error
+
+
 def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
     monkeypatch.delattr(torch, "npu", raising=False)
 
-    assert platforms._is_npu_available() is False
+    assert platforms.is_npu_available() is False
 
 
 def test_cpu_platform_needs_no_stage_process_env() -> None:
@@ -48,8 +109,23 @@ def test_cpu_platform_needs_no_stage_process_env() -> None:
     assert CPUOmniPlatform().get_stage_process_env(spec, {}) == {}
 
 
+def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
+    spec = StageLaunchConfig(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    env = CUDAOmniPlatform().get_stage_process_env(
+        spec, {"CUDA_VISIBLE_DEVICES": "3,4"}
+    )
+
+    assert env == {
+        "CUDA_VISIBLE_DEVICES": "4",
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+        "NCCL_NVLS_ENABLE": "0",
+    }
+
+
 def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
-    platform = platforms._as_omni_platform(RocmSRTPlatform())
+    platform = platforms.as_omni_platform(RocmSRTPlatform())
     spec = SimpleNamespace(stage_name="thinker", tp_size=2, gpu_id=1)
 
     assert platform.is_rocm()
@@ -122,7 +198,7 @@ def test_rocm_talker_keeps_auto_moe_backend() -> None:
         "Qwen3OmniTalker",
     )
 
-    assert server_args.moe_runner_backend == "auto"
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
@@ -140,9 +216,9 @@ def test_rocm_qwen3_omni_rejects_cutlass_moe_backends(backend: str) -> None:
 
 def test_srt_plugin_identity_round_trips_to_spawned_process() -> None:
     qualname = f"{__name__}._VendorSRTPlatform"
-    platform = platforms._load_platform_class(qualname)()
+    platform = platforms.load_platform_class(qualname)()
 
-    restored = platforms._load_platform_class(platforms.get_platform_spec(platform))()
+    restored = platforms.load_platform_class(platforms.get_platform_spec(platform))()
 
     assert isinstance(restored, OmniPlatform)
     assert restored.get_device(2) == "vendor:2"
@@ -175,7 +251,7 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
 
 
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
-    platform = platforms._as_omni_platform(XpuSRTPlatform())
+    platform = platforms.as_omni_platform(XpuSRTPlatform())
 
     assert type(platform) is XPUOmniPlatform
     spec = SimpleNamespace(tp_size=2, gpu_id=0, stage_name="talker")
@@ -207,15 +283,21 @@ def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert CPUOmniPlatform().enable_thinker_decode_graph() is True
 
 
+def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
+    assert xpu_platform.XPUOmniPlatform().enable_tts_predictor_graph() is True
+    assert OmniPlatform().enable_tts_predictor_graph() is True
+    assert CPUOmniPlatform().enable_tts_predictor_graph() is True
+
+
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 
-    NPU, CPU and Apple keep the base None: before this hook they would have run
-    a CUDA capture path and failed inside it.
+    CPU and Apple keep the base None.
     """
     from sglang_omni.platforms.apple import AppleOmniPlatform
     from sglang_omni.platforms.device_graph import (
         CudaDeviceGraphBackend,
+        NpuDeviceGraphBackend,
         XpuDeviceGraphBackend,
     )
     from sglang_omni.platforms.musa import MUSAOmniPlatform
@@ -226,7 +308,7 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
         ROCMOmniPlatform: CudaDeviceGraphBackend,
         MUSAOmniPlatform: CudaDeviceGraphBackend,
         xpu_platform.XPUOmniPlatform: XpuDeviceGraphBackend,
-        NPUOmniPlatform: None,
+        NPUOmniPlatform: NpuDeviceGraphBackend,
         CPUOmniPlatform: None,
         AppleOmniPlatform: None,
         OmniPlatform: None,

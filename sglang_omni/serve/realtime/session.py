@@ -22,7 +22,7 @@ from sglang_omni.serve.realtime.events import (
     TurnDetection,
     TurnDetectionType,
     make_event,
-    parse_client_event,
+    parse_conversation_client_event,
 )
 from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
@@ -173,7 +173,7 @@ class RealtimeSession:
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
-        event = parse_client_event(payload)
+        event = parse_conversation_client_event(payload)
         assert event is not None, f"Unsupported event type: {payload.get('type')!r}"
         method_name = HANDLERS[type(event)]
         await getattr(self, method_name)(event)
@@ -190,7 +190,7 @@ class RealtimeSession:
         turn_detection_update = update.pop("turn_detection", _UNSET)
         try:
             if turn_detection_update is not _UNSET:
-                current["turn_detection"] = self._merge_turn_detection(
+                current["turn_detection"] = self.merge_turn_detection(
                     current.get("turn_detection"),
                     turn_detection_update,
                 )
@@ -231,8 +231,8 @@ class RealtimeSession:
         replacement_vad: TurnDetector | None = None
         turn_detection_changed = (
             turn_detection_update is not _UNSET
-            and self._detector_config(candidate.turn_detection)
-            != self._detector_config(self.session_object.turn_detection)
+            and self.detector_config(candidate.turn_detection)
+            != self.detector_config(self.session_object.turn_detection)
         )
         if turn_detection_changed:
             try:
@@ -248,9 +248,9 @@ class RealtimeSession:
                 candidate.turn_detection = TurnDetection.model_validate(
                     build.effective_config
                 )
-                if self._detector_config(
+                if self.detector_config(
                     candidate.turn_detection
-                ) != self._detector_config(self.session_object.turn_detection):
+                ) != self.detector_config(self.session_object.turn_detection):
                     replacement_vad = build.detector
             except ValueError as exc:
                 await self.send_error(
@@ -291,7 +291,7 @@ class RealtimeSession:
         )
 
     @staticmethod
-    def _detector_config(value: TurnDetection | None) -> dict[str, Any]:
+    def detector_config(value: TurnDetection | None) -> dict[str, Any]:
         # Resolve against the same runtime defaults build_turn_detector applies,
         # so a client that merely restates the active default doesn't compare
         # as "changed" and trigger a needless detector rebuild/buffer clear.
@@ -341,7 +341,7 @@ class RealtimeSession:
         }
 
     @staticmethod
-    def _merge_turn_detection(
+    def merge_turn_detection(
         current: Mapping[str, Any] | None,
         update: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:
@@ -472,7 +472,7 @@ class RealtimeSession:
     async def handle_response_cancel(self, event: ResponseCancel) -> None:
         await self.cancel_active_response("client_cancelled")
 
-    def _remember_cancelled_assistant_item(self, item_id: str) -> None:
+    def remember_cancelled_assistant_item(self, item_id: str) -> None:
         self.cancelled_assistant_item_ids[item_id] = None
         if len(self.cancelled_assistant_item_ids) > _MAX_CANCELLED_ASSISTANT_ITEM_IDS:
             oldest_item_id = next(iter(self.cancelled_assistant_item_ids))
@@ -554,9 +554,9 @@ class RealtimeSession:
 
         abort_task = asyncio.create_task(abort_request())
         self.active_response_abort_task = abort_task
-        abort_task.add_done_callback(self._clear_active_response_abort_task)
+        abort_task.add_done_callback(self.clear_active_response_abort_task)
 
-    def _clear_active_response_abort_task(self, task: asyncio.Task[None]) -> None:
+    def clear_active_response_abort_task(self, task: asyncio.Task[None]) -> None:
         if self.active_response_abort_task is task:
             self.active_response_abort_task = None
 
@@ -675,7 +675,7 @@ class RealtimeSession:
                 audio_done = True
             if error is not None:
                 await self.send_error(*error)
-            await self._send_response_done(
+            await self.send_response_done(
                 response_id=response_id,
                 item_id=resp_item_id,
                 response_text=response_text,
@@ -685,7 +685,7 @@ class RealtimeSession:
                 usage=usage,
             )
             if wants_audio and status == "cancelled":
-                self._remember_cancelled_assistant_item(resp_item_id)
+                self.remember_cancelled_assistant_item(resp_item_id)
             response_done = True
 
         async def emit_terminals_safely(**kwargs: Any) -> None:
@@ -896,7 +896,7 @@ class RealtimeSession:
                 if self.finalized_response_request_id == request_id:
                     self.finalized_response_request_id = None
 
-    async def _send_response_done(
+    async def send_response_done(
         self,
         *,
         response_id: str,
@@ -967,7 +967,7 @@ class RealtimeSession:
         finally:
             self.active_request_id = None
 
-    def _sampling(self) -> SamplingParams:
+    def sampling(self) -> SamplingParams:
         max_tokens = self.session_object.max_response_output_tokens
         return SamplingParams(
             temperature=self.session_object.temperature,
@@ -1000,7 +1000,7 @@ class RealtimeSession:
         return GenerateRequest(
             model=self.model_name,
             messages=messages,
-            sampling=self._sampling(),
+            sampling=self.sampling(),
             stream=True,
             output_modalities=list(self.session_object.modalities),
             metadata={"audios": [audio_payload]},
@@ -1014,7 +1014,7 @@ class RealtimeSession:
                 Message(role="system", content=_TRANSCRIPTION_PROMPT),
                 Message(role="user", content="Transcribe the spoken audio."),
             ],
-            sampling=self._sampling(),
+            sampling=self.sampling(),
             stream=True,
             output_modalities=["text"],
             metadata={"audios": [audio_payload]},
@@ -1036,7 +1036,7 @@ class RealtimeSession:
             )
         )
 
-    async def _cancel_and_abort(
+    async def cancel_and_abort(
         self, task: asyncio.Task | None, request_id: str | None
     ) -> None:
         """Cancel the owning turn, abort its engine request, absorb the result.
@@ -1066,9 +1066,9 @@ class RealtimeSession:
         self.closed = True
         self.turn_cancel_requested = True
         abort_task = self.active_response_abort_task
-        await self._cancel_and_abort(self.active_task, self.active_request_id)
+        await self.cancel_and_abort(self.active_task, self.active_request_id)
         if abort_task is not None:
             await asyncio.gather(abort_task, return_exceptions=True)
-        await self._cancel_and_abort(self.queue_drainer, None)
+        await self.cancel_and_abort(self.queue_drainer, None)
         if self.websocket.client_state == WebSocketState.CONNECTED:
             await self.websocket.close()

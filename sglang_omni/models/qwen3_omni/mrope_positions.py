@@ -52,14 +52,14 @@ def talker_can_use_linear_mrope(
     return False
 
 
-def _feat_extract_output_lengths(input_lengths: int) -> int:
+def feat_extract_output_lengths(input_lengths: int) -> int:
     """Audio encoder output length (matches HF / sglang port)."""
     input_lengths_leave = input_lengths % 100
     feat_lengths = (input_lengths_leave - 1) // 2 + 1
     return int(((feat_lengths - 1) // 2 + 1 - 1) // 2 + 1 + (input_lengths // 100) * 13)
 
 
-def _linear_pos_ids(length: int, st_idx: float) -> np.ndarray:
+def linear_pos_ids(length: int, st_idx: float) -> np.ndarray:
     """[3, length] identical arange on each M-RoPE axis."""
     if length <= 0:
         return np.zeros((3, 0), dtype=np.float32)
@@ -67,7 +67,7 @@ def _linear_pos_ids(length: int, st_idx: float) -> np.ndarray:
     return np.stack([row, row, row], axis=0)
 
 
-def _vision_t_index(
+def vision_t_index(
     grid_t: int,
     second_per_grid: float,
     position_id_per_seconds: float,
@@ -78,7 +78,7 @@ def _vision_t_index(
     return (t * np.float32(second_per_grid)) * np.float32(position_id_per_seconds)
 
 
-def _vision_pos_ids(
+def vision_pos_ids(
     st_idx: float,
     grid_h: int,
     grid_w: int,
@@ -97,7 +97,7 @@ def _vision_pos_ids(
     ) + np.float32(st_idx)
 
 
-def _merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.ndarray:
+def merge_audio_in_video(video_pos: np.ndarray, audio_pos: np.ndarray) -> np.ndarray:
     """Merge video/audio columns by temporal id; ties prefer video."""
     if video_pos.shape[1] == 0:
         return audio_pos
@@ -235,20 +235,20 @@ def get_rope_index_qwen3_omni_vectorized(
             min_ed = min(ed_vision_start, ed_audio_start)
             text_len = min_ed - st
             if text_len != 0:
-                blocks.append(_linear_pos_ids(text_len, st_idx))
+                blocks.append(linear_pos_ids(text_len, st_idx))
                 st_idx += text_len
 
             if min_ed == ed_vision_start and ed_vision_start + 1 == ed_audio_start:
                 bos_len, eos_len = 2, 2
             else:
                 bos_len, eos_len = 1, 1
-            blocks.append(_linear_pos_ids(bos_len, st_idx))
+            blocks.append(linear_pos_ids(bos_len, st_idx))
             st_idx += bos_len
 
             if min_ed == ed_audio_start:
                 assert audio_seqlens_list is not None
-                audio_len = _feat_extract_output_lengths(audio_seqlens_list[audio_idx])
-                blocks.append(_linear_pos_ids(audio_len, st_idx))
+                audio_len = feat_extract_output_lengths(audio_seqlens_list[audio_idx])
+                blocks.append(linear_pos_ids(audio_len, st_idx))
                 st += text_len + bos_len + audio_len + eos_len
                 audio_idx += 1
                 remain_audios -= 1
@@ -261,8 +261,8 @@ def get_rope_index_qwen3_omni_vectorized(
                 grid_t = int(image_grid_np[image_idx, 0])
                 grid_h = int(image_grid_np[image_idx, 1]) // merge
                 grid_w = int(image_grid_np[image_idx, 2]) // merge
-                t_index = _vision_t_index(grid_t, 1.0, float(position_id_per_seconds))
-                blocks.append(_vision_pos_ids(st_idx, grid_h, grid_w, t_index))
+                t_index = vision_t_index(grid_t, 1.0, float(position_id_per_seconds))
+                blocks.append(vision_pos_ids(st_idx, grid_h, grid_w, t_index))
                 image_len = int(image_grid_np[image_idx].prod()) // (merge * merge)
                 st += text_len + bos_len + image_len + eos_len
                 image_idx += 1
@@ -276,12 +276,12 @@ def get_rope_index_qwen3_omni_vectorized(
                 grid_t = int(video_grid_np[video_idx, 0])
                 grid_h = int(video_grid_np[video_idx, 1]) // merge
                 grid_w = int(video_grid_np[video_idx, 2]) // merge
-                t_index = _vision_t_index(
+                t_index = vision_t_index(
                     grid_t,
                     float(second_per_grids_np[video_idx]),
                     float(position_id_per_seconds),
                 )
-                blocks.append(_vision_pos_ids(st_idx, grid_h, grid_w, t_index))
+                blocks.append(vision_pos_ids(st_idx, grid_h, grid_w, t_index))
                 video_len = int(video_grid_np[video_idx].prod()) // (merge * merge)
                 st += text_len + bos_len + video_len + eos_len
                 video_idx += 1
@@ -290,18 +290,18 @@ def get_rope_index_qwen3_omni_vectorized(
             elif min_ed == ed_vision_start and ed_vision_start + 1 == ed_audio_start:
                 assert audio_seqlens_list is not None
                 assert video_grid_np is not None and second_per_grids_np is not None
-                audio_len = _feat_extract_output_lengths(audio_seqlens_list[audio_idx])
-                audio_pos = _linear_pos_ids(audio_len, st_idx)
+                audio_len = feat_extract_output_lengths(audio_seqlens_list[audio_idx])
+                audio_pos = linear_pos_ids(audio_len, st_idx)
                 grid_t = int(video_grid_np[video_idx, 0])
                 grid_h = int(video_grid_np[video_idx, 1]) // merge
                 grid_w = int(video_grid_np[video_idx, 2]) // merge
-                t_index = _vision_t_index(
+                t_index = vision_t_index(
                     grid_t,
                     float(second_per_grids_np[video_idx]),
                     float(position_id_per_seconds),
                 )
-                video_pos = _vision_pos_ids(st_idx, grid_h, grid_w, t_index)
-                merged = _merge_audio_in_video(video_pos, audio_pos)
+                video_pos = vision_pos_ids(st_idx, grid_h, grid_w, t_index)
+                merged = merge_audio_in_video(video_pos, audio_pos)
                 blocks.append(merged)
                 video_len = int(video_grid_np[video_idx].prod()) // (merge * merge)
                 st += text_len + bos_len + audio_len + video_len + eos_len
@@ -316,10 +316,10 @@ def get_rope_index_qwen3_omni_vectorized(
                 next_st = float(blocks[-1][:, -1].max() + 1)
             else:
                 next_st = float(blocks[-1].max() + 1) if blocks else 0.0
-            blocks.append(_linear_pos_ids(eos_len, next_st))
+            blocks.append(linear_pos_ids(eos_len, next_st))
         if st < n_tokens:
             st_idx = float(blocks[-1].max() + 1) if blocks else 0.0
-            blocks.append(_linear_pos_ids(n_tokens - st, st_idx))
+            blocks.append(linear_pos_ids(n_tokens - st, st_idx))
 
         llm_positions = np.concatenate(blocks, axis=1).astype(np.float32, copy=False)
         position_ids[:, batch_i, :] = torch.from_numpy(llm_positions)

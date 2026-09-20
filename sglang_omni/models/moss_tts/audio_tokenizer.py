@@ -16,6 +16,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
 from sglang_omni.models.moss_tts.attention import (
     AUTO_ATTENTION_BACKEND,
@@ -23,8 +24,10 @@ from sglang_omni.models.moss_tts.attention import (
     SDPA_ATTENTION_BACKEND,
     AttentionBackendResolution,
     MossAudioTokenizerAttention,
+    MossAudioTokenizerStreamingModule,
     MossPackedRopeCache,
     PositionIdsCache,
+    StreamingExecutionContext,
     merge_attention_backend_resolutions,
     pack_padded_sequence,
     pack_padded_sequence_from_host_lengths,
@@ -33,6 +36,9 @@ from sglang_omni.models.moss_tts.attention import (
     unpack_packed_sequence_from_indices,
     unpack_unpadded_sequence,
     validate_attention_backend,
+)
+from sglang_omni.models.moss_tts.vocoder_quantizer import (
+    MossAudioTokenizerQuantizerDecoder,
 )
 from sglang_omni.models.weight_loader import (
     load_module,
@@ -43,9 +49,14 @@ from sglang_omni.models.weight_loader import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MOSS_TTS_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
+DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 _LOUDNESS_TARGET_DBFS = -20.0
 _LOUDNESS_GAIN_MIN_DB = -3.0
 _LOUDNESS_GAIN_MAX_DB = 3.0
+# note (Zhang Yiyang): Reserve RoPE positions for 30 minutes of streaming
+# audio. Each decoder stage uses its own frame rate to size the fixed table
+# before CUDA graph capture, avoiding over-allocation in slower stages.
+_STREAMING_ROPE_CACHE_DURATION_SECONDS = 30 * 60
 _HF_FLASH_ATTENTION_IMPLEMENTATION = "flash_attention_2"
 _SUPPORTED_ATTENTION_IMPLEMENTATIONS = (
     None,
@@ -86,13 +97,13 @@ def resolve_moss_audio_sample_rate(model: Any, config: Any) -> int:
     )
 
 
-def _attention_backend_label(resolution: AttentionBackendResolution) -> str:
+def attention_backend_label(resolution: AttentionBackendResolution) -> str:
     if resolution.fallback_reason is None:
         return resolution.backend
     return f"{resolution.backend} (fallback: {resolution.fallback_reason})"
 
 
-class _MossAudioTokenizerV1FeedForward(nn.Module):
+class MossAudioTokenizerV1FeedForward(nn.Module):
     """Expose MOSS-Audio-Tokenizer v1 Linear-GELU-Linear weights."""
 
     def __init__(
@@ -110,7 +121,7 @@ class _MossAudioTokenizerV1FeedForward(nn.Module):
         return self.linear2(self.activation(self.linear1(x)))
 
 
-def _feed_forward(module: nn.Module) -> nn.Module:
+def feed_forward(module: nn.Module) -> nn.Module:
     ffn = getattr(module, "ffn", None)
     if ffn is not None:
         return ffn
@@ -119,7 +130,7 @@ def _feed_forward(module: nn.Module) -> nn.Module:
         or getattr(module, "linear2", None) is None
     ):
         raise ValueError("MOSS-Audio-Tokenizer transformer layer has no supported FFN")
-    return _MossAudioTokenizerV1FeedForward(
+    return MossAudioTokenizerV1FeedForward(
         module.linear1,
         module.linear2,
         module.activation,
@@ -161,7 +172,7 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
             )
             layer_scale_1 = source_module.layer_scale_1
             norm2 = source_module.norm2
-            ffn = _feed_forward(source_module)
+            ffn = feed_forward(source_module)
             layer_scale_2 = source_module.layer_scale_2
         elif config is not None:
             d_model = int(config["d_model"])
@@ -177,7 +188,7 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
                     f"got {gating!r}"
                 )
             if moss_audio_tokenizer_v1_weights:
-                ffn = _MossAudioTokenizerV1FeedForward(
+                ffn = MossAudioTokenizerV1FeedForward(
                     nn.Linear(
                         d_model,
                         dim_feedforward,
@@ -216,13 +227,13 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
                 layer_scale_1 = nn.Identity()
                 layer_scale_2 = nn.Identity()
             else:
-                layer_scale_1 = _LayerScale(
+                layer_scale_1 = LayerScale(
                     d_model,
                     init=float(layer_scale),
                     device=device,
                     dtype=dtype,
                 )
-                layer_scale_2 = _LayerScale(
+                layer_scale_2 = LayerScale(
                     d_model,
                     init=float(layer_scale),
                     device=device,
@@ -262,8 +273,8 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
                 attention_backend=selected_attention_backend,
                 packed_rope_cache=packed_rope_cache,
             )
-            norm1 = _create_norm(norm, d_model, device=device, dtype=dtype)
-            norm2 = _create_norm(norm, d_model, device=device, dtype=dtype)
+            norm1 = create_norm(norm, d_model, device=device, dtype=dtype)
+            norm2 = create_norm(norm, d_model, device=device, dtype=dtype)
         else:
             raise ValueError(
                 "MOSS-Audio-Tokenizer transformer layer requires config or "
@@ -301,7 +312,7 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
         return x
 
 
-class MossAudioTokenizerTransformer(nn.Module):
+class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
     """Shared MOSS-Audio-Tokenizer transformer body."""
 
     def __init__(
@@ -324,6 +335,10 @@ class MossAudioTokenizerTransformer(nn.Module):
                 )
             max_period = float(source_module.max_period)
             packed_rope_cache = MossPackedRopeCache(max_period=max_period)
+            if isinstance(source_module, MossAudioTokenizerTransformer):
+                packed_rope_cache.streaming_max_positions = (
+                    source_module._packed_rope_cache.streaming_max_positions
+                )
             layers = [
                 MossAudioTokenizerTransformerLayer.from_module(
                     layer,
@@ -339,7 +354,7 @@ class MossAudioTokenizerTransformer(nn.Module):
             max_period = float(config.get("max_period", 10_000))
             positional_scale = float(config.get("positional_scale", 1.0))
             rope = (
-                _RotaryEmbedding(max_period)
+                RotaryEmbedding(max_period)
                 if positional_embedding in {"rope", "sin_rope"}
                 else None
             )
@@ -362,6 +377,7 @@ class MossAudioTokenizerTransformer(nn.Module):
                 "MOSS-Audio-Tokenizer transformer requires config or source_module"
             )
         self.layers = nn.ModuleList(layers)
+        self._packed_rope_cache = packed_rope_cache
         self.positional_embedding = positional_embedding
         self.positional_scale = float(positional_scale)
         self.max_period = float(max_period)
@@ -401,7 +417,18 @@ class MossAudioTokenizerTransformer(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        execution_context = kwargs.pop("execution_context", None)
+        state = self._streaming_state
+        if state is None and execution_context is not None:
+            raise RuntimeError(
+                "streaming execution context requires an active transformer state"
+            )
         if self.positional_embedding in {"sin", "sin_rope"}:
+            if state is not None:
+                raise ValueError(
+                    "sinusoidal position embeddings are only supported "
+                    "for non-streaming inputs"
+                )
             if x.dim() == 3:
                 positions = torch.arange(x.shape[1], device=x.device).view(1, -1)
             else:
@@ -419,7 +446,9 @@ class MossAudioTokenizerTransformer(nn.Module):
             )
             x = x + self.positional_scale * pos_emb
         for layer in self.layers:
-            x = layer(x, **kwargs)
+            x = layer(x, execution_context=execution_context, **kwargs)
+        if state is not None and x.dim() != 3:
+            raise ValueError("streaming transformer requires dense inputs")
         return x
 
 
@@ -496,6 +525,10 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         self.output_proj = output_proj
         self._position_ids_cache = PositionIdsCache()
 
+    @property
+    def is_streaming(self) -> bool:
+        return self.transformer.is_streaming
+
     @classmethod
     def from_module(
         cls,
@@ -514,13 +547,20 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         input_lengths: torch.Tensor,
         *,
         input_lengths_cpu: Sequence[int] | None = None,
+        execution_context: StreamingExecutionContext | None = None,
         **kwargs: Any,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        if execution_context is not None and not self.is_streaming:
+            raise RuntimeError(
+                "streaming execution context requires an active projected transformer"
+            )
         x = self.input_proj(x.transpose(1, 2))
-        backend = self.transformer.resolve_attention_backend(
-            x.device,
-            MossAudioTokenizerAttention.get_backend_dtype(x),
-        ).backend
+        backend = None
+        if not self.is_streaming:
+            backend = self.transformer.resolve_attention_backend(
+                x.device,
+                MossAudioTokenizerAttention.get_backend_dtype(x),
+            ).backend
         if backend == PACKED_FLASH_ATTENTION_BACKEND:
             batch_size, max_seqlen, _ = x.shape
             if input_lengths_cpu is not None:
@@ -589,7 +629,12 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
                         max_seqlen,
                     )
         else:
-            x = self.transformer(x, input_lengths=input_lengths, **kwargs)
+            x = self.transformer(
+                x,
+                input_lengths=input_lengths,
+                execution_context=execution_context,
+                **kwargs,
+            )
         return self.output_proj(x).transpose(1, 2), input_lengths
 
     def supports_packed_attention(
@@ -607,7 +652,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         return self.transformer.resolve_attention_backend(torch.device(device), dtype)
 
 
-def _update_decoder_cpu_lengths(
+def update_decoder_cpu_lengths(
     stage: nn.Module,
     input_lengths: Sequence[int],
 ) -> list[int]:
@@ -664,7 +709,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
         elif config is not None:
             sampling_rate = config.get("sampling_rate") or config.get("sample_rate")
             if sampling_rate is None:
-                raise ValueError("MOSS audio-tokenizer config lacks sampling_rate")
+                raise ValueError("MOSS-Audio-Tokenizer config lacks sampling_rate")
             downsample_rate = int(config["downsample_rate"])
             default_context_duration = float(
                 config.get("causal_transformer_context_duration", 10.0)
@@ -675,7 +720,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
                 stage_config = dict(stage_config_raw)
                 module_type = stage_config["module_type"]
                 if module_type == "PatchedPretransform":
-                    stage = _PatchedPretransform(
+                    stage = PatchedPretransform(
                         int(stage_config["patch_size"]),
                         is_downsample=False,
                     )
@@ -700,13 +745,16 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
                         dtype=dtype,
                         attention_backend=attention_backend,
                     )
+                    stage.transformer._packed_rope_cache.streaming_max_positions = (
+                        math.ceil(frame_rate * _STREAMING_ROPE_CACHE_DURATION_SECONDS)
+                    )
                 else:
                     raise ValueError(
                         "unsupported MOSS-Audio-Tokenizer decoder stage: "
                         f"{module_type!r}"
                     )
                 stages.append(stage)
-                if isinstance(stage, _PatchedPretransform):
+                if isinstance(stage, PatchedPretransform):
                     frame_rate *= stage.patch_size
         else:
             raise ValueError(
@@ -768,7 +816,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
     def output_lengths(self, input_lengths: Sequence[int]) -> list[int]:
         output_lengths = list(map(int, input_lengths))
         for stage in self:
-            output_lengths = _update_decoder_cpu_lengths(stage, output_lengths)
+            output_lengths = update_decoder_cpu_lengths(stage, output_lengths)
         return output_lengths
 
     def forward(
@@ -777,6 +825,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
         input_lengths: torch.Tensor,
         *,
         input_lengths_cpu: Sequence[int] | None = None,
+        execution_context: StreamingExecutionContext | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         cpu_lengths = (
             None if input_lengths_cpu is None else list(map(int, input_lengths_cpu))
@@ -787,11 +836,12 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
                     x,
                     input_lengths,
                     input_lengths_cpu=cpu_lengths,
+                    execution_context=execution_context,
                 )
             else:
                 x, input_lengths = stage(x, input_lengths)
             if cpu_lengths is not None:
-                cpu_lengths = _update_decoder_cpu_lengths(stage, cpu_lengths)
+                cpu_lengths = update_decoder_cpu_lengths(stage, cpu_lengths)
         return x, input_lengths
 
 
@@ -848,7 +898,7 @@ def resolve_moss_audio_dtype(
     raise ValueError(f"{name} must be {allowed}; got {dtype!r}")
 
 
-def _validate_audio_dtypes(
+def validate_audio_dtypes(
     *,
     component_dtype: torch.dtype,
     component_name: str,
@@ -875,7 +925,7 @@ class MossAudioTokenizerEncoderOutput:
     encoder_hidden_states: torch.Tensor
 
 
-class _LayerScale(nn.Module):
+class LayerScale(nn.Module):
     def __init__(
         self,
         channels: int,
@@ -893,7 +943,7 @@ class _LayerScale(nn.Module):
         return self.scale * x
 
 
-class _RMSNorm(nn.Module):
+class RMSNorm(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -919,7 +969,7 @@ class _RMSNorm(nn.Module):
         return (x * (alpha * torch.rsqrt(variance))).to(output_dtype)
 
 
-def _create_norm(
+def create_norm(
     norm: str,
     dim: int,
     *,
@@ -929,9 +979,9 @@ def _create_norm(
     if norm == "layer_norm":
         return nn.LayerNorm(dim, eps=1e-5, device=device, dtype=dtype)
     if norm == "rms_norm":
-        return _RMSNorm(dim, eps=1e-5, device=device, dtype=dtype)
+        return RMSNorm(dim, eps=1e-5, device=device, dtype=dtype)
     if norm == "rms_norm_f32":
-        return _RMSNorm(
+        return RMSNorm(
             dim,
             eps=1e-8,
             device=device,
@@ -941,13 +991,13 @@ def _create_norm(
             dtype=torch.float32,
             compute_dtype=torch.float32,
         )
-    raise ValueError(f"unsupported MOSS audio-tokenizer norm: {norm!r}")
+    raise ValueError(f"unsupported MOSS-Audio-Tokenizer norm: {norm!r}")
 
 
-def _restore_fp32_compute_parameters(module: nn.Module) -> None:
+def restore_fp32_compute_parameters(module: nn.Module) -> None:
     """Keep parameters of explicitly FP32 compute modules in FP32."""
     for submodule in module.modules():
-        if not isinstance(submodule, _RMSNorm):
+        if not isinstance(submodule, RMSNorm):
             continue
         if submodule.compute_dtype is not torch.float32:
             continue
@@ -955,7 +1005,7 @@ def _restore_fp32_compute_parameters(module: nn.Module) -> None:
             submodule.alpha.data = submodule.alpha.data.to(dtype=torch.float32)
 
 
-class _RotaryEmbedding(nn.Module):
+class RotaryEmbedding(nn.Module):
     def __init__(self, max_period: float) -> None:
         super().__init__()
         self.max_period = float(max_period)
@@ -1000,7 +1050,7 @@ class _RotaryEmbedding(nn.Module):
         return rotate(q), rotate(k)
 
 
-class _PatchedPretransform(nn.Module):
+class PatchedPretransform(nn.Module):
     def __init__(self, patch_size: int, *, is_downsample: bool) -> None:
         super().__init__()
         self.module_type = "PatchedPretransform"
@@ -1023,7 +1073,7 @@ class _PatchedPretransform(nn.Module):
             return x, input_lengths // self.patch_size
         if channels % self.patch_size:
             raise ValueError(
-                "MOSS vocoder patch stage requires channels divisible by "
+                "MOSS-Audio-Tokenizer vocoder patch stage requires channels divisible by "
                 f"patch_size, got channels={channels}, patch_size={self.patch_size}"
             )
         output_channels = channels // self.patch_size
@@ -1035,11 +1085,11 @@ class _PatchedPretransform(nn.Module):
         return x, input_lengths * self.patch_size
 
 
-def _weight_normalized_conv1d(*args: Any, **kwargs: Any) -> nn.Module:
+def weight_normalized_conv1d(*args: Any, **kwargs: Any) -> nn.Module:
     return nn.utils.parametrizations.weight_norm(nn.Conv1d(*args, **kwargs))
 
 
-class _LFQ(nn.Module):
+class LFQ(nn.Module):
     def __init__(
         self,
         *,
@@ -1050,7 +1100,7 @@ class _LFQ(nn.Module):
     ) -> None:
         super().__init__()
         self.in_proj = (
-            _weight_normalized_conv1d(
+            weight_normalized_conv1d(
                 input_dim,
                 codebook_dim,
                 kernel_size=1,
@@ -1061,7 +1111,7 @@ class _LFQ(nn.Module):
             else nn.Identity()
         )
         self.out_proj = (
-            _weight_normalized_conv1d(
+            weight_normalized_conv1d(
                 codebook_dim,
                 input_dim,
                 kernel_size=1,
@@ -1100,7 +1150,7 @@ class _LFQ(nn.Module):
         return self.out_proj(quantized.float()).float()
 
 
-class _ResidualLFQ(nn.Module):
+class ResidualLFQ(nn.Module):
     def __init__(
         self,
         config: dict[str, Any],
@@ -1116,7 +1166,7 @@ class _ResidualLFQ(nn.Module):
         codebook_size = int(config.get("codebook_size", 1024))
         codebook_dim = int(config.get("codebook_dim", 8))
         self.input_proj = (
-            _weight_normalized_conv1d(
+            weight_normalized_conv1d(
                 input_dim,
                 rvq_dim,
                 kernel_size=1,
@@ -1127,7 +1177,7 @@ class _ResidualLFQ(nn.Module):
             else nn.Identity()
         )
         self.output_proj = (
-            _weight_normalized_conv1d(
+            weight_normalized_conv1d(
                 rvq_dim,
                 output_dim,
                 kernel_size=1,
@@ -1139,7 +1189,7 @@ class _ResidualLFQ(nn.Module):
         )
         self.quantizers = nn.ModuleList(
             [
-                _LFQ(
+                LFQ(
                     input_dim=rvq_dim,
                     codebook_size=codebook_size,
                     codebook_dim=codebook_dim,
@@ -1148,6 +1198,18 @@ class _ResidualLFQ(nn.Module):
                 for _ in range(self.num_quantizers)
             ]
         )
+        # Note (Zhang Yiyang): Build this optional cache after loading to remove
+        # repeated embedding/projection setup without changing the reference path.
+        self._decode_cache: MossAudioTokenizerQuantizerDecoder | None = None
+
+    @torch.no_grad()
+    def build_decode_cache(self) -> None:
+        """Cache one batched codebook gather and fixed projection weights."""
+        self._decode_cache = MossAudioTokenizerQuantizerDecoder(self)
+
+    def clear_decode_cache(self) -> None:
+        """Drop the inference-only cache and restore the reference decode path."""
+        self._decode_cache = None
 
     @torch.no_grad()
     def forward(
@@ -1198,6 +1260,11 @@ class _ResidualLFQ(nn.Module):
                     "MOSS quantizer codebook count must be within "
                     f"[1, {self.num_quantizers}], got {count}"
                 )
+            if (
+                self._decode_cache is not None
+                and codes.device == self._decode_cache.device
+            ):
+                return self._decode_cache.decode_codes(codes)
             decoded = torch.zeros(
                 batch_size,
                 self.rvq_dim,
@@ -1211,7 +1278,7 @@ class _ResidualLFQ(nn.Module):
 
 
 class MossAudioTokenizerEncoder(nn.Module):
-    """Inference-only MOSS codec encoder with repository-owned execution code."""
+    """Inference-only MOSS-Audio-Tokenizer encoder with repository-owned execution code."""
 
     def __init__(
         self,
@@ -1225,7 +1292,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         self.config = SimpleNamespace(**config)
         sampling_rate = config.get("sampling_rate") or config.get("sample_rate")
         if sampling_rate is None:
-            raise ValueError("MOSS audio-tokenizer config lacks sampling_rate")
+            raise ValueError("MOSS-Audio-Tokenizer config lacks sampling_rate")
         self.sampling_rate = int(sampling_rate)
         self.downsample_rate = int(config["downsample_rate"])
         self.number_channels = int(config.get("number_channels", 1))
@@ -1293,7 +1360,7 @@ class MossAudioTokenizerEncoder(nn.Module):
             stage_config = dict(stage_config_raw)
             module_type = stage_config["module_type"]
             if module_type == "PatchedPretransform":
-                stage = _PatchedPretransform(
+                stage = PatchedPretransform(
                     int(stage_config["patch_size"]),
                     is_downsample=True,
                 )
@@ -1333,7 +1400,7 @@ class MossAudioTokenizerEncoder(nn.Module):
                 "repository-local MOSS encoder supports residual LFQ checkpoints; "
                 f"got quantizer_type={quantizer_type!r}"
             )
-        self.quantizer = _ResidualLFQ(
+        self.quantizer = ResidualLFQ(
             quantizer_config,
             device=parameter_device,
         )
@@ -1363,7 +1430,7 @@ class MossAudioTokenizerEncoder(nn.Module):
             ]
         )
 
-    def _prepare_waveform_batch(
+    def prepare_waveform_batch(
         self,
         waveforms: list[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
@@ -1396,7 +1463,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         lengths = torch.tensor(lengths_cpu, device=device, dtype=torch.long)
         return batch, lengths, lengths_cpu
 
-    def _flatten_channels(
+    def flatten_channels(
         self,
         input_values: torch.Tensor,
         input_lengths: torch.Tensor,
@@ -1432,8 +1499,8 @@ class MossAudioTokenizerEncoder(nn.Module):
                 "repository-local MOSS encoder only supports full non-streaming "
                 "batch_encode (chunk_duration=None)"
             )
-        hidden, lengths, lengths_cpu = self._prepare_waveform_batch(waveforms)
-        hidden, lengths, lengths_cpu = self._flatten_channels(
+        hidden, lengths, lengths_cpu = self.prepare_waveform_batch(waveforms)
+        hidden, lengths, lengths_cpu = self.flatten_channels(
             hidden,
             lengths,
             lengths_cpu,
@@ -1528,7 +1595,7 @@ class MossAudioEncoder:
         if not waveforms:
             raise ValueError("waveforms must contain at least one waveform")
         prepared = [
-            self._prepare_waveform(waveform, sample_rate)
+            self.prepare_waveform(waveform, sample_rate)
             for waveform, sample_rate in waveforms
         ]
         with torch.inference_mode():
@@ -1549,7 +1616,7 @@ class MossAudioEncoder:
             for index in range(int(codes.shape[1]))
         ]
 
-    def _prepare_waveform(
+    def prepare_waveform(
         self,
         waveform: torch.Tensor,
         sample_rate: int,
@@ -1582,13 +1649,13 @@ class MossAudioEncoder:
                 orig_freq=int(sample_rate),
                 new_freq=self.sample_rate,
             )
-        waveform = self._loudness_normalize(waveform)
+        waveform = self.loudness_normalize(waveform)
         if self.number_channels == 1:
             waveform = waveform.squeeze(0)
         return waveform.to(device=self.device, dtype=torch.float32)
 
     @staticmethod
-    def _loudness_normalize(waveform: torch.Tensor) -> torch.Tensor:
+    def loudness_normalize(waveform: torch.Tensor) -> torch.Tensor:
         waveform = waveform.to(torch.float32)
         if waveform.numel() == 0:
             return waveform
@@ -1598,7 +1665,7 @@ class MossAudioEncoder:
         return waveform * (10.0 ** (gain / 20.0))
 
 
-def _normalize_moss_audio_tokenizer_v1_transformer_state_dict(
+def normalize_moss_audio_tokenizer_v1_transformer_state_dict(
     state_dict: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     """Map MOSS v1 weight names onto the shared Transformer modules."""
@@ -1618,7 +1685,7 @@ def _normalize_moss_audio_tokenizer_v1_transformer_state_dict(
     return normalized
 
 
-def _load_moss_audio_config(model_path: str) -> tuple[Path, dict[str, Any]]:
+def load_moss_audio_config(model_path: str) -> tuple[Path, dict[str, Any]]:
     resolved_path = resolve_model_path(str(model_path))
     config_path = resolved_path / "config.json"
     with config_path.open(encoding="utf-8") as config_file:
@@ -1631,7 +1698,7 @@ def _load_moss_audio_config(model_path: str) -> tuple[Path, dict[str, Any]]:
     return resolved_path, config
 
 
-def _load_moss_audio_component(
+def load_moss_audio_component(
     module: nn.Module,
     model_path: Path,
     *,
@@ -1642,7 +1709,7 @@ def _load_moss_audio_component(
 ) -> nn.Module:
     if v1_weights:
         state_dict = load_weights_by_prefix(str(model_path), prefix=prefix)
-        state_dict = _normalize_moss_audio_tokenizer_v1_transformer_state_dict(
+        state_dict = normalize_moss_audio_tokenizer_v1_transformer_state_dict(
             state_dict
         )
         try:
@@ -1660,17 +1727,27 @@ def _load_moss_audio_component(
             device=device,
             strict=True,
         )
-    _restore_fp32_compute_parameters(module)
+    restore_fp32_compute_parameters(module)
     return module
 
 
-def _load_moss_audio_quantizer(
+def fold_weight_norm(module: nn.Module) -> int:
+    folded = 0
+    for submodule in list(module.modules()):
+        while is_parametrized(submodule):
+            name = next(iter(submodule.parametrizations.keys()))
+            remove_parametrizations(submodule, name, leave_parametrized=True)
+            folded += 1
+    return folded
+
+
+def load_moss_audio_quantizer(
     module: nn.Module,
     model_path: Path,
     *,
     device: str | torch.device,
 ) -> nn.Module:
-    return load_module(
+    module = load_module(
         module,
         str(model_path),
         prefix="quantizer.",
@@ -1678,6 +1755,10 @@ def _load_moss_audio_quantizer(
         device=device,
         strict=True,
     )
+    folded = fold_weight_norm(module)
+    if folded:
+        logger.info("Folded %d MOSS quantizer weight_norm parametrizations", folded)
+    return module
 
 
 def load_moss_audio_encoder(
@@ -1689,7 +1770,7 @@ def load_moss_audio_encoder(
 ) -> MossAudioEncoder:
     """Load only encoder/quantizer weights without executing checkpoint code."""
 
-    resolved_path, config = _load_moss_audio_config(model_path)
+    resolved_path, config = load_moss_audio_config(model_path)
 
     model = MossAudioTokenizerEncoder(
         config,
@@ -1699,8 +1780,8 @@ def load_moss_audio_encoder(
     )
     target_device = torch.device(device)
     backend_resolution = model.resolve_attention_backend(target_device)
-    backend_label = _attention_backend_label(backend_resolution)
-    _load_moss_audio_component(
+    backend_label = attention_backend_label(backend_resolution)
+    model.encoder = load_moss_audio_component(
         model.encoder,
         resolved_path,
         prefix="encoder.",
@@ -1708,7 +1789,7 @@ def load_moss_audio_encoder(
         device=device,
         v1_weights=model._uses_moss_audio_tokenizer_v1_weights,
     )
-    _load_moss_audio_quantizer(
+    model.quantizer = load_moss_audio_quantizer(
         model.quantizer,
         resolved_path,
         device=device,
@@ -1728,7 +1809,7 @@ def load_moss_audio_encoder(
     return MossAudioEncoder(model, device=str(device))
 
 
-class MossAudioTokenizerVocoder(nn.Module):
+class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
     """Inference-only MOSS quantizer and waveform decoder."""
 
     def __init__(
@@ -1741,7 +1822,7 @@ class MossAudioTokenizerVocoder(nn.Module):
         attention_backend: str = AUTO_ATTENTION_BACKEND,
     ) -> None:
         super().__init__()
-        _validate_audio_dtypes(
+        validate_audio_dtypes(
             component_dtype=decoder_dtype,
             component_name="decoder_dtype",
             compute_dtype=compute_dtype,
@@ -1749,9 +1830,19 @@ class MossAudioTokenizerVocoder(nn.Module):
         self.config = SimpleNamespace(**config)
         sampling_rate = config.get("sampling_rate") or config.get("sample_rate")
         if sampling_rate is None:
-            raise ValueError("MOSS audio-tokenizer config lacks sampling_rate")
+            raise ValueError("MOSS-Audio-Tokenizer config lacks sampling_rate")
         self.sampling_rate = int(sampling_rate)
         self.downsample_rate = int(config["downsample_rate"])
+        self.number_channels = int(config.get("number_channels", 1))
+        self.enable_channel_interleave = bool(
+            config.get("enable_channel_interleave", True)
+        )
+        if not hasattr(self.config, "sampling_rate"):
+            self.config.sampling_rate = self.sampling_rate
+        if not hasattr(self.config, "number_channels"):
+            self.config.number_channels = self.number_channels
+        if not hasattr(self.config, "enable_channel_interleave"):
+            self.config.enable_channel_interleave = self.enable_channel_interleave
         self.decoder_dtype = decoder_dtype if compute_dtype is None else compute_dtype
         self.compute_dtype = None if compute_dtype is torch.float32 else compute_dtype
         self.attention_backend = validate_attention_backend(attention_backend)
@@ -1763,10 +1854,10 @@ class MossAudioTokenizerVocoder(nn.Module):
         )
         if quantizer_type not in {"rlfq", "random_prefix_rlfq"}:
             raise ValueError(
-                "repository-local MOSS vocoder supports residual LFQ checkpoints; "
+                "repository-local MOSS-Audio-Tokenizer vocoder supports residual LFQ checkpoints; "
                 f"got quantizer_type={quantizer_type!r}"
             )
-        self.quantizer = _ResidualLFQ(
+        self.quantizer = ResidualLFQ(
             quantizer_config,
             device=parameter_device,
         )
@@ -1780,6 +1871,172 @@ class MossAudioTokenizerVocoder(nn.Module):
             dtype=self.decoder_dtype,
             attention_backend=self.attention_backend,
         )
+        # Note (Zhang Yiyang): Keep persistent decoder state separate from the
+        # scheduler's compact execution width.
+        self._decoder_streaming_modules: list[MossAudioTokenizerStreamingModule] = []
+        self._decoder_state_capacity = 0
+        self._decoder_real_state_capacity = 0
+
+    def decoder_device(self) -> torch.device:
+        parameter = next(self.decoder.parameters(), None)
+        if parameter is not None:
+            return parameter.device
+        return self.streaming_device()
+
+    def start_decoder_state_pool(self, total_capacity: int) -> None:
+        if self._decoder_streaming_modules:
+            raise RuntimeError(
+                "MOSS-Audio-Tokenizer decoder state pool is already initialized"
+            )
+        modules = [
+            module
+            for module in self.decoder.modules()
+            if isinstance(module, MossAudioTokenizerStreamingModule)
+        ]
+        if not modules:
+            raise RuntimeError(
+                "MOSS-Audio-Tokenizer decoder has no streaming-capable stages"
+            )
+        if any(module._streaming_state is not None for module in modules):
+            raise RuntimeError(
+                "MOSS-Audio-Tokenizer decoder is already in a streaming session"
+            )
+        try:
+            for module in modules:
+                module._streaming_state = module.init_streaming_state(total_capacity)
+        except BaseException:
+            for module in modules:
+                module._streaming_state = None
+            raise
+        self._decoder_streaming_modules = modules
+
+    def initialize_decoder_state_pool(
+        self,
+        state_capacity: int,
+        scratch_capacity: int = 0,
+    ) -> None:
+        """Allocate persistent decoder state independently of execution width."""
+        if not isinstance(state_capacity, int) or isinstance(state_capacity, bool):
+            raise TypeError("state_capacity must be an int")
+        if not isinstance(scratch_capacity, int) or isinstance(scratch_capacity, bool):
+            raise TypeError("scratch_capacity must be an int")
+        if state_capacity <= 0 or scratch_capacity < 0:
+            raise ValueError(
+                "state_capacity must be > 0 and scratch_capacity must be >= 0; "
+                f"got state_capacity={state_capacity}, scratch_capacity={scratch_capacity}"
+            )
+        total_capacity = state_capacity + scratch_capacity
+        self.start_decoder_state_pool(total_capacity)
+        self._decoder_state_capacity = total_capacity
+        self._decoder_real_state_capacity = state_capacity
+
+    def close_decoder_state_pool(self) -> None:
+        """Release all decoder streaming state and its persistent cache rows."""
+        if not self._decoder_streaming_modules:
+            return
+        for module in reversed(self._decoder_streaming_modules):
+            module._streaming_state = None
+        self._decoder_streaming_modules = []
+        self._decoder_state_capacity = 0
+        self._decoder_real_state_capacity = 0
+
+    def reset_decoder_state_slots(self, state_slot_ids: torch.Tensor) -> None:
+        """Reset only the requested decoder state slots."""
+        if not self._decoder_streaming_modules:
+            raise RuntimeError(
+                "MOSS-Audio-Tokenizer decoder state pool is not initialized"
+            )
+        if state_slot_ids.ndim != 1:
+            raise ValueError(
+                f"state_slot_ids must be rank 1, got {tuple(state_slot_ids.shape)}"
+            )
+        if state_slot_ids.dtype != torch.long:
+            raise TypeError("state_slot_ids must have dtype torch.long")
+        device = self.decoder_device()
+        if state_slot_ids.device != device:
+            raise ValueError(
+                f"state_slot_ids must be on {device}, got {state_slot_ids.device}"
+            )
+        if state_slot_ids.numel() == 0:
+            return
+        if device.type != "cuda":
+            if bool(torch.any(state_slot_ids < 0)) or bool(
+                torch.any(state_slot_ids >= self._decoder_state_capacity)
+            ):
+                raise ValueError(
+                    "state_slot_ids must be in "
+                    f"[0, {self._decoder_state_capacity}), got "
+                    f"{state_slot_ids.detach().to('cpu').tolist()}"
+                )
+            if torch.unique(state_slot_ids).numel() != state_slot_ids.numel():
+                raise ValueError("state_slot_ids must be unique")
+        for module in self._decoder_streaming_modules:
+            state = module._streaming_state
+            if state is None:
+                raise RuntimeError(
+                    "MOSS-Audio-Tokenizer decoder streaming state was unexpectedly closed"
+                )
+            state.reset_slots(state_slot_ids)
+
+    def validate_decoder_streaming_inputs(
+        self,
+        codes: torch.Tensor,
+        codes_lengths: torch.Tensor,
+        state_slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor,
+    ) -> StreamingExecutionContext:
+        if not self._decoder_streaming_modules:
+            raise RuntimeError(
+                "MOSS-Audio-Tokenizer decoder state pool is not initialized"
+            )
+        if codes.ndim != 3:
+            raise ValueError(
+                "codes must have shape [num_quantizers, batch, time], "
+                f"got {tuple(codes.shape)}"
+            )
+        device = self.decoder_device()
+        if codes.device != device:
+            raise ValueError(f"codes must be on {device}, got {codes.device}")
+        if codes.dtype != torch.long:
+            raise TypeError("codes must have dtype torch.long")
+        _, batch_size, frame_count = codes.shape
+        if batch_size <= 0 or frame_count <= 0:
+            raise ValueError(
+                f"codes must have positive batch/time dimensions, got B={batch_size}, T={frame_count}"
+            )
+        for name, tensor, dtype in (
+            ("codes_lengths", codes_lengths, torch.long),
+            ("state_slot_ids", state_slot_ids, torch.long),
+            ("valid_rows", valid_rows, torch.bool),
+        ):
+            if tensor.shape != (batch_size,):
+                raise ValueError(
+                    f"{name} must have shape ({batch_size},), got {tuple(tensor.shape)}"
+                )
+            if tensor.dtype != dtype or tensor.device != device:
+                raise TypeError(f"{name} must have dtype {dtype} on {device}")
+        # note (Zhang Yiyang): Scheduler and graph inputs are trusted device
+        # tensors. CPU value checks also cover direct callers without adding
+        # GPU synchronization.
+        if device.type != "cuda":
+            if bool(torch.any(state_slot_ids < 0)) or bool(
+                torch.any(state_slot_ids >= self._decoder_state_capacity)
+            ):
+                raise ValueError(
+                    f"state_slot_ids must be in [0, {self._decoder_state_capacity})"
+                )
+            valid_slots = state_slot_ids[valid_rows]
+            if bool(torch.any(valid_slots >= self._decoder_real_state_capacity)):
+                raise ValueError("valid rows must use real decoder state slots")
+            if torch.unique(valid_slots).numel() != valid_slots.numel():
+                raise ValueError("valid state_slot_ids must be unique")
+            if bool(torch.any(codes_lengths[valid_rows] != frame_count)):
+                raise ValueError(
+                    f"valid rows must use the full execution length {frame_count}"
+                )
+            if bool(torch.any(codes_lengths[~valid_rows] != 0)):
+                raise ValueError("invalid streaming rows must have codes_lengths=0")
+        return StreamingExecutionContext(state_slot_ids, valid_rows)
 
     def resolve_attention_backend(
         self,
@@ -1788,6 +2045,79 @@ class MossAudioTokenizerVocoder(nn.Module):
     ) -> AttentionBackendResolution:
         decoder_dtype = self.decoder_dtype if dtype is None else dtype
         return self.decoder.resolve_attention_backend(device, decoder_dtype)
+
+    def restore_channels_from_codec(
+        self,
+        audio: torch.Tensor,
+        audio_lengths: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.number_channels == 1 or not self.enable_channel_interleave:
+            return audio.float(), audio_lengths
+        if audio.shape[1] != 1:
+            raise ValueError(
+                "interleaved MOSS-Audio-Tokenizer decoder output must have one codec channel, "
+                f"got {audio.shape[1]}"
+            )
+        audio = (
+            audio.squeeze(1)
+            .contiguous()
+            .view(audio.shape[0], -1, self.number_channels)
+            .transpose(1, 2)
+            .contiguous()
+            .float()
+        )
+        return (
+            audio,
+            torch.div(
+                audio_lengths,
+                self.number_channels,
+                rounding_mode="floor",
+            ),
+        )
+
+    @torch.no_grad()
+    def decode_streaming_tensors(
+        self,
+        codes: torch.Tensor,
+        codes_lengths: torch.Tensor,
+        state_slot_ids: torch.Tensor,
+        valid_rows: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Tensor-only indexed decode boundary for scheduler/graph callers."""
+        execution_context = self.validate_decoder_streaming_inputs(
+            codes,
+            codes_lengths,
+            state_slot_ids,
+            valid_rows,
+        )
+        # note (Zhang Yiyang): Match the source codec's autocast boundary,
+        # including FP32 LayerNorm. Casting decoder weights/inputs to BF16
+        # alone changes streaming PCM.
+        autocast_enabled = (
+            codes.device.type == "cuda"
+            and self.compute_dtype in (torch.float16, torch.bfloat16)
+        ) or (codes.device.type == "cpu" and self.compute_dtype is torch.bfloat16)
+        hidden = self.quantizer.decode_codes(codes).to(
+            dtype=torch.float32 if autocast_enabled else self.decoder_dtype
+        )
+        with torch.autocast(
+            device_type=codes.device.type,
+            dtype=self.compute_dtype or self.decoder_dtype,
+            enabled=autocast_enabled,
+        ):
+            audio, audio_lengths = self.decoder(
+                hidden,
+                codes_lengths,
+                execution_context=execution_context,
+            )
+        audio, audio_lengths = self.restore_channels_from_codec(
+            audio,
+            audio_lengths,
+        )
+        invalid = ~valid_rows
+        audio = audio.masked_fill(invalid.view(-1, 1, 1), 0)
+        audio_lengths = audio_lengths.masked_fill(invalid, 0)
+        return audio, audio_lengths
 
 
 class MossAudioVocoder:
@@ -1850,7 +2180,7 @@ def load_moss_audio_vocoder(
 ) -> MossAudioVocoder:
     """Load only quantizer/decoder weights without executing checkpoint code."""
 
-    resolved_path, config = _load_moss_audio_config(model_path)
+    resolved_path, config = load_moss_audio_config(model_path)
 
     model = MossAudioTokenizerVocoder(
         config,
@@ -1861,13 +2191,14 @@ def load_moss_audio_vocoder(
     )
     target_device = torch.device(device)
     backend_resolution = model.resolve_attention_backend(target_device)
-    backend_label = _attention_backend_label(backend_resolution)
-    _load_moss_audio_quantizer(
+    backend_label = attention_backend_label(backend_resolution)
+    model.quantizer = load_moss_audio_quantizer(
         model.quantizer,
         resolved_path,
         device=device,
     )
-    _load_moss_audio_component(
+    model.quantizer.build_decode_cache()
+    model.decoder = load_moss_audio_component(
         model.decoder,
         resolved_path,
         prefix="decoder.",

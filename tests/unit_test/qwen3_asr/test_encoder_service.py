@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 from collections.abc import Iterator
@@ -9,11 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
-    _expected_audio_tokens,
     build_cache_namespace,
+    expected_audio_tokens,
 )
 
 _HIDDEN_SIZE = 4
@@ -81,7 +83,7 @@ class _StubModel(torch.nn.Module):
             raise RuntimeError("multi-item boom")
         parts = []
         for item in items:
-            rows = _expected_audio_tokens(item) + self.row_offset
+            rows = expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
             parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
         packed = torch.cat(parts, dim=0)
@@ -115,13 +117,15 @@ def _item(
     num_audio_tokens: int,
     *,
     with_feature: bool = True,
-) -> SimpleNamespace:
-    return SimpleNamespace(
+) -> MultimodalDataItem:
+    return MultimodalDataItem(
+        modality=Modality.AUDIO,
         hash=audio_hash,
-        audio_fingerprint=str(audio_hash) if audio_hash is not None else None,
-        num_audio_tokens=num_audio_tokens,
         feature=torch.zeros(1, 128, 300) if with_feature else None,
-        precomputed_embeddings=None,
+        model_specific_data={
+            "audio_fingerprint": str(audio_hash) if audio_hash is not None else None,
+            "num_audio_tokens": num_audio_tokens,
+        },
     )
 
 
@@ -211,18 +215,27 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(Qwen3ASRPreLMEncoderService)
-    service._stream = object()
+    service._stream = SimpleNamespace(device=torch.device("cuda", 0))
 
-    def fail_stream(_stream):  # noqa: ANN001, ANN202
-        raise RuntimeError("stream context failed")
+    class _FakeDeviceModule:
+        def __init__(self) -> None:
+            self.stream_calls: list[object] = []
 
-    monkeypatch.setattr(torch.cuda, "stream", fail_stream)
+        @contextlib.contextmanager
+        def stream(self, stream):  # noqa: ANN001, ANN202
+            self.stream_calls.append(stream)
+            raise RuntimeError("stream context failed")
+            yield
+
+    device_module = _FakeDeviceModule()
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: device_module)
 
     assert not torch.is_inference_mode_enabled()
     with pytest.raises(RuntimeError, match="stream context failed"):
-        with service._batch_context():
+        with service.batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
+    assert device_module.stream_calls == [service._stream]
 
 
 def test_cache_hit_skips_reencode() -> None:
@@ -297,7 +310,7 @@ def test_concurrent_identical_requests_encode_once() -> None:
     items = [_item(123, 3) for _ in range(n_threads)]
     errors: list[Exception] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -376,7 +389,7 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
     items = [_item(123, 3) for _ in range(2)]
     errors: list[Exception] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             barrier.wait(timeout=10)
             service.encode_item(item)
@@ -501,7 +514,7 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     items = [_item(31, 3), _item(32, 3), _item(33, 4)]
     errors: list[Exception] = []
 
-    def worker(item: SimpleNamespace) -> None:
+    def worker(item: MultimodalDataItem) -> None:
         try:
             service.encode_item(item)
         except Exception as exc:
@@ -554,7 +567,7 @@ def test_invalid_cache_entry_is_evicted_and_reencoded() -> None:
     probe = _item(42, 3)
     service.encode_item(probe)
     assert model.encode_calls == 1
-    key = service._cache_key(probe)
+    key = service.cache_key(probe)
 
     for poison in (
         torch.zeros(5, _HIDDEN_SIZE),
@@ -585,7 +598,7 @@ def test_token_count_mismatch_fails_loudly() -> None:
 
 def test_missing_token_count_raises() -> None:
     service = _make_service()
-    item = SimpleNamespace(hash=1, feature=None, precomputed_embeddings=None)
+    item = MultimodalDataItem(modality=Modality.AUDIO, hash=1)
 
     with pytest.raises(RuntimeError, match="num_audio_tokens"):
         service.encode_item(item)
@@ -609,9 +622,13 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
 
 
 def test_expected_audio_tokens_uses_request_metadata() -> None:
-    explicit = SimpleNamespace(num_audio_tokens=5, feature=torch.zeros(1, 128, 300))
-    assert _expected_audio_tokens(explicit) == 5
-    assert _expected_audio_tokens(SimpleNamespace()) is None
+    explicit = MultimodalDataItem(
+        modality=Modality.AUDIO,
+        feature=torch.zeros(1, 128, 300),
+        model_specific_data={"num_audio_tokens": 5},
+    )
+    assert expected_audio_tokens(explicit) == 5
+    assert expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:
@@ -692,7 +709,7 @@ def test_the_device_cache_is_really_reclaimed_after_an_oom() -> None:
         reserved_before = device_module.memory_reserved()
         assert reserved_before > floor
 
-        service._recover_after_failure(torch.OutOfMemoryError("encoder OOM"))
+        service.recover_after_failure(torch.OutOfMemoryError("encoder OOM"))
 
         device_module.synchronize()
         assert device_module.memory_reserved() < reserved_before
