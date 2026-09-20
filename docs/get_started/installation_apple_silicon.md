@@ -22,47 +22,17 @@ live in each cookbook's **Apple Silicon** section.
 
 ## Method 1: Using the `install.sh` Script (recommended)
 
-### Qwen3-ASR
-
 ```bash
 git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
  ./install.sh
 source .venv-apple/bin/activate
 ```
 
-### Fun-Cosyvoice3
-
-```bash
-git clone https://github.com/sgl-project/sglang-omni.git && cd sglang-omni
-SGLANG_OMNI_EXTRAS=Fun-CosyVoice3 ./install.sh
-source .venv-apple/bin/activate
-```
-
-Set `SGLANG_OMNI_EXTRAS` to the comma-separated extras your model needs (see
-the model's cookbook). Omit it for models with no extra dependency.
-
 The script is idempotent and creates (or reuses) `.venv-apple`, installs the
 Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
 already available), installs SGLang `v0.5.19` from source with its `all_mps`
 extra, and installs this checkout with `uv pip`. SGLang's optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
-
-### FFmpeg 7 and `DYLD_LIBRARY_PATH`
-
-`ffmpeg@7` is intentional: `torchcodec==0.15.0` ships loaders for FFmpeg 4
-through 8 only, and the unversioned `ffmpeg` formula installs FFmpeg 9. At
-runtime, expose its libraries before starting the server:
-
-```bash
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-Because `ffmpeg@7` is keg-only, this export must be present whenever the server
-starts. macOS may remove `DYLD_*` variables when a SIP-protected system
-executable launches the server; set it on the final `sgl-omni` process (for
-example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
-`/usr/bin/time`). Test a compressed input such as M4A or MP3, since WAV
-decoding can succeed without loading FFmpeg.
 
 ### Environment variables
 
@@ -92,29 +62,11 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
 ## Method 2: Run from a hosted installer
 
-The script also supports a downloaded or `curl | bash` invocation: when it is
-not inside an sglang-omni checkout, it clones the repository specified by
-`SGLANG_OMNI_REPO` and `SGLANG_OMNI_REF` into the cache and installs that
-checkout. Prefer downloading, reviewing, and then running a pinned script:
+This method runs the installer directly without cloning the repository.
 
 ```bash
-curl -fsSLo /tmp/sglang-omni-install.sh \
-  https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh
-less /tmp/sglang-omni-install.sh
-chmod +x /tmp/sglang-omni-install.sh
-SGLANG_OMNI_EXTRAS=<model-extra> SGLANG_OMNI_REF=<commit> /tmp/sglang-omni-install.sh
+curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/main/install.sh | bash
 ```
-
-Piping a remote script directly to Bash executes code without a review step;
-use it only when that trade-off is acceptable:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/sgl-project/sglang-omni/<commit>/install.sh \
-  | SGLANG_OMNI_EXTRAS=<model-extra> SGLANG_OMNI_REF=<commit> bash
-```
-
-For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
-`SGLANG_OMNI_REF` explicitly.
 
 ## Common failures
 
