@@ -116,8 +116,8 @@ class AuKFlowMatching(nn.Module):
     ) -> list[torch.Tensor]:
         """Integrate the velocity field for a batch of requests.
 
-        With a ``step_graph`` the batch pads to that runner's shape buckets, so
-        one captured step can be replayed for every NFE step.
+        With a ``step_graph`` the batch pads to one of that runner's declared
+        shapes, so one captured step can be replayed for every NFE step.
         """
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -140,18 +140,18 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
-        # A runner declines a batch too wide to gain from a graph, and then this
-        # batch neither pads nor binds: buckets carries both decisions.
-        buckets = None
+        # A runner declines a batch no captured shape covers, and that batch
+        # then neither pads nor binds: ``padding`` carries both decisions.
+        padding = None
         if step_graph is not None:
-            buckets = step_graph.pad_lengths(
+            padding = step_graph.pad_lengths(
                 frames=max(item.target_frames for item in items),
                 ref=max(reference.shape[0] for reference in references),
                 text=max(item.conditioning.shape[0] for item in items),
                 batch=len(items),
             )
         frame_rows, ref_rows, text_rows = (
-            buckets if buckets is not None else (None, None, None)
+            padding if padding is not None else (None, None, None)
         )
 
         ref = pack(references, ref_rows).to(weight_dtype)
@@ -177,7 +177,7 @@ class AuKFlowMatching(nn.Module):
         mask = audio_positions = joint_positions = None
         # Positions come from the real lengths, so a padded batch places each
         # request's target frames where the unpadded single request would.
-        if len(items) > 1 or buckets is not None:
+        if len(items) > 1 or padding is not None:
             target_positions = torch.arange(y0.shape[1], device=device)[None, :]
             mask = (
                 target_positions
@@ -218,7 +218,7 @@ class AuKFlowMatching(nn.Module):
             ref_mask=ref_mask,
             # The projected text is constant per trajectory either way; a graph
             # holds it in its own buffers and must not write the python cache.
-            cache=buckets is None,
+            cache=padding is None,
             audio_positions=audio_positions,
             joint_positions=joint_positions,
         )
@@ -235,7 +235,7 @@ class AuKFlowMatching(nn.Module):
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
         fn = None
-        if buckets is not None:
+        if padding is not None:
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
         try:
             result = integrate(fn or partial(step, inputs), y0, t)

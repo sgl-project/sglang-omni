@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from contextlib import nullcontext
 from functools import lru_cache
 
@@ -112,26 +113,57 @@ def _load_flow(
     return flow
 
 
-def _warmup_flow(flow, device, dtype):
-    """Pay the block compile once at startup instead of on the first request.
+def _warmup_items(flow, device, *, batch, frames, ref, text):
+    """A synthetic sampling batch shaped like one the server will be given."""
+    return [
+        AuKSampleItem(
+            torch.zeros(text, flow.transformer.txt_proj.in_features, device=device),
+            torch.ones(text, dtype=torch.bool, device=device),
+            frames,
+            (
+                torch.zeros(ref, flow.transformer.latent_dim, device=device)
+                if ref
+                else None
+            ),
+            seed=0,
+            ref_length=ref,
+        )
+        for _ in range(batch)
+    ]
 
-    The blocks compile for dynamic shapes, so a short trajectory pays most of
-    the cost; a later length can still trigger a smaller recompile.
+
+def _warmup_flow(flow, device, dtype, sampling, step_graph=None):
+    """Pay the block compile, and every declared graph capture, at startup.
+
+    The warmup enters at ``sample_batch``, where a request does, so it compiles
+    the shapes a request runs: a batch that pads to a graph shape and one that
+    does not differ in the rope's batch dimension, and a single item that is
+    not padded differs again, so a warmup through one of them alone would leave
+    the first requests recompiling.
     """
-    frames, ref, text = 32, 16, 8
-    item = AuKSampleItem(
-        torch.zeros(text, flow.transformer.txt_proj.in_features, device=device),
-        torch.ones(text, dtype=torch.bool, device=device),
-        frames,
-        torch.zeros(ref, flow.transformer.latent_dim, device=device),
-        seed=0,
-        ref_length=ref,
-    )
     started = time.perf_counter()
+    # One step compiles and captures everything a trajectory needs; the rest of
+    # its steps replay or recompute the same shapes. The released time grid
+    # goes with them: it overrides ``steps`` where a checkpoint declares one,
+    # and only the shapes matter here, not where in the trajectory they sit.
+    one_step = {**sampling, "steps": 1, "t_grid": None}
     # Under inference_mode like the request path, so dynamo compiles once.
     with torch.inference_mode(), _autocast(device, dtype):
-        flow.sample(item, steps=1, cfg_strength=C.DEFAULT_CFG_STRENGTH)
-    logger.info("AuK DiT: compiled the blocks in %.1fs", time.perf_counter() - started)
+        # The eager path, which a batch too wide or too long for a declared
+        # graph still takes: a lone unpadded item, and the multi-item batch
+        # that carries explicit rope positions.
+        for batch in (1, 2):
+            items = _warmup_items(flow, device, batch=batch, frames=64, ref=32, text=16)
+            flow.sample_batch(items, **one_step)
+        if step_graph is not None:
+            step_graph.capture_declared(
+                lambda shape: flow.sample_batch(
+                    _warmup_items(flow, device, **shape._asdict()),
+                    **one_step,
+                    step_graph=step_graph,
+                )
+            )
+    logger.info("AuK DiT: warmed the sampler in %.1fs", time.perf_counter() - started)
 
 
 def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
@@ -280,6 +312,7 @@ def create_auk_engine_executor(
     weight_dtype: str = "float32",
     enable_dit_torch_compile: bool = False,
     enable_dit_cuda_graph: bool = False,
+    dit_cuda_graph_capture_shapes: Sequence[Sequence[int]] | None = None,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
@@ -287,8 +320,9 @@ def create_auk_engine_executor(
     upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
     autocast. ``enable_dit_torch_compile`` fuses each block's elementwise chain,
     and ``enable_dit_cuda_graph`` replays a whole Euler step from one captured
-    graph, padding the batch to shape buckets to do so (see
-    docs/cookbook/auk.md, Sampling).
+    graph, padding the batch to the shapes in ``dit_cuda_graph_capture_shapes``
+    -- ``(batch, frames, reference frames, text tokens)`` each, captured at
+    startup -- to do so (see docs/cookbook/auk.md, Sampling).
     """
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = _resolve_dtype(field="dtype", name=dtype)
@@ -309,26 +343,21 @@ def create_auk_engine_executor(
     # Installed before the blocks compile and before the step graph captures
     # them, so both carry the fused kernel instead of the unfused chain.
     if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
-        from sglang_omni.models.auk.fused_qk_norm_rope import QKFusion
+        from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
-        fusion = QKFusion()
-        flow.transformer.qk_fusion = fusion
-        for block in (
-            *flow.transformer.transformer_blocks,
-            *flow.transformer.single_transformer_blocks,
-        ):
-            block.attn.qk_fusion = fusion
-    if enable_dit_torch_compile:
-        _warmup_flow(flow, device, autocast_dtype)
+        flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)
+    step_graph = None
     if enable_dit_cuda_graph:
         if not flow.transformer.attn_mask_enabled:
             raise ValueError(
                 "AuK enable_dit_cuda_graph needs attn_mask_enabled: without the "
                 "attention bias, padded rows would reach the valid ones"
             )
-        step_graph = build_step_graph_runner(device)
-        if step_graph is not None:
-            sampling["step_graph"] = step_graph
+        step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
+    if enable_dit_torch_compile or step_graph is not None:
+        _warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
+    if step_graph is not None:
+        sampling["step_graph"] = step_graph
     return _scheduler(
         lambda payloads: _sample_batch(
             payloads,

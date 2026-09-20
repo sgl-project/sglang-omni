@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.auk.flow_matching import fuse_hidden_states
-from sglang_omni.models.auk.step_cuda_graph import round_to_bucket
 
 
 def test_fusion_matches_upstream_layerwise_normalization():
@@ -105,35 +104,38 @@ def test_bf16_backbone_integrates_in_fp32_and_tracks_fp32_backbone():
         assert cosine > 0.99, cosine
 
 
-class _BucketPadding:
+class _ShapePadding:
     """The step-graph runner's padding contract, with nothing to replay.
 
-    ``bind`` returning None is the runner's own fallback when a shape cannot be
-    captured, so the padded batch runs through the eager backbone.
+    It pads to one declared shape, and only for a batch that shape covers on
+    every axis, which is the runner's own lookup. ``bind`` returning None is
+    the runner's fallback for a shape it holds no graph for, so the padded
+    batch still runs through the eager backbone.
     """
 
-    max_graph_batch = 8
+    batch = 8
+    shape = (32, 16, 8)
 
     def pad_lengths(self, *, frames, ref, text, batch):
-        if batch > self.max_graph_batch:
-            return None
-        return (
-            round_to_bucket(frames, 16),
-            round_to_bucket(ref, 16),
-            round_to_bucket(text, 8),
+        covers = (
+            batch <= self.batch
+            and frames <= self.shape[0]
+            and ref <= self.shape[1]
+            and text <= self.shape[2]
         )
+        return self.shape if covers else None
 
     def bind(self, *args, **kwargs):
         return None
 
 
 @pytest.mark.parametrize("count", [1, 3])
-def test_bucket_padding_does_not_change_the_sampled_latents(monkeypatch, count):
+def test_shape_padding_does_not_change_the_sampled_latents(monkeypatch, count):
     """Padded rows must reach the backbone and contribute nothing.
 
     The masks carry the real lengths and the rope positions are built from them,
-    so rounding target frames, reference frames, and text tokens up to a bucket
-    is the same trajectory the unpadded batch integrates.
+    so rounding target frames, reference frames, and text tokens up to a declared
+    capture shape is the same trajectory the unpadded batch integrates.
     """
     from sglang_omni.models.auk.dit import AuKDit
     from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
@@ -179,7 +181,7 @@ def test_bucket_padding_does_not_change_the_sampled_latents(monkeypatch, count):
     expected = flow.sample_batch(items, **sampling)
     unpadded = set(widths)
     widths.clear()
-    actual = flow.sample_batch(items, **sampling, step_graph=_BucketPadding())
+    actual = flow.sample_batch(items, **sampling, step_graph=_ShapePadding())
 
     assert unpadded == {max(item.target_frames for item in items)}
     assert set(widths) == {32}
@@ -220,7 +222,7 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
         return original(self, x, *args, **kwargs)
 
     monkeypatch.setattr(type(flow.transformer), "forward", forward)
-    declining = _BucketPadding()
-    declining.max_graph_batch = 2
+    declining = _ShapePadding()
+    declining.batch = 2
     flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
     assert set(widths) == {19}

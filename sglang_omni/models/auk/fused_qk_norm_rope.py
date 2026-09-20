@@ -82,55 +82,47 @@ def _norm_rope_kernel(
     tl.store(K_OUT + row * HEAD_DIM + dim, k * cosine + k_pair * sine)
 
 
-class QKFusion:
-    """Share trig tables within one integration; clear them with the DiT cache."""
+def fused_qk_norm_rope(q, k, q_norm, k_norm, rope):
+    """Norm and rotate Q and K in one launch, from the caller's trig tables.
 
-    def __init__(self):
-        self.tables = {}
-
-    def clear(self):
-        self.tables.clear()
-
-    def __call__(self, q, k, q_norm, k_norm, rope):
-        freqs, scale = rope
-        if scale != 1.0:
-            raise ValueError("AuK Q/K fusion requires XPos disabled")
-        key = (freqs.data_ptr(), tuple(freqs.shape), tuple(freqs.stride()))
-        if key not in self.tables:
-            # Retain freqs too, so allocator pointer reuse cannot alias a table.
-            self.tables[key] = (freqs, freqs.cos(), freqs.sin())
-        _, cosine, sine = self.tables[key]
-        if cosine.ndim == 2:
-            strides = (0, *cosine.stride())
-        else:
-            strides = (
-                0 if cosine.shape[0] == 1 else cosine.stride(0),
-                cosine.stride(1),
-                cosine.stride(2),
-            )
-        output_dtype = q_norm.weight.dtype
-        q_out = torch.empty(q.shape, device=q.device, dtype=output_dtype)
-        k_out = torch.empty_like(q_out)
-        epsilon = torch.finfo(output_dtype).eps if q_norm.eps is None else q_norm.eps
-        # Runtime sequence/outer strides share a kernel across request lengths.
-        _norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
-            q,
-            k,
-            q_norm.weight,
-            k_norm.weight,
-            cosine,
-            sine,
-            q_out,
-            k_out,
-            *q.stride(),
-            *k.stride(),
-            *strides,
-            HEADS=q.shape[1],
-            HEAD_DIM=q.shape[3],
-            SEQ=q.shape[2],
-            EPS=epsilon,
-            ROUND_NORM=output_dtype != torch.float32,
-            num_warps=1,
-            enable_fp_fusion=False,
+    The tables come in on ``rope`` rather than from a cache of this module's
+    own: the blocks that call this are compiled, and a lookup keyed on the
+    freqs pointer would make every trajectory a new guard to recompile for.
+    """
+    if rope.scale != 1.0:
+        raise ValueError("AuK Q/K fusion requires XPos disabled")
+    cosine, sine = rope.cos, rope.sin
+    if cosine.ndim == 2:
+        strides = (0, *cosine.stride())
+    else:
+        strides = (
+            0 if cosine.shape[0] == 1 else cosine.stride(0),
+            cosine.stride(1),
+            cosine.stride(2),
         )
-        return q_out, k_out
+    output_dtype = q_norm.weight.dtype
+    q_out = torch.empty(q.shape, device=q.device, dtype=output_dtype)
+    k_out = torch.empty_like(q_out)
+    epsilon = torch.finfo(output_dtype).eps if q_norm.eps is None else q_norm.eps
+    # Runtime sequence/outer strides share a kernel across request lengths.
+    _norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
+        q,
+        k,
+        q_norm.weight,
+        k_norm.weight,
+        cosine,
+        sine,
+        q_out,
+        k_out,
+        *q.stride(),
+        *k.stride(),
+        *strides,
+        HEADS=q.shape[1],
+        HEAD_DIM=q.shape[3],
+        SEQ=q.shape[2],
+        EPS=epsilon,
+        ROUND_NORM=output_dtype != torch.float32,
+        num_warps=1,
+        enable_fp_fusion=False,
+    )
+    return q_out, k_out
