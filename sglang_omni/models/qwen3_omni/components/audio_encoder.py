@@ -175,7 +175,9 @@ class Qwen3OmniAudioEncoder(nn.Module):
             torch_dtype=torch_dtype,
             device=device,
         )
-        self._downsample_lengths = hf_modeling.get_feat_extract_output_lengths
+        # note (tly): the helper keeps its leading underscore in the pinned
+        # transformers; the repo-wide lint only covers repo-local definitions.
+        self._downsample_lengths = hf_modeling._get_feat_extract_output_lengths
         self._segment_splits = SegmentSplits()
         share_segment_splits(self.audio_tower, self._segment_splits)
         self._layer_graph_runner = None
