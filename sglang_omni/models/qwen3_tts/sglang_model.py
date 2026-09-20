@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
@@ -190,18 +190,13 @@ class _PredictorDecodeGraph:
         talker_hidden: torch.Tensor,
         semantic_positions: torch.Tensor | None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # note (yingzhou): MUSA capture stores graph buffers as inference
-        # tensors, so replay inplace copies must stay in inference mode.
-        replay_mode = (
-            torch.inference_mode() if self.device.type == "musa" else nullcontext()
-        )
         live = layer0_codes.shape[0]
         if live > self.batch_size:
             raise ValueError(
                 "Qwen3-TTS predictor graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live}"
             )
-        with replay_mode, self.device_module.device(self.device):
+        with self.device_module.device(self.device):
             self.layer0_codes[:live].copy_(layer0_codes)
             self.talker_hidden[:live].copy_(talker_hidden)
             if semantic_positions is None:
@@ -1393,11 +1388,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         device = self._predictor_device
         module = self._predictor_device_module
         backend = current_platform.get_device_graph_backend(device)
-        # note (yingzhou): CUDA stays on the original no-grad path. MUSA graph
-        # capture rejects inplace updates to inference tensors from warmup.
-        capture_mode = (
-            torch.inference_mode() if device.type == "musa" else nullcontext()
-        )
         if self._predictor_capture_stream is None:
             self._predictor_capture_stream = module.Stream(device=device)
         capture_stream = self._predictor_capture_stream
@@ -1428,7 +1418,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             # when a failed capture raises from capture_end before the graph
             # context restores it.
             with (
-                capture_mode,
                 module.device(device),
                 current_platform.graph_capture_attention(),
                 self._predictor_graph_capture_state(bucket_size, signature),

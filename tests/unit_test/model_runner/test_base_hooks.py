@@ -15,7 +15,6 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
     get_omni_prefill_inputs,
 )
-from sglang_omni.platforms import current_platform
 from tests.unit_test.fakes import FakeExecutionBridge
 
 
@@ -384,98 +383,3 @@ def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
     )
 
     assert calls == [("req-1", 1), ("req-2", 5)]
-
-
-def test_execute_allocates_ordinary_host_staging_under_musa_inference_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Pinned host staging must stay an ordinary tensor on MUSA.
-
-    Execute itself stays in inference mode so graph logits can be written.
-    The host buffers still have to be allocated as ordinary tensors, because
-    later inplace copies happen after execute returns.
-    """
-    monkeypatch.setattr(current_platform, "device_type", "musa", raising=False)
-    _install_fake_forward_batch_module(monkeypatch)
-    real_empty = torch.empty
-
-    def cpu_empty(*args, **kwargs):
-        kwargs.pop("pin_memory", None)
-        return real_empty(*args, **kwargs)
-
-    monkeypatch.setattr(torch, "empty", cpu_empty)
-    observed: dict[str, bool] = {}
-    host_buf_holder: dict[str, torch.Tensor] = {}
-    runner = _runner(
-        [],
-        custom_result=SimpleNamespace(
-            logits_output=None,
-            next_token_ids=torch.tensor([7]),
-            can_run_cuda_graph=True,
-        ),
-    )
-    runner._host_staging_buffers = []
-    runner._staging_slot = 0
-
-    def post_decode(result, forward_batch, schedule_batch, requests) -> None:
-        del result, forward_batch, schedule_batch, requests
-        observed["execute_inference_mode"] = torch.is_inference_mode_enabled()
-        host_buf = runner._next_host_staging((1,), torch.long)
-        host_buf_holder["host_buf"] = host_buf
-        observed["host_buf"] = host_buf.is_inference()
-
-    runner.post_decode = post_decode
-    runner.execute(_scheduler_output(is_prefill=False))
-    host_buf = host_buf_holder["host_buf"]
-    clone = host_buf[:1].detach().clone()
-    host_buf[:1].fill_(3)
-    clone.fill_(4)
-    observed["clone"] = clone.is_inference()
-    observed["after_execute_inference_mode"] = torch.is_inference_mode_enabled()
-    assert observed == {
-        "execute_inference_mode": True,
-        "after_execute_inference_mode": False,
-        "host_buf": False,
-        "clone": False,
-    }
-
-
-def test_execute_keeps_musa_sampling_inplace_in_inference_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """MUSA graph replay leaves logits as inference tensors.
-
-    Codec suppress writes those logits in place during execute, so the
-    sampling path must stay inside inference mode on MUSA.
-    """
-    monkeypatch.setattr(current_platform, "device_type", "musa", raising=False)
-    _install_fake_forward_batch_module(monkeypatch)
-    observed: dict[str, bool] = {}
-    logits = torch.zeros(1, 8)
-    runner = _runner(
-        [],
-        custom_result=SimpleNamespace(
-            logits_output=SimpleNamespace(next_token_logits=logits),
-            next_token_ids=None,
-            can_run_cuda_graph=True,
-        ),
-    )
-    runner.sample_before_post_decode = lambda *_args, **_kwargs: True
-    runner._install_sampling_seeds = lambda *_args, **_kwargs: None
-    scheduler_output = _scheduler_output(is_prefill=False)
-    scheduler_output.requests[0].data.return_logprob = False
-
-    def apply_codec_suppress_tokens(logits_output, requests) -> None:
-        del requests
-        observed["inference_mode"] = torch.is_inference_mode_enabled()
-        logits_output.next_token_logits[:, 0] = float("-inf")
-
-    def sample(logits_output, forward_batch):
-        del logits_output, forward_batch
-        return torch.tensor([3])
-
-    runner._apply_codec_suppress_tokens = apply_codec_suppress_tokens
-    runner.tp_worker.model_runner = SimpleNamespace(sample=sample)
-    runner.execute(scheduler_output)
-    assert observed == {"inference_mode": True}
-    assert logits[0, 0] == float("-inf")

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
-import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
@@ -18,7 +17,6 @@ from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import PortArgs, ServerArgs
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
-from sglang_omni.platforms import current_platform
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -345,13 +343,6 @@ class SGLModelRunner(ModelRunner):
             )
         return kwargs
 
-    def forward(self, *args, **kwargs):
-        """Keep MUSA graph-buffer writes in the same mode as graph capture."""
-        if current_platform.device_type == "musa":
-            with torch.inference_mode():
-                return super().forward(*args, **kwargs)
-        return super().forward(*args, **kwargs)
-
     def _resolve_draft_load_format(self) -> str | None:
         """A weight-share follower builds its module tree with dummy weights.
 
@@ -480,15 +471,9 @@ class SGLModelRunner(ModelRunner):
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         _install_prefill_runner_dispatch()
 
-        # note (yingzhou): MUSA capture_begin rejects inplace updates to
-        # inference tensors when capture starts under no_grad. CUDA stays on
-        # the original path; MUSA capture and warmup share inference mode.
-        capture_mode = (
-            torch.inference_mode()
-            if current_platform.device_type == "musa"
-            else contextlib.nullcontext()
-        )
-        with capture_mode, contextlib.ExitStack() as pins:
+        from sglang_omni.platforms import current_platform
+
+        with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
                 pins.enter_context(current_platform.graph_capture_attention())
             result = super().init_cuda_graphs(capture_decode_cuda_graph)
