@@ -10,6 +10,8 @@ import torch
 
 from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.platforms import current_platform
+from sglang_omni.profiler.comm_trace import emit as _comm_trace
+from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
 from sglang_omni.relay.base import Relay, create_relay
 
 logger = logging.getLogger(__name__)
@@ -58,9 +60,10 @@ class CommRouter:
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
         self._relays: dict[TransportKind, Relay] = {}
+        self._traced_transports: dict[tuple[str, str], str] = {}
         self._cuda_ipc_peer_cache: dict[str, bool] = {}
 
-    def _cuda_ipc_peer_available(self, target: str) -> bool:
+    def cuda_ipc_peer_available(self, target: str) -> bool:
         """Return whether a GPU edge can use CUDA IPC peer copies."""
         cached = self._cuda_ipc_peer_cache.get(target)
         if cached is not None:
@@ -78,7 +81,7 @@ class CommRouter:
             return True
 
         if self.gpu_id is None or int(self.gpu_id) != source_gpu:
-            self._warn_cuda_ipc_fallback(
+            self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "source process uses a remapped GPU"
             )
             self._cuda_ipc_peer_cache[target] = False
@@ -95,19 +98,19 @@ class CommRouter:
                 torch.cuda.can_device_access_peer(target_local, source_local)
             )
         except Exception as exc:
-            self._warn_cuda_ipc_fallback(
+            self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, f"peer query failed: {exc}"
             )
             self._cuda_ipc_peer_cache[target] = False
             return False
         if not available:
-            self._warn_cuda_ipc_fallback(
+            self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "peer access is unsupported"
             )
         self._cuda_ipc_peer_cache[target] = available
         return available
 
-    def _warn_cuda_ipc_fallback(
+    def warn_cuda_ipc_fallback(
         self, target: str, source_gpu: int, target_gpu: int, reason: str
     ) -> None:
         key = (self.stage_name, target, source_gpu, target_gpu, reason)
@@ -136,26 +139,68 @@ class CommRouter:
             and current_platform.get_intra_node_transport() == TransportKind.CUDA_IPC
         )
 
-    def _intra_node_transport(self, target: str) -> TransportKind:
+    def intra_node_transport(self, target: str) -> TransportKind:
         # The peer probe reads torch.cuda and warns about a CUDA fallback, so it must
         # run only once the platform has actually chosen CUDA IPC.
         transport = current_platform.get_intra_node_transport()
-        if transport is TransportKind.CUDA_IPC and not self._cuda_ipc_peer_available(
+        if transport is TransportKind.CUDA_IPC and not self.cuda_ipc_peer_available(
             target
         ):
             return TransportKind.SHM
         return transport
 
+    def note_transport_choice(
+        self,
+        direction: str,
+        target: str,
+        transport: str,
+    ) -> None:
+        """Record the transport an edge uses, the first time and on every change.
+
+        The routing methods run once per transfer, so emitting on every call
+        would bury the log. An edge that changes transport mid-run still reads as
+        healthy in every other counter, so record the change itself.
+
+        Takes a plain string because the same-GPU direct path names a transport
+        (``torch_cuda_ipc``) that TransportKind does not carry.
+        """
+        if not _comm_trace_enabled():
+            return
+        key = (direction, target)
+        previous = self._traced_transports.get(key)
+        if previous == transport:
+            return
+        self._traced_transports[key] = transport
+        _comm_trace(
+            "comm_transport_selected",
+            stage=self.stage_name,
+            direction=direction,
+            peer_stage=target,
+            transport=transport,
+            previous=previous,
+        )
+
+    def note_transport(
+        self,
+        direction: str,
+        target: str,
+        kind: TransportKind,
+    ) -> TransportKind:
+        self.note_transport_choice(direction, target, kind.value)
+        return kind
+
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:
-            return TransportKind.LOCAL_OBJECT
-        return self._physical_outbound(target)
+            kind = TransportKind.LOCAL_OBJECT
+        else:
+            kind = self.physical_outbound(target)
+        return self.note_transport("outbound", target, kind)
 
-    def _physical_outbound(self, target: str) -> TransportKind:
+    def physical_outbound(self, target: str) -> TransportKind:
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
         if self.self_is_gpu and target in self.gpu_stage_names:
-            return self._intra_node_transport(target)
+            return self.intra_node_transport(target)
         return TransportKind.SHM
 
     def outbound_stream(self, target: str, data: torch.Tensor) -> TransportKind:
@@ -165,22 +210,26 @@ class CommRouter:
                 f"{type(data).__name__}"
             )
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
-        if data.device.type != current_platform.device_type:
-            return TransportKind.SHM
-        if self.self_is_gpu and target in self.gpu_stage_names:
-            return self._intra_node_transport(target)
-        raise ValueError(
-            f"{current_platform.device_type} stream chunk cannot be sent from "
-            f"{self.stage_name!r} to non-GPU target {target!r}"
-        )
+            kind = TransportKind.MOONCAKE
+        elif data.device.type != current_platform.device_type:
+            kind = TransportKind.SHM
+        elif self.self_is_gpu and target in self.gpu_stage_names:
+            kind = self.intra_node_transport(target)
+        else:
+            raise ValueError(
+                f"{current_platform.device_type} stream chunk cannot be sent from "
+                f"{self.stage_name!r} to non-GPU target {target!r}"
+            )
+        return self.note_transport("stream", target, kind)
 
     def inbound(self, from_stage: str) -> TransportKind:
         if from_stage in self.remote_stage_names:
-            return TransportKind.MOONCAKE
-        if self.self_is_gpu and from_stage in self.gpu_stage_names:
-            return current_platform.get_intra_node_transport()
-        return TransportKind.SHM
+            kind = TransportKind.MOONCAKE
+        elif self.self_is_gpu and from_stage in self.gpu_stage_names:
+            kind = current_platform.get_intra_node_transport()
+        else:
+            kind = TransportKind.SHM
+        return self.note_transport("inbound", from_stage, kind)
 
     def relay(self, kind: TransportKind) -> Relay:
         if kind is TransportKind.LOCAL_OBJECT:
@@ -189,7 +238,7 @@ class CommRouter:
             return self.injected_relay
         relay = self._relays.get(kind)
         if relay is None:
-            relay = self._build_relay(kind)
+            relay = self.build_relay(kind)
             self._relays[kind] = relay
         return relay
 
@@ -212,18 +261,24 @@ class CommRouter:
 
     def outbound_payload(self, target: str, payload: Any) -> TransportKind:
         if target in self.remote_stage_names:
-            return TransportKind.MOONCAKE
-        devices = _tensor_devices(getattr(payload, "data", payload))
-        if not devices or devices == {"cpu"}:
-            return TransportKind.SHM
-        if current_platform.device_type in devices and devices <= {
-            "cpu",
-            current_platform.device_type,
-        }:
-            if self.self_is_gpu and target in self.gpu_stage_names:
-                return self._intra_node_transport(target)
-            return TransportKind.SHM
-        raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")
+            kind = TransportKind.MOONCAKE
+        else:
+            devices = tensor_devices(getattr(payload, "data", payload))
+            if not devices or devices == {"cpu"}:
+                kind = TransportKind.SHM
+            elif current_platform.device_type in devices and devices <= {
+                "cpu",
+                current_platform.device_type,
+            }:
+                if self.self_is_gpu and target in self.gpu_stage_names:
+                    kind = self.intra_node_transport(target)
+                else:
+                    kind = TransportKind.SHM
+            else:
+                raise ValueError(
+                    f"mixed or unsupported tensor devices in payload: {devices}"
+                )
+        return self.note_transport("payload", target, kind)
 
     def relay_for_stream(
         self, target: str, data: torch.Tensor
@@ -239,7 +294,7 @@ class CommRouter:
     def inbound_relay(self, from_stage: str) -> Relay:
         return self.relay(self.inbound(from_stage))
 
-    def _build_relay(self, kind: TransportKind) -> Relay:
+    def build_relay(self, kind: TransportKind) -> Relay:
         cfg = self.comm_config
         engine_id = (
             cfg["worker_id"] if "worker_id" in cfg else f"{self.stage_name}_relay"
@@ -301,23 +356,23 @@ class CommRouter:
         raise ValueError(f"CommRouter cannot build a relay for {kind}")
 
     def cleanup(self, request_id: str) -> None:
-        for relay in self._active_relays():
+        for relay in self.active_relays():
             with suppress(Exception):
                 relay.cleanup(request_id)
 
     def close(self) -> None:
-        for relay in self._active_relays():
+        for relay in self.active_relays():
             with suppress(Exception):
                 relay.close()
         self._relays.clear()
 
-    def _active_relays(self) -> list[Relay]:
+    def active_relays(self) -> list[Relay]:
         if self.injected_relay is not None:
             return [self.injected_relay]
         return list(self._relays.values())
 
 
-def _tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
+def tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
     if obj is None:
         return set()
     seen = set() if seen is None else seen
@@ -326,19 +381,19 @@ def _tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:
         return set()
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
+        if obj.device.type in ("cpu", "musa"):
+            return {obj.device.type}
         if obj.is_cuda:
             return {"cuda"}
-        if obj.device.type == "cpu":
-            return {"cpu"}
         return {obj.device.type}
     if isinstance(obj, dict):
         devices: set[str] = set()
         for value in obj.values():
-            devices.update(_tensor_devices(value, seen))
+            devices.update(tensor_devices(value, seen))
         return devices
     if isinstance(obj, (list, tuple, set, frozenset)):
         devices = set()
         for value in obj:
-            devices.update(_tensor_devices(value, seen))
+            devices.update(tensor_devices(value, seen))
         return devices
     return set()

@@ -1,14 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """Precompute and cache complete LM-ready Qwen3-ASR audio embeddings.
 
-Issue #1324 Q-PR4. Today the audio tower runs inside multimodal embedding
-construction on the LM forward path, so every admission stalls the running
-decode batch for the whole encoder forward on the scheduler thread and the
-default stream. This service mirrors the Fun-ASR pre-LM encoder: complete
-audio-tower execution happens at request-build time on a dedicated worker
-thread and CUDA stream, batched across concurrent requests, and the request
-is admitted with ``MultimodalDataItem.precomputed_embeddings`` already
+Issue #1324 Q-PR4 moved the audio tower off the LM forward path onto a
+dedicated worker thread and CUDA stream. Request building submits encode
+and admits only after the future completes with the LM-ready embedding
 attached.
+
+A cache hit is still resolved before mel extraction in the request builder,
+so repeated audio never enters this queue.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from typing import Any, cast
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
+from sglang.srt.utils import create_device_stream, device_stream_context
 
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
@@ -52,7 +52,7 @@ _FRONTEND_CONFIG_FIELDS = (
 
 
 @dataclass(frozen=True)
-class _DetachedFailure:
+class DetachedFailure:
     exception: Exception
     formatted_traceback: str
 
@@ -86,13 +86,13 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _expected_audio_tokens(item: Any) -> int | None:
+def expected_audio_tokens(item: Any) -> int | None:
     """Audio placeholder token count for an item (rows the LM expects)."""
     num_tokens = getattr(item, "num_audio_tokens", None)
     return int(num_tokens) if num_tokens is not None else None
 
 
-def _text_hidden_size(model: Any) -> int:
+def text_hidden_size(model: Any) -> int:
     config = model.config
     thinker_config = getattr(config, "thinker_config", None)
     text_config = getattr(thinker_config or config, "text_config", None)
@@ -121,10 +121,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         reference = next(model.audio_tower.parameters())
         self._device = reference.device
         self._dtype = reference.dtype
-        self._hidden_size = _text_hidden_size(model)
+        self._hidden_size = text_hidden_size(model)
+        # Keep encoder submissions off the generation lane on Ascend, where the
+        # decode graph replay and update threads can otherwise stall behind it.
         self._stream = (
-            torch.cuda.Stream(device=self._device)
-            if self._device.type == "cuda"
+            create_device_stream(self._device)
+            if self._device.type in {"cuda", "npu"}
             else None
         )
         self._cache = StageOutputCache(
@@ -160,7 +162,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             self._queue.put(_SHUTDOWN)
         self._thread.join(timeout=5)
 
-    def _enqueue(
+    def enqueue(
         self,
         item: Any,
         future: concurrent.futures.Future[torch.Tensor],
@@ -176,32 +178,28 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 )
             )
 
-    def encode_item(self, item: Any) -> None:
-        """Block until ``item.precomputed_embeddings`` holds the LM embedding.
-
-        On success ``item.feature`` is cleared to release the CPU mel tensor.
-        Raises on encode failure; the request must not be admitted without the
-        complete embedding.
-        """
-        expected_tokens = _expected_audio_tokens(item)
+    def submit_item(self, item: Any) -> concurrent.futures.Future[torch.Tensor]:
+        """Queue the item for LM-ready encoding and return its future."""
+        expected_tokens = expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
                 "Qwen3-ASR pre-LM encode requires the item's num_audio_tokens"
             )
-        key = self._cache_key(item)
+        key = self.cache_key(item)
 
         if key is None:
-            future = self._submit(item)
-            future.result(timeout=self.ENCODE_TIMEOUT_S)
-            return
+            return self.count_failed(self.submit(item))
 
         cached = self.lookup_cached_embedding(
             getattr(item, "audio_fingerprint", None), expected_tokens
         )
         if cached is not None:
             self.attach_embedding(item, cached)
-            return
+            done: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+            done.set_result(cached)
+            return done
 
+        follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
         with self._lock:
             future = self._inflight.get(key)
@@ -209,7 +207,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 # note (luojiaxuan): re-check under the single-flight lock so a
                 # stale miss cannot start work after the prior leader cached.
                 cached = self._cache.get(key)
-                if cached is not None and self._is_valid(cached, expected_tokens):
+                if cached is not None and self.is_valid(cached, expected_tokens):
                     self._hits += 1
                 else:
                     cached = None
@@ -217,37 +215,81 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     self._inflight[key] = future
                     leader = True
                     self._misses += 1
-                    try:
-                        self._submit(item, future)
-                    except Exception:
-                        del self._inflight[key]
-                        raise
             else:
                 self._merged += 1
+                follower_of = future
         if cached is not None:
             self.attach_embedding(item, cached)
-            return
-        try:
-            embedding = future.result(timeout=self.ENCODE_TIMEOUT_S)
-        except Exception:
-            with self._lock:
-                self._failed += 1
-            raise
-        finally:
-            if leader:
-                with self._lock:
-                    if self._inflight.get(key) is future:
-                        del self._inflight[key]
-        if leader:
-            return
-        if not self._is_valid(embedding, expected_tokens):
-            with self._lock:
-                self._failed += 1
-            raise RuntimeError(
-                f"Qwen3-ASR pre-LM encode leader for {key} returned an invalid "
-                f"embedding"
+            completed: concurrent.futures.Future[torch.Tensor] = (
+                concurrent.futures.Future()
             )
-        self.attach_embedding(item, embedding)
+            completed.set_result(cached)
+            return completed
+        if leader:
+            future.add_done_callback(
+                lambda done, cache_key=key: self.clear_inflight(cache_key, done)
+            )
+            self.count_failed(future)
+            try:
+                self.submit(item, future)
+            except Exception as exc:
+                if not future.done():
+                    future.set_exception(exc)
+                raise
+            return future
+
+        item.feature = None
+        completion: concurrent.futures.Future[torch.Tensor] = (
+            concurrent.futures.Future()
+        )
+
+        def attach_follower(done: concurrent.futures.Future[torch.Tensor]) -> None:
+            try:
+                embedding = done.result()
+                if not self.is_valid(embedding, expected_tokens):
+                    raise RuntimeError(
+                        f"Qwen3-ASR pre-LM encode leader for {key} returned an "
+                        "invalid embedding"
+                    )
+                self.attach_embedding(item, embedding)
+                completion.set_result(embedding)
+            except Exception as exc:
+                completion.set_exception(exc)
+
+        follower_of.add_done_callback(attach_follower)
+        return self.count_failed(completion)
+
+    def encode_item(self, item: Any) -> None:
+        """Block until the item holds the LM-ready embedding.
+
+        On success the CPU mel tensor is cleared. Raises on encode failure;
+        the request must not be admitted without the complete embedding.
+        """
+        self.submit_item(item).result(timeout=self.ENCODE_TIMEOUT_S)
+
+    def count_failed(
+        self, future: concurrent.futures.Future[torch.Tensor]
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        def finish(done: concurrent.futures.Future[torch.Tensor]) -> None:
+            try:
+                failed = done.exception() is not None
+            except concurrent.futures.CancelledError:
+                failed = True
+            if failed:
+                with self._lock:
+                    self._failed += 1
+
+        future.add_done_callback(finish)
+        return future
+
+    def clear_inflight(
+        self,
+        key: str,
+        future: concurrent.futures.Future[torch.Tensor],
+    ) -> None:
+        with self._lock:
+            if self._inflight.get(key) is future:
+                del self._inflight[key]
 
     def lookup_cached_embedding(
         self,
@@ -255,11 +297,11 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         expected_tokens: int,
     ) -> torch.Tensor | None:
         """Return a validated cached embedding without starting an encode."""
-        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        key = self.cache_key_from_fingerprint(audio_fingerprint)
         cached = self._cache.get(key)
         if cached is None:
             return None
-        if self._is_valid(cached, expected_tokens):
+        if self.is_valid(cached, expected_tokens):
             with self._lock:
                 self._hits += 1
             return cached
@@ -299,17 +341,15 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 "cache_evictions": self._cache.eviction_count,
             }
 
-    def _cache_key(self, item: Any) -> str | None:
-        return self._cache_key_from_fingerprint(
-            getattr(item, "audio_fingerprint", None)
-        )
+    def cache_key(self, item: Any) -> str | None:
+        return self.cache_key_from_fingerprint(getattr(item, "audio_fingerprint", None))
 
-    def _cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+    def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
         if audio_fingerprint is None:
             return None
         return f"{self._namespace}:{audio_fingerprint}"
 
-    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -320,17 +360,18 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
         embedding = embedding.to(self._device, non_blocking=True)
-        if self._stream is not None and embedding.is_cuda:
+        if self._stream is not None:
             # note (luojiaxuan): the batch path allocates on the private
             # stream while the LM consumes on the default stream; register
             # the consumer so the allocator cannot recycle the block for a
             # later batch while LM reads are still queued.
-            embedding.record_stream(torch.cuda.default_stream(self._device))
+            device_module = torch.get_device_module(embedding.device)
+            embedding.record_stream(device_module.default_stream(embedding.device))
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
-    def _drain_batch(
+    def drain_batch(
         self,
     ) -> tuple[list[QueueEntry[Any]], bool]:
         # note (luojiaxuan): the default window is 0 (greedy drain): items
@@ -360,16 +401,16 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
-    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
-        return self._drain_batch()
+    def next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+        return self.drain_batch()
 
     @contextlib.contextmanager
-    def _batch_context(self) -> Iterator[None]:
+    def batch_context(self) -> Iterator[None]:
         with torch.inference_mode():
             if self._stream is None:
                 yield
             else:
-                with torch.cuda.stream(self._stream):
+                with device_stream_context(self._stream):
                     yield
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
@@ -382,7 +423,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
     ) -> list[torch.Tensor]:
         token_counts = []
         for item in items:
-            expected = _expected_audio_tokens(item)
+            expected = expected_audio_tokens(item)
             if expected is None:
                 raise RuntimeError(
                     "Qwen3-ASR pre-LM encode item is missing its audio token count"
@@ -419,19 +460,19 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         host_copy: torch.Tensor | None = None,
     ) -> None:
         del host_copy
-        key = self._cache_key(item)
+        key = self.cache_key(item)
         if key is not None:
             self._cache.put(key, embedding)
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         return len(batch) > 1
 
-    def _handle_batch_failure(
+    def handle_batch_failure(
         self,
         batch: list[QueueEntry[Any]],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         if len(batch) == 1:
             logger.error(
                 "Qwen3-ASR audio encode failed:\n%s",
@@ -444,24 +485,24 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 len(batch),
                 failure.formatted_traceback,
             )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
-    def _handle_item_failure(
+    def handle_item_failure(
         self,
         _entry: QueueEntry[Any],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         logger.error(
             "Qwen3-ASR per-item audio encode retry failed:\n%s",
             failure.formatted_traceback,
         )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
     @staticmethod
-    def _detach_failure(exc: Exception) -> _DetachedFailure:
+    def detach_failure(exc: Exception) -> DetachedFailure:
         # note (luojiaxuan): keep the formatted traceback for logs but drop
         # frame references from the propagated exception; a future holding a
         # traceback would pin encoder tensors after an OOM.
@@ -477,12 +518,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             detached = ValueError(message)
         else:
             detached = RuntimeError(f"{type(exc).__name__}: {message}")
-        return _DetachedFailure(
+        return DetachedFailure(
             exception=detached,
             formatted_traceback=formatted_traceback,
         )
 
-    def _recover_after_failure(self, exc: Exception) -> None:
+    def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
         if self._stream is not None:
@@ -494,14 +535,15 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     exc_info=True,
                 )
         try:
-            with torch.cuda.device(self._device):
-                torch.cuda.empty_cache()
+            device_module = torch.get_device_module(self._device)
+            with device_module.device(self._device):
+                device_module.empty_cache()
         except Exception:
             logger.warning(
-                "Qwen3-ASR CUDA cache cleanup failed after OOM", exc_info=True
+                "Qwen3-ASR device cache cleanup failed after OOM", exc_info=True
             )
 
-    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+    def on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -516,7 +558,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 max(queue_waits, default=0.0),
             )
 
-    def _on_batch_finished(
+    def on_batch_finished(
         self,
         batch: list[QueueEntry[Any]],
         batch_exc: Exception | None,

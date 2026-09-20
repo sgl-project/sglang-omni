@@ -71,21 +71,37 @@ def resolve_allowed_local_media_path(path: str | Path) -> Path:
     return resolved
 
 
-def _next_redirect_url(response: httpx.Response) -> str:
+def resolve_local_file(
+    filepath: str | Path, *, allowed_local_media_path: Path | None
+) -> Path:
+    """Resolve a local path, applying containment when an allowlist is set.
+
+    Callers decide what a missing allowlist means: file:// URLs treat it as a
+    rejection, bare paths fall back to the trusted-local default.
+    """
+    resolved = Path(filepath).expanduser().resolve()
+    if allowed_local_media_path is not None and not resolved.is_relative_to(
+        allowed_local_media_path
+    ):
+        raise ValueError(f"File path {resolved} is not within allowed directory.")
+    return resolved
+
+
+def next_redirect_url(response: httpx.Response) -> str:
     location = response.headers.get("location")
     if not location:
         raise ValueError("Redirect response is missing a Location header.")
     return str(response.url.join(location))
 
 
-def _response_media_type(response: httpx.Response) -> str | None:
+def response_media_type(response: httpx.Response) -> str | None:
     content_type = response.headers.get("content-type")
     if not content_type:
         return None
     return content_type.split(";", 1)[0].strip().lower() or None
 
 
-def _validate_response_length(
+def validate_response_length(
     response: httpx.Response, *, max_bytes: int | None
 ) -> None:
     if max_bytes is None:
@@ -101,12 +117,12 @@ def _validate_response_length(
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
 
 
-def _validate_downloaded_size(size: int, *, max_bytes: int | None) -> None:
+def validate_downloaded_size(size: int, *, max_bytes: int | None) -> None:
     if max_bytes is not None and size > max_bytes:
         raise ValueError(f"Media URL response exceeds {max_bytes} bytes.")
 
 
-def _resolve_remote_addresses(
+def resolve_remote_addresses(
     hostname: str,
 ) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
     try:
@@ -131,7 +147,7 @@ def _resolve_remote_addresses(
     return tuple(addresses)
 
 
-def _unsafe_remote_address_category(
+def unsafe_remote_address_category(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
 ) -> str | None:
     if address.is_loopback:
@@ -149,7 +165,7 @@ def _unsafe_remote_address_category(
     return None
 
 
-def _is_allowed_remote_domain(hostname: str, allowed_domain: str) -> bool:
+def is_allowed_remote_domain(hostname: str, allowed_domain: str) -> bool:
     allowed_domain = allowed_domain.rstrip(".").lower()
     if allowed_domain.startswith("."):
         suffix = allowed_domain[1:]
@@ -157,22 +173,22 @@ def _is_allowed_remote_domain(hostname: str, allowed_domain: str) -> bool:
     return hostname == allowed_domain
 
 
-def _read_limited_response_bytes(
+def read_limited_response_bytes(
     response: httpx.Response, *, max_bytes: int | None
 ) -> bytes:
-    _validate_response_length(response, max_bytes=max_bytes)
+    validate_response_length(response, max_bytes=max_bytes)
     chunks: list[bytes] = []
     total = 0
     for chunk in response.iter_bytes():
         if not chunk:
             continue
         total += len(chunk)
-        _validate_downloaded_size(total, max_bytes=max_bytes)
+        validate_downloaded_size(total, max_bytes=max_bytes)
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-def _media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
+def media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code
         return ValueError(f"Media URL returned HTTP {status_code}: {url}")
@@ -181,17 +197,17 @@ def _media_http_error(exc: httpx.HTTPError, url: str) -> ValueError:
     return ValueError(f"Failed to load media URL {url}: {exc}")
 
 
-async def _read_limited_response_bytes_async(
+async def read_limited_response_bytes_async(
     response: httpx.Response, *, max_bytes: int | None
 ) -> bytes:
-    _validate_response_length(response, max_bytes=max_bytes)
+    validate_response_length(response, max_bytes=max_bytes)
     chunks: list[bytes] = []
     total = 0
     async for chunk in response.aiter_bytes():
         if not chunk:
             continue
         total += len(chunk)
-        _validate_downloaded_size(total, max_bytes=max_bytes)
+        validate_downloaded_size(total, max_bytes=max_bytes)
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -252,14 +268,14 @@ class MultiModalResourceConnector:
                 "Remote media URLs require --allowed-media-domain to be configured."
             )
         if self.allowed_media_domains and not any(
-            _is_allowed_remote_domain(normalized_hostname, domain)
+            is_allowed_remote_domain(normalized_hostname, domain)
             for domain in self.allowed_media_domains
         ):
             raise ValueError(f"Domain {hostname} is not allowed.")
 
         if self.reject_unsafe_remote_addresses:
-            for address in _resolve_remote_addresses(normalized_hostname):
-                category = _unsafe_remote_address_category(address)
+            for address in resolve_remote_addresses(normalized_hostname):
+                category = unsafe_remote_address_category(address)
                 if category is not None:
                     raise ValueError(
                         f"Remote media URL resolves to a {category} address: {address}"
@@ -269,10 +285,10 @@ class MultiModalResourceConnector:
         """Validate URL policy without loading the resource."""
         self._assert_url_allowed(urlparse(url))
 
-    async def _assert_url_allowed_async(self, url_spec: Any) -> None:
+    async def assert_url_allowed_async(self, url_spec: Any) -> None:
         await asyncio.to_thread(self._assert_url_allowed, url_spec)
 
-    def _load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_data_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
         """Load media from a data URL (base64 encoded)."""
         path = url_spec.path or ""
         if "," not in path:
@@ -283,7 +299,7 @@ class MultiModalResourceConnector:
         media_type = spec.split(";")[0].lstrip("/")
         return media_io.load_base64(media_type, data)
 
-    def _load_file_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
+    def load_file_url(self, url_spec: Any, media_io: MediaIO[_M]) -> _M:
         """Load media from a file URL."""
         if not self.allowed_local_media_path:
             raise RuntimeError("Local file loading is disabled.")
@@ -291,12 +307,23 @@ class MultiModalResourceConnector:
         netloc = url_spec.netloc or ""
         if netloc and netloc != "localhost":
             raise ValueError(f"File URL netloc is not supported: {netloc}")
-        filepath = Path(url2pathname(url_spec.path)).resolve()
+        filepath = resolve_local_file(
+            url2pathname(url_spec.path),
+            allowed_local_media_path=self.allowed_local_media_path,
+        )
+        return media_io.load_file(filepath)
 
-        try:
-            filepath.relative_to(self.allowed_local_media_path)
-        except ValueError:
-            raise ValueError(f"File path {filepath} is not within allowed directory.")
+    def load_local_path(self, path: str | Path, media_io: MediaIO[_M]) -> _M:
+        """Load media from a bare local path.
+
+        Bare paths keep the trusted-local behavior of unconfigured servers
+        (allowed), but are scoped to allowed_local_media_path once it is
+        configured. Existence and size checks are delegated to
+        media_io.load_file.
+        """
+        filepath = resolve_local_file(
+            path, allowed_local_media_path=self.allowed_local_media_path
+        )
         return media_io.load_file(filepath)
 
     def load_resource(
@@ -320,16 +347,16 @@ class MultiModalResourceConnector:
         url_spec = urlparse(url)
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
-            data, media_type = self._load_http_bytes(
+            data, media_type = self.load_http_bytes(
                 url, timeout=timeout, max_bytes=max_bytes
             )
             return media_io.load_http_bytes(data, media_type)
 
         if url_spec.scheme == "data":
-            return self._load_data_url(url_spec, media_io)
+            return self.load_data_url(url_spec, media_io)
 
         if url_spec.scheme == "file":
-            return self._load_file_url(url_spec, media_io)
+            return self.load_file_url(url_spec, media_io)
 
         raise ValueError(f"Unsupported URL scheme: {url_spec.scheme}")
 
@@ -356,7 +383,7 @@ class MultiModalResourceConnector:
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
-            data, media_type = await self._load_http_bytes_async(
+            data, media_type = await self.load_http_bytes_async(
                 url, timeout=timeout, max_bytes=max_bytes
             )
             download_time = time.time() - download_start
@@ -385,9 +412,7 @@ class MultiModalResourceConnector:
 
         if url_spec.scheme in ["data", "file"]:
             method = (
-                self._load_data_url
-                if url_spec.scheme == "data"
-                else self._load_file_url
+                self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
             return await loop.run_in_executor(
                 global_thread_pool, method, url_spec, media_io
@@ -395,7 +420,7 @@ class MultiModalResourceConnector:
 
         raise ValueError(f"Unsupported URL scheme: {url_spec.scheme}")
 
-    def _load_http_bytes(
+    def load_http_bytes(
         self,
         url: str,
         *,
@@ -414,18 +439,18 @@ class MultiModalResourceConnector:
                     follow_redirects=False,
                 ) as response:
                     if response.is_redirect:
-                        current_url = _next_redirect_url(response)
+                        current_url = next_redirect_url(response)
                         continue
                     response.raise_for_status()
                     return (
-                        _read_limited_response_bytes(response, max_bytes=max_bytes),
-                        _response_media_type(response),
+                        read_limited_response_bytes(response, max_bytes=max_bytes),
+                        response_media_type(response),
                     )
             except httpx.HTTPError as exc:
-                raise _media_http_error(exc, current_url) from exc
+                raise media_http_error(exc, current_url) from exc
         raise ValueError(f"Too many redirects while loading media URL: {url}")
 
-    async def _load_http_bytes_async(
+    async def load_http_bytes_async(
         self,
         url: str,
         *,
@@ -435,7 +460,7 @@ class MultiModalResourceConnector:
         client = await self.connection.get_async_client()
         current_url = url
         for _ in range(_MAX_HTTP_REDIRECTS + 1):
-            await self._assert_url_allowed_async(urlparse(current_url))
+            await self.assert_url_allowed_async(urlparse(current_url))
             try:
                 async with client.stream(
                     "GET",
@@ -444,17 +469,17 @@ class MultiModalResourceConnector:
                     follow_redirects=False,
                 ) as response:
                     if response.is_redirect:
-                        current_url = _next_redirect_url(response)
+                        current_url = next_redirect_url(response)
                         continue
                     response.raise_for_status()
                     return (
-                        await _read_limited_response_bytes_async(
+                        await read_limited_response_bytes_async(
                             response, max_bytes=max_bytes
                         ),
-                        _response_media_type(response),
+                        response_media_type(response),
                     )
             except httpx.HTTPError as exc:
-                raise _media_http_error(exc, current_url) from exc
+                raise media_http_error(exc, current_url) from exc
         raise ValueError(f"Too many redirects while loading media URL: {url}")
 
     async def fetch_audio_async(

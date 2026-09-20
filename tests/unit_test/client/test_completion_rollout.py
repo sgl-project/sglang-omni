@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from sglang_omni.client import Client
-from sglang_omni.client.client import _extract_inputs
+from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest
 
 
@@ -97,6 +97,20 @@ def test_completion_surfaces_omni_rollout() -> None:
     )
 
     assert out.omni_rollout == rollout
+
+
+def test_completion_surfaces_language() -> None:
+    client = Client(
+        _SubmitStubCoordinator(
+            {"text": "hello", "language": "English", "finish_reason": "stop"}
+        )
+    )
+
+    out = asyncio.run(
+        client.completion(GenerateRequest(prompt="hi", stream=False), request_id="r1")
+    )
+
+    assert out.language == "English"
 
 
 def test_completion_without_logprobs_leaves_fields_none() -> None:
@@ -199,7 +213,7 @@ def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
     )
 
     with pytest.raises(ValueError, match="requires prompt_token_ids"):
-        _extract_inputs(request)
+        extract_inputs(request)
 
 
 def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
@@ -209,7 +223,7 @@ def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
         multimodal_train_inputs=bundle,
     )
 
-    assert _extract_inputs(request) == {
+    assert extract_inputs(request) == {
         "input_ids": [1, 2, 3],
         "multimodal_train_inputs": bundle,
     }

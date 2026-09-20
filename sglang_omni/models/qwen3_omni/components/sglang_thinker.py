@@ -22,10 +22,13 @@ from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel, load_fused_expert_weights
 from sglang.srt.utils import add_prefix, logger
 
+from sglang_omni.models.qwen3_omni.components.thinker_fused_rope import (
+    install_thinker_fused_rope,
+)
 from sglang_omni.quantization import get_weight_preprocessor
 
 
-def _config_uses_mrope(config: Any) -> bool:
+def config_uses_mrope(config: Any) -> bool:
     """Return whether the exact Qwen text config declares M-RoPE."""
     for field in ("rope_parameters", "rope_scaling"):
         value = getattr(config, field, None)
@@ -47,13 +50,16 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         self.root_config = config
         self.thinker_config = getattr(config, "thinker_config", config)
         self.config = getattr(self.thinker_config, "text_config", self.thinker_config)
-        self.is_mrope_enabled = _config_uses_mrope(self.config)
+        self.is_mrope_enabled = config_uses_mrope(self.config)
 
         self.model = Qwen3MoeLLMModel(
             config=self.config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
+        # sglang v0.5.19's default deepstack order regresses omni visual accuracy;
+        # remove this override once the upstream default passes omni's visual checks.
+        self.model.use_hf_deepstack_order = True
         if getattr(self.config, "tie_word_embeddings", False):
             self.lm_head = self.model.embed_tokens
         else:
@@ -64,6 +70,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
+        self._fused_rope_gate = install_thinker_fused_rope(self.model)
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -84,6 +91,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         del get_embedding, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        if self._fused_rope_gate is not None:
+            self._fused_rope_gate.evaluate(positions, forward_batch)
 
         hidden_states = self.model(
             input_ids=input_ids,

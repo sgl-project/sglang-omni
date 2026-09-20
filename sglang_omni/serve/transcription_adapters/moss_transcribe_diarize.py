@@ -39,6 +39,10 @@ _SEGMENT_RE = re.compile(
 
 @register_transcription_adapter("MossTranscribeDiarize")
 class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
+    @property
+    def supports_segment_timestamps(self) -> bool:
+        return True
+
     def postprocess_text(self, text: str) -> str:
         return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
@@ -48,10 +52,30 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         language: str | None,
         audio_duration_s: float,
     ) -> TranscriptionVerboseResponse:
-        segments = self._parse_segments(text)
+        segments = self.parse_segments(text)
         if not segments:
-            segments = self._build_fallback_segments(text, audio_duration_s)
-        segments = self._sanitize_segments(segments, audio_duration_s)
+            segments = self.build_fallback_segments(text, audio_duration_s)
+        return self.build_response(text, language, audio_duration_s, segments)
+
+    def build_timestamped_response(
+        self,
+        text: str,
+        language: str | None,
+        audio_duration_s: float,
+    ) -> TranscriptionVerboseResponse:
+        segments = self.parse_segments(text)
+        if not segments:
+            raise ValueError("model did not produce segment timestamps")
+        return self.build_response(text, language, audio_duration_s, segments)
+
+    def build_response(
+        self,
+        text: str,
+        language: str | None,
+        audio_duration_s: float,
+        segments: list[TranscriptionSegment],
+    ) -> TranscriptionVerboseResponse:
+        segments = self.sanitize_segments(segments, audio_duration_s)
         duration = (
             round(float(audio_duration_s), 2)
             if audio_duration_s > 0
@@ -65,7 +89,7 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         )
 
     @staticmethod
-    def _parse_segments(text: str) -> list[TranscriptionSegment]:
+    def parse_segments(text: str) -> list[TranscriptionSegment]:
         segments: list[TranscriptionSegment] = []
         for segment_id, match in enumerate(_SEGMENT_RE.finditer(text)):
             speaker = match.group("speaker")
@@ -82,7 +106,7 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         return segments
 
     @staticmethod
-    def _sanitize_segments(
+    def sanitize_segments(
         segments: list[TranscriptionSegment], audio_duration_s: float
     ) -> list[TranscriptionSegment]:
         if audio_duration_s <= 0:
@@ -105,7 +129,7 @@ class MossTranscribeDiarizeAdapter(TranscriptionAdapter):
         return segments
 
     @staticmethod
-    def _build_fallback_segments(
+    def build_fallback_segments(
         text: str, audio_duration_s: float
     ) -> list[TranscriptionSegment]:
         text = text.strip()

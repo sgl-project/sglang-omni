@@ -8,10 +8,11 @@ preset per run through the ASR_CI_MODEL environment variable (or the
 model-agnostic and reads everything model-specific from the selected preset.
 
 Threshold constants live here (not in the test file) so that the
-tune-ci-thresholds skill can read and rewrite them; the skill locates this
+calibrate-h100-ci skill can read and rewrite them; the skill locates this
 file through the `threshold_file` key in
-.claude/skills/tune-ci-thresholds/models/asr/config.yaml and claims each
-preset's constants by name prefix (e.g. ^FUN_ASR_).
+skills/calibrate-h100-ci/calibration/models/asr/config.yaml in the private
+sglang-omni-calibration repository and claims each preset's constants by
+name prefix (e.g. ^FUN_ASR_).
 """
 
 from __future__ import annotations
@@ -19,7 +20,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from benchmarks.tasks.asr import FUN_ASR_MODEL_PATH, QWEN3_ASR_MODEL_PATH
+from benchmarks.tasks.asr import (
+    FUN_ASR_MODEL_PATH,
+    OMNI_WHISPER_MODEL_PATH,
+    QWEN3_ASR_MODEL_PATH,
+)
 from tests.utils import apply_wer_slack
 
 
@@ -46,6 +51,25 @@ class AsrCiPreset:
     # note (Jeffro): False means threshold assertions are skipped while a
     # newly onboarded model awaits calibration;
     gate_thresholds: bool = True
+    revision: str | None = None
+
+    def resolved_model_path(self) -> str:
+        """The weights path to serve: a pinned local snapshot, or the repo id."""
+        if self.revision is None:
+            return self.model_path
+        from huggingface_hub import snapshot_download
+
+        try:
+            return snapshot_download(
+                self.model_path, revision=self.revision, local_files_only=True
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"pinned snapshot {self.model_path}@{self.revision[:12]} is "
+                "not in the local HF cache; run "
+                ".github/scripts/ensure_hf_models.sh, or: "
+                f"hf download {self.model_path} --revision {self.revision}"
+            ) from exc
 
 
 # Slack factors applied to worst-of-N reference values to derive CI gates.
@@ -58,13 +82,13 @@ THRESHOLD_SLACK_LOWER = 1.1
 # note (Jeffro): thresholds ported from #1220.
 FUN_ASR_EN_CORPUS_WER_MAX = 0.0172
 FUN_ASR_EN_SAMPLE_WER_MAX = 0.3077
-FUN_ASR_ZH_CORPUS_WER_MAX = 0.0139
+FUN_ASR_ZH_CORPUS_WER_MAX = 0.0138
 FUN_ASR_ZH_SAMPLE_WER_MAX = 0.8334
-FUN_ASR_THROUGHPUT_MIN = 89.57
-FUN_ASR_LATENCY_MEAN_MAX_S = 0.3510936067930957
-FUN_ASR_LATENCY_P95_MAX_S = 0.45118457402568307
-FUN_ASR_RTF_MEAN_MAX = 0.07710278345415189
-FUN_ASR_RTF_P95_MAX = 0.1161
+FUN_ASR_THROUGHPUT_MIN = 207.44393755048503
+FUN_ASR_LATENCY_MEAN_MAX_S = 0.153
+FUN_ASR_LATENCY_P95_MAX_S = 0.351
+FUN_ASR_RTF_MEAN_MAX = 0.0334
+FUN_ASR_RTF_P95_MAX = 0.0829
 
 FUN_ASR_EN_CORPUS_WER_THRESHOLD = apply_wer_slack(
     FUN_ASR_EN_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
@@ -88,15 +112,15 @@ FUN_ASR_LATENCY_P95_THRESHOLD_S = round(
 FUN_ASR_RTF_MEAN_THRESHOLD = round(FUN_ASR_RTF_MEAN_MAX * THRESHOLD_SLACK_LOWER, 4)
 FUN_ASR_RTF_P95_THRESHOLD = round(FUN_ASR_RTF_P95_MAX * THRESHOLD_SLACK_LOWER, 4)
 
-QWEN3_ASR_EN_CORPUS_WER_MAX = 0.0124
+QWEN3_ASR_EN_CORPUS_WER_MAX = 0.0122
 QWEN3_ASR_EN_SAMPLE_WER_MAX = 0.1819
-QWEN3_ASR_ZH_CORPUS_WER_MAX = 0.0065
+QWEN3_ASR_ZH_CORPUS_WER_MAX = 0.0062
 QWEN3_ASR_ZH_SAMPLE_WER_MAX = 0.2106
-QWEN3_ASR_THROUGHPUT_MIN = 212.71274802047512
-QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.1480239159279924
-QWEN3_ASR_LATENCY_P95_MAX_S = 0.21739053069904912
-QWEN3_ASR_RTF_MEAN_MAX = 0.0322
-QWEN3_ASR_RTF_P95_MAX = 0.0518
+QWEN3_ASR_THROUGHPUT_MIN = 259.077
+QWEN3_ASR_LATENCY_MEAN_MAX_S = 0.122
+QWEN3_ASR_LATENCY_P95_MAX_S = 0.19309727939871538
+QWEN3_ASR_RTF_MEAN_MAX = 0.0265
+QWEN3_ASR_RTF_P95_MAX = 0.0427
 
 QWEN3_ASR_EN_CORPUS_WER_THRESHOLD = apply_wer_slack(
     QWEN3_ASR_EN_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
@@ -121,6 +145,47 @@ QWEN3_ASR_LATENCY_P95_THRESHOLD_S = round(
 )
 QWEN3_ASR_RTF_MEAN_THRESHOLD = round(QWEN3_ASR_RTF_MEAN_MAX * THRESHOLD_SLACK_LOWER, 4)
 QWEN3_ASR_RTF_P95_THRESHOLD = round(QWEN3_ASR_RTF_P95_MAX * THRESHOLD_SLACK_LOWER, 4)
+
+
+# note (Junnan Li): worst-of-5 raw references from tune-ci-thresholds on the H100
+# CI lane 0,1 (main 201e5572 + this preset).
+WHISPER_ASR_EN_CORPUS_WER_MAX = 0.0138
+WHISPER_ASR_EN_SAMPLE_WER_MAX = 0.2858
+WHISPER_ASR_ZH_CORPUS_WER_MAX = 0.0667
+WHISPER_ASR_ZH_SAMPLE_WER_MAX = 0.75
+WHISPER_ASR_THROUGHPUT_MIN = 106.531
+WHISPER_ASR_LATENCY_MEAN_MAX_S = 0.296
+WHISPER_ASR_LATENCY_P95_MAX_S = 0.420257833699361
+WHISPER_ASR_RTF_MEAN_MAX = 0.06412788578075934
+WHISPER_ASR_RTF_P95_MAX = 0.0949
+
+WHISPER_ASR_EN_CORPUS_WER_THRESHOLD = apply_wer_slack(
+    WHISPER_ASR_EN_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+WHISPER_ASR_EN_SAMPLE_WER_THRESHOLD = apply_wer_slack(
+    WHISPER_ASR_EN_SAMPLE_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+WHISPER_ASR_ZH_CORPUS_WER_THRESHOLD = apply_wer_slack(
+    WHISPER_ASR_ZH_CORPUS_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+WHISPER_ASR_ZH_SAMPLE_WER_THRESHOLD = apply_wer_slack(
+    WHISPER_ASR_ZH_SAMPLE_WER_MAX, THRESHOLD_SLACK_LOWER
+)
+WHISPER_ASR_THROUGHPUT_THRESHOLD = round(
+    WHISPER_ASR_THROUGHPUT_MIN * THRESHOLD_SLACK_HIGHER, 3
+)
+WHISPER_ASR_LATENCY_MEAN_THRESHOLD_S = round(
+    WHISPER_ASR_LATENCY_MEAN_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+WHISPER_ASR_LATENCY_P95_THRESHOLD_S = round(
+    WHISPER_ASR_LATENCY_P95_MAX_S * THRESHOLD_SLACK_LOWER, 3
+)
+WHISPER_ASR_RTF_MEAN_THRESHOLD = round(
+    WHISPER_ASR_RTF_MEAN_MAX * THRESHOLD_SLACK_LOWER, 4
+)
+WHISPER_ASR_RTF_P95_THRESHOLD = round(
+    WHISPER_ASR_RTF_P95_MAX * THRESHOLD_SLACK_LOWER, 4
+)
 
 
 ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
@@ -152,6 +217,21 @@ ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
             latency_p95_max_s=QWEN3_ASR_LATENCY_P95_THRESHOLD_S,
             rtf_mean_max=QWEN3_ASR_RTF_MEAN_THRESHOLD,
             rtf_p95_max=QWEN3_ASR_RTF_P95_THRESHOLD,
+        ),
+    ),
+    "whisper": AsrCiPreset(
+        model_path=OMNI_WHISPER_MODEL_PATH,
+        display_name="Whisper-large-v3",
+        thresholds=AsrCiThresholdPreset(
+            en_corpus_wer_max=WHISPER_ASR_EN_CORPUS_WER_THRESHOLD,
+            en_sample_wer_max=WHISPER_ASR_EN_SAMPLE_WER_THRESHOLD,
+            zh_corpus_wer_max=WHISPER_ASR_ZH_CORPUS_WER_THRESHOLD,
+            zh_sample_wer_max=WHISPER_ASR_ZH_SAMPLE_WER_THRESHOLD,
+            throughput_min=WHISPER_ASR_THROUGHPUT_THRESHOLD,
+            latency_mean_max_s=WHISPER_ASR_LATENCY_MEAN_THRESHOLD_S,
+            latency_p95_max_s=WHISPER_ASR_LATENCY_P95_THRESHOLD_S,
+            rtf_mean_max=WHISPER_ASR_RTF_MEAN_THRESHOLD,
+            rtf_p95_max=WHISPER_ASR_RTF_P95_THRESHOLD,
         ),
     ),
 }

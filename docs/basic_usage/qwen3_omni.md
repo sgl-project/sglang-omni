@@ -19,6 +19,13 @@ sgl-omni serve \
   --port 8008
 ```
 
+Multimodal preprocessing (tokenization, image/video/audio feature extraction)
+runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to
+run it on a thread pool when CPU preprocessing is the bottleneck under
+concurrent load. Threaded preprocessing changes how requests arrive at the
+thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
+keep the default when comparing accuracy across runs.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:
@@ -160,6 +167,40 @@ print(result["choices"][0]["message"]["content"])
 Speech mode runs the full eight-stage pipeline on one or more GPUs. It produces
 both text (from the thinker) and audio (from the talker) output.
 
+### Codec Coalescing and First-Audio Latency
+
+The speech pipeline sets `codec_coalesce_frames=10`,
+`codec_coalesce_early_frames=10`, and `codec_coalesce_first_frames=0` under
+`stages.talker_ar.factory`. The first 10 codec frames are sent individually;
+later frames are coalesced into groups of 10. Omitting a YAML override keeps
+these pipeline defaults; set `codec_coalesce_early_frames=0` explicitly to
+disable the early prefix. This aligns with the default serial Code2Wav
+10-frame threshold: the first three windows contain 10, 20, and 30 frames,
+and subsequent full windows contain 35 frames including left context.
+These shapes can use the captured serial windows when CUDA Graph is enabled.
+An early prefix of 12 with this serial configuration instead produces
+22- and 32-frame windows that fall back to eager execution.
+
+With Code2Wav batching enabled, `initial_codec_chunk_frames=2`, and
+`stream_chunk_size=10`, explicitly set `codec_coalesce_early_frames=12` to
+make the first two windows eligible
+at generated frames 2 and 12.
+Uniform groups of 10 (`early_frames=0`, `first_frames=0`) instead publish the
+first group at step 11: the sender retains the newest row until the next step
+can exclude EOS, or the request finishes. For a request that continues past
+step 10, first-window input readiness therefore moves from step 2 to step 11,
+adding nine Talker decode intervals. If the interval is approximately `d` ms,
+the added input wait is approximately `9d` ms. With the serial 10-frame first
+window, readiness instead moves from step 10 to step 11. The default 10-frame
+early prefix preserves readiness at step 10; the next two windows become
+ready at steps 21 and 31. The extra step after the prefix retains the newest
+row for EOS detection, compared with steps 20 and 30 without coalescing.
+
+This is an input-readiness estimate, not a measured end-to-end TTFA delta or
+nine frames of audio playback time. Actual TTFA also depends on transport,
+queueing, and vocoder execution; the overall coalescing benchmark does not
+isolate the early-prefix setting.
+
 ### Launch the Server
 
 Speech mode can run as a colocated one-GPU worker using the colocated config:
@@ -178,17 +219,18 @@ Exact-shape CUDA Graph replay is enabled by default for Qwen3-Omni Code2Wav.
 The default stage config supplies a 2% typed GPU memory budget; colocated
 example configs override it with their hardware-specific budget.
 
-To disable replay, add this runtime override to the YAML config:
+To disable replay, set it on the stage in the YAML config:
 
 ```yaml
-runtime_overrides:
+stages:
   code2wav:
-    enable_cuda_graph: false
+    factory:
+      enable_cuda_graph: false
 ```
 
 When replay is enabled, a custom Code2Wav stage must define
-`runtime.resources.total_gpu_memory_fraction`; startup rejects a missing typed
-budget before loading the model.
+`gpu_memory_fraction`; startup rejects a missing typed budget before loading
+the model.
 
 The feature derives the exact `B=1` threshold windows from
 `stream_chunk_size` and `left_context_size`; the defaults capture
@@ -206,9 +248,10 @@ that fails or is aborted can drop an un-emitted pending window while its
 in-flight staging buffer is retired. To disable it:
 
 ```yaml
-runtime_overrides:
+stages:
   code2wav:
-    enable_output_overlap: false
+    factory:
+      enable_output_overlap: false
 ```
 
 For manual multi-GPU placement, use the example script:
@@ -248,8 +291,8 @@ Use per-stage flags when the thinker and talker need different budgets:
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --port 8008 \
-  --thinker-mem-fraction-static 0.88 \
-  --talker-mem-fraction-static 0.88
+  --thinker.engine.mem_fraction_static 0.88 \
+  --talker_ar.engine.mem_fraction_static 0.88
 ```
 
 The speech server launcher exposes the same per-stage controls:
@@ -266,9 +309,9 @@ python examples/run_omni.py qwen3-speech-server \
   --talker-mem-fraction-static 0.88
 ```
 
-`--mem-fraction-static` applies to both Qwen AR stages. Per-stage flags override
-the global value for that stage. Values must be greater than `0` and less than
-`1`.
+`--mem-fraction-static` applies to every SGLang engine stage. A dotted
+per-stage path overrides the global value for that stage. Values must be
+greater than `0` and less than `1`.
 
 The thinker admits up to 64 running requests by default. Use the
 thinker-specific flag to lower or raise that limit in either text-only or
@@ -277,17 +320,16 @@ speech mode:
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
-  --thinker-max-running-requests 16
+  --thinker.engine.max_running_requests 16
 ```
 
-`--max-running-requests` continues to target the generation stage, which is the
-talker in the Qwen3-Omni speech pipeline. To configure the thinker through a
-pipeline YAML file instead, use the stage runtime override:
+To configure the thinker through a pipeline YAML file instead, set the same
+path under the stage entry:
 
 ```yaml
-runtime_overrides:
+stages:
   thinker:
-    server_args_overrides:
+    engine:
       max_running_requests: 16
 ```
 
@@ -297,8 +339,8 @@ At concurrency 8, the talker is the heaviest speech stage: it holds its GPU
 at about 86% median utilization. Give it a GPU of its own. The code2wav
 vocoder is light by comparison (9–13% median utilization) and shares the
 thinker's GPU by default. That default holds only when the thinker stays on
-its own default GPU — a `--thinker-gpus` override moves the thinker alone,
-not code2wav, so pass `--code2wav-gpu` explicitly too if you relocate the
+its own default GPU — a `--thinker.gpu` override moves the thinker alone,
+not code2wav, so pass `--code2wav.gpu` explicitly too if you relocate the
 thinker.
 
 This is the default topology for `sgl-omni serve` without GPU overrides:
@@ -306,7 +348,7 @@ thinker alone, talker alone, code2wav on the thinker's GPU. When code2wav
 shares the thinker's GPU, the thinker's auto-sized KV pool shrinks to make
 room for it — about 4.3 GiB smaller, measured on H200, since the vocoder
 itself needs roughly 1.4–1.6 GiB. That adjustment only happens for the
-auto-sized budget: an explicitly pinned `--thinker-mem-fraction-static`
+auto-sized budget: an explicitly pinned `--thinker.engine.mem_fraction_static`
 gets no automatic carve-out, so a tightly pinned fraction should leave
 headroom for code2wav.
 
@@ -340,7 +382,7 @@ GPUs, so these numbers describe that experiment's topology change, not the
 default code2wav placement. Streaming TTS workloads should prefer this
 layout regardless, since TTFA is the latency users notice first.
 
-### Realtime Speech with Server VAD
+### Realtime Speech with Server-Side Turn Detection
 
 The speech pipeline can stream spoken responses over `/v1/realtime`. Enable the
 WebSocket endpoint on the standard speech pipeline:
@@ -361,15 +403,35 @@ output:
   "session": {
     "modalities": ["text", "audio"],
     "input_audio_format": "pcm16",
-    "output_audio_format": "pcm16"
+    "output_audio_format": "pcm16",
+    "turn_detection": {
+      "type": "semantic_vad",
+      "eagerness": "medium"
+    }
   }
 }
 ```
 
-Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Server VAD
-automatically commits each utterance and starts generation. Text arrives in
-`response.text.delta` events; spoken output arrives as base64-encoded mono
-24 kHz PCM16 in `response.audio.delta` events, followed by
+Stream mono 16 kHz PCM16 input with `input_audio_buffer.append`. Turn
+detection auto-commits each utterance and starts generation. Check
+`session.created.capabilities.turn_detection` before requesting
+`semantic_vad` — older servers only support `server_vad`.
+
+`server_vad` (default) ends a turn after a fixed silence duration.
+`semantic_vad` adds a GPU Smart Turn v3.2 model on top of Silero speech
+detection, so a natural mid-thought pause doesn't end the turn early.
+`eagerness` (`low`/`medium`/`high`, default `medium`) trades latency for
+patience; `silence_duration_ms` only applies to `server_vad`.
+
+To enable `semantic_vad`, provision the BSD-2 licensed
+[Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
+`smart-turn-v3.2-gpu.onnx` model and set `SGLANG_OMNI_SMART_TURN_MODEL_PATH`
+to its path (file or containing directory). The server never downloads it and
+verifies its SHA-256 on load. If the model is missing or invalid, the
+endpoint still works — semantic requests just fall back to `server_vad`.
+
+Text arrives in `response.text.delta` events; spoken output arrives as
+base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by
 `response.audio.done` and `response.done`.
 
 Audio output is opt-in: sessions remain text-only unless both modalities are
@@ -377,10 +439,10 @@ requested. A thinker-only server rejects audio negotiation because it has no
 `code2wav` stage.
 
 For text-and-audio sessions, server-owned barge-in is enabled by default. When
-server VAD emits `input_audio_buffer.speech_started`, the active response is
-cancelled with reason `turn_detected`; its user transcription still completes
-and enters conversation history before the next queued turn runs. Cancelled
-assistant output is not added to conversation history.
+the active turn detector emits `input_audio_buffer.speech_started`, the active
+response is cancelled with reason `turn_detected`; its user transcription still
+completes and enters conversation history before the next queued turn runs.
+Cancelled assistant output is not added to conversation history.
 
 Clients must stop buffered playback on `speech_started` and reject every later
 `response.audio.delta` for that response until its `response.done`. If speech
@@ -397,14 +459,15 @@ removes that assistant item from conversation history. The whole assistant
 transcript is removed because the endpoint cannot align text with played audio.
 
 Set `turn_detection.interrupt_response` to `false` in `session.update` to opt
-out. This is the only `turn_detection` field applied dynamically by the current
-endpoint. Server VAD remains fixed at its startup defaults; `threshold`,
-`prefix_padding_ms`, and `silence_duration_ms` do not reconfigure it. Text-only
-responses are not interrupted automatically.
+out. Partial updates preserve the active detector type and settings, so clients
+can change interruption behavior without dropping semantic VAD or its
+eagerness. Changing detector behavior rebuilds the detector and clears pending
+input audio; `interrupt_response` changes independently. Text-only responses
+are not interrupted automatically.
 
 The browser example in `playground/qwen-omni/realtime` captures microphone
-input and lets the user select text-only output or text plus streamed PCM16
-audio playback.
+input, negotiates turn-detection support per connection, and lets the user
+select text-only output or text plus streamed PCM16 audio playback.
 
 ## Single-GPU FP8 on H100/H20
 

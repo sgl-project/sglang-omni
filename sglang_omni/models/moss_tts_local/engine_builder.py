@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
 from typing import Any
 
+from sglang_omni.models.moss_tts.hf_loading import (
+    MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
+    resolve_moss_tts_context_length,
+)
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
@@ -13,8 +18,20 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS Local"
-    context_length = 8192
+    context_length = MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     model_arch_override = "MossTTSLocalSGLangModel"
+    supports_context_length_override = True
+
+    def resolve_context_length(
+        self,
+        checkpoint_dir: str,
+        *,
+        server_args_overrides: Mapping[str, Any] | None = None,
+    ) -> int:
+        return resolve_moss_tts_context_length(
+            checkpoint_dir,
+            server_args_overrides=server_args_overrides,
+        )
 
     def __init__(
         self,
@@ -34,7 +51,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.process_total_gpu_memory_fraction = process_total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
-        self.memory_budget = moss_local_stages._ArMemoryBudget(
+        self.memory_budget = moss_local_stages.ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
@@ -52,7 +69,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": False,
-            "max_prefill_tokens": 8192,
+            "max_prefill_tokens": min(self.context_length, 8192),
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
         }
@@ -63,7 +80,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        self.memory_budget = moss_local_stages._apply_colocated_ar_memory_budget(
+        self.memory_budget = moss_local_stages.apply_colocated_ar_memory_budget(
             overrides,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
             codec_mem_reserve=self.codec_mem_reserve,
@@ -91,6 +108,9 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             self.profile_total_gpu_memory_fraction = None
 
     def customize_server_args(self, server_args: Any) -> None:
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        cfg = resolved_view(server_args)
         moss_local_stages.logger.info(
             f"MOSS-TTS Local SGLang startup: gpu_id={self.gpu_id} "
             f"total_gpu_memory_fraction={self.total_gpu_memory_fraction} "
@@ -99,7 +119,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             f"process_total_gpu_memory_fraction="
             f"{self.process_total_gpu_memory_fraction} "
             f"codec_mem_reserve={self.memory_budget.applied_codec_mem_reserve:.3f} "
-            f"mem_fraction_static={server_args.mem_fraction_static} "
+            f"mem_fraction_static={cfg.mem_fraction_static} "
             f"profile_total_gpu_memory_fraction="
             f"{self.profile_total_gpu_memory_fraction}"
         )

@@ -13,7 +13,7 @@ import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
-def _compile_fun_asr_audio_encoder(
+def compile_fun_asr_audio_encoder(
     model: Any, *, warmup_lfr_frames: int = 128, warmup_inference_mode: bool = True
 ) -> None:
     """Compile the SANM encoder and adaptor with a symbolic sequence length.
@@ -34,7 +34,7 @@ def _compile_fun_asr_audio_encoder(
 
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
-    from sglang_omni.models.fun_asr.sglang_model import _sanm_mask_from_lengths
+    from sglang_omni.models.fun_asr.sglang_model import sanm_mask_from_lengths
 
     if warmup_lfr_frames < 2:
         # Note (wilsonzheng0327) Sizes 0/1 are always shape-specialized by
@@ -57,7 +57,7 @@ def _compile_fun_asr_audio_encoder(
         # inference-mode tensors fail, forcing a full recompile on the first
         # real request
         t = int(warmup_lfr_frames)
-        feat_dim = int(model.config.encoder_config.input_size)
+        feat_dim = int(model.config.audio_config.input_size)
 
         # note(guozhihao-224): Dynamo specializes B=0/1 and mask=None vs tensor;
         # B1/None + B1/mask + B2/mask cover the mask branch and the B>=2 dynamic graph.
@@ -70,7 +70,7 @@ def _compile_fun_asr_audio_encoder(
                 .contiguous()
             )
             mask = (
-                _sanm_mask_from_lengths(
+                sanm_mask_from_lengths(
                     torch.full((batch,), t, device=param.device, dtype=torch.long),
                     t,
                     dtype=param.dtype,
@@ -93,9 +93,10 @@ def _compile_fun_asr_audio_encoder(
 def create_sglang_fun_asr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    max_running_requests: int = 32,
+    max_running_requests: int = 64,
     max_new_tokens: int = 200,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
@@ -104,16 +105,19 @@ def create_sglang_fun_asr_executor(
     enable_encoder_cuda_graph: bool = False,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
-    prefill_coalesce_requests: int = 0,
-    prefill_coalesce_wait_ms: float = 60.0,
+    prefill_coalesce_requests: int = 16,
+    prefill_coalesce_wait_ms: float = 24.0,
+    prefill_coalesce_when_idle: bool = True,
+    prefill_coalesce_requires_pending_builds: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool = True,
     mm_attention_backend: str | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
     pre_lm_cache_size_bytes: int = 2 * 1024**3,
     pre_lm_max_batch_size: int = 8,
-    pre_lm_max_batch_wait_ms: int = 4,
+    pre_lm_max_batch_wait_ms: int = 10,
     request_build_max_workers: int = 8,
-    request_build_max_pending: int | None = 16,
+    request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: dict[str, Any] | None = None,
 ):
@@ -140,6 +144,13 @@ def create_sglang_fun_asr_executor(
         async_decode_min_batch_size=async_decode_min_batch_size,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
+        prefill_coalesce_requires_pending_builds=(
+            prefill_coalesce_requires_pending_builds
+        ),
+        prefill_coalesce_after_builds_during_decode=(
+            prefill_coalesce_after_builds_during_decode
+        ),
         mm_attention_backend=mm_attention_backend,
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,
@@ -152,6 +163,7 @@ def create_sglang_fun_asr_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

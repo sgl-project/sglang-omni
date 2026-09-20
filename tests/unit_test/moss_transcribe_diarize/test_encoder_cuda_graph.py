@@ -16,7 +16,7 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
 
-pytestmark = pytest.mark.gpu
+pytestmark = pytest.mark.accelerator
 
 _HAS_CUDA = torch.cuda.is_available()
 
@@ -34,7 +34,7 @@ _TEST_CHUNKS = [1, 2, 3, 4, 5, 8, 12, 16, 20, 32]
 
 def test_capture_uses_thread_local_error_mode():
     source = textwrap.dedent(
-        inspect.getsource(WhisperEncoderCudaGraphRunner._capture_bucket)
+        inspect.getsource(WhisperEncoderCudaGraphRunner.capture_bucket)
     )
     tree = ast.parse(source)
     graph_calls = [
@@ -72,6 +72,7 @@ def encoder_bundle():
         model_parallel_is_initialized,
     )
     from sglang.srt.models.whisper import WhisperEncoder
+    from sglang.srt.runtime_context import get_context
     from transformers import AutoConfig
 
     torch.cuda.set_device(0)
@@ -91,11 +92,18 @@ def encoder_bundle():
     audio_config = AutoConfig.from_pretrained(
         snaps[0], trust_remote_code=True
     ).audio_config
-    encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
-    num_mel_bins = int(audio_config.num_mel_bins)
-    runner = WhisperEncoderCudaGraphRunner(encoder, num_mel_bins, _INPUT_FEATURE_LEN)
-    runner.capture(_CHUNK_BUCKETS)
-    return encoder, num_mel_bins, runner
+    published = get_context().override_server_args()
+    published.install()
+    try:
+        encoder = WhisperEncoder(audio_config).cuda().to(torch.bfloat16).eval()
+        num_mel_bins = int(audio_config.num_mel_bins)
+        runner = WhisperEncoderCudaGraphRunner(
+            encoder, num_mel_bins, _INPUT_FEATURE_LEN
+        )
+        runner.capture(_CHUNK_BUCKETS)
+        yield encoder, num_mel_bins, runner
+    finally:
+        published.restore()
 
 
 def _feat(num_mel_bins: int, n: int) -> torch.Tensor:
@@ -177,7 +185,7 @@ def test_capture_failure_falls_back_to_eager(encoder_bundle):
     def boom(*args, **kwargs):
         raise RuntimeError("simulated capture OOM")
 
-    runner._capture_bucket = boom
+    runner.capture_bucket = boom
     runner.capture(_CHUNK_BUCKETS)
     assert runner._graphs == {}, "capture failures must be caught -> no graphs"
 

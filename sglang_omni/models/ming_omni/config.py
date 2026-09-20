@@ -7,7 +7,15 @@ from typing import Any, ClassVar
 
 from pydantic import Field
 
-from sglang_omni.config.schema import PipelineConfig, PlacementConfig, StageConfig
+from sglang_omni.config.schema import (
+    EngineStageConfig,
+    FactoryArgs,
+    PipelineConfig,
+    PlacementConfig,
+    ProcessConfig,
+    StageConfig,
+    stage_process_name,
+)
 from sglang_omni.models.ming_omni.pipeline.next_stage import (
     AGGREGATE_STAGE,
     AUDIO_STAGE,
@@ -24,33 +32,67 @@ from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 _PKG = "sglang_omni.models.ming_omni"
 
 
-def _stage_by_name(stages: list[StageConfig], name: str) -> StageConfig | None:
+def stage_by_name(stages: list[StageConfig], name: str) -> StageConfig | None:
     return next((stage for stage in stages if stage.name == name), None)
 
 
-def _stage_gpu_set(gpu: int | list[int] | None, tp_size: int) -> set[int]:
-    """Return GPUs occupied by a stage.
+def stage_gpu_set(
+    stage: StageConfig,
+    processes: dict[str, ProcessConfig],
+) -> set[int]:
+    """Return GPUs declared for a stage at the configuration boundary.
 
-    Explicit list placement is authoritative; scalar placement preserves the
-    legacy contiguous TP range interpretation.
+    ``replica_devices`` overrides stage placement, including every replica.
     """
+    process = processes.get(stage_process_name(stage))
+    if process is not None:
+        devices = process.replica_devices
+        if devices is not None:
+            return set(devices)
+
+    gpu = stage.gpu
     if isinstance(gpu, list):
-        return {int(gpu_id) for gpu_id in gpu}
+        return set(gpu)
     if gpu is None:
         return set()
-    return set(range(int(gpu), int(gpu) + tp_size))
+    return {gpu}
 
 
-def _validate_ming_stage_tp_support(stages: list[StageConfig]) -> None:
+def reject_thinker_talker_collision(
+    stages: list[StageConfig],
+    talker_stage_name: str,
+    processes: dict[str, ProcessConfig],
+) -> None:
+    """Reject a thinker/talker GPU collision before startup."""
+    thinker = stage_by_name(stages, THINKER_STAGE)
+    talker = stage_by_name(stages, talker_stage_name)
+    if thinker is None or talker is None:
+        return
+
+    thinker_gpus = stage_gpu_set(thinker, processes)
+    talker_gpus = stage_gpu_set(talker, processes)
+    collisions = thinker_gpus & talker_gpus
+    if not collisions:
+        return
+
+    raise ValueError(
+        f"Ming-Omni speech talker {talker_stage_name!r} GPU collides with "
+        f"thinker TP range: talker gpus={sorted(talker_gpus)}, "
+        f"thinker gpus={sorted(thinker_gpus)}, "
+        f"collisions={sorted(collisions)}"
+    )
+
+
+def validate_ming_stage_tp_support(stages: list[StageConfig]) -> None:
     for stage in stages:
         validate_stage_tp_support(stage_name=stage.name, tp_size=stage.tp_size)
 
 
-def _preprocessing_stage(*, process: str) -> StageConfig:
+def preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=PREPROCESSING_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_preprocessing_executor",
+        factory_path=f"{_PKG}.stages.create_preprocessing_executor",
         next=[AUDIO_STAGE, IMAGE_STAGE, AGGREGATE_STAGE],
         project_payload={
             AUDIO_STAGE: f"{_PKG}.stages.project_preprocessing_to_audio_encoder",
@@ -60,12 +102,12 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
     )
 
 
-def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+def audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name=AUDIO_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_audio_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory_path=f"{_PKG}.stages.create_audio_encoder_executor",
+        factory=FactoryArgs(dtype=None),
         gpu=gpu,
         next=AGGREGATE_STAGE,
         project_payload={
@@ -74,14 +116,14 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _image_encoder_stage(
+def image_encoder_stage(
     *, gpu: int | list[int], tp_size: int = 1, process: str
 ) -> StageConfig:
     return StageConfig(
         name=IMAGE_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_image_encoder_executor",
-        factory_args={"device": "cuda", "dtype": None},
+        factory_path=f"{_PKG}.stages.create_image_encoder_executor",
+        factory=FactoryArgs(dtype=None),
         gpu=gpu,
         tp_size=tp_size,
         next=AGGREGATE_STAGE,
@@ -91,11 +133,11 @@ def _image_encoder_stage(
     )
 
 
-def _aggregate_stage(*, process: str) -> StageConfig:
+def aggregate_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=AGGREGATE_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_aggregate_executor",
+        factory_path=f"{_PKG}.stages.create_aggregate_executor",
         wait_for=[PREPROCESSING_STAGE, AUDIO_STAGE, IMAGE_STAGE],
         merge_fn=f"{_PKG}.pipeline.merge.merge_for_thinker",
         next=THINKER_STAGE,
@@ -103,18 +145,37 @@ def _aggregate_stage(*, process: str) -> StageConfig:
     )
 
 
-def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
+class MingThinkerFactoryArgs(FactoryArgs):
+    """Thinker constructor knobs, typed like the shared ones."""
+
+    thinker_max_seq_len: int | None = Field(default=None, gt=0)
+    enable_streaming_tts: bool | None = None
+
+
+class MingThinkerStageConfig(EngineStageConfig):
+    factory: MingThinkerFactoryArgs = Field(default_factory=MingThinkerFactoryArgs)
+
+
+class MingTalkerFactoryArgs(FactoryArgs):
+    voice: str | None = Field(default=None, min_length=1)
+
+
+class MingTalkerStageConfig(StageConfig):
+    factory: MingTalkerFactoryArgs = Field(default_factory=MingTalkerFactoryArgs)
+
+
+def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
     project_payload = {
         DECODE_STAGE: f"{_PKG}.stages.project_thinker_to_decode",
     }
     if speech_enabled:
         project_payload[TALKER_STAGE] = f"{_PKG}.stages.project_thinker_to_talker"
 
-    return StageConfig(
+    return MingThinkerStageConfig(
         name=THINKER_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
-        factory_args={"thinker_max_seq_len": 8192},
+        factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+        factory=MingThinkerFactoryArgs(thinker_max_seq_len=8192),
         gpu=gpu,
         next=[DECODE_STAGE, TALKER_STAGE] if speech_enabled else DECODE_STAGE,
         stream_to=[DECODE_STAGE],
@@ -122,18 +183,20 @@ def _thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConf
     )
 
 
-def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
+def streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
     """Thinker stage variant for streaming TTS.
 
     Fans out to decode + segmenter and streams completion to both. The
     segmenter consumes TTS text chunks; decode needs stream_done to finalize
     stream=true requests.
     """
-    return StageConfig(
+    return MingThinkerStageConfig(
         name=THINKER_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
-        factory_args={"thinker_max_seq_len": 8192, "enable_streaming_tts": True},
+        factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+        factory=MingThinkerFactoryArgs(
+            thinker_max_seq_len=8192, enable_streaming_tts=True
+        ),
         gpu=gpu,
         next=[DECODE_STAGE, SEGMENTER_STAGE],
         stream_to=[DECODE_STAGE, SEGMENTER_STAGE],
@@ -144,103 +207,104 @@ def _streaming_thinker_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _segmenter_stage(*, process: str) -> StageConfig:
+def segmenter_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=SEGMENTER_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_streaming_segmenter_executor",
+        factory_path=f"{_PKG}.stages.create_streaming_segmenter_executor",
         next=TALKER_STREAM_STAGE,
         stream_to=[TALKER_STREAM_STAGE],
         can_accept_stream_before_payload=True,
     )
 
 
-def _talker_stream_stage(*, gpu: int, process: str) -> StageConfig:
-    return StageConfig(
+def talker_stream_stage(*, gpu: int, process: str) -> StageConfig:
+    return MingTalkerStageConfig(
         name=TALKER_STREAM_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_streaming_talker_executor",
-        factory_args={"device": "cuda", "voice": "DB30"},
+        factory_path=f"{_PKG}.stages.create_streaming_talker_executor",
+        factory=MingTalkerFactoryArgs(voice="DB30"),
         gpu=gpu,
         terminal=True,
         can_accept_stream_before_payload=True,
     )
 
 
-def _decode_stage(*, process: str) -> StageConfig:
+def decode_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name=DECODE_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_decode_executor",
+        factory_path=f"{_PKG}.stages.create_decode_executor",
         terminal=True,
         can_accept_stream_before_payload=True,
     )
 
 
-def _talker_stage(*, gpu: int, process: str) -> StageConfig:
-    return StageConfig(
+def talker_stage(*, gpu: int, process: str) -> StageConfig:
+    return MingTalkerStageConfig(
         name=TALKER_STAGE,
         process=process,
-        factory=f"{_PKG}.stages.create_talker_executor",
-        factory_args={"device": "cuda", "voice": "DB30"},
+        factory_path=f"{_PKG}.stages.create_talker_executor",
+        factory=MingTalkerFactoryArgs(voice="DB30"),
         gpu=gpu,
         terminal=True,
     )
 
 
-def _ming_text_stages() -> list[StageConfig]:
+def ming_text_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="preprocessing"),
-        _audio_encoder_stage(gpu=0, process="audio_encoder"),
-        _image_encoder_stage(gpu=0, process="image_encoder"),
-        _aggregate_stage(process="mm_aggregate"),
-        _thinker_stage(gpu=0, speech_enabled=False, process="thinker"),
-        _decode_stage(process="decode"),
+        preprocessing_stage(process="preprocessing"),
+        audio_encoder_stage(gpu=0, process="audio_encoder"),
+        image_encoder_stage(gpu=0, process="image_encoder"),
+        aggregate_stage(process="mm_aggregate"),
+        thinker_stage(gpu=0, speech_enabled=False, process="thinker"),
+        decode_stage(process="decode"),
     ]
 
 
-def _ming_speech_stages() -> list[StageConfig]:
+def ming_speech_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="preprocessing"),
-        _audio_encoder_stage(gpu=0, process="audio_encoder"),
-        _image_encoder_stage(gpu=0, process="image_encoder"),
-        _aggregate_stage(process="mm_aggregate"),
-        _thinker_stage(gpu=0, speech_enabled=True, process="thinker"),
-        _decode_stage(process="decode"),
-        _talker_stage(gpu=1, process="talker"),
+        preprocessing_stage(process="preprocessing"),
+        audio_encoder_stage(gpu=0, process="audio_encoder"),
+        image_encoder_stage(gpu=0, process="image_encoder"),
+        aggregate_stage(process="mm_aggregate"),
+        thinker_stage(gpu=0, speech_enabled=True, process="thinker"),
+        decode_stage(process="decode"),
+        talker_stage(gpu=1, process="talker"),
     ]
 
 
-def _ming_streaming_speech_stages() -> list[StageConfig]:
+def ming_streaming_speech_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="preprocessing"),
-        _audio_encoder_stage(gpu=0, process="audio_encoder"),
-        _image_encoder_stage(gpu=0, process="image_encoder"),
-        _aggregate_stage(process="mm_aggregate"),
-        _streaming_thinker_stage(gpu=0, process="thinker"),
-        _decode_stage(process="decode"),
-        _segmenter_stage(process="segmenter"),
-        _talker_stream_stage(gpu=1, process="talker_stream"),
+        preprocessing_stage(process="preprocessing"),
+        audio_encoder_stage(gpu=0, process="audio_encoder"),
+        image_encoder_stage(gpu=0, process="image_encoder"),
+        aggregate_stage(process="mm_aggregate"),
+        streaming_thinker_stage(gpu=0, process="thinker"),
+        decode_stage(process="decode"),
+        segmenter_stage(process="segmenter"),
+        talker_stream_stage(gpu=1, process="talker_stream"),
     ]
 
 
-class _MingOmniBasePipelineConfig(PipelineConfig):
+class MingOmniBasePipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "BailingMM2NativeForConditionalGeneration"
     architecture_aliases: ClassVar[tuple[str, ...]] = ("BailingMoeV2ForCausalLM",)
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        THINKER_STAGE: MingThinkerStageConfig,
+        TALKER_STAGE: MingTalkerStageConfig,
+        TALKER_STREAM_STAGE: MingTalkerStageConfig,
+    }
     tensor_parallel_disable_custom_all_reduce_stages: ClassVar[tuple[str, ...]] = (
         THINKER_STAGE,
     )
-
-    @classmethod
-    def mem_fraction_role_to_stage(cls) -> dict[str, str]:
-        return {"thinker": THINKER_STAGE}
 
     @classmethod
     def topology_gated_custom_all_reduce_stages(cls) -> set[str]:
         return {THINKER_STAGE}
 
 
-class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
+class MingOmniPipelineConfig(MingOmniBasePipelineConfig):
     """6-stage text pipeline."""
 
     model_path: str
@@ -250,19 +314,15 @@ class MingOmniPipelineConfig(_MingOmniBasePipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
-    stages: list[StageConfig] = Field(default_factory=_ming_text_stages)
+    stages: list[StageConfig] = Field(default_factory=ming_text_stages)
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        _validate_ming_stage_tp_support(self.stages)
+        validate_ming_stage_tp_support(self.stages)
 
 
-class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
+class MingOmniSpeechPipelineConfig(MingOmniBasePipelineConfig):
     """7-stage speech pipeline."""
-
-    @classmethod
-    def talker_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": TALKER_STAGE}
 
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
@@ -271,34 +331,18 @@ class MingOmniSpeechPipelineConfig(_MingOmniBasePipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
-    stages: list[StageConfig] = Field(default_factory=_ming_speech_stages)
+    stages: list[StageConfig] = Field(default_factory=ming_speech_stages)
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        _validate_ming_stage_tp_support(self.stages)
-        self._validate_talker_gpu_not_in_thinker_tp_range()
+        validate_ming_stage_tp_support(self.stages)
+        self.validate_talker_gpu_not_in_thinker_tp_range()
 
-    def _validate_talker_gpu_not_in_thinker_tp_range(self) -> None:
-        thinker = _stage_by_name(self.stages, THINKER_STAGE)
-        talker = _stage_by_name(self.stages, TALKER_STAGE)
-        if thinker is None or talker is None:
-            return
-
-        thinker_gpus = _stage_gpu_set(thinker.gpu, thinker.tp_size)
-        talker_gpus = _stage_gpu_set(talker.gpu, talker.tp_size)
-        collisions = thinker_gpus & talker_gpus
-        if not collisions:
-            return
-
-        raise ValueError(
-            "Ming-Omni speech talker GPU collides with thinker TP range: "
-            f"talker gpus={sorted(talker_gpus)}, "
-            f"thinker gpus={sorted(thinker_gpus)}, "
-            f"collisions={sorted(collisions)}"
-        )
+    def validate_talker_gpu_not_in_thinker_tp_range(self) -> None:
+        reject_thinker_talker_collision(self.stages, TALKER_STAGE, self.processes)
 
 
-class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
+class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
     """8-stage streaming-TTS speech pipeline.
 
     Adds a ``segmenter`` stage between ``thinker`` and ``talker_stream``
@@ -308,10 +352,6 @@ class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
     streaming talker emits audio chunks to the coordinator (terminal).
     """
 
-    @classmethod
-    def talker_role_to_stage(cls) -> dict[str, str]:
-        return {"talker": TALKER_STREAM_STAGE}
-
     model_path: str
     entry_stage: str = PREPROCESSING_STAGE
     placement: PlacementConfig = Field(
@@ -319,30 +359,16 @@ class MingOmniStreamingSpeechPipelineConfig(_MingOmniBasePipelineConfig):
             require_memory_fraction_for_colocation=False
         )
     )
-    stages: list[StageConfig] = Field(default_factory=_ming_streaming_speech_stages)
+    stages: list[StageConfig] = Field(default_factory=ming_streaming_speech_stages)
 
     def model_post_init(self, __context: Any = None) -> None:
         super().model_post_init(__context)
-        _validate_ming_stage_tp_support(self.stages)
-        self._validate_talker_stream_gpu_not_in_thinker_tp_range()
+        validate_ming_stage_tp_support(self.stages)
+        self.validate_talker_stream_gpu_not_in_thinker_tp_range()
 
-    def _validate_talker_stream_gpu_not_in_thinker_tp_range(self) -> None:
-        thinker = _stage_by_name(self.stages, THINKER_STAGE)
-        talker = _stage_by_name(self.stages, TALKER_STREAM_STAGE)
-        if thinker is None or talker is None:
-            return
-
-        thinker_gpus = _stage_gpu_set(thinker.gpu, thinker.tp_size)
-        talker_gpus = _stage_gpu_set(talker.gpu, talker.tp_size)
-        collisions = thinker_gpus & talker_gpus
-        if not collisions:
-            return
-
-        raise ValueError(
-            "Ming-Omni streaming-speech talker GPU collides with thinker TP range: "
-            f"talker gpus={sorted(talker_gpus)}, "
-            f"thinker gpus={sorted(thinker_gpus)}, "
-            f"collisions={sorted(collisions)}"
+    def validate_talker_stream_gpu_not_in_thinker_tp_range(self) -> None:
+        reject_thinker_talker_collision(
+            self.stages, TALKER_STREAM_STAGE, self.processes
         )
 
 

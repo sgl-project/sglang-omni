@@ -6,6 +6,7 @@ import importlib.util
 import json
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -362,7 +363,7 @@ def test_scheduler_model_path_activity_is_monotonic_and_default_off(
 
     path = recorder.start("run-unit", str(tmp_path), "tts_engine")
     monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
-    monkeypatch.setattr(event_recorder, "_read_host_boot_id", lambda: "boot-test")
+    monkeypatch.setattr(event_recorder, "read_host_boot_id", lambda: "boot-test")
     event_recorder.emit_model_path_start("request-on")
     event_recorder.emit_model_path_end("request-on", status="success")
     recorder.stop()
@@ -546,6 +547,7 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
     tmp_path: Path,
 ) -> None:
     from tests.test_model import omni_router_utils
+    from tests.test_model.rust_router_config import CiRouterTopology
 
     command: list[str] = []
     process = SimpleNamespace(pid=123)
@@ -559,6 +561,13 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
         "getpgid",
         lambda _pid: 123,
         raising=False,
+    )
+    router_binary = tmp_path / "sgl-omni-router"
+    router_binary.touch(mode=0o755)
+    monkeypatch.setattr(
+        omni_router_utils,
+        "_rust_router_binary",
+        lambda: router_binary,
     )
     for name in (
         "_record_process_group",
@@ -575,15 +584,22 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
         model_path="unused-for-external-workers",
         model_name="model-under-test",
         worker_extra_args="",
+        router_topology=CiRouterTopology.TTS,
         external_worker_urls=worker_urls,
         wait_timeout=30,
     ) as handle:
         assert handle.worker_ports == [8801, 8802]
+        assert handle.router_config is not None
+        router_config = tomllib.loads(handle.router_config.read_text(encoding="utf-8"))
 
-    worker_index = command.index("--worker-urls")
-    assert command[worker_index + 1 : worker_index + 3] == worker_urls
-    assert command[command.index("--model") + 1] == "model-under-test"
-    assert "--launcher-config" not in command
+    assert command == [str(router_binary), "--config", str(handle.router_config)]
+    assert [worker["base_url"] for worker in router_config["workers"]] == [
+        f"{url}/" for url in worker_urls
+    ]
+    assert all(
+        worker["default_model_id"] == "model-under-test"
+        for worker in router_config["workers"]
+    )
 
 
 def _healthy_mps_summary() -> dict:
@@ -625,7 +641,7 @@ def test_mps_performance_fails_closed_on_an_uncalibrated_reference(
 
     assert verdict["status"] == "fail"
     assert verdict["uncalibrated"] == ["throughput_qps"]
-    assert any("tune-ci-thresholds" in check for check in verdict["failed_checks"])
+    assert any("calibrate-h100-ci" in check for check in verdict["failed_checks"])
 
 
 def test_shipped_mps_references_are_all_calibrated() -> None:

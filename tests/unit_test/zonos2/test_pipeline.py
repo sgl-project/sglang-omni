@@ -6,11 +6,7 @@ import pytest
 import torch
 
 from sglang_omni.client import Client
-from sglang_omni.config import (
-    build_process_topology_plan,
-    build_stage_placement_plan,
-    resolve_stage_factory_args,
-)
+from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2 import engine_builder as eb
 from sglang_omni.models.zonos2.components import text_frontend
@@ -29,7 +25,7 @@ from sglang_omni.models.zonos2.streaming_contract import (
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.speech_service import SpeechRequestValidator
-from tests.unit_test.fakes import FakeServerArgs
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
@@ -72,11 +68,10 @@ def test_zonos2_streaming_pipeline_routes_chunks_to_vocoder() -> None:
 
     assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
     assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
-    assert (
-        stages_by_name["tts_engine"].factory_args["stream_emit_first_chunk_frames"]
-        == DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS
-        == 58
-    )
+    # The first-flush row count is the factory signature's default now; the
+    # config leaves it unset.
+    assert stages_by_name["tts_engine"].factory.model_extra in (None, {})
+    assert DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS == 58
 
 
 @pytest.mark.parametrize(
@@ -107,8 +102,7 @@ def test_zonos2_stream_metadata_preserves_request_override_provenance(
 def test_zonos2_multi_gpu_uses_typed_gpu_one_process() -> None:
     config = Zonos2MultiGPUPipelineConfig(model_path="fake-model")
     stages_by_name = {stage.name: stage for stage in config.stages}
-    placement = build_stage_placement_plan(config)
-    topology = build_process_topology_plan(config, placement)
+    topology = build_compiled_process_topology(config)
 
     for stage_name in ("speaker_encode", "vocoder"):
         stage = stages_by_name[stage_name]
@@ -135,7 +129,7 @@ def _speech_payload(payload: dict) -> StagePayload:
     )
     return StagePayload(
         request_id="request",
-        request=Client._build_omni_request(generation_request),
+        request=Client.build_omni_request(generation_request),
         data={},
     )
 
@@ -199,9 +193,13 @@ def test_speech_seed_is_rejected_until_request_rng_is_supported() -> None:
 def test_zonos2_engine_builder_disables_chunked_prefill() -> None:
     """The per-frame feedback/EOS state machine has no rollback, so the builder
     must disable chunked prefill regardless of the ServerArgs default."""
-    server_args = FakeServerArgs(chunked_prefill_size=8192)
+    from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.server_args import ServerArgs
+
+    server_args = ServerArgs(model_path="dummy", chunked_prefill_size=8192)
+    server_args.resolve_once()
     Zonos2EngineBuilder().customize_server_args(server_args)
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
 
 
 def test_zonos2_engine_builder_declares_model_arch_override() -> None:
@@ -215,7 +213,7 @@ def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:
         "load_zonos2_pretrained_config",
         lambda path: SimpleNamespace(max_seqlen=6144),
     )
-    monkeypatch.setattr(eb, "_build_config_shim", lambda path, cfg: "/tmp/shim")
+    monkeypatch.setattr(eb, "build_config_shim", lambda path, cfg: "/tmp/shim")
 
     builder = Zonos2EngineBuilder()
     assert builder.resolve_checkpoint("fake-zonos2") == "/tmp/shim"
@@ -226,3 +224,20 @@ def test_zonos2_engine_builder_keeps_power_of_two_cuda_graph_buckets() -> None:
     overrides = {"cuda_graph_max_bs": 16}
     Zonos2EngineBuilder(cuda_graph_max_bs=16).adjust_overrides(overrides)
     assert overrides["cuda_graph_bs"] == [1, 2, 4, 8, 16]
+
+
+def test_zonos2_factories_reject_unknown_config_options() -> None:
+    """A catch-all **kwargs here once made the config validator accept options
+    the factory silently discarded (e.g. factory.max_new_tokens)."""
+    import pytest
+
+    from sglang_omni.config.runtime import apply_typed_stage_kwargs
+    from sglang_omni.models.zonos2 import stages
+
+    with pytest.raises(ValueError, match="max_new_tokens"):
+        apply_typed_stage_kwargs(
+            stages.create_sglang_omni_tts_engine_executor,
+            {},
+            {"max_new_tokens": 100},
+            stage_name="tts_engine",
+        )

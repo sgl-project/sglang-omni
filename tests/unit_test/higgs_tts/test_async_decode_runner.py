@@ -136,14 +136,14 @@ def _patch_cpu_host_staging(monkeypatch):
     """
     monkeypatch.setattr(
         HiggsTTSModelRunner,
-        "_next_host_staging",
+        "next_host_staging",
         lambda self, shape, dtype: torch.empty(tuple(shape), dtype=dtype, device="cpu"),
     )
 
 
 def _run_sync(**kw):
     runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=False, **kw)
-    runner._collect_step_outputs_cg(result, fb, sched)
+    runner.collect_step_outputs_cg(result, fb, sched)
     return _snapshot(reqs, datas, result)
 
 
@@ -283,15 +283,16 @@ def test_rollout_logprob_host_staging_grows_with_async_batch(
     runner._logprob_host_buffers = None
     runner._logprob_slot = 0
 
-    first = runner._next_logprob_host_staging(torch.empty((1, 8)))
-    grown = runner._next_logprob_host_staging(torch.empty((2, 8)))
-    smaller = runner._next_logprob_host_staging(torch.empty((1, 8)))
+    first = runner.next_logprob_host_staging(torch.empty((1, 8)))
+    grown = runner.next_logprob_host_staging(torch.empty((2, 8)))
+    smaller = runner.next_logprob_host_staging(torch.empty((1, 8)))
 
     assert first.shape == (1, 8)
     assert grown.shape == (2, 8)
     assert smaller.shape == (2, 8)
 
 
+@pytest.mark.accelerator
 def test_async_real_pinned_path_matches_sync():
     """CUDA-guarded: run the async path through the REAL _next_host_staging
     (pinned host buffer + non-blocking copy on a CUDA model) and confirm it
@@ -367,7 +368,7 @@ def test_async_real_pinned_path_matches_sync():
         return runner, sched, result, fb, reqs, datas
 
     r_s, sc_s, res_s, fb_s, rq_s, dt_s = build(False)
-    r_s._collect_step_outputs_cg(res_s, fb_s, sc_s)
+    r_s.collect_step_outputs_cg(res_s, fb_s, sc_s)
     sync = _snapshot(rq_s, dt_s, res_s)
 
     r_a, sc_a, res_a, fb_a, rq_a, dt_a = build(True)

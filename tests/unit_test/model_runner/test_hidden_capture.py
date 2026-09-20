@@ -136,7 +136,7 @@ def test_static_capture_rejects_layer_input_dtype_mismatch() -> None:
         _run_layer(text_model.layers[0], torch.ones(2, 3, dtype=torch.float64), None)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_static_capture_refreshes_two_layers_under_breakable_cuda_graph_replay() -> (
     None

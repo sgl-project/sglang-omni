@@ -137,12 +137,18 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from functools import partial
 
 import aiohttp
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
+from benchmarks.benchmarker.runner import (
+    BenchmarkRunner,
+    RunConfig,
+    SendFn,
+    resolve_warmup,
+)
 from benchmarks.benchmarker.utils import (
     get_wav_duration,
     save_json_results,
@@ -159,6 +165,7 @@ from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
 )
 from benchmarks.tasks.tts import (
+    ReferenceAudioField,
     VoiceCloneOmni,
     build_base_url,
     run_seedtts_similarity,
@@ -188,12 +195,14 @@ class OmniSeedttsBenchmarkConfig:
     lang: str = "en"
     speaker: str = "Ethan"
     voice_clone: bool = False
+    reference_audio_field: ReferenceAudioField = "audios"
     stream: bool = False
     output_dir: str = "results/omni_seedtts"
     max_samples: int | None = None
     max_new_tokens: int = 256
     temperature: float = 0.7
-    warmup: int = 1
+    warmup: int | None = None
+    warmup_meta: str | None = None
     max_concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     disable_tqdm: bool = False
@@ -210,6 +219,10 @@ class OmniSeedttsBenchmarkConfig:
     system_prompt: str | None = None
 
 
+def _resolve_warmup(config: OmniSeedttsBenchmarkConfig) -> int:
+    return resolve_warmup(config.warmup, config.max_concurrency)
+
+
 def _build_results_config(
     config: OmniSeedttsBenchmarkConfig,
     *,
@@ -220,12 +233,14 @@ def _build_results_config(
         "base_url": base_url,
         "meta": config.meta,
         "voice_clone": config.voice_clone,
+        "reference_audio_field": config.reference_audio_field,
         "stream": config.stream,
         "lang": config.lang,
         "speaker": config.speaker,
         "max_samples": config.max_samples,
         "max_new_tokens": config.max_new_tokens,
-        "warmup": config.warmup,
+        "warmup": _resolve_warmup(config),
+        "warmup_meta": config.warmup_meta,
         "max_concurrency": config.max_concurrency,
         "request_rate": config.request_rate,
     }
@@ -243,8 +258,9 @@ def make_send_fn(
     stream: bool,
     save_audio_dir: str,
     system_prompt: str | None = None,
+    reference_audio_field: ReferenceAudioField = "audios",
 ) -> SendFn:
-    """Return a SendFn that calls Qwen3-Omni via VoiceCloneOmni and saves WAV."""
+    """Return a SendFn that calls the Omni chat API and saves WAV."""
     task = VoiceCloneOmni()
 
     async def send_fn(
@@ -270,6 +286,7 @@ def make_send_fn(
                 voice_clone=voice_clone,
                 stream=stream,
                 system_prompt=system_prompt,
+                reference_audio_field=reference_audio_field,
                 chunk_times_out=chunk_times if stream else None,
                 text_first_time_holder=text_first_time_holder if stream else None,
             )
@@ -333,7 +350,8 @@ async def run_omni_seedtts_benchmark(
     save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
     os.makedirs(save_audio_dir, exist_ok=True)
 
-    send_fn = make_send_fn(
+    build_send_fn = partial(
+        make_send_fn,
         config.model,
         api_url,
         lang=config.lang,
@@ -342,19 +360,66 @@ async def run_omni_seedtts_benchmark(
         max_tokens=config.max_new_tokens,
         temperature=config.temperature,
         stream=config.stream,
-        save_audio_dir=save_audio_dir,
         system_prompt=config.system_prompt,
+        reference_audio_field=config.reference_audio_field,
     )
+
+    warmup_count = _resolve_warmup(config)
+    if config.warmup_meta is not None and warmup_count > 0:
+        warmup_samples = load_seedtts_samples(
+            config.warmup_meta, warmup_count, split=config.lang
+        )
+        if len(warmup_samples) != warmup_count:
+            raise ValueError(
+                f"Requested {warmup_count} warmup samples, found {len(warmup_samples)}"
+            )
+        warmup_dir = os.path.join(config.output_dir, "warmup")
+        warmup_audio_dir = os.path.abspath(os.path.join(warmup_dir, "audio"))
+        os.makedirs(warmup_audio_dir, exist_ok=True)
+        warmup_send_fn = build_send_fn(save_audio_dir=warmup_audio_dir)
+
+        async def send_warmup(session, sample):
+            try:
+                return await warmup_send_fn(session, sample)
+            except Exception as exc:
+                logger.exception("Warmup request %s failed", sample.sample_id)
+                return RequestResult(request_id=sample.sample_id, error=str(exc))
+
+        # Note (wenyao): A separate input set lets callers warm the full path
+        # without pre-filling the measured set's caches or changing server startup.
+        warmup_runner = BenchmarkRunner(
+            RunConfig(
+                max_concurrency=config.max_concurrency,
+                warmup=0,
+                disable_tqdm=config.disable_tqdm,
+            )
+        )
+        warmup_outputs = await warmup_runner.run(warmup_samples, send_warmup)
+        completed = sum(output.is_success for output in warmup_outputs)
+        save_json_results(
+            {
+                "config": _build_results_config(config, base_url=base_url),
+                "completed": completed,
+                "requested": warmup_count,
+                "wall_clock_s": warmup_runner.wall_clock_s,
+                "results": [asdict(output) for output in warmup_outputs],
+            },
+            warmup_dir,
+            "results.json",
+        )
+        if completed != warmup_count:
+            raise RuntimeError(f"Benchmark warmup completed {completed}/{warmup_count}")
+        warmup_count = 0
 
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=config.max_concurrency,
             request_rate=config.request_rate,
-            warmup=config.warmup,
+            warmup=warmup_count,
             disable_tqdm=config.disable_tqdm,
         )
     )
-    outputs = await runner.run(samples, send_fn)
+    outputs = await runner.run(samples, build_send_fn(save_audio_dir=save_audio_dir))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
     results_config = _build_results_config(config, base_url=base_url)
@@ -408,12 +473,14 @@ def _config_from_args(args: argparse.Namespace) -> OmniSeedttsBenchmarkConfig:
         lang=args.lang,
         speaker=args.speaker,
         voice_clone=voice_clone,
+        reference_audio_field=args.reference_audio_field,
         stream=args.stream,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         warmup=args.warmup,
+        warmup_meta=args.warmup_meta,
         max_concurrency=args.max_concurrency,
         request_rate=args.request_rate,
         disable_tqdm=args.disable_tqdm,
@@ -481,7 +548,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--voice-clone",
         dest="voice_clone",
         action="store_true",
-        help="Pass ref_audio via 'audios' field for voice cloning.",
+        help="Pass the sample's reference audio for voice cloning.",
     )
     voice_clone_group.add_argument(
         "--no-ref-audio",
@@ -491,6 +558,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--voice-clone; kept for backward-compatible shell history).",
     )
     parser.set_defaults(voice_clone=False, no_ref_audio=False)
+    parser.add_argument(
+        "--reference-audio-field",
+        choices=["audios", "audio.ref_audio"],
+        default="audios",
+        help="Reference transport: audios for Qwen3-Omni, audio.ref_audio for MiniCPM-o.",
+    )
     parser.add_argument("--output-dir", type=str, default="results/omni_seedtts")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=256)
@@ -500,7 +573,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use streaming chat completions and concatenate audio chunks.",
     )
-    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup requests; defaults to the configured concurrency.",
+    )
+    parser.add_argument(
+        "--warmup-meta",
+        type=str,
+        default=None,
+        help="Separate SeedTTS metadata for warmup; use references and text outside "
+        "the measured set. Must contain at least --warmup samples.",
+    )
     parser.add_argument(
         "--max-concurrency",
         type=int,

@@ -31,7 +31,7 @@ from sglang_omni.models.audar_tts.request_builders import build_audar_state
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
@@ -218,11 +218,10 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     )
     prepared = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prepared.stages_cfg,
-            name_map=prepared.name_map,
             endpoints=prepared.endpoints,
             placement_plan=prepared.placement_plan,
             process_plan=prepared.process_plan,
@@ -235,7 +234,7 @@ def test_config_dispatch_injects_model_path_and_gpu(tmp_path: Any) -> None:
     for spec in (spec for group in groups for spec in group.specs):
         resolved[spec.stage_name] = resolve_factory_signature_args(
             import_string(spec.factory),
-            spec.factory_args,
+            spec.factory_kwargs,
             defaults=spec.factory_arg_defaults,
         )
 
@@ -325,7 +324,7 @@ def test_openai_speech_request_lowers_to_audar_state() -> None:
     ]
     payload = StagePayload(
         request_id="request",
-        request=Client._build_omni_request(generation_request),
+        request=Client.build_omni_request(generation_request),
         data={},
     )
 
@@ -433,7 +432,7 @@ def test_reference_encoder_builds_prompt_and_caches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     codec = FakeCodec()
-    monkeypatch.setattr(stages, "_load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_reference_encoder_executor(gpu_id=None)
     reference_audio = {"bytes": five_second_wav()}
 
@@ -466,7 +465,7 @@ def test_reference_encoder_singleflights_same_reference(
     second_normalized = threading.Event()
     normalize_lock = threading.Lock()
     normalize_calls = 0
-    original_normalize = stages._normalize_reference
+    original_normalize = stages.normalize_reference
 
     def normalize(raw_input: Any):
         nonlocal normalize_calls
@@ -483,9 +482,9 @@ def test_reference_encoder_singleflights_same_reference(
         assert release_encode.wait(timeout=2)
         return torch.tensor([[[7, 8, 9]]])
 
-    monkeypatch.setattr(stages, "_normalize_reference", normalize)
+    monkeypatch.setattr(stages, "normalize_reference", normalize)
     monkeypatch.setattr(codec, "encode_code", encode_code)
-    monkeypatch.setattr(stages, "_load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_reference_encoder_executor(gpu_id=None, max_concurrency=2)
     reference_audio = {"bytes": five_second_wav()}
 
@@ -533,7 +532,7 @@ def test_reference_encoder_serializes_codec_for_different_references(
         return torch.tensor([[[7, 8, 9]]])
 
     monkeypatch.setattr(codec, "encode_code", encode_code)
-    monkeypatch.setattr(stages, "_load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_reference_encoder_executor(gpu_id=None, max_concurrency=2)
 
     def encode(request_id: str, wav_bytes: bytes) -> AudarTTSState:
@@ -560,7 +559,7 @@ def test_reference_encoder_serializes_codec_for_different_references(
 
 
 def _reference_service(codec: FakeCodec) -> Any:
-    hook = stages._AudarReferenceEncodeHook(
+    hook = stages.AudarReferenceEncodeHook(
         codec=codec,
         device="cpu",
         codec_model="codec",
@@ -572,7 +571,7 @@ def _reference_service(codec: FakeCodec) -> Any:
 def test_reference_hook_preserves_key_and_tensor_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    hook = stages._AudarReferenceEncodeHook(
+    hook = stages.AudarReferenceEncodeHook(
         codec=FakeCodec(),
         device="cpu",
         codec_model="codec",
@@ -587,7 +586,7 @@ def test_reference_hook_preserves_key_and_tensor_contract(
         encoder_id="neucodec",
         encoder_config_hash=stages.hash_bytes(b"sample_rate:16000"),
         artifact_kind="audar_reference_codes",
-        input_key=stages._reference_key(item),
+        input_key=stages.reference_key(item),
     )
 
     stored = hook.store_artifact(torch.tensor([7, 8, 9], dtype=torch.long))
@@ -599,7 +598,7 @@ def test_reference_hook_preserves_key_and_tensor_contract(
     assert first.data_ptr() != stored.data_ptr()
     assert first.data_ptr() != second.data_ptr()
 
-    monkeypatch.setattr(stages, "_reference_key", lambda item: None)
+    monkeypatch.setattr(stages, "reference_key", lambda item: None)
     assert hook.cache_key(item) is None
 
 
@@ -707,20 +706,66 @@ def test_codec_model_and_lock_are_shared_between_stages(
     monkeypatch.setitem(
         sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=FakeNeuCodec)
     )
-    stages._load_codec.cache_clear()
-    stages._codec_lock.cache_clear()
+    stages.load_codec.cache_clear()
+    stages.codec_lock.cache_clear()
     try:
-        first = stages._load_codec("codec", "revision", "cpu")
-        second = stages._load_codec("codec", "revision", "cpu")
-        first_lock = stages._codec_lock("codec", "revision", "cpu")
-        second_lock = stages._codec_lock("codec", "revision", "cpu")
+        first = stages.load_codec("codec", "revision", "cpu")
+        second = stages.load_codec("codec", "revision", "cpu")
+        first_lock = stages.codec_lock("codec", "revision", "cpu")
+        second_lock = stages.codec_lock("codec", "revision", "cpu")
     finally:
-        stages._load_codec.cache_clear()
-        stages._codec_lock.cache_clear()
+        stages.load_codec.cache_clear()
+        stages.codec_lock.cache_clear()
 
     assert first is second is codec
     assert first_lock is second_lock
     assert loads == 1
+
+
+def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """n_gpu_layers defaults to -1 (offload everything); a cpu resolution must
+    zero it or the stage silently runs on GPU 0 anyway."""
+    captured: dict[str, object] = {}
+
+    class FakeLlama:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            raise RuntimeError("stop after capture")
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(current_platform, "device_type", "cpu", raising=False)
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        stages.create_tts_engine_executor("unused", device="cpu")
+
+    assert captured["n_gpu_layers"] == 0
+    assert captured["main_gpu"] == 0
+
+
+def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """llama.cpp binds a bare main_gpu index; a non-cuda/cpu device intent would
+    be silently mapped onto the wrong backend's card numbering."""
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
+    )
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+    with pytest.raises(ValueError, match="cuda or cpu"):
+        stages.create_tts_engine_executor("unused", device="xpu", gpu_id=1)
 
 
 def test_llama_cpp_stage_matches_official_generation_loop(
@@ -763,7 +808,10 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         "llama_cpp",
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
     )
-    monkeypatch.setattr(stages, "_resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
     payload = make_payload(
         state=AudarTTSState(
             prompt="prompt",
@@ -803,7 +851,7 @@ def test_vocoder_emits_24khz_audio_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     codec = FakeCodec()
-    monkeypatch.setattr(stages, "_load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_vocoder_executor(gpu_id=None)
     payload = make_payload(
         state=AudarTTSState(
@@ -834,7 +882,7 @@ def test_vocoder_does_not_claim_batching_without_tensor_batch_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     codec = FakeCodec()
-    monkeypatch.setattr(stages, "_load_codec", lambda *args, **kwargs: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_vocoder_executor(gpu_id=None)
 
     assert scheduler._batch_fn is None

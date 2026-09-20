@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import torch
 
-from sglang_omni.comm.stage_io import _restore_tensor_device
+from sglang_omni.comm.stage_io import restore_tensor_device
 
 
 def test_host_origin_tensor_stays_on_the_host() -> None:
-    restored = _restore_tensor_device(torch.empty(2), "cpu", "xpu:1")
+    restored = restore_tensor_device(torch.empty(2), "cpu", "xpu:1")
 
     assert restored.device.type == "cpu"
 
@@ -22,21 +22,21 @@ def test_already_resident_tensor_is_left_alone() -> None:
     """A cuda_ipc payload arrives on the accelerator, so it must not be copied."""
     tensor = torch.empty(2, device="meta")
 
-    restored = _restore_tensor_device(tensor, "meta:0", "meta:1")
+    restored = restore_tensor_device(tensor, "meta:0", "meta:1")
 
     assert restored is tensor
 
 
 def test_accelerator_origin_tensor_moves_to_the_receiver_device() -> None:
     """The receiver's index wins over the sender's."""
-    restored = _restore_tensor_device(torch.empty(2), "meta:3", "meta:1")
+    restored = restore_tensor_device(torch.empty(2), "meta:3", "meta:1")
 
     assert restored.device.type == "meta"
 
 
 def test_host_only_stage_keeps_an_accelerator_origin_tensor_on_the_host() -> None:
     """A stage with no card assigned consumes the host copy."""
-    restored = _restore_tensor_device(torch.empty(2), "meta:3", None)
+    restored = restore_tensor_device(torch.empty(2), "meta:3", None)
 
     assert restored.device.type == "cpu"
 
@@ -44,7 +44,7 @@ def test_host_only_stage_keeps_an_accelerator_origin_tensor_on_the_host() -> Non
 def test_a_raw_stream_ref_carries_its_source_device() -> None:
     """A raw DataRef had nowhere to record residency, so a host-shm hop lost it.
     Qwen3-TTS emits device-resident codec chunks, and a process-isolated vocoder
-    (--isolate-stage) would otherwise feed CPU codes to an accelerator decoder.
+    (--vocoder.process vocoder) would otherwise feed CPU codes to an accelerator decoder.
     """
     from sglang_omni.comm.data_ref import (
         BackendRef,

@@ -68,14 +68,7 @@ def _two_gpus() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not (
-        _two_gpus()
-        and _resolve_base_dir()
-        and _resolve_snapshot(INSTRUCT_CACHE_DIRNAME)
-    ),
-    reason="requires 2 GPUs + Higgs 4B-base and 4B-instruct checkpoints in the HF cache",
-)
+pytestmark = pytest.mark.accelerator
 
 
 def _run_trainer() -> None:
@@ -192,6 +185,10 @@ def _tts_checksums(url: str) -> dict:
 
 def test_distributed_refit_matches_base_and_keeps_serving(tmp_path):
     base_dir = _resolve_base_dir()
+    if not (base_dir and _resolve_snapshot(INSTRUCT_CACHE_DIRNAME) and _two_gpus()):
+        pytest.skip(
+            "requires 2 GPUs + Higgs 4B-base and 4B-instruct checkpoints in the HF cache"
+        )
 
     proc_b, url_b = _boot_server(base_dir, BASE_REF_PORT, gpu=1)
     try:

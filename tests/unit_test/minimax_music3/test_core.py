@@ -13,7 +13,7 @@ from torch.nn import functional as F
 
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
-    _resolve_acoustic_dtype,
+    resolve_acoustic_dtype,
 )
 from sglang_omni.models.minimax_music3.chunking import chunk_windows
 from sglang_omni.models.minimax_music3.config import (
@@ -26,10 +26,10 @@ from sglang_omni.models.minimax_music3.dit import (
     Attention,
     MiniMaxMusic3DIT,
     RotaryEmbedding,
-    _apply_rope,
-    _resolve_attention_backend,
+    apply_rope,
+    resolve_attention_backend,
 )
-from sglang_omni.models.minimax_music3.model_runner import _HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -62,7 +62,7 @@ def test_chunk_windows_cover_boundaries(
 
 
 def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
-    buffer = _HiddenFrameBuffer()
+    buffer = HiddenFrameBuffer()
     for frame in range(201):
         buffer.append(torch.full((2,), frame, dtype=torch.float32))
 
@@ -77,7 +77,7 @@ def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
         buffer.concatenate(0, 10)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     # A request's codes must not depend on which other requests share its
@@ -104,7 +104,7 @@ def test_sample_topk_seeded_is_invariant_to_batch_composition() -> None:
     assert torch.equal(batched, alone)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
     torch.manual_seed(0)
@@ -130,13 +130,13 @@ def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
 def test_resolve_acoustic_dtype(
     value: str | torch.dtype, expected: torch.dtype
 ) -> None:
-    assert _resolve_acoustic_dtype(value) is expected
+    assert resolve_acoustic_dtype(value) is expected
 
 
 @pytest.mark.parametrize("value", ["float16", "int8", None])
 def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> None:
     with pytest.raises(ValueError, match="float32.*bfloat16|bfloat16.*float32"):
-        _resolve_acoustic_dtype(value)  # type: ignore[arg-type]
+        resolve_acoustic_dtype(value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -151,12 +151,12 @@ def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> Non
 def test_resolve_attention_backend(
     value: str, expected: AttentionBackendEnum | None
 ) -> None:
-    assert _resolve_attention_backend(value) is expected
+    assert resolve_attention_backend(value) is expected
 
 
 def test_resolve_attention_backend_rejects_unknown_value() -> None:
     with pytest.raises(ValueError, match="attention_backend"):
-        _resolve_attention_backend("flashinfer")
+        resolve_attention_backend("flashinfer")
 
 
 def test_minimax_music3_explicit_placements_ignore_the_machine(
@@ -176,16 +176,16 @@ def test_minimax_music3_explicit_placements_ignore_the_machine(
         dual_stages = {stage.name: stage for stage in dual.stages}
         single_stages = {stage.name: stage for stage in single.stages}
         assert dual_stages["minimax_music3_ar"].gpu == 0
-        assert dual_stages["minimax_music3_ar"].factory_args["max_concurrency"] == 16
+        assert dual_stages["minimax_music3_ar"].factory.max_concurrency == 16
         assert dual_stages["dit_dav"].gpu == 1
-        assert dual_stages["dit_dav"].factory_args["dtype"] == "float32"
-        assert dual_stages["dit_dav"].factory_args["breakable_cuda_graph"] is False
+        assert dual_stages["dit_dav"].factory.dtype == "float32"
+        assert dual_stages["dit_dav"].factory.breakable_cuda_graph is False
         assert dual.placement.require_memory_fraction_for_colocation
         assert single_stages["minimax_music3_ar"].gpu == 0
-        assert single_stages["minimax_music3_ar"].factory_args["max_concurrency"] == 16
+        assert single_stages["minimax_music3_ar"].factory.max_concurrency == 16
         assert single_stages["dit_dav"].gpu == 0
-        assert single_stages["dit_dav"].factory_args["dtype"] == "float32"
-        assert single_stages["dit_dav"].factory_args["breakable_cuda_graph"] is False
+        assert single_stages["dit_dav"].factory.dtype == "float32"
+        assert single_stages["dit_dav"].factory.breakable_cuda_graph is False
         assert not single.placement.require_memory_fraction_for_colocation
 
 
@@ -219,12 +219,12 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     stages = {stage.name: stage for stage in config.stages}
     assert stages["minimax_music3_ar"].gpu == 0
     assert stages["dit_dav"].gpu == acoustic_gpu
-    assert stages["dit_dav"].factory_args["dtype"] == acoustic_dtype
-    assert stages["dit_dav"].factory_args["compile_acoustic"] is True
+    assert stages["dit_dav"].factory.dtype == acoustic_dtype
+    assert stages["dit_dav"].factory.compile_acoustic is True
     assert config.placement.require_memory_fraction_for_colocation is colocation_check
-    assert MiniMaxMusic3PipelineConfig.mem_fraction_role_to_stage() == {
-        "talker": "minimax_music3_ar"
-    }
+    assert MiniMaxMusic3PipelineConfig.stage_config_cls(
+        "minimax_music3_ar"
+    ).engine_stage
 
 
 def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
@@ -238,6 +238,21 @@ def test_native_attention_preserves_checkpoint_state_dict_keys() -> None:
     assert "diffusion_transformer.transformer.layers.0.self_attn.to_qkv.weight" in keys
     assert "diffusion_transformer.transformer.layers.35.self_attn.to_out.weight" in keys
     assert not any(".backend." in key for key in keys)
+
+
+def test_auto_attention_backend_accepts_the_platform_fallback(monkeypatch) -> None:
+    from sglang.multimodal_gen.runtime.layers.attention import selector
+    from sglang.multimodal_gen.runtime.layers.attention.backends.sdpa import SDPABackend
+
+    monkeypatch.setattr(selector, "_cached_get_attn_backend", lambda *_: SDPABackend)
+    with torch.device("meta"):
+        model = MiniMaxMusic3DIT(
+            compute_dtype=torch.float32,
+            attention_backend="auto",
+        )
+
+    attention = model.diffusion_transformer.transformer.layers[0].self_attn
+    assert attention.backend.backend is AttentionBackendEnum.TORCH_SDPA
 
 
 def test_dav_weight_norm_folding_preserves_output() -> None:
@@ -255,7 +270,7 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
     assert remove_weight_norm(convolution) == 0
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.manual_seed(17)
@@ -275,8 +290,8 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
 
     q, k, v = module.to_qkv(x).chunk(3, dim=-1)
     rope_cos, rope_sin = freqs.cos(), freqs.sin()
-    q = _apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
-    k = _apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    q = apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    k = apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
     v = v.view(2, 19, 2, 64).transpose(1, 2)
     expected = F.scaled_dot_product_attention(q, k, v, is_causal=False)
     expected = module.to_out(expected.transpose(1, 2).contiguous().view(2, 19, 128))
@@ -288,7 +303,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
     torch.testing.assert_close(actual, expected, rtol=0, atol=1e-6)
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     def depth_forward(
@@ -344,6 +359,7 @@ def test_rvq_cuda_graph_replays_per_bucket_and_clones_outputs() -> None:
     assert torch.equal(actual_codes, preserved_codes)
 
 
+@pytest.mark.accelerator
 def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
     def depth_forward(hidden, c0, seeds, positions, forced, replay):
         del c0, seeds, positions, replay
@@ -392,7 +408,7 @@ class _TinyCacheDiffusion(torch.nn.Module):
         self.transformer = _TinyCacheTransformer()
 
 
-@pytest.mark.gpu
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
@@ -546,7 +562,7 @@ def test_backbone_config_rewrite_does_not_write_through_a_symlink(
     config_path = snapshot / "config.json"
     config_path.symlink_to(blob)
 
-    MiniMaxMusic3EngineBuilder._normalize_backbone_config(config_path)
+    MiniMaxMusic3EngineBuilder.normalize_backbone_config(config_path)
 
     assert json.loads(blob.read_text())["model_type"] == "mixtral"
     assert not config_path.is_symlink()

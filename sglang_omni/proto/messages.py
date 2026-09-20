@@ -25,12 +25,13 @@ class DataReadyMessage:
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
+    replica_bindings: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        _require_str(self.request_id, "request_id")
-        _require_str(self.from_stage, "from_stage")
-        _require_str(self.to_stage, "to_stage")
-        _require_bool(self.is_done, "is_done")
+        require_str(self.request_id, "request_id")
+        require_str(self.from_stage, "from_stage")
+        require_str(self.to_stage, "to_stage")
+        require_bool(self.is_done, "is_done")
         if self.is_done and self.error is not None:
             raise ValueError("stream signal cannot be both done and error")
         if self.is_done or self.error is not None:
@@ -52,26 +53,28 @@ class DataReadyMessage:
         if self.data_ref is not None:
             d["data_ref"] = self.data_ref.copy()
         if self.chunk_id is not None:
-            _require_non_negative_int(self.chunk_id, "chunk_id")
+            require_non_negative_int(self.chunk_id, "chunk_id")
             d["chunk_id"] = self.chunk_id
         if self.is_done:
             d["is_done"] = True
         if self.error is not None:
-            _require_str(self.error, "error")
+            require_str(self.error, "error")
             d["error"] = self.error
+        if self.replica_bindings:
+            d["replica_bindings"] = dict(self.replica_bindings)
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DataReadyMessage":
-        request_id = _require_str(d.get("request_id"), "request_id")
-        from_stage = _require_str(d.get("from_stage"), "from_stage")
-        to_stage = _require_str(d.get("to_stage"), "to_stage")
+        request_id = require_str(d.get("request_id"), "request_id")
+        from_stage = require_str(d.get("from_stage"), "from_stage")
+        to_stage = require_str(d.get("to_stage"), "to_stage")
         data_ref = d.get("data_ref")
         raw_is_done = d.get("is_done", False)
-        is_done = _require_bool(raw_is_done, "is_done")
+        is_done = require_bool(raw_is_done, "is_done")
         error = d.get("error")
         if error is not None:
-            error = _require_str(error, "error")
+            error = require_str(error, "error")
         if is_done and error is not None:
             raise ValueError("stream signal cannot be both done and error")
         if is_done or error is not None:
@@ -86,7 +89,7 @@ class DataReadyMessage:
             )
         chunk_id = d.get("chunk_id")
         if chunk_id is not None:
-            _require_non_negative_int(chunk_id, "chunk_id")
+            require_non_negative_int(chunk_id, "chunk_id")
 
         return cls(
             request_id=request_id,
@@ -96,6 +99,7 @@ class DataReadyMessage:
             chunk_id=chunk_id,
             is_done=is_done,
             error=error,
+            replica_bindings=d.get("replica_bindings"),
         )
 
 
@@ -110,17 +114,17 @@ class DataAckMessage(msgspec.Struct):
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        _require_str(self.request_id, "request_id")
-        _require_str(self.from_stage, "from_stage")
-        _require_str(self.to_stage, "to_stage")
-        _require_str(self.object_id, "object_id")
+        require_str(self.request_id, "request_id")
+        require_str(self.from_stage, "from_stage")
+        require_str(self.to_stage, "to_stage")
+        require_str(self.object_id, "object_id")
         if not isinstance(self.success, bool):
             raise TypeError("success must be bool")
         if self.success:
             if self.error is not None:
                 raise ValueError("successful data ack must not carry error")
         else:
-            _require_str(self.error, "error")
+            require_str(self.error, "error")
         d: dict[str, Any] = {
             "type": "data_ack",
             "request_id": self.request_id,
@@ -143,12 +147,12 @@ class DataAckMessage(msgspec.Struct):
             if error is not None:
                 raise ValueError("successful data_ack must not carry error")
         else:
-            error = _require_str(error, "error")
+            error = require_str(error, "error")
         return cls(
-            request_id=_require_str(d.get("request_id"), "request_id"),
-            from_stage=_require_str(d.get("from_stage"), "from_stage"),
-            to_stage=_require_str(d.get("to_stage"), "to_stage"),
-            object_id=_require_str(d.get("object_id"), "object_id"),
+            request_id=require_str(d.get("request_id"), "request_id"),
+            from_stage=require_str(d.get("from_stage"), "from_stage"),
+            to_stage=require_str(d.get("to_stage"), "to_stage"),
+            object_id=require_str(d.get("object_id"), "object_id"),
             success=success,
             error=error,
         )
@@ -244,19 +248,27 @@ class SubmitMessage:
 
     request_id: str
     data: Any
+    replica_bindings: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = self.data
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
-        return {"type": "submit", "request_id": self.request_id, "data": data}
+        d = {"type": "submit", "request_id": self.request_id, "data": data}
+        if self.replica_bindings:
+            d["replica_bindings"] = dict(self.replica_bindings)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SubmitMessage":
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
-        return cls(request_id=d["request_id"], data=data)
+        return cls(
+            request_id=d["request_id"],
+            data=data,
+            replica_bindings=d.get("replica_bindings"),
+        )
 
 
 @dataclass
@@ -390,19 +402,19 @@ def parse_message(
         raise ValueError(f"Unknown message type: {msg_type}")
 
 
-def _require_str(value: Any, name: str) -> str:
+def require_str(value: Any, name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise TypeError(f"{name} must be a non-empty str")
     return value
 
 
-def _require_bool(value: Any, name: str) -> bool:
+def require_bool(value: Any, name: str) -> bool:
     if type(value) is not bool:
         raise TypeError(f"{name} must be bool")
     return value
 
 
-def _require_non_negative_int(value: Any, name: str) -> int:
+def require_non_negative_int(value: Any, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
     return value

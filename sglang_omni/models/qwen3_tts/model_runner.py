@@ -6,12 +6,42 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.model_runner.sglang_execution import attn_forward_context
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.types import RequestOutput
+
+
+def ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) -> None:
+    """Give a graph-replayed batch MRoPE positions mirroring its plain ones.
+
+    The Talker declares ``is_mrope_enabled``, so a captured prefill graph binds
+    the runner's ``mrope_positions`` slot, and that slot is only refreshed at
+    replay when the live batch carries mrope positions. A TTS request has no
+    multimodal inputs to provide them, so a replay would otherwise rotate on
+    whatever positions capture happened to leave behind.
+
+    All three MRoPE rows are equal for the Talker, and ``MRotaryEmbedding``
+    selects row ``i`` of each mrope section, so a mirrored ``[3, T]`` collapses
+    to exactly the 1-D result. It is not the same kernel though: on CUDA a 1-D
+    positions tensor runs ``forward_native`` while a 2-D one runs the fused
+    ``forward_triton``. Mirroring only the batches that replay keeps every
+    other prefill on the kernel it already used: SGLang hands out an
+    ``EagerRunner`` when prefill graphs are off, and a runner that holds graphs
+    still declines batches outside its captured shapes.
+    """
+    if prefill_graph_runner is None or not prefill_graph_runner.can_run_graph(
+        forward_batch
+    ):
+        return
+    if forward_batch.mrope_positions is None:
+        forward_batch.mrope_positions = (
+            forward_batch.positions.unsqueeze(0).expand(3, -1).contiguous()
+        )
 
 
 class Qwen3TTSModelRunner(ModelRunner):
@@ -21,10 +51,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._has_pending_code_step = False
         self._row_ids_cache: torch.Tensor | None = None
-        self._mask_last_sampled: torch.Tensor | None = None
-        self._mask_prep_rids: list | None = None
-        self._mask_rep_active = False
-        self._mask_sup_active = False
 
     def before_prefill(
         self,
@@ -32,20 +58,20 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        del forward_batch, schedule_batch
-        self.model.prepare_decode_buffers(requests)
-
-    def custom_prefill_forward(
-        self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> GenerationBatchResult | None:
         del schedule_batch
-        input_embeds = self._build_prefill_input_embeds(forward_batch, requests)
-        return self._forward_with_input_embeds(
+        ensure_mrope_positions(
             forward_batch,
-            input_embeds,
+            prefill_graph_runner=self.tp_worker.model_runner.prefill_cuda_graph_runner,
+        )
+        self.model.prepare_decode_buffers(requests)
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self.build_prefill_input_embeds(
+                    forward_batch,
+                    requests,
+                ),
+            ),
         )
 
     def before_decode(
@@ -59,7 +85,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         del is_lookahead
         del schedule_batch
         self.model.prepare_decode_buffers(requests)
-        self._write_feedback_buffers(forward_batch, requests)
+        self.write_feedback_buffers(forward_batch, requests)
 
     def post_prefill(
         self,
@@ -68,7 +94,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_codes(result, forward_batch, schedule_batch, requests)
+        self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
@@ -77,7 +103,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._collect_codes(result, forward_batch, schedule_batch, requests)
+        self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
@@ -91,169 +117,53 @@ class Qwen3TTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         return True
 
-    def _sample_next_token_ids(
+    def lookahead_eligible(self, batch: Any) -> bool:
+        # note(ratish): the lookahead's launch and resolve hooks do not run the
+        # codec collect, they would feed token embeddings back.
+        del batch
+        return False
+
+    def sample_next_token_ids(
         self,
         logits_output: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> Any:
-        self._install_semantic_sampling_seeds(forward_batch, requests)
-        next_token_ids = super()._sample_next_token_ids(
+        self.install_semantic_sampling_seeds(forward_batch, requests)
+        return super().sample_next_token_ids(
             logits_output,
             forward_batch,
             schedule_batch,
             requests,
         )
-        if isinstance(next_token_ids, torch.Tensor):
-            self._mask_last_sampled = next_token_ids
-        else:
-            self._mask_last_sampled = None
-        return next_token_ids
 
     # ------------------------------------------------------------------
-    # Mask-based logit shaping (device-resident, replaces the per-step
-    # host index building in the base helpers for this model)
+    # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
 
-    def _mask_fingerprint(self, requests: list) -> list | None:
-        rids = []
-        for sched_req in requests:
-            rid = getattr(sched_req, "request_id", None)
-            epoch = getattr(sched_req.data, "_qwen3_tts_prep_epoch", None)
-            if rid is None or epoch is None:
-                return None
-            rids.append((rid, epoch))
-        return rids
-
-    @staticmethod
-    def _every_row_grew_by_one(requests: list) -> bool:
-        """True when every penalized row's history is exactly one token longer.
-
-        Rows at penalty 1.0 are exempt: their mask bits never reach the logits.
-        """
-        for sched_req in requests:
-            data = sched_req.data
-            req = data.req
-            if float(req.sampling_params.repetition_penalty) == 1.0:
-                continue
-            seen_len = getattr(data, "_rep_seen_len", None)
-            output_ids = req.output_ids
-            if seen_len is None or not output_ids:
-                return False
-            if len(output_ids) != seen_len + 1:
-                return False
-        return True
-
-    def _ensure_masks(self, batch_size: int, vocab: int, device: Any) -> None:
-        masks = getattr(self, "_shape_masks", None)
-        if (
-            masks is not None
-            and masks[0].shape[0] >= batch_size
-            and masks[0].shape[1] == vocab
-            and masks[0].device == device
-        ):
-            return
-        rows = max(batch_size, 64)
-        self._shape_masks = (
-            torch.zeros(rows, vocab, dtype=torch.bool, device=device),
-            torch.zeros(rows, vocab, dtype=torch.bool, device=device),
-            torch.ones(rows, 1, dtype=torch.float32, device=device),
-        )
-        self._mask_prep_rids = None
-
-    def _rebuild_masks(self, requests: list, vocab: int, device: Any) -> None:
-        rep_mask, sup_mask, pen_col = self._shape_masks
-        batch_size = len(requests)
-        rep_mask[:batch_size] = False
-        sup_mask[:batch_size] = False
-        rep_rows: list[int] = []
-        rep_toks: list[int] = []
-        penalties = [1.0] * batch_size
-        sup_rows: list[int] = []
-        sup_toks: list[int] = []
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            req = data.req
-            penalty = float(req.sampling_params.repetition_penalty)
-            penalties[row_idx] = penalty
-            output_ids = req.output_ids
-            if penalty != 1.0 and output_ids:
-                seen = ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
-                rep_rows.extend([row_idx] * len(seen))
-                rep_toks.extend(seen)
-            suppress_tokens = data.suppress_tokens
-            if not suppress_tokens:
-                suppress_tokens = getattr(req, "_codec_suppress_tokens", None)
-            if suppress_tokens:
-                for token_id in suppress_tokens:
-                    tok = int(token_id)
-                    if 0 <= tok < vocab:
-                        sup_rows.append(row_idx)
-                        sup_toks.append(tok)
-        if rep_rows:
-            pairs = torch.tensor(rep_rows + rep_toks, dtype=torch.long, device=device)
-            rep_mask[pairs[: len(rep_rows)], pairs[len(rep_rows) :]] = True
-        if sup_rows:
-            pairs = torch.tensor(sup_rows + sup_toks, dtype=torch.long, device=device)
-            sup_mask[pairs[: len(sup_rows)], pairs[len(sup_rows) :]] = True
-        pen_col[:batch_size, 0] = torch.tensor(
-            penalties, dtype=torch.float32, device=device
-        )
-        self._mask_rep_active = bool(rep_rows) or any(p != 1.0 for p in penalties)
-        self._mask_sup_active = bool(sup_rows)
-
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
+    def apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits
-        if logits is None or logits.ndim != 2:
+        if logits is None or logits.ndim != 2 or not requests:
             return
-        batch_size = len(requests)
-        vocab = logits.shape[1]
-        self._ensure_masks(batch_size, vocab, logits.device)
-        rep_mask, sup_mask, pen_col = self._shape_masks
-        fingerprint = self._mask_fingerprint(requests)
-        last_sampled = getattr(self, "_mask_last_sampled", None)
-        if (
-            fingerprint is not None
-            and fingerprint == getattr(self, "_mask_prep_rids", None)
-            and last_sampled is not None
-            and last_sampled.shape[0] >= batch_size
-            and self._every_row_grew_by_one(requests)
-        ):
-            # Note: (Jiaxin Deng) unchanged batch, every history exactly one token
-            # longer: the only new information is each row's sampled token, so one
-            # scatter replaces the full host-side index rebuild. A history that did
-            # not grow by one (retract, restart) can need bits cleared, which the
-            # scatter cannot do, so those steps rebuild.
-            if self._mask_rep_active:
-                rows = torch.arange(batch_size, device=logits.device)
-                rep_mask[rows, last_sampled[:batch_size].clamp(0, vocab - 1)] = True
-                for sched_req in requests:
-                    data = sched_req.data
-                    output_ids = sched_req.data.req.output_ids
-                    if output_ids:
-                        ModelRunner._rep_penalty_unique_tokens(data, output_ids, vocab)
+
+        # Qwen3-TTS reserves the final 1024 configured token IDs for codec
+        # control and suppresses that range except for codec EOS.
+        configured_vocab = int(self.model.config.vocab_size)
+        suppress_start = max(0, configured_vocab - 1024)
+        suppress_stop = min(configured_vocab, logits.shape[1])
+        if suppress_start >= suppress_stop:
+            return
+
+        active_logits = logits[: len(requests)]
+        codec_eos = int(self.model.config.codec_eos_token_id)
+        if suppress_start <= codec_eos < suppress_stop:
+            active_logits[:, suppress_start:codec_eos] = float("-inf")
+            active_logits[:, codec_eos + 1 : suppress_stop] = float("-inf")
         else:
-            self._rebuild_masks(requests, vocab, logits.device)
-        self._mask_prep_rids = fingerprint
-        if self._mask_rep_active:
-            pen = pen_col[:batch_size]
-            scores = logits.to(torch.float32)
-            penalized = torch.where(scores > 0, scores / pen, scores * pen)
-            logits.copy_(
-                torch.where(rep_mask[:batch_size], penalized, scores).to(logits.dtype)
-            )
+            active_logits[:, suppress_start:suppress_stop] = float("-inf")
 
-    def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
-        logits = logits_output.next_token_logits
-        if logits is None or logits.ndim != 2:
-            return
-        masks = getattr(self, "_shape_masks", None)
-        if masks is None or not getattr(self, "_mask_sup_active", False):
-            return
-        logits.masked_fill_(masks[1][: len(requests)], float("-inf"))
-
-    def _install_semantic_sampling_seeds(
+    def install_semantic_sampling_seeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -263,7 +173,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             self.model._semantic_sampling_seed_tensor[:batch_size]
         )
 
-    def _collect_codes(
+    def collect_codes(
         self,
         result: Any,
         forward_batch: Any,
@@ -276,20 +186,19 @@ class Qwen3TTSModelRunner(ModelRunner):
         layer0_codes = result.next_token_ids
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        # note(ratish): the layer 0 id is the step's only host read, staged ahead
+        # of the predictor so the finalize wait covers the sample, not the predictor.
+        self.stage_token_ids(result, result.next_token_ids)
 
         hidden = result.logits_output.hidden_states
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
             hidden = hidden.unsqueeze(1)
-        semantic_positions = self._sample_positions(forward_batch, layer0_codes.device)
+        semantic_positions = self.sample_positions(forward_batch, layer0_codes.device)
         self.model.code_predictor_forward(
             layer0_codes,
             hidden,
             semantic_positions=semantic_positions,
         )
-        # Note: (Jiaxin Deng) stage the ids into pinned host memory now so the
-        # output processor's .tolist() waits on an event instead of issuing a
-        # blocking pageable copy inside the decode loop.
-        self._stage_token_ids(result, result.next_token_ids)
         self._has_pending_code_step = True
 
     def post_process_outputs(
@@ -308,6 +217,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         batch_size = len(scheduler_output.requests)
         codes_snap = self.model._output_codes[:batch_size].detach().clone()
         embeds_snap = self.model._output_embeds[:batch_size].detach().clone()
+        codes_ready = None
+        if codes_snap.is_cuda:
+            codes_ready = torch.cuda.Event()
+            codes_ready.record()
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == eos_id:
@@ -315,9 +228,10 @@ class Qwen3TTSModelRunner(ModelRunner):
             code_chunk = codes_snap[row_idx]
             sched_req.data.output_codes.append(code_chunk)
             sched_req.data.latest_stream_code_chunk = code_chunk
+            sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
 
-    def _sample_positions(
+    def sample_positions(
         self, forward_batch: Any, device: torch.device
     ) -> torch.Tensor:
         forward_mode = getattr(forward_batch, "forward_mode", None)
@@ -341,7 +255,7 @@ class Qwen3TTSModelRunner(ModelRunner):
 
         raise RuntimeError("Qwen3-TTS subtalker sampling requires semantic positions")
 
-    def _write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
+    def write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -355,28 +269,55 @@ class Qwen3TTSModelRunner(ModelRunner):
             raise RuntimeError(
                 "Qwen3-TTS decode batch exceeds staged feedback embedding rows"
             )
-        row_ids = self._decode_row_ids(batch_size, input_ids)
-        rows = []
-
+        row_ids = self.decode_row_ids(batch_size, input_ids)
+        weight = decode_feedback_embedding.weight
+        device = weight.device
+        dtype = weight.dtype
+        feedback_rows: list[torch.Tensor] = []
+        text_rows: list[torch.Tensor] = []
+        batched_row_ids: list[int] = []
+        rows: list[torch.Tensor | None] = [None] * batch_size
         for row_idx, sched_req in enumerate(requests):
-            combined = QwenTalkerModelRunner._take_next_decode_input_embed(
-                sched_req=sched_req,
-                device=decode_feedback_embedding.weight.device,
-                dtype=decode_feedback_embedding.weight.dtype,
+            data = sched_req.data
+            inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
+            if inputs is None:
+                token_id = input_ids[row_idx : row_idx + 1].to(device=device)
+                rows[row_idx] = self.model.get_input_embeddings()(token_id).reshape(-1)
+                continue
+            feedback, text = inputs
+            feedback_rows.append(
+                QwenTalkerModelRunner.decode_row(feedback, device=device, dtype=dtype)
             )
-            if combined is None:
-                token_id = input_ids[row_idx : row_idx + 1].to(
-                    device=decode_feedback_embedding.weight.device
-                )
-                combined = self.model.get_input_embeddings()(token_id).reshape(-1)
-            QwenTalkerModelRunner._append_decode_input_history(sched_req.data, combined)
-            rows.append(combined)
+            text_rows.append(
+                QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
+            )
+            batched_row_ids.append(row_idx)
+            QwenTalkerModelRunner.pop_next_decode_inputs(data)
+
         with torch.no_grad():
-            torch.stack(rows, dim=0, out=decode_feedback_embedding.weight[:batch_size])
+            target = weight[:batch_size]
+            if len(batched_row_ids) == batch_size:
+                torch.stack(feedback_rows, dim=0, out=target)
+                target.add_(torch.stack(text_rows, dim=0))
+            else:
+                if feedback_rows:
+                    combined = torch.stack(feedback_rows, dim=0) + torch.stack(
+                        text_rows, dim=0
+                    )
+                    for slot, row_idx in enumerate(batched_row_ids):
+                        rows[row_idx] = combined[slot]
+                torch.stack(rows, dim=0, out=target)
+            # note(ratish): the history outlives the buffer, a retracted request
+            # replays it in its re-prefill.
+            history = target.detach().clone()
+        for row_idx, sched_req in enumerate(requests):
+            QwenTalkerModelRunner.append_decode_input_history(
+                sched_req.data, history[row_idx]
+            )
         # During graph decode, input_ids carries staged embedding row ids.
         input_ids[:batch_size].copy_(row_ids)
 
-    def _decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
+    def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
         cached = getattr(self, "_row_ids_cache", None)
         if (
             cached is None
@@ -392,7 +333,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             self._row_ids_cache = cached
         return cached[:batch_size]
 
-    def _build_prefill_input_embeds(
+    def build_prefill_input_embeds(
         self,
         forward_batch: Any,
         requests: list,
@@ -407,7 +348,7 @@ class Qwen3TTSModelRunner(ModelRunner):
                 data.prefill_input_embeds = data.prompt_input_embeds
             if data.prefill_input_embeds is None:
                 raise RuntimeError("Qwen3-TTS prefill requires prompt_input_embeds")
-            piece = QwenTalkerModelRunner._projected_prefill_slice(
+            piece = QwenTalkerModelRunner.projected_prefill_slice(
                 sched_req=sched_req,
                 prefix_len=prefix_len,
                 extend_len=req_len,
@@ -423,33 +364,4 @@ class Qwen3TTSModelRunner(ModelRunner):
         return torch.cat(pieces, dim=0).to(
             device=forward_batch.input_ids.device,
             dtype=next(self.model.parameters()).dtype,
-        )
-
-    def _forward_with_input_embeds(
-        self,
-        forward_batch: Any,
-        input_embeds: torch.Tensor,
-    ) -> GenerationBatchResult:
-        model_runner = self.tp_worker.model_runner
-        model_dtype = next(self.model.parameters()).dtype
-        model_runner.attn_backend.init_forward_metadata(forward_batch)
-
-        positions = forward_batch.positions
-        if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
-        input_embeds = input_embeds.to(
-            device=forward_batch.input_ids.device,
-            dtype=model_dtype,
-        )
-        with attn_forward_context(model_runner.attn_backend):
-            logits_output = self.model(
-                input_ids=forward_batch.input_ids,
-                positions=positions,
-                forward_batch=forward_batch,
-                input_embeds=input_embeds,
-                input_embeds_are_projected=True,
-            )
-        return GenerationBatchResult(
-            logits_output=logits_output,
-            can_run_cuda_graph=False,
         )

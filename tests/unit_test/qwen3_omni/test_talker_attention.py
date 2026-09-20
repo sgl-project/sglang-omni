@@ -25,9 +25,13 @@ _DEVICE_DTYPE_PARAMS = [
         "cuda",
         torch.bfloat16,
         id="cuda-bf16",
-        marks=pytest.mark.skipif(
-            not torch.cuda.is_available(), reason="CUDA bf16 variant requires a GPU"
-        ),
+        marks=[
+            pytest.mark.accelerator,
+            pytest.mark.skipif(
+                not torch.cuda.is_available(),
+                reason="CUDA bf16 variant requires a GPU",
+            ),
+        ],
     ),
 ]
 
@@ -132,7 +136,7 @@ def test_qwen_predictor_direct_attention_gqa_matches_materialized_kv(
     positions = torch.arange(seq_len, device=device).repeat(batch_size)
 
     with torch.no_grad():
-        actual = Qwen3OmniMoeTalkerCodePredictor._direct_self_attention(
+        actual = Qwen3OmniMoeTalkerCodePredictor.direct_self_attention(
             attn=attn,
             hidden_states=hidden_states,
             positions=positions,
@@ -170,7 +174,7 @@ def test_qwen_predictor_cached_attention_gqa_matches_materialized_kv(
                 batch_size, 1, hidden_size, device=device, dtype=dtype
             )
             positions = torch.full((batch_size,), cache_len, device=device)
-            actual = talker._predictor_cached_self_attention(
+            actual = talker.predictor_cached_self_attention(
                 layer_idx=0,
                 attn=attn,
                 hidden_states=hidden_states,

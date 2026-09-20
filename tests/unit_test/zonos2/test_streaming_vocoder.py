@@ -68,7 +68,7 @@ class _FakeDAC:
 @pytest.fixture(autouse=True)
 def _mock_dac(monkeypatch):
     fake = _FakeDAC()
-    monkeypatch.setattr(streaming_vocoder, "_get_vocoder", lambda device: fake)
+    monkeypatch.setattr(streaming_vocoder, "get_vocoder", lambda device: fake)
     monkeypatch.setattr(
         streaming_vocoder,
         "decode_to_pcm",
@@ -141,7 +141,7 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
     )
 
     scheduler = Zonos2StreamingVocoderScheduler(device="cpu")
-    scheduler._stream_payloads["req"] = _payload(
+    scheduler.stream_payloads["req"] = _payload(
         producer_message.data,
         eos_frame=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS - WITHHOLD,
     )
@@ -293,7 +293,7 @@ def _drive(sch, codes, eos_frame, *, emit, rid="req", stream_first_n=None):
     """Feed `codes` to the vocoder in coalesced batches of `emit` rows, then
     finish. `stream_first_n` streams only the first N rows (simulating a dropped
     tail) while the terminal payload still carries the full `audio_codes`."""
-    sch._stream_payloads[rid] = _payload(codes, eos_frame, rid)
+    sch.stream_payloads[rid] = _payload(codes, eos_frame, rid)
     meta = _meta()
     fed = codes if stream_first_n is None else codes[:stream_first_n]
     msgs = []
@@ -338,7 +338,7 @@ def test_adaptive_emit_alignment():
     sch = _scheduler(steady=32, initial=5, overlap=2)
     # simulate adaptive at the message level: first batch 8, then steady 32
     rid = "req"
-    sch._stream_payloads[rid] = _payload(codes, eos, rid)
+    sch.stream_payloads[rid] = _payload(codes, eos, rid)
     meta = _meta()
     sizes = [8] + [32] * 100
     msgs, i, cid = [], 0, 0
@@ -418,3 +418,32 @@ def test_eos_near_chunk_boundary(eos):
     sch = _scheduler(steady=32, initial=5, overlap=2)
     pcm = _drive(sch, codes, eos, emit=32)
     assert len(pcm) == _aligned_len(codes, eos)
+
+
+@pytest.mark.parametrize("payload_first", [False, True])
+def test_final_payload_recovers_tail_after_early_eos(payload_first):
+    codes = _codes(32)
+    eos = 24
+    scheduler = _scheduler(steady=32, initial=5, overlap=0)
+    payload = _payload(codes, eos)
+    if payload_first:
+        scheduler.handle_streaming_new_request("req", payload)
+    scheduler.handle_stream_chunk(
+        "req",
+        StreamItem(
+            chunk_id=0, data=codes[:16], from_stage="tts_engine", metadata=_meta()
+        ),
+    )
+    scheduler.handle_stream_done("req")
+    if not payload_first:
+        # Note (wenyao): EOS cannot recover missing code rows without the payload.
+        scheduler.handle_stream_done("req")
+        scheduler.handle_streaming_new_request("req", payload)
+    messages = []
+    while not scheduler.outbox.empty():
+        messages.append(scheduler.outbox.get_nowait())
+    np.testing.assert_array_equal(
+        _pcm_from_messages(messages, "req"), _fake_decode(codes, eos).numpy()
+    )
+    assert sum(message.type == "result" for message in messages) == 1
+    assert scheduler.stream_states == {}

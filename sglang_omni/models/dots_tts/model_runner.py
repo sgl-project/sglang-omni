@@ -15,7 +15,7 @@ from sglang_omni.models.dots_tts.request_builders import DotsFlowResume
 
 
 @dataclass
-class _DotsFlowLaunchBuf:
+class DotsFlowLaunchBuf:
     """Acoustic-tail launch payload; finish is applied in _resolve_flow_finish."""
 
     data_rows: list[Any]
@@ -36,7 +36,7 @@ class DotsTTSModelRunner(ModelRunner):
         del schedule_batch
         if not requests:
             return
-        self._release_retracted_flow_states()
+        self.release_retracted_flow_states()
         rows = []
         materialized = []
         try:
@@ -50,7 +50,7 @@ class DotsTTSModelRunner(ModelRunner):
                 if data.flow_state is not None and not isinstance(
                     data.flow_state, DotsFlowResume
                 ):
-                    self._suspend_request_data(data)
+                    self.suspend_request_data(data)
                 self._request_data.pop(request.request_id, None)
                 resume = data.flow_state
                 flow_state, prompt_embeddings = self.model.flow.new_request(
@@ -102,7 +102,7 @@ class DotsTTSModelRunner(ModelRunner):
         except BaseException:
             for request_id, data in materialized:
                 self._request_data.pop(request_id, None)
-                self._clear_request_data(data)
+                self.clear_request_data(data)
             raise
 
     def before_decode(
@@ -153,8 +153,8 @@ class DotsTTSModelRunner(ModelRunner):
 
         # note (luojiaxuan): decode runs one token per request, so FULL and LAST return the same
         # rows. The decode CUDA graph is captured with FULL (via
-        # enable_return_hidden_states) and its can_run gate requires an exact
-        # hidden-mode match, so request FULL whenever the graph path is on.
+        # enable_return_hidden_states) and load_batch raises when a batch requests
+        # more than the captured mode, so request FULL whenever the graph path is on.
         if self.model.graph_feedback_buffer is not None:
             return CaptureHiddenMode.FULL
         return CaptureHiddenMode.LAST
@@ -167,7 +167,7 @@ class DotsTTSModelRunner(ModelRunner):
             return
         if not requests:
             return
-        hidden = self._hidden_states(result)
+        hidden = self.hidden_states(result)
         if hidden.ndim == 3:
             hidden = hidden.reshape(-1, hidden.shape[-1])
         elif hidden.ndim != 2:
@@ -195,13 +195,13 @@ class DotsTTSModelRunner(ModelRunner):
             offset += length
         if offset != hidden.size(0):
             raise RuntimeError("dots.tts prefill hidden rows do not match requests")
-        launch_buf = self._launch_flow_batch(
+        launch_buf = self.launch_flow_batch(
             result,
             requests,
             torch.stack(last_hidden),
             append_hidden=False,
         )
-        self._resolve_flow_finish(launch_buf)
+        self.resolve_flow_finish(launch_buf)
 
     def post_decode(
         self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
@@ -213,38 +213,38 @@ class DotsTTSModelRunner(ModelRunner):
 
     def post_decode_launch(
         self, result: Any, forward_batch: Any, requests: list
-    ) -> _DotsFlowLaunchBuf | None:
+    ) -> DotsFlowLaunchBuf | None:
         del forward_batch
         if not requests:
             return None
-        hidden = self._hidden_states(result)
+        hidden = self.hidden_states(result)
         if hidden.ndim == 3:
             hidden = hidden[:, -1]
         elif hidden.ndim != 2:
             raise RuntimeError(
                 f"dots.tts expected rank-2/3 decode hidden, got {hidden.ndim}"
             )
-        return self._launch_flow_batch(result, requests, hidden, append_hidden=True)
+        return self.launch_flow_batch(result, requests, hidden, append_hidden=True)
 
     def post_decode_resolve(
         self,
-        launch_buf: _DotsFlowLaunchBuf | None,
+        launch_buf: DotsFlowLaunchBuf | None,
         result: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> None:
         del result, forward_batch, schedule_batch, requests
-        self._resolve_flow_finish(launch_buf)
+        self.resolve_flow_finish(launch_buf)
 
-    def _launch_flow_batch(
+    def launch_flow_batch(
         self,
         result: Any,
         requests: list,
         hidden: torch.Tensor,
         *,
         append_hidden: bool,
-    ) -> _DotsFlowLaunchBuf:
+    ) -> DotsFlowLaunchBuf:
         data_rows = [request.data for request in requests]
         steps = self.model.flow.decode_batch(
             [data.flow_state for data in data_rows],
@@ -269,13 +269,13 @@ class DotsTTSModelRunner(ModelRunner):
             dtype=torch.long,
             device=hidden.device,
         )
-        return _DotsFlowLaunchBuf(
+        return DotsFlowLaunchBuf(
             data_rows=data_rows,
             steps=steps,
             batched=bool(self.model.flow.is_batched),
         )
 
-    def _resolve_flow_finish(self, launch_buf: _DotsFlowLaunchBuf | None) -> None:
+    def resolve_flow_finish(self, launch_buf: DotsFlowLaunchBuf | None) -> None:
         if launch_buf is None:
             return
         if launch_buf.batched:
@@ -292,7 +292,7 @@ class DotsTTSModelRunner(ModelRunner):
                 data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
 
     @staticmethod
-    def _hidden_states(result: Any) -> torch.Tensor:
+    def hidden_states(result: Any) -> torch.Tensor:
         logits_output = getattr(result, "logits_output", None)
         hidden = getattr(logits_output, "hidden_states", None)
         if hidden is None:
@@ -303,23 +303,23 @@ class DotsTTSModelRunner(ModelRunner):
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         self._request_data.pop(request_id, None)
-        self._clear_request_data(req_data)
+        self.clear_request_data(req_data)
 
     def reset_request(self, request_id: str) -> None:
         req_data = self._request_data.pop(request_id, None)
         if req_data is not None:
-            self._clear_request_data(req_data)
+            self.clear_request_data(req_data)
 
-    def _release_retracted_flow_states(self) -> None:
+    def release_retracted_flow_states(self) -> None:
         for req_data in self._request_data.values():
             if (
                 req_data.flow_state is not None
                 and not isinstance(req_data.flow_state, DotsFlowResume)
                 and req_data.req.is_retracted
             ):
-                self._suspend_request_data(req_data)
+                self.suspend_request_data(req_data)
 
-    def _suspend_request_data(self, req_data: Any) -> None:
+    def suspend_request_data(self, req_data: Any) -> None:
         flow_state = req_data.flow_state
         assert flow_state is not None and not isinstance(flow_state, DotsFlowResume)
         req_data.flow_state = DotsFlowResume(
@@ -327,7 +327,7 @@ class DotsTTSModelRunner(ModelRunner):
         )
         req_data.pending_feedback_queue.clear()
 
-    def _clear_request_data(self, req_data: Any) -> None:
+    def clear_request_data(self, req_data: Any) -> None:
         flow_state = req_data.flow_state
         if flow_state is not None and not isinstance(flow_state, DotsFlowResume):
             self.model.flow.release_request(flow_state)

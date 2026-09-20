@@ -15,6 +15,7 @@ import torch
 
 from sglang_omni.models.voxtral_tts.io import VoxtralTTSState
 from sglang_omni.models.voxtral_tts.pipeline.state_io import load_state, store_state
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -31,7 +32,7 @@ _VOXTRAL_MISTRAL_COMMON_HINT = (
 )
 
 
-def _import_mistral_common_for_voxtral():
+def import_mistral_common_for_voxtral():
     """Lazy import so the rest of sglang-omni does not depend on mistral-common."""
     try:
         from mistral_common.protocol.speech.request import SpeechRequest
@@ -41,7 +42,7 @@ def _import_mistral_common_for_voxtral():
     return SpeechRequest, MistralTokenizer
 
 
-def _validate_voxtral_speech_params(
+def validate_voxtral_speech_params(
     *,
     inputs: Any,
     params: dict[str, Any],
@@ -80,7 +81,7 @@ def _validate_voxtral_speech_params(
         )
 
 
-def _ensure_non_empty_audio_codes(audio_codes: Any) -> None:
+def ensure_non_empty_audio_codes(audio_codes: Any) -> None:
     if audio_codes is None:
         raise ValueError("Voxtral TTS generated no audio codes")
     if isinstance(audio_codes, torch.Tensor) and audio_codes.numel() == 0:
@@ -94,7 +95,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     """Factory for the preprocessing stage."""
     checkpoint_dir = _resolve_checkpoint(model_path)
 
-    SpeechRequest, MistralTokenizer = _import_mistral_common_for_voxtral()
+    SpeechRequest, MistralTokenizer = import_mistral_common_for_voxtral()
 
     tekken_path = os.path.join(checkpoint_dir, "tekken.json")
     tokenizer = MistralTokenizer.from_file(tekken_path)
@@ -106,7 +107,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
         tts_params = metadata.get("tts_params", {})
         if not isinstance(tts_params, dict):
             tts_params = {}
-        _validate_voxtral_speech_params(
+        validate_voxtral_speech_params(
             inputs=inputs,
             params=params,
             tts_params=tts_params,
@@ -147,7 +148,7 @@ def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
 # ---- Generation ----
 
 
-def _enable_inductor_gemm_autotune() -> None:
+def enable_inductor_gemm_autotune() -> None:
     # Note:(Chenchen Hong) on torch 2.11/cu13 inductor routes the compiled
     # matmuls to slow split-K cuBLAS (~8% RTF); per-shape GEMM autotuning makes
     # it benchmark triton vs aten and keep the fastest. One-time startup cost.
@@ -168,7 +169,7 @@ def _enable_inductor_gemm_autotune() -> None:
 def create_generation_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
@@ -187,7 +188,7 @@ def create_generation_executor(
     )
 
 
-def _write_voxtral_sglang_config(checkpoint_dir: str) -> str:
+def write_voxtral_sglang_config(checkpoint_dir: str) -> str:
     from sglang_omni.models.voxtral_tts.model_config import VoxtralModelConfig
 
     cfg = VoxtralModelConfig.from_model_path(checkpoint_dir).text_config
@@ -215,7 +216,7 @@ def _write_voxtral_sglang_config(checkpoint_dir: str) -> str:
     return path
 
 
-def _load_voxtral_voice_embeddings(
+def load_voxtral_voice_embeddings(
     checkpoint_dir: str,
     device: str,
 ) -> dict[str, torch.Tensor]:
@@ -223,23 +224,24 @@ def _load_voxtral_voice_embeddings(
     voice_dir = os.path.join(checkpoint_dir, "voice_embedding")
     if not os.path.isdir(voice_dir):
         return voice_embeddings
+    map_location = "cpu" if current_platform.is_musa() else device
     for fname in sorted(os.listdir(voice_dir)):
         if not fname.endswith(".pt"):
             continue
         name = fname.removesuffix(".pt")
         emb = torch.load(
             os.path.join(voice_dir, fname),
-            map_location=device,
+            map_location=map_location,
             weights_only=True,
         )
-        voice_embeddings[name] = emb.to(dtype=torch.bfloat16)
+        voice_embeddings[name] = emb.to(device=device, dtype=torch.bfloat16)
     return voice_embeddings
 
 
 # ---- Vocoder ----
 
 
-def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
+def load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
     """Load the VoxtralTTSAudioTokenizer (decoder) from checkpoint."""
     import glob
 
@@ -291,7 +293,7 @@ def _load_audio_tokenizer(checkpoint_dir: str, audio_config: dict, device: str):
     return tokenizer
 
 
-class _VoxtralTTSVocoder(BatchVocoderBase):
+class VoxtralTTSVocoder(BatchVocoderBase):
     """Decode audio codes with repeated initial frames as warmup context."""
 
     _N_WARMUP = 2
@@ -306,7 +308,7 @@ class _VoxtralTTSVocoder(BatchVocoderBase):
         state = load_state(payload)
         audio_codes = state.audio_codes
 
-        _ensure_non_empty_audio_codes(audio_codes)
+        ensure_non_empty_audio_codes(audio_codes)
 
         if not isinstance(audio_codes, torch.Tensor):
             audio_codes = torch.tensor(audio_codes)
@@ -394,16 +396,17 @@ class _VoxtralTTSVocoder(BatchVocoderBase):
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
     gpu_id: int | None = None,
 ) -> SimpleScheduler:
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = _resolve_checkpoint(model_path)
-    if gpu_id is not None:
-        device = f"cuda:{gpu_id}"
 
     logger.info("Loading Voxtral audio tokenizer for vocoding...")
-    audio_tokenizer = _load_audio_tokenizer(checkpoint_dir, {}, device)
+    audio_tokenizer = load_audio_tokenizer(checkpoint_dir, {}, device)
 
-    return _VoxtralTTSVocoder(audio_tokenizer).build_scheduler(
+    return VoxtralTTSVocoder(audio_tokenizer).build_scheduler(
         max_batch_size=1, max_batch_wait_ms=0
     )

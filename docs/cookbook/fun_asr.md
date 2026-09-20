@@ -118,11 +118,12 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 
 ## Benchmark Results
 
-Measured on a single H100 80 GB (bf16, DP=1, default server settings)
-against the full SeedTTS sets. Each row is the mean of 3 runs with one
-discarded warmup pass per level. RTF is processing time divided by audio
-duration (lower is better). RTFx is successful input-audio seconds divided by
-wall-clock seconds (higher is better).
+Measured on a single H100 80 GB (bf16, DP=1) against the full SeedTTS sets,
+with the pre-coalescing stage defaults (`max_running_requests=32`,
+`request_build_max_pending=16`, prefill coalescing off). Each row is the mean
+of 3 runs with one discarded warmup pass per level. RTF is processing time
+divided by audio duration (lower is better). RTFx is successful input-audio
+seconds divided by wall-clock seconds (higher is better).
 
 SeedTTS EN (1088 clips, mean clip length 4.69 s). Corpus WER was 0.0171 at
 every level through concurrency 32:
@@ -151,21 +152,24 @@ concurrency 32:
 | 32 | 167.42 | 0.190 | 0.264 | 0.0410 | 784 |
 | 64 | 165.75 | 0.381 | 0.475 | 0.0825 | 776 |
 
-At concurrency 64 a single worker rejects roughly 2 to 5 percent of
-requests with HTTP 500 by design, because the request-build backlog admits
-at most 16 pending builds per worker. Qwen3-ASR shows the same shedding
-behavior at this level. For higher client concurrency, serve behind the
-DP=2 managed router, matching the ASR CI topology.
+A single worker sheds requests with HTTP 500 by design once the
+request-build backlog is full; the current default admits at most 32 pending
+builds per worker. Under the pre-coalescing defaults above (16 pending
+builds) that cost roughly 2 to 5 percent of requests at concurrency 64.
+Qwen3-ASR shows the same shedding behavior at this level. For higher client
+concurrency, serve behind the DP=2 managed router, matching the ASR CI
+topology.
 
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
 - Each uploaded audio segment must be 30 seconds or shorter, matching the
   official Fun-ASR VAD segment limit. Split longer recordings before upload.
-- `itn` and `hotwords` are supported by the model request builder but not
-  exposed as form fields on the public transcription endpoint.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but
-  Fun-ASR-Nano currently ignores it (use `hotwords` inside the builder for
-  context biasing instead).
+- `prompt` carries context biasing: a comma-separated list of terms likely to
+  appear in the audio (names, jargon). Each term becomes a hotword in the
+  model's prompt. Biasing raises the model's preference for the supplied
+  terms; it does not force them, and an irrelevant list can hurt accuracy.
+- `itn` and explicit `hotwords` remain available to in-process callers of the
+  request builder; explicit `hotwords` take precedence over `prompt`.
 - Audio is resampled to 16 kHz before transcription.
 - bf16 is strongly recommended; fp16 can overflow to NaN in the adaptor path.

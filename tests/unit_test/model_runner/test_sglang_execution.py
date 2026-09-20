@@ -21,15 +21,8 @@ class _FutureMap:
 
 
 class _SpecAlgorithm:
-    def __init__(self, future_map: _FutureMap, *, is_none: bool = True) -> None:
-        self.future_map = future_map
+    def __init__(self, *, is_none: bool = True) -> None:
         self._is_none = is_none
-
-    def create_future_map(self, device, req_to_token_pool, needs_cpu_seq_lens):
-        assert device == torch.device("cpu")
-        assert req_to_token_pool == "pool"
-        assert needs_cpu_seq_lens is True
-        return self.future_map
 
     def is_none(self) -> bool:
         return self._is_none
@@ -41,8 +34,8 @@ def _make_bridge() -> tuple[SGLangExecutionBridge, _FutureMap]:
     bridge = SGLangExecutionBridge(
         device=torch.device("cpu"),
         worker=worker,
-        req_to_token_pool="pool",
-        spec_algorithm=_SpecAlgorithm(future_map),
+        spec_algorithm=_SpecAlgorithm(),
+        future_map=future_map,
     )
     return bridge, future_map
 
@@ -140,6 +133,6 @@ def test_execution_bridge_rejects_speculative_decoding() -> None:
         SGLangExecutionBridge(
             device=torch.device("cpu"),
             worker=worker,
-            req_to_token_pool="pool",
-            spec_algorithm=_SpecAlgorithm(future_map, is_none=False),
+            spec_algorithm=_SpecAlgorithm(is_none=False),
+            future_map=future_map,
         )

@@ -27,20 +27,18 @@ from benchmarks.eval.benchmark_omni_seedtts import (
 from benchmarks.metrics._format import format_benchmark_dataset_label
 from benchmarks.metrics.performance import print_speed_summary
 from benchmarks.metrics.wer import print_wer_summary
+from tests.test_model.omni_ci_config import OmniCiModelPreset
 from tests.test_model.omni_router_utils import (
     ManagedRouterHandle,
-    assert_workers_served_requests,
+    assert_router_healthy,
+    assert_workers_served_requests_since,
     print_log_tail,
     print_router_diagnostics,
-    print_worker_snapshot,
     router_get_json,
 )
 from tests.utils import (
     QWEN3_ASR_WER_CONCURRENCY,
     MetricCheckCollector,
-    apply_mos_slack,
-    apply_slack,
-    apply_wer_slack,
     assert_per_request_fields,
     assert_speed_thresholds,
     assert_summary_metrics,
@@ -62,24 +60,6 @@ WER_TIMEOUT = 600
 SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
-VC_WER_BELOW_50_CORPUS_MAX = 0.0231
-VC_WER_BELOW_50_CORPUS_THRESHOLD = apply_wer_slack(VC_WER_BELOW_50_CORPUS_MAX)
-VC_N_ABOVE_50_MAX = 0
-# 60.0 mirrors the S2-Pro floor and is a placeholder until upstream issue
-# #483 is fixed; the hard assertion is currently disabled in
-# test_voice_cloning_similarity (see docstring there). PR #469 also collected
-# five Qwen3-Omni SeedTTS-50 EN runs for the record — all in the 2.90–3.48
-# range (worst = 2.90, stdev = 0.21), which confirms #483 deterministically
-# rather than producing a usable lower bound: no meaningful CI floor can be
-# derived from broken-state data. When #483 lands, re-run the five-shot
-# calibration with the fix and reset this constant from the lowest of the
-# five with the standard slack margin. See the "Speaker similarity
-# calibration" section of the PR description for the per-run numbers.
-VC_SIMILARITY_MEAN_MIN = 60.0
-# Calibrated from worst-of-5 full generate+score runs on SeedTTS-50 EN, H200 SXM.
-# worst-of-5 = 4.1924 · mean = 4.2575 · stdev = 0.0487
-VC_UTMOS_MEAN_REFERENCE = 4.4568
-
 
 def _thinker_prefill_graph_info(worker_port: int) -> dict:
     with requests.Session() as session:
@@ -100,31 +80,6 @@ def _thinker_prefill_graph_info(worker_port: int) -> dict:
     return thinker["data"]["prefill_cuda_graph"]
 
 
-VC_UTMOS_MEAN_MIN = apply_mos_slack(VC_UTMOS_MEAN_REFERENCE)
-
-# Strict worst-of-5 references from #1021's published 8xH100 calibration report.
-
-_VC_NON_STREAM_P95 = {
-    16: {
-        "throughput_qps": 8.921,
-        "output_tok_per_req_s": 8.9,
-        "latency_mean_s": 1.644,
-        "rtf_mean": 0.5124,
-    },
-}
-
-
-# Slack factors applied to P95 reference values to derive CI thresholds.
-# Higher-is-better metrics (throughput, output tok/req-s): threshold = P95 x slack_higher
-# Lower-is-better metrics (latency, rtf): threshold = P95 x slack_lower
-
-QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9536
-VC_NON_STREAM_THRESHOLDS = apply_slack(_VC_NON_STREAM_P95)
-VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"] = min(
-    VC_NON_STREAM_THRESHOLDS[CONCURRENCY]["rtf_mean_max"],
-    QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX,
-)
-
 SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
     dataset="seedtts-50",
     repo_id=DATASETS["seedtts-50"],
@@ -132,18 +87,20 @@ SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
 
 
 def _run_benchmark(
+    omni_ci_model: OmniCiModelPreset,
     port: int,
     meta: str,
     output_dir: str,
 ) -> dict:
     config = OmniSeedttsBenchmarkConfig(
-        model="qwen3-omni",
+        model=omni_ci_model.name,
         port=port,
         meta=meta,
         output_dir=output_dir,
         max_samples=MAX_SAMPLES,
         max_concurrency=CONCURRENCY,
         voice_clone=True,
+        reference_audio_field=omni_ci_model.reference_audio_field,
     )
     speed_results = asyncio.run(run_omni_seedtts_benchmark(config))
     assert (
@@ -156,6 +113,7 @@ def _run_benchmark(
 
 
 def _run_wer_transcribe(
+    omni_ci_model: OmniCiModelPreset,
     meta: str,
     output_dir: str,
     *,
@@ -170,7 +128,7 @@ def _run_wer_transcribe(
     )
 
     config = OmniSeedttsBenchmarkConfig(
-        model="qwen3-omni",
+        model=omni_ci_model.name,
         meta=meta,
         output_dir=output_dir,
         lang=lang,
@@ -206,6 +164,7 @@ def _run_wer_transcribe(
 
 
 def _run_similarity(
+    omni_ci_model: OmniCiModelPreset,
     meta: str,
     output_dir: str,
     checkpoint_path: str | None,
@@ -223,7 +182,7 @@ def _run_similarity(
         "--output-dir",
         output_dir,
         "--model",
-        "qwen3-omni",
+        omni_ci_model.name,
         "--device",
         device,
     ]
@@ -287,7 +246,9 @@ def _assert_similarity_results(
         checks.assert_all()
 
 
-def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
+def _run_utmos(
+    omni_ci_model: OmniCiModelPreset, output_dir: str, *, device: str = "cuda:0"
+) -> dict:
     cmd = [
         sys.executable,
         "-m",
@@ -298,7 +259,7 @@ def _run_utmos(output_dir: str, *, device: str = "cuda:0") -> dict:
         "--output-dir",
         output_dir,
         "--model",
-        "qwen3-omni",
+        omni_ci_model.name,
         "--device",
         device,
     ]
@@ -379,48 +340,52 @@ class _SpeedArtifacts:
     output_dir: str
     summary: dict
     per_request: list
+    router_before: dict
 
 
 @pytest.fixture(scope="module")
 def speed_artifacts(
-    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> _SpeedArtifacts:
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     try:
-        workers = router_get_json(qwen3_omni_bf16_colocated_server.port, "/workers")
-        print_worker_snapshot("initial /workers snapshot", workers)
-        assert workers["total_workers"] == 2
-        assert workers["healthy_workers"] == 2
-        assert workers["routable_workers"] == 2
+        assert_router_healthy(omni_ci_server)
+        router_before = router_get_json(
+            omni_ci_server.port,
+            "/diagnostics",
+        )
 
-        models = router_get_json(qwen3_omni_bf16_colocated_server.port, "/v1/models")
-        assert {card["id"] for card in models["data"]} == {"qwen3-omni"}
+        models = router_get_json(omni_ci_server.port, "/v1/models")
+        assert {card["id"] for card in models["data"]} == {omni_ci_model.name}
 
         results = _run_benchmark(
-            qwen3_omni_bf16_colocated_server.port,
+            omni_ci_model,
+            omni_ci_server.port,
             dataset_repo,
             output_dir,
         )
     except Exception:
-        print_router_diagnostics(qwen3_omni_bf16_colocated_server)
+        print_router_diagnostics(omni_ci_server)
         raise
     return _SpeedArtifacts(
         output_dir=output_dir,
         summary=results["summary"],
         per_request=results["per_request"],
+        router_before=router_before,
     )
 
 
 @pytest.fixture(scope="module")
 def wer_audio_dir(
-    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
+    omni_ci_server: ManagedRouterHandle,
     speed_artifacts: _SpeedArtifacts,
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
-    qwen3_omni_bf16_colocated_server.stop()
+    omni_ci_server.stop()
     wait_for_gpu_memory_release()
     generated_path = Path(speed_artifacts.output_dir) / "generated.json"
     assert generated_path.exists(), f"WER metadata missing: {generated_path}"
@@ -429,68 +394,59 @@ def wer_audio_dir(
 
 @pytest.mark.benchmark
 def test_voice_cloning_non_streaming(
-    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
     speed_artifacts: _SpeedArtifacts,
 ) -> None:
     """Print speed summary and assert metrics meet thresholds."""
     try:
         print_speed_summary(
             speed_artifacts.summary,
-            "qwen3-omni",
+            omni_ci_model.name,
             CONCURRENCY,
             title="TTS Voice-Clone Speed",
             dataset=SEEDTTS_50_DATASET_LABEL,
         )
-        checks = MetricCheckCollector("Qwen3-Omni voice-cloning speed")
+        thresholds = omni_ci_model.thresholds["tts"]
+        checks = MetricCheckCollector(f"{omni_ci_model.name} voice-cloning speed")
         assert_summary_metrics(speed_artifacts.summary, collector=checks)
         assert_per_request_fields(speed_artifacts.per_request, collector=checks)
-        assert_speed_thresholds(
-            speed_artifacts.summary,
-            VC_NON_STREAM_THRESHOLDS,
-            CONCURRENCY,
-            collector=checks,
-        )
+        if thresholds.calibrated:
+            assert_speed_thresholds(
+                speed_artifacts.summary,
+                thresholds.speed,
+                CONCURRENCY,
+                collector=checks,
+            )
         checks.check(
             Path(speed_artifacts.output_dir).is_dir(),
             f"Speed output directory missing: {speed_artifacts.output_dir}",
         )
 
-        final_workers = router_get_json(
-            qwen3_omni_bf16_colocated_server.port, "/workers"
-        )
-        print_worker_snapshot("final /workers snapshot", final_workers)
-        checks.check(
-            final_workers.get("routable_workers") == 2,
-            f"Expected 2 routable workers, got {final_workers.get('routable_workers')}",
-        )
-        active_workers = [
-            worker
-            for worker in final_workers.get("workers", [])
-            if worker.get("active_requests") != 0
-        ]
-        checks.check(
-            not active_workers,
-            f"Expected no active requests after benchmark, got {active_workers}",
-        )
         checks.check_assertion(
             "router worker traffic",
-            assert_workers_served_requests,
-            final_workers,
+            assert_workers_served_requests_since,
+            handle=omni_ci_server,
+            before_snapshot=speed_artifacts.router_before,
+            label=f"{omni_ci_model.name} voice cloning",
             min_total_requests=MAX_SAMPLES,
         )
+        thresholds.require_calibrated(omni_ci_model.name, "tts", checks)
         checks.assert_all()
     except Exception:
-        print_router_diagnostics(qwen3_omni_bf16_colocated_server)
+        print_router_diagnostics(omni_ci_server)
         raise
 
 
 @pytest.mark.benchmark
+@pytest.mark.usefixtures("speed_artifacts")
 def test_speech_prefill_graph_replays_in_existing_tts_stage(
-    qwen3_omni_bf16_colocated_server: ManagedRouterHandle,
-    speed_artifacts: _SpeedArtifacts,
+    omni_ci_model: OmniCiModelPreset,
+    omni_ci_server: ManagedRouterHandle,
 ) -> None:
-    del speed_artifacts  # Ensure the Stage 2 benchmark has exercised both workers.
-    for worker_port in qwen3_omni_bf16_colocated_server.worker_ports:
+    if omni_ci_model.name != "qwen3-omni":
+        pytest.skip("Speech prefill CUDA graph replay is Qwen3-Omni-specific")
+    for worker_port in omni_ci_server.worker_ports:
         info = _thinker_prefill_graph_info(worker_port)
         assert info["backend"] == "breakable"
         assert info["runner"] == "PrefillCudaGraphRunner"
@@ -501,60 +457,54 @@ def test_speech_prefill_graph_replays_in_existing_tts_stage(
 
 @pytest.mark.benchmark
 def test_voice_cloning_wer(
+    omni_ci_model: OmniCiModelPreset,
     wer_audio_dir: str,
     dataset_repo: str,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     results = _run_wer_transcribe(
+        omni_ci_model,
         dataset_repo,
         wer_audio_dir,
         asr_router_port=qwen3_asr_wer_router.port,
     )
     print_wer_summary(
-        results["summary"], "qwen3-omni", dataset=SEEDTTS_50_DATASET_LABEL
+        results["summary"], omni_ci_model.name, dataset=SEEDTTS_50_DATASET_LABEL
     )
-    checks = MetricCheckCollector("Qwen3-Omni voice-cloning WER")
+    thresholds = omni_ci_model.thresholds["tts"]
+    checks = MetricCheckCollector(f"{omni_ci_model.name} voice-cloning WER")
     assert_wer_partitioned(
         results,
-        max_wer_below_50_corpus=VC_WER_BELOW_50_CORPUS_THRESHOLD,
-        max_n_above_50=VC_N_ABOVE_50_MAX,
+        max_wer_below_50_corpus=(
+            thresholds.wer if thresholds.calibrated else float("inf")
+        ),
+        max_n_above_50=(
+            thresholds.n_above_50 if thresholds.calibrated else float("inf")
+        ),
         collector=checks,
     )
+    thresholds.require_calibrated(omni_ci_model.name, "tts", checks)
     checks.assert_all()
     print_log_tail("asr_wer_router", qwen3_asr_wer_router.log_file)
 
 
 @pytest.mark.benchmark
 def test_voice_cloning_similarity(
+    omni_ci_model: OmniCiModelPreset,
     wer_audio_dir: str,
     dataset_repo: str,
     similarity_checkpoint: str | None,
 ) -> None:
-    """Speaker similarity for Qwen3-Omni voice-clone output.
-
-    Quality gating against ``VC_SIMILARITY_MEAN_MIN`` is intentionally
-    DISABLED while upstream issue sgl-project/sglang-omni#483 is open:
-    Qwen3-Omni currently emits a default voice (multimodal prompt
-    features do not reach talker prefill ``input_embeds``), so a
-    50-sample EN dry-run measures SIM mean ~3 vs ~64 for S2-Pro on the
-    same samples.
-
-    The test still runs and persists ``similarity_results.json`` so the
-    metric tracks longitudinally and will catch the day #483 is fixed.
-    Once #483 lands, swap the structural assert below back to
-    ``_assert_similarity_results(results, VC_SIMILARITY_MEAN_MIN)``.
-    """
+    """Score saved audio; Qwen3-Omni's similarity gate remains disabled by #483."""
     results = _run_similarity(
+        omni_ci_model,
         dataset_repo,
         wer_audio_dir,
         similarity_checkpoint,
     )
-    # Structural sanity only — quality gate disabled per docstring above.
-    # `skipped == 0` is a structural assertion (generation succeeded and WAVs
-    # are on disk), not a voice-quality gate, so it stays enabled even while
-    # #483 keeps the similarity-mean assertion soft.
     summary = results.get("summary", {})
-    checks = MetricCheckCollector("Qwen3-Omni speaker similarity structure")
+    thresholds = omni_ci_model.thresholds["tts"]
+    checks = MetricCheckCollector(f"{omni_ci_model.name} speaker similarity structure")
     checks.check(
         summary.get("speaker_similarity_mean") is not None,
         "Missing speaker_similarity_mean in summary",
@@ -567,14 +517,25 @@ def test_voice_cloning_similarity(
         summary.get("skipped", 0) == 0,
         f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
     )
+    if omni_ci_model.name == "minicpmo" and thresholds.calibrated:
+        _assert_similarity_results(results, thresholds.similarity, collector=checks)
+    thresholds.require_calibrated(omni_ci_model.name, "tts", checks)
     checks.assert_all()
 
 
 @pytest.mark.benchmark
-def test_voice_cloning_utmos(wer_audio_dir: str) -> None:
-    results = _run_utmos(wer_audio_dir)
-    checks = MetricCheckCollector("Qwen3-Omni voice-cloning UTMOS")
-    _assert_utmos_results(results, VC_UTMOS_MEAN_MIN, collector=checks)
+def test_voice_cloning_utmos(
+    omni_ci_model: OmniCiModelPreset, wer_audio_dir: str
+) -> None:
+    results = _run_utmos(omni_ci_model, wer_audio_dir)
+    thresholds = omni_ci_model.thresholds["tts"]
+    checks = MetricCheckCollector(f"{omni_ci_model.name} voice-cloning UTMOS")
+    _assert_utmos_results(
+        results,
+        thresholds.utmos if thresholds.calibrated else float("-inf"),
+        collector=checks,
+    )
+    thresholds.require_calibrated(omni_ci_model.name, "tts", checks)
     checks.assert_all()
 
 

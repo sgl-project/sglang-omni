@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
@@ -70,7 +72,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([99], dtype=torch.long))
 
-    runner._write_feedback_buffers(forward_batch, [sched_req])
+    runner.write_feedback_buffers(forward_batch, [sched_req])
 
     assert len(sched_req.data.decode_input_embeds) == 1
     assert torch.equal(
@@ -81,6 +83,53 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     assert forward_batch.input_ids.tolist() == [0]
     assert list(sched_req.data.pending_feedback_queue) == []
     assert list(sched_req.data.pending_text_queue) == []
+
+
+def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> None:
+    embedding = torch.nn.Embedding(4, 2)
+    with torch.no_grad():
+        embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(
+        _decode_feedback_embedding=embedding,
+        get_input_embeddings=lambda: embedding,
+    )
+
+    def _data(feedback, text, pad):
+        return SimpleNamespace(
+            pending_feedback_queue=deque(feedback),
+            pending_text_queue=deque(text),
+            decode_input_embeds=[],
+            thinker_chunks_done=True,
+            tts_pad_embed=pad,
+        )
+
+    staged = SimpleNamespace(
+        data=_data(
+            [torch.tensor([1.0, 2.0])], [torch.tensor([20.0, 30.0])], torch.zeros(2)
+        )
+    )
+    padded = SimpleNamespace(
+        data=_data([torch.tensor([3.0, 4.0])], [], torch.tensor([0.5, 0.5]))
+    )
+    first_step = SimpleNamespace(
+        data=_data([], [torch.tensor([40.0, 50.0])], torch.zeros(2))
+    )
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9, 3], dtype=torch.long))
+
+    runner.write_feedback_buffers(forward_batch, [staged, padded, first_step])
+
+    expected = torch.tensor([[21.0, 32.0], [3.5, 4.5], [6.0, 7.0]])
+    assert torch.equal(embedding.weight[:3].detach(), expected)
+    for row_idx, sched_req in enumerate((staged, padded, first_step)):
+        assert len(sched_req.data.decode_input_embeds) == 1
+        assert torch.equal(sched_req.data.decode_input_embeds[0], expected[row_idx])
+    assert forward_batch.input_ids.tolist() == [0, 1, 2]
+    assert list(staged.data.pending_feedback_queue) == []
+    assert list(staged.data.pending_text_queue) == []
+    assert list(padded.data.pending_feedback_queue) == []
+    assert list(first_step.data.pending_feedback_queue) == []
+    assert len(first_step.data.pending_text_queue) == 1
 
 
 def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
@@ -103,7 +152,7 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(extend_len, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert out.shape[0] == extend_len
     assert torch.equal(out[:prompt_len], prompt)
@@ -111,6 +160,75 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     assert torch.equal(out[-1], leftover)
     assert list(sched_req.data.pending_feedback_queue) == []
     assert len(sched_req.data.decode_input_embeds) == generated_len
+
+
+def test_reprefill_restores_retained_repetition_penalty_history() -> None:
+    retained_req = SimpleNamespace(
+        output_ids=[2, 5, 2],
+        sampling_params=SimpleNamespace(repetition_penalty=1.05),
+    )
+    fresh_req = SimpleNamespace(
+        output_ids=[],
+        sampling_params=SimpleNamespace(repetition_penalty=1.05),
+    )
+    identity_req = SimpleNamespace(
+        output_ids=[3],
+        sampling_params=SimpleNamespace(repetition_penalty=1.0),
+    )
+    reqs = [retained_req, fresh_req, identity_req]
+
+    class _PenaltyOrchestrator:
+        vocab_size = 8
+        device = "cpu"
+
+        def __init__(self) -> None:
+            self.penalizers = {}
+
+        def reqs(self):
+            return reqs
+
+    orchestrator = _PenaltyOrchestrator()
+    penalizer = BatchedRepetitionPenalizer(orchestrator)
+    penalizer.prepare()
+    orchestrator.penalizers[BatchedRepetitionPenalizer] = penalizer
+    schedule_batch = SimpleNamespace(
+        reqs=reqs,
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        sampling_info=SimpleNamespace(penalizer_orchestrator=orchestrator),
+    )
+
+    scaling = penalizer.get_scaling_penalties()
+    expected = torch.ones(3, 8)
+    expected[0, [2, 5]] = 1.05
+
+    class _ExecutionBridge:
+        def forward_context(self, batch, *, isolate_sampling):
+            assert batch is schedule_batch
+            assert isolate_sampling
+            assert torch.equal(scaling, expected)
+            return contextlib.nullcontext()
+
+    runner = _runner()
+    runner._execution_bridge = _ExecutionBridge()
+    with runner.execution_context(schedule_batch, isolate_sampling=True):
+        pass
+
+    assert torch.equal(scaling, expected)
+
+    logits = torch.tensor(
+        [
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+            [1.0, 2.0, 10.0, 4.0, 5.0, -10.0, 7.0, 8.0],
+        ]
+    )
+    original_logits = logits.clone()
+    penalizer.apply(logits)
+
+    assert logits[0, 2].item() == pytest.approx(10.0 / 1.05)
+    assert logits[0, 5].item() == pytest.approx(-10.0 * 1.05)
+    assert torch.equal(logits[1], original_logits[1])
+    assert torch.equal(logits[2], original_logits[2])
 
 
 def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:
@@ -123,7 +241,7 @@ def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:
     sched_req = _sched_req(prompt=prompt, prefix_len=8, extend_len=5, history=history)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat([prompt[8:10], torch.stack(history)], dim=0)
     assert torch.equal(out, expected)
@@ -141,7 +259,7 @@ def test_reprefill_drains_leftover_feedback_when_history_is_short() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat(
         [
@@ -162,7 +280,7 @@ def test_reprefill_without_generated_history_fails_loudly() -> None:
     forward_batch = SimpleNamespace(input_ids=torch.zeros(594, dtype=torch.long))
 
     with pytest.raises(RuntimeError, match="missing feedback/text input embeds"):
-        _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+        _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
 
 def test_decode_then_retract_reprefill_roundtrip() -> None:
@@ -191,7 +309,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
             torch.full((hidden,), float(step + 1), dtype=torch.float32)
         )
         sched_req.data.pending_text_queue.append(torch.zeros(hidden))
-        runner._write_feedback_buffers(decode_batch, [sched_req])
+        runner.write_feedback_buffers(decode_batch, [sched_req])
 
     leftover = torch.full((hidden,), float(generated), dtype=torch.float32)
     sched_req.data.pending_feedback_queue.append(leftover)
@@ -204,7 +322,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     prefill_batch = SimpleNamespace(
         input_ids=torch.zeros(prompt_len + generated, dtype=torch.long)
     )
-    out = runner._build_prefill_input_embeds(prefill_batch, [sched_req])
+    out = runner.build_prefill_input_embeds(prefill_batch, [sched_req])
 
     assert out.shape[0] == prompt_len + generated
     assert torch.equal(out[:prompt_len], prompt)
@@ -222,6 +340,6 @@ def test_fresh_prefill_still_uses_prompt_only_buffer() -> None:
     sched_req = _sched_req(prompt=prompt, prefix_len=1, extend_len=4)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(4, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert torch.equal(out, prompt[1:5])

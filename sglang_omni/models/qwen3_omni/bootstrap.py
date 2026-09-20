@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from sglang_omni.vendor.sglang.server_args import override_server_args
-
 
 def create_thinker_scheduler(
     server_args: Any,
@@ -21,8 +19,10 @@ def create_thinker_scheduler(
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ):
     """Create the Qwen thinker scheduler."""
+    from sglang.srt.arg_groups.model_override_base import resolved_view
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -46,50 +46,31 @@ def create_thinker_scheduler(
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
     from sglang_omni.utils import cuda_graph_batch_validator
 
+    cfg = resolved_view(server_args)
     capture_hidden_layers = [0, 24] if speech_enabled else None
     capture_hidden = speech_enabled
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
     enable_prefill_input_embeds = prefill_graph_backend == CudaGraphBackend.BREAKABLE
-    want_cuda_graph = not bool(server_args.disable_cuda_graph)
+    want_cuda_graph = not bool(cfg.disable_cuda_graph)
     defer_cuda_graph_capture = want_cuda_graph and capture_hidden
-    if defer_cuda_graph_capture:
-        saved_disable_cuda_graph = server_args.disable_cuda_graph
-        saved_return_hidden_states = server_args.enable_return_hidden_states
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.defer_cuda_graph_capture",
-            enable_return_hidden_states=True,
-            disable_cuda_graph=True,
-        )
 
-    try:
-        infrastructure = create_sglang_infrastructure(
-            server_args,
-            gpu_id,
-            tp_rank=tp_rank,
-            nccl_port=nccl_port,
-            model_arch_override="Qwen3OmniThinkerForCausalLM",
-            capture_hidden_layers=capture_hidden_layers,
-            total_gpu_memory_fraction=total_gpu_memory_fraction,
-            defer_cuda_graph_capture=defer_cuda_graph_capture,
-            enable_prefill_input_embeds=enable_prefill_input_embeds,
-        )
-    finally:
-        if defer_cuda_graph_capture:
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_omni.restore_cuda_graph_capture",
-                disable_cuda_graph=saved_disable_cuda_graph,
-                enable_return_hidden_states=saved_return_hidden_states,
-            )
+    infrastructure = create_sglang_infrastructure(
+        server_args,
+        gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        model_arch_override="Qwen3OmniThinkerForCausalLM",
+        capture_hidden_layers=capture_hidden_layers,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+        defer_cuda_graph_capture=defer_cuda_graph_capture,
+        enable_prefill_input_embeds=enable_prefill_input_embeds,
+    )
 
     (
         model_worker,
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = infrastructure
 
@@ -101,7 +82,8 @@ def create_thinker_scheduler(
 
     if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
         cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-            model_worker.model_runner, server_args
+            model_worker.model_runner,
+            operator_selected=operator_selected_prefill_backend,
         )
 
     def _should_generate_qwen_audio_output(request: Any) -> bool:
@@ -138,8 +120,6 @@ def create_thinker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
@@ -164,6 +144,10 @@ def create_talker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
+    enable_talker_start_topology: bool = False,
+    codec_coalesce_frames: int = 0,
+    codec_coalesce_first_frames: int = 0,
+    codec_coalesce_early_frames: int = 0,
 ):
     """Create the Qwen talker scheduler."""
     del speech_enabled
@@ -193,8 +177,6 @@ def create_talker_scheduler(
         tree_cache,
         req_to_token_pool,
         token_to_kv_pool_allocator,
-        prefill_mgr,
-        decode_mgr,
         model_config,
     ) = create_sglang_infrastructure(
         server_args,
@@ -216,11 +198,6 @@ def create_talker_scheduler(
         _runner_cfg.vocab_size = _codec_vocab_size
     model_worker.model_runner.model._sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
-        override_server_args(
-            server_args,
-            "sglang_omni.qwen3_omni.talker_restore_cuda_graph_capture",
-            disable_cuda_graph=False,
-        )
         # Equivalent to init_cuda_graphs() while the talker requests no prefill
         # embeds slot, but keeps both stages on one path so enabling talker
         # prefill graphs later cannot silently miss the embeds view.
@@ -279,14 +256,13 @@ def create_talker_scheduler(
         token_to_kv_pool_allocator=token_to_kv_pool_allocator,
         server_args=server_args,
         model_config=model_config,
-        prefill_manager=prefill_mgr,
-        decode_manager=decode_mgr,
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_chunk_handler=stream_chunk_handler,
         stream_done_handler=stream_done_handler,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
+        enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
     )
 
@@ -295,6 +271,9 @@ def create_talker_scheduler(
         output_proc,
         scheduler.outbox,
         feedback_enabled=feedback_enabled,
+        codec_coalesce_frames=codec_coalesce_frames,
+        codec_coalesce_first_frames=codec_coalesce_first_frames,
+        codec_coalesce_early_frames=codec_coalesce_early_frames,
     )
     scheduler.bind_model_runner(model_runner)
     return scheduler

@@ -4,21 +4,72 @@
 from __future__ import annotations
 
 import importlib
+import logging
+from collections.abc import Sequence
 from typing import Any
 
-from sglang_omni.models.qwen3_tts import request_builders
+import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.runtime_context import get_model, get_schedule
+
+from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
+    DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
+)
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
-from sglang_omni.vendor.sglang.server_args import override_server_args
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return False
+
+
+# note (luojiaxuan): the generic ladder starts at 4, and a replay falls back to
+# eager when its bucket exceeds twice the real token count, so a 1-token prefill
+# lands in bucket 4 and misses. Measured over 3203 prefills at 10 and 20 RPS on
+# H100 CustomVoice, 1301 of them (40.6%) are exactly one token, and they are the
+# only shapes that fall back: 2 and 3 already replay inside bucket 4. Adding the
+# single 1 bucket takes the fallback rate to zero, so the default is the shared
+# ladder plus that bucket rather than a hand-picked list.
+QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
 
 class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     model_name = "Qwen3-TTS"
     context_length = 8192
     model_arch_override = "Qwen3TTSTalker"
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
-    def __init__(self, *, attn_implementation: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        attn_implementation: str | None = None,
+        prefill_coalesce_requests: int = 0,
+        prefill_coalesce_wait_ms: float = 60.0,
+        reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
+            DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
+        ),
+    ) -> None:
         self.attn_implementation = attn_implementation
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        self.reference_encoder_cuda_graph_bucket_frames = tuple(
+            reference_encoder_cuda_graph_bucket_frames
+        )
         self.wrapper: Any | None = None
         self._stream_output_builder: Any | None = None
 
@@ -33,7 +84,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
-        qwen3_stages._register_qwen3_tts_hf_config()
+        qwen3_stages.register_qwen3_tts_hf_config()
 
     def generation_defaults(
         self,
@@ -48,14 +99,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
+            "enable_torch_compile": False,
             "mem_fraction_static": 0.85,
             "max_prefill_tokens": 8192,
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
+            # note (luojiaxuan): under load prefills coalesce into one extend
+            # batch, so the ladder must reach well past a single prompt.
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_bs_prefill": list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS),
         }
 
-    def setup_model(
+    def before_memory_pool(
         self,
         *,
         model_worker: Any,
@@ -64,12 +119,14 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del gpu_id, server_args
+        del gpu_id
         from qwen_tts import Qwen3TTSModel
         from transformers import AutoProcessor
 
+        # note(ratish): the tokenizer and the predictor graphs live for the whole
+        # process, so they are attached before sglang reads free memory for the pool.
         model = model_worker.model_runner.model
-        speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
+        speech_tokenizer = qwen3_stages.load_qwen3_tts_tokenizer(
             checkpoint_dir,
             device=device,
             dtype=self.dtype,
@@ -83,30 +140,68 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.wrapper = Qwen3TTSModel(
             model=model,
             processor=processor,
-            generate_defaults=qwen3_stages._load_qwen3_tts_generate_defaults(
+            generate_defaults=qwen3_stages.load_qwen3_tts_generate_defaults(
                 checkpoint_dir
             ),
         )
+        disable_cuda_graph = bool(resolved_view(server_args).disable_cuda_graph)
         request_builders.set_qwen3_tts_preprocessing_context(
             model=model,
             wrapper=self.wrapper,
+            device=torch.device(device),
+            reference_encoder_graph_bucket_frames=(
+                ()
+                if disable_cuda_graph
+                else self.reference_encoder_cuda_graph_bucket_frames
+            ),
+        )
+        if disable_cuda_graph:
+            return
+        # note(ratish): the bucket warmups also build cuDNN's attention plans,
+        # which otherwise land inside the first serving step of each batch size.
+        subtalker = request_builders.resolve_subtalker_sampling(
+            self.wrapper._merge_generate_kwargs()
+        )
+        model.capture_predictor_graphs(
+            do_sample=subtalker.do_sample,
+            top_k=subtalker.top_k,
+            top_p=subtalker.top_p,
         )
 
-    def compile_model(self, model: Any, server_args: Any) -> None:
-        if server_args.enable_deterministic_inference:
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_tts.deterministic_inference",
-                enable_torch_compile=False,
-            )
-            return
-        if bool(server_args.enable_torch_compile):
-            qwen3_stages._compile_qwen3_tts_backbone(model)
-            override_server_args(
-                server_args,
-                "sglang_omni.qwen3_tts.compile_complete",
-                enable_torch_compile=False,
-            )
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        # note(ratish): everything Qwen3-TTS attaches stays resident, so it all
+        # runs in before_memory_pool and nothing is left for after the pool.
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
+
+    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if is_truthy(overrides.get("enable_torch_compile", False)):
+            raise ValueError("Qwen3-TTS torch.compile is not supported")
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        del model_runner
+        schedule = get_schedule()
+        running = int(schedule.max_running_requests)
+        context = int(get_model().context_length)
+        pool = scheduler.tp_worker.model_runner.token_to_kv_pool
+        k_bytes, v_bytes = pool.get_kv_size_bytes()
+        logger.info(
+            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against a configured "
+            "maximum demand of %d (%d running x %d context), mem_fraction_static %.3f",
+            int(scheduler.max_total_num_tokens),
+            (int(k_bytes) + int(v_bytes)) / float(1 << 30),
+            running * context,
+            running,
+            context,
+            float(schedule.mem_fraction_static),
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(
@@ -129,6 +224,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             "stream_output_builder": self._stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def make_abort_callback(self) -> Any | None:

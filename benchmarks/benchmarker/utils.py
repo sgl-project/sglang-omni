@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import requests as requests_lib
@@ -30,6 +30,7 @@ GPU_IDLE_POLL_SECONDS = 5
 WAV_HEADER_SIZE = 44
 SSE_DATA_PREFIX = "data: "
 SSE_DONE_MARKER = "data: [DONE]"
+STREAM_SERVER_LOGS_ENV = "OMNI_CI_STREAM_SERVER_LOGS"
 
 
 @contextmanager
@@ -67,7 +68,7 @@ def no_proxy_env() -> dict[str, str]:
 def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
     """Capture server logs to a file on CI; stream to the terminal locally."""
     is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    if not is_ci:
+    if not is_ci or os.environ.get(STREAM_SERVER_LOGS_ENV) == "1":
         return None
     return tmp_path_factory.mktemp(prefix) / "server.log"
 
@@ -145,6 +146,9 @@ def wait_healthy(
     port: int,
     log_file: Path | None,
     timeout: int = STARTUP_TIMEOUT,
+    *,
+    health_path: str = "/health",
+    health_body_contains: str | None = "healthy",
 ) -> None:
     """Wait for a server to report healthy, stopping it and raising on failure."""
     try:
@@ -154,7 +158,8 @@ def wait_healthy(
                 timeout=timeout,
                 server_process=proc,
                 server_log_file=log_file,
-                health_body_contains="healthy",
+                health_path=health_path,
+                health_body_contains=health_body_contains,
             )
     except Exception as exc:
         stop_server(proc)
@@ -179,6 +184,8 @@ def start_server_from_cmd(
     env: dict[str, str] | None = None,
     tee: bool = False,
     strip_proxy: bool = False,
+    health_path: str = "/health",
+    health_body_contains: str | None = "healthy",
 ) -> subprocess.Popen:
     """Start a server from an arbitrary command and wait until healthy."""
     process_env = os.environ.copy()
@@ -197,8 +204,9 @@ def start_server_from_cmd(
     elif tee:
         # Tee (file + stdout): TP=2 fixture wants the file for grep + live
         # output for `pytest -s`. Pattern from sglang's popen_launch_server.
-        log_handle = open(log_file, "w")
-        try:
+        # Keep the log open after return; the tee thread closes it in finally.
+        with ExitStack() as stack:
+            log_handle = stack.enter_context(open(log_file, "w"))
             proc = subprocess.Popen(
                 cmd,
                 env=process_env,
@@ -208,27 +216,24 @@ def start_server_from_cmd(
                 text=True,
                 bufsize=1,
             )
-        except Exception:
-            log_handle.close()
-            raise
 
-        def _tee_stdout(src, sink) -> None:
-            try:
-                for line in iter(src.readline, ""):
-                    sink.write(line)
-                    sink.flush()
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-            finally:
-                src.close()
-                sink.close()
+            def _tee_stdout(src, sink) -> None:
+                try:
+                    for line in iter(src.readline, ""):
+                        sink.write(line)
+                        sink.flush()
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                finally:
+                    src.close()
+                    sink.close()
 
-        # log_handle ownership is handed to the thread; its finally closes it.
-        threading.Thread(
-            target=_tee_stdout,
-            args=(proc.stdout, log_handle),
-            daemon=True,
-        ).start()
+            threading.Thread(
+                target=_tee_stdout,
+                args=(proc.stdout, log_handle),
+                daemon=True,
+            ).start()
+            stack.pop_all()
     else:
         with open(log_file, "w") as log_handle:
             proc = subprocess.Popen(
@@ -238,7 +243,14 @@ def start_server_from_cmd(
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-    wait_healthy(proc, port, log_file, timeout=timeout)
+    wait_healthy(
+        proc,
+        port,
+        log_file,
+        timeout=timeout,
+        health_path=health_path,
+        health_body_contains=health_body_contains,
+    )
     return proc
 
 
@@ -260,6 +272,7 @@ def managed_omni_server(
 ) -> Iterator[None]:
     """Start an ``sglang_omni.cli serve`` process and clean it up on exit."""
     _ensure_port_available(host, port)
+    model_path = _pinned_model_path(model_path, server_config)
     cmd = [
         sys.executable,
         "-m",
@@ -274,16 +287,22 @@ def managed_omni_server(
     ]
     if server_config is not None:
         cmd.extend(["--config", server_config])
-    if max_running_requests is not None:
-        cmd.extend(["--max-running-requests", str(max_running_requests)])
-    if max_queued_requests is not None:
-        cmd.extend(["--max-queued-requests", str(max_queued_requests)])
-    if cuda_graph_max_bs is not None:
-        cmd.extend(["--cuda-graph-max-bs", str(cuda_graph_max_bs)])
+    engine_overrides = {
+        "max_running_requests": max_running_requests,
+        "max_queued_requests": max_queued_requests,
+        "cuda_graph_max_bs": cuda_graph_max_bs,
+        "quantization": quantization,
+    }
+    if any(value is not None for value in engine_overrides.values()):
+        engine_stage = _resolve_managed_server_engine_stage(
+            model_path=model_path,
+            server_config=server_config,
+        )
+        for name, value in engine_overrides.items():
+            if value is not None:
+                cmd.extend([f"--{engine_stage}.engine.{name}", str(value)])
     if mem_fraction_static is not None:
         cmd.extend(["--mem-fraction-static", str(mem_fraction_static)])
-    if quantization is not None:
-        cmd.extend(["--quantization", quantization])
     logger.info(f"Starting server: {' '.join(cmd)}")
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -295,6 +314,47 @@ def managed_omni_server(
         stop_server(proc)
         if wait_for_gpu_release:
             wait_for_gpu_memory_release()
+
+
+def _pinned_model_path(model_path: str, server_config: str | None) -> str:
+    # note (db-ol): --model-path outranks the config, so a bare repo id would
+    # drop the revision a config pins for that same repo. Serve the pin.
+    if server_config is None:
+        return model_path
+    from sglang_omni.config.manager import ConfigManager
+
+    pinned = ConfigManager.from_file(server_config).config.model_path
+    if pinned and pinned.startswith(f"{model_path}@"):
+        return pinned
+    return model_path
+
+
+def _resolve_managed_server_engine_stage(
+    *,
+    model_path: str,
+    server_config: str | None,
+) -> str:
+    from sglang_omni.config.manager import ConfigManager
+
+    config_manager = (
+        ConfigManager.from_file(server_config)
+        if server_config is not None
+        else ConfigManager.from_model_path(model_path)
+    )
+    config = config_manager.config
+    assert config is not None
+    config_cls = type(config)
+    engine_stages = [
+        stage.name
+        for stage in config.stages
+        if config_cls.stage_config_cls(stage.name).engine_stage
+    ]
+    if len(engine_stages) != 1:
+        raise ValueError(
+            "managed server engine overrides require exactly one SGLang "
+            f"engine stage; found {engine_stages}"
+        )
+    return engine_stages[0]
 
 
 def _ensure_port_available(host: str, port: int) -> None:
@@ -335,6 +395,7 @@ def wait_for_service(
     *,
     server_process: subprocess.Popen | None = None,
     server_log_file: str | os.PathLike[str] | None = None,
+    health_path: str = "/health",
     health_body_contains: str | None = None,
 ) -> None:
     """Wait for SGLang Omni Server to be ready."""
@@ -352,7 +413,7 @@ def wait_for_service(
                             log_text = f.read()
                 raise RuntimeError(f"Server exited with code {exit_code}.\n{log_text}")
         try:
-            resp = requests_lib.get(f"{base_url}/health", timeout=1)
+            resp = requests_lib.get(f"{base_url}{health_path}", timeout=1)
             if resp.status_code == 200 and (
                 health_body_contains is None or health_body_contains in resp.text
             ):

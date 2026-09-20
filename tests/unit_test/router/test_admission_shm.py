@@ -6,14 +6,14 @@ import time
 
 import pytest
 
-from sglang_omni_router.admission_shm import (
+from sglang_omni_router.python.admission_shm import (
     SLOT_SIZE,
     AdmissionAggregateView,
     SharedAdmission,
     SlotCodec,
     admission_file_size,
 )
-from sglang_omni_router.proxy import AdmissionController
+from sglang_omni_router.python.proxy import AdmissionController
 
 
 def _buf(slots: int = 3) -> bytearray:
@@ -57,9 +57,9 @@ def test_soft_bound_overshoot_is_at_most_n_minus_one() -> None:
     c = _admission(buf, 2, bound=3)
 
     assert a.try_acquire() and a.try_acquire()  # sum = 2 = bound - 1
-    stale_total = b._total_inflight()
+    stale_total = b.total_inflight()
     assert a.try_acquire() is True  # sum = 3 = bound
-    b._total_inflight = lambda: stale_total  # type: ignore[method-assign]
+    b.total_inflight = lambda: stale_total  # type: ignore[method-assign]
     assert b.try_acquire() is True  # stale check admits: sum = 4 = bound + 1
 
     # Note (Jiaxin Deng): overshoot is bounded by N-1 and a fresh reader immediately
@@ -121,7 +121,7 @@ def test_unstable_sibling_is_cached_not_respun_on_every_request(
     # being counted, and must admit again once the slot is healed
     import logging
 
-    import sglang_omni_router.admission_shm as shm
+    import sglang_omni_router.python.admission_shm as shm
 
     buf = _buf(2)
     stuck = SlotCodec(buf, 0)
@@ -174,7 +174,7 @@ def test_cp_aggregate_reads_fail_fast_and_never_block_the_event_loop(
     # Note (Jiaxin Deng): a DP killed mid-write leaves its slot odd until reclaim;
     # event-loop aggregate readers must fail fast (spin, never sleep) instead of
     # blocking.
-    import sglang_omni_router.admission_shm as shm
+    import sglang_omni_router.python.admission_shm as shm
 
     sleeps: list[float] = []
     monkeypatch.setattr(shm.time, "sleep", lambda secs: sleeps.append(secs))
@@ -313,7 +313,7 @@ def test_fail_fast_read_sheds_instead_of_blocking() -> None:
 
 
 def test_retired_slot_keeps_rejected_and_peak_across_reclaim() -> None:
-    from sglang_omni_router.admission_shm import retired_slot_index
+    from sglang_omni_router.python.admission_shm import retired_slot_index
 
     buf = _buf()
     a = _admission(buf, 0, bound=1)
@@ -346,7 +346,7 @@ def test_platform_warning_fires_off_x86(
 ) -> None:
     import logging
 
-    from sglang_omni_router import admission_shm
+    from sglang_omni_router.python import admission_shm
 
     monkeypatch.setattr(admission_shm, "_PLATFORM_WARNED", False)
     monkeypatch.setattr(admission_shm.platform, "machine", lambda: "aarch64")
@@ -359,7 +359,7 @@ def test_fold_is_atomic_across_the_two_slot_transfer() -> None:
     # Note (Jiaxin Deng): a reader between retired.write_fields and dying.reclaim must
     # not double count: the retired slot stays mid-write (odd) across both, so it
     # retries
-    from sglang_omni_router.admission_shm import (
+    from sglang_omni_router.python.admission_shm import (
         SeqlockUnstableError,
         retired_slot_index,
     )

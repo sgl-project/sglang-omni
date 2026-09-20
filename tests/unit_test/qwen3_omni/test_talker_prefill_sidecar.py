@@ -84,6 +84,32 @@ def test_before_prefill_attaches_projected_embeds_to_the_sidecar() -> None:
     assert forward_batch.input_embeds is None
 
 
+def test_before_prefill_preserves_unprojected_tensor_embeds() -> None:
+    embeds = torch.randn(6, 64)
+    request = _sched_req(
+        input_embeds_are_projected=False,
+        prefill_input_embeds=embeds,
+        req=SimpleNamespace(
+            input_embeds=None,
+            prefix_indices=[],
+            extend_range=SimpleNamespace(length=6),
+        ),
+    )
+    forward_batch = _forward_batch(6)
+
+    _runner().before_prefill(
+        forward_batch,
+        schedule_batch=None,
+        requests=[request],
+    )
+
+    payload = get_omni_prefill_inputs(forward_batch)
+    assert payload is not None
+    assert torch.equal(payload.input_embeds, embeds)
+    assert payload.input_embeds_are_projected is False
+    assert forward_batch.input_embeds is None
+
+
 def test_sidecar_composes_the_logical_rows_for_each_request() -> None:
     first = torch.randn(12, 64)
     second = torch.randn(9, 64)

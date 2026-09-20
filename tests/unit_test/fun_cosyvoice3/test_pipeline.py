@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+import torch
+
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
+from sglang_omni.models.fun_cosyvoice3.config import (
+    FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
+    FunCosyVoice3PipelineConfig,
+)
+from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+
+
+def test_fun_cosyvoice3_config_and_registry_contract() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="model")
+
+    assert [stage.name for stage in config.stages] == [
+        "preprocessing",
+        "vocoder",
+        "tts_engine",
+    ]
+    assert [stage.process for stage in config.stages] == [
+        "pipeline",
+        "pipeline",
+        "pipeline",
+    ]
+    assert config.terminal_stages == ["vocoder"]
+    assert config.required_speech_reference_count == 1
+    assert config.speech_reference_text_excludes_instructions is True
+    assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
+    assert type(config).stage_config_cls("tts_engine").engine_stage
+    assert config.process_local_edges() == frozenset({("preprocessing", "tts_engine")})
+    assert CAPABILITIES.supports_streaming_vocoder is True
+    stages_by_name = {stage.name: stage for stage in config.stages}
+    assert stages_by_name["tts_engine"].stream_to == ["vocoder"]
+    assert stages_by_name["vocoder"].can_accept_stream_before_payload is True
+
+    vocoder = next(stage for stage in config.stages if stage.name == "vocoder")
+    assert vocoder.factory.dtype == "bfloat16"
+    # max_batch_size / max_batch_wait_ms are declared fields on FactoryArgs, so
+    # they are validated eagerly rather than passing through as extras.
+    assert vocoder.factory.max_batch_size == 16
+    assert vocoder.factory.max_batch_wait_ms == 30
+    assert vocoder.factory.model_extra == {
+        "flow_batch_admission_frames": 8000,
+        "flow_merge_max_gap_frames": 384,
+        "flow_merge_pad_budget_percent": 25.0,
+        "flow_cuda_graph_capture_shapes": FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
+        "enable_flow_cuda_graph": True,
+        "enable_flow_estimator_trt": False,
+        "token_hop_len": 25,
+        "token_max_hop_len": 100,
+        "disable_hop_growth": False,
+    }
+
+    build_compiled_process_topology(config)
+    assert (
+        PIPELINE_CONFIG_REGISTRY.get_config("FunCosyVoice3SGLangModel")
+        is FunCosyVoice3PipelineConfig
+    )
+
+
+def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="model")
+    manager = ConfigManager(config)
+    merged = manager.merge_config(
+        {
+            "vocoder.factory.flow_batch_admission_frames": 4000,
+            "vocoder.factory.flow_merge_max_gap_frames": 40,
+            "vocoder.factory.flow_merge_pad_budget_percent": 3,
+            "vocoder.factory.flow_cuda_graph_capture_shapes": [
+                [1, 496],
+                [5, 544],
+                [7, 576],
+            ],
+        }
+    )
+    vocoder = next(stage for stage in merged.stages if stage.name == "vocoder")
+
+    assert vocoder.factory.model_extra == {
+        "flow_batch_admission_frames": 4000,
+        "flow_merge_max_gap_frames": 40,
+        "flow_merge_pad_budget_percent": 3,
+        "flow_cuda_graph_capture_shapes": [[1, 496], [5, 544], [7, 576]],
+        "enable_flow_cuda_graph": True,
+        "enable_flow_estimator_trt": False,
+        "token_hop_len": 25,
+        "token_max_hop_len": 100,
+        "disable_hop_growth": False,
+    }
+    args = resolve_stage_typed_kwargs(vocoder)
+    assert args["flow_batch_admission_frames"] == 4000
+    assert args["flow_merge_max_gap_frames"] == 40
+    assert args["flow_merge_pad_budget_percent"] == 3
+    assert args["flow_cuda_graph_capture_shapes"] == [
+        [1, 496],
+        [5, 544],
+        [7, 576],
+    ]
+
+
+def test_fun_cosyvoice3_state_round_trip_preserves_wire_contract() -> None:
+    state = FunCosyVoice3State(
+        text="hello",
+        language="en",
+        instructions="speak brightly",
+        ref_text="reference",
+        stream=True,
+        speed=1.25,
+        seed=7,
+        generation_kwargs={"max_new_tokens": 32},
+        flow_embedding=torch.tensor([[1.0, 2.0]]),
+        flow_prompt_speech_token=torch.tensor([[10, 11]], dtype=torch.int32),
+        flow_prompt_speech_feat=torch.ones(1, 2, 80),
+        audio_codes=torch.tensor([[20], [21]], dtype=torch.long),
+    )
+
+    wire = state.to_dict()
+    restored = FunCosyVoice3State.from_dict(wire)
+
+    assert wire["flow_embedding"] == [[1.0, 2.0]]
+    assert restored.text == state.text
+    assert restored.language == state.language
+    assert restored.instructions == state.instructions
+    assert restored.stream is True
+    assert restored.speed == 1.25
+    assert restored.seed == 7
+    assert restored.generation_kwargs == {"max_new_tokens": 32}
+    assert restored.flow_prompt_speech_token == [[10, 11]]
+    assert restored.flow_prompt_speech_feat[0][0] == [1.0] * 80
+    assert restored.audio_codes == [[20], [21]]

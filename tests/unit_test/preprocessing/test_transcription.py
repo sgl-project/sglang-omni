@@ -175,3 +175,38 @@ def test_prepare_audio_resamples_and_downmixes_like_before() -> None:
     )
     assert prepared.waveform.ndim == 1
     assert prepared.duration_s == pytest.approx(0.1)
+
+
+def test_resolve_audio_source_wraps_declared_g711_bytes() -> None:
+    raw = bytes([0xFF] * 800)
+
+    wrapped = resolve_audio_source(
+        _payload({"audio_bytes": raw, "content_type": "audio/basic"})
+    )
+
+    assert wrapped[:4] == b"RIFF"
+    assert wrapped.endswith(raw)
+
+
+def test_resolve_audio_source_leaves_undeclared_bytes_alone() -> None:
+    raw = bytes([0xFF] * 800)
+
+    assert resolve_audio_source(_payload({"audio_bytes": raw})) is raw
+    assert (
+        resolve_audio_source(
+            _payload({"audio_bytes": raw, "content_type": "audio/wav"})
+        )
+        is raw
+    )
+
+
+def test_prepare_audio_decodes_headerless_mulaw_from_the_offline_inputs() -> None:
+    # 0.5 s of µ-law silence at 8 kHz becomes 0.5 s at the model's 16 kHz.
+    prepared = prepare_audio(
+        _payload({"audio_bytes": bytes([0xFF] * 4000), "filename": "call.ulaw"}),
+        source_name="Test",
+    )
+
+    assert prepared.sample_rate == 16000
+    assert prepared.duration_s == pytest.approx(0.5)
+    assert np.abs(prepared.waveform).max() == 0.0

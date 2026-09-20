@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Long-audio chunking for /v1/audio/transcriptions.
 
-Chunking is opt-in per model, declared via sglang_omni.config.AudioChunkingConfig.
+Chunking is opt-in per model, declared on the model's PipelineConfig; the
+handlers receive the merged sglang_omni.config.ResolvedAudioChunking contract.
 Audio longer than max_audio_clip_s is split into non-overlapping chunks at the quietest point near each nominal boundary.
 """
 
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from sglang_omni.config import AudioChunkingConfig
+from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.utils.audio import load_audio
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ SILENT_CHUNK_PEAK_THRESHOLD = 1e-3
 Span = tuple[int, int]
 
 
-def needs_chunking(duration_s: float, config: AudioChunkingConfig) -> bool:
+def needs_chunking(duration_s: float, config: ResolvedAudioChunking) -> bool:
     """Whether a probed clip duration calls for splitting.
 
     duration_s <= 0 means the duration probe failed (PyAV could not read
@@ -44,7 +45,7 @@ def needs_chunking(duration_s: float, config: AudioChunkingConfig) -> bool:
     return duration_s > config.max_audio_clip_s
 
 
-def check_total_duration(duration_s: float, config: AudioChunkingConfig) -> None:
+def check_total_duration(duration_s: float, config: ResolvedAudioChunking) -> None:
     """Reject uploads past max_total_audio_s.
 
     Raises ValueError; the handler maps it to HTTP 400. The wording matches
@@ -87,7 +88,7 @@ class RMSSplitter:
         """Split the waveform into the spans that become chunk requests.
 
         min_tail_s is the model's floor for a worth-transcribing final
-        chunk (AudioChunkingConfig.min_tail_s); 0 disables the guard.
+        chunk (ResolvedAudioChunking.min_tail_s); 0 disables the guard.
         """
         total_samples = int(waveform.shape[-1])
         if total_samples <= 0:
@@ -107,7 +108,7 @@ class RMSSplitter:
             # Never search past the boundary (that would overrun the context limit)
             # and never back to `start`.
             search_start = max(boundary - search_samples, start + 1)
-            cut = self._find_split_point(waveform, search_start, boundary)
+            cut = self.find_split_point(waveform, search_start, boundary)
             tail_samples = total_samples - cut
             min_tail = int(min_tail_s * sample_rate)
             if 0 < tail_samples < min_tail <= chunk_samples:
@@ -120,7 +121,7 @@ class RMSSplitter:
             start = cut
         return spans
 
-    def _find_split_point(
+    def find_split_point(
         self, waveform: np.ndarray, search_start: int, search_end: int
     ) -> int:
         """Return the sample index to cut at, within [search_start, search_end]."""
@@ -197,7 +198,7 @@ def encode_wav(waveform: np.ndarray, sample_rate: int) -> bytes:
 
 def plan_audio_chunks(
     audio_bytes: bytes,
-    config: AudioChunkingConfig,
+    config: ResolvedAudioChunking,
     *,
     splitter: RMSSplitter | None = None,
     sample_rate: int = TARGET_SAMPLE_RATE,
@@ -262,7 +263,7 @@ _UNSPACED_SCRIPT_RANGES = (
 )
 
 
-def _is_spaced_script(char: str) -> bool:
+def is_spaced_script(char: str) -> bool:
     """Whether this character's writing system separates words with spaces."""
     if char.isspace():
         return False
@@ -289,7 +290,7 @@ def join_transcript_parts(parts: Iterable[str]) -> str:
         stripped = part.strip()
         if not stripped:
             continue
-        if joined and _is_spaced_script(joined[-1]) and _is_spaced_script(stripped[0]):
+        if joined and is_spaced_script(joined[-1]) and is_spaced_script(stripped[0]):
             joined += " "
         joined += stripped
     return joined

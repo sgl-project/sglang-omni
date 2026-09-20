@@ -37,6 +37,7 @@ class SimpleScheduler:
         batch_compute_fn: Callable | None = None,
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
+        batch_wait_when_idle: bool = True,
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
@@ -50,6 +51,7 @@ class SimpleScheduler:
         self._batch_fn = batch_compute_fn
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self._batch_wait_when_idle = bool(batch_wait_when_idle)
         self._request_cost_fn = request_cost_fn
         self._max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
@@ -72,7 +74,7 @@ class SimpleScheduler:
         self._running = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
 
-    def _cleanup_aborted_request(self, request_id: str) -> None:
+    def cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
             return
         try:
@@ -80,20 +82,20 @@ class SimpleScheduler:
         except Exception:
             logger.exception("SimpleScheduler: abort cleanup failed for %s", request_id)
 
-    def _consume_if_aborted(self, request_id: str) -> bool:
+    def consume_if_aborted(self, request_id: str) -> bool:
         with self._abort_lock:
             if request_id not in self._aborted:
                 return False
             self._aborted.discard(request_id)
-        self._cleanup_aborted_request(request_id)
+        self.cleanup_aborted_request(request_id)
         return True
 
-    def _message_cost(self, msg: IncomingMessage) -> int:
+    def message_cost(self, msg: IncomingMessage) -> int:
         if self._request_cost_fn is None or msg.type != "new_request":
             return 0
         return max(int(self._request_cost_fn(msg.data)), 0)
 
-    def _next_message(self) -> IncomingMessage | None:
+    def next_message(self) -> IncomingMessage | None:
         if self._pending_messages:
             return self._pending_messages.popleft()
         try:
@@ -101,17 +103,23 @@ class SimpleScheduler:
         except _queue_mod.Empty:
             return None
 
-    def _collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
+    def collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
         batch = [first_msg]
         if self._batch_fn is None or self._max_batch_size <= 1:
             return batch
 
-        batch_cost = self._message_cost(first_msg)
-        deadline = time.monotonic() + self._max_batch_wait_s
+        batch_cost = self.message_cost(first_msg)
+        deadline: float | None = (
+            time.monotonic() + self._max_batch_wait_s
+            if self._batch_wait_when_idle
+            else None
+        )
         while len(batch) < self._max_batch_size:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
+                if deadline is None:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -122,18 +130,20 @@ class SimpleScheduler:
 
             if msg.type == "new_request":
                 if self._max_batch_cost is not None:
-                    msg_cost = self._message_cost(msg)
+                    msg_cost = self.message_cost(msg)
                     if batch and batch_cost + msg_cost > self._max_batch_cost:
                         self._pending_messages.appendleft(msg)
                         break
                     batch_cost += msg_cost
                 batch.append(msg)
+                if deadline is None:
+                    deadline = time.monotonic() + self._max_batch_wait_s
             else:
                 self._pending_messages.append(msg)
         return batch
 
     @staticmethod
-    def _emit_result(
+    def emit_result(
         request_id: str, result: Any, outbox: _queue_mod.Queue[OutgoingMessage]
     ) -> None:
         outbox.put(
@@ -145,7 +155,7 @@ class SimpleScheduler:
         )
 
     @staticmethod
-    def _emit_error(
+    def emit_error(
         request_id: str, error: BaseException, outbox: _queue_mod.Queue[OutgoingMessage]
     ) -> None:
         outbox.put(
@@ -156,31 +166,29 @@ class SimpleScheduler:
             )
         )
 
-    def _run_single(
-        self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop
-    ) -> None:
-        if self._consume_if_aborted(msg.request_id):
+    def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
+        if self.consume_if_aborted(msg.request_id):
             return
         try:
             result = self._fn(msg.data)
             if asyncio.iscoroutine(result):
                 result = loop.run_until_complete(result)
         except Exception:
-            if self._consume_if_aborted(msg.request_id):
+            if self.consume_if_aborted(msg.request_id):
                 return
             raise
-        if self._consume_if_aborted(msg.request_id):
+        if self.consume_if_aborted(msg.request_id):
             return
-        self._emit_result(msg.request_id, result, self.outbox)
+        self.emit_result(msg.request_id, result, self.outbox)
 
-    def _run_batch(
+    def run_batch(
         self,
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
         if self._batch_fn is None or len(batch) <= 1:
             for msg in batch:
-                self._run_single(msg, loop)
+                self.run_single(msg, loop)
             return
 
         payloads = [msg.data for msg in batch]
@@ -192,51 +200,51 @@ class SimpleScheduler:
                 f"batch_compute_fn returned {len(results)} results for {len(batch)} requests"
             )
         for msg, result in zip(batch, results):
-            if self._consume_if_aborted(msg.request_id):
+            if self.consume_if_aborted(msg.request_id):
                 continue
-            self._emit_result(msg.request_id, result, self.outbox)
+            self.emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
-    async def _await_result(result: Awaitable[Any]) -> Any:
+    async def await_result(result: Awaitable[Any]) -> Any:
         return await result
 
-    def _run_compute_in_thread(self, payload: Any) -> Any:
+    def run_compute_in_thread(self, payload: Any) -> Any:
         result = self._fn(payload)
         if inspect.isawaitable(result):
-            result = asyncio.run(self._await_result(result))
+            result = asyncio.run(self.await_result(result))
         return result
 
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
         self._running = True
         if self._max_concurrency > 1:
-            self._start_concurrent()
+            self.start_concurrent()
         else:
-            self._start_serial()
+            self.start_serial()
 
-    def _start_serial(self) -> None:
+    def start_serial(self) -> None:
         loop = asyncio.new_event_loop()
         try:
             while self._running:
-                msg = self._next_message()
+                msg = self.next_message()
                 if msg is None:
                     continue
 
                 if msg.type == "new_request":
-                    if self._consume_if_aborted(msg.request_id):
+                    if self.consume_if_aborted(msg.request_id):
                         continue
                     batch = [msg]
                     try:
-                        batch = self._collect_batch(msg)
-                        self._run_batch(batch, loop)
+                        batch = self.collect_batch(msg)
+                        self.run_batch(batch, loop)
                     except Exception as exc:
                         logger.exception(
                             "SimpleScheduler: compute_fn failed for %s", msg.request_id
                         )
                         for failed_msg in batch:
-                            if self._consume_if_aborted(failed_msg.request_id):
+                            if self.consume_if_aborted(failed_msg.request_id):
                                 continue
-                            self._emit_error(
+                            self.emit_error(
                                 failed_msg.request_id,
                                 exc,
                                 self.outbox,
@@ -244,14 +252,14 @@ class SimpleScheduler:
         finally:
             loop.close()
 
-    def _start_concurrent(self) -> None:
+    def start_concurrent(self) -> None:
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(self._run_workers(loop))
+            loop.run_until_complete(self.run_workers(loop))
         finally:
             loop.close()
 
-    async def _run_workers(self, loop: asyncio.AbstractEventLoop) -> None:
+    async def run_workers(self, loop: asyncio.AbstractEventLoop) -> None:
         async_inbox: asyncio.Queue[IncomingMessage] = asyncio.Queue()
 
         async def bridge_inbox() -> None:
@@ -272,22 +280,22 @@ class SimpleScheduler:
                     continue
                 if msg.type != "new_request":
                     continue
-                if self._consume_if_aborted(msg.request_id):
+                if self.consume_if_aborted(msg.request_id):
                     continue
                 try:
                     result = await asyncio.to_thread(
-                        self._run_compute_in_thread, msg.data
+                        self.run_compute_in_thread, msg.data
                     )
-                    if self._consume_if_aborted(msg.request_id):
+                    if self.consume_if_aborted(msg.request_id):
                         continue
-                    self._emit_result(msg.request_id, result, self.outbox)
+                    self.emit_result(msg.request_id, result, self.outbox)
                 except Exception as exc:
-                    if self._consume_if_aborted(msg.request_id):
+                    if self.consume_if_aborted(msg.request_id):
                         continue
                     logger.exception(
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
-                    self._emit_error(msg.request_id, exc, self.outbox)
+                    self.emit_error(msg.request_id, exc, self.outbox)
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
@@ -297,7 +305,7 @@ class SimpleScheduler:
             await asyncio.gather(bridge_task, *worker_tasks)
         except asyncio.CancelledError:
             # Expected during shutdown/task cancellation; suppress intentionally.
-            logger.debug("SimpleScheduler: _run_workers cancelled during shutdown")
+            logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
 
     def stop(self) -> None:
         self._running = False
@@ -314,4 +322,4 @@ class SimpleScheduler:
                 excess = len(self._aborted) - 5000
                 for stale_request_id in list(self._aborted)[:excess]:
                     self._aborted.discard(stale_request_id)
-        self._cleanup_aborted_request(request_id)
+        self.cleanup_aborted_request(request_id)

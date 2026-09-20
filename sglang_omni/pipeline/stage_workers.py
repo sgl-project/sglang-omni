@@ -10,12 +10,15 @@ import os
 import queue
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal, Sequence
 
-from sglang_omni.config.runtime import resolve_factory_signature_args
+from sglang_omni.config.runtime import (
+    apply_typed_stage_kwargs,
+    resolve_factory_signature_args,
+)
 from sglang_omni.pipeline.control_plane import StageControlPlane
 from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
@@ -57,9 +60,19 @@ class StageLaunchConfig:
 
     # Factory
     factory: str = ""
-    factory_args: dict[str, Any] = field(default_factory=dict)
+    # Constructor kwargs from PipelineConfig.stage_factory_kwargs (plus TP
+    # wiring). Typed group kwargs are overlaid against the factory's
+    # signature in the child, which imports the factory anyway.
+    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+    typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
+    require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
+    # Note (Jiaxin Deng): the byte budgets are first-class fields, never
+    # factory kwargs, so no factory signature can accidentally absorb them.
+    kv_cache_bytes: int | None = None
+    total_reserve_bytes: int | None = None
+    enforce_total_reserve: bool = True
 
     # Routing: static next stage(s)
     next_stages: str | list[str] | None = None
@@ -97,8 +110,8 @@ class StageLaunchConfig:
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
 
-    # Fusion name map
-    name_map: dict[str, str] = field(default_factory=dict)
+    # Replica topology (logical stage name -> instance names)
+    replica_topology: dict[str, list[str]] = field(default_factory=dict)
 
     # TP internal control (leader -> followers)
     follower_work_queues: list[Any] = field(default_factory=list)
@@ -127,9 +140,12 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
+    # note (Dayuxiaoshui): root logger level for the spawned process. The
+    # launcher passes its own root level so --log-level reaches every stage.
+    log_level: int = logging.INFO
 
 
-def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
+def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
     Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
@@ -150,7 +166,10 @@ def _get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
 
 
 @contextmanager
-def _patched_spawn_env(spec: StageWorkerProcessSpec):
+def patched_spawn_env(
+    spec: StageWorkerProcessSpec,
+    extra_env: Mapping[str, str] | None = None,
+):
     env_default_updates: dict[str, str] = {}
     for stage_spec in spec.stage_specs:
         for key, value in stage_spec.env_defaults.items():
@@ -163,7 +182,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
             if key not in os.environ:
                 env_default_updates[key] = value
 
-    worker_process_env = _get_worker_process_env(spec)
+    worker_process_env = get_worker_process_env(spec)
     compat_env_defaults = get_gpu_compat_env_defaults(
         {
             **os.environ,
@@ -176,6 +195,7 @@ def _patched_spawn_env(spec: StageWorkerProcessSpec):
         **compat_env_defaults,
         **worker_process_env,
         "SGLANG_OMNI_PLATFORM_SPEC": get_platform_spec(current_platform),
+        **(extra_env or {}),
     }
     backup = {key: os.environ.get(key) for key in updates}
     try:
@@ -207,6 +227,7 @@ class StageGroup:
         self._processes: list[multiprocessing.Process] = []
         self._ready_events: list[multiprocessing.Event] = []
         self._startup_error_channels: list[object] = []
+        self._process_start_attempts: set[str] = set()
 
     @property
     def process_count(self) -> int:
@@ -244,12 +265,20 @@ class StageGroup:
     def processes(self) -> list[multiprocessing.Process]:
         return list(self._processes)
 
-    def spawn(self, ctx: multiprocessing.context.SpawnContext) -> None:
+    def process_start_attempts(self) -> set[str]:
+        """Return process names whose ``Process.start()`` was called."""
+        return set(self._process_start_attempts)
+
+    def spawn(
+        self,
+        ctx: multiprocessing.context.SpawnContext,
+        process_env_overrides: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> None:
         """Spawn the OS process(es) owned by this group."""
         for spec in self.process_specs:
             event = ctx.Event()
             startup_error_channel = ctx.Queue()
-            proc_name = _process_name(spec)
+            proc_name = process_name(spec)
             proc = ctx.Process(
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
@@ -257,10 +286,16 @@ class StageGroup:
                 daemon=True,
             )
             try:
-                with _patched_spawn_env(spec):
+                extra_env = (
+                    process_env_overrides.get(spec.process_name)
+                    if process_env_overrides is not None
+                    else None
+                )
+                with patched_spawn_env(spec, extra_env=extra_env):
+                    self._process_start_attempts.add(spec.process_name)
                     proc.start()
             except Exception:
-                _close_queue(startup_error_channel)
+                close_queue(startup_error_channel)
                 raise
             self._processes.append(proc)
             self._ready_events.append(event)
@@ -331,18 +366,22 @@ class StageGroup:
 
     def close_control_channels(self) -> None:
         for q in self._startup_error_channels:
-            _close_queue(q)
+            close_queue(q)
         for stage_spec in self.specs:
             for q in (
                 stage_spec.follower_work_queues
                 + stage_spec.follower_abort_queues
                 + stage_spec.follower_admin_result_queues
             ):
-                _close_queue(q)
+                close_queue(q)
 
-    async def shutdown(self, join_timeout: float = 30.0) -> None:
+    async def shutdown(
+        self,
+        join_timeout: float = 30.0,
+        before_signal: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         try:
-            for p in self._processes:
+            for spec, p in zip(self.process_specs, self._processes):
                 p.join(timeout=join_timeout)
                 if p.is_alive():
                     logger.warning(
@@ -350,6 +389,8 @@ class StageGroup:
                         p.name,
                         p.pid,
                     )
+                    if before_signal is not None:
+                        await before_signal(spec.process_name)
                     p.terminate()
                     p.join(timeout=5)
                     if p.is_alive():
@@ -368,21 +409,26 @@ def stage_process_main(
     startup_error_channel: Any | None = None,
 ) -> None:
     """Subprocess entrypoint: construct stage(s) from *spec* and run them."""
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    # note (Dayuxiaoshui): a spawned process starts with fresh logging, and
+    # importing sglang already installs a root handler at INFO, which turns
+    # basicConfig into a no-op. Set the level explicitly so the stage follows
+    # the launcher's --log-level.
+    logging.basicConfig(level=spec.log_level, stream=sys.stdout)
+    logging.getLogger().setLevel(spec.log_level)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
         for stage_spec in spec.stage_specs:
-            _prepare_accelerator_environment(stage_spec, log)
+            prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
         prepare_weight_share_process_compat()
-        _run_process(spec, ready_event, log)
+        run_process(spec, ready_event, log)
     except (KeyboardInterrupt, SystemExit):
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
+        destroy_torch_distributed_process_group(log)
+        reclaim_process_cuda_memory(
+            stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
@@ -396,9 +442,9 @@ def stage_process_main(
         with suppress(Exception):
             traceback.clear_frames(exc.__traceback__)
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
-        _destroy_torch_distributed_process_group(log)
-        _reclaim_process_cuda_memory(
-            _stage_gpu_ids(spec.stage_specs),
+        destroy_torch_distributed_process_group(log)
+        reclaim_process_cuda_memory(
+            stage_gpu_ids(spec.stage_specs),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
@@ -407,7 +453,7 @@ def stage_process_main(
         sys.exit(1)
 
 
-def _run_process(
+def run_process(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
     log: logging.Logger,
@@ -454,7 +500,7 @@ def _run_process(
     try:
         for stage_spec in spec.stage_specs:
             stages.append(
-                _construct_stage(
+                construct_stage(
                     stage_spec,
                     log,
                     local_dispatcher=local_dispatcher,
@@ -463,7 +509,7 @@ def _run_process(
         local_dispatcher.register_many(stages)
         asyncio.run(_start_and_run())
     except BaseException:
-        _cleanup_constructed_stages(
+        cleanup_constructed_stages(
             stages,
             log,
             reason=f"stage process {spec.process_name} failure",
@@ -471,7 +517,7 @@ def _run_process(
         raise
 
 
-def _cleanup_constructed_stages(
+def cleanup_constructed_stages(
     stages: list[Stage],
     log: logging.Logger,
     *,
@@ -497,7 +543,7 @@ def _cleanup_constructed_stages(
             stage.scheduler = None
 
 
-def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
+def stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     return sorted(
         {
             int(stage_spec.gpu_id)
@@ -507,7 +553,7 @@ def _stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     )
 
 
-def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
+def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
     try:
         import torch.distributed as dist
 
@@ -522,7 +568,7 @@ def _destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         )
 
 
-def _reclaim_process_cuda_memory(
+def reclaim_process_cuda_memory(
     gpu_ids: Iterable[int],
     log: logging.Logger,
     *,
@@ -573,7 +619,7 @@ def _reclaim_process_cuda_memory(
         )
 
 
-def _construct_stage(
+def construct_stage(
     spec: StageLaunchConfig,
     log: logging.Logger,
     local_dispatcher: LocalStageDispatcher | None = None,
@@ -591,7 +637,7 @@ def _construct_stage(
         spec.tp_size,
     )
 
-    scheduler = _construct_scheduler(spec, gpu_id, log)
+    scheduler = construct_scheduler(spec, gpu_id, log)
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
@@ -605,19 +651,13 @@ def _construct_stage(
             f"unsupported target value {targets!r}"
         )
 
-    def _map_target_list(targets: str | list[str] | None) -> list[str]:
-        return [spec.name_map.get(t, t) for t in _target_list(targets)]
-
-    def _map_wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
+    def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
         if sources is None:
             return None
         if isinstance(sources, str):
-            return [spec.name_map.get(sources, sources)]
+            return [sources]
         if isinstance(sources, Iterable):
-            return [
-                spec.name_map.get(source, source) if isinstance(source, str) else source
-                for source in sources
-            ]
+            return list(sources)
         raise ValueError(
             f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
             f"source value {sources!r}"
@@ -630,29 +670,29 @@ def _construct_stage(
         allow_empty: bool,
         hook_name: str,
     ) -> str | list[str] | None:
-        mapped_targets = _map_target_list(targets)
-        if not mapped_targets:
+        returned_targets = _target_list(targets)
+        if not returned_targets:
             if allow_empty:
                 return None
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned no targets; "
                 "dynamic route functions must return downstream stage(s)"
             )
-        unknown = set(mapped_targets) - allowed_targets
+        unknown = set(returned_targets) - allowed_targets
         if unknown:
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned targets "
                 f"outside the static topology: {sorted(unknown)}. "
                 f"Allowed targets: {sorted(allowed_targets)}"
             )
-        return mapped_targets[0] if isinstance(targets, str) else mapped_targets
+        return returned_targets[0] if isinstance(targets, str) else returned_targets
 
     # --- Build routing ---
     if spec.is_terminal:
         get_next = lambda request_id, output: None
     elif spec.route_fn:
         route_fn = import_string(spec.route_fn)
-        allowed_route_targets = set(_map_target_list(spec.next_stages))
+        allowed_route_targets = set(_target_list(spec.next_stages))
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
@@ -665,17 +705,15 @@ def _construct_stage(
     else:
         target = spec.next_stages
         if isinstance(target, str):
-            mapped = spec.name_map.get(target, target)
-            get_next = lambda request_id, output, _t=mapped: _t
+            get_next = lambda request_id, output, _t=target: _t
         elif isinstance(target, list):
-            mapped = [spec.name_map.get(t, t) for t in target]
-            get_next = lambda request_id, output, _t=mapped: _t
+            get_next = lambda request_id, output, _t=list(target): _t
         else:
             get_next = lambda request_id, output: None
 
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
-        allowed_stream_targets = set(_map_target_list(spec.stream_targets))
+        allowed_stream_targets = set(spec.stream_targets)
         get_stream_done_targets = (
             lambda request_id, output, _fn=stream_done_to_fn: _target_result(
                 _fn(request_id, output),
@@ -690,14 +728,14 @@ def _construct_stage(
     # --- Build input handler ---
     if spec.wait_for and spec.merge_fn:
         merge_fn = import_string(spec.merge_fn)
-        sources = {spec.name_map.get(n, n) for n in spec.wait_for}
+        sources = set(spec.wait_for)
         expected_sources_fn = None
         if spec.wait_for_fn:
             wait_for_fn = import_string(spec.wait_for_fn)
 
             def expected_sources_fn(request_id, from_stage, data, _fn=wait_for_fn):
                 resolved_sources = _fn(request_id, from_stage, data)
-                return _map_wait_source_list(resolved_sources)
+                return _wait_source_list(resolved_sources)
 
         input_handler = AggregatedInput(
             sources=sources,
@@ -763,6 +801,7 @@ def _construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        replica_topology=spec.replica_topology or None,
     )
 
     if spec.is_stream_receiver:
@@ -771,28 +810,90 @@ def _construct_stage(
     return stage
 
 
-def _construct_scheduler(
+# Summed declared reserves per device for this OS process; colocated stages
+# sharing a worker accumulate into one allocator cap.
+_process_reserve_bytes: dict[int, int] = {}
+
+
+def apply_total_reserve_cap(
+    spec: StageLaunchConfig,
+    gpu_id: int | None,
+    log: logging.Logger,
+) -> None:
+    """Cap this process's torch allocator at its summed declared reserves.
+
+    Note (Jiaxin Deng): with the cap, a stage that outgrows its declared
+    budget OOMs itself instead of a co-tenant on the same GPU, which makes
+    the failure attributable.
+    """
+
+    if (
+        spec.total_reserve_bytes is None
+        or not spec.enforce_total_reserve
+        or gpu_id is None
+    ):
+        return
+    import torch
+
+    if not torch.cuda.is_available():
+        return
+    device = int(gpu_id)
+    total = torch.cuda.get_device_properties(device).total_memory
+    _process_reserve_bytes[device] = (
+        _process_reserve_bytes.get(device, 0) + spec.total_reserve_bytes
+    )
+    fraction = min(1.0, _process_reserve_bytes[device] / total)
+    torch.cuda.set_per_process_memory_fraction(fraction, device)
+    log.info(
+        "Stage %s: torch allocator capped at %d bytes on cuda:%d (fraction %.4f)",
+        spec.stage_name,
+        _process_reserve_bytes[device],
+        device,
+        fraction,
+    )
+
+
+def construct_scheduler(
     spec: StageLaunchConfig,
     gpu_id: int | None,
     log: logging.Logger,
 ) -> Any:
     """Build a scheduler, serializing GPU factory work per visible device."""
 
+    from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
+
+    apply_total_reserve_cap(spec, gpu_id, log)
     factory = import_string(spec.factory)
+    factory_args = apply_typed_stage_kwargs(
+        factory,
+        spec.factory_kwargs,
+        spec.typed_kwargs,
+        stage_name=spec.stage_name,
+    )
+    kv_cache_bytes = spec.kv_cache_bytes
     factory_args = resolve_factory_signature_args(
         factory,
-        spec.factory_args,
+        factory_args,
         defaults=spec.factory_arg_defaults,
+        require_gpu_id=spec.require_factory_gpu_id,
+        stage_name=spec.stage_name,
     )
+
+    def _invoke() -> Any:
+        if kv_cache_bytes is None:
+            return factory(**factory_args)
+        with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
+            return factory(**factory_args)
+
     if gpu_id is None:
-        return factory(**factory_args)
+        return _invoke()
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
-        return factory(**factory_args)
+        return _invoke()
 
 
-def _prepare_accelerator_environment(
+def prepare_accelerator_environment(
     spec: StageLaunchConfig,
     log: logging.Logger,
 ) -> None:
@@ -806,8 +907,12 @@ def _prepare_accelerator_environment(
         current_platform.is_cuda_alike()
         and os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true"
     ):
+        if spec.gpu_id is None:
+            # A CPU stage colocated in a GPU-narrowed process keeps its
+            # identity; normalizing it would bind it to the local device.
+            return
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
-        _normalize_spec_gpu_id_to_local_device(spec)
+        normalize_spec_gpu_id_to_local_device(spec)
         log.info(
             "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
             spec.stage_name,
@@ -833,7 +938,7 @@ def _prepare_accelerator_environment(
         )
         return
 
-    _normalize_spec_gpu_id_to_local_device(spec)
+    normalize_spec_gpu_id_to_local_device(spec)
     log.info(
         "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
         spec.stage_name,
@@ -842,17 +947,20 @@ def _prepare_accelerator_environment(
     )
 
 
-def _normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
+def normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     if spec.placement_gpu_id is None:
         spec.placement_gpu_id = spec.gpu_id
     spec.gpu_id = 0
-    if "gpu_id" in spec.factory_arg_defaults:
-        spec.factory_arg_defaults["gpu_id"] = 0
-    if "gpu_id" in spec.comm_config:
-        spec.comm_config["gpu_id"] = 0
+    for kwargs in (
+        spec.typed_kwargs,
+        spec.factory_arg_defaults,
+        spec.comm_config,
+    ):
+        if kwargs.get("gpu_id") is not None:
+            kwargs["gpu_id"] = 0
 
 
-def _process_name(spec: StageWorkerProcessSpec) -> str:
+def process_name(spec: StageWorkerProcessSpec) -> str:
     if len(spec.stage_specs) > 1:
         return f"process-{spec.process_name}"
     stage_spec = spec.stage_specs[0]
@@ -863,7 +971,7 @@ def _process_name(spec: StageWorkerProcessSpec) -> str:
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
 
 
-def _close_queue(q: object) -> None:
+def close_queue(q: object) -> None:
     q.close()
     join_thread = getattr(q, "join_thread", None)
     if callable(join_thread):

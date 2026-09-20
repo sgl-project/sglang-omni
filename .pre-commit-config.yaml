@@ -1,6 +1,6 @@
 default_stages: [pre-commit, pre-push, manual]
 
-exclude: \.txt$
+exclude: \.(txt|ulaw)$
 
 repos:
   - repo: https://github.com/PyCQA/autoflake
@@ -23,7 +23,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
-        exclude: ^\.claude/skills/
+        exclude: (?:^\.claude/skills/|^sglang_omni_router/rust/tests/.*\.rs$)
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -39,6 +39,7 @@ repos:
         args: [--select=F401, --fixable=F401]
         files: ^(benchmarks/|docs/|examples/)
         exclude: \.ipynb$
+      - id: ruff-check
   - repo: https://github.com/psf/black
     rev: 24.10.0
     hooks:
@@ -65,3 +66,18 @@ repos:
         language: system
         files: ^\.github/CI_PERMISSIONS\.json$
         pass_filenames: false
+      - id: rustfmt-sglang-omni-router
+        name: rustfmt sglang-omni-router
+        entry: bash -c 'cd sglang_omni_router/rust && cargo fmt --all -- --check'
+        language: system
+        files: ^sglang_omni_router/rust/.*\.rs$
+        pass_filenames: false
+      # Matches every new/existing file under sglang_omni/, including models/*.
+      # --fix rewrites the current file in place, same pattern as isort.
+      - id: leading-underscore-names
+        name: leading-underscore class and function names
+        entry: python3 scripts/check_leading_underscore.py --fix
+        language: system
+        types: [python]
+        files: ^sglang_omni/
+        exclude: ^sglang_omni/vendor/

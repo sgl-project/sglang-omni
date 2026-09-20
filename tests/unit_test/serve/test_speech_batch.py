@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from sglang_omni.client import ClientError
 from sglang_omni.client.types import SpeechResult
+from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import _create_speech_batch_with_disconnect_watch
+from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+
+CONTEXT_LENGTH_ERROR = (
+    "Requested token count exceeds the model's maximum context length"
+)
 
 
 class RecordingBatchSpeechClient:
@@ -101,6 +108,8 @@ class MixedBatchSpeechClient:
             await asyncio.sleep(0.01)
         if request.prompt == "fail":
             raise ClientError("model failed")
+        if request.prompt == "context":
+            raise RuntimeError(CONTEXT_LENGTH_ERROR)
         return SpeechResult(
             audio_bytes=f"audio:{request.prompt}".encode(),
             mime_type=f"audio/{response_format}",
@@ -113,11 +122,52 @@ class CountingReferenceSpeechRequestValidator(SpeechRequestValidator):
         super().__init__(default_model="tts")
         self.reference_loads: list[str] = []
 
-    def _load_media_reference_descriptor(
+    def load_media_reference_descriptor(
         self, value: str, *, param: str
     ) -> dict[str, str]:
         self.reference_loads.append(value)
         return {"data": "UklGRg==", "media_type": "audio/wav"}
+
+
+def test_custom_voice_batch_validates_each_item_before_io(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("SPEAKER_SAMPLES_DIR", str(tmp_path))
+    client_impl = RecordingBatchSpeechClient()
+    app = create_app(
+        client_impl,
+        custom_voice_config=CustomVoiceConfig(
+            speakers=("speaker",), task_type="CustomVoice"
+        ),
+    )
+    load = Mock(side_effect=AssertionError("Invalid reference must not be read"))
+    monkeypatch.setattr(
+        app.state.speech_service.reference_connector, "load_resource", load
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/speech/batch",
+            json={
+                "voice": "speaker",
+                "items": [
+                    {"input": "valid"},
+                    {"input": "bad voice", "voice": "missing"},
+                    {"input": "bad task", "task_type": "Base"},
+                    {
+                        "input": "bad reference",
+                        "ref_audio": "https://example.com/ref.wav",
+                    },
+                ],
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 3)
+    assert [
+        item["error"]["param"] for item in body["results"] if item["status"] == "error"
+    ] == ["items.1.voice", "items.2.task_type", "items.3.ref_audio"]
+    assert [request.prompt for request in client_impl.requests] == ["valid"]
+    load.assert_not_called()
 
 
 def test_batch_speech_preserves_order_and_item_errors() -> None:
@@ -199,6 +249,37 @@ def test_batch_speech_applies_pipeline_reference_requirements() -> None:
 
     assert response.status_code == 200
     assert response.json()["results"][0]["error"]["param"] == "items.0.ref_audio"
+    assert client_impl.requests == []
+
+
+def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="cosyvoice",
+            required_speech_reference_count=1,
+            speech_reference_text_excludes_instructions=True,
+        )
+    )
+    ref_audio = base64.b64encode(b"RIFF").decode("ascii")
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "items": [
+                {
+                    "input": "hello",
+                    "ref_audio": f"data:audio/wav;base64,{ref_audio}",
+                    "ref_text": "reference transcript",
+                    "instructions": "speak warmly",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["error"]["param"] == ("items.0.instructions")
     assert client_impl.requests == []
 
 
@@ -430,6 +511,30 @@ def test_batch_speech_isolates_runtime_failures_and_preserves_order() -> None:
     assert set(client_impl.requests) == {"slow", "fail", "fast"}
 
 
+def test_batch_speech_maps_context_rejection_to_bad_request() -> None:
+    client_impl = MixedBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "model": "tts",
+            "voice": "default",
+            "items": [{"input": "context"}, {"input": "fast"}],
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["status"] == "error"
+    assert result["error"] == {
+        "message": CONTEXT_LENGTH_ERROR,
+        "type": "BadRequestError",
+        "param": None,
+        "code": 400,
+    }
+
+
 def test_batch_speech_cancellation_aborts_started_items() -> None:
     async def run() -> None:
         service = SpeechRequestValidator(default_model="tts")
@@ -484,7 +589,7 @@ def test_batch_speech_request_disconnect_aborts_started_items() -> None:
         request = DisconnectingBatchRequest(client_impl)
 
         with pytest.raises(asyncio.CancelledError):
-            await _create_speech_batch_with_disconnect_watch(
+            await create_speech_batch_with_disconnect_watch(
                 request,
                 client=client_impl,
                 speech_service=service,

@@ -13,7 +13,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: --rm -e NVIDIA_VISIBLE_DEVICES -e OMNI_CI_CPUSET -v /dev/shm:/dev/shm -v /data/omni-ci:/data/omni-ci
     steps:
       - name: Checkout code

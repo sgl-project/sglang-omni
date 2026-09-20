@@ -75,7 +75,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.videomme import DEFAULT_REPO_ID as _VIDEOMME_DEFAULT_REPO
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
@@ -118,7 +118,7 @@ class VideoEvalConfig:
     video_total_pixels: int | None = None
     output_dir: str | None = None
     max_concurrency: int = 1
-    warmup: int = 0
+    warmup: int | None = None
     request_rate: float = float("inf")
     timeout_s: int = 300
     disable_tqdm: bool = False
@@ -205,7 +205,8 @@ async def run_video_eval(
             "video_max_pixels": config.video_max_pixels,
             "video_total_pixels": config.video_total_pixels,
             "max_concurrency": config.max_concurrency,
-            "warmup": config.warmup,
+            "warmup": resolve_warmup(config.warmup, config.max_concurrency),
+            "request_rate": config.request_rate,
             "enable_audio": config.enable_audio,
             "asr_device": config.asr_device,
             "asr_concurrency": config.asr_concurrency,
@@ -276,7 +277,12 @@ def add_video_eval_args(parser: argparse.ArgumentParser, *, repo_help: str) -> N
     parser.add_argument("--video-min-pixels", type=int, default=None)
     parser.add_argument("--video-max-pixels", type=int, default=None)
     parser.add_argument("--video-total-pixels", type=int, default=None)
-    parser.add_argument("--warmup", type=int, default=0)
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup requests; defaults to the configured concurrency.",
+    )
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--request-rate", type=float, default=float("inf"))
     parser.add_argument("--timeout-s", type=int, default=300)

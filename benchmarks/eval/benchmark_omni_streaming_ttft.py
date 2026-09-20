@@ -2,24 +2,26 @@
 """Streaming time-to-first-audio-chunk (TTFT) benchmark for Qwen3-Omni speech.
 
 Measures wall-clock latency from request submission to the first audio
-delta returned by ``POST /v1/chat/completions`` with
-``modalities=["text","audio"]`` and ``stream=true``. Designed to surface
-the gain from partial-prefix talker startup (``partial_start_min_chunks``),
+delta returned by POST /v1/chat/completions with
+modalities=["text","audio"] and stream=true. Designed to surface
+the gain from partial-prefix talker startup (partial_start_min_chunks),
 which MMMU end-to-end accuracy benchmarks cannot observe because their
 total-request latency is dominated by the thinker.
 
 Usage:
-    # Baseline server (partial-start disabled):
-    python examples/run_qwen3_omni_speech_server.py --port 8001 ...
-    python benchmarks/eval/benchmark_omni_streaming_ttft.py \\
-        --base-url http://localhost:8001 \\
+    python examples/run_qwen3_omni_speech_server.py --port 8001 \
+        --no-enable-partial-start
+
+    python -m benchmarks.eval.benchmark_omni_streaming_ttft \
+        --base-url http://localhost:8001 \
         --label baseline --repeats 5
 
-    # Treatment server (partial-start enabled):
-    python examples/run_qwen3_omni_speech_server.py --port 8001 \\
-        --enable-partial-start --partial-start-min-chunks 5 ...
-    python benchmarks/eval/benchmark_omni_streaming_ttft.py \\
-        --base-url http://localhost:8001 \\
+    # Treatment server (partial-start enabled; explicit flags for the A/B).
+    python examples/run_qwen3_omni_speech_server.py --port 8001 \
+        --enable-partial-start --partial-start-min-chunks 5
+
+    python -m benchmarks.eval.benchmark_omni_streaming_ttft \
+        --base-url http://localhost:8001 \
         --label partial5 --repeats 5
 """
 

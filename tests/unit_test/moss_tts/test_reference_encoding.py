@@ -52,7 +52,7 @@ def test_moss_tts_reference_encoder_uses_shared_audio_loader(
         return np.asarray([0.1, 0.2], dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    encoder = stages._BatchedReferenceEncoder(
+    encoder = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_wait_ms=0,
@@ -105,7 +105,7 @@ def test_moss_tts_slow_reference_load_does_not_block_ready_reference(
         return np.asarray([2.0], dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    encoder = stages._BatchedReferenceEncoder(
+    encoder = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_size=1,
@@ -154,14 +154,14 @@ def test_moss_tts_batch_wait_uses_one_deadline(
             raise stages.queue.Empty
 
     fake_queue = FakeQueue()
-    encoder = object.__new__(stages._BatchedReferenceEncoder)
+    encoder = object.__new__(stages.BatchedReferenceEncoder)
     encoder._max_batch_size = 8
     encoder._max_wait_s = 0.004
     encoder._queue = fake_queue
     clock = iter((10.0, 10.001, 10.003))
     monkeypatch.setattr(stages.time, "monotonic", lambda: next(clock))
 
-    batch, shutdown = encoder._drain_batch()
+    batch, shutdown = encoder.drain_batch()
 
     assert len(batch) == 2
     assert shutdown is False
@@ -173,7 +173,7 @@ def test_moss_tts_batched_reference_encoder_close_is_idempotent() -> None:
     from sglang_omni.models.moss_tts import stages
 
     codec = SimpleNamespace(sample_rate=24000)
-    encoder = stages._BatchedReferenceEncoder(codec, n_vq=2)
+    encoder = stages.BatchedReferenceEncoder(codec, n_vq=2)
     worker = encoder._thread
 
     encoder.close()
@@ -189,9 +189,9 @@ def test_moss_tts_preprocessing_context_closes_replaced_encoder() -> None:
     from sglang_omni.models.moss_tts import stages
 
     codec = SimpleNamespace(sample_rate=24000, device="cuda:0", model=None)
-    first = stages._BatchedReferenceEncoder(codec, n_vq=2)
-    second_batcher = stages._BatchedReferenceEncoder(codec, n_vq=2)
-    second = stages._MossTTSReferenceEncoder(
+    first = stages.BatchedReferenceEncoder(codec, n_vq=2)
+    second_batcher = stages.BatchedReferenceEncoder(codec, n_vq=2)
+    second = stages.MossTTSReferenceEncoder(
         second_batcher,
         codec_model_path="codec",
         n_vq=2,
@@ -256,7 +256,7 @@ def test_moss_tts_path_file_uri_and_data_uri_use_shared_audio_loader(
             encoded_waveforms.extend(waveforms)
             return [torch.full((2, 2), 7, dtype=torch.long) for _ in waveforms]
 
-    encoder = stages._BatchedReferenceEncoder(
+    encoder = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_wait_ms=0,
@@ -311,7 +311,7 @@ def test_moss_tts_batched_reference_encoder_coalesces_and_isolates_errors(
         return np.full(length, length, dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    encoder = stages._BatchedReferenceEncoder(
+    encoder = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_size=4,
@@ -368,7 +368,7 @@ def test_moss_tts_batched_reference_encoder_deduplicates_same_batch(
         return np.zeros(3, dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    encoder = stages._BatchedReferenceEncoder(
+    encoder = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_size=2,
@@ -426,13 +426,13 @@ def test_moss_tts_path_replacement_keeps_content_versions_isolated(
         return np.asarray([value], dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    batcher = stages._BatchedReferenceEncoder(
+    batcher = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=1,
         max_batch_size=2,
         max_batch_wait_ms=0,
     )
-    encoder = stages._MossTTSReferenceEncoder(
+    encoder = stages.MossTTSReferenceEncoder(
         batcher,
         codec_model_path="codec",
         n_vq=1,
@@ -488,12 +488,12 @@ def test_moss_tts_url_cache_tracks_fetched_waveform(
         return np.asarray([next(loaded_values)], dtype=np.float32)
 
     monkeypatch.setattr(stages, "load_audio", fake_load_audio)
-    batcher = stages._BatchedReferenceEncoder(
+    batcher = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=1,
         max_batch_wait_ms=0,
     )
-    encoder = stages._MossTTSReferenceEncoder(
+    encoder = stages.MossTTSReferenceEncoder(
         batcher,
         codec_model_path="codec",
         n_vq=1,
@@ -541,12 +541,12 @@ def test_moss_tts_cached_reference_encoder_uses_loaded_waveform_identity(
 
     monkeypatch.setattr(stages, "load_audio", counting_load_audio)
 
-    batcher = stages._BatchedReferenceEncoder(
+    batcher = stages.BatchedReferenceEncoder(
         FakeAudioTokenizer(),
         n_vq=2,
         max_batch_wait_ms=0,
     )
-    encoder = stages._MossTTSReferenceEncoder(
+    encoder = stages.MossTTSReferenceEncoder(
         batcher,
         codec_model_path="codec",
         n_vq=2,
@@ -591,12 +591,12 @@ def test_moss_tts_cached_reference_encoder_merges_inflight(tmp_path: Path) -> No
             device = "cuda:0"
             model = None
 
-        _audio_tokenizer = AudioTokenizer()
+        _audio_encoder = AudioTokenizer()
 
         @staticmethod
         def load(source):
             del source
-            return stages._LoadedReferenceWaveform(
+            return stages.LoadedReferenceWaveform(
                 torch.zeros(4, dtype=torch.float32),
                 24000,
                 "waveform:shared",
@@ -610,7 +610,7 @@ def test_moss_tts_cached_reference_encoder_merges_inflight(tmp_path: Path) -> No
             assert release.wait(timeout=5)
             return torch.ones((4, 2), dtype=torch.long)
 
-    encoder = stages._MossTTSReferenceEncoder(
+    encoder = stages.MossTTSReferenceEncoder(
         FakeBatched(),
         codec_model_path="codec",
         n_vq=2,

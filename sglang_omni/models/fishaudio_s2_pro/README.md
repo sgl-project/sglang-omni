@@ -38,6 +38,71 @@ Text input ──► Preprocessing ──► SGLang AR Engine ──► DAC Voco
 
 Please refer to [TTS Model Usage](https://github.com/sgl-project/sglang-omni/blob/main/docs/basic_usage/tts.md) for more details.
 
+## Ascend NPU Support
+
+S2-Pro can run on Ascend NPU through the sglang-omni platform abstraction:
+
+- `attention_backend="ascend"` is selected automatically on NPU; single-token
+  Fast-AR decode requires `torch.ops.npu.npu_fused_infer_attention_score`.
+- Decode runs under NPU graph (`cuda_graph_backend_decode="full"`); the eager
+  decode path is avoided because the ascend backend corrupts content under
+  concurrent decode. `torch.compile` defaults to off on NPU because its
+  interaction with the NPU fused operator and NPU graph has not yet been
+  validated for correctness, memory use, or numerical stability. It can be
+  enabled explicitly for validation with `engine.enable_torch_compile: true`.
+
+  ```yaml
+  stages:
+    tts_engine:
+      engine:
+        enable_torch_compile: true
+        torch_compile_max_bs: 16
+  ```
+- Cross-process payloads use SHM transport instead of CUDA IPC.
+- The standard `sgl-omni serve --config examples/configs/s2pro_tts.yaml` command
+  works unchanged; device strings are resolved by `resolve_device_spec`.
+
+### NPU Validation
+
+Start the service with:
+
+```bash
+sgl-omni serve --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000 --allowed-local-media-path .
+```
+
+Pure TTS, voice cloning, and streaming requests were checked through
+`/v1/audio/speech`; all returned HTTP 200 and the generated content matched the
+input text. For example, voice cloning was tested with:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"input":"The quick brown fox jumps over the lazy dog.","voice":"default","ref_audio":"ref.wav","ref_text":"Hello world! This is a Fish Audio S2-Pro reference.","response_format":"wav","max_new_tokens":1024}' \
+  --output vc.wav
+```
+
+The full 1,088-utterance SeedTTS English set was measured at concurrency 16
+after one warmup request:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --use-existing-server --generate-only \
+  --meta zhaochenyang20/seed-tts-eval-arrow \
+  --max-concurrency 16 --model fishaudio/s2-pro --port 8000 \
+  --output-dir results/s2pro_npu_en
+```
+
+| Hardware | Throughput (req/s) | Mean latency (s) | RTF | Success |
+|---|---:|---:|---:|---:|
+| Ascend 910, 64 GiB | 1.428 | 11.14 | 2.88 | 1088/1088 |
+| H100 reference | 1.700 | 9.38 | 2.48 | 1088/1088 |
+| H200 reference | 1.005 | 15.84 | 4.27 | 1088/1088 |
+
+The CUDA rows are official reference results and are directional comparisons;
+the accelerator and software stacks differ from the NPU run.
+
 ## Optimizations with SGLang Omni
 
 By integrating S2's Dual-AR backbone into SGLang's paged-attention engine, we inherit LLM-native optimizations:

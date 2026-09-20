@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import os
 import pickle
+import subprocess
+import sys
 import threading
 import time
 
@@ -267,6 +269,52 @@ def test_handle_file_for_model_uses_class_name(tmp_path):
     )
 
 
+def test_reduction_compat_covers_processes_without_a_share_role(monkeypatch):
+    """A relay-only stage unpickles the engine's tensors and needs the patch."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "sglang.srt.utils.patch_torch.monkey_patch_torch_reductions",
+        lambda: calls.append(1),
+    )
+    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE, raising=False)
+
+    monkeypatch.delenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, raising=False)
+    ipc_weights.prepare_weight_share_process_compat()
+    assert calls == []
+
+    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE_COMPAT, "1")
+    ipc_weights.prepare_weight_share_process_compat()
+    assert calls == [1]
+
+
+def test_reduction_compat_keeps_cpu_tensors_crossing_a_queue_intact():
+    """TP leader fanout pickles CPU tensors through multiprocessing queues.
+
+    Run in a subprocess because the reductions patch is process global.
+    """
+    pytest.importorskip("sglang.srt.utils.patch_torch")
+    script = """
+import os, pickle, sys
+import torch
+from multiprocessing.reduction import ForkingPickler
+os.environ["SGLANG_OMNI_WEIGHT_SHARE_COMPAT"] = "1"
+from sglang_omni.utils.ipc_weights import prepare_weight_share_process_compat
+from sglang_omni.pipeline.tp_control import TPWorkMessage
+prepare_weight_share_process_compat()
+prepare_weight_share_process_compat()
+msg = TPWorkMessage(request_id="r1", data={"x": torch.arange(6.0).view(2, 3)})
+out = pickle.loads(ForkingPickler.dumps(msg))
+assert torch.equal(out.data["x"], msg.data["x"]), out
+assert out.data["x"].device.type == "cpu"
+print("cpu round trip ok")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=300
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "cpu round trip ok" in result.stdout
+
+
 def test_validate_weight_share_architecture_allows_and_rejects():
     # Note (Jiaxin Deng): exact-set locks so an arch cannot enter or leave
     # either registry without updating the expectations here. Supported means
@@ -328,13 +376,13 @@ def test_is_zombie_parses_state_after_comm(monkeypatch):
         "read_text",
         lambda _self, encoding=None: "42 (weight (leader)) Z 1 2 3\n",
     )
-    assert ipc_weights._is_zombie(42)
+    assert ipc_weights.is_zombie(42)
     monkeypatch.setattr(
         ipc_weights.Path,
         "read_text",
         lambda _self, encoding=None: "42 (weight (leader)) R 1 2 3\n",
     )
-    assert not ipc_weights._is_zombie(42)
+    assert not ipc_weights.is_zombie(42)
 
 
 def test_is_zombie_false_when_stat_unreadable(monkeypatch):
@@ -342,7 +390,7 @@ def test_is_zombie_false_when_stat_unreadable(monkeypatch):
         raise OSError
 
     monkeypatch.setattr(ipc_weights.Path, "read_text", _raise)
-    assert not ipc_weights._is_zombie(42)
+    assert not ipc_weights.is_zombie(42)
 
 
 _POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX fs-trust checks")
@@ -352,7 +400,7 @@ _POSIX_ONLY = pytest.mark.skipif(os.name != "posix", reason="POSIX fs-trust chec
 def test_validate_secure_dir_rejects_group_world(tmp_path):
     os.chmod(tmp_path, 0o777)
     with pytest.raises(WeightShareError, match="group/world"):
-        ipc_weights._validate_secure_dir(str(tmp_path))
+        ipc_weights.validate_secure_dir(str(tmp_path))
 
 
 @_POSIX_ONLY
@@ -360,7 +408,7 @@ def test_validate_secure_dir_rejects_foreign_owner(tmp_path, monkeypatch):
     os.chmod(tmp_path, 0o700)
     monkeypatch.setattr(ipc_weights.os, "geteuid", lambda: os.stat(tmp_path).st_uid + 1)
     with pytest.raises(WeightShareError, match="owned by"):
-        ipc_weights._validate_secure_dir(str(tmp_path))
+        ipc_weights.validate_secure_dir(str(tmp_path))
 
 
 @_POSIX_ONLY
@@ -383,12 +431,12 @@ def test_load_payload_rejects_symlinked_handle(tmp_path):
 def test_check_leader_alive_rejects_dead_pid(monkeypatch):
     monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: False)
     with pytest.raises(WeightShareError, match="not alive"):
-        ipc_weights._check_leader_alive(
+        ipc_weights.check_leader_alive(
             {"pid": 4321, "leader_start_time": "1"}, "before attach"
         )
     monkeypatch.setattr(ipc_weights, "pid_is_alive", lambda pid: True)
-    monkeypatch.setattr(ipc_weights, "_proc_start_time", lambda pid: "1")
-    ipc_weights._check_leader_alive(
+    monkeypatch.setattr(ipc_weights, "proc_start_time", lambda pid: "1")
+    ipc_weights.check_leader_alive(
         {"pid": 4321, "leader_start_time": "1"}, "before attach"
     )  # alive + matching start time: no raise
 
@@ -398,14 +446,14 @@ def test_check_leader_alive_rejects_recycled_pid():
     # Note (Jiaxin Deng): same live pid but a different recorded start time
     # means the pid was reused.
     with pytest.raises(WeightShareError, match="recycled"):
-        ipc_weights._check_leader_alive(
+        ipc_weights.check_leader_alive(
             {"pid": os.getpid(), "leader_start_time": "0"}, "before attach"
         )
     ok = {
         "pid": os.getpid(),
-        "leader_start_time": ipc_weights._proc_start_time(os.getpid()),
+        "leader_start_time": ipc_weights.proc_start_time(os.getpid()),
     }
-    ipc_weights._check_leader_alive(ok, "before attach")  # matching start: no raise
+    ipc_weights.check_leader_alive(ok, "before attach")  # matching start: no raise
 
 
 def _min_payload(**overrides):
@@ -415,8 +463,8 @@ def _min_payload(**overrides):
         "manifest_hash": "x",
         "private_names": [],
         "pid": os.getpid(),
-        "leader_start_time": ipc_weights._proc_start_time(os.getpid()),
-        "gpu_uuid": ipc_weights._gpu_uuid(),
+        "leader_start_time": ipc_weights.proc_start_time(os.getpid()),
+        "gpu_uuid": ipc_weights.gpu_uuid(),
         "ipc_blob": b"",
         "ipc_names": [],
         "value_blobs": {},
@@ -495,9 +543,9 @@ def test_run_id_mismatch_rejected(handle_path):
 
 
 def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
-    monkeypatch.setattr(ipc_weights, "_gpu_uuid", lambda: "GPU-2222")
+    monkeypatch.setattr(ipc_weights, "gpu_uuid", lambda: "GPU-2222")
     with pytest.raises(WeightShareError, match="GPU"):
-        ipc_weights._check_model_identity(
+        ipc_weights.check_model_identity(
             {"gpu_uuid": "GPU-1111"}, None, None, "handle", run_id=None
         )
 
@@ -505,9 +553,9 @@ def test_check_model_identity_rejects_wrong_gpu(monkeypatch):
 @_POSIX_ONLY
 def test_claim_namespace_refuses_second_leader(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
-    ipc_weights._claim_namespace(path, "run-A")  # first leader holds the flock
+    ipc_weights.claim_namespace(path, "run-A")  # first leader holds the flock
     with pytest.raises(WeightShareError, match="owns the weight-share"):
-        ipc_weights._claim_namespace(path, "run-B")
+        ipc_weights.claim_namespace(path, "run-B")
 
 
 class ScratchModel(nn.Module):
@@ -578,10 +626,10 @@ def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
     # Note (Jiaxin Deng): a leader that IPC-shared a policy-private tensor is
     # the corruption vector itself, so the follower must refuse the whole blob.
     path = str(tmp_path / "ScratchModel.weights-ipc")
-    tensors = ipc_weights._named_shared_tensors(ScratchModel(seed=1))
+    tensors = ipc_weights.named_shared_tensors(ScratchModel(seed=1))
     payload = _min_payload(
         model_class="ScratchModel",
-        manifest_hash=ipc_weights._manifest_hash(tensors, _SCRATCH_PRIVATE),
+        manifest_hash=ipc_weights.manifest_hash(tensors, _SCRATCH_PRIVATE),
         private_names=sorted(_SCRATCH_PRIVATE),
         ipc_blob=IdentitySerializer.serialize(dict(tensors)),
         ipc_names=sorted(tensors),
@@ -593,10 +641,10 @@ def test_ipc_blob_sharing_private_tensor_rejected(tmp_path):
 
 
 def test_manifest_hash_includes_classification():
-    tensors = ipc_weights._named_shared_tensors(ScratchModel(seed=1))
-    assert ipc_weights._manifest_hash(
-        tensors, frozenset()
-    ) != ipc_weights._manifest_hash(tensors, _SCRATCH_PRIVATE)
+    tensors = ipc_weights.named_shared_tensors(ScratchModel(seed=1))
+    assert ipc_weights.manifest_hash(tensors, frozenset()) != ipc_weights.manifest_hash(
+        tensors, _SCRATCH_PRIVATE
+    )
 
 
 def test_verify_attachment_detects_private_rebound(tmp_path):
@@ -641,11 +689,11 @@ def test_cross_registered_private_tensor_rejected(tmp_path):
 
 def test_payload_with_unregistered_tensor_rejected(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
-    tensors = ipc_weights._named_shared_tensors(TinyModel(seed=1))
+    tensors = ipc_weights.named_shared_tensors(TinyModel(seed=1))
     blob = dict(tensors)
     blob["ghost.weight"] = torch.randn(2)
     payload = _min_payload(
-        manifest_hash=ipc_weights._manifest_hash(tensors, frozenset()),
+        manifest_hash=ipc_weights.manifest_hash(tensors, frozenset()),
         ipc_blob=IdentitySerializer.serialize(blob),
         ipc_names=sorted(blob),
     )
@@ -657,15 +705,13 @@ def test_payload_with_unregistered_tensor_rejected(tmp_path):
 
 def test_name_in_both_ipc_and_value_rejected(tmp_path):
     path = str(tmp_path / "TinyModel.weights-ipc")
-    tensors = ipc_weights._named_shared_tensors(TinyModel(seed=1))
+    tensors = ipc_weights.named_shared_tensors(TinyModel(seed=1))
     payload = _min_payload(
-        manifest_hash=ipc_weights._manifest_hash(tensors, frozenset()),
+        manifest_hash=ipc_weights.manifest_hash(tensors, frozenset()),
         ipc_blob=IdentitySerializer.serialize(dict(tensors)),
         ipc_names=sorted(tensors),
         value_blobs={
-            "linear.weight": ipc_weights._tensor_to_value_bytes(
-                tensors["linear.weight"]
-            )
+            "linear.weight": ipc_weights.tensor_to_value_bytes(tensors["linear.weight"])
         },
     )
     with open(path, "wb") as fh:

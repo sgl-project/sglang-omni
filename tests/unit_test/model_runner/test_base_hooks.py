@@ -40,7 +40,7 @@ def _install_fake_forward_batch_module(monkeypatch: pytest.MonkeyPatch) -> None:
             capture_hidden_mode=None,
             return_hidden_states_before_norm,
         ):
-            # Mirrors the sglang 0.5.16 signature: both overrides are
+            # Mirrors the upstream signature: both overrides are
             # keyword-only and return_hidden_states_before_norm is required.
             del model_runner, return_hidden_states_before_norm
             return SimpleNamespace(
@@ -75,6 +75,7 @@ def _scheduler_output(*, is_prefill: bool):
         is_prefill_only=False,
         output_ids=None,
         marker="worker-batch",
+        sampling_info=SimpleNamespace(penalizer_orchestrator=None),
         prefill_input_ids_cpu=None,
         mix_running_indices=None,
     )
@@ -303,7 +304,7 @@ def test_prepare_and_forward_clears_sidecar_before_cleanup_on_forward_error() ->
     )
 
     with pytest.raises(ValueError, match="forward failed"):
-        runner._prepare_and_forward(
+        runner.prepare_and_forward(
             forward_batch,
             SimpleNamespace(is_prefill_only=True),
             [],
@@ -370,7 +371,7 @@ def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
         ),
     ]
 
-    runner._finalize(
+    runner.finalize(
         SimpleNamespace(
             next_token_ids=torch.tensor([1, 2]),
             logits_output=None,

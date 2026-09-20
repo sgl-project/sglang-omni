@@ -7,7 +7,7 @@ import threading
 import pytest
 import torch
 
-from sglang_omni.scheduling.stage_cache import StageOutputCache, _value_size_bytes
+from sglang_omni.scheduling.stage_cache import StageOutputCache, value_size_bytes
 
 
 def _fixed_size(_value: object) -> int:
@@ -15,10 +15,10 @@ def _fixed_size(_value: object) -> int:
 
 
 def test_value_size_bytes_counts_byte_buffers() -> None:
-    assert _value_size_bytes(b"x" * 1024) == 1024
-    assert _value_size_bytes(bytearray(16)) == 16
-    assert _value_size_bytes({"a": b"xx", "b": [b"yyy"]}) == 5
-    assert _value_size_bytes(torch.zeros(4, dtype=torch.float32)) == 16
+    assert value_size_bytes(b"x" * 1024) == 1024
+    assert value_size_bytes(bytearray(16)) == 16
+    assert value_size_bytes({"a": b"xx", "b": [b"yyy"]}) == 5
+    assert value_size_bytes(torch.zeros(4, dtype=torch.float32)) == 16
 
 
 def test_stage_output_cache_evicts_on_byte_buffer_size() -> None:
@@ -168,6 +168,7 @@ def test_pin_memory_is_inert_without_cuda(monkeypatch: pytest.MonkeyPatch) -> No
     assert cached is not None and cached.device.type == "cpu"
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
@@ -184,6 +185,7 @@ def test_pinned_cache_stores_device_tensors_in_page_locked_memory() -> None:
     assert all(t.is_pinned() for t in nested["a"])
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
@@ -195,6 +197,7 @@ def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     assert cached_host.data_ptr() == host.data_ptr() and cached_host.is_pinned()
 
 
+@pytest.mark.accelerator
 @_requires_cuda
 def test_pinned_cache_falls_back_to_pageable_on_alloc_failure(
     monkeypatch: pytest.MonkeyPatch,
@@ -204,7 +207,7 @@ def test_pinned_cache_falls_back_to_pageable_on_alloc_failure(
     def _boom(_value: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("cudaHostAlloc failed")
 
-    monkeypatch.setattr(stage_cache, "_to_pinned_host", _boom)
+    monkeypatch.setattr(stage_cache, "to_pinned_host", _boom)
     cache = StageOutputCache(cache_device="cpu", pin_memory=True)
     src = torch.ones(4, device="cuda")
     cache.put("k", src)

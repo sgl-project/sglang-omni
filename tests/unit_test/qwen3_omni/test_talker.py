@@ -8,9 +8,11 @@ import time
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import ReqKvInfo
 from torch import nn
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
@@ -18,10 +20,14 @@ from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.qwen3_omni.components.talker import (
     Qwen3OmniTalker,
-    _bind_default_weight_loaders,
+    bind_default_weight_loaders,
 )
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.config import (
+    ENABLE_TALKER_START_TOPOLOGY,
+    TALKER_START_MIN_CHUNKS,
+)
 from sglang_omni.models.qwen3_omni.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
@@ -74,42 +80,42 @@ def _prefill_sidecar(
 
 
 def _take_decode_input(sched_req: SimpleNamespace) -> torch.Tensor | None:
-    return QwenTalkerModelRunner._take_next_decode_input_embed(
+    return QwenTalkerModelRunner.take_next_decode_input_embed(
         sched_req=sched_req,
         device=torch.device("cpu"),
         dtype=torch.float32,
     )
 
 
-def test_configure_talker_server_args_uses_override_in_strict_mode() -> None:
-    environ_mod = pytest.importorskip("sglang.srt.environ")
+def test_configure_talker_server_args_writes_through_the_mutation_guard() -> None:
+    """A materialized ServerArgs rejects bare attribute writes, so the talker
+    configuration must go through the audited override path.
+    """
     server_args_mod = pytest.importorskip("sglang.srt.server_args")
-    server_args = server_args_mod.ServerArgs(model_path="dummy")
-    object.__setattr__(server_args, "_declarations_materialized", True)
+    from sglang.srt.arg_groups.overrides import resolution_result
 
-    with environ_mod.envs.SGLANG_STRICT_CONFIG_MUTATION.override(True):
-        want_cuda_graph = configure_talker_server_args(
-            server_args,
-            feedback_enabled=True,
-        )
+    server_args = server_args_mod.ServerArgs(model_path="dummy")
+    server_args.resolve_once()
+
+    want_cuda_graph = configure_talker_server_args(
+        server_args,
+        feedback_enabled=True,
+    )
 
     assert want_cuda_graph is True
-    assert server_args.disable_overlap_schedule is True
-    assert server_args.disable_cuda_graph is True
-    assert server_args.disable_radix_cache is True
-    assert server_args.chunked_prefill_size == 0
+    assert resolution_result(server_args, "disable_overlap_schedule") is True
+    assert resolution_result(server_args, "disable_cuda_graph") is False
+    assert resolution_result(server_args, "disable_radix_cache") is True
+    assert resolution_result(server_args, "chunked_prefill_size") == 0
+    assert server_args.disable_radix_cache is False
     audited_overrides = {}
-    for source, fields in [
-        *server_args._resolved_overrides,
-        *server_args._runtime_mutations,
-    ]:
+    for source, fields in server_args._runtime_mutations:
         assert source == "qwen3_omni.talker"
         audited_overrides.update(fields)
     assert audited_overrides == {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
         "disable_overlap_schedule": True,
-        "disable_cuda_graph": True,
     }
 
 
@@ -216,9 +222,36 @@ def test_qwen_talker_decode_readiness_requires_feedback_and_text_or_pad() -> Non
         tts_pad_embed=torch.tensor([7.0, 8.0]),
     )
 
-    assert not QwenTalkerModelRunner._data_has_next_decode_input(no_text)
-    assert QwenTalkerModelRunner._data_has_next_decode_input(with_text)
-    assert QwenTalkerModelRunner._data_has_next_decode_input(with_pad)
+    assert not QwenTalkerModelRunner.data_has_next_decode_input(no_text)
+    assert QwenTalkerModelRunner.data_has_next_decode_input(with_text)
+    assert QwenTalkerModelRunner.data_has_next_decode_input(with_pad)
+
+
+def test_qwen_talker_decode_inputs_read_the_request_data_as_built() -> None:
+    """The decode input helpers read the request data fields as the builders
+    leave them: empty queues, the pad fallback, and the history the scheduler
+    clears at finish."""
+    data = SGLangARRequestData()
+
+    assert not QwenTalkerModelRunner.data_has_next_decode_input(data)
+    assert QwenTalkerModelRunner.peek_next_decode_inputs(data) is None
+
+    data.pending_feedback_queue.append(torch.tensor([1.0, 2.0]))
+    data.tts_pad_embed = torch.tensor([7.0, 8.0])
+    assert QwenTalkerModelRunner.data_has_next_decode_input(data)
+    feedback, text = QwenTalkerModelRunner.peek_next_decode_inputs(data)
+    assert torch.equal(feedback, torch.tensor([1.0, 2.0]))
+    assert text is data.tts_pad_embed
+
+    QwenTalkerModelRunner.pop_next_decode_inputs(data)
+    assert len(data.pending_feedback_queue) == 0
+    assert QwenTalkerModelRunner.peek_next_decode_inputs(data) is None
+
+    QwenTalkerModelRunner.append_decode_input_history(data, feedback)
+    assert len(data.decode_input_embeds) == 1
+    data.decode_input_embeds = None
+    assert QwenTalkerModelRunner.decode_input_history(data) == []
+    assert data.decode_input_embeds == []
 
 
 def test_qwen_talker_scheduler_waits_for_stream_done_without_replay() -> None:
@@ -226,11 +259,11 @@ def test_qwen_talker_scheduler_waits_for_stream_done_without_replay() -> None:
     scheduler = _fresh_partial_scheduler()
     payload = SimpleNamespace(prefetched_chunks=[], prefetched_stream_done=False)
 
-    assert not scheduler._is_request_build_ready(
+    assert not scheduler.is_request_build_ready(
         payload,
         pending_stream_done=False,
     )
-    assert scheduler._is_request_build_ready(
+    assert scheduler.is_request_build_ready(
         payload,
         pending_stream_done=True,
     )
@@ -243,8 +276,8 @@ def test_qwen_talker_scheduler_waits_for_stream_done_without_replay() -> None:
         prefetched_chunks=[SimpleNamespace(data=torch.tensor([20.0, 20.0]))],
         prefetched_stream_done=True,
     )
-    assert scheduler._is_request_build_ready(payload, pending_stream_done=True)
-    scheduler._initialize_request_stream_state(req_data, payload)
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=True)
+    scheduler.initialize_request_stream_state(req_data, payload)
     assert len(req_data.pending_text_queue) == 1
     assert torch.equal(req_data.pending_text_queue[0], torch.tensor([11.0, 12.0]))
 
@@ -326,45 +359,19 @@ def test_qwen_talker_prefill_keeps_future_rows_device_backed() -> None:
     assert queue[0].device.type == "meta"
 
 
-def test_chunk_hidden_device_mismatch_resolved_before_stack() -> None:
-    """Mixed CPU/CUDA thinker chunks must not crash torch.stack in build_prompt_prefill."""
-    builder = object.__new__(TalkerPrefillBuilder)
-    builder._device = torch.device("meta")
-    builder._dtype = torch.float16
-
-    chunks = [
-        SimpleNamespace(data=torch.ones((3,), dtype=torch.float32), metadata={}),
-        SimpleNamespace(
-            data=torch.zeros((3,), dtype=torch.float32),
-            metadata={
-                "layer_hidden": torch.empty((3,), device="meta", dtype=torch.float32)
-            },
-        ),
-    ]
-
-    # note (YueYin): .to() must happen per-chunk before torch.stack, not after
-    result = torch.stack(
-        [
-            builder.chunk_layer_hidden_or_embed(c).to(
-                device=builder._device, dtype=builder._dtype
-            )
-            for c in chunks
-        ],
-        dim=0,
-    )
-    assert result.shape == (2, 3)
-    assert result.device.type == "meta"
-    assert result.dtype == torch.float16
-
-
-def test_pending_text_queue_rejects_unexpected_rank() -> None:
-    """Keeps queue shape handling explicit instead of flattening unknown ranks."""
+def test_pending_text_queue_rejects_invalid_shapes() -> None:
+    """Keeps queue shape validation explicit."""
     queue = PendingTextTensorQueue()
 
     with pytest.raises(ValueError, match="1D row tensor or a 2D row batch"):
         queue.append_rows(torch.zeros((1, 2, 3)))
     with pytest.raises(ValueError, match="non-empty hidden dimension"):
         queue.append_rows(torch.zeros((1, 0)))
+
+    queue = PendingTextTensorQueue.from_tensor(torch.zeros((2, 3)))
+    with pytest.raises(ValueError, match="hidden dimension must match"):
+        queue.append_rows(torch.zeros((1, 4)))
+    assert len(queue) == 2
 
 
 def test_pending_text_queue_rejects_non_tensor_input() -> None:
@@ -378,16 +385,98 @@ def test_pending_text_queue_rejects_non_tensor_input() -> None:
         coerce_pending_text_queue(object())
 
 
+def test_pending_text_queue_rejects_non_integer_indices() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+
+    for idx in (slice(None), torch.tensor(0)):
+        with pytest.raises(
+            TypeError, match="PendingTextTensorQueue indices must be integers"
+        ):
+            queue.__getitem__(idx)
+
+
 def test_coerce_pending_text_queue_copies_cursor_state() -> None:
     """Avoids sharing mutable FIFO cursor state across request data objects."""
     queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
 
     copied = coerce_pending_text_queue(queue)
     copied.popleft()
+    copied.popleft()
 
     assert copied is not queue
-    assert len(copied) == 1
-    assert len(queue) == 2
+    assert [row.item() for row in copied] == [3.0, 4.0]
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
+
+
+def test_pending_text_queue_preserves_fifo_across_chunks() -> None:
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    queue.append_rows(torch.tensor([[3.0], [4.0]]))
+    queue.append(torch.tensor([5.0]))
+
+    assert len(queue) == 5
+    assert queue[0].item() == 1.0
+    assert queue[3].item() == 4.0
+    assert queue[-1].item() == 5.0
+    assert [queue.popleft().item() for _ in range(5)] == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+        5.0,
+    ]
+    assert not queue
+
+
+def test_pending_text_queue_appends_without_cat_after_partial_consumption(
+    monkeypatch,
+) -> None:
+    queue = PendingTextTensorQueue.from_tensor(
+        torch.tensor([[1.0], [2.0], [3.0]], dtype=torch.float32)
+    )
+
+    assert queue.popleft().item() == 1.0
+
+    def fail_cat(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("pending-text queue append must not invoke torch.cat")
+
+    monkeypatch.setattr(torch, "cat", fail_cat)
+    queue.append_rows(torch.tensor([[4.0], [5.0]], dtype=torch.float64))
+    queue.append(torch.tensor([6.0]))
+
+    assert [row.item() for row in queue] == [2.0, 3.0, 4.0, 5.0, 6.0]
+    assert all(row.dtype == torch.float32 for row in queue)
+
+
+def test_pending_text_queue_appends_after_exhausted_cursor() -> None:
+    queue = PendingTextTensorQueue(rows=torch.tensor([[1.0], [2.0]]), cursor=2)
+
+    assert len(queue) == 0
+    queue.append(torch.tensor([3.0]))
+
+    assert len(queue) == 1
+    assert queue.cursor == 0
+    assert queue[0].item() == 3.0
+
+
+def test_pending_text_queue_runtime_append_reuses_request_queue() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder._im_end_token_id = 99
+    builder.project_assistant_chunk = lambda chunk: torch.tensor([3.0])
+    queue = PendingTextTensorQueue.from_tensor(torch.tensor([[1.0], [2.0]]))
+    req_data = SimpleNamespace(
+        thinker_chunks_done=False,
+        pending_text_queue=queue,
+        tts_eos_embed=torch.tensor([4.0]),
+    )
+
+    builder.append_text_chunk(req_data, SimpleNamespace(metadata={}))
+    assert req_data.pending_text_queue is queue
+
+    builder.mark_thinker_done(req_data)
+    assert req_data.pending_text_queue is queue
+    assert [row.item() for row in queue] == [1.0, 2.0, 3.0, 4.0]
 
 
 def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
@@ -421,7 +510,7 @@ def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
         dtype=torch.float32,
     )
 
-    sampled = Qwen3OmniTalker._sample_code_predictor_token(logits)
+    sampled = Qwen3OmniTalker.sample_code_predictor_token(logits)
 
     assert sampled.shape == (1, 2)
     assert sampled.tolist() == [[2, 0]]
@@ -458,6 +547,27 @@ def test_qwen_predictor_cuda_graph_capture_uses_thread_local_error_mode() -> Non
         )
         for call in graph_calls
     )
+
+
+def test_code_predictor_forward_runs_without_grad_tracking() -> None:
+    grad_enabled = []
+    source = torch.ones(1, requires_grad=True)
+
+    class FakeTalker:
+        def code_predictor_forward_incremental(self, **_kwargs):
+            grad_enabled.append(torch.is_grad_enabled())
+            return torch.zeros(1, dtype=torch.long), source * 2
+
+    with torch.enable_grad():
+        result_codes, summed_embeddings = Qwen3OmniTalker.code_predictor_forward(
+            FakeTalker(), torch.zeros(1), torch.zeros(1)
+        )
+
+    assert grad_enabled == [False]
+    assert result_codes.requires_grad is False
+    assert summed_embeddings.requires_grad is False
+    assert result_codes.grad_fn is None
+    assert summed_embeddings.grad_fn is None
 
 
 class _FakePredictorLmHead(nn.Module):
@@ -499,10 +609,11 @@ def _build_fake_predictor_graph_talker(device: torch.device) -> Qwen3OmniTalker:
     ) -> torch.Tensor:
         return token_embeds[:batch_size] + float(cache_len + 1)
 
-    talker._predictor_forward_one_token = fake_forward_one_token
+    talker.predictor_forward_one_token = fake_forward_one_token
     return talker
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -550,7 +661,7 @@ def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
 
     monkeypatch.setattr(
         talker_module,
-        "_PredictorDecodeGraph",
+        "PredictorDecodeGraph",
         RecordingPredictorDecodeGraph,
     )
 
@@ -570,6 +681,7 @@ def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
     assert (3, torch.int) not in talker._predictor_decode_graphs
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -586,15 +698,14 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
-    # SGLang 0.5.15 constructs nested model buffers while its outer runner is
-    # in inference mode. Replaying later from a no-grad capture must still be
-    # allowed to update those inference tensors in place.
+    # Note (zijiecode): SGLang runs the predictor from inference mode, so capture
+    # and replay are exercised in that mode here as well.
     with torch.inference_mode():
         talker.code_predictor_forward(layer0_codes, talker_hidden)
         torch.cuda.synchronize()
 
     with torch.no_grad():
-        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+        eager_codes, eager_embeds = talker.code_predictor_forward_incremental_eager(
             layer0_codes,
             talker_hidden,
         )
@@ -612,6 +723,7 @@ def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPat
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
@@ -631,7 +743,7 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
     with torch.no_grad():
-        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+        eager_codes, eager_embeds = talker.code_predictor_forward_incremental_eager(
             layer0_codes,
             talker_hidden,
         )
@@ -649,6 +761,7 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     torch.testing.assert_close(graph_embeds, eager_embeds)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="requires two visible CUDA devices",
@@ -670,7 +783,7 @@ def test_qwen_predictor_decode_graph_uses_tensor_device_when_current_device_diff
     talker_hidden = torch.randn(2, 1, 8, device=device)
 
     with torch.no_grad():
-        eager_codes, eager_embeds = talker._code_predictor_forward_incremental_eager(
+        eager_codes, eager_embeds = talker.code_predictor_forward_incremental_eager(
             layer0_codes,
             talker_hidden,
         )
@@ -719,17 +832,9 @@ def _build_assistant_part_for_n_chunks(n: int) -> dict[str, torch.Tensor]:
 
 
 def test_partial_prompt_prefill_layout_invariants() -> None:
-    """Locks the assistant-segment row contract used by partial-start.
-
-    Source of truth for ``MIN_PARTIAL_START_CHUNKS`` and the documented
-    decode-ready operating point: below 3 chunks ``build_assistant_part``
-    fails to assemble the layout (``text_hidden`` is < 9 rows while
-    ``codec_hidden`` is fixed at 9 rows, so the subsequent tensor add raises);
-    at 3 or 4 chunks the layout is stable but ``future_text_rows`` collapses
-    to zero after the trailing EOS row is stripped on the partial path; from
-    5 chunks onward at least one consumable future text row remains.
-    """
-    for n in range(1, MIN_PARTIAL_START_CHUNKS):
+    # Note (wenyao): n counts the three generation-prompt rows plus text chunks;
+    # fewer than three rows cannot fill the fixed nine-row codec layout.
+    for n in range(1, 3):
         try:
             _build_assistant_part_for_n_chunks(n)
         except RuntimeError:
@@ -771,12 +876,13 @@ def _fresh_partial_scheduler(
     *,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
+    talker_start_topology: bool = False,
 ) -> QwenTalkerScheduler:
-    """Build a bare scheduler instance with only the partial-start state needed."""
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler._enable_partial_start = enable_partial_start
     scheduler._partial_start_min_chunks = partial_start_min_chunks
     scheduler._im_end_token_id = None
+    scheduler._talker_start_topology = talker_start_topology
     return scheduler
 
 
@@ -798,8 +904,8 @@ def test_partial_disabled_preserves_legacy_path() -> None:
     scheduler = _fresh_partial_scheduler(enable_partial_start=False)
     payload = _make_payload(prefetched_chunks=[object()] * 50)
 
-    assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
-    assert scheduler._is_request_build_ready(payload, pending_stream_done=True)
+    assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=True)
 
 
 def test_partial_enabled_below_threshold_stays_deferred() -> None:
@@ -809,7 +915,7 @@ def test_partial_enabled_below_threshold_stays_deferred() -> None:
     )
     payload = _make_payload(prefetched_chunks=[object()] * 4)
 
-    assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
+    assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
 
 
 def test_partial_enabled_at_threshold_returns_true_with_done_false() -> None:
@@ -819,7 +925,7 @@ def test_partial_enabled_at_threshold_returns_true_with_done_false() -> None:
     )
     payload = _make_payload(prefetched_chunks=[object()] * 5)
 
-    assert scheduler._is_request_build_ready(payload, pending_stream_done=False)
+    assert scheduler.is_request_build_ready(payload, pending_stream_done=False)
 
 
 def test_partial_rejects_min_chunks_below_layout_floor(monkeypatch) -> None:
@@ -850,21 +956,19 @@ def test_partial_count_strips_only_trailing_im_end_chunk() -> None:
     trailing_im_end = _make_payload(
         prefetched_chunks=[_chunk(100), _chunk(101), _chunk(13)]
     )
-    assert not scheduler._is_request_build_ready(
+    assert not scheduler.is_request_build_ready(
         trailing_im_end, pending_stream_done=False
     )
 
     midstream_im_end = _make_payload(
         prefetched_chunks=[_chunk(100), _chunk(13), _chunk(101)]
     )
-    assert scheduler._is_request_build_ready(
-        midstream_im_end, pending_stream_done=False
-    )
+    assert scheduler.is_request_build_ready(midstream_im_end, pending_stream_done=False)
 
     enough = _make_payload(
         prefetched_chunks=[_chunk(100), _chunk(13), _chunk(102), _chunk(13)]
     )
-    assert scheduler._is_request_build_ready(enough, pending_stream_done=False)
+    assert scheduler.is_request_build_ready(enough, pending_stream_done=False)
 
 
 def test_partial_enabled_zero_chunks_stays_deferred() -> None:
@@ -874,7 +978,155 @@ def test_partial_enabled_zero_chunks_stays_deferred() -> None:
     )
     payload = _make_payload(prefetched_chunks=[])
 
-    assert not scheduler._is_request_build_ready(payload, pending_stream_done=False)
+    assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
+
+
+def test_talker_prompt_tail_assembles_from_one_thinker_chunk() -> None:
+    # Note (wenyao): <|im_start|>, assistant, and newline supply the three prefix
+    # rows, so one text chunk fills the first-text slot of the nine-row tail.
+    parts = _build_assistant_part_for_n_chunks(3 + TALKER_START_MIN_CHUNKS)
+
+    assert parts["input_embeds"].shape[0] == 9
+    hidden_dim = parts["input_embeds"].shape[-1]
+    segment = torch.arange(4 * hidden_dim, dtype=torch.float32).reshape(4, hidden_dim)
+    torch.testing.assert_close(parts["input_embeds"][8], segment[3])
+    assert parts["future_text_rows"].shape[0] == 1
+
+
+def test_assistant_segment_below_three_rows_reports_actionable_error() -> None:
+    with pytest.raises(RuntimeError, match="at least 3 rows"):
+        _build_assistant_part_for_n_chunks(2)
+
+
+def test_topology_is_opt_in() -> None:
+    assert ENABLE_TALKER_START_TOPOLOGY is False
+    assert QwenTalkerScheduler._talker_start_topology is False
+
+
+def test_topology_builds_at_first_chunk() -> None:
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, talker_start_topology=True
+    )
+
+    assert scheduler.is_request_build_ready(
+        _make_payload(prefetched_chunks=[object()] * TALKER_START_MIN_CHUNKS),
+        pending_stream_done=False,
+    )
+    assert not scheduler.is_request_build_ready(
+        _make_payload(prefetched_chunks=[]), pending_stream_done=False
+    )
+
+
+def test_topology_ignores_the_legacy_chunk_floor() -> None:
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True,
+        partial_start_min_chunks=10,
+        talker_start_topology=True,
+    )
+
+    assert scheduler.is_request_build_ready(
+        _make_payload(prefetched_chunks=[object()]), pending_stream_done=False
+    )
+
+
+def test_topology_still_strips_a_trailing_im_end_chunk() -> None:
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, talker_start_topology=True
+    )
+    scheduler._im_end_token_id = 13
+    payload = _make_payload(
+        prefetched_chunks=[
+            SimpleNamespace(data=torch.tensor([0.0]), metadata={"token_id": 13})
+        ]
+    )
+
+    assert not scheduler.is_request_build_ready(payload, pending_stream_done=False)
+
+
+def test_topology_rechecks_deferred_payload_on_every_chunk() -> None:
+    scheduler = _fresh_partial_scheduler(
+        enable_partial_start=True, talker_start_topology=True
+    )
+
+    assert scheduler.should_recheck_deferred_request_on_stream_chunk("r0", object())
+
+
+def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
+
+    def stub_request_builder(payload: Any) -> Any:
+        origin_input_ids: list[int] = []
+        return SGLangARRequestData(
+            req=SimpleNamespace(
+                rid=payload.request_id,
+                _omni_data=None,
+                origin_input_ids=origin_input_ids,
+                origin_input_ids_unpadded=origin_input_ids,
+                sampling_params=SimpleNamespace(max_new_tokens=0),
+                priority=None,
+            ),
+            thinker_chunks_done=False,
+            pending_text_queue=deque(),
+        )
+
+    scheduler = _build_state_machine_scheduler(
+        enable_partial_start=True,
+        partial_start_min_chunks=10,
+        talker_start_topology=True,
+        request_builder_stub=stub_request_builder,
+    )
+    scheduler.append_stream_chunk = lambda req_data, chunk: None
+    scheduler.mark_stream_done = lambda req_data: None
+    payload = SimpleNamespace(
+        request_id="rid-topo",
+        prefetched_chunks=[SimpleNamespace(data=torch.tensor([0.0]))],
+        prefetched_stream_done=False,
+    )
+
+    OmniScheduler.process_input_requests(scheduler, [payload])
+
+    assert [req.rid for req in scheduler.waiting_queue] == ["rid-topo"]
+    assert "rid-topo" not in scheduler._deferred_request_payloads
+
+
+def _chunk_gate_scheduler(*, decode_ready: bool) -> QwenTalkerScheduler:
+    scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler._model_runner = SimpleNamespace(
+        is_decode_batch_ready=lambda batch: decode_ready
+    )
+    scheduler._chunk_wait_steps = 0
+    scheduler._chunk_wait_last_log_s = 0.0
+    return scheduler
+
+
+def _decode_batch(rows: int = 2) -> SimpleNamespace:
+    return SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        reqs=[SimpleNamespace() for _ in range(rows)],
+    )
+
+
+def test_chunk_gate_holds_the_decode_step_until_the_next_chunk_lands() -> None:
+    waiting = _chunk_gate_scheduler(decode_ready=False)
+    batch = _decode_batch()
+
+    assert not waiting.is_batch_ready_to_run(batch)
+    assert not waiting.is_batch_ready_to_run(batch)
+    assert waiting._chunk_wait_steps == 2
+
+    ready = _chunk_gate_scheduler(decode_ready=True)
+    assert ready.is_batch_ready_to_run(batch)
+    assert ready._chunk_wait_steps == 0
+
+
+def test_chunk_gate_ignores_prefill_batches() -> None:
+    scheduler = _chunk_gate_scheduler(decode_ready=False)
+    prefill = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_decode=lambda: False),
+        reqs=[SimpleNamespace()],
+    )
+
+    assert scheduler.is_batch_ready_to_run(prefill)
+    assert scheduler._chunk_wait_steps == 0
 
 
 def test_no_op_initialize_request_stream_state_prevents_replay() -> None:
@@ -899,7 +1151,7 @@ def test_no_op_initialize_request_stream_state_prevents_replay() -> None:
         prefetched_stream_done=False,
     )
 
-    scheduler._initialize_request_stream_state(req_data, payload)
+    scheduler.initialize_request_stream_state(req_data, payload)
 
     # No-op override: no rows appended for chunks consumed at build time.
     assert list(req_data.pending_text_queue) == []
@@ -914,12 +1166,12 @@ def test_no_op_initialize_request_stream_state_prevents_replay() -> None:
         captured_appends.append(chunk)
 
     base_scheduler = object.__new__(QwenTalkerScheduler)
-    base_scheduler._append_stream_chunk = _record_append.__get__(
+    base_scheduler.append_stream_chunk = _record_append.__get__(
         base_scheduler, QwenTalkerScheduler
     )
-    base_scheduler._mark_stream_done = lambda req: None
+    base_scheduler.mark_stream_done = lambda req: None
     # Call the upstream base implementation directly.
-    OmniScheduler._initialize_request_stream_state(
+    OmniScheduler.initialize_request_stream_state(
         base_scheduler, base_req_data, payload
     )
     assert len(captured_appends) == len(chunks_consumed_at_build)
@@ -987,9 +1239,7 @@ def _drive_real_builder(
     request_id: str = "r0",
     request_params: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
-    from sglang_omni.models.qwen3_omni.request_builders import (
-        _build_talker_request_data,
-    )
+    from sglang_omni.models.qwen3_omni.request_builders import build_talker_request_data
 
     captured: dict[str, Any] = {}
 
@@ -1042,7 +1292,7 @@ def _drive_real_builder(
             prefetched_chunks=list(prefetched_chunks or []),
             prefetched_stream_done=prefetched_stream_done,
         )
-        req_data = _build_talker_request_data(
+        req_data = build_talker_request_data(
             payload,
             prefill_builder=StubPrefillBuilder(),
             tokenizer=SimpleNamespace(),
@@ -1149,6 +1399,7 @@ def _build_state_machine_scheduler(
     *,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
+    talker_start_topology: bool = False,
     request_builder_stub: Any,
 ) -> QwenTalkerScheduler:
     """Construct a scheduler with just enough state for process_input_requests."""
@@ -1156,6 +1407,7 @@ def _build_state_machine_scheduler(
     scheduler._enable_partial_start = enable_partial_start
     scheduler._partial_start_min_chunks = partial_start_min_chunks
     scheduler._im_end_token_id = None
+    scheduler._talker_start_topology = talker_start_topology
     scheduler._pending_stream_ingress = {}
     scheduler._completed_request_ids = {}
     scheduler._deferred_request_payloads = {}
@@ -1207,8 +1459,8 @@ def test_process_input_requests_partial_build_state_machine() -> None:
         request_builder_stub=stub_request_builder,
     )
     # Stream-state handlers used after build:
-    scheduler._append_stream_chunk = lambda req_data, chunk: appended.append(chunk)
-    scheduler._mark_stream_done = lambda req_data: marked_done.__setitem__(0, True)
+    scheduler.append_stream_chunk = lambda req_data, chunk: appended.append(chunk)
+    scheduler.mark_stream_done = lambda req_data: marked_done.__setitem__(0, True)
 
     chunks = [SimpleNamespace(data=torch.tensor([float(i)])) for i in range(5)]
     payload = SimpleNamespace(
@@ -1230,14 +1482,14 @@ def test_process_input_requests_partial_build_state_machine() -> None:
 
     # 2) A later stream chunk arrives. _find_request_data is provided by upstream;
     #    short-circuit it for the test so that the live request is found.
-    scheduler._find_request_data = lambda rid: built if rid == "rid-partial-1" else None
-    OmniScheduler._on_stream_chunk(
+    scheduler.find_request_data = lambda rid: built if rid == "rid-partial-1" else None
+    OmniScheduler.on_stream_chunk(
         scheduler, "rid-partial-1", SimpleNamespace(data=torch.tensor([42.0]))
     )
     assert len(appended) == 1, "exactly one row must be appended after build"
 
     # 3) The eventual stream_done arrives.
-    OmniScheduler._on_stream_done(scheduler, "rid-partial-1")
+    OmniScheduler.on_stream_done(scheduler, "rid-partial-1")
     assert marked_done == [True]
 
 
@@ -1273,21 +1525,21 @@ def test_deferred_request_payload_ignores_chunks_when_partial_disabled() -> None
         enable_partial_start=False,
         request_builder_stub=lambda _payload: None,
     )
-    scheduler._find_request_data = lambda _rid: None
+    scheduler.find_request_data = lambda _rid: None
     payload = SimpleNamespace(request_id="rid-disabled", prefetched_chunks=[])
     scheduler._deferred_request_payloads["rid-disabled"] = payload
 
-    OmniScheduler._on_stream_chunk(
+    OmniScheduler.on_stream_chunk(
         scheduler, "rid-disabled", SimpleNamespace(data=torch.tensor([1.0]))
     )
 
     assert scheduler._pending_stream_ingress["rid-disabled"].chunks
     assert scheduler._dirty_deferred_request_ids == set()
-    assert OmniScheduler._take_deferred_request_payloads(scheduler) == []
+    assert OmniScheduler.take_deferred_request_payloads(scheduler) == []
 
-    OmniScheduler._on_stream_done(scheduler, "rid-disabled")
+    OmniScheduler.on_stream_done(scheduler, "rid-disabled")
     assert scheduler._dirty_deferred_request_ids == {"rid-disabled"}
-    assert OmniScheduler._take_deferred_request_payloads(scheduler) == [payload]
+    assert OmniScheduler.take_deferred_request_payloads(scheduler) == [payload]
 
 
 def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
@@ -1310,10 +1562,8 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
 
     stream_chunk_calls: list[Any] = []
     stream_done_calls: list[str] = []
-    scheduler._on_stream_chunk = lambda rid, data: stream_chunk_calls.append(
-        (rid, data)
-    )
-    scheduler._on_stream_done = lambda rid: stream_done_calls.append(rid)
+    scheduler.on_stream_chunk = lambda rid, data: stream_chunk_calls.append((rid, data))
+    scheduler.on_stream_done = lambda rid: stream_done_calls.append(rid)
 
     messages = [
         IncomingMessage(
@@ -1323,7 +1573,7 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
         ),
         IncomingMessage(request_id="rid-abort", type="stream_done"),
     ]
-    scheduler._recv_scheduler_messages = lambda: list(messages)
+    scheduler.recv_scheduler_messages = lambda: list(messages)
 
     # Mark as aborted via the same set the public abort() ultimately writes to.
     scheduler._aborted_request_ids.add("rid-abort")
@@ -1334,14 +1584,14 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     assert stream_done_calls == []
 
 
-def test_wiring_propagation_factory_args_to_scheduler(monkeypatch) -> None:
-    """factory_args enable_partial_start + partial_start_min_chunks flow to scheduler."""
+def test_wiring_propagation_factory_group_to_scheduler(monkeypatch) -> None:
+    """Factory-group enable_partial_start + partial_start_min_chunks flow to scheduler."""
     from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
 
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     talker_stage = next(stage for stage in config.stages if stage.name == "talker_ar")
-    assert talker_stage.factory_args["enable_partial_start"] is True
-    assert talker_stage.factory_args["partial_start_min_chunks"] == 5
+    assert talker_stage.factory.enable_partial_start is True
+    assert talker_stage.factory.partial_start_min_chunks == 5
 
     scheduler = QwenTalkerScheduler.__new__(QwenTalkerScheduler)
     monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *args, **kwargs: None)
@@ -1382,13 +1632,11 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     reqs = [
         SimpleNamespace(
             decode_batch_idx=5,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
         SimpleNamespace(
             decode_batch_idx=7,
-            kv_committed_len=12,
-            kv=SimpleNamespace(kv_allocated_len=13),
+            kv=ReqKvInfo(kv_committed_len=12, kv_allocated_len=13),
         ),
     ]
     req_pool_indices = torch.tensor([3, 4])
@@ -1413,11 +1661,11 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
 
     # Simulate one prepare_for_decode round: counters already incremented +
     # an out_cache_loc allocation handed in. One stall -> one rollback.
-    scheduler._rollback_decode_prep_after_skip(batch)
+    scheduler.rollback_decode_prep_after_skip(batch)
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert torch.equal(batch.seq_lens, pre_seq_lens)
     assert torch.equal(batch.seq_lens_cpu, pre_seq_lens_cpu)
@@ -1436,7 +1684,7 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
     batch.out_cache_loc = object()
     for req in reqs:
         req.decode_batch_idx += 1
-        req.kv_committed_len += 1
+        req.kv.kv_committed_len += 1
         req.kv.kv_allocated_len += 1
     batch.seq_lens.add_(1)
     batch.seq_lens_cpu.add_(1)
@@ -1445,11 +1693,11 @@ def test_rollback_decode_prep_after_skip_is_idempotent_across_repeated_stalls() 
         [333, 444], dtype=torch.int32
     )
 
-    scheduler._rollback_decode_prep_after_skip(batch)
+    scheduler.rollback_decode_prep_after_skip(batch)
     assert batch.out_cache_loc is None
     for req in reqs:
         assert req.decode_batch_idx == [5, 7][reqs.index(req)] - 1
-        assert req.kv_committed_len == 11
+        assert req.kv.kv_committed_len == 11
         assert req.kv.kv_allocated_len == 12
     assert batch.seq_lens_sum is None
     assert len(freed) == 2
@@ -1473,7 +1721,7 @@ def test_rollback_decode_prep_after_skip_is_noop_for_prefill_batches() -> None:
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(free=freed.append)
 
-    scheduler._rollback_decode_prep_after_skip(batch)
+    scheduler.rollback_decode_prep_after_skip(batch)
     assert batch.out_cache_loc is not None
     assert batch.seq_lens_sum == 99
     assert freed == []
@@ -1487,10 +1735,10 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
     reqs = [
         SimpleNamespace(
             decode_batch_idx=0,
-            kv_committed_len=10,
-            kv=SimpleNamespace(kv_allocated_len=11),
+            kv=ReqKvInfo(kv_committed_len=10, kv_allocated_len=11),
             output_ids=[6],
             origin_input_ids=[5],
+            beam_group=None,
         )
     ]
     batch.reqs = reqs
@@ -1518,6 +1766,7 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         b.req_to_token_pool.req_to_token[b.req_pool_indices, locs] = out.to(torch.int32)
         for req in b.reqs:
             req.kv.kv_allocated_len += token_per_req
+            req.kv.kv_committed_len += token_per_req
         return out
 
     monkeypatch.setattr(
@@ -1525,27 +1774,24 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         "alloc_for_decode",
         _fake_alloc_for_decode,
     )
-    monkeypatch.setattr(
-        schedule_batch_mod,
-        "get_server_args",
-        lambda: SimpleNamespace(enable_mamba_extra_buffer=lambda: False),
-    )
+    monkeypatch.setattr(schedule_batch_mod, "mamba_extra_buffer_enabled", lambda: False)
 
     ScheduleBatch.prepare_for_decode(batch)
     assert batch.seq_lens_sum is None
     assert reqs[0].kv.kv_allocated_len == 12
+    assert reqs[0].kv.kv_committed_len == 11
     assert int(req_to_token[2, 10]) == 123
 
     allocated = batch.out_cache_loc
     freed: list[Any] = []
     scheduler = object.__new__(QwenTalkerScheduler)
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(free=freed.append)
-    scheduler._rollback_decode_prep_after_skip(batch)
+    scheduler.rollback_decode_prep_after_skip(batch)
 
     assert batch.seq_lens_sum is None
     assert torch.equal(batch.seq_lens, torch.tensor([10], dtype=torch.long))
     assert reqs[0].decode_batch_idx == 0
-    assert reqs[0].kv_committed_len == 10
+    assert reqs[0].kv.kv_committed_len == 10
     assert reqs[0].kv.kv_allocated_len == 11
     assert batch.out_cache_loc is None
     assert len(freed) == 1
@@ -1584,7 +1830,7 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
         },
         inflight_middle_chunks=0,
     )
-    input_embeds, _, _ = runner._inject_multimodal_embeds(
+    input_embeds, _, _ = runner.inject_multimodal_embeds(
         SimpleNamespace(
             input_ids=torch.tensor([1, 999, 2]),
             extend_seq_lens_cpu=[3],
@@ -1600,7 +1846,7 @@ def test_qwen_model_runner_and_code_predictor_tensor_contracts() -> None:
     assert torch.equal(input_embeds[1], torch.tensor([1.0, 2.0, 3.0, 4.0]))
 
     logits = torch.tensor([[[0.0, 1.0, 2.0]], [[2.0, 1.0, 0.0]]])
-    sampled = Qwen3OmniTalker._sample_code_predictor_token(logits)
+    sampled = Qwen3OmniTalker.sample_code_predictor_token(logits)
     assert sampled.shape == (2, 1)
     assert sampled[:, 0].tolist() == [2, 0]
 
@@ -1622,7 +1868,7 @@ def test_qwen_talker_keeps_existing_read_only_weight_loader() -> None:
 
     module = FakeModule()
 
-    _bind_default_weight_loaders(module)
+    bind_default_weight_loaders(module)
 
     assert module.param.weight_loader == "existing"
 
@@ -1709,7 +1955,7 @@ def _patch_sampling(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("_patch_sampling")
 class TestBuildTalkerRequestTensorStorage:
-    """build_sglang_talker_request stores the tensor and honours the Req list contract."""
+    """build_sglang_talker_request keeps embeds as a tensor on request data."""
 
     def test_projected_embeds_path(self) -> None:
         seq_len, hidden = 64, 128
@@ -1740,9 +1986,9 @@ class TestBuildTalkerRequestTensorStorage:
             codec_vocab_size=4096,
         )
 
-        assert data.prefill_input_embeds is None
-        assert isinstance(data.req.input_embeds, list)
-        assert len(data.req.input_embeds) == seq_len
+        assert data.req.sampling_params.repetition_penalty == 1.05
+        assert data.prefill_input_embeds is hidden_states
+        assert data.req.input_embeds is None
         assert data.req._input_embeds_are_projected is False
 
 
@@ -1957,7 +2203,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
         _feedback_mask=feedback_mask,
     )
 
-    runner._write_feedback_buffers([sched_req])
+    runner.write_feedback_buffers([sched_req])
 
     assert feedback_mask.tolist() == [True]
     assert torch.equal(feedback_buffer[0], torch.tensor([21.0, 32.0]))
@@ -2072,7 +2318,7 @@ def _talker_seed_self(
         _decode_prep_out_lens=[],
         _decode_prep_rep_rows=None,
     )
-    fake._reuse_decode_buffers = Qwen3OmniTalker._reuse_decode_buffers.__get__(fake)
+    fake.reuse_decode_buffers = Qwen3OmniTalker.reuse_decode_buffers.__get__(fake)
     fake.invalidate_decode_buffers = Qwen3OmniTalker.invalidate_decode_buffers.__get__(
         fake
     )
@@ -2190,6 +2436,7 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     assert torch.equal(fake._suppress_mask, fresh._suppress_mask)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="sampling staging regression requires CUDA"
 )
@@ -2321,13 +2568,13 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
 
     fake._uses_mrope = False
     fake.model = lambda **_: torch.zeros(1, 2)
-    fake._manual_extend_logits = lambda hidden_states, forward_batch: SimpleNamespace(
+    fake.manual_extend_logits = lambda hidden_states, forward_batch: SimpleNamespace(
         hidden_states=hidden_states
     )
-    fake._manual_decode_logits = lambda hidden_states: SimpleNamespace(
+    fake.manual_decode_logits = lambda hidden_states: SimpleNamespace(
         next_token_logits=torch.zeros(1, 8), hidden_states=hidden_states
     )
-    fake._sample_decode_tokens = lambda logits, forward_batch: torch.tensor([4])
+    fake.sample_decode_tokens = lambda logits, forward_batch: torch.tensor([4])
     fake.code_predictor_forward = lambda token_ids, hidden_states: None
     positions = torch.zeros(1, dtype=torch.long)
     extend_batch = SimpleNamespace(
@@ -2358,3 +2605,47 @@ def test_talker_prefill_forward_invalidates_next_decode_reuse() -> None:
     )
 
     assert float(fake._sampling_temperatures[0, 0]) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(("is_rocm", "expected"), [(True, False), (False, True)])
+def test_qwen_predictor_decode_graph_skips_outer_sglang_capture_on_rocm(
+    monkeypatch: pytest.MonkeyPatch, is_rocm: bool, expected: bool
+) -> None:
+    """SGLang's warmup forwards run inside model_capture_mode() before the
+    stream capture starts; ROCm keeps the predictor eager there, CUDA does not."""
+    monkeypatch.setattr(talker_module, "get_is_capture_mode", lambda: True)
+    monkeypatch.setattr(talker_module.current_platform, "is_rocm", lambda: is_rocm)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: False)
+    talker = object.__new__(Qwen3OmniTalker)
+
+    assert (
+        talker.can_use_predictor_decode_graph(
+            layer0_codes=SimpleNamespace(dtype=torch.int, is_cuda=True),
+            talker_hidden=SimpleNamespace(is_cuda=True),
+            seq_len=1,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize("topology", [False, True])
+def test_partial_start_off_switch_overrides_topology(monkeypatch, topology) -> None:
+    monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *a, **k: None)
+    scheduler = QwenTalkerScheduler(
+        enable_partial_start=False, enable_talker_start_topology=topology
+    )
+    assert not scheduler.is_request_build_ready(
+        _make_payload(prefetched_chunks=[object()] * 10), pending_stream_done=False
+    )
+    assert not scheduler.should_recheck_deferred_request_on_stream_chunk("r", object())
+
+
+def test_partial_start_default_keeps_configured_threshold(monkeypatch) -> None:
+    monkeypatch.setattr(OmniScheduler, "__init__", lambda self, *a, **k: None)
+    scheduler = QwenTalkerScheduler(
+        enable_partial_start=True, partial_start_min_chunks=5
+    )
+    assert not scheduler.is_request_build_ready(
+        _make_payload(prefetched_chunks=[object()]), pending_stream_done=False
+    )

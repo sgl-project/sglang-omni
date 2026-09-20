@@ -20,9 +20,9 @@ import torch
 
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
+    ContiguousSlotAllocator,
     CudaIpcPutOperation,
     CudaIpcRelay,
-    _ContiguousSlotAllocator,
 )
 
 _N = 1024 * 1024  # 1 MiB payload
@@ -89,9 +89,9 @@ def test_cuda_ipc_relay_failure_wakes_blocked_slot_acquire() -> None:
     async def run() -> BlockingAllocator:
         relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
         allocator = BlockingAllocator()
-        task = asyncio.create_task(relay._acquire_slots(allocator, 2))
+        task = asyncio.create_task(relay.acquire_slots(allocator, 2))
         await asyncio.sleep(0)
-        relay._mark_failed(TimeoutError("ack timeout"))
+        relay.mark_failed(TimeoutError("ack timeout"))
         with pytest.raises(RuntimeError, match="cuda_ipc relay failed"):
             _ = await task
         return allocator
@@ -103,7 +103,7 @@ def test_cuda_ipc_relay_failure_wakes_blocked_slot_acquire() -> None:
 def test_cuda_ipc_put_fails_fast_after_relay_failure() -> None:
     async def run() -> None:
         relay = CudaIpcRelay(engine_id="sender", device="cuda:0")
-        relay._mark_failed(TimeoutError("ack timeout"))
+        relay.mark_failed(TimeoutError("ack timeout"))
         with pytest.raises(RuntimeError, match="cuda_ipc relay failed"):
             await relay.put_async(torch.zeros(1, dtype=torch.uint8))
 
@@ -131,7 +131,7 @@ def test_cuda_ipc_pool_size_and_slot_size_are_configurable() -> None:
 
 def test_contiguous_slot_allocator_waits_for_contiguous_range() -> None:
     async def run() -> None:
-        allocator = _ContiguousSlotAllocator(slot_count=4, slot_size=8)
+        allocator = ContiguousSlotAllocator(slot_count=4, slot_size=8)
         first = (await allocator.acquire_async(1)).offset
         middle = (await allocator.acquire_async(1)).offset
         tail = (await allocator.acquire_async(1)).offset
@@ -156,7 +156,7 @@ def test_contiguous_slot_allocator_waits_for_contiguous_range() -> None:
 
 def test_contiguous_slot_allocator_rejects_double_release() -> None:
     async def run() -> None:
-        allocator = _ContiguousSlotAllocator(slot_count=2, slot_size=8)
+        allocator = ContiguousSlotAllocator(slot_count=2, slot_size=8)
         offset = (await allocator.acquire_async(2)).offset
         allocator.release(offset, 2)
         with pytest.raises(RuntimeError, match="released twice"):
@@ -668,16 +668,19 @@ def _run_paged_case(gpu: int) -> None:
         assert value is True
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_same_gpu_round_trip() -> None:
     _run_case(0, 0)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
     _run_paged_case(0)
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     torch.cuda.device_count() < 2, reason="requires >= 2 GPUs for cross-GPU transfer"
 )

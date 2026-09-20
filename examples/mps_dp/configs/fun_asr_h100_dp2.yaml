@@ -6,8 +6,8 @@ config_cls: FunASRPipelineConfig
 name: funasr
 model_path: FunAudioLLM/Fun-ASR-Nano-2512-hf
 
-runtime_overrides:
+stages:
   asr:
-    mem_fraction_static: 0.20
-    server_args_overrides:
+    engine:
+      mem_fraction_static: 0.20
       max_total_tokens: 30000

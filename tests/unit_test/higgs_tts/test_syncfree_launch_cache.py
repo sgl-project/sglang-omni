@@ -20,7 +20,7 @@ import torch
 
 from sglang_omni.models.higgs_tts.model_runner import (
     HiggsTTSModelRunner,
-    _syncfree_launch_enabled,
+    syncfree_launch_enabled,
 )
 from sglang_omni.models.higgs_tts.sampler import K_MAX
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, new_random_sampling_seed
@@ -94,18 +94,18 @@ def _make_runner(model, *, enabled=True, async_enabled=False):
     runner._syncfree_launch = enabled
     runner._cg_launch_key = None
     calls = {"extract": 0}
-    orig = HiggsTTSModelRunner._extract_decode_sampling_params
+    orig = HiggsTTSModelRunner.extract_decode_sampling_params
 
     def counting_extract(requests):
         calls["extract"] += 1
         return orig(requests)
 
-    runner._extract_decode_sampling_params = counting_extract
+    runner.extract_decode_sampling_params = counting_extract
     return runner, calls
 
 
 def _reqs(rids, temps=None, top_ps=None, top_ks=None):
-    # The 0.5.15 adaptation reads sampling params host-side from the request
+    # The launch cache reads sampling params host-side from the request
     # objects, not from forward_batch.sampling_info.
     reqs = []
     for i, rid in enumerate(rids):
@@ -136,7 +136,7 @@ def test_hit_skips_extract_and_keeps_buffers():
     fb = _fb(2)
     reqs = _reqs(["a", "b"], *AB_FB)
 
-    runner._populate_cg_buffers(fb, reqs)
+    runner.populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 1
     snap = {
         "rows": model._cg_row_indices.clone(),
@@ -149,7 +149,7 @@ def test_hit_skips_extract_and_keeps_buffers():
     assert snap["top_k"][:2].tolist() == [50, K_MAX]
 
     for _ in range(3):
-        runner._populate_cg_buffers(fb, reqs)
+        runner.populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 1  # all hits
     assert torch.equal(model._cg_row_indices, snap["rows"])
     assert torch.equal(model._cg_temperature, snap["temp"])
@@ -162,12 +162,12 @@ def test_pool_gathers_still_run_on_hit():
     runner, _ = _make_runner(model)
     fb = _fb(2)
     reqs = _reqs(["a", "b"], *AB_FB)
-    runner._populate_cg_buffers(fb, reqs)
+    runner.populate_cg_buffers(fb, reqs)
     row_a = model._rid_to_row["a"]
     # Note (Yueying Li): simulate the previous step's scatter mutating pool state.
     model._sampler_pool.delay_count[row_a] = 5
     model._sampler_pool.step_count[row_a] = 7
-    runner._populate_cg_buffers(fb, reqs)  # hit
+    runner.populate_cg_buffers(fb, reqs)  # hit
     assert int(model._cg_active_delay_count[0]) == 5
     assert int(model._cg_active_step_count[0]) == 7
 
@@ -177,18 +177,18 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     runner, calls = _make_runner(model)
 
     fb_a = _fb(1)
-    runner._populate_cg_buffers(fb_a, _reqs(["a"], [0.7], [0.95], [50]))
+    runner.populate_cg_buffers(fb_a, _reqs(["a"], [0.7], [0.95], [50]))
     assert calls["extract"] == 1
 
     # Admission: [a] -> [a, b]
     fb_ab = _fb(2)
-    runner._populate_cg_buffers(fb_ab, _reqs(["a", "b"], *AB_FB))
+    runner.populate_cg_buffers(fb_ab, _reqs(["a", "b"], *AB_FB))
     assert calls["extract"] == 2
     assert model._cg_temperature[:2].tolist() == pytest.approx([0.7, 0.9])
 
     # Reorder: [a, b] -> [b, a] (order-sensitive key)
     fb_ba = _fb(2)
-    runner._populate_cg_buffers(
+    runner.populate_cg_buffers(
         fb_ba, _reqs(["b", "a"], [0.9, 0.7], [0.8, 0.95], [0, 50])
     )
     assert calls["extract"] == 3
@@ -197,13 +197,13 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
 
     # Finish/removal: [b, a] -> [b]
     fb_b = _fb(1)
-    runner._populate_cg_buffers(fb_b, _reqs(["b"], [0.9], [0.8], [0]))
+    runner.populate_cg_buffers(fb_b, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 4
     assert model._cg_row_indices[0] == model._rid_to_row["b"]
 
     # Padded-bs change with same composition: bs 1 -> 3
     fb_b_pad = _fb(3)
-    runner._populate_cg_buffers(fb_b_pad, _reqs(["b"], [0.9], [0.8], [0]))
+    runner.populate_cg_buffers(fb_b_pad, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 5
     assert model._cg_row_indices[1:3].tolist() == [PAD_ROW, PAD_ROW]
     assert model._cg_temperature[1:3].tolist() == [1.0, 1.0]
@@ -214,7 +214,7 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     old_row = model._rid_to_row["b"]
     model.release_row("b")
     assert model.acquire_row("z") == old_row  # steals b's row
-    runner._populate_cg_buffers(
+    runner.populate_cg_buffers(
         fb_b_pad, _reqs(["b"], [0.9], [0.8], [0])
     )  # same rids, same bs
     assert calls["extract"] == 6  # row change -> miss
@@ -228,7 +228,7 @@ def test_flag_off_always_rebuilds():
     fb = _fb(2)
     reqs = _reqs(["a", "b"], *AB_FB)
     for _ in range(3):
-        runner._populate_cg_buffers(fb, reqs)
+        runner.populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 3
 
 
@@ -239,18 +239,18 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
         fb = _fb(2)
         reqs = _reqs(["a", "b"], *AB_FB)
         rows_per_step = []
-        runner._populate_cg_buffers(fb, reqs, is_lookahead=True)
+        runner.populate_cg_buffers(fb, reqs, is_lookahead=True)
         rows_per_step.append(model._cg_row_indices[:2].tolist())
         # Note (Yueying Li): request "b" finishes via EOC on-GPU: the step's scatter marks its
         # pool row done while the host has not yet filtered it out.
         model._sampler_pool.generation_done[model._rid_to_row["b"]] = True
         for _ in range(2):  # overrun steps, composition unchanged
-            runner._populate_cg_buffers(fb, reqs, is_lookahead=True)
+            runner.populate_cg_buffers(fb, reqs, is_lookahead=True)
             rows_per_step.append(model._cg_row_indices[:2].tolist())
         # Host drops "b": composition changes -> rebuild.
         model.release_row("b")
         fb_a = _fb(1)
-        runner._populate_cg_buffers(
+        runner.populate_cg_buffers(
             fb_a, _reqs(["a"], [0.7], [0.95], [50]), is_lookahead=True
         )
         rows_per_step.append(model._cg_row_indices[:1].tolist())
@@ -276,7 +276,7 @@ def test_rid_reuse_on_same_row_misses():
     model = _FakeModel()
     runner, calls = _make_runner(model, async_enabled=True)
     fb_old = _fb(1)
-    runner._populate_cg_buffers(
+    runner.populate_cg_buffers(
         fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
     )
     assert calls["extract"] == 1
@@ -284,7 +284,7 @@ def test_rid_reuse_on_same_row_misses():
 
     # "x" EOC-finishes on-GPU; overrun step redirects its slot to padding.
     model._sampler_pool.generation_done[row] = True
-    runner._populate_cg_buffers(
+    runner.populate_cg_buffers(
         fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
     )
     assert calls["extract"] == 1  # hit, as in baseline
@@ -294,7 +294,7 @@ def test_rid_reuse_on_same_row_misses():
     model.release_row("x")
     model._sampler_pool.generation_done[row] = False
     fb_new = _fb(1)
-    runner._populate_cg_buffers(
+    runner.populate_cg_buffers(
         fb_new, _reqs(["x"], [0.9], [0.8], [50]), is_lookahead=True
     )
     assert model._rid_to_row["x"] == row  # same row: key would collide
@@ -306,11 +306,11 @@ def test_rid_reuse_on_same_row_misses():
 
 def test_env_flag_parsing(monkeypatch):
     monkeypatch.delenv("SGLANG_OMNI_SYNCFREE_LAUNCH", raising=False)
-    assert _syncfree_launch_enabled() is True  # default ON
+    assert syncfree_launch_enabled() is True  # default ON
     monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "0")
-    assert _syncfree_launch_enabled() is False
+    assert syncfree_launch_enabled() is False
     monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "1")
-    assert _syncfree_launch_enabled() is True
+    assert syncfree_launch_enabled() is True
     monkeypatch.setenv("SGLANG_OMNI_SYNCFREE_LAUNCH", "bogus")
     with pytest.raises(ValueError):
-        _syncfree_launch_enabled()
+        syncfree_launch_enabled()

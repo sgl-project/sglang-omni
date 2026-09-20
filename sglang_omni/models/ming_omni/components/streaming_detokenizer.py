@@ -52,7 +52,7 @@ _STATE_ORPHAN_IDLE_S = 300.0
 
 
 @dataclass
-class _RequestState:
+class RequestState:
     pending_tokens: list[int] = field(default_factory=list)
     payload: StagePayload | None = None
     done: bool = False
@@ -79,7 +79,7 @@ class MingStreamingDetokenizeScheduler:
         self._eos_token_id = eos_token_id
         self.stage_name = stage_name
         self._running = False
-        self._state: dict[str, _RequestState] = {}
+        self._state: dict[str, RequestState] = {}
         self._done_seen: OrderedDict[str, None] = OrderedDict()
         # abort() runs on the stage's event-loop thread while start() runs on
         # the scheduler thread; guards iteration/multi-op sections.
@@ -94,11 +94,11 @@ class MingStreamingDetokenizeScheduler:
                 continue
             try:
                 if msg.type == "new_request":
-                    self._on_new_request(msg.request_id, msg.data)
+                    self.on_new_request(msg.request_id, msg.data)
                 elif msg.type == "stream_chunk":
-                    self._on_stream_chunk(msg.request_id, msg.data)
+                    self.on_stream_chunk(msg.request_id, msg.data)
                 elif msg.type == "stream_done":
-                    self._on_stream_done(msg.request_id)
+                    self.on_stream_done(msg.request_id)
             except Exception as exc:
                 logger.exception(
                     "MingStreamingDetokenizeScheduler failed request %s",
@@ -121,17 +121,17 @@ class MingStreamingDetokenizeScheduler:
             self._state.pop(request_id, None)
             self._done_seen.pop(request_id, None)
 
-    def _ensure_state(self, request_id: str) -> _RequestState:
+    def ensure_state(self, request_id: str) -> RequestState:
         s = self._state.get(request_id)
         if s is None:
-            s = _RequestState(last_seen=time.monotonic())
+            s = RequestState(last_seen=time.monotonic())
             self._state[request_id] = s
             if len(self._state) > _STATE_MAX:
-                self._evict_idle_orphans()
+                self.evict_idle_orphans()
         s.last_seen = time.monotonic()
         return s
 
-    def _evict_idle_orphans(self) -> None:
+    def evict_idle_orphans(self) -> None:
         cutoff = time.monotonic() - _STATE_ORPHAN_IDLE_S
         with self._state_lock:
             stale = [
@@ -148,13 +148,13 @@ class MingStreamingDetokenizeScheduler:
                 _STATE_MAX,
             )
 
-    def _on_stream_chunk(self, request_id: str, item: Any) -> None:
+    def on_stream_chunk(self, request_id: str, item: Any) -> None:
         # item is the StreamItem the runtime wraps around the thinker's
         # torch.tensor([token_id], dtype=torch.long)
         data = item.data
         token_id = int(data.item()) if hasattr(data, "item") else int(data)
 
-        s = self._ensure_state(request_id)
+        s = self.ensure_state(request_id)
         s.pending_tokens.append(token_id)
 
         candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
@@ -183,7 +183,7 @@ class MingStreamingDetokenizeScheduler:
             )
         )
 
-    def _on_stream_done(self, request_id: str) -> None:
+    def on_stream_done(self, request_id: str) -> None:
         s = self._state.get(request_id)
         if s is None:
             # Zero-token generation or late duplicate done — latch for
@@ -196,19 +196,19 @@ class MingStreamingDetokenizeScheduler:
             return
         s.done = True
         if s.payload is not None:
-            self._finalize(request_id)
+            self.finalize(request_id)
 
-    def _on_new_request(self, request_id: str, payload: StagePayload) -> None:
-        s = self._ensure_state(request_id)
+    def on_new_request(self, request_id: str, payload: StagePayload) -> None:
+        s = self.ensure_state(request_id)
         s.payload = payload
         if request_id in self._done_seen:
             s.done = True
             self._done_seen.pop(request_id, None)
         is_streaming = bool((payload.request.params or {}).get("stream", False))
         if s.done or not is_streaming:
-            self._finalize(request_id)
+            self.finalize(request_id)
 
-    def _finalize(self, request_id: str) -> None:
+    def finalize(self, request_id: str) -> None:
         s = self._state.pop(request_id, None)
         self._done_seen.pop(request_id, None)
         if s is None or s.payload is None:
@@ -235,7 +235,7 @@ class MingStreamingDetokenizeScheduler:
                 )
 
         is_streaming = bool((s.payload.request.params or {}).get("stream", False))
-        result = self._build_result(s.payload, is_streaming=is_streaming)
+        result = self.build_result(s.payload, is_streaming=is_streaming)
         s.payload.data = result
         self.outbox.put(
             OutgoingMessage(
@@ -245,7 +245,7 @@ class MingStreamingDetokenizeScheduler:
             )
         )
 
-    def _build_result(
+    def build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
     ) -> dict[str, Any]:
         state = load_state(payload)
@@ -269,7 +269,7 @@ class MingStreamingDetokenizeScheduler:
             )
         )
 
-        result: dict[str, Any] = {"events": [_event_to_dict(e) for e in events]}
+        result: dict[str, Any] = {"events": [event_to_dict(e) for e in events]}
         final_event = next(
             (
                 e
@@ -297,12 +297,12 @@ class MingStreamingDetokenizeScheduler:
                 )
                 result.setdefault("modality", "text")
 
-        _attach_decode_final_metadata(result, state, thinker_out)
+        attach_decode_final_metadata(result, state, thinker_out)
 
         return result
 
 
-def _event_to_dict(event: Any) -> dict[str, Any]:
+def event_to_dict(event: Any) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -330,7 +330,7 @@ def text_output_requested(request: OmniRequest) -> bool:
     return True
 
 
-def _attach_decode_final_metadata(
+def attach_decode_final_metadata(
     result: dict[str, Any],
     state: MingOmniPipelineState,
     thinker_out: dict[str, Any],

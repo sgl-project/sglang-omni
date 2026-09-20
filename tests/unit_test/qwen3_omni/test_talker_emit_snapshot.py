@@ -25,6 +25,7 @@ def _runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.model = model
     runner._feedback_enabled = True
     runner._code2wav_target = "code2wav"
+    runner._codec_coalesce_frames = 0
     runner._outbox = SimpleNamespace(sent=[])
     runner._outbox.put = runner._outbox.sent.append
     return runner
@@ -54,7 +55,7 @@ def test_emitted_rows_survive_next_step_inplace_write() -> None:
     embeds_before = model._output_embeds.clone()
 
     requests = _requests(n)
-    runner._emit_code_chunks_and_feedback(
+    runner.emit_code_chunks_and_feedback(
         schedule_batch=_sched_batch(n), requests=requests
     )
 
@@ -83,7 +84,7 @@ def test_two_batched_clones_rows_share_storage() -> None:
     requests = _requests(n)
     torch.Tensor.clone = _counting_clone
     try:
-        runner._emit_code_chunks_and_feedback(
+        runner.emit_code_chunks_and_feedback(
             schedule_batch=_sched_batch(n), requests=requests
         )
     finally:

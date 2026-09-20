@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from starlette.websockets import WebSocketState
@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketState
 from sglang_omni.serve.realtime import session as session_module
 from sglang_omni.serve.realtime.events import TurnDetection
 from sglang_omni.serve.realtime.session import RealtimeSession
+from sglang_omni.serve.realtime.turn_detector import TurnDetectorBuild
 from sglang_omni.serve.realtime.vad import Emit, VADEvent
 
 
@@ -95,3 +96,79 @@ async def test_partial_turn_detection_update_preserves_interrupt_opt_out(
     session.cancel_active_response = AsyncMock()  # type: ignore[method-assign]
     await session.handle_vad_emit(Emit(VADEvent.SPEECH_STARTED, 0))
     session.cancel_active_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_only_update_does_not_rebuild_semantic_detector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "StreamingVAD", FakeVAD)
+    builder = Mock(side_effect=AssertionError("detector should not rebuild"))
+    monkeypatch.setattr(session_module, "build_turn_detector", builder)
+    session = RealtimeSession(
+        RecordingWebSocket(),  # type: ignore[arg-type]
+        client=object(),  # type: ignore[arg-type]
+        model_name="qwen3-omni",
+    )
+    active_detector = session.vad
+    session.session_object.turn_detection = TurnDetection(
+        type="semantic_vad",
+        eagerness="high",
+        interrupt_response=True,
+    )
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"turn_detection": {"interrupt_response": False}},
+        }
+    )
+
+    assert session.vad is active_detector
+    builder.assert_not_called()
+    assert session.session_object.turn_detection.eagerness == "high"
+    assert session.session_object.turn_detection.interrupt_response is False
+
+
+@pytest.mark.asyncio
+async def test_type_switch_preserves_interrupt_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "StreamingVAD", FakeVAD)
+    semantic_detector = FakeVAD()
+    builder = Mock(
+        return_value=TurnDetectorBuild(
+            semantic_detector,
+            {
+                "type": "semantic_vad",
+                "eagerness": "medium",
+                "interrupt_response": False,
+            },
+        )
+    )
+    monkeypatch.setattr(session_module, "build_turn_detector", builder)
+    session = RealtimeSession(
+        RecordingWebSocket(),  # type: ignore[arg-type]
+        client=object(),  # type: ignore[arg-type]
+        model_name="qwen3-omni",
+    )
+    session.session_object.turn_detection = TurnDetection(
+        type="server_vad",
+        silence_duration_ms=800,
+        interrupt_response=False,
+    )
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"turn_detection": {"type": "semantic_vad"}},
+        }
+    )
+
+    assert builder.call_args.args[0] == {
+        "type": "semantic_vad",
+        "eagerness": "medium",
+        "interrupt_response": False,
+    }
+    assert session.vad is semantic_detector
+    assert session.session_object.turn_detection.interrupt_response is False

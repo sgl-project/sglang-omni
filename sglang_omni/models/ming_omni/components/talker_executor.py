@@ -7,7 +7,7 @@ using its own internal LLM + CFM + DiT + AudioVAE pipeline.
 
 The talker is a self-contained TTS system that:
 1. Tokenizes input text with its own tokenizer
-2. Runs its own Qwen2 LLM with StaticCache + CUDA graphs
+2. Runs its own Qwen2 LLM with StaticCache + device graphs
 3. Uses CFM (Conditional Flow Matching) + DiT for diffusion-based audio synthesis
 4. Decodes audio latents to waveform via AudioVAE
 """
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_VOICE = "DB30"
 
 
-def _build_talker_usage(payload: StagePayload) -> dict[str, int]:
+def build_talker_usage(payload: StagePayload) -> dict[str, int]:
     data = payload.data if isinstance(payload.data, dict) else {}
     return build_text_usage(data)
 
@@ -60,10 +60,10 @@ class MingTalkerExecutor:
     async def start(self) -> None:
         """Initialize the talker model and AudioVAE."""
         logger.info("Loading Ming talker from %s", self._talker_model_path)
-        await asyncio.to_thread(self._load_models)
+        await asyncio.to_thread(self.load_models)
         logger.info("Ming talker loaded and initialized")
 
-    def _load_models(self) -> None:
+    def load_models(self) -> None:
         """Load talker model and VAE (runs in thread pool)."""
         from transformers import AutoTokenizer
 
@@ -86,6 +86,8 @@ class MingTalkerExecutor:
         # 1. Load config from checkpoint
         t0 = time.time()
         config = MingOmniTalkerConfig.from_pretrained_dir(self._talker_model_path)
+        if torch.device(self._device).type == "npu":
+            config.use_torch_attention()
 
         # 2. Create model (no weights yet)
         self._talker = MingOmniTalker(config)
@@ -110,7 +112,7 @@ class MingTalkerExecutor:
         if os.path.exists(voice_json_path):
             with open(voice_json_path, "r") as f:
                 voice_dict = json.load(f)
-            self._validate_voice_presets(
+            self.validate_voice_presets(
                 voice_dict, voice_json_path, self._talker_model_path
             )
             self._talker.set_voice_presets(voice_dict)
@@ -167,11 +169,11 @@ class MingTalkerExecutor:
         except Exception as e:
             logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
 
-        # 10. Initialize CUDA graphs
-        logger.info("[TALKER] Initializing CUDA graphs...")
+        # 10. Initialize device graphs
+        logger.info("[TALKER] Initializing device graphs...")
         t0g = time.time()
         self._talker.initial_graph()
-        logger.info("[TALKER] CUDA graphs initialized in %.1fs", time.time() - t0g)
+        logger.info("[TALKER] Device graphs initialized in %.1fs", time.time() - t0g)
 
     async def add_request(self, payload: StagePayload) -> None:
         """Process a TTS request."""
@@ -182,12 +184,12 @@ class MingTalkerExecutor:
             logger.info(
                 "[TALKER] Skipping TTS for request %s; output_modalities=%s",
                 request_id,
-                self._output_modalities(payload),
+                self.output_modalities(payload),
             )
             await self._results.put(self.build_empty_audio_result(payload))
             return
 
-        text = self._extract_text(payload)
+        text = self.extract_text(payload)
         logger.info(
             "[TALKER] Extracted text (len=%d): %r",
             len(text) if text else 0,
@@ -202,7 +204,7 @@ class MingTalkerExecutor:
                     "sample_rate": 44100,
                     "duration": 0.0,
                     "modality": "audio",
-                    "usage": _build_talker_usage(payload),
+                    "usage": build_talker_usage(payload),
                 },
             )
             await self._results.put(result)
@@ -211,7 +213,7 @@ class MingTalkerExecutor:
         t0 = time.time()
         logger.info("[TALKER] Starting TTS generation for %d chars...", len(text))
         waveform, sample_rate, duration = await asyncio.to_thread(
-            self._generate_speech, text
+            self.generate_speech, text
         )
         logger.info(
             "[TALKER] TTS done in %.1fs, audio=%.2fs", time.time() - t0, duration
@@ -238,7 +240,7 @@ class MingTalkerExecutor:
                 "sample_rate": sample_rate,
                 "duration": duration,
                 "modality": "audio",
-                "usage": _build_talker_usage(payload),
+                "usage": build_talker_usage(payload),
             },
         )
         await self._results.put(result)
@@ -254,11 +256,11 @@ class MingTalkerExecutor:
         self._aborted.add(request_id)
 
     def should_generate_audio(self, payload: StagePayload) -> bool:
-        modalities = self._output_modalities(payload)
+        modalities = self.output_modalities(payload)
         return modalities is None or "audio" in modalities
 
     @staticmethod
-    def _output_modalities(payload: StagePayload) -> set[str] | None:
+    def output_modalities(payload: StagePayload) -> set[str] | None:
         metadata = payload.request.metadata
         if not isinstance(metadata, dict):
             return None
@@ -281,11 +283,11 @@ class MingTalkerExecutor:
                 "sample_rate": 44100,
                 "duration": 0.0,
                 "skipped": True,
-                "usage": _build_talker_usage(payload),
+                "usage": build_talker_usage(payload),
             },
         )
 
-    def _validate_voice_presets(
+    def validate_voice_presets(
         self, voice_dict: dict, manifest_path: str, talker_dir: str
     ) -> None:
         """Resolve relative prompt-wav paths and validate the manifest.
@@ -314,7 +316,7 @@ class MingTalkerExecutor:
                 )
             entry["prompt_wav_path"] = resolved
 
-    def _extract_text(self, payload: StagePayload) -> str:
+    def extract_text(self, payload: StagePayload) -> str:
         """Extract generated text from the thinker output in the payload."""
         data = payload.data
         if not isinstance(data, dict):
@@ -341,7 +343,7 @@ class MingTalkerExecutor:
         return stream_state.get("accumulated_text", "")
 
     @torch.no_grad()
-    def _generate_speech(self, text: str) -> tuple[torch.Tensor, int, float]:
+    def generate_speech(self, text: str) -> tuple[torch.Tensor, int, float]:
         """Generate speech from text using MingOmniTalker.
 
         Returns:

@@ -1,8 +1,13 @@
-name: Qwen3-Omni CI
+name: Omni model CI
 
 on:
   workflow_call:
     inputs:
+      omni_ci_model:
+        description: Omni model preset selected by the parent workflow.
+        type: string
+        required: false
+        default: qwen3-omni
       omni_ci_home:
         description: PR-scoped CI home from the parent omni-ci workflow.
         type: string
@@ -15,18 +20,22 @@ permissions:
   pull-requests: read
 
 env:
+  OMNI_CI_MODEL: ${{ inputs.omni_ci_model }}
   OMNI_CI_HOME: >-
     ${{ inputs.omni_ci_home != ''
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   PYTORCH_ALLOC_CONF: expandable_segments:True
+  # NCCL 2.29.7 (torch 2.13 pin) makes a failed NVLS multicast bind fatal at init
+  # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
+  NCCL_NVLS_ENABLE: "0"
 
 # Invoked by omni-ci.yaml after TTS CI. Restores omni only.
 # DAG:
 #   stage-1-thinker -> stage-2-tts -> stage-3-mmmu -> stage-4-mmmu-talker
 #     -> stage-5-mmsu -> stage-6-mmsu-talker -> stage-7-videomme
 #     -> stage-8-videomme-talker -> stage-9-videoamme
-#     -> stage-10-videoamme-talker-tp2
+#     -> stage-10-videoamme-talker-tp2 -> stage-11-process-replicas
 
 jobs:
   stage-1-thinker:
@@ -34,7 +43,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -76,7 +85,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -125,7 +134,7 @@ jobs:
             */speed_results.json
             */wer_results.json
             */similarity_results.json
-          artifact-upload-name: qwen3-omni-tts-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-tts-results
           artifact-upload-path: /tmp/**/*_results.json
 
   stage-3-mmmu:
@@ -135,7 +144,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -171,7 +180,7 @@ jobs:
           stage-label: MMMU (accuracy + speed)
           artifact-path-globs: |
             */mmmu/mmmu_results.json
-          artifact-upload-name: qwen3-omni-mmmu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-results
           artifact-upload-path: /tmp/**/mmmu_results.json
 
   stage-4-mmmu-talker:
@@ -181,7 +190,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -217,7 +226,7 @@ jobs:
           stage-label: MMMU Talker (WER + speed)
           artifact-path-globs: |
             */mmmu_audio*/mmmu_results.json
-          artifact-upload-name: qwen3-omni-mmmu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmmu-talker-results
           artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
@@ -227,7 +236,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -263,7 +272,7 @@ jobs:
           stage-label: MMSU (accuracy + speed, summary only)
           artifact-path-globs: |
             */mmsu/mmsu_results.json
-          artifact-upload-name: qwen3-omni-mmsu-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-results
           artifact-upload-path: /tmp/**/mmsu/mmsu_results.json
           summary-only: "true"
 
@@ -274,7 +283,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -310,7 +319,7 @@ jobs:
           stage-label: MMSU Talker (WER + speed)
           artifact-path-globs: |
             */mmsu_audio*/mmsu_results.json
-          artifact-upload-name: qwen3-omni-mmsu-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-mmsu-talker-results
           artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
@@ -320,7 +329,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -356,7 +365,7 @@ jobs:
           stage-label: Video-MME (accuracy + speed)
           artifact-path-globs: |
             */videomme/videomme_results.json
-          artifact-upload-name: qwen3-omni-videomme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-results
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
 
   stage-8-videomme-talker:
@@ -366,7 +375,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -402,7 +411,7 @@ jobs:
           stage-label: Video-MME Talker (WER + speed)
           artifact-path-globs: |
             */videomme_audio*/videomme_results.json
-          artifact-upload-name: qwen3-omni-videomme-talker-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videomme-talker-results
           artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
@@ -412,7 +421,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -448,17 +457,17 @@ jobs:
           stage-label: Video-AMME (accuracy + speed)
           artifact-path-globs: |
             */videoamme/videoamme_results.json
-          artifact-upload-name: qwen3-omni-videoamme-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-results
           artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
 
   stage-10-videoamme-talker-tp2:
-    name: stage 10 - FP8 Thinker TP=2 (Video-AMME Talker)
+    name: stage 10 - Video-AMME Talker
     needs: stage-9-videoamme
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: hongccc/sglang-omni@sha256:374d0b1c30b2bff685b1716fc64a02ad3b3d0a90fe2ce73ce9861a6992c28101
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
@@ -493,8 +502,50 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: FP8 Thinker TP=2 (Video-AMME Talker accuracy + WER + speed)
+          stage-label: Video-AMME Talker (accuracy + WER + speed)
           artifact-path-globs: |
             */videoamme_audio*/videoamme_results.json
-          artifact-upload-name: qwen3-omni-videoamme-talker-tp2-results
+          artifact-upload-name: ${{ inputs.omni_ci_model }}-videoamme-talker-results
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
+
+  stage-11-process-replicas:
+    name: stage 11 - process replicas
+    needs: stage-10-videoamme-talker-tp2
+    if: always() && !cancelled() && inputs.omni_ci_model == 'qwen3-omni'
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    container:
+      image: hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        --cap-add=SYS_PTRACE
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run process-replica smoke test
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_qwen3_omni_process_replicas.py -v -s -x
+        env:
+          HF_ENDPOINT: https://huggingface.co
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: process replicas

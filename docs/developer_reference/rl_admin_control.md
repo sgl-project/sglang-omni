@@ -58,7 +58,10 @@ updated the model weights; recover by reloading or otherwise repairing the
 worker before calling `continue_generation`.
 
 `/update_weights_from_tensor` is still reserved for a future tensor data-plane
-integration and returns HTTP 501 from the worker and router HTTP APIs.
+integration and returns HTTP 501 from the worker and router HTTP APIs. Once
+enabled, a failed tensor update leaves the scheduler paused because tensor
+loading is non-transactional; repair the worker before calling
+`continue_generation`.
 
 ## Stage and TP Behavior
 

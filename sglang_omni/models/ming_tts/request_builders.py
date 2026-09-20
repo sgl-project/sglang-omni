@@ -253,8 +253,8 @@ def preprocess_ming_tts_payload(
         raise ValueError(
             "Ming-Omni-TTS does not support initial_codec_chunk_frames because "
             "initial and steady AudioVAE cadence are configured by "
-            "audio_decode.factory_args.initial_chunk_patches and "
-            "audio_decode.factory_args.steady_chunk_patches"
+            "audio_decode.factory.initial_chunk_patches and "
+            "audio_decode.factory.steady_chunk_patches"
         )
 
     explicit_fields = explicit_generation_fields(tts_params)

@@ -21,7 +21,7 @@ _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
 
 
 @contextmanager
-def _missing_additional_chat_templates_compat() -> Iterator[None]:
+def missing_additional_chat_templates_compat() -> Iterator[None]:
     """Treat a missing optional chat-template directory as no extra templates."""
     import transformers.processing_utils as processing_utils
     import transformers.utils.hub as hub_utils
@@ -42,7 +42,7 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
                     return []
                 raise
 
-        setattr(module, "list_repo_templates", wrapped)
+        module.list_repo_templates = wrapped
         patched.append((module, original))
 
     try:
@@ -51,16 +51,16 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
         yield
     finally:
         for module, original in reversed(patched):
-            setattr(module, "list_repo_templates", original)
+            module.list_repo_templates = original
 
 
-def _default_context_length(model_path: str) -> int:
+def default_context_length(model_path: str) -> int:
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     text_config = getattr(config, "text_config", None)
     return int(getattr(text_config, "max_position_embeddings", 131072))
 
 
-def _default_max_new_tokens(model_path: str) -> int:
+def default_max_new_tokens(model_path: str) -> int:
     try:
         generation_config = GenerationConfig.from_pretrained(model_path)
     except Exception:
@@ -71,7 +71,8 @@ def _default_max_new_tokens(model_path: str) -> int:
 def create_sglang_moss_transcribe_diarize_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    device: str | None = None,
+    gpu_id: int | None = None,
     dtype: str = "bfloat16",
     max_running_requests: int = 16,
     max_new_tokens: int | None = None,
@@ -82,7 +83,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     enable_torch_compile: bool = False,
     torch_compile_max_bs: int = 4,
     # note (yichi): MOSS-TD overlaps host collect starting at batch size 1;
-    # --decode-mode sync remains the operator opt-out.
+    # --asr.factory.enable_async_decode false remains the operator opt-out.
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 4,
@@ -138,6 +139,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     ).build(
         model_path,
         device=device,
+        gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,
     )

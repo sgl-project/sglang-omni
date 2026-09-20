@@ -12,7 +12,7 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def _rematerialize_audio_decoder_buffers(
+def rematerialize_audio_decoder_buffers(
     audio_decoder: torch.nn.Module, device: Any
 ) -> None:
     """Recompute the audio decoder's non-persistent computed buffers.
@@ -120,15 +120,19 @@ def load_audio_decoder(
     )
     # note (xinyu): Meta construction leaves non-persistent buffers on meta after strict
     # parameter assignment. Rebuild them before moving the module to its device.
-    _rematerialize_audio_decoder_buffers(audio_decoder, device)
+    rematerialize_audio_decoder_buffers(audio_decoder, device)
     audio_decoder = audio_decoder.to(device=device, dtype=torch.bfloat16).eval()
 
     tokenizer = PreTrainedTokenizerFast.from_pretrained(checkpoint_dir)
     num_codebooks = int(config.audio_decoder_config.num_codebooks)
     codebook_size = int(config.audio_decoder_config.vocab_size)
 
-    if str(device).startswith("cuda"):
-        torch.cuda.empty_cache()
+    device_type = str(device).split(":")[0]
+    if device_type in ("cuda", "npu"):
+        try:
+            torch.get_device_module(device).empty_cache()
+        except (AttributeError, ModuleNotFoundError, RuntimeError) as exc:
+            logger.warning("Cache reclaim failed for device %s: %s", device, exc)
 
     logger.info(
         "Fish audio decoder loaded in %.2fs (num_codebooks=%d, codebook_size=%d)",

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 import torch
 
-from sglang_omni.comm.engine import CommEngine
-from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPageDestination, KVPool
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
+from sglang_omni.comm.kv_transfer import (
+    KVBufferRegion,
+    KVPageDestination,
+    KVPageTransfer,
+    KVPool,
+)
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.control_plane import (
     deserialize_message,
@@ -19,6 +24,7 @@ from sglang_omni.pipeline.control_plane import (
     serialize_message,
 )
 from sglang_omni.proto import (
+    DataAckMessage,
     DataReadyMessage,
     KVBufferSpec,
     KVPoolLayout,
@@ -26,6 +32,8 @@ from sglang_omni.proto import (
     KVTransferReadyMessage,
 )
 from tests.unit_test.fixtures.pipeline_fakes import FakeOp, FakeRelay
+from tests.unit_test.fixtures.trace_capture import capture_comm_trace
+from tests.unit_test.pipeline.helpers import make_stage
 
 
 @pytest.fixture(autouse=True)
@@ -64,8 +72,9 @@ class _PagedRelay(FakeRelay):
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, Any],
+        transfer_id: str | None = None,
     ) -> FakeOp:
-        del source_pool_id, destination_ref
+        del source_pool_id, destination_ref, transfer_id
         op = FakeOp(
             {
                 "transfer_info": {"size": len(source_page_indices)},
@@ -86,6 +95,7 @@ class _PagedRelay(FakeRelay):
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
         request_id: str,
+        transfer_id: str | None = None,
     ) -> FakeOp:
         assert metadata["fake_kv"] is True
         self.received_source_tp_ranks.append(metadata["source_tp_rank"])
@@ -160,6 +170,7 @@ class _BlockingPagedRelay(_PagedRelay):
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
         request_id: str,
+        transfer_id: str | None = None,
     ) -> FakeOp:
         del metadata
         self.get_calls.append(
@@ -176,6 +187,24 @@ def _pool(pool_id: str, *, buffer_name: str = "layer.0.kv") -> KVPool:
         page_size=1,
         buffers=(KVBufferRegion(buffer_name, tensor, bytes_per_page=4),),
     )
+
+
+def test_prepare_metadata_keeps_continuation_bytes() -> None:
+    message = KVTransferPrepareMessage(
+        request_id="request-1",
+        transfer_id="transfer-1",
+        from_stage="source",
+        to_stage="destination",
+        source_pool_id="source:kv",
+        target_pool_id="destination:kv",
+        source_page_indices=(1,),
+        source_layout=_pool("source:kv").layout,
+        metadata={"decode_continuation": b"\x00\xff"},
+    )
+
+    decoded = deserialize_message(serialize_message(message))
+
+    assert decoded.metadata["decode_continuation"] == b"\x00\xff"
 
 
 def _kv_endpoints(tp_size: int) -> dict[str, tuple[str, ...]]:
@@ -499,6 +528,9 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
 ) -> None:
     async def _run() -> None:
         relay, source, destination = await _start_pair()
+        stage = make_stage(name="source")
+        stage._running = True
+        source._task_done_callback = stage.on_background_task_done
 
         async def drop_data_ready(
             sockets: dict[str, Any], target_endpoint: str, message: Any
@@ -534,9 +566,161 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
             assert relay.put_ops[0].failed is None
             assert "transfer" not in source._pending
             assert len(source._retained_pending_kv_transfers) == 1
+            assert isinstance(stage._background_task_error, TimeoutError)
+            assert not stage._running
+            assert stage.control_plane.closed
         finally:
             await source.close()
             await destination.close()
+
+    asyncio.run(_run())
+
+
+def test_kv_cleanup_before_ready_cancels_only_the_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        async def accept_prepare(
+            sockets: dict[str, Any], target_endpoint: str, message: Any
+        ) -> None:
+            del sockets, target_endpoint
+            assert isinstance(message, KVTransferPrepareMessage)
+
+        monkeypatch.setattr(
+            "sglang_omni.comm.engine.send_to_endpoint",
+            accept_prepare,
+        )
+        source = _engine(
+            "source",
+            _PagedRelay(),
+            rank_endpoints=_kv_endpoints(1),
+        )
+        source.register_kv_pool(_pool("source_pool"))
+        lease = Mock()
+        task = asyncio.create_task(
+            source.send_kv_pages(
+                request_id="request",
+                transfer_id="transfer",
+                source_pool_id="source_pool",
+                source_page_indices=(1,),
+                target_pool_id="destination_pool",
+                to_stage="destination",
+                lease=lease,
+            )
+        )
+
+        try:
+            while "transfer" not in source._kv_ready:
+                await asyncio.sleep(0)
+            source.cleanup("request")
+
+            with pytest.raises(KVTransferCancelled):
+                await task
+            lease.release.assert_called_once_with()
+            assert "transfer" not in source._pending
+            assert not source._retained_pending_kv_transfers
+        finally:
+            await source.close()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("ack_success", [True, False])
+@pytest.mark.parametrize("abort_first", [True, False])
+def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
+    ack_success: bool, abort_first: bool
+) -> None:
+    async def _run() -> None:
+        stage = make_stage(name="source")
+        stage._running = True
+        stage._active_requests.add("other-request")
+        op = FakeOp({"transfer_info": {"size": 4}, "key": "kv-put"})
+        lease = Mock()
+        stage._comm._outbound_kv_requests["transfer"] = "request"
+        stage._comm.register_pending(
+            "transfer",
+            [op],
+            lease=lease,
+            retain_pending_on_failure=True,
+        )
+        pending_task = stage._comm.arm_pending("transfer")
+        await asyncio.sleep(0)
+
+        try:
+            if abort_first:
+                stage.on_abort("request")
+                assert stage._comm._pending["transfer"].cleanup_requested
+                assert not pending_task.done()
+                lease.release.assert_not_called()
+
+            stage._comm.ack_transfer(
+                DataAckMessage(
+                    request_id="request",
+                    from_stage="destination",
+                    to_stage="source",
+                    object_id="transfer",
+                    success=ack_success,
+                    error=None if ack_success else "request aborted",
+                )
+            )
+            if not ack_success and not abort_first:
+                with pytest.raises(KVTransferRejected, match="request aborted"):
+                    await pending_task
+            else:
+                assert await pending_task == abort_first
+            await asyncio.sleep(0)
+            if not abort_first:
+                stage.on_abort("request")
+
+            assert not pending_task.cancelled()
+            assert "transfer" not in stage._comm._pending
+            assert not stage._comm._retained_pending_kv_transfers
+            assert op.waited
+            lease.release.assert_called_once_with()
+            assert stage._background_task_error is None
+            assert stage._running
+            assert not stage.control_plane.closed
+            assert stage._active_requests == {"other-request"}
+        finally:
+            await stage._comm.close()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [KVTransferCancelled("request aborted"), KVTransferRejected("KV copy failed")],
+    ids=["cancelled", "rejected"],
+)
+def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
+    async def _run() -> None:
+        stage = make_stage(name="source")
+        stage._running = True
+        stage._active_requests.update({"request", "other-request"})
+        stage._comm.send_kv_pages = AsyncMock(side_effect=error)
+        transfer = KVPageTransfer(
+            request_id="request",
+            transfer_id="transfer",
+            source_pool_id="source_pool",
+            target_pool_id="destination_pool",
+            source_page_indices=(1,),
+            to_stage="destination",
+        )
+
+        await stage.send_kv_transfer(transfer)
+
+        stage._comm.send_kv_pages.assert_awaited_once()
+        if isinstance(error, KVTransferRejected):
+            [completion] = stage.control_plane.completions
+            assert completion.request_id == "request"
+            assert not completion.success
+            assert completion.error == "KV copy failed"
+        else:
+            assert not stage.control_plane.completions
+        assert stage._active_requests == {"other-request"}
+        assert stage._running
+        assert stage._background_task_error is None
+        assert not stage.control_plane.closed
 
     asyncio.run(_run())
 
@@ -603,3 +787,232 @@ def test_kv_cleanup_aborts_reserved_destination() -> None:
     destination.cleanup("request")
 
     assert receiver.aborted == ["request"]
+
+
+# --- trace events on the paged KV path -------------------------------------
+#
+# These tests use the fake relay, so they cover the engine-side events only.
+# `cuda_ipc_kv_put` and `cuda_ipc_kv_get` live in CudaIpcRelay and need a GPU.
+
+
+def _kv_events(events: list[dict]) -> list[str]:
+    return [
+        event["event"]
+        for event in events
+        if event["event"].startswith(("comm_kv", "cuda_ipc_kv"))
+    ]
+
+
+def _first(events: list[dict], name: str) -> dict:
+    for event in events:
+        if event["event"] == name:
+            return event
+    raise AssertionError(f"no {name} event in {[e['event'] for e in events]}")
+
+
+def test_kv_transfer_traces_every_step_of_a_successful_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def _run() -> None:
+            relay, source, destination = await _start_pair()
+            try:
+                source.register_kv_pool(_pool("source_pool"))
+                destination.register_kv_pool(_pool("destination_pool"))
+                destination.register_kv_receiver("destination_pool", _Receiver((0, 3)))
+                await source.send_kv_pages(
+                    request_id="request",
+                    transfer_id="transfer",
+                    source_pool_id="source_pool",
+                    source_page_indices=(1, 4),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=Mock(),
+                )
+            finally:
+                await source.close()
+                await destination.close()
+
+        asyncio.run(_run())
+
+    assert _kv_events(events) == [
+        "comm_kv_send_start",
+        "comm_kv_prepare_ready",
+        "comm_kv_ready",
+        "comm_kv_read_complete",
+        "comm_kv_transfer_complete",
+    ]
+
+    start = _first(events, "comm_kv_send_start")
+    assert start["transfer_id"] == "transfer"
+    assert start["from_stage"] == "source"
+    assert start["to_stage"] == "destination"
+    assert start["num_pages"] == 2
+
+    ready = _first(events, "comm_kv_ready")
+    assert ready["success"] is True
+    assert ready["error"] is None
+    assert ready["wait_ms"] >= 0.0
+
+    complete = _first(events, "comm_kv_transfer_complete")
+    assert complete["num_pages"] == 2
+    assert complete["elapsed_ms"] >= 0.0
+
+
+def test_kv_transfer_traces_a_transport_rejection_as_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def _run() -> None:
+            source = CommEngine(
+                CommRouter(
+                    stage_name="source",
+                    gpu_id=None,
+                    same_process_targets=set(),
+                    gpu_stage_names=set(),
+                    injected_relay=_PagedRelay(),
+                )
+            )
+            source.register_kv_pool(_pool("source_pool"))
+            with pytest.raises(NotImplementedError, match="only cuda_ipc"):
+                await source.send_kv_pages(
+                    request_id="request",
+                    source_pool_id="source_pool",
+                    source_page_indices=(0,),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=Mock(),
+                )
+
+        asyncio.run(_run())
+
+    assert _kv_events(events) == ["comm_kv_send_start", "comm_kv_transfer_failed"]
+    failed = _first(events, "comm_kv_transfer_failed")
+    assert failed["error"] == "NotImplementedError"
+    assert "only cuda_ipc" in failed["detail"]
+
+
+def test_kv_transfer_traces_a_receiver_rejection_on_both_sides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def _run() -> None:
+            relay, source, destination = await _start_pair()
+            try:
+                source.register_kv_pool(_pool("source_pool"))
+                destination.register_kv_pool(_pool("destination_pool"))
+                destination.register_kv_receiver(
+                    "destination_pool", _FailingReceiver((0,))
+                )
+                with pytest.raises(RuntimeError, match="rank-local reserve failed"):
+                    await source.send_kv_pages(
+                        request_id="request",
+                        transfer_id="transfer",
+                        source_pool_id="source_pool",
+                        source_page_indices=(1,),
+                        target_pool_id="destination_pool",
+                        to_stage="destination",
+                        lease=Mock(),
+                    )
+            finally:
+                await source.close()
+                await destination.close()
+
+        asyncio.run(_run())
+
+    assert _kv_events(events) == [
+        "comm_kv_send_start",
+        "comm_kv_prepare_rejected",
+        "comm_kv_ready",
+        "comm_kv_transfer_failed",
+    ]
+
+    # The receiver names the reason, so the sender does not have to guess it.
+    rejected = _first(events, "comm_kv_prepare_rejected")
+    assert rejected["transfer_id"] == "transfer"
+    assert rejected["target_pool_id"] == "destination_pool"
+    assert "rank-local reserve failed" in rejected["error"]
+
+    ready = _first(events, "comm_kv_ready")
+    assert ready["success"] is False
+    assert "rank-local reserve failed" in ready["error"]
+
+
+def test_kv_ack_timeout_traces_the_retained_transfer_with_a_running_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch) as events:
+
+        async def _run() -> None:
+            relay, source, destination = await _start_pair()
+
+            async def drop_data_ready(
+                sockets: dict[str, Any], target_endpoint: str, message: Any
+            ) -> None:
+                if isinstance(message, DataReadyMessage):
+                    return
+                await send_to_endpoint(sockets, target_endpoint, message)
+
+            monkeypatch.setattr(
+                "sglang_omni.comm.engine.send_to_endpoint",
+                drop_data_ready,
+            )
+            source._ack_timeout_s = 0.1
+            source.register_kv_pool(_pool("source_pool"))
+            destination.register_kv_pool(_pool("destination_pool"))
+            destination.register_kv_receiver("destination_pool", _Receiver((0,)))
+            try:
+                with pytest.raises(TimeoutError):
+                    await source.send_kv_pages(
+                        request_id="request",
+                        transfer_id="transfer",
+                        source_pool_id="source_pool",
+                        source_page_indices=(1,),
+                        target_pool_id="destination_pool",
+                        to_stage="destination",
+                        lease=Mock(),
+                    )
+                assert len(source._retained_pending_kv_transfers) == 1
+            finally:
+                await source.close()
+                await destination.close()
+
+        asyncio.run(_run())
+
+    retained = _first(events, "comm_kv_pending_retained")
+    assert retained["object_id"] == "transfer"
+    assert retained["retained_count"] == 1
+    assert retained["num_ops"] == 1
+    assert "comm_kv_transfer_failed" in _kv_events(events)
+
+
+def test_kv_transfer_emits_nothing_when_the_env_gate_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with capture_comm_trace(monkeypatch, enable=False) as events:
+
+        async def _run() -> None:
+            relay, source, destination = await _start_pair()
+            try:
+                source.register_kv_pool(_pool("source_pool"))
+                destination.register_kv_pool(_pool("destination_pool"))
+                destination.register_kv_receiver("destination_pool", _Receiver((0, 3)))
+                await source.send_kv_pages(
+                    request_id="request",
+                    transfer_id="transfer",
+                    source_pool_id="source_pool",
+                    source_page_indices=(1, 4),
+                    target_pool_id="destination_pool",
+                    to_stage="destination",
+                    lease=Mock(),
+                )
+            finally:
+                await source.close()
+                await destination.close()
+
+        asyncio.run(_run())
+
+    assert events == []

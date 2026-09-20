@@ -29,12 +29,12 @@ _PEER_VISIBILITY_WARNED: set[tuple[int, int, int]] = set()
 _DEFAULT_WAIT_THREADS = 8
 
 
-class _CudaEventWaitResult(NamedTuple):
+class CudaEventWaitResult(NamedTuple):
     worker_start_ns: int
     worker_done_ns: int
 
 
-def _event_wait_threads_from_env() -> int:
+def event_wait_threads_from_env() -> int:
     value = os.getenv("SGLANG_OMNI_CUDA_IPC_WAIT_THREADS")
     if value is None:
         return _DEFAULT_WAIT_THREADS
@@ -44,27 +44,27 @@ def _event_wait_threads_from_env() -> int:
     return threads
 
 
-def _synchronize_cuda_event(
+def synchronize_cuda_event(
     event: torch.cuda.Event,
     device_index: int,
-) -> _CudaEventWaitResult:
+) -> CudaEventWaitResult:
     worker_start_ns = _comm_now_ns()
     with torch.cuda.device(device_index):
         event.synchronize()
-    return _CudaEventWaitResult(
+    return CudaEventWaitResult(
         worker_start_ns=worker_start_ns,
         worker_done_ns=_comm_now_ns(),
     )
 
 
-async def _wait_for_cuda_event(
+async def wait_for_cuda_event(
     event: torch.cuda.Event,
     *,
     device_index: int,
     wait_executor: ThreadPoolExecutor,
     timeout: float,
     finish_on_interrupt: bool = False,
-) -> tuple[int | None, _CudaEventWaitResult | None]:
+) -> tuple[int | None, CudaEventWaitResult | None]:
     """Wait for a CUDA event without blocking the asyncio event loop."""
 
     if event.query():
@@ -73,7 +73,7 @@ async def _wait_for_cuda_event(
     submit_ns = _comm_now_ns()
     wait_future = loop.run_in_executor(
         wait_executor,
-        _synchronize_cuda_event,
+        synchronize_cuda_event,
         event,
         device_index,
     )
@@ -89,7 +89,7 @@ async def _wait_for_cuda_event(
     return submit_ns, result
 
 
-def _cuda_event_elapsed_ms(
+def cuda_event_elapsed_ms(
     start_event: torch.cuda.Event | None,
     end_event: torch.cuda.Event | None,
 ) -> float | None:
@@ -101,13 +101,13 @@ def _cuda_event_elapsed_ms(
         return None
 
 
-def _parse_device_id(device: str) -> int:
+def parse_device_id(device: str) -> int:
     if device.startswith("cuda:"):
         return int(device.split(":", 1)[1])
     return 0
 
 
-def _ensure_peer_access(src_index: int, dst_index: int) -> bool:
+def ensure_peer_access(src_index: int, dst_index: int) -> bool:
     """Check P2P access and report whether a cross-GPU copy is safe."""
     if src_index == dst_index:
         return True
@@ -129,7 +129,7 @@ def _ensure_peer_access(src_index: int, dst_index: int) -> bool:
     return True
 
 
-def _dump_cuda_storage_handle(tensor: torch.Tensor) -> dict[str, Any]:
+def dump_cuda_storage_handle(tensor: torch.Tensor) -> dict[str, Any]:
     (
         storage_device,
         storage_handle,
@@ -154,7 +154,7 @@ def _dump_cuda_storage_handle(tensor: torch.Tensor) -> dict[str, Any]:
     }
 
 
-def _load_cuda_storage_handle(
+def load_cuda_storage_handle(
     storage_meta: dict[str, Any],
     *,
     device: torch.device,
@@ -179,20 +179,20 @@ def _load_cuda_storage_handle(
     )
 
 
-def _slots_for_size(size: int, slot_size: int) -> int:
+def slots_for_size(size: int, slot_size: int) -> int:
     if size < 0:
         raise ValueError("cuda_ipc transfer size must be non-negative")
     return max(1, (size + slot_size - 1) // slot_size)
 
 
-class _SlotLayout(NamedTuple):
+class SlotLayout(NamedTuple):
     slot_index: int | None
     free_slots: int
     largest_free_run: int
     free_runs: int
 
 
-class _SlotAllocation(NamedTuple):
+class SlotAllocation(NamedTuple):
     offset: int
     wait_rounds: int
     free_slots_before: int
@@ -203,7 +203,7 @@ class _SlotAllocation(NamedTuple):
     last_failed_free_runs: int
 
 
-class _ReceiverAckOperation(RelayOperation):
+class ReceiverAckOperation(RelayOperation):
     """Common operation state for sender resources held until receiver ACK."""
 
     def __init__(
@@ -222,14 +222,14 @@ class _ReceiverAckOperation(RelayOperation):
     def metadata(self) -> dict[str, Any]:
         return self._metadata
 
-    async def _wait_for_receiver(self, timeout: float) -> None:
+    async def wait_for_receiver(self, timeout: float) -> None:
         await asyncio.wait_for(self._receiver_done, timeout=timeout)
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self._completed:
             return
         try:
-            await self._wait_for_receiver(timeout)
+            await self.wait_for_receiver(timeout)
         finally:
             self._completed = True
             self._held_references = ()
@@ -244,7 +244,7 @@ class _ReceiverAckOperation(RelayOperation):
             self._receiver_done.set_exception(exc)
 
 
-class CudaIpcPutOperation(_ReceiverAckOperation):
+class CudaIpcPutOperation(ReceiverAckOperation):
     """Sender-side handle; completion means the slot can be reused."""
 
     def __init__(
@@ -280,7 +280,7 @@ class CudaIpcPutOperation(_ReceiverAckOperation):
             return
         wait_start = _comm_now_ns()
         try:
-            await self._wait_for_receiver(timeout)
+            await self.wait_for_receiver(timeout)
         except TimeoutError as exc:
             self._completed = True
             self._fail_cb(exc)
@@ -302,7 +302,7 @@ class CudaIpcPutOperation(_ReceiverAckOperation):
         ack_resume_ms = -1.0
         if self._receiver_done_mark_ns is not None:
             ack_resume_ms = _comm_elapsed_ms(self._receiver_done_mark_ns)
-        sender_copy_gpu_ms = _cuda_event_elapsed_ms(
+        sender_copy_gpu_ms = cuda_event_elapsed_ms(
             self._copy_start_event, self._copy_done_event
         )
         self._source_tensor = None
@@ -365,7 +365,7 @@ class CudaIpcGetOperation(RelayOperation):
             return
         wait_start = _comm_now_ns()
         try:
-            submit_ns, wait_result = await _wait_for_cuda_event(
+            submit_ns, wait_result = await wait_for_cuda_event(
                 self._event,
                 device_index=self._device_index,
                 wait_executor=self._wait_executor,
@@ -373,12 +373,12 @@ class CudaIpcGetOperation(RelayOperation):
                 finish_on_interrupt=self._finish_on_interrupt,
             )
         except BaseException:
-            self._release_references()
+            self.release_references()
             raise
 
         host_wait_ms = _comm_elapsed_ms(wait_start)
-        receiver_gpu_ms = _cuda_event_elapsed_ms(self._start_event, self._done_event)
-        self._release_references()
+        receiver_gpu_ms = cuda_event_elapsed_ms(self._start_event, self._done_event)
+        self.release_references()
         trace_fields: dict[str, Any] = {
             "request_id": self._request_id,
             "slot_index": self._slot_index,
@@ -411,7 +411,7 @@ class CudaIpcGetOperation(RelayOperation):
         if self._emit_trace:
             _comm_trace("cuda_ipc_get_wait_copy", **trace_fields)
 
-    def _release_references(self) -> None:
+    def release_references(self) -> None:
         self._completed = True
         self._pool_tensor = None
         self._held_references = ()
@@ -419,7 +419,7 @@ class CudaIpcGetOperation(RelayOperation):
         self._done_event = None
 
 
-class _ContiguousSlotAllocator:
+class ContiguousSlotAllocator:
     def __init__(self, *, slot_count: int, slot_size: int) -> None:
         if slot_count <= 0:
             raise ValueError("slot_count must be positive")
@@ -435,7 +435,7 @@ class _ContiguousSlotAllocator:
 
     async def acquire_async(
         self, num_slots: int, *, capture_layout: bool = False
-    ) -> _SlotAllocation:
+    ) -> SlotAllocation:
         if num_slots <= 0:
             raise ValueError("num_slots must be positive")
         if num_slots > self.slot_count:
@@ -450,7 +450,7 @@ class _ContiguousSlotAllocator:
         last_failed_free_runs = 0
         while True:
             async with self._lock:
-                slot_index = self._find_contiguous(num_slots)
+                slot_index = self.find_contiguous(num_slots)
                 free_slots_before = self._free_slots
                 if slot_index is not None:
                     for index in range(slot_index, slot_index + num_slots):
@@ -458,7 +458,7 @@ class _ContiguousSlotAllocator:
                     self._free_slots -= num_slots
                     if self._free_slots == 0:
                         self._changed.clear()
-                    return _SlotAllocation(
+                    return SlotAllocation(
                         offset=slot_index * self.slot_size,
                         wait_rounds=wait_rounds,
                         free_slots_before=free_slots_before,
@@ -469,7 +469,7 @@ class _ContiguousSlotAllocator:
                         last_failed_free_runs=last_failed_free_runs,
                     )
                 if capture_layout:
-                    layout = self._find_contiguous_with_layout(num_slots)
+                    layout = self.find_contiguous_with_layout(num_slots)
                     last_failed_free_slots = free_slots_before
                     last_failed_largest_free_run = layout.largest_free_run
                     last_failed_free_runs = layout.free_runs
@@ -493,7 +493,7 @@ class _ContiguousSlotAllocator:
         self._free_slots += num_slots
         self._changed.set()
 
-    def _find_contiguous(self, num_slots: int) -> int | None:
+    def find_contiguous(self, num_slots: int) -> int | None:
         run_start = 0
         run_len = 0
         for index, is_free in enumerate(self._free):
@@ -507,7 +507,7 @@ class _ContiguousSlotAllocator:
                 run_len = 0
         return None
 
-    def _find_contiguous_with_layout(self, num_slots: int) -> _SlotLayout:
+    def find_contiguous_with_layout(self, num_slots: int) -> SlotLayout:
         run_start = 0
         run_len = 0
         free_slots = 0
@@ -530,7 +530,7 @@ class _ContiguousSlotAllocator:
             else:
                 in_run = False
                 run_len = 0
-        return _SlotLayout(
+        return SlotLayout(
             slot_index=slot_index,
             free_slots=free_slots,
             largest_free_run=largest_free_run,
@@ -561,7 +561,7 @@ class CudaIpcRelay(Relay):
                 "relay for host-memory stages."
             )
         self.device = device
-        self.device_id = _parse_device_id(device)
+        self.device_id = parse_device_id(device)
         if pool_size_mb is None:
             legacy_slot_size_mb = 512 if slot_size_mb is None else int(slot_size_mb)
             legacy_credits = 2 if credits is None else int(credits)
@@ -581,7 +581,7 @@ class CudaIpcRelay(Relay):
         self._pool_tensor: torch.Tensor | None = None
         self._pool_id: str | None = None
         self._pool_storage_handles: dict[str, dict[str, Any]] = {}
-        self._allocator: _ContiguousSlotAllocator | None = None
+        self._allocator: ContiguousSlotAllocator | None = None
 
         self._remote_pools: dict[str, torch.Tensor] = {}
         self._kv_pools: dict[str, KVPool] = {}
@@ -593,7 +593,7 @@ class CudaIpcRelay(Relay):
         self._failed_error: BaseException | None = None
         self._failed_event = asyncio.Event()
         self._wait_executor = ThreadPoolExecutor(
-            max_workers=_event_wait_threads_from_env(),
+            max_workers=event_wait_threads_from_env(),
             thread_name_prefix=f"cuda-ipc-wait-{engine_id}",
         )
 
@@ -603,7 +603,7 @@ class CudaIpcRelay(Relay):
         except Exception:
             logger.debug("CudaIpcRelay finalizer cleanup failed", exc_info=True)
 
-    def _ensure_local_pool(self) -> None:
+    def ensure_local_pool(self) -> None:
         if self._pool_tensor is not None:
             return
         start = _comm_now_ns()
@@ -622,7 +622,7 @@ class CudaIpcRelay(Relay):
                 total_pool_bytes, dtype=torch.uint8, device=device
             )
         self._pool_id = f"{self.engine_id}:{os.getpid()}:{uuid.uuid4().hex}"
-        self._allocator = _ContiguousSlotAllocator(
+        self._allocator = ContiguousSlotAllocator(
             slot_count=self.slot_count,
             slot_size=self.slot_size,
         )
@@ -637,10 +637,10 @@ class CudaIpcRelay(Relay):
             elapsed_ms=round(_comm_elapsed_ms(start), 6),
         )
 
-    def _local_pool_state(
+    def local_pool_state(
         self,
-    ) -> tuple[torch.Tensor, str, _ContiguousSlotAllocator]:
-        self._ensure_local_pool()
+    ) -> tuple[torch.Tensor, str, ContiguousSlotAllocator]:
+        self.ensure_local_pool()
         pool_tensor = self._pool_tensor
         pool_id = self._pool_id
         allocator = self._allocator
@@ -652,7 +652,7 @@ class CudaIpcRelay(Relay):
             raise RuntimeError("cuda_ipc local credit allocator was not initialized")
         return pool_tensor, pool_id, allocator
 
-    def _pool_storage_handle_for(
+    def pool_storage_handle_for(
         self,
         pool_tensor: torch.Tensor,
         receiver_id: str,
@@ -663,23 +663,23 @@ class CudaIpcRelay(Relay):
 
         # Each PyTorch CUDA storage export carries one consumer refcounter
         # token. Reuse an export only for the Stage relay cache that imports it.
-        storage_handle = _dump_cuda_storage_handle(pool_tensor)
+        storage_handle = dump_cuda_storage_handle(pool_tensor)
         self._pool_storage_handles[receiver_id] = storage_handle
         return storage_handle, True
 
-    def _mark_failed(self, exc: BaseException) -> None:
+    def mark_failed(self, exc: BaseException) -> None:
         if self._failed_error is None:
             self._failed_error = exc
             self._failed_event.set()
 
-    def _raise_if_failed(self) -> None:
+    def raise_if_failed(self) -> None:
         if self._failed_error is not None:
             raise RuntimeError("cuda_ipc relay failed") from self._failed_error
 
-    async def _acquire_slots(
-        self, allocator: _ContiguousSlotAllocator, num_slots: int
-    ) -> _SlotAllocation:
-        self._raise_if_failed()
+    async def acquire_slots(
+        self, allocator: ContiguousSlotAllocator, num_slots: int
+    ) -> SlotAllocation:
+        self.raise_if_failed()
         acquire_task = asyncio.create_task(
             allocator.acquire_async(num_slots, capture_layout=_comm_trace_enabled())
         )
@@ -692,12 +692,12 @@ class CudaIpcRelay(Relay):
             if fail_task in done:
                 if acquire_task in done:
                     allocator.release(acquire_task.result().offset, num_slots)
-                self._raise_if_failed()
+                self.raise_if_failed()
                 raise RuntimeError("cuda_ipc relay failed")
 
             allocation = acquire_task.result()
             try:
-                self._raise_if_failed()
+                self.raise_if_failed()
             except Exception:
                 allocator.release(allocation.offset, num_slots)
                 raise
@@ -707,7 +707,7 @@ class CudaIpcRelay(Relay):
                 if not task.done():
                     task.cancel()
 
-    def _get_remote_pool(
+    def get_remote_pool(
         self,
         metadata: dict[str, Any],
         *,
@@ -723,7 +723,7 @@ class CudaIpcRelay(Relay):
                     "cuda_ipc pool_storage metadata must be a dict, got "
                     f"{type(storage_meta).__name__}"
                 )
-            pool = _load_cuda_storage_handle(storage_meta, device=device)
+            pool = load_cuda_storage_handle(storage_meta, device=device)
             self._remote_pools[pool_id] = pool
         return pool
 
@@ -734,7 +734,7 @@ class CudaIpcRelay(Relay):
         dst_rank: int | None = None,
         receiver_id: str | None = None,
     ) -> CudaIpcPutOperation:
-        self._raise_if_failed()
+        self.raise_if_failed()
         if receiver_id is None:
             raise ValueError("cuda_ipc put requires a receiver identity")
         if not tensor.is_cuda:
@@ -742,10 +742,10 @@ class CudaIpcRelay(Relay):
                 "cuda_ipc relay can only transfer CUDA tensors; "
                 f"got tensor on {tensor.device}"
             )
-        pool_tensor, pool_id, allocator = self._local_pool_state()
+        pool_tensor, pool_id, allocator = self.local_pool_state()
         flat = tensor.contiguous().view(torch.uint8).reshape(-1)
         size = int(flat.numel())
-        num_slots = _slots_for_size(size, self.slot_size)
+        num_slots = slots_for_size(size, self.slot_size)
         if num_slots > allocator.slot_count:
             raise ValueError(
                 f"Tensor size {size} requires {num_slots} cuda_ipc slots, "
@@ -753,7 +753,7 @@ class CudaIpcRelay(Relay):
             )
 
         acquire_start = _comm_now_ns()
-        allocation = await self._acquire_slots(allocator, num_slots)
+        allocation = await self.acquire_slots(allocator, num_slots)
         acquire_ms = _comm_elapsed_ms(acquire_start)
         offset = allocation.offset
         slot_index = int(offset // self.slot_size)
@@ -783,7 +783,7 @@ class CudaIpcRelay(Relay):
             ready_handle = ready_event.ipc_handle()
             handle_ms = _comm_elapsed_ms(handle_start)
             pool_export_start = _comm_now_ns()
-            pool_storage_handle, pool_exported = self._pool_storage_handle_for(
+            pool_storage_handle, pool_exported = self.pool_storage_handle_for(
                 pool_tensor,
                 receiver_id,
             )
@@ -839,7 +839,7 @@ class CudaIpcRelay(Relay):
             request_id=request_id,
             size=size,
             release_cb=lambda: allocator.release(offset, num_slots),
-            fail_cb=self._mark_failed,
+            fail_cb=self.mark_failed,
             copy_start_event=copy_start_event,
             copy_done_event=copy_done_event,
         )
@@ -859,7 +859,7 @@ class CudaIpcRelay(Relay):
         ipc_meta = metadata["cuda_ipc"]
         dst_device = dest_tensor.device
         pool_start = _comm_now_ns()
-        pool_tensor = self._get_remote_pool(metadata, device=dst_device)
+        pool_tensor = self.get_remote_pool(metadata, device=dst_device)
         pool_ms = _comm_elapsed_ms(pool_start)
 
         src_index = int(ipc_meta["src_device_id"])
@@ -867,7 +867,7 @@ class CudaIpcRelay(Relay):
         peer_start = _comm_now_ns()
         device_count = torch.cuda.device_count()
         if 0 <= src_index < device_count:
-            if not _ensure_peer_access(src_index, dst_index):
+            if not ensure_peer_access(src_index, dst_index):
                 raise RuntimeError(
                     "cuda_ipc cross-GPU transfer requires peer access, but "
                     f"GPU {dst_index} cannot access GPU {src_index}; use the "
@@ -898,7 +898,7 @@ class CudaIpcRelay(Relay):
             raise ValueError("cuda_ipc slot_size and num_slots must be positive")
         if offset % slot_size != 0:
             raise ValueError("cuda_ipc transfer offset must be slot aligned")
-        if num_slots < _slots_for_size(size, slot_size):
+        if num_slots < slots_for_size(size, slot_size):
             raise ValueError("cuda_ipc num_slots is too small for transfer size")
         allocation_size = num_slots * slot_size
         if offset + allocation_size > int(pool_tensor.numel()):
@@ -982,7 +982,7 @@ class CudaIpcRelay(Relay):
             f"{self.engine_id}:{os.getpid()}:{uuid.uuid4().hex}",
         )
 
-    def _export_kv_source_pool(
+    def export_kv_source_pool(
         self,
         pool_id: str,
         *,
@@ -995,7 +995,7 @@ class CudaIpcRelay(Relay):
         storage_handles = self._kv_pool_storage_handles.get(cache_key)
         if storage_handles is None:
             storage_handles = tuple(
-                _dump_cuda_storage_handle(buffer.byte_view()) for buffer in pool.buffers
+                dump_cuda_storage_handle(buffer.byte_view()) for buffer in pool.buffers
             )
             self._kv_pool_storage_handles[cache_key] = storage_handles
         return {
@@ -1023,7 +1023,8 @@ class CudaIpcRelay(Relay):
         source_pool_id: str,
         source_page_indices: tuple[int, ...],
         destination_ref: dict[str, Any],
-    ) -> _ReceiverAckOperation:
+        transfer_id: str | None = None,
+    ) -> ReceiverAckOperation:
         pool = self._kv_pools.get(source_pool_id)
         if pool is None:
             raise KeyError(f"unknown cuda_ipc KV pool {source_pool_id!r}")
@@ -1036,7 +1037,7 @@ class CudaIpcRelay(Relay):
         ready_event = torch.cuda.Event(interprocess=True)
         with torch.cuda.device(device), torch.cuda.stream(stream):
             ready_event.record(stream)
-        relay_info = self._export_kv_source_pool(
+        relay_info = self.export_kv_source_pool(
             source_pool_id,
             destination_registration_id=destination_registration_id,
         )
@@ -1048,7 +1049,15 @@ class CudaIpcRelay(Relay):
         }
         relay_info["cuda_ipc_kv"] = dict(relay_info["cuda_ipc_kv"])
         relay_info["cuda_ipc_kv"]["ready_event"] = ready_event.ipc_handle()
-        return _ReceiverAckOperation(
+        _comm_trace(
+            "cuda_ipc_kv_put",
+            transfer_id=transfer_id,
+            source_pool_id=source_pool_id,
+            num_pages=len(source_page_indices),
+            bytes=relay_info["transfer_info"]["size"],
+            device_id=device.index if device.index is not None else 0,
+        )
+        return ReceiverAckOperation(
             relay_info,
             held_references=(
                 ready_event,
@@ -1064,6 +1073,7 @@ class CudaIpcRelay(Relay):
         source_page_indices: tuple[int, ...],
         destination_page_indices: tuple[int, ...],
         request_id: str,
+        transfer_id: str | None = None,
     ) -> CudaIpcGetOperation:
         destination = self._kv_pools.get(destination_pool_id)
         if destination is None:
@@ -1081,19 +1091,27 @@ class CudaIpcRelay(Relay):
                     source_device_id,
                 )
             ):
+                _comm_trace(
+                    "cuda_ipc_kv_peer_access_denied",
+                    transfer_id=transfer_id,
+                    request_id=request_id,
+                    source_device_id=source_device_id,
+                    destination_device_id=destination_device_id,
+                )
                 raise RuntimeError(
                     "direct CUDA-IPC KV transfer requires GPU peer access; "
                     f"cuda:{destination_device_id} cannot access "
                     f"cuda:{source_device_id}"
                 )
-            _ensure_peer_access(source_device_id, destination_device_id)
+            ensure_peer_access(source_device_id, destination_device_id)
         source_engine_id = metadata["engine_id"]
         source_registration_id = source_meta["registration_id"]
         remote_pool_key = (source_engine_id, source_registration_id)
         source_buffers = self._remote_kv_pools.get(remote_pool_key)
+        remote_pool_cached = source_buffers is not None
         if source_buffers is None:
             source_buffers = tuple(
-                _load_cuda_storage_handle(storage, device=destination_device)
+                load_cuda_storage_handle(storage, device=destination_device)
                 for storage in source_meta["storages"]
             )
             self._remote_kv_pools[remote_pool_key] = source_buffers
@@ -1144,6 +1162,18 @@ class CudaIpcRelay(Relay):
         transfer_size = sum(
             buffer.bytes_per_page * len(source_page_indices)
             for buffer in destination.buffers
+        )
+        _comm_trace(
+            "cuda_ipc_kv_get",
+            transfer_id=transfer_id,
+            request_id=request_id,
+            destination_pool_id=destination_pool_id,
+            num_pages=len(source_page_indices),
+            bytes=transfer_size,
+            source_device_id=source_device_id,
+            destination_device_id=destination_device_id,
+            cross_device=source_device_id != destination_device_id,
+            remote_pool_cached=remote_pool_cached,
         )
         return CudaIpcGetOperation(
             done_event,

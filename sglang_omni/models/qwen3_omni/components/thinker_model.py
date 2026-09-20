@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_stream
+from sglang.srt.runtime_context import get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -32,8 +32,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -51,7 +49,7 @@ fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 logger = logging.getLogger(__name__)
 
 
-def _bind_default_weight_loaders(module: nn.Module) -> None:
+def bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
@@ -168,8 +166,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.hidden_size = hidden_size
         self.layer_id = layer_id
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
 
         self.config = config
         self.total_num_heads = num_heads
@@ -508,8 +506,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
 
         self.layer_id = layer_id
 
-        self.attn_tp_size = get_attention_tp_size()
-        self.attn_tp_rank = get_attention_tp_rank()
+        self.attn_tp_size = get_parallel().attn_tp_size
+        self.attn_tp_rank = get_parallel().attn_tp_rank
 
         # Qwen3MoE all layers are sparse and have no nextn now
         self.is_layer_sparse = True
@@ -647,7 +645,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         # For EAGLE3 support
         self.layers_to_capture = []
-        _bind_default_weight_loaders(self)
+        bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
 
     def forward(
@@ -685,7 +683,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             if deepstack_visual_embeds is not None and layer_idx in range(
                 len(deepstack_visual_embeds)
             ):
-                hidden_states = self._deepstack_process(
+                hidden_states = self.deepstack_process(
                     hidden_states,
                     visual_pos_masks,
                     deepstack_visual_embeds[layer_idx],
@@ -701,7 +699,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         return hidden_states, aux_hidden_states
 
-    def _deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
+    def deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
         # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)
         if visual_pos_masks.dim() > 1:
             visual_pos_masks = visual_pos_masks[..., 0]

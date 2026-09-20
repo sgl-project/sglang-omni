@@ -6,8 +6,8 @@ config_cls: MossTranscribeDiarizePipelineConfig
 name: mtd
 model_path: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
-runtime_overrides:
+stages:
   asr:
-    mem_fraction_static: 0.20
-    server_args_overrides:
+    engine:
+      mem_fraction_static: 0.20
       max_total_tokens: 40000

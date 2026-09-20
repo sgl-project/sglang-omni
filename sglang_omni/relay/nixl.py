@@ -350,5 +350,5 @@ class NixlRelay(Relay):
         if NIXL_AVAILABLE:
             try:
                 self.connection._nixl.deregister_memory(self.pool_handle)
-            except:
-                pass
+            except Exception:
+                logger.exception("Failed to deregister NIXL memory pool")

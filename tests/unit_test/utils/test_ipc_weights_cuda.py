@@ -25,9 +25,12 @@ from sglang_omni.pipeline.stage_workers import (
 )
 from sglang_omni.utils import ipc_weights
 
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="weight-share CUDA test requires CUDA"
-)
+pytestmark = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="weight-share CUDA test requires CUDA"
+    ),
+]
 
 
 class _Tiny(nn.Module):
@@ -78,7 +81,7 @@ def test_weight_share_stage_bootstrap_supports_direct_cuda_ipc(
             StageLaunchConfig(
                 stage_name="consumer",
                 factory=f"{__name__}._direct_ipc_consumer_factory",
-                factory_args={"data_queue": data_queue, "done": done},
+                factory_kwargs={"data_queue": data_queue, "done": done},
             )
         ],
     )

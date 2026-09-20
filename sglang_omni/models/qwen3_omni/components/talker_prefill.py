@@ -32,7 +32,7 @@ _EMBED_SOURCE_CACHE: dict[str, tuple[Path, str]] = {}
 _EMBED_HANDLE_CACHE: dict[str, Any] = {}
 
 
-def _resolve_embed_source(model_path: str) -> tuple[Path, str]:
+def resolve_embed_source(model_path: str) -> tuple[Path, str]:
     cached = _EMBED_SOURCE_CACHE.get(model_path)
     if cached is not None:
         return cached
@@ -60,7 +60,7 @@ def _resolve_embed_source(model_path: str) -> tuple[Path, str]:
 
 
 def load_thinker_embedding_rows(model_path: str, row_ids: list[int]) -> torch.Tensor:
-    shard_path, tensor_name = _resolve_embed_source(model_path)
+    shard_path, tensor_name = resolve_embed_source(model_path)
     handle = _EMBED_HANDLE_CACHE.get(model_path)
     if handle is None:
         handle = safe_open(str(shard_path), framework="pt", device="cpu")
@@ -201,24 +201,15 @@ class TalkerPrefillBuilder:
 
         state = Qwen3OmniPipelineState.from_dict(payload.data)
         prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs = (
-            self._reconstruct_prompt_states(state)
+            self.reconstruct_prompt_states(state)
         )
 
         assistant_token_ids = self.extract_chunk_token_ids(thinker_chunks)
-        assistant_embed = self._load_prompt_token_embeddings(assistant_token_ids)
-        assistant_hidden = torch.stack(
-            [
-                self.chunk_layer_hidden_or_embed(chunk).to(
-                    device=self._device, dtype=self._dtype
-                )
-                for chunk in thinker_chunks
-            ],
-            dim=0,
-        )
+        assistant_embed = self.load_prompt_token_embeddings(assistant_token_ids)
 
         thinker_input_ids = torch.cat([prompt_ids, assistant_token_ids], dim=0)
         thinker_embed = torch.cat([prompt_embed, assistant_embed], dim=0)
-        thinker_hidden = torch.cat([prompt_hidden, assistant_hidden], dim=0)
+        thinker_hidden = torch.cat([prompt_hidden, assistant_embed], dim=0)
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
@@ -271,8 +262,9 @@ class TalkerPrefillBuilder:
             return
 
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
-        pending_text_queue = coerce_pending_text_queue(pending_text_queue)
-        req_data.pending_text_queue = pending_text_queue
+        if not isinstance(pending_text_queue, PendingTextTensorQueue):
+            pending_text_queue = coerce_pending_text_queue(pending_text_queue)
+            req_data.pending_text_queue = pending_text_queue
         pending_text_queue.append(self.project_assistant_chunk(chunk))
 
     def mark_thinker_done(self, req_data: Any) -> None:
@@ -281,8 +273,9 @@ class TalkerPrefillBuilder:
 
         req_data.thinker_chunks_done = True
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
-        pending_text_queue = coerce_pending_text_queue(pending_text_queue)
-        req_data.pending_text_queue = pending_text_queue
+        if not isinstance(pending_text_queue, PendingTextTensorQueue):
+            pending_text_queue = coerce_pending_text_queue(pending_text_queue)
+            req_data.pending_text_queue = pending_text_queue
         if isinstance(req_data.tts_eos_embed, torch.Tensor):
             pending_text_queue.append(req_data.tts_eos_embed)
 
@@ -293,18 +286,11 @@ class TalkerPrefillBuilder:
             token_ids.append(int(metadata["token_id"]))
         return torch.tensor(token_ids, dtype=torch.long)
 
-    def chunk_layer_hidden_or_embed(self, chunk: Any) -> torch.Tensor:
-        metadata = chunk.metadata or {}
-        layer_hidden = metadata.get("layer_hidden")
-        if isinstance(layer_hidden, torch.Tensor):
-            return layer_hidden
-        return chunk.data
-
     def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
         if token_id is not None:
-            chunk_tensor = self._load_prompt_token_embeddings(
+            chunk_tensor = self.load_prompt_token_embeddings(
                 torch.tensor([int(token_id)], dtype=torch.long)
             )
         else:
@@ -347,7 +333,7 @@ class TalkerPrefillBuilder:
             return PendingTextTensorQueue()
         return PendingTextTensorQueue.from_tensor(tensor)
 
-    def _reconstruct_prompt_states(
+    def reconstruct_prompt_states(
         self, state: Qwen3OmniPipelineState
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
         prompt = state.prompt or {}
@@ -356,9 +342,9 @@ class TalkerPrefillBuilder:
             prompt_input_ids = prompt_input_ids[0]
         prompt_ids = prompt_input_ids.to(dtype=torch.long).cpu()
 
-        prompt_embed = self._load_prompt_token_embeddings(prompt_ids)
+        prompt_embed = self.load_prompt_token_embeddings(prompt_ids)
         prompt_hidden = prompt_embed.clone()
-        prompt_model_inputs = self._prompt_model_inputs(state)
+        prompt_model_inputs = self.prompt_model_inputs(state)
 
         merge_prompt_modality(
             prompt_ids,
@@ -384,7 +370,7 @@ class TalkerPrefillBuilder:
 
         return prompt_ids, prompt_embed, prompt_hidden, prompt_model_inputs
 
-    def _load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def load_prompt_token_embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
         token_ids = token_ids.to(dtype=torch.long).view(-1).cpu()
         unique_ids, inverse = torch.unique(token_ids, sorted=False, return_inverse=True)
         missing_ids = [
@@ -410,7 +396,7 @@ class TalkerPrefillBuilder:
         gathered = unique_rows.index_select(0, inverse.to(device=unique_rows.device))
         return gathered.view(token_ids.shape[0], unique_rows.shape[-1])
 
-    def _prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, Any]:
+    def prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, Any]:
         thinker_inputs = state.thinker_inputs or {}
         model_inputs = thinker_inputs.get("model_inputs")
         if isinstance(model_inputs, dict):

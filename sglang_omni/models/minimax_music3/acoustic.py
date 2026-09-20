@@ -16,6 +16,7 @@ import torch
 from torch import Tensor
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.messages import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -41,7 +42,7 @@ from .payload_types import MiniMaxMusic3State
 logger = logging.getLogger(__name__)
 
 
-def _derive_seed(seed: int, *parts: object) -> int:
+def derive_seed(seed: int, *parts: object) -> int:
     """Stable 64-bit seed derivation; never use Python's randomized hash()."""
     digest = hashlib.blake2b(digest_size=8, person=b"minimax-ttm")
     digest.update(int(seed).to_bytes(8, "little", signed=False))
@@ -58,13 +59,13 @@ def resample_waveform(waveform: Tensor) -> Tensor:
     return AF.resample(waveform.float(), DAV_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)
 
 
-def _positive_int(name: str, value: Any) -> int:
+def positive_int(name: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"MiniMax Music 3 {name} must be a positive integer")
     return value
 
 
-def _non_negative_number(name: str, value: Any) -> float:
+def non_negative_number(name: str, value: Any) -> float:
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
@@ -75,13 +76,13 @@ def _non_negative_number(name: str, value: Any) -> float:
     return float(value)
 
 
-def _boolean(name: str, value: Any) -> bool:
+def boolean(name: str, value: Any) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"MiniMax Music 3 {name} must be a boolean")
     return value
 
 
-def _compile_timed(label: str, enable: Callable[[], None]) -> None:
+def compile_timed(label: str, enable: Callable[[], None]) -> None:
     started = time.perf_counter()
     enable()
     logger.info(
@@ -89,7 +90,7 @@ def _compile_timed(label: str, enable: Callable[[], None]) -> None:
     )
 
 
-def _resolve_acoustic_dtype(value: str | torch.dtype) -> torch.dtype:
+def resolve_acoustic_dtype(value: str | torch.dtype) -> torch.dtype:
     if isinstance(value, torch.dtype):
         name = str(value).removeprefix("torch.")
     elif isinstance(value, str):
@@ -131,16 +132,18 @@ class MiniMaxMusic3AcousticDecoder:
         cache_dit_residual_diff_threshold: float = 0.08,
         cache_dit_max_continuous_cached_steps: int = 1,
     ) -> None:
-        if not torch.cuda.is_available():
-            raise RuntimeError("MiniMax Music 3 acoustic inference requires CUDA")
+        if not (current_platform.is_cuda() or current_platform.is_musa()):
+            raise RuntimeError(
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
+            )
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type != "cuda":
+        if self.device.type not in ("cuda", "musa"):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA device"
+                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
             )
-        self.dtype = _resolve_acoustic_dtype(dtype)
+        self.dtype = resolve_acoustic_dtype(dtype)
         if self.dtype is torch.float32:
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa
             # and measures 0.22% from the true float32 DIT solve while running
@@ -150,12 +153,12 @@ class MiniMaxMusic3AcousticDecoder:
             # shares this process.
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.set_float32_matmul_precision("high")
-        self.dit_steps = _positive_int("dit_steps", dit_steps)
-        self.dit_cfg_scale = _non_negative_number("dit_cfg_scale", dit_cfg_scale)
+        self.dit_steps = positive_int("dit_steps", dit_steps)
+        self.dit_cfg_scale = non_negative_number("dit_cfg_scale", dit_cfg_scale)
         self.attention_backend = attention_backend.strip().lower()
-        self.cache_dit = _boolean("cache_dit", cache_dit)
-        self.compile_acoustic = _boolean("compile_acoustic", compile_acoustic)
-        self.breakable_cuda_graph_requested = _boolean(
+        self.cache_dit = boolean("cache_dit", cache_dit)
+        self.compile_acoustic = boolean("compile_acoustic", compile_acoustic)
+        self.breakable_cuda_graph_requested = boolean(
             "breakable_cuda_graph", breakable_cuda_graph
         )
         self.breakable_cuda_graph = False
@@ -167,7 +170,7 @@ class MiniMaxMusic3AcousticDecoder:
             breakable_cuda_graph_min_free_gb = (
                 24.0 if self.dtype is torch.float32 else 10.0
             )
-        self.breakable_cuda_graph_min_free_gb = _non_negative_number(
+        self.breakable_cuda_graph_min_free_gb = non_negative_number(
             "breakable_cuda_graph_min_free_gb", breakable_cuda_graph_min_free_gb
         )
         if self.dtype is torch.float32 and self.attention_backend in {
@@ -180,7 +183,7 @@ class MiniMaxMusic3AcousticDecoder:
 
         paths = resolve_checkpoint(model_path)
         load_started = time.perf_counter()
-        self._build_dit(
+        self.build_dit(
             paths.dit_path,
             cache_dit_fn_compute_blocks=cache_dit_fn_compute_blocks,
             cache_dit_bn_compute_blocks=cache_dit_bn_compute_blocks,
@@ -188,7 +191,7 @@ class MiniMaxMusic3AcousticDecoder:
             cache_dit_residual_diff_threshold=cache_dit_residual_diff_threshold,
             cache_dit_max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
         )
-        removed_weight_norms = self._build_dav(paths.dav_path)
+        removed_weight_norms = self.build_dav(paths.dav_path)
         logger.info(
             f"MiniMax Music 3 PyTorch DIT/DAV loaded device={self.device} dtype={self.dtype} dit_parameters={sum((parameter.numel() for parameter in self.dit.parameters()))} dav_parameters={sum((parameter.numel() for parameter in self.dav.parameters()))} folded_weight_norms={removed_weight_norms} elapsed={time.perf_counter() - load_started:.1f}s"
         )
@@ -196,7 +199,7 @@ class MiniMaxMusic3AcousticDecoder:
             f"MiniMax Music 3 acoustic runtime dit_steps={self.dit_steps} dit_cfg_scale={self.dit_cfg_scale:.3f} attention_backend={self.attention_backend} cache_dit={self.cache_dit} compile_acoustic={self.compile_acoustic} breakable_cuda_graph={self.breakable_cuda_graph} breakable_cuda_graph_requested={self.breakable_cuda_graph_requested}"
         )
 
-    def _build_dit(
+    def build_dit(
         self,
         dit_path: str,
         *,
@@ -225,7 +228,7 @@ class MiniMaxMusic3AcousticDecoder:
         if self.compile_acoustic and not (
             self.cache_dit or self.breakable_cuda_graph_requested
         ):
-            _compile_timed(
+            compile_timed(
                 "DIT blocks",
                 lambda: self.dit.enable_compiled_blocks(warmup_mel_length=window),
             )
@@ -244,7 +247,7 @@ class MiniMaxMusic3AcousticDecoder:
                 max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
             )
 
-    def _build_dav(self, dav_path: str) -> int:
+    def build_dav(self, dav_path: str) -> int:
         """Load the DAV decoder and return how many weight norms were folded."""
         logger.info(f"Loading MiniMax Music 3 DAV from {dav_path}")
         state = load_torch_state(dav_path, device=self.device)
@@ -256,7 +259,7 @@ class MiniMaxMusic3AcousticDecoder:
         removed_weight_norms = remove_weight_norm(self.dav)
         if self.compile_acoustic:
             window = self.dit.aligned_mel_length(AR_CHUNK_FRAMES)
-            _compile_timed(
+            compile_timed(
                 "DAV decoder",
                 lambda: self.dav.enable_compiled_decoder(warmup_mel_length=window),
             )
@@ -279,7 +282,7 @@ class MiniMaxMusic3AcousticDecoder:
             device=self.device, dtype=self.dtype, non_blocking=True
         )
         generator = torch.Generator(device=self.device).manual_seed(
-            _derive_seed(int(seed), "dit", int(chunk_idx))
+            derive_seed(int(seed), "dit", int(chunk_idx))
         )
         align = self.dit.aligned_condition(hidden)
         latent = self.dit(
@@ -309,7 +312,7 @@ class MiniMaxMusic3AcousticDecoder:
 
 
 @dataclass
-class _AcousticStreamState:
+class AcousticStreamState:
     final_state: MiniMaxMusic3State | None = None
     wave_chunks: list[Tensor] = field(default_factory=list)
     hidden_frames: int = 0
@@ -329,7 +332,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         decoder: MiniMaxMusic3AcousticDecoder,
     ) -> None:
         self._decoder = decoder
-        self._stream_states: dict[str, _AcousticStreamState] = {}
+        self._stream_states: dict[str, AcousticStreamState] = {}
         super().__init__(compute_fn=None, max_batch_size=1)
 
     def is_streaming_payload(self, payload: Any) -> bool:
@@ -339,7 +342,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         return bool(data.get("internal_chunk_stream", False))
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        state = self._stream_states.setdefault(request_id, _AcousticStreamState())
+        state = self._stream_states.setdefault(request_id, AcousticStreamState())
         state.final_state = MiniMaxMusic3State.from_dict(payload.data)
         logger.info(
             f"MiniMax Music 3 acoustic request={request_id} payload_ready seed={state.final_state.seed} expected_frames={state.final_state.generated_frames}"
@@ -362,7 +365,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 f"got {tuple(item.data.shape)}"
             )
         hidden = item.data[0]
-        state = self._stream_states.setdefault(request_id, _AcousticStreamState())
+        state = self._stream_states.setdefault(request_id, AcousticStreamState())
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise ValueError(
@@ -441,8 +444,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 request_id=request_id,
                 type="result",
                 data=StagePayload(
-                    request_id=self._stream_payloads[request_id].request_id,
-                    request=self._stream_payloads[request_id].request,
+                    request_id=self.stream_payloads[request_id].request_id,
+                    request=self.stream_payloads[request_id].request,
                     data=payload_data,
                 ),
             )
@@ -468,5 +471,5 @@ __all__ = [
     "MiniMaxMusic3AcousticDecoder",
     "MiniMaxMusic3AcousticScheduler",
     "resample_waveform",
-    "_resolve_acoustic_dtype",
+    "resolve_acoustic_dtype",
 ]

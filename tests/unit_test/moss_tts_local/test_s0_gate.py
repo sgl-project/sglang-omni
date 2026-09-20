@@ -4,18 +4,20 @@
 Reproducer for this PR's bit-identity claim (the S0 gate cited in the
 Verification section), runnable by anyone via pytest; the upcoming #734 and #736
 changes reuse the same check. The frame-decode CUDA graph, replayed twice with
-identical fixed-seed inputs, must produce bit-identical output. Marked ``gpu``
-and auto-skipped without a CUDA device. Do not modify after initial commit.
+identical fixed-seed inputs, must produce bit-identical output. Marked
+``accelerator`` and auto-skipped without a CUDA device. Do not modify after
+initial commit.
 """
 from __future__ import annotations
 
 import pytest
 import torch
 
+pytestmark = pytest.mark.accelerator
+
 _N_VQ = 12
 
 
-@pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_s0_graph_replay_is_deterministic():
     """Two CUDA-graph replays with identical inputs must be bit-identical.

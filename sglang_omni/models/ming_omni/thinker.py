@@ -21,6 +21,7 @@ from typing import Any, Iterable, Optional, Tuple
 
 import torch
 from sglang.srt.layers.communicator import enable_moe_dense_fully_dp
+from sglang.srt.runtime_context import get_parallel
 from torch import nn
 
 from sglang_omni.models.ming_omni.configuration import (
@@ -46,8 +47,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     SiluAndMul,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -89,8 +88,8 @@ class BailingMoeV2Attention(nn.Module):
         self.rotary_dim = config.rotary_dim
         self.use_qk_norm = config.use_qk_norm
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
         validate_attention_tp_config(
             num_attention_heads=self.num_heads,
             num_key_value_heads=self.num_kv_heads,
@@ -368,7 +367,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             scores_for_routing = scores
 
         # Group-limited top-k selection
-        topk_weights, topk_ids = self._group_limited_topk(scores_for_routing)
+        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
 
         # Gather actual scores (without bias) for the selected experts
         topk_weights = torch.gather(scores, dim=1, index=topk_ids)
@@ -407,7 +406,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
-    def _group_limited_topk(
+    def group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection.
@@ -844,10 +843,10 @@ class BailingMoeV2ForCausalLM(nn.Module):
         # This runs during model loading, BEFORE SGLangModelScheduler reads
         # the config, so the patched values will be visible.
         # ------------------------------------------------------------------
-        self._patch_token_ids(config, llm_cfg)
+        self.patch_token_ids(config, llm_cfg)
 
     @staticmethod
-    def _patch_token_ids(config: Any, llm_cfg: Any) -> None:
+    def patch_token_ids(config: Any, llm_cfg: Any) -> None:
         """Set image/video/audio token IDs on the HF config."""
         if not hasattr(config, "image_token_id"):
             config.image_token_id = getattr(llm_cfg, "image_patch_token", None)
