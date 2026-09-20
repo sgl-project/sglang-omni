@@ -5,20 +5,23 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
-if TYPE_CHECKING:
-    from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
+FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
 OUTPUT_SAMPLE_RATE = 24000
+CODEC_TOKEN_RATE = 25
+SAMPLES_PER_CODEC_TOKEN = OUTPUT_SAMPLE_RATE // CODEC_TOKEN_RATE
 
 
 class MiniCPMOCode2Wav(nn.Module):
@@ -29,7 +32,7 @@ class MiniCPMOCode2Wav(nn.Module):
         model_path: str,
         *,
         device: str = "cuda",
-        float16: bool = False,
+        dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
     ) -> None:
@@ -48,9 +51,19 @@ class MiniCPMOCode2Wav(nn.Module):
                 f"token2wav assets not found at {asset_dir}; copy the "
                 "checkpoint's assets/token2wav directory next to the weights"
             )
+        if dtype is None:
+            torch_dtype = torch.float32
+        elif isinstance(dtype, torch.dtype):
+            torch_dtype = dtype
+        else:
+            torch_dtype = resolve_dtype(dtype)
+        if torch_dtype not in FLOW_DTYPES:
+            raise ValueError(
+                f"Code2Wav dtype must be float32, float16, or bfloat16, got {dtype}"
+            )
         with self.device_context:
             self.token2wav = Token2Wav(
-                Path(asset_dir), device=dev, float16=float16, n_timesteps=n_timesteps
+                Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
             )
 
         if prompt_wav is None:
@@ -58,6 +71,8 @@ class MiniCPMOCode2Wav(nn.Module):
             prompt_wav = default_wav if os.path.isfile(default_wav) else None
         self.default_prompt_wav = prompt_wav
         self.prompt_cache_key: str | None = None
+        self.sample_rate = OUTPUT_SAMPLE_RATE
+        self.eval()
 
     @torch.inference_mode()
     def forward(
@@ -70,26 +85,33 @@ class MiniCPMOCode2Wav(nn.Module):
         """Vocode EOS-stripped codec tokens using the supplied or default reference."""
         tokens = codec_tokens.reshape(-1).tolist()
         if not tokens:
-            return {
-                "waveform": np.zeros(0, dtype=np.float32),
-                "sample_rate": OUTPUT_SAMPLE_RATE,
-            }
-        with self.device_context:
-            reference = self.default_prompt_wav if prompt_wav is None else prompt_wav
-            waveform = self.vocode(tokens, reference)
+            waveform = np.zeros(0, dtype=np.float32)
+        else:
+            with self.device_context:
+                reference = self.resolve_prompt_wav(prompt_wav)
+                waveform = self.vocode([tokens], reference)[0]
         return {"waveform": waveform, "sample_rate": OUTPUT_SAMPLE_RATE}
 
-    def speaker_prompt(self, prompt_wav: str | bytes | None) -> SpeakerPrompt:
-        if prompt_wav is None:
+    def resolve_prompt_wav(self, prompt_wav: str | bytes | None) -> str | bytes:
+        if prompt_wav is not None:
+            resolved = prompt_wav
+        elif self.default_prompt_wav is None:
             raise ValueError("No speaker-reference audio supplied or default available")
+        else:
+            resolved = self.default_prompt_wav
+        return resolved
+
+    def speaker_prompt(
+        self, prompt_wav: str | bytes | None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        prompt_wav = self.resolve_prompt_wav(prompt_wav)
         prompt_key = (
             f"bytes:{hash_bytes(prompt_wav)}"
             if isinstance(prompt_wav, bytes)
             else reference_path_cache_key(prompt_wav)
         )
-        t2w = self.token2wav
         if (
-            t2w.cache is None
+            self.token2wav.cache is None
             or prompt_key is None
             or prompt_key != self.prompt_cache_key
         ):
@@ -97,37 +119,82 @@ class MiniCPMOCode2Wav(nn.Module):
                 with tempfile.NamedTemporaryFile(suffix=".wav") as reference:
                     reference.write(prompt_wav)
                     reference.flush()
-                    prompt = t2w.prepare_prompt(reference.name)
+                    prompt = self.token2wav.prepare_prompt(reference.name)
             else:
-                prompt = t2w.prepare_prompt(prompt_wav)
-            t2w.cache = prompt
+                prompt = self.token2wav.prepare_prompt(prompt_wav)
+            self.token2wav.cache = prompt
             self.prompt_cache_key = prompt_key
-        return t2w.cache
+        return self.token2wav.cache
 
-    def vocode(self, tokens: list[int], prompt_wav: str | bytes | None) -> np.ndarray:
-        """Return the waveform directly, avoiding the vocoder's file encoder."""
-        t2w = self.token2wav
-        (
-            prompt_speech_tokens,
-            prompt_speech_tokens_lens,
-            spk_emb,
-            prompt_mels,
-        ) = self.speaker_prompt(prompt_wav)
-
-        speech_tokens = torch.tensor([tokens], dtype=torch.int32, device=t2w.device)
-        speech_tokens_lens = torch.tensor(
-            [speech_tokens.shape[1]], dtype=torch.int32, device=t2w.device
-        )
-        with torch.amp.autocast("cuda", dtype=torch.float16, enabled=t2w.float16):
-            mel = t2w.flow.inference(
-                speech_tokens,
-                speech_tokens_lens,
+    def vocode(
+        self,
+        token_sequences: Sequence[Sequence[int]],
+        prompt_wav: str | bytes | None,
+    ) -> list[np.ndarray]:
+        """Vocode a prompt-homogeneous batch of codec-token sequences."""
+        if not token_sequences:
+            waveforms: list[np.ndarray] = []
+        elif any(len(tokens) == 0 for tokens in token_sequences):
+            raise ValueError("codec token sequences must be non-empty")
+        else:
+            (
                 prompt_speech_tokens,
                 prompt_speech_tokens_lens,
+                speaker_embedding,
                 prompt_mels,
-                spk_emb,
-                t2w.n_timesteps,
+            ) = self.speaker_prompt(prompt_wav)
+            batch_size = len(token_sequences)
+            token_lens = [len(tokens) for tokens in token_sequences]
+            speech_tokens = pad_sequence(
+                [
+                    torch.tensor(
+                        tokens, dtype=torch.int32, device=self.token2wav.device
+                    )
+                    for tokens in token_sequences
+                ],
+                batch_first=True,
             )
-        # note (MayDomine): HiFT stays FP32 when the flow runs in half precision.
-        wav, _ = t2w.hift(speech_feat=mel.float())
-        return wav.reshape(-1).float().cpu().numpy()
+            speech_tokens_lens = torch.tensor(
+                token_lens, dtype=torch.int32, device=self.token2wav.device
+            )
+            prompt_speech_tokens = prompt_speech_tokens.expand(
+                batch_size, -1
+            ).contiguous()
+            prompt_speech_tokens_lens = prompt_speech_tokens_lens.expand(
+                batch_size
+            ).contiguous()
+            speaker_embedding = speaker_embedding.expand(batch_size, -1).contiguous()
+            prompt_mels = prompt_mels.expand(batch_size, -1, -1).contiguous()
+            with torch.amp.autocast(
+                "cuda",
+                dtype=self.token2wav.dtype,
+                enabled=self.token2wav.dtype != torch.float32,
+            ):
+                mel = self.token2wav.flow.inference(
+                    speech_tokens,
+                    speech_tokens_lens,
+                    prompt_speech_tokens,
+                    prompt_speech_tokens_lens,
+                    prompt_mels,
+                    speaker_embedding,
+                    self.token2wav.n_timesteps,
+                )
+            length_groups: dict[int, list[int]] = defaultdict(list)
+            for idx, token_len in enumerate(token_lens):
+                length_groups[token_len * self.token2wav.flow.up_rate].append(idx)
+            waveforms_by_index: dict[int, np.ndarray] = {}
+            for mel_len, indices in length_groups.items():
+                speech_feat = torch.stack(
+                    [mel[idx, :, :mel_len] for idx in indices],
+                    dim=0,
+                ).float()
+                # note (MayDomine): HiFT stays FP32 when the flow runs in half precision.
+                wav, _ = self.token2wav.hift(speech_feat=speech_feat)
+                wav = wav.float().cpu()
+                for local_idx, batch_idx in enumerate(indices):
+                    n_samples = token_lens[batch_idx] * SAMPLES_PER_CODEC_TOKEN
+                    waveforms_by_index[batch_idx] = (
+                        wav[local_idx].reshape(-1)[:n_samples].numpy()
+                    )
+            waveforms = [waveforms_by_index[idx] for idx in range(batch_size)]
+        return waveforms

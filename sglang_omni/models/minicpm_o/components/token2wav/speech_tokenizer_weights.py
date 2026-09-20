@@ -23,7 +23,7 @@ import onnx
 import torch
 
 
-def _rename_weights(weights_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def rename_weights(weights_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     new_weight_dict = {}
     for k in weights_dict.keys():
         if "quantizer" in k:
@@ -120,4 +120,4 @@ def load_tokenizer_weights(onnx_path: Path) -> dict[str, torch.Tensor]:
                         weights_dict[weight_name] = weight_tensor
                     else:
                         weights_dict[weight_name] = weight_tensor.t()
-    return _rename_weights(weights_dict)
+    return rename_weights(weights_dict)

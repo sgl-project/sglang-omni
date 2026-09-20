@@ -219,7 +219,7 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
             mp.setitem(sys.modules, "sglang_omni.relay.nixl", fake_nixl)
 
             from sglang_omni.models.ming_omni.config import MingOmniPipelineConfig
-            from sglang_omni.pipeline.mp_runner import _build_stage_groups
+            from sglang_omni.pipeline.mp_runner import build_stage_groups
             from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 
             config = MingOmniPipelineConfig(
@@ -227,9 +227,7 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
                 stages=_ming_config_with_thinker_tp2(MingOmniPipelineConfig),
             )
 
-            groups = _build_groups(
-                config, _build_stage_groups, prepare_pipeline_runtime
-            )
+            groups = _build_groups(config, build_stage_groups, prepare_pipeline_runtime)
             all_specs = [s for g in groups for s in g.specs]
             specs = [s for s in all_specs if s.stage_name == "thinker"]
             cpu_stage_specs = {
@@ -264,7 +262,7 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
                 stages=explicit_stages,
             )
             explicit_specs = _thinker_specs(
-                explicit_config, _build_stage_groups, prepare_pipeline_runtime
+                explicit_config, build_stage_groups, prepare_pipeline_runtime
             )
             assert [spec.gpu_id for spec in explicit_specs] == [2, 4]
     finally:
@@ -591,14 +589,14 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
             payload = SimpleNamespace(request_id="req-1")
 
             stage_omni = _make_stage(omni_like)
-            await stage_omni._execute(payload)
+            await stage_omni.execute(payload)
             fanout.fanout_work.assert_not_called()
             assert omni_like.inbox.get_nowait().request_id == "req-1"
 
             fanout.reset_mock()
 
             stage_simple = _make_stage(simple_like)
-            await stage_simple._execute(payload)
+            await stage_simple.execute(payload)
             fanout.fanout_work.assert_called_once_with(payload)
             assert simple_like.inbox.get_nowait().request_id == "req-1"
     finally:

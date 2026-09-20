@@ -22,14 +22,14 @@ MASK_MIN = -1e9
 QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 
 
-def _audio_config_object(config: PretrainedConfig) -> PretrainedConfig:
+def audio_config_object(config: PretrainedConfig) -> PretrainedConfig:
     audio_config = config.audio_config
     if isinstance(audio_config, dict):
         return PretrainedConfig.from_dict(audio_config)
     return audio_config
 
 
-def _chunked_causal_mask(
+def chunked_causal_mask(
     size: int, chunk_size: int, device: torch.device
 ) -> torch.Tensor:
     """Allow attention within the current chunk and to all preceding chunks."""
@@ -38,21 +38,21 @@ def _chunked_causal_mask(
     return frame[None, :] < visible_end[:, None]
 
 
-def _feature_lens_after_conv(input_lengths: torch.Tensor) -> torch.Tensor:
+def feature_lens_after_conv(input_lengths: torch.Tensor) -> torch.Tensor:
     """Valid frame counts after the encoder's stride-2 conv2."""
     return (input_lengths - 1) // 2 + 1
 
 
-def _feature_lens_after_pooling(
+def feature_lens_after_pooling(
     input_lengths: torch.Tensor, pool_step: int
 ) -> torch.Tensor:
     """Valid frame counts after pooling."""
-    after_cnn = _feature_lens_after_conv(input_lengths)
+    after_cnn = feature_lens_after_conv(input_lengths)
     after_pool = (after_cnn - pool_step) // pool_step + 1
     return after_pool.to(dtype=torch.int32)
 
 
-def _min_mel_frames(pool_step: int) -> int:
+def min_mel_frames(pool_step: int) -> int:
     """Fewest mel frames the pooling stage accepts (one pooled frame)."""
     return 2 * pool_step - 1
 
@@ -173,7 +173,7 @@ class MultiModalProjector(nn.Module):
         return self.linear2(F.relu(self.linear1(audio_features)))
 
 
-def _fuse_qkv(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def fuse_qkv(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Fuse QKV checkpoint projections, filling the absent K bias with zeros."""
     fused: dict[str, torch.Tensor] = {}
     pending: dict[str, dict[str, torch.Tensor]] = {}
@@ -210,9 +210,9 @@ class MiniCPMOAudioEncoder(nn.Module):
         self.device = torch.device(device)
         self.dtype = torch_dtype
 
-        audio_config = _audio_config_object(config)
+        audio_config = audio_config_object(config)
         self.apm = MiniCPMWhisperEncoder(audio_config)
-        apm_state = _fuse_qkv(load_weights_by_prefix(model_dir, prefix=("apm.",)))
+        apm_state = fuse_qkv(load_weights_by_prefix(model_dir, prefix=("apm.",)))
         self.apm.load_state_dict(apm_state, strict=True)
 
         projector = MultiModalProjector(
@@ -239,7 +239,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         if self.chunk_mask_cache is None or self.chunk_mask_cache[0] != size:
             self.chunk_mask_cache = (
                 size,
-                _chunked_causal_mask(size, self.chunk_num_frame, self.device),
+                chunked_causal_mask(size, self.chunk_num_frame, self.device),
             )
         return self.chunk_mask_cache[1]
 
@@ -263,11 +263,11 @@ class MiniCPMOAudioEncoder(nn.Module):
         lens = audio_feature_lens.to(self.device)
 
         # note (wenyao): a short trailing segment contributes zero pooled tokens.
-        min_mel_frames = _min_mel_frames(self.audio_pool_step)
-        if int(lens_cpu.max()) < min_mel_frames:
+        frame_limit = min_mel_frames(self.audio_pool_step)
+        if int(lens_cpu.max()) < frame_limit:
             shortest = int(lens_cpu.min())
             raise ValueError(
-                f"MiniCPM-o accepts audio up to {min_mel_frames} mel frames "
+                f"MiniCPM-o accepts audio up to {frame_limit} mel frames "
                 f"minimum, but the shortest segment has only {shortest}; "
                 "send a longer clip"
             )
@@ -283,7 +283,7 @@ class MiniCPMOAudioEncoder(nn.Module):
 
         # note (MayDomine): validity lengths must account for convolution stride.
         seq_range = torch.arange(max_seq_len, device=self.device)
-        lens_after_conv = _feature_lens_after_conv(lens)
+        lens_after_conv = feature_lens_after_conv(lens)
         valid = seq_range[None, :] < lens_after_conv[:, None]
         allowed = self.cached_chunk_mask(max_seq_len)[None, :, :] & valid[:, None, :]
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
@@ -297,7 +297,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         audio_embeds = audio_embeds.transpose(1, 2)
 
         # note (MayDomine): host-side lengths avoid per-sample device synchronization.
-        pooled_lens = _feature_lens_after_pooling(lens_cpu, self.audio_pool_step)
+        pooled_lens = feature_lens_after_pooling(lens_cpu, self.audio_pool_step)
         pool_range = torch.arange(audio_embeds.shape[1], device=self.device)
         keep = pool_range[None, :] < pooled_lens.to(self.device)[:, None]
         return {"audio_embeds": audio_embeds[keep]}

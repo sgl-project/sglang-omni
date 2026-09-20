@@ -34,9 +34,9 @@ def test_dac_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -> No
     monkeypatch.setitem(sys.modules, "dac", dac_module)
     monkeypatch.setattr(audio_codec, "_dac_cache", None)
 
-    first = audio_codec._get_dac("cuda:0")
-    assert audio_codec._get_dac("cuda:0") is first
-    assert audio_codec._get_dac("cuda:1") is not first
+    first = audio_codec.get_dac("cuda:0")
+    assert audio_codec.get_dac("cuda:0") is first
+    assert audio_codec.get_dac("cuda:1") is not first
     assert [model.device for model in created] == ["cuda:0", "cuda:1"]
 
 
@@ -51,7 +51,7 @@ def test_vocoder_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -
     monkeypatch.setattr(streaming_vocoder, "Zonos2DACVocoder", _FakeVocoder)
     monkeypatch.setattr(streaming_vocoder, "_vocoder_cache", None)
 
-    first = streaming_vocoder._get_vocoder("cuda:0")
-    assert streaming_vocoder._get_vocoder("cuda:0") is first
-    assert streaming_vocoder._get_vocoder("cuda:1") is not first
+    first = streaming_vocoder.get_vocoder("cuda:0")
+    assert streaming_vocoder.get_vocoder("cuda:0") is first
+    assert streaming_vocoder.get_vocoder("cuda:1") is not first
     assert [vocoder.device for vocoder in created] == ["cuda:0", "cuda:1"]

@@ -174,7 +174,7 @@ class _FakeGroup:
 def _patch(monkeypatch, events, groups) -> _FakeCoordinator:
     coordinator = _FakeCoordinator(events)
     monkeypatch.setattr(mp_runner, "Coordinator", lambda *a, **k: coordinator)
-    monkeypatch.setattr(mp_runner, "_build_stage_groups", lambda *a, **k: groups)
+    monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: groups)
     return coordinator
 
 

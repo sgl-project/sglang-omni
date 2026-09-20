@@ -9,7 +9,7 @@ import librosa
 import numpy as np
 import pytest
 
-from sglang_omni.preprocessing.video import _extract_audio_from_path
+from sglang_omni.preprocessing.video import extract_audio_from_path
 
 
 @pytest.mark.parametrize("sample_rate", [16000, 44100])
@@ -33,7 +33,7 @@ def test_extract_aac_from_mp4(tmp_path: Path, monkeypatch, sample_rate: int) -> 
         pytest.fail("Video audio must be decoded by PyAV, not librosa.load")
 
     monkeypatch.setattr(librosa, "load", fail_load)
-    audio = _extract_audio_from_path(path, 16000)
+    audio = extract_audio_from_path(path, 16000)
 
     assert audio is not None
     assert audio.dtype == np.float32
@@ -70,7 +70,7 @@ def test_packed_stereo_keeps_duration_and_scale(
         for packet in stream.encode():
             container.mux(packet)
 
-    audio = _extract_audio_from_path(path, sample_rate)
+    audio = extract_audio_from_path(path, sample_rate)
 
     assert audio is not None
     assert audio.shape == (sample_rate,)
@@ -94,7 +94,7 @@ def test_video_without_audio_returns_none(tmp_path: Path, caplog) -> None:
             container.mux(packet)
 
     with caplog.at_level(logging.WARNING):
-        assert _extract_audio_from_path(path, 16000) is None
+        assert extract_audio_from_path(path, 16000) is None
     assert not caplog.records
 
 
@@ -103,5 +103,5 @@ def test_broken_media_logs_decoding_failure(tmp_path: Path, caplog) -> None:
     path.write_bytes(b"not a media container")
 
     with caplog.at_level(logging.WARNING):
-        assert _extract_audio_from_path(path, 16000) is None
+        assert extract_audio_from_path(path, 16000) is None
     assert "Failed to extract audio" in caplog.text

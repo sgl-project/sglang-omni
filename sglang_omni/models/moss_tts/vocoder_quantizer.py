@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def _pointwise_conv1d_parameters(
+def pointwise_conv1d_parameters(
     module: nn.Module,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if not isinstance(module, nn.Conv1d):
@@ -43,7 +43,7 @@ class MossAudioTokenizerQuantizerDecoder:
             codebook = getattr(getattr(quantizer, "codebook", None), "weight", None)
             if not isinstance(codebook, torch.Tensor) or codebook.ndim != 2:
                 raise TypeError("MOSS quantizer codebook must be a 2D tensor")
-            weight, bias = _pointwise_conv1d_parameters(quantizer.out_proj)
+            weight, bias = pointwise_conv1d_parameters(quantizer.out_proj)
             if int(codebook.shape[1]) != int(weight.shape[1]):
                 raise ValueError("MOSS codebook and projection dimensions do not match")
             if not codebooks:
@@ -65,7 +65,7 @@ class MossAudioTokenizerQuantizerDecoder:
             output_weight = None
             output_bias = None
         else:
-            output_weight, output_bias = _pointwise_conv1d_parameters(output_proj)
+            output_weight, output_bias = pointwise_conv1d_parameters(output_proj)
             if int(output_weight.shape[1]) != output_dim:
                 raise ValueError(
                     "MOSS quantizer output projection has an unexpected input size"

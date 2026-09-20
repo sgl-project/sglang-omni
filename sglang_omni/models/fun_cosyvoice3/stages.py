@@ -1139,7 +1139,9 @@ def compile_dit_backbone(
             CHUNK_MASK_COMPILE_DISABLED = True
     try:
         estimator.forward = torch.compile(original_forward, dynamic=True)
-        param = next(estimator.parameters())
+        # note(ratish): serving feeds the Flow's dtype; the DiT's weights may
+        # already be in the autocast dtype.
+        param = next(flow.parameters())
         device, dtype = param.device, param.dtype
         mel_frame = int(warmup_mel_frames)
         with torch.inference_mode():
@@ -2064,6 +2066,13 @@ def create_vocoder_executor(
         enable_flow_cuda_graph = False
 
     patch_chunk_mask()
+
+    if autocast_dtype is not None and device_obj.type == "cuda":
+        # note(ratish): autocast caches no weight cast under inference mode, so
+        # each Linear and Conv1d would recast its weights on every Euler step.
+        for module in flow.decoder.estimator.modules():
+            if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
+                module.to(autocast_dtype)
 
     if enable_dit_torch_compile:
         compile_dit_backbone(flow, autocast_dtype=autocast_dtype)

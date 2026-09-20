@@ -11,7 +11,7 @@ _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
 
 
-def _read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | None]:
+def read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | None]:
     """Return the process's cgroup-v2 and cpu-controller cgroup paths."""
     v2_path: str | None = None
     v1_cpu_path: str | None = None
@@ -32,13 +32,13 @@ def _read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | N
     return v2_path, v1_cpu_path
 
 
-def _relative_cgroup_path(path: str | None) -> Path:
+def relative_cgroup_path(path: str | None) -> Path:
     if not path:
         return Path()
     return Path(path.lstrip("/"))
 
 
-def _read_v2_quota(path: Path) -> int | None:
+def read_v2_quota(path: Path) -> int | None:
     try:
         quota_text, period_text = path.read_text(encoding="utf-8").split()[:2]
         if quota_text == "max":
@@ -52,7 +52,7 @@ def _read_v2_quota(path: Path) -> int | None:
     return max(math.ceil(quota / period), 1)
 
 
-def _read_v1_quota(directory: Path) -> int | None:
+def read_v1_quota(directory: Path) -> int | None:
     try:
         quota = int(
             (directory / "cpu.cfs_quota_us").read_text(encoding="utf-8").strip()
@@ -73,10 +73,10 @@ def cgroup_cpu_quota_count(
     proc_self_cgroup: Path = _PROC_SELF_CGROUP,
 ) -> int | None:
     """Return the cgroup CPU quota as a CPU count, or ``None`` if unlimited."""
-    v2_path, v1_cpu_path = _read_self_cgroup_paths(proc_self_cgroup)
+    v2_path, v1_cpu_path = read_self_cgroup_paths(proc_self_cgroup)
 
     quota_counts: list[int] = []
-    v2_relative = _relative_cgroup_path(v2_path)
+    v2_relative = relative_cgroup_path(v2_path)
     v2_directories = [
         cgroup_root.joinpath(*v2_relative.parts[:part_count])
         for part_count in range(len(v2_relative.parts), -1, -1)
@@ -88,13 +88,13 @@ def cgroup_cpu_quota_count(
             continue
         seen.add(candidate)
         if candidate.is_file():
-            quota_count = _read_v2_quota(candidate)
+            quota_count = read_v2_quota(candidate)
             if quota_count is not None:
                 quota_counts.append(quota_count)
     if quota_counts:
         return min(quota_counts)
 
-    v1_relative = _relative_cgroup_path(v1_cpu_path)
+    v1_relative = relative_cgroup_path(v1_cpu_path)
     v1_roots = [cgroup_root / "cpu", cgroup_root]
     seen.clear()
     for controller_root in v1_roots:
@@ -107,7 +107,7 @@ def cgroup_cpu_quota_count(
                 continue
             seen.add(directory)
             if (directory / "cpu.cfs_quota_us").is_file():
-                quota_count = _read_v1_quota(directory)
+                quota_count = read_v1_quota(directory)
                 if quota_count is not None:
                     quota_counts.append(quota_count)
     return min(quota_counts) if quota_counts else None

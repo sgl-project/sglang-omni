@@ -150,7 +150,7 @@ class TranscriptionSessionObject(EventBase):
     turn_detection: TurnDetection | None = None
 
     @field_serializer("turn_detection")
-    def _serialize_turn_detection(
+    def serialize_turn_detection(
         self, value: TurnDetection | None
     ) -> dict[str, Any] | None:
         # Only the settings the client actually set are echoed back.
@@ -243,7 +243,7 @@ _TRANSCRIPTION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
 }
 
 
-def _parse(
+def parse(
     raw: dict[str, Any], table: dict[str, type[ClientEvent]]
 ) -> ClientEvent | None:
     event_type = raw.get("type")
@@ -257,9 +257,9 @@ def _parse(
 
 def parse_conversation_client_event(raw: dict[str, Any]) -> ClientEvent | None:
     """Parse one client event of a conversation session, return None if not part of its protocol."""
-    return _parse(raw, _CONVERSATION_CLIENT_EVENT_TYPES)
+    return parse(raw, _CONVERSATION_CLIENT_EVENT_TYPES)
 
 
 def parse_transcription_client_event(raw: dict[str, Any]) -> ClientEvent | None:
     """Parse one client event of a transcription session, return None if not part of its protocol."""
-    return _parse(raw, _TRANSCRIPTION_CLIENT_EVENT_TYPES)
+    return parse(raw, _TRANSCRIPTION_CLIENT_EVENT_TYPES)

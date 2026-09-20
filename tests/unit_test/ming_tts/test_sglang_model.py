@@ -209,7 +209,7 @@ def test_ming_tts_tail_compute_owns_model_precision(
     )
 
     with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
-        MingTTSSGLangModel._compute_tail_step(
+        MingTTSSGLangModel.compute_tail_step(
             owner,
             inputs,
             noise=torch.ones(2, 1, 4),

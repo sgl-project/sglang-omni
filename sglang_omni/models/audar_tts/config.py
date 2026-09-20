@@ -12,7 +12,7 @@ from sglang_omni.config import PipelineConfig, StageConfig
 _PKG = "sglang_omni.models.audar_tts"
 
 
-def _stages() -> list[StageConfig]:
+def stages() -> list[StageConfig]:
     return [
         StageConfig(
             name="preprocessing",
@@ -55,7 +55,7 @@ class AudarTTSPipelineConfig(PipelineConfig):
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset({"Arabic"})
 
     model_path: str
-    stages: list[StageConfig] = Field(default_factory=_stages)
+    stages: list[StageConfig] = Field(default_factory=stages)
 
     def supports_uploaded_voice_references(self) -> bool:
         return True

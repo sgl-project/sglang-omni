@@ -612,7 +612,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         resolve_factory_signature_args,
     )
     from sglang_omni.pipeline import runtime_config
-    from sglang_omni.pipeline.mp_runner import _build_stage_groups
+    from sglang_omni.pipeline.mp_runner import build_stage_groups
     from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
     from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
@@ -629,7 +629,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
 
     # note (lennox): the replica cards (2, 3) need not exist on this host; the
     # test stops at the launch specs, before any process or device is touched.
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: None)
+    monkeypatch.setattr(runtime_config, "visible_device_count", lambda: None)
     # note (lennox): budget here is unrelated to gpu routing, set it only for local test run on Windows.
     monkeypatch.setattr(runtime_config, "_IPC_SUN_PATH_BUDGET", 10_000)
 
@@ -640,7 +640,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
 
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,

@@ -126,10 +126,10 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             **resolve_stage_factory_kwargs(engine_stage, self),
             **resolve_stage_typed_kwargs(engine_stage),
         }
-        checkpoint_config = _load_qwen3_tts_checkpoint_config(
+        checkpoint_config = load_qwen3_tts_checkpoint_config(
             engine_factory_kwargs["model_path"]
         )
-        model_type = _normalize_qwen3_tts_model_type(
+        model_type = normalize_qwen3_tts_model_type(
             checkpoint_config.get("tts_model_type")
         )
         if model_type in {"base", "voice_design"}:
@@ -151,7 +151,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return None
 
 
-def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
+def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
     checkpoint_dir = Path(model_path).expanduser()
     if checkpoint_dir.is_dir():
         config_path = checkpoint_dir / "config.json"
@@ -163,7 +163,7 @@ def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
         return json.load(handle)
 
 
-def _normalize_qwen3_tts_model_type(raw: Any) -> str:
+def normalize_qwen3_tts_model_type(raw: Any) -> str:
     normalized = str(raw or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"

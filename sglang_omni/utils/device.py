@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     import torch
 
 
-def _with_index(dev_type: str, raw_index: str, index: int | None) -> str:
+def with_index(dev_type: str, raw_index: str, index: int | None) -> str:
     if raw_index:
         raise ValueError(
             f"device={f'{dev_type}:{raw_index}'!r} names an index; device can"
@@ -32,7 +32,7 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
     platform_type = current_platform.device_type
 
     if device is None:
-        return _with_index(platform_type, "", index)
+        return with_index(platform_type, "", index)
 
     dev_type, _, raw_index = str(device).strip().partition(":")
     dev_type = dev_type.lower()
@@ -42,7 +42,7 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
             f"{platform_type!r}. Pass device=None to run on whatever the host "
             f"provides, or 'cpu'/'{platform_type}' explicitly."
         )
-    return _with_index(dev_type, raw_index, index)
+    return with_index(dev_type, raw_index, index)
 
 
 def resolve_concrete_device(

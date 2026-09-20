@@ -26,7 +26,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def _ar_request(
+def ar_request(
     payload: StagePayload, *, input_ids: list[int], max_new_tokens: int, vocab_size: int
 ) -> SGLangARRequestData:
     # Greedy sampling keeps Thinker's sampled tokens equal to those sent to Talker.
@@ -70,7 +70,7 @@ def build_thinker_request(
         )
     num_frames = NemotronVoiceChatState.from_dict(payload.data).num_frames
     opening = [*prompt_token_ids, pad_token_id]
-    data = _ar_request(
+    data = ar_request(
         payload,
         input_ids=opening,
         max_new_tokens=num_frames,
@@ -113,7 +113,7 @@ def build_talker_request(
 ) -> SGLangARRequestData:
     """Whole-utterance request used by the offline pipeline."""
     num_frames = NemotronVoiceChatState.from_dict(payload.data).num_frames
-    return _ar_request(
+    return ar_request(
         payload,
         input_ids=[TALKER_PLACEHOLDER_ID] * prompt_frames,
         # One more than the frames: the prefill's own step does not emit codes.

@@ -38,29 +38,31 @@ from __future__ import annotations
 import logging
 
 import torch
+from sglang.srt.utils.custom_op import register_custom_op
 
 try:  # keep the module importable when Triton is unavailable
     import triton
     import triton.language as tl
     from triton.language.extra import libdevice
 
-    _HAS_TRITON = True
+    HAS_TRITON = True
 except Exception:  # pragma: no cover
     triton = None
     tl = None
     libdevice = None
-    _HAS_TRITON = False
+    HAS_TRITON = False
 
-_ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
-_MAX_BATCH = 8
-_MAX_T = 65536
+ALLOWED_CHANNELS = frozenset((1536, 768, 384, 192, 96))
+MAX_BATCH = 8
+# note (ratish): CUDA caps the launch's second axis, cdiv(T, 1024), at 65,535
+MAX_T = 65535 * 1024
 
 logger = logging.getLogger(__name__)
 
-if _HAS_TRITON:
+if HAS_TRITON:
 
     @triton.jit(do_not_specialize=["C", "T"])
-    def _snake_beta_kernel(
+    def snake_beta_kernel(
         x_ptr,
         y_ptr,
         alpha_ptr,
@@ -93,7 +95,7 @@ if _HAS_TRITON:
         tl.store(y_ptr + ptrs, y, mask=mask)
 
 
-def _block_for(t: int) -> int:
+def block_for(t: int) -> int:
     if t <= 64:
         return 64
     if t <= 128:
@@ -103,13 +105,15 @@ def _block_for(t: int) -> int:
     return 1024
 
 
-def _launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
+# note (ratish): opaque to torch.compile, which cannot trace the Triton launch
+@register_custom_op(op_name="qwen3_tts_fused_snake_beta", mutates_args=[], out_shape=0)
+def launch(x: torch.Tensor, alpha: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
     batch, channels, t = x.shape
     out = torch.empty_like(x)
-    block = _block_for(t)
+    block = block_for(t)
     grid = (batch * channels, triton.cdiv(t, block))
     with torch.cuda.device_of(x):
-        _snake_beta_kernel[grid](
+        snake_beta_kernel[grid](
             x,
             out,
             alpha,
@@ -131,12 +135,12 @@ def fused_snake_beta(
 
     Envelope: x [B, C, T] bfloat16 contiguous CUDA, alpha/beta
     bfloat16 [C] on the same device, 1 <= B <= 8, C in {1536, 768, 384,
-    192, 96}, 1 <= T <= 65536. Inside the envelope the result is bitwise
+    192, 96}, 1 <= T <= 65535 * 1024. Inside the envelope the result is bitwise
     identical to the eager qwen-tts SnakeBeta.forward. Never raises and
     never synchronizes with the host (safe under CUDA graph capture).
     """
     try:
-        if not _HAS_TRITON:
+        if not HAS_TRITON:
             return None
         if (
             not isinstance(x, torch.Tensor)
@@ -157,9 +161,9 @@ def fused_snake_beta(
         if x.dim() != 3 or not x.is_contiguous():
             return None
         batch, channels, t = x.shape
-        if channels not in _ALLOWED_CHANNELS:
+        if channels not in ALLOWED_CHANNELS:
             return None
-        if not (1 <= batch <= _MAX_BATCH) or not (1 <= t <= _MAX_T):
+        if not (1 <= batch <= MAX_BATCH) or not (1 <= t <= MAX_T):
             return None
         if alpha.shape != (channels,) or beta.shape != (channels,):
             return None
@@ -169,7 +173,7 @@ def fused_snake_beta(
             beta = beta.contiguous()
     except Exception:
         return None
-    return _launch(x, alpha, beta)
+    return launch(x, alpha, beta)
 
 
 class FusedSnakeBeta(torch.nn.Module):
@@ -197,7 +201,7 @@ class FusedSnakeBeta(torch.nn.Module):
         return hidden_states
 
 
-def _is_snake_beta(module: torch.nn.Module) -> bool:
+def is_snake_beta(module: torch.nn.Module) -> bool:
     return (
         type(module).__name__ == "SnakeBeta"
         and isinstance(getattr(module, "alpha", None), torch.Tensor)
@@ -205,23 +209,23 @@ def _is_snake_beta(module: torch.nn.Module) -> bool:
     )
 
 
-def _prewarm(device: torch.device) -> None:
+def prewarm(device: torch.device) -> None:
     """Compile every kernel variant before CUDA graph capture can begin.
 
     All integer arguments are do_not_specialize, so one binary per BLOCK
     covers every envelope shape; a JIT compile can then never happen inside
     a stream capture.
     """
-    if not _HAS_TRITON or device.type != "cuda":
+    if not HAS_TRITON or device.type != "cuda":
         return
     with torch.cuda.device(device):
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
             ab = torch.zeros((96,), dtype=torch.bfloat16, device=device)
-            _launch(x, ab, ab)
+            launch(x, ab, ab)
 
 
-def _prewarm_replacements(
+def prewarm_replacements(
     replacements: list[tuple[torch.nn.Module, str]],
 ) -> None:
     devices = {
@@ -230,7 +234,7 @@ def _prewarm_replacements(
         if getattr(parent, name).alpha.device.type == "cuda"
     }
     for device in devices:
-        _prewarm(device)
+        prewarm(device)
 
 
 def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
@@ -244,14 +248,14 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
     replacements: list[tuple[torch.nn.Module, str]] = []
     for module in decoder.modules():
         for name, child in module.named_children():
-            if _is_snake_beta(child):
+            if is_snake_beta(child):
                 replacements.append((module, name))
 
-    if replacements and _HAS_TRITON and torch.cuda.is_available():
+    if replacements and HAS_TRITON and torch.cuda.is_available():
         try:
             # Note(Jiaxin): compile before mutating the decoder so a failed
             # prewarm leaves the proven eager implementation intact.
-            _prewarm_replacements(replacements)
+            prewarm_replacements(replacements)
         except Exception:
             logger.warning(
                 "Qwen3-TTS fused SnakeBeta prewarm failed; keeping eager modules",

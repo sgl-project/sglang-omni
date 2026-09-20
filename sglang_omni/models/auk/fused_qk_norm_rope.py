@@ -10,7 +10,7 @@ import triton.language as tl
     do_not_specialize=("QB", "KB", "CB", "SEQ"),
     do_not_specialize_on_alignment=("QB", "KB", "CB", "SEQ"),
 )
-def _norm_rope_kernel(
+def norm_rope_kernel(
     Q,
     K,
     Q_WEIGHT,
@@ -113,7 +113,7 @@ class QKFusion:
         k_out = torch.empty_like(q_out)
         epsilon = torch.finfo(output_dtype).eps if q_norm.eps is None else q_norm.eps
         # Runtime sequence/outer strides share a kernel across request lengths.
-        _norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
+        norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
             q,
             k,
             q_norm.weight,

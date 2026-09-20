@@ -355,7 +355,7 @@ def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:
     )
 
     mel_tensor, mel_len, audio_token_count = (
-        preprocessor._compute_mel_features_for_waveform(
+        preprocessor.compute_mel_features_for_waveform(
             waveform,
             ds_kernel_size=3,
             ds_stride=2,
@@ -766,7 +766,7 @@ def test_ming_arch_override_uses_composite_llm_config() -> None:
         num_hidden_layers=None,
     )
 
-    ModelWorker._apply_arch_override(model_config, "BailingMoeV2ForCausalLM")
+    ModelWorker.apply_arch_override(model_config, "BailingMoeV2ForCausalLM")
 
     assert model_config.hf_config.architectures == ["BailingMoeV2ForCausalLM"]
     assert model_config.hf_text_config is llm_config
@@ -828,14 +828,14 @@ def test_ming_init_model_config_registers_auto_config_before_loading(
     worker.server_args = SimpleNamespace(model_path="dummy", revision=None)
     worker.model_arch_override = "BailingMoeV2ForCausalLM"
 
-    worker._init_model_config()
+    worker.init_model_config()
 
     assert call_order == ["register", "from_server_args"]
 
 
 def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
     from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
-        _attach_decode_final_metadata,
+        attach_decode_final_metadata,
     )
     from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 
@@ -850,7 +850,7 @@ def test_ming_decode_metadata_includes_usage_and_finish_reason() -> None:
     }
     result: dict[str, object] = {}
 
-    _attach_decode_final_metadata(result, state, thinker_out)
+    attach_decode_final_metadata(result, state, thinker_out)
 
     assert result["finish_reason"] == "length"
     assert result["usage"] == {
@@ -867,14 +867,14 @@ def test_ming_preprocessor_injects_top_level_videos_as_inline_content() -> None:
     the preprocessor handles top-level and inline video requests identically.
     """
     from sglang_omni.models.ming_omni.components.preprocessor import (
-        _inject_top_level_videos,
+        inject_top_level_videos,
     )
 
     messages = [
         {"role": "system", "content": "你是助手"},
         {"role": "user", "content": "What is happening?"},
     ]
-    out = _inject_top_level_videos(messages, ["/tmp/clip.mp4"])
+    out = inject_top_level_videos(messages, ["/tmp/clip.mp4"])
 
     # System message untouched, only first user message extended.
     assert out[0] == {"role": "system", "content": "你是助手"}
@@ -911,7 +911,7 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
     preprocessor._vision_config = SimpleNamespace(spatial_merge_size=2)
 
     frames = torch.zeros((4, 3, 8, 8), dtype=torch.float32)
-    pixel_values, grid, token_counts = preprocessor._process_videos([frames])
+    pixel_values, grid, token_counts = preprocessor.process_videos([frames])
 
     assert tuple(pixel_values.shape) == (8, 16)
     assert grid.tolist() == [[2, 4, 4]]
@@ -1116,7 +1116,7 @@ def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
         embeds = torch.zeros(total, 8)  # hidden_dim doesn't matter for shape test
         return embeds, token_counts
 
-    enc.__dict__["_encode"] = fake_encode
+    enc.__dict__["encode"] = fake_encode
     return enc
 
 

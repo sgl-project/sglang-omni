@@ -117,7 +117,7 @@ class RequestEventRecorder:
                     self._run_id,
                     run_id,
                 )
-                self._close_unlocked()
+                self.close_unlocked()
 
             directory = Path(event_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
@@ -155,10 +155,10 @@ class RequestEventRecorder:
                 )
                 return None
             path = str(self._path) if self._path is not None else None
-            self._close_unlocked()
+            self.close_unlocked()
             return path
 
-    def _close_unlocked(self) -> None:
+    def close_unlocked(self) -> None:
         if self._fp is not None:
             try:
                 self._fp.flush()
@@ -206,7 +206,7 @@ class RequestEventRecorder:
                 metadata=dict(metadata) if metadata else {},
             )
             try:
-                fp.write(json.dumps(event.to_dict(), default=_json_default))
+                fp.write(json.dumps(event.to_dict(), default=json_default))
                 fp.write("\n")
             except Exception:
                 self._dropped += 1
@@ -219,7 +219,7 @@ class RequestEventRecorder:
                     )
 
 
-def _json_default(obj: Any) -> Any:
+def json_default(obj: Any) -> Any:
     """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
 
     Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
@@ -278,7 +278,7 @@ def emit(
 
 
 @functools.cache
-def _read_host_boot_id() -> str | None:
+def read_host_boot_id() -> str | None:
     # Note: (Jiaxin Deng) constant for the process lifetime, and these events
     # are emitted from the scheduler loop while profiling is active, which is
     # exactly when extra syscalls would contaminate what is being measured.
@@ -288,7 +288,7 @@ def _read_host_boot_id() -> str | None:
         return None
 
 
-def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
+def emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
     if not _RECORDER.is_active():
         return
     emit(
@@ -297,7 +297,7 @@ def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
         event_name=event_name,
         metadata={
             "clock": "CLOCK_MONOTONIC",
-            "host_boot_id": _read_host_boot_id(),
+            "host_boot_id": read_host_boot_id(),
             "monotonic_ns": time.monotonic_ns(),
             **extra,
         },
@@ -305,8 +305,8 @@ def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
 
 
 def emit_model_path_start(request_id: str) -> None:
-    _emit_model_path("model_path_start", request_id)
+    emit_model_path("model_path_start", request_id)
 
 
 def emit_model_path_end(request_id: str, *, status: str) -> None:
-    _emit_model_path("model_path_end", request_id, status=status)
+    emit_model_path("model_path_end", request_id, status=status)

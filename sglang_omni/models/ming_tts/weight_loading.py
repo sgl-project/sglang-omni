@@ -226,7 +226,7 @@ class MingTTSWeightReport:
         if self.leftovers:
             lines.append(f"  leftover_sample={sample(self.leftovers)}")
         if self.required_shards:
-            incomplete = _incomplete_packed_shards(
+            incomplete = incomplete_packed_shards(
                 self.loaded_shards,
                 self.required_shards,
             )
@@ -417,7 +417,7 @@ def assert_ming_tts_weight_coverage(report: MingTTSWeightReport) -> None:
     for owner, keys in sorted(report.missing.items()):
         if keys:
             errors.append(f"missing {owner} weights: {format_key_count(keys)}")
-    for target, missing in _incomplete_packed_shards(
+    for target, missing in incomplete_packed_shards(
         report.loaded_shards,
         report.required_shards,
     ).items():
@@ -428,7 +428,7 @@ def assert_ming_tts_weight_coverage(report: MingTTSWeightReport) -> None:
         raise RuntimeError("Ming-Omni-TTS weight coverage failed: " + "; ".join(errors))
 
 
-def _incomplete_packed_shards(
+def incomplete_packed_shards(
     loaded_shards: dict[str, list[str]],
     required_shards: dict[str, list[str]],
 ) -> dict[str, list[str]]:

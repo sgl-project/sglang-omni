@@ -26,7 +26,7 @@ _MLX_DTYPES = {
 }
 
 
-def _normalize_dtype_name(value: Any) -> str:
+def normalize_dtype_name(value: Any) -> str:
     name = str(value).lower().removeprefix("torch.").removeprefix("mlx.core.")
     if name not in _MLX_DTYPES:
         raise ValueError(
@@ -36,7 +36,7 @@ def _normalize_dtype_name(value: Any) -> str:
     return name
 
 
-def _resolve_model_directory(model_path: str, revision: str | None) -> Path:
+def resolve_model_directory(model_path: str, revision: str | None) -> Path:
     local_path = Path(model_path).expanduser()
     if local_path.is_dir():
         return local_path.resolve()
@@ -45,7 +45,7 @@ def _resolve_model_directory(model_path: str, revision: str | None) -> Path:
     return Path(resolve_model_directory(model_path, revision=revision))
 
 
-def _map_flow_weight(name: str) -> str:
+def map_flow_weight(name: str) -> str:
     """Map the public mlx-community artifact onto the PR #861 module tree."""
     name = name.removeprefix("flow.")
     replacements = (
@@ -60,7 +60,7 @@ def _map_flow_weight(name: str) -> str:
     return name
 
 
-def _map_hift_weight(name: str) -> str:
+def map_hift_weight(name: str) -> str:
     """Map wrapped-convolution names onto the PR #861 HiFT module tree."""
     name = name.removeprefix("hifigan.")
     name = name.removeprefix("hift.")
@@ -72,7 +72,7 @@ def _map_hift_weight(name: str) -> str:
     return name.replace(".conv.weight", ".weight").replace(".conv.bias", ".bias")
 
 
-def _as_batch(
+def as_batch(
     value: Any,
     *,
     name: str,
@@ -139,7 +139,7 @@ class FunCosyVoice3MlxVocoder:
         Omni's main checkpoint for ONNX preprocessing assets; this loader gets
         the separately converted MLX artifact.
         """
-        model_dir = _resolve_model_directory(model_path, revision)
+        model_dir = resolve_model_directory(model_path, revision)
         config_path = model_dir / "config.json"
         weights_path = model_dir / "model.safetensors"
         if not config_path.is_file() or not weights_path.is_file():
@@ -149,9 +149,9 @@ class FunCosyVoice3MlxVocoder:
             )
 
         raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-        dtype_name = _normalize_dtype_name(raw_config.get("dtype", "float16"))
+        dtype_name = normalize_dtype_name(raw_config.get("dtype", "float16"))
         if expected_dtype is not None:
-            requested_dtype = _normalize_dtype_name(expected_dtype)
+            requested_dtype = normalize_dtype_name(expected_dtype)
             if requested_dtype != dtype_name:
                 raise ValueError(
                     "Fun-CosyVoice3 native MLX vocoder dtype is owned by the "
@@ -163,7 +163,7 @@ class FunCosyVoice3MlxVocoder:
         all_weights = mx.load(str(weights_path))
 
         flow_weights = {
-            _map_flow_weight(name): value
+            map_flow_weight(name): value
             for name, value in all_weights.items()
             if name.startswith("flow.") and "rotary_embed.inv_freq" not in name
         }
@@ -184,7 +184,7 @@ class FunCosyVoice3MlxVocoder:
                 "HiFT weights; convert/fold weight normalization first"
             )
         hift_weights = {
-            _map_hift_weight(name): value
+            map_hift_weight(name): value
             for name, value in all_weights.items()
             if name.startswith(hift_prefix)
         }
@@ -220,19 +220,19 @@ class FunCosyVoice3MlxVocoder:
         embedding: Any,
     ) -> mx.array:
         """Decode one request to a rank-one MLX waveform."""
-        token = _as_batch(token, name="token", dtype=mx.int32)
-        prompt_token = _as_batch(
+        token = as_batch(token, name="token", dtype=mx.int32)
+        prompt_token = as_batch(
             prompt_token,
             name="prompt_token",
             dtype=mx.int32,
         )
-        prompt_feat = _as_batch(
+        prompt_feat = as_batch(
             prompt_feat,
             name="prompt_feat",
             dtype=self.dtype,
             feature_size=self.config.flow.output_size,
         )
-        embedding = _as_batch(
+        embedding = as_batch(
             embedding,
             name="embedding",
             dtype=self.dtype,
