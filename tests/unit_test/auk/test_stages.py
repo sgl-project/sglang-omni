@@ -73,7 +73,7 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
     assert torch.equal(torch.random.get_rng_state(), rng)
     assert states[0].ref_length == 50
     assert states[0].ref_latent.stride() == (1, 51)
-    sampled = sample_batch(conditioned, flow, device, torch.float32, 1500, {})
+    sampled = sample_batch(conditioned, flow, device, torch.float32, 1500, {}, None)
     assert len(flow.sample_batch.call_args.args[0]) == 3
     results = decode_batch(sampled, vae, device)
 

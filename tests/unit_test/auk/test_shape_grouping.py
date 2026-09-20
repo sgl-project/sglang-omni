@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.auk.flow_matching import AuKSampleItem
 from sglang_omni.models.auk.payload_types import AuKState
@@ -29,17 +30,33 @@ def make_item(
     )
 
 
-def test_shape_grouping_is_disabled_by_default():
+def test_shape_grouping_is_enabled_by_default():
     items = [make_item(frames) for frames in (100, 110, 400)]
 
-    groups = partition_sample_items_by_target(items, None)
+    groups = partition_sample_items_by_target(items, 0.2)
 
-    assert [[index for index, _ in group] for group in groups] == [[0, 1, 2]]
+    assert [[index for index, _ in group] for group in groups] == [[0, 1], [2]]
     engine = next(
         stage
         for stage in AuKPipelineConfig.model_fields["stages"].default
         if stage.name == "auk_engine"
     )
+    assert engine.factory.min_batch_work_savings == 0.2
+
+
+def test_none_disables_shape_grouping():
+    items = [make_item(frames) for frames in (100, 110, 400)]
+
+    groups = partition_sample_items_by_target(items, None)
+
+    assert [[index for index, _ in group] for group in groups] == [[0, 1, 2]]
+    manager = ConfigManager(AuKPipelineConfig(model_path="tencent/AuK"))
+    config = manager.merge_config(
+        manager.parse_extra_args(
+            ["--auk_engine.factory.min_batch_work_savings", "none"]
+        )
+    )
+    engine = next(stage for stage in config.stages if stage.name == "auk_engine")
     assert engine.factory.min_batch_work_savings is None
 
 

@@ -332,7 +332,7 @@ def sample_batch(
     dtype,
     max_frames,
     sampling,
-    min_batch_work_savings=None,
+    min_batch_work_savings,
 ):
     started = time.perf_counter()
     states = [load_state(payload, AuKState) for payload in payloads]
@@ -391,7 +391,7 @@ def create_auk_engine_executor(
     enable_dit_torch_compile: bool = False,
     enable_dit_cuda_graph: bool = False,
     dit_cuda_graph_capture_shapes: Sequence[Sequence[int]] | None = None,
-    min_batch_work_savings: float | None = None,
+    min_batch_work_savings: float | None = 0.2,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 

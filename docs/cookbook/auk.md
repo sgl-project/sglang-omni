@@ -114,18 +114,17 @@ and AuK-Flash use the native path. The first request may include Triton JIT
 compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
 weights under BF16 autocast and with native BF16 weights.
 
-For mixed-duration traffic, DiT batches can optionally sort by target duration
-and split once. Every cut in that order is scored with a linear proxy for
-padded target, reference, and text work. For example, require at least 20%
-estimated savings:
+For mixed-duration traffic, DiT batches sort by target duration and split once
+when the best cut saves at least 20% of a linear padded-work estimate covering
+target, reference, and text lengths. Disable shape-aware grouping with:
 
 ```bash
 python -m sglang_omni.cli serve --model-path tencent/AuK \
-  --auk_engine.factory.min_batch_work_savings 0.2
+  --auk_engine.factory.min_batch_work_savings none
 ```
 
-The option is disabled by default. A split creates at most two DiT calls and
-preserves request result order.
+A split creates at most two DiT calls and preserves request result order. Set a
+different fraction to tune the required estimated savings.
 
 ## SeedTTS Evaluation
 
