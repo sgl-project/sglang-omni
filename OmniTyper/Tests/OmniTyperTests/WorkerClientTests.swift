@@ -328,6 +328,8 @@ private final class ShutdownHarness {
                 os.killpg(child.pid, signal.SIGTERM)
                 child.wait(timeout=2)
             marker = pathlib.Path(__file__).with_name(f'{os.getpid()}.json')
-            marker.write_text(json.dumps(result))
+            temporary_marker = marker.with_suffix('.tmp')
+            temporary_marker.write_text(json.dumps(result))
+            temporary_marker.replace(marker)
     """#
 }

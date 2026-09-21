@@ -157,11 +157,15 @@ final class WorkerClient: ObservableObject {
         }
         child.terminationHandler = { [weak self] child in
             let code = child.terminationStatus
+            let pid = child.processIdentifier
+            let reason = child.terminationReason == .exit ? "exit" : "signal"
             DispatchQueue.main.async {
                 guard let self, self.generation == workerGeneration else { return }
                 self.exitStatus = code
                 self.isRunning = false
-                Diagnostics.record("worker.exited", ["status": String(code)])
+                Diagnostics.record("worker.exited", [
+                    "pid": String(pid), "reason": reason, "status": String(code),
+                ])
                 if self.stdoutEnded { self.handleExit() }
                 else {
                     // Note (Codex): Process exit can arrive before the pipe's final response.
@@ -185,7 +189,7 @@ final class WorkerClient: ObservableObject {
         errors = stderr.fileHandleForReading
         pythonPath = executable.path
         isRunning = true
-        Diagnostics.record("worker.started")
+        Diagnostics.record("worker.started", ["pid": String(child.processIdentifier)])
     }
 
     private func receive(_ data: Data) {
@@ -299,7 +303,11 @@ final class WorkerClient: ObservableObject {
             childOutput?.readabilityHandler = nil
             childErrors?.readabilityHandler = nil
             try? childInput?.close()
-            Diagnostics.record("worker.stopped", ["status": String(child.terminationStatus)])
+            Diagnostics.record("worker.stopped", [
+                "pid": String(child.processIdentifier),
+                "reason": child.terminationReason == .exit ? "exit" : "signal",
+                "status": String(child.terminationStatus),
+            ])
         }
     }
 
