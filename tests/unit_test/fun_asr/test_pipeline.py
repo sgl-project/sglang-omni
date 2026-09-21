@@ -206,7 +206,9 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
             context_length
             == expected_audio_tokens
             + 200
-            + request_builders.fun_asr_prompt_overhead_tokens(tokenizer)
+            + request_builders.fun_asr_prompt_overhead_tokens(
+                tokenizer, language=request_builders.resolve_language("en")
+            )
         )
         build_kwargs.clear()
         build_kwargs.update(overrides)

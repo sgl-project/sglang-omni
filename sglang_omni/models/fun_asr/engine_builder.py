@@ -101,8 +101,10 @@ class FunASREngineBuilder(AsrEngineBuilder):
         encoder_token_count = int(
             fun_asr_low_frame_rate_length(self.feature_extractor.nb_max_frames)
         )
+        # note (Zhufeng Qiu): size for the longest built-in prompt (English adds a
+        # suffix); per-request hotword overflow is rejected by the request builder.
         prompt_overhead = request_builders.fun_asr_prompt_overhead_tokens(
-            self.tokenizer
+            self.tokenizer, language=request_builders.resolve_language("en")
         )
         self.context_length = (
             encoder_token_count + self.max_new_tokens + prompt_overhead
