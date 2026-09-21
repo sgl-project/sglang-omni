@@ -8,14 +8,21 @@ speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, 
 
 Install `sglang-omni` from source as in [Installation](../get_started/installation.md).
 
-Fun-CosyVoice3 needs `sox` and a few extra Python packages. From the repository root, install the extra against **this checkout**:
+On Linux/CUDA, install `sox` and the extra against **this checkout**:
 
 ```bash
 apt-get update && apt-get install -y sox
 uv pip install -e ".[fun-cosyvoice3]"
 ```
 
-Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
+On Apple Silicon, use the
+[Apple Silicon installation guide](../get_started/installation_apple_silicon.md)
+to create and activate the shared runtime. The installer provisions the
+CosyVoice Python/runtime dependencies; model weights and the optional MLX
+conversion remain separate.
+
+If you are installing manually, clone the CosyVoice repository with its
+Matcha-TTS submodule and add both to `PYTHONPATH`:
 
 ```bash
 COSYVOICE_PATH=/path/to/CosyVoice
@@ -49,21 +56,13 @@ sgl-omni serve \
 
 ## Apple Silicon
 
-On Apple Silicon, install the optional
-Fun-CosyVoice3 extra with the repository installer, then expose Homebrew's
-keg-only FFmpeg libraries to TorchCodec:
-
-```bash
-brew install sox
-SGLANG_OMNI_EXTRAS=fun-cosyvoice3 ./install.sh
-source .venv-apple/bin/activate
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
+Follow the [Apple Silicon installation guide](../get_started/installation_apple_silicon.md)
+and activate the environment it creates. There is no separate `brew install sox`
+or `DYLD_LIBRARY_PATH` step.
 
 Keep the official checkpoint as `--model-path`; it supplies the ONNX
 preprocessing assets. The MLX path additionally needs the converted speech
-model artifact, which contains the Qwen2, Flow, and HiFT weights. `mlx-audio`
-is not a runtime dependency.
+model artifact, which contains the Qwen2, Flow, and HiFT weights.
 
 ### MLX
 
