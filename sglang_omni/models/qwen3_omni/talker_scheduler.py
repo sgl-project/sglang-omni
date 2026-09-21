@@ -89,7 +89,7 @@ class QwenTalkerScheduler(OmniScheduler):
                 self._partial_start_min_chunks,
             )
 
-    def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
+    def count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
         im_end = self._im_end_token_id
         if im_end is None or not prefetched:
             return len(prefetched)
@@ -99,7 +99,7 @@ class QwenTalkerScheduler(OmniScheduler):
             return len(prefetched) - 1
         return len(prefetched)
 
-    def _is_request_build_ready(
+    def is_request_build_ready(
         self,
         payload: Any,
         *,
@@ -110,24 +110,24 @@ class QwenTalkerScheduler(OmniScheduler):
         if not self._enable_partial_start:
             return False
         prefetched = getattr(payload, "prefetched_chunks", None) or []
-        usable = self._count_usable_prefetched_chunks(prefetched)
+        usable = self.count_usable_prefetched_chunks(prefetched)
         if self._talker_start_topology:
             # Note (wenyao): Later thinker chunks feed decode one row at a time;
             # waiting for them while building the prompt only delays talker prefill.
             return usable >= TALKER_START_MIN_CHUNKS
         return usable >= self._partial_start_min_chunks
 
-    def _initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
+    def initialize_request_stream_state(self, req_data: Any, payload: Any) -> None:
         del req_data, payload
         return None
 
-    def _should_recheck_deferred_request_on_stream_chunk(
+    def should_recheck_deferred_request_on_stream_chunk(
         self, request_id: str, chunk: Any
     ) -> bool:
         del request_id, chunk
         return self._enable_partial_start
 
-    def _is_batch_ready_to_run(self, batch: Any) -> bool:
+    def is_batch_ready_to_run(self, batch: Any) -> bool:
         if (
             batch is not None
             and batch.forward_mode.is_decode()
@@ -135,11 +135,11 @@ class QwenTalkerScheduler(OmniScheduler):
             and hasattr(self._model_runner, "is_decode_batch_ready")
             and not self._model_runner.is_decode_batch_ready(batch)
         ):
-            self._note_chunk_wait(batch)
+            self.note_chunk_wait(batch)
             return False
         return True
 
-    def _note_chunk_wait(self, batch: Any) -> None:
+    def note_chunk_wait(self, batch: Any) -> None:
         # Note (wenyao): Topology startup initially has no future text queued;
         # wait counters distinguish normal one-step delay from a wedged batch.
         self._chunk_wait_steps += 1
@@ -157,12 +157,12 @@ class QwenTalkerScheduler(OmniScheduler):
 
     def get_next_batch_to_run(self) -> Any | None:
         batch = super().get_next_batch_to_run()
-        if batch is not None and not self._is_batch_ready_to_run(batch):
-            self._rollback_decode_prep_after_skip(batch)
+        if batch is not None and not self.is_batch_ready_to_run(batch):
+            self.rollback_decode_prep_after_skip(batch)
             return None
         return batch
 
-    def _rollback_decode_prep_after_skip(self, batch: Any) -> None:
+    def rollback_decode_prep_after_skip(self, batch: Any) -> None:
         # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully
         # invert prepare_for_decode; talker disables overlap/spec/Mamba/hisparse,
         # and the penalizer's cumulate scatter_ is idempotent under the talker's
@@ -192,14 +192,14 @@ class QwenTalkerScheduler(OmniScheduler):
         super().self_check_during_idle()
 
     @staticmethod
-    def _append_stream_chunk_default(req_data: Any, chunk: Any) -> None:
+    def append_stream_chunk_default(req_data: Any, chunk: Any) -> None:
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
         if pending_text_queue is None:
             pending_text_queue = deque()
             req_data.pending_text_queue = pending_text_queue
         pending_text_queue.append(getattr(chunk, "data", chunk))
 
-    def _mark_stream_done(self, req_data: Any) -> None:
+    def mark_stream_done(self, req_data: Any) -> None:
         if self._stream_done_handler is None:
             req_data.thinker_chunks_done = True
             return

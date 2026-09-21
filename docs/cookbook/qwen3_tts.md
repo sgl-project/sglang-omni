@@ -79,6 +79,30 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Ascend NPU baseline
+
+The NPU configurations use SGLang's `ascend` attention backend for the Talker
+and PyTorch SDPA for both Speech Tokenizer instances. Talker graph capture
+(`cuda_graph`), private Talker compile, and asynchronous vocoder decode stay
+disabled. The 0.6B Base
+configuration has been validated with 16 concurrent requests; the other
+configurations retain a conservative single-request baseline.
+
+```bash
+# 0.6B Base
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --config examples/configs/qwen3_tts_0_6b_npu.yaml \
+  --port 8000
+```
+
+Use `qwen3_tts_1_7b_npu.yaml`, `qwen3_tts_0_6b_customvoice_npu.yaml`, or
+`qwen3_tts_1_7b_voicedesign_npu.yaml` for the other supported checkpoints.
+The 0.6B and 1.7B files intentionally have separate `mem_fraction_static`
+starting values. Calibrate configurations that retain the single-request
+baseline on the target NPU before increasing `max_running_requests` or any
+vocoder batch limit.
+
 ### Deterministic Inference
 
 Dynamic batching can change Qwen3-TTS codec and waveform outputs even when the
@@ -92,7 +116,8 @@ enable_deterministic_inference: true
 When enabled, the same prompt, reference audio, and seed produce byte-identical
 PCM across runtime batch sizes. This mode reduces throughput because it
 serializes reference preprocessing and vocoder decoding and disables both the
-initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
+initial and follow-up vocoder graph-capture paths (`initial_cuda_graph` and
+`followup_cuda_graph`), so it is disabled by default.
 
 ### Overload / admission policy
 
@@ -111,12 +136,12 @@ defaults to 4 request-build workers with pending depth 16.
 
 ### Breakable prefill CUDA graphs
 
-Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
-prefill CUDA-graph backend with a token ladder up to 512:
+Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to the
+breakable prefill CUDA-graph backend with a token ladder up to 512:
 
 | Knob | Meaning | Default |
 |---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` |
 | `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
 
@@ -127,11 +152,6 @@ misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
 are exactly one token, and they are the only shapes that fall back: 2 and
 3 already replay inside bucket 4. Adding the single `1` bucket takes the
 fallback rate to zero.
-
-Only CustomVoice takes this default, selected by the checkpoint's
-`tts_model_type`. Base prefills also carry reference audio, so their shape
-distribution differs, and VoiceDesign has not been measured; both keep the
-eager path.
 
 Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
 default costs extra graph capture during startup. Raising

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _CapturedVocoderGraph:
+class CapturedVocoderGraph:
     graph: torch.cuda.CUDAGraph
     static_codes: torch.Tensor
     static_lengths: torch.Tensor
@@ -64,7 +64,7 @@ class MossVocoderCudaGraphRunner:
             }
         )
         self._frame_sizes = sorted({int(size) for size in frame_sizes if int(size) > 0})
-        self._graphs: dict[tuple[int, int], _CapturedVocoderGraph] = {}
+        self._graphs: dict[tuple[int, int], CapturedVocoderGraph] = {}
         self._pool = None
         self._sealed = False
 
@@ -99,7 +99,7 @@ class MossVocoderCudaGraphRunner:
     def scratch_capacity(self) -> int:
         return self._scratch_capacity
 
-    def _capture_state_slots(
+    def capture_state_slots(
         self, batch_size: int, *, device: torch.device
     ) -> torch.Tensor:
         return self._real_state_capacity + torch.arange(
@@ -108,21 +108,21 @@ class MossVocoderCudaGraphRunner:
             device=device,
         )
 
-    def _enough_free_vram(self) -> tuple[bool, int]:
+    def enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _has_unbounded_attention_context(self) -> bool:
+    def has_unbounded_attention_context(self) -> bool:
         decoder = getattr(self._codec, "decoder", None)
         if decoder is None or not callable(getattr(decoder, "modules", None)):
             return False
         return any(
-            hasattr(module, "context") and getattr(module, "context") is None
+            hasattr(module, "context") and module.context is None
             for module in decoder.modules()
         )
 
     @torch.no_grad()
-    def _capture(self, batch_size: int, frame_size: int) -> None:
+    def capture(self, batch_size: int, frame_size: int) -> None:
         device = self._device
         codes = torch.zeros(
             self._num_quantizers,
@@ -132,7 +132,7 @@ class MossVocoderCudaGraphRunner:
             device=device,
         )
         lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
-        state_slot_ids = self._capture_state_slots(batch_size, device=device)
+        state_slot_ids = self.capture_state_slots(batch_size, device=device)
         valid_rows = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         # Note (Zhang Yiyang): Warm up outside capture so lazy workspaces and the
@@ -165,7 +165,7 @@ class MossVocoderCudaGraphRunner:
                 state_slot_ids,
                 valid_rows,
             )
-        self._graphs[(batch_size, frame_size)] = _CapturedVocoderGraph(
+        self._graphs[(batch_size, frame_size)] = CapturedVocoderGraph(
             graph=graph,
             static_codes=codes,
             static_lengths=lengths,
@@ -190,7 +190,7 @@ class MossVocoderCudaGraphRunner:
         self._sealed = True
         if self._device.type != "cuda" or not torch.cuda.is_available():
             return []
-        if self._has_unbounded_attention_context():
+        if self.has_unbounded_attention_context():
             logger.info(
                 "MOSS-Audio-Tokenizer vocoder CUDA graphs require finite attention context; "
                 "using eager streaming decode"
@@ -217,7 +217,7 @@ class MossVocoderCudaGraphRunner:
         with torch.cuda.device(self._device):
             for batch_size, frame_size in keys:
                 key = (batch_size, frame_size)
-                enough, free = self._enough_free_vram()
+                enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
                         "MOSS-Audio-Tokenizer vocoder CUDA graphs: free VRAM %.1fGB < %.1fGB; "
@@ -227,14 +227,14 @@ class MossVocoderCudaGraphRunner:
                     )
                     break
                 try:
-                    self._capture(batch_size, frame_size)
+                    self.capture(batch_size, frame_size)
                 except Exception:
                     self._graphs.pop(key, None)
                     # Note (Zhang Yiyang): Reset scratch state after a failed
                     # capture so eager execution remains available.
                     try:
                         self._codec.reset_decoder_state_slots(
-                            self._capture_state_slots(
+                            self.capture_state_slots(
                                 batch_size,
                                 device=self._device,
                             )

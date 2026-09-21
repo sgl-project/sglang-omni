@@ -38,7 +38,7 @@ class RVQDepthCudaGraphRunner:
         self._outputs: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
         self.allocated_bytes = 0
         for size in self._buckets:
-            self._capture(size, dtype, hidden_size, num_codebooks)
+            self.capture(size, dtype, hidden_size, num_codebooks)
         logger.info(
             f"MiniMax Music 3 RVQ depth CUDA graphs captured buckets={self._buckets} memory={self.allocated_bytes / 2 ** 20:.1f}MiB"
         )
@@ -48,7 +48,7 @@ class RVQDepthCudaGraphRunner:
         return self._buckets[-1]
 
     @torch.inference_mode()
-    def _capture(
+    def capture(
         self, size: int, dtype: torch.dtype, hidden_size: int, num_codebooks: int
     ) -> None:
         hidden = torch.zeros((size, hidden_size), device=self._device, dtype=dtype)
@@ -77,7 +77,7 @@ class RVQDepthCudaGraphRunner:
         self._inputs[size] = (hidden, c0, seeds, positions, forced, replay)
         self._outputs[size] = outputs
 
-    def _bucket_for(self, rows: int) -> int | None:
+    def bucket_for(self, rows: int) -> int | None:
         for size in self._buckets:
             if size >= rows:
                 return size
@@ -95,7 +95,7 @@ class RVQDepthCudaGraphRunner:
     ) -> tuple[Tensor, ...] | None:
         """Replay for this batch, or None when no captured bucket fits."""
         rows = hidden.shape[0]
-        size = self._bucket_for(rows)
+        size = self.bucket_for(rows)
         if size is None:
             return None
         statics = self._inputs[size]

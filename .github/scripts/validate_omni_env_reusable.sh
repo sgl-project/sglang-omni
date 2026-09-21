@@ -61,7 +61,7 @@ then
   exit 1
 fi
 
-if ! "${PYTHON}" "${SCRIPT_DIR}/omni_missing_dependencies.py" --check pyproject.toml; then
+if ! "${PYTHON}" "${SCRIPT_DIR}/omni_missing_dependencies.py" --check --extra minicpm-o pyproject.toml; then
   exit 1
 fi
 

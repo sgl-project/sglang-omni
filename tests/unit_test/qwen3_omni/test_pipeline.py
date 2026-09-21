@@ -301,13 +301,13 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
     # directly (no chat template / re-tokenize), with encoders skipped.
     from sglang_omni.models.qwen3_omni.components.preprocessor import (
         Qwen3OmniPreprocessor,
-        _is_pretokenized_prompt,
+        is_pretokenized_prompt,
     )
 
-    assert _is_pretokenized_prompt([5, 6, 7]) is True
-    assert _is_pretokenized_prompt([]) is False
-    assert _is_pretokenized_prompt([{"role": "user", "content": "hi"}]) is False
-    assert _is_pretokenized_prompt("hi") is False
+    assert is_pretokenized_prompt([5, 6, 7]) is True
+    assert is_pretokenized_prompt([]) is False
+    assert is_pretokenized_prompt([{"role": "user", "content": "hi"}]) is False
+    assert is_pretokenized_prompt("hi") is False
 
     pre = object.__new__(Qwen3OmniPreprocessor)
     pre.max_seq_len = None
@@ -327,7 +327,7 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
         data=None,
     )
 
-    out = asyncio.run(pre._call_impl(payload))
+    out = asyncio.run(pre.call_impl(payload))
 
     state = Qwen3OmniPipelineState.from_dict(out.data)
     assert state.prompt["input_ids"].tolist() == [5, 6, 7]
@@ -345,11 +345,11 @@ def test_qwen_preprocess_pretokenized_builds_state_and_releases_inputs() -> None
 @pytest.mark.parametrize("missing", [None, np.array([], dtype=np.float32)])
 def test_merge_extracted_video_audio_rejects_mixed_audio_presence(missing) -> None:
     from sglang_omni.models.qwen3_omni.components.preprocessor import (
-        _merge_extracted_video_audio,
+        merge_extracted_video_audio,
     )
 
     with pytest.raises(ValueError, match="every video"):
-        _merge_extracted_video_audio([], [np.ones(3), missing])
+        merge_extracted_video_audio([], [np.ones(3), missing])
 
 
 @pytest.mark.parametrize("sampled_fps", [[2.0, 2.0], [2.0, 4.0]])
@@ -425,10 +425,10 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     )
     if sampled_fps[0] != sampled_fps[1]:
         with pytest.raises(ValueError, match="same sampled FPS"):
-            asyncio.run(pre._call_impl(payload))
+            asyncio.run(pre.call_impl(payload))
         return
 
-    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
     assert state.mm_inputs["video"]["video_second_per_grid"].tolist() == [1.0, 1.0]
     assert state.mm_inputs["video"]["video_grid_thw"].shape[0] == 2
     mask = state.encoder_inputs["audio_encoder"]["feature_attention_mask"]
@@ -517,7 +517,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
         data={},
     )
 
-    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
 
     assert processor_calls[0]["audio"] == expected_audio
     assert (
@@ -532,7 +532,7 @@ def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
     from sglang_omni.models.qwen3_omni.components import (
         preprocessor as preprocessor_mod,
     )
-    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.openai_api import build_rollout_generate_request
     from sglang_omni.serve.protocol import RolloutGenerateRequest
 
     def _encode(tensor: torch.Tensor) -> dict[str, object]:
@@ -563,13 +563,11 @@ def test_qwen_accepts_miles_audio_video_processor_tensors() -> None:
         )
         payload = StagePayload(
             request_id="req-processed-mm",
-            request=Client._build_omni_request(
-                _build_rollout_generate_request(request)
-            ),
+            request=Client.build_omni_request(build_rollout_generate_request(request)),
             data={},
         )
         return Qwen3OmniPipelineState.from_dict(
-            asyncio.run(pre._call_impl(payload)).data
+            asyncio.run(pre.call_impl(payload)).data
         )
 
     state = _preprocess(processor_tensors)
@@ -1311,7 +1309,7 @@ def test_qwen_encoder_reserve_and_explicit_pin_conflict_consumer_side() -> None:
     stage factory refuses the combination with an explicit pin."""
     server_args = SimpleNamespace(mem_fraction_static=0.70)
 
-    applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
+    applied = qwen_stages.apply_qwen_thinker_encoder_reserve(
         server_args,
         has_explicit_mem_fraction_static=True,
         encoder_mem_reserve=0.15,
@@ -1442,7 +1440,7 @@ def test_qwen_cli_serve_enables_custom_all_reduce_on_p2p_mesh(monkeypatch) -> No
 def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
     server_args = SimpleNamespace(mem_fraction_static=0.929)
 
-    applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
+    applied = qwen_stages.apply_qwen_thinker_encoder_reserve(
         server_args,
         has_explicit_mem_fraction_static=False,
         encoder_mem_reserve=0.05,
@@ -1455,7 +1453,7 @@ def test_qwen_thinker_auto_path_applies_encoder_reserve() -> None:
 def test_qwen_thinker_explicit_pin_bypasses_encoder_reserve() -> None:
     server_args = SimpleNamespace(mem_fraction_static=0.70)
 
-    applied = qwen_stages._apply_qwen_thinker_encoder_reserve(
+    applied = qwen_stages.apply_qwen_thinker_encoder_reserve(
         server_args,
         has_explicit_mem_fraction_static=True,
         encoder_mem_reserve=0.20,
@@ -1467,7 +1465,7 @@ def test_qwen_thinker_explicit_pin_bypasses_encoder_reserve() -> None:
 
 def test_qwen_thinker_encoder_reserve_rejects_below_safe_floor() -> None:
     with pytest.raises(ValueError, match="below the safe floor"):
-        qwen_stages._apply_qwen_thinker_encoder_reserve(
+        qwen_stages.apply_qwen_thinker_encoder_reserve(
             SimpleNamespace(mem_fraction_static=0.15),
             has_explicit_mem_fraction_static=False,
             encoder_mem_reserve=0.10,
@@ -1663,7 +1661,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
         lambda self, vocab_size: None,
     )
     monkeypatch.setattr(
-        "sglang_omni.models.qwen3_omni.request_builders._compute_mrope_positions",
+        "sglang_omni.models.qwen3_omni.request_builders.compute_mrope_positions",
         fake_mrope,
     )
 
@@ -1709,7 +1707,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
         lambda self, vocab_size: None,
     )
     monkeypatch.setattr(
-        "sglang_omni.models.qwen3_omni.request_builders._compute_mrope_positions",
+        "sglang_omni.models.qwen3_omni.request_builders.compute_mrope_positions",
         lambda input_ids, model_inputs, thinker_config: (
             torch.zeros((3, input_ids.numel()), dtype=torch.long),
             torch.tensor(0),
@@ -1770,7 +1768,7 @@ def _processed_bundle_state(
     from sglang_omni.models.qwen3_omni.components import (
         preprocessor as preprocessor_mod,
     )
-    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.openai_api import build_rollout_generate_request
     from sglang_omni.serve.protocol import RolloutGenerateRequest
 
     pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
@@ -1786,10 +1784,10 @@ def _processed_bundle_state(
     )
     payload = StagePayload(
         request_id="req-processed-guards",
-        request=Client._build_omni_request(_build_rollout_generate_request(request)),
+        request=Client.build_omni_request(build_rollout_generate_request(request)),
         data={},
     )
-    return Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+    return Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
 
 
 def test_qwen_accepts_miles_image_processor_tensors() -> None:
@@ -1874,7 +1872,7 @@ def decoded_audio_preprocessor(monkeypatch):
             request_id="cache-key", request=OmniRequest(inputs=inputs), data={}
         )
         state = Qwen3OmniPipelineState.from_dict(
-            asyncio.run(pre._call_impl(payload)).data
+            asyncio.run(pre.call_impl(payload)).data
         )
         return state.encoder_inputs["audio_encoder"].get("cache_key")
 

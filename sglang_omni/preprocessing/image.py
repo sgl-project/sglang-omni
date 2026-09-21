@@ -11,7 +11,7 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from .base import MediaIO, _is_url
+from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup
 
@@ -103,7 +103,7 @@ async def ensure_image_list_async(
         # First pass: identify URL items and create coroutines
         for idx, item in enumerate(items):
             if isinstance(item, (str, Path)):
-                if _is_url(item):
+                if is_url(item):
                     # Create coroutine for async URL fetching
                     coro = media_connector.fetch_image_async(
                         str(item), image_mode=image_mode

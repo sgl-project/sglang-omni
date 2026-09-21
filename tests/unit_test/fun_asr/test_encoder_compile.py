@@ -34,7 +34,7 @@ def _tiny_model() -> SimpleNamespace:
     return SimpleNamespace(
         audio_tower=encoder,
         multi_modal_projector=projector,
-        config=SimpleNamespace(encoder_config=SimpleNamespace(input_size=8)),
+        config=SimpleNamespace(audio_config=SimpleNamespace(input_size=8)),
     )
 
 
@@ -71,7 +71,7 @@ def test_compile_fun_asr_audio_encoder_compiles_forwards_with_dynamic_shapes(
 
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
-    fun_asr_stages._compile_fun_asr_audio_encoder(model, warmup_lfr_frames=16)
+    fun_asr_stages.compile_fun_asr_audio_encoder(model, warmup_lfr_frames=16)
 
     assert [call["dynamic"] for call in compile_calls] == [True, True]
     assert compile_calls[0]["fn"] == original_tower_forward
@@ -114,13 +114,13 @@ def test_compile_fun_asr_audio_encoder_warmup_matches_service_grad_mode(
 
     monkeypatch.setattr(torch, "compile", _fake_compile)
 
-    fun_asr_stages._compile_fun_asr_audio_encoder(model, warmup_lfr_frames=16)
+    fun_asr_stages.compile_fun_asr_audio_encoder(model, warmup_lfr_frames=16)
     # Three signatures × (encoder + projector).
     assert modes == [(True, True)] * 6
 
     modes.clear()
     model = _tiny_model()
-    fun_asr_stages._compile_fun_asr_audio_encoder(
+    fun_asr_stages.compile_fun_asr_audio_encoder(
         model, warmup_lfr_frames=16, warmup_inference_mode=False
     )
     assert modes == [(False, False)] * 6
@@ -138,4 +138,4 @@ def test_compile_fun_asr_audio_encoder_rejects_degenerate_warmup_length(
     monkeypatch.setattr(torch, "compile", _fail_compile)
 
     with pytest.raises(ValueError, match="warmup_lfr_frames"):
-        fun_asr_stages._compile_fun_asr_audio_encoder(model, warmup_lfr_frames=1)
+        fun_asr_stages.compile_fun_asr_audio_encoder(model, warmup_lfr_frames=1)

@@ -54,8 +54,13 @@ class SpeechTokenizerV3:
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
 
+        # note (db-ol): the cuDNN conv plan is rebuilt whenever the input shape differs
+        # from the previous call, and the default search setting makes rebuilds slow.
         providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            [
+                ("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}),
+                "CPUExecutionProvider",
+            ]
             if device.startswith("cuda")
             else ["CPUExecutionProvider"]
         )
@@ -137,7 +142,7 @@ class SpeakerEncoder:
         return torch.tensor([embedding.flatten().tolist()])
 
 
-def _run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
+def run_cosyvoice3_mel_spectrogram(waveform: torch.Tensor) -> torch.Tensor:
     """Run the official CosyVoice3 prompt-mel configuration."""
     from matcha.utils.audio import mel_spectrogram
 
@@ -179,7 +184,7 @@ def extract_prompt_speech_feat(
         )
 
     waveform = torch.from_numpy(audio_array)
-    mel = _run_cosyvoice3_mel_spectrogram(waveform)
+    mel = run_cosyvoice3_mel_spectrogram(waveform)
     if mel.ndim != 3 or mel.shape[0] != waveform.shape[0] or mel.shape[1] != 80:
         raise RuntimeError(
             f"CosyVoice3 mel extractor returned an unexpected shape: {tuple(mel.shape)}"

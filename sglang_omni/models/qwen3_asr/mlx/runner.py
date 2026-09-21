@@ -21,7 +21,7 @@ class Qwen3ASRMlxModelRunner(AudioMlxModelRunner):
 
     model_name = "Qwen3-ASR"
 
-    def _load_model(self) -> None:
+    def load_model(self) -> None:
         from mlx_lm.utils import load_model
         from sglang.srt.hardware_backend.mlx.remote_code_gate import (
             ensure_remote_code_allowed,

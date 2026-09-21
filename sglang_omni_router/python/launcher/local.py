@@ -105,7 +105,7 @@ class LocalLauncher:
                     start_new_session=True,
                 )
                 process_group_id = os.getpgid(process.pid)
-                _record_cleanup_process_group(process_group_id)
+                record_cleanup_process_group(process_group_id)
                 self.workers.append(
                     ManagedWorkerProcess(
                         url=worker_url,
@@ -127,7 +127,7 @@ class LocalLauncher:
         deadline = time.monotonic() + self.config.wait_timeout
         executor = ThreadPoolExecutor(max_workers=len(self.workers))
         futures: set[Future[None]] = {
-            executor.submit(self._wait_for_worker_ready, worker, deadline)
+            executor.submit(self.wait_for_worker_ready, worker, deadline)
             for worker in self.workers
         }
         try:
@@ -141,7 +141,7 @@ class LocalLauncher:
         finally:
             executor.shutdown(wait=True, cancel_futures=True)
 
-    def _wait_for_worker_ready(
+    def wait_for_worker_ready(
         self, worker: ManagedWorkerProcess, deadline: float
     ) -> None:
         timeout = deadline - time.monotonic()
@@ -163,13 +163,13 @@ class LocalLauncher:
     def shutdown(self) -> None:
         if not self.workers:
             return
-        _terminate_worker_process_groups(self.workers)
+        terminate_worker_process_groups(self.workers)
         self.workers.clear()
 
 
-def _terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> None:
+def terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> None:
     for worker in workers:
-        _signal_process_group(worker.process_group_id, signal.SIGINT)
+        signal_process_group(worker.process_group_id, signal.SIGINT)
 
     deadline = time.monotonic() + 30
     for worker in workers:
@@ -177,18 +177,18 @@ def _terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> Non
         try:
             worker.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _signal_process_group(worker.process_group_id, signal.SIGKILL)
+            signal_process_group(worker.process_group_id, signal.SIGKILL)
             worker.process.wait(timeout=10)
 
 
-def _signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
+def signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
     try:
         os.killpg(process_group_id, sig)
     except ProcessLookupError:
         pass
 
 
-def _record_cleanup_process_group(process_group_id: int | None) -> None:
+def record_cleanup_process_group(process_group_id: int | None) -> None:
     manifest = os.environ.get(_CLEANUP_MANIFEST_ENV)
     if not manifest or process_group_id is None:
         return

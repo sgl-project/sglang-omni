@@ -39,16 +39,16 @@ class Qwen3OmniPlacementPolicy:
 
         has_speech_stage = "talker_ar" in stage_map or "code2wav" in stage_map
         if has_speech_stage:
-            self._validate_speech_topology(stage_map)
+            self.validate_speech_topology(stage_map)
 
         if not has_speech_stage:
             return
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
-            self._validate_colocated_qwen_replicas(plan)
-            self._validate_colocated_qwen_parallelism(stage_map)
-            self._validate_colocated_qwen_topology(plan)
-            self._validate_colocated_qwen_runtime(stage_map)
+            self.validate_colocated_qwen_replicas(plan)
+            self.validate_colocated_qwen_parallelism(stage_map)
+            self.validate_colocated_qwen_topology(plan)
+            self.validate_colocated_qwen_runtime(stage_map)
             return
 
         thinkers = plan.instances_of("thinker")
@@ -67,7 +67,7 @@ class Qwen3OmniPlacementPolicy:
                     f"share a GPU only with {_COLOCATED_CONFIG_CLASS}"
                 )
 
-    def _validate_colocated_qwen_replicas(self, plan: StagePlacementPlan) -> None:
+    def validate_colocated_qwen_replicas(self, plan: StagePlacementPlan) -> None:
         # Note (kaige): read the expanded plan rather than the pre-expansion
         # stage config, because replica counts now live on the process.
         replicated = sorted(
@@ -81,7 +81,7 @@ class Qwen3OmniPlacementPolicy:
                 f"got replicated stage(s) {replicated}"
             )
 
-    def _validate_colocated_qwen_parallelism(self, stage_map) -> None:
+    def validate_colocated_qwen_parallelism(self, stage_map) -> None:
         for stage_name in _AR_STAGES:
             stage = stage_map.get(stage_name)
             if stage is not None and stage.tp_size != 1:
@@ -89,7 +89,7 @@ class Qwen3OmniPlacementPolicy:
                     f"Qwen Phase 1 colocation does not support {stage_name} TP"
                 )
 
-    def _validate_speech_topology(self, stage_map) -> None:
+    def validate_speech_topology(self, stage_map) -> None:
         names = set(stage_map)
         if names != _SPEECH_STAGE_SET:
             missing = sorted(_SPEECH_STAGE_SET - names)
@@ -99,7 +99,7 @@ class Qwen3OmniPlacementPolicy:
                 f"missing={missing}, extra={extra}"
             )
 
-    def _validate_colocated_qwen_topology(self, plan: StagePlacementPlan) -> None:
+    def validate_colocated_qwen_topology(self, plan: StagePlacementPlan) -> None:
         gpu_ids: set[int] = set()
         invalid: list[str] = []
         for stage_name in sorted(_COLOCATED_BUDGET_STAGES):
@@ -119,7 +119,7 @@ class Qwen3OmniPlacementPolicy:
                 "thinker, talker_ar, and code2wav to share one GPU"
             )
 
-    def _validate_colocated_qwen_runtime(self, stage_map) -> None:
+    def validate_colocated_qwen_runtime(self, stage_map) -> None:
         # Note (Jiaxin Deng): the schema forbids fraction next to kv_cache_bytes,
         # so requiring the fraction would outlaw every colocated byte budget.
         missing_budgets = [

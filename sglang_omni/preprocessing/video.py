@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import av
+import librosa
 import numpy as np
 import torch
 from qwen_vl_utils import vision_process as qwen_vision
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
-from .base import MediaIO, _is_url
+from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
 from .resource_connector import await_media_cleanup, run_media_io
 
@@ -69,7 +70,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         self.audio_target_sr = audio_target_sr
         self.kwargs = kwargs
 
-    def _load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
+    def load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
         return load_video_path(
             filepath,
             fps=self.fps,
@@ -95,11 +96,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         try:
             if self.extract_audio:
                 # Load video and extract audio from the same file
-                video, sample_fps = self._load_path(tmp_path)
-                audio = _extract_audio_from_path(tmp_path, self.audio_target_sr)
+                video, sample_fps = self.load_path(tmp_path)
+                audio = extract_audio_from_path(tmp_path, self.audio_target_sr)
                 return video, sample_fps, audio
             else:
-                video, sample_fps = self._load_path(tmp_path)
+                video, sample_fps = self.load_path(tmp_path)
                 return video, sample_fps, None
         finally:
             # Clean up temporary file
@@ -117,11 +118,11 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, Any | None]]):
         """Load video from a local file path, optionally extracting audio."""
         if self.extract_audio:
             # Load video and extract audio from the same file
-            video, sample_fps = self._load_path(filepath)
-            audio = _extract_audio_from_path(filepath, self.audio_target_sr)
+            video, sample_fps = self.load_path(filepath)
+            audio = extract_audio_from_path(filepath, self.audio_target_sr)
             return video, sample_fps, audio
         else:
-            video, sample_fps = self._load_path(filepath)
+            video, sample_fps = self.load_path(filepath)
             return video, sample_fps, None
 
 
@@ -202,7 +203,28 @@ async def ensure_video_list_async(
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
             )
-            return await run_media_io(media_io.load_file, Path(video_item))
+            video_path = Path(video_item)
+            if not extract_audio:
+                return await run_media_io(media_io.load_file, video_path)
+            else:
+                tasks = [
+                    asyncio.create_task(run_media_io(media_io.load_path, video_path)),
+                    asyncio.create_task(
+                        run_media_io(
+                            extract_audio_from_path, video_path, audio_target_sr
+                        )
+                    ),
+                ]
+                try:
+                    (frames, sample_fps), audio = await asyncio.gather(*tasks)
+                    return frames, sample_fps, audio
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await await_media_cleanup(
+                        asyncio.gather(*tasks, return_exceptions=True)
+                    )
 
     # Collect coroutines for URL and local file items
     coroutines: list[asyncio.Task[tuple[Any, float, Any | None]]] = []
@@ -212,7 +234,7 @@ async def ensure_video_list_async(
         # First pass: identify items that need loading
         for idx, video_item in enumerate(items):
             if isinstance(video_item, (str, Path)):
-                if _is_url(video_item):
+                if is_url(video_item):
                     # Create coroutine for async URL fetching with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=True)
                     task = asyncio.create_task(coro)
@@ -269,7 +291,7 @@ async def ensure_video_list_async(
     return normalized, None, extracted_audios if extract_audio else None
 
 
-def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
+def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | None:
     """Extract audio from a video file path."""
     try:
         with av.open(str(video_path)) as container:
@@ -280,23 +302,25 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
             if audio_stream is None:
                 return None
 
+            sample_rate = audio_stream.rate
             resampler = av.AudioResampler(
                 format="fltp",
-                layout="mono",
-                rate=target_sr,
+                layout=audio_stream.layout.name,
+                rate=sample_rate,
             )
             chunks: list[np.ndarray] = []
             for frame in container.decode(audio_stream):
                 for resampled in resampler.resample(frame):
-                    chunks.append(resampled.to_ndarray().reshape(-1))
+                    chunks.append(resampled.to_ndarray())
             for resampled in resampler.resample(None):
-                chunks.append(resampled.to_ndarray().reshape(-1))
+                chunks.append(resampled.to_ndarray())
 
         if not chunks:
             raise VideoDecodeError(
                 f"Embedded audio stream decoded no samples: {video_path}"
             )
-        return np.concatenate(chunks).astype(np.float32, copy=False)
+        audio = librosa.to_mono(np.concatenate(chunks, axis=1))
+        return librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
     except VideoDecodeError:
         raise
     except (av.error.InvalidDataError, av.error.EOFError) as exc:
@@ -309,7 +333,7 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
         ) from exc
 
 
-def _is_invalid_video(path: Path, error: Exception) -> bool:
+def is_invalid_video(path: Path, error: Exception) -> bool:
     if isinstance(error, (av.error.InvalidDataError, av.error.EOFError)):
         return True
     if isinstance(error, (OSError, MemoryError, ImportError, torch.OutOfMemoryError)):
@@ -360,7 +384,7 @@ def load_video_path(
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
     except Exception as backend_exc:
         if backend == "torchvision":
-            if _is_invalid_video(path, backend_exc):
+            if is_invalid_video(path, backend_exc):
                 raise VideoDecodeError(
                     f"Invalid media data while decoding video path={path}: {backend_exc}"
                 ) from backend_exc
@@ -368,11 +392,11 @@ def load_video_path(
                 f"Failed to decode video path={path}; torchvision failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}"
             ) from backend_exc
-        logger.warning("Video reader %s failed, falling back to torchvision", backend)
+        logger.warning(f"Video reader {backend} failed, falling back to torchvision")
         try:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
         except Exception as fallback_exc:
-            if _is_invalid_video(path, fallback_exc):
+            if is_invalid_video(path, fallback_exc):
                 raise VideoDecodeError(
                     f"Invalid media data while decoding video path={path}: {fallback_exc}"
                 ) from fallback_exc
@@ -443,7 +467,7 @@ def compute_video_cache_key(
     Decode params change the resulting frame count and thus the encoder
     output length. They must be part of the cache key — otherwise an entry
     produced under one (fps, max_frames, pixel-limit) tuple could be
-    returned for a request with different params, yielding ``video_embeds``
+    returned for a request with different params, yielding video_embeds
     whose length no longer matches the prompt placeholders.
     """
     base = compute_media_cache_key(videos, prefix="video")

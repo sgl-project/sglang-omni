@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+import types
+
 import numpy as np
 import torch
 
@@ -85,7 +88,7 @@ def test_cosyvoice3_prompt_mel_uses_flow_layout_and_fixed_configuration(
         captured["waveform"] = waveform
         return torch.arange(1 * 80 * 3, dtype=torch.float32).reshape(1, 80, 3)
 
-    monkeypatch.setattr(utils, "_run_cosyvoice3_mel_spectrogram", fake_mel)
+    monkeypatch.setattr(utils, "run_cosyvoice3_mel_spectrogram", fake_mel)
 
     result = utils.extract_prompt_speech_feat(np.zeros(12, dtype=np.float64))
 
@@ -93,3 +96,30 @@ def test_cosyvoice3_prompt_mel_uses_flow_layout_and_fixed_configuration(
     assert captured["waveform"].dtype == torch.float32
     assert result.shape == (1, 3, 80)
     assert torch.equal(result[0, 0], torch.arange(0, 80 * 3, 3, dtype=torch.float32))
+
+
+def test_cosyvoice3_reference_encoders_pin_onnx_providers(monkeypatch) -> None:
+    captured: list[object] = []
+
+    def fake_session(model_path, sess_options, providers):
+        captured.append(providers)
+
+    fake_onnxruntime = types.SimpleNamespace(
+        SessionOptions=types.SimpleNamespace,
+        GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=99),
+        InferenceSession=fake_session,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_onnxruntime)
+
+    utils.SpeechTokenizerV3("speech_tokenizer_v3.onnx", device="cuda:0")
+    utils.SpeechTokenizerV3("speech_tokenizer_v3.onnx", device="cpu")
+    utils.SpeakerEncoder("campplus.onnx", device="cuda:0")
+
+    assert captured == [
+        [
+            ("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}),
+            "CPUExecutionProvider",
+        ],
+        ["CPUExecutionProvider"],
+        ["CPUExecutionProvider"],
+    ]

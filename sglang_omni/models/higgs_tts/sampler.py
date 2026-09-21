@@ -30,7 +30,7 @@ STOP_CODE = -1
 K_MAX = 1026
 
 
-def _resolve_renorm_kernels():
+def resolve_renorm_kernels():
     """Return ``(top_k_renorm, top_p_renorm)`` callables for this platform.
 
     CUDA uses the fused ``sgl_kernel`` kernels to avoid a full-vocab
@@ -50,7 +50,7 @@ def _resolve_renorm_kernels():
     return top_k_renorm_prob, top_p_renorm_prob
 
 
-_fused_top_k_renorm, _fused_top_p_renorm = _resolve_renorm_kernels()
+_fused_top_k_renorm, _fused_top_p_renorm = resolve_renorm_kernels()
 
 
 @dataclass
@@ -165,7 +165,7 @@ class HiggsBatchedSamplerState:
 _GREEDY_TEMP_THRESHOLD = 1e-5
 
 
-def _sample_independent(
+def sample_independent(
     logits_NV: torch.Tensor,
     *,
     temperature: float,
@@ -230,7 +230,7 @@ def step(
     if state.generation_done:
         return torch.full((N,), STOP_CODE, dtype=torch.long, device=logits_NV.device)
 
-    codes_N = _sample_independent(
+    codes_N = sample_independent(
         logits_NV,
         temperature=temperature,
         top_p=top_p,
@@ -258,7 +258,7 @@ def step(
     return codes_N
 
 
-def _sample_independent_batched(
+def sample_independent_batched(
     logits_BNV: torch.Tensor,
     *,
     temperature: torch.Tensor,
@@ -440,7 +440,7 @@ def batched_step_direct(
     delay_count = delay_count.to(torch.long)
     eoc_countdown = eoc_countdown.to(torch.long)
 
-    codes_BN = _sample_independent_batched(
+    codes_BN = sample_independent_batched(
         logits_BNV,
         temperature=temperature,
         top_p=top_p,

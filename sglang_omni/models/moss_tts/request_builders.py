@@ -39,7 +39,7 @@ _DATA_URI_RE = re.compile(r"^data:audio/[^;,]+;base64,(?P<data>.+)$", re.DOTALL)
 _INF_DELAY = -1
 
 
-def _new_moss_tts_sampling_seed() -> int:
+def new_moss_tts_sampling_seed() -> int:
     return new_random_sampling_seed()
 
 
@@ -100,7 +100,7 @@ class MossTTSSGLangRequestData(ARRequestData):
     audio_top_k: int = AUDIO_SAMPLING.top_k
     audio_repetition_penalty: float = AUDIO_REPETITION_PENALTY
     seed: int | None = None
-    sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
+    sampling_seed: int = field(default_factory=new_moss_tts_sampling_seed)
     delay_state: torch.Tensor | None = None
     audio_length: int = 0
     delayed_length: int = _INF_DELAY
@@ -131,7 +131,7 @@ _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest
 _CONTEXT_LIFECYCLE_LOCK = threading.Lock()
 
 
-def _close_moss_tts_preprocessing_context(
+def close_moss_tts_preprocessing_context(
     context: MossTTSPreprocessingContext | None,
 ) -> None:
     if context is None:
@@ -156,7 +156,7 @@ def set_moss_tts_preprocessing_context(
         )
         if previous is not None and previous.reference_encoder is reference_encoder:
             return
-        _close_moss_tts_preprocessing_context(previous)
+        close_moss_tts_preprocessing_context(previous)
 
 
 def clear_moss_tts_preprocessing_context() -> None:
@@ -165,7 +165,7 @@ def clear_moss_tts_preprocessing_context() -> None:
     with _CONTEXT_LIFECYCLE_LOCK:
         previous = _QUEUE.snapshot().context
         _QUEUE.clear_context()
-        _close_moss_tts_preprocessing_context(previous)
+        close_moss_tts_preprocessing_context(previous)
 
 
 def cleanup_prepared_moss_tts_request(request_id: str) -> None:
@@ -224,14 +224,14 @@ def resolve_moss_reference(
     return ref_audio, str(ref_text) if ref_text is not None else None
 
 
-def _resolve_optional_text(value: Any) -> str | None:
+def resolve_optional_text(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
 
 
-def _resolve_token_count(
+def resolve_token_count(
     text: str,
     params: dict[str, Any],
     tts_params: dict[str, Any],
@@ -277,16 +277,16 @@ def build_moss_tts_state(payload: StagePayload) -> MossTTSState:
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
-    language = _resolve_optional_text(
+    language = resolve_optional_text(
         tts_params.get("language") or params.get("language")
     )
-    instructions = _resolve_optional_text(
+    instructions = resolve_optional_text(
         tts_params.get("instructions")
         or tts_params.get("instruct")
         or params.get("instructions")
         or params.get("instruct")
     )
-    text, token_count = _resolve_token_count(text, params, tts_params)
+    text, token_count = resolve_token_count(text, params, tts_params)
     return MossTTSState(
         text=text,
         ref_audio=ref_audio,
@@ -372,11 +372,11 @@ def build_generation_kwargs(
     if seed is not None:
         generation_kwargs["seed"] = seed
 
-    _validate_moss_tts_generation_kwargs(generation_kwargs)
+    validate_moss_tts_generation_kwargs(generation_kwargs)
     return generation_kwargs
 
 
-def _validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
+def validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
     """Validate public sampling fields (MOSS uses a custom sampler that bypasses
     SGLang's SamplingParams.verify), raising ValueError on out-of-range values."""
     if int(kwargs["max_new_tokens"]) <= 0:
@@ -421,7 +421,7 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
     return key_ids
 
 
-def _reference_for_processor(
+def reference_for_processor(
     processor: Any,
     ref_audio: Any | None,
     reference_encoder: Any = None,
@@ -437,12 +437,12 @@ def _reference_for_processor(
     return [ref_audio]
 
 
-def _build_processor_message(
+def build_processor_message(
     processor: Any,
     state: MossTTSState,
     reference_encoder: Any = None,
 ) -> dict[str, Any]:
-    reference = _reference_for_processor(
+    reference = reference_for_processor(
         processor,
         state.ref_audio,
         reference_encoder,
@@ -456,14 +456,14 @@ def _build_processor_message(
     )
 
 
-def _prepare_moss_tts_request(
+def prepare_moss_tts_request(
     payload: StagePayload,
     *,
     processor: Any,
     reference_encoder: Any = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
-    message = _build_processor_message(processor, state, reference_encoder)
+    message = build_processor_message(processor, state, reference_encoder)
     batch = processor([[message]], mode="generation")
     input_rows = batch["input_ids"]
     if input_rows.ndim != 3 or int(input_rows.shape[0]) != 1:
@@ -493,7 +493,7 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
         )
 
     try:
-        prepared = _prepare_moss_tts_request(
+        prepared = prepare_moss_tts_request(
             payload,
             processor=context.processor,
             reference_encoder=context.reference_encoder,
@@ -514,14 +514,14 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
     )
 
 
-def _last_equal(rows: torch.Tensor, value: int) -> int:
+def last_equal(rows: torch.Tensor, value: int) -> int:
     matches = (rows[:, 0] == int(value)).nonzero(as_tuple=False).flatten()
     if matches.numel() == 0:
         return -1
     return int(matches[-1].item())
 
 
-def _resolve_audio_payload_bounds(
+def resolve_audio_payload_bounds(
     rows: torch.Tensor, cfg: Any
 ) -> tuple[int, int] | None:
     text = rows[:, 0].to(dtype=torch.long)
@@ -558,7 +558,7 @@ def _resolve_audio_payload_bounds(
     return start, end
 
 
-def _moss_stream_metadata(
+def moss_stream_metadata(
     data: MossTTSSGLangRequestData,
     *,
     n_vq: int,
@@ -584,7 +584,7 @@ def _moss_stream_metadata(
     return metadata
 
 
-def _collect_moss_stream_rows(
+def collect_moss_stream_rows(
     data: MossTTSSGLangRequestData,
     req_output: Any,
 ) -> list[torch.Tensor]:
@@ -654,7 +654,7 @@ def make_moss_tts_stream_output_builder():
         if req is not None and int(getattr(req, "inflight_middle_chunks", 0) or 0):
             return []
 
-        rows = _collect_moss_stream_rows(data, req_output)
+        rows = collect_moss_stream_rows(data, req_output)
         if not rows:
             return []
         n_vq = int(rows[0].shape[0])
@@ -664,7 +664,7 @@ def make_moss_tts_stream_output_builder():
         row_index = int(data.stream_row_count)
         data.stream_row_count += len(rows)
         chunk = rows[0] if len(rows) == 1 else torch.stack(rows, dim=0)
-        metadata = _moss_stream_metadata(data, n_vq=n_vq)
+        metadata = moss_stream_metadata(data, n_vq=n_vq)
         metadata["row_index"] = row_index
         return [
             OutgoingMessage(
@@ -679,7 +679,7 @@ def make_moss_tts_stream_output_builder():
     return stream_output_builder
 
 
-def _initialize_generation_state(
+def initialize_generation_state(
     data: MossTTSSGLangRequestData,
     *,
     model: Any,
@@ -694,10 +694,10 @@ def _initialize_generation_state(
         int(cfg.audio_start_token_id),
         int(cfg.audio_assistant_gen_slot_token_id),
     )
-    audio_start_idx = _last_equal(prompt_rows, int(cfg.audio_start_token_id))
+    audio_start_idx = last_equal(prompt_rows, int(cfg.audio_start_token_id))
     data.is_audio = bool(is_continuation and audio_start_idx >= 0)
     data.audio_length = seq_len - audio_start_idx if data.is_audio else 0
-    assistant_start_idx = _last_equal(prompt_rows, int(cfg.im_start_token_id)) + 3
+    assistant_start_idx = last_equal(prompt_rows, int(cfg.im_start_token_id)) + 3
     assistant_start_idx = max(0, min(assistant_start_idx, seq_len))
     data.assistant_prefix_rows = prompt_rows[assistant_start_idx:].detach().clone()
     data.state.assistant_start_length = int(data.assistant_prefix_rows.shape[0])
@@ -772,12 +772,12 @@ def build_sglang_moss_tts_request(
         sampling_seed=(
             derive_moss_tts_sampling_seed(gen_kwargs["seed"])
             if gen_kwargs.get("seed") is not None
-            else _new_moss_tts_sampling_seed()
+            else new_moss_tts_sampling_seed()
         ),
         engine_start_s=time.perf_counter(),
     )
     data.input_embeds_are_projected = True
-    _initialize_generation_state(data, model=model)
+    initialize_generation_state(data, model=model)
     data.stage_payload = payload
     return data
 
@@ -801,7 +801,7 @@ def apply_sglang_moss_tts_result(
             )
         else:
             rows = generated_rows
-        bounds = _resolve_audio_payload_bounds(rows, data.model_config)
+        bounds = resolve_audio_payload_bounds(rows, data.model_config)
         if bounds is None:
             payload_rows = rows
         else:

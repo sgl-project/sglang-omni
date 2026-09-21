@@ -37,11 +37,11 @@ class WhisperEncoderCudaGraphRunner:
         self._pool = None
         self._forward_batch = None
 
-    def _enough_free_vram(self) -> tuple[bool, int]:
+    def enough_free_vram(self) -> tuple[bool, int]:
         free, _ = torch.cuda.mem_get_info(self._device)
         return free >= self._min_free_bytes, free
 
-    def _warmup(self, static_feat, static_pos, forward_batch) -> None:
+    def warmup(self, static_feat, static_pos, forward_batch) -> None:
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
@@ -50,7 +50,7 @@ class WhisperEncoderCudaGraphRunner:
         torch.cuda.current_stream().wait_stream(stream)
         torch.cuda.synchronize()
 
-    def _capture_bucket(self, c: int, encoder_len: int, forward_batch) -> None:
+    def capture_bucket(self, c: int, encoder_len: int, forward_batch) -> None:
         static_feat = torch.zeros(
             c,
             self._num_mel_bins,
@@ -59,7 +59,7 @@ class WhisperEncoderCudaGraphRunner:
             dtype=self._dtype,
         )
         static_pos = torch.arange(encoder_len, device=self._device, dtype=torch.long)
-        self._warmup(static_feat, static_pos, forward_batch)
+        self.warmup(static_feat, static_pos, forward_batch)
 
         if self._pool is None:
             self._pool = torch.cuda.graph_pool_handle()
@@ -88,7 +88,7 @@ class WhisperEncoderCudaGraphRunner:
             ):
                 if c in self._graphs:
                     continue
-                enough, free = self._enough_free_vram()
+                enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
                         "MOSS-TD encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
@@ -99,7 +99,7 @@ class WhisperEncoderCudaGraphRunner:
                     )
                     continue
                 try:
-                    self._capture_bucket(c, encoder_len, forward_batch)
+                    self.capture_bucket(c, encoder_len, forward_batch)
                 except Exception as exc:
                     logger.warning(
                         "MOSS-TD encoder CUDA graph capture failed for chunks=%d: "

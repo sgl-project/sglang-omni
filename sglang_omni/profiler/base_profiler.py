@@ -52,7 +52,7 @@ class ProfilerBase(ABC):
         """Return True if profiling is currently running."""
 
     @classmethod
-    def _get_rank(cls) -> int:
+    def get_rank(cls) -> int:
         import os
 
         return int(os.getenv("RANK", "0"))

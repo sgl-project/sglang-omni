@@ -196,7 +196,7 @@ class SerializedMultimodalTensor(BaseModel):
     data: str
 
     @model_validator(mode="after")
-    def _validate_payload(self) -> SerializedMultimodalTensor:
+    def validate_payload(self) -> SerializedMultimodalTensor:
         itemsize = _SERIALIZED_DTYPE_ITEMSIZE.get(self.dtype)
         if itemsize is None:
             raise ValueError(f"unsupported tensor dtype {self.dtype!r}")

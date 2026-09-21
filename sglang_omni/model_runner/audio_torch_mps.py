@@ -23,14 +23,14 @@ class AudioTorchMpsModelRunner(ModelRunner):
         del batch
         return False
 
-    def _one_request(self, requests: list[Any]) -> Any:
+    def one_request(self, requests: list[Any]) -> Any:
         if len(requests) != 1:
             raise RuntimeError(
                 f"{self.model_name} Torch MPS currently requires max_running_requests=1"
             )
         return requests[0]
 
-    def _next_token_result(self, next_token_ids: torch.Tensor) -> Any:
+    def next_token_result(self, next_token_ids: torch.Tensor) -> Any:
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         return GenerationBatchResult(
@@ -47,7 +47,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
         requests: list[Any],
     ) -> Any:
         del forward_batch
-        scheduler_request = self._one_request(requests)
+        scheduler_request = self.one_request(requests)
         req = scheduler_request.data.req
         mm_inputs = req.multimodal_inputs
         if mm_inputs is None or len(mm_inputs.mm_items) != 1:
@@ -127,7 +127,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
             logits_to_keep=1,
         )
         self._past_key_values[scheduler_request.request_id] = output.past_key_values
-        return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     @torch.inference_mode()
     def custom_decode_forward(
@@ -137,7 +137,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
         requests: list[Any],
     ) -> Any:
         del forward_batch
-        scheduler_request = self._one_request(requests)
+        scheduler_request = self.one_request(requests)
         request_id = scheduler_request.request_id
         try:
             past_key_values = self._past_key_values[request_id]
@@ -157,7 +157,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
             logits_to_keep=1,
         )
         self._past_key_values[request_id] = output.past_key_values
-        return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         del req_data

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 
 from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import run_media_io
@@ -63,7 +64,7 @@ def test_invalid_video_probe_is_bounded(monkeypatch, has_frame):
                 yield SimpleNamespace(decode=lambda: [object()] if has_frame else [])
 
     monkeypatch.setattr(video.av, "open", lambda path: Container())
-    assert not video._is_invalid_video(Path("video.mp4"), RuntimeError("reader failed"))
+    assert not video.is_invalid_video(Path("video.mp4"), RuntimeError("reader failed"))
     assert len(packets) == (1 if has_frame else 32)
 
 
@@ -73,7 +74,7 @@ def test_extract_audio_from_path_decodes_resamples_and_downmixes(
     media = tmp_path / "audio.mp4"
     _write_video_with_audio(media)
 
-    audio = video._extract_audio_from_path(media, 16_000)
+    audio = video.extract_audio_from_path(media, 16_000)
 
     assert audio is not None
     assert audio.dtype == np.float32
@@ -95,7 +96,7 @@ def test_extract_audio_from_path_returns_none_without_audio(monkeypatch) -> None
 
     monkeypatch.setattr(video.av, "open", lambda _path: Container())
 
-    assert video._extract_audio_from_path(Path("silent.mp4"), 16_000) is None
+    assert video.extract_audio_from_path(Path("silent.mp4"), 16_000) is None
 
 
 @pytest.mark.parametrize(
@@ -114,7 +115,9 @@ def test_extract_audio_from_path_surfaces_decode_failure(
 ) -> None:
     class Container:
         def __init__(self) -> None:
-            self.audio_stream = SimpleNamespace(type="audio", index=2)
+            self.audio_stream = SimpleNamespace(
+                type="audio", index=2, rate=16000, layout=SimpleNamespace(name="mono")
+            )
             self.streams = [SimpleNamespace(type="video", index=0), self.audio_stream]
 
         def __enter__(self):
@@ -135,7 +138,7 @@ def test_extract_audio_from_path_surfaces_decode_failure(
     monkeypatch.setattr(video.av, "open", open_media)
 
     with pytest.raises(video.VideoDecodeError, match="broken stream") as exc_info:
-        video._extract_audio_from_path(Path("broken.mp4"), 16_000)
+        video.extract_audio_from_path(Path("broken.mp4"), 16_000)
 
     assert exc_info.value.__cause__ is error
     assert is_bad_request_error(exc_info.value) is bad_request
@@ -146,7 +149,7 @@ def test_extract_audio_from_path_rejects_corrupt_media(tmp_path: Path) -> None:
     media.write_bytes(b"not an mp4 file")
 
     with pytest.raises(video.VideoDecodeError, match="Invalid media data") as exc_info:
-        video._extract_audio_from_path(media, 16_000)
+        video.extract_audio_from_path(media, 16_000)
 
     assert isinstance(exc_info.value.__cause__, video.av.error.InvalidDataError)
     assert is_bad_request_error(exc_info.value)
@@ -154,7 +157,11 @@ def test_extract_audio_from_path_rejects_corrupt_media(tmp_path: Path) -> None:
 
 def test_extract_audio_from_path_rejects_empty_audio_stream(monkeypatch) -> None:
     class Container:
-        streams = [SimpleNamespace(type="audio")]
+        streams = [
+            SimpleNamespace(
+                type="audio", rate=16000, layout=SimpleNamespace(name="mono")
+            )
+        ]
 
         def __enter__(self):
             return self
@@ -168,7 +175,7 @@ def test_extract_audio_from_path_rejects_empty_audio_stream(monkeypatch) -> None
     monkeypatch.setattr(video.av, "open", lambda _path: Container())
 
     with pytest.raises(video.VideoDecodeError, match="decoded no samples"):
-        video._extract_audio_from_path(Path("empty.mp4"), 16_000)
+        video.extract_audio_from_path(Path("empty.mp4"), 16_000)
 
 
 @pytest.mark.parametrize("backend", ["torchvision", "decord"])
@@ -291,3 +298,63 @@ async def test_cancelled_decoder_is_drained_before_returning(through_video_loade
         assert finished.is_set()
     finally:
         released.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+async def test_local_video_audio_decode_concurrently_and_drain(
+    tmp_path, monkeypatch, outcome
+):
+    started = [asyncio.Event(), asyncio.Event()]
+    release = [threading.Event(), threading.Event()]
+    finished = [threading.Event(), threading.Event()]
+    loop = asyncio.get_running_loop()
+    frames = torch.zeros((2, 3, 4, 4))
+    waveform = np.zeros(160, dtype=np.float32)
+
+    def decode(index):
+        loop.call_soon_threadsafe(started[index].set)
+        try:
+            if not release[index].wait(timeout=10):
+                raise TimeoutError("decoder was not released")
+            if index == 0 and outcome == "failure":
+                raise video.VideoDecodeError("decode failed")
+            return (frames, 2.0) if index == 0 else waveform
+        finally:
+            finished[index].set()
+
+    monkeypatch.setattr(video.VideoMediaIO, "load_path", lambda self, path: decode(0))
+    monkeypatch.setattr(video, "extract_audio_from_path", lambda path, sr: decode(1))
+    path = tmp_path / "video.mp4"
+    path.touch()
+    task = asyncio.create_task(
+        video.ensure_video_list_async([path], extract_audio=True)
+    )
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 5)
+        if outcome == "cancel":
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+        release[0].set()
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        release[1].set()
+        if outcome == "success":
+            videos, fps, audios = await asyncio.wait_for(task, 5)
+            assert videos[0] is frames
+            assert fps == [2.0]
+            assert audios[0] is waveform
+        else:
+            error = (
+                asyncio.CancelledError
+                if outcome == "cancel"
+                else video.VideoDecodeError
+            )
+            with pytest.raises(error):
+                await asyncio.wait_for(task, 5)
+        assert all(event.is_set() for event in finished)
+    finally:
+        for event in release:
+            event.set()
+        await asyncio.gather(task, return_exceptions=True)

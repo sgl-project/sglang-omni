@@ -45,7 +45,7 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
             features.unsqueeze(0) if batched_audio else features
         ),
     )
-    runner._next_token_result = lambda tokens: tokens
+    runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
@@ -86,7 +86,7 @@ def test_shared_runner_retains_model_specific_errors():
     with pytest.raises(
         RuntimeError, match="Other ASR Torch MPS.*max_running_requests=1"
     ):
-        runner._one_request([])
+        runner.one_request([])
     req = SimpleNamespace(multimodal_inputs=None)
     request = SimpleNamespace(data=SimpleNamespace(req=req))
     with pytest.raises(
@@ -156,7 +156,7 @@ def test_audio_tower_runs_before_token_embedding():
     runner.model = SimpleNamespace(
         language_model=model, get_audio_feature=get_audio_feature
     )
-    runner._next_token_result = lambda tokens: tokens
+    runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)

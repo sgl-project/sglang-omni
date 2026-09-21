@@ -275,7 +275,7 @@ _EXACT_LENGTH_SUBTYPES = frozenset(
 _UNKNOWN_LENGTH_FRAMES = 2**63 - 1
 
 
-def _looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
+def looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
     # Cheap prefilter so only the two formats the fast path serves are ever
     # handed to libsndfile; every other container goes straight to PyAV.
     header = audio_bytes[:12]
@@ -284,8 +284,8 @@ def _looks_like_wav_or_flac(audio_bytes: bytes) -> bool:
     return header[:4] == b"fLaC"
 
 
-def _soundfile_duration(audio_bytes: bytes) -> float:
-    if not _looks_like_wav_or_flac(audio_bytes):
+def soundfile_duration(audio_bytes: bytes) -> float:
+    if not looks_like_wav_or_flac(audio_bytes):
         return 0.0
     try:
         import soundfile as sf
@@ -302,7 +302,7 @@ def _soundfile_duration(audio_bytes: bytes) -> float:
     return 0.0
 
 
-def _av_duration(audio_bytes: bytes) -> float:
+def av_duration(audio_bytes: bytes) -> float:
     try:
         import av
 
@@ -329,10 +329,10 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     decodes with, so their measurements are unchanged. 0.0 means unknown;
     callers treat that as "duration not available".
     """
-    duration_s = _soundfile_duration(audio_bytes)
+    duration_s = soundfile_duration(audio_bytes)
     if duration_s > 0:
         return duration_s
-    return _av_duration(audio_bytes)
+    return av_duration(audio_bytes)
 
 
 def assemble_speech_to_text_response(
@@ -406,16 +406,16 @@ def assemble_speech_to_text_response(
     )
 
 
-async def _cancel_task_bounded(task: asyncio.Task[Any]) -> None:
+async def cancel_task_bounded(task: asyncio.Task[Any]) -> None:
     task.cancel()
     done, _ = await asyncio.wait({task}, timeout=HTTP_DISCONNECT_CANCEL_TIMEOUT_S)
     if done:
         await asyncio.gather(*done, return_exceptions=True)
     else:
-        task.add_done_callback(_discard_cancelled_task_result)
+        task.add_done_callback(discard_cancelled_task_result)
 
 
-def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
+def discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -424,12 +424,12 @@ def _discard_cancelled_task_result(task: asyncio.Task[Any]) -> None:
         logger.debug("Cancelled request task finished with an error", exc_info=True)
 
 
-async def _wait_for_request_disconnect(request: Request) -> None:
+async def wait_for_request_disconnect(request: Request) -> None:
     while not await request.is_disconnected():
         await asyncio.sleep(HTTP_DISCONNECT_POLL_INTERVAL_S)
 
 
-async def _abort_and_close_speech_to_text_stream(
+async def abort_and_close_speech_to_text_stream(
     client: Client,
     request_id: str,
     stream: AsyncIterator[Any],
@@ -440,7 +440,7 @@ async def _abort_and_close_speech_to_text_stream(
         await close_async_iterator_if_supported(stream)
 
 
-async def _first_speech_to_text_chunk(
+async def first_speech_to_text_chunk(
     request: Request,
     client: Client,
     chunk_stream: AsyncIterator[GenerateChunk],
@@ -448,7 +448,7 @@ async def _first_speech_to_text_chunk(
 ) -> GenerateChunk | None:
     # note (Junnan Li): Admit before headers so model validation remains an
     # HTTP error instead of becoming an SSE error event.
-    disconnect_task = asyncio.create_task(_wait_for_request_disconnect(request))
+    disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
     first_chunk_task = asyncio.create_task(anext(chunk_stream))
     try:
         done, _ = await asyncio.wait(
@@ -456,8 +456,8 @@ async def _first_speech_to_text_chunk(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if disconnect_task in done:
-            await _cancel_task_bounded(first_chunk_task)
-            await _abort_and_close_speech_to_text_stream(
+            await cancel_task_bounded(first_chunk_task)
+            await abort_and_close_speech_to_text_stream(
                 client, request_id, chunk_stream
             )
             raise asyncio.CancelledError
@@ -467,7 +467,7 @@ async def _first_speech_to_text_chunk(
             return None
     finally:
         if not disconnect_task.done():
-            await _cancel_task_bounded(disconnect_task)
+            await cancel_task_bounded(disconnect_task)
 
 
 async def speech_to_text_stream(
@@ -537,7 +537,7 @@ async def create_speech_to_text_streaming_response(
         duration_s = await asyncio.to_thread(probe_audio_duration, audio_bytes)
     chunk_stream = client.generate(gen_req, request_id=request_id)
     try:
-        first_chunk = await _first_speech_to_text_chunk(
+        first_chunk = await first_speech_to_text_chunk(
             request, client, chunk_stream, request_id
         )
     except ClientError as exc:

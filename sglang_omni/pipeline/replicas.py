@@ -142,7 +142,7 @@ def expand_replica_stages(
                     expanded_by_stage[stage_name] = [
                         stage_cfg.model_copy(
                             update={
-                                "gpu": _replica_stage_gpu(
+                                "gpu": replica_stage_gpu(
                                     stage_cfg, process.replica_devices[0]
                                 )
                             }
@@ -161,7 +161,7 @@ def expand_replica_stages(
                     stage_cfg.model_copy(
                         update={
                             "name": replicas[stage_name][replica_id],
-                            "gpu": _replica_stage_gpu(stage_cfg, devices),
+                            "gpu": replica_stage_gpu(stage_cfg, devices),
                             "process": replica_instance_name(process.name, replica_id),
                         }
                     )
@@ -186,7 +186,7 @@ def expand_replica_stages(
     return expanded, ReplicaTopology(replicas=replicas)
 
 
-def _replica_stage_gpu(
+def replica_stage_gpu(
     stage_cfg: StageConfig,
     devices: tuple[int, ...] | None,
 ) -> int | list[int] | None:
