@@ -104,7 +104,7 @@ def test_bf16_backbone_integrates_in_fp32_and_tracks_fp32_backbone():
         assert cosine > 0.99, cosine
 
 
-class _ShapePadding:
+class ShapePadding:
     """The step-graph runner's padding contract, with nothing to replay.
 
     It pads to one declared shape, and only for a batch that shape covers on
@@ -181,7 +181,7 @@ def test_shape_padding_does_not_change_the_sampled_latents(monkeypatch, count):
     expected = flow.sample_batch(items, **sampling)
     unpadded = set(widths)
     widths.clear()
-    actual = flow.sample_batch(items, **sampling, step_graph=_ShapePadding())
+    actual = flow.sample_batch(items, **sampling, step_graph=ShapePadding())
 
     assert unpadded == {max(item.target_frames for item in items)}
     assert set(widths) == {32}
@@ -222,7 +222,7 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
         return original(self, x, *args, **kwargs)
 
     monkeypatch.setattr(type(flow.transformer), "forward", forward)
-    declining = _ShapePadding()
+    declining = ShapePadding()
     declining.batch = 2
     flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
     assert set(widths) == {19}

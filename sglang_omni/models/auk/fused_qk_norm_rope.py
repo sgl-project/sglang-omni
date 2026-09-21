@@ -4,6 +4,9 @@
 import torch
 import triton
 import triton.language as tl
+from torch import nn
+
+from sglang_omni.models.auk.dit import Rope
 
 
 @triton.jit(
@@ -82,7 +85,13 @@ def norm_rope_kernel(
     tl.store(K_OUT + row * HEAD_DIM + dim, k * cosine + k_pair * sine)
 
 
-def fused_qk_norm_rope(q, k, q_norm, k_norm, rope):
+def fused_qk_norm_rope(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    q_norm: nn.RMSNorm,
+    k_norm: nn.RMSNorm,
+    rope: Rope,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Norm and rotate Q and K in one launch, from the caller's trig tables.
 
     The tables come in on the rope tuple rather than from a cache of this
@@ -104,7 +113,8 @@ def fused_qk_norm_rope(q, k, q_norm, k_norm, rope):
     q_out = torch.empty(q.shape, device=q.device, dtype=output_dtype)
     k_out = torch.empty_like(q_out)
     epsilon = torch.finfo(output_dtype).eps if q_norm.eps is None else q_norm.eps
-    # Runtime sequence/outer strides share a kernel across request lengths.
+    # note(Dayuxiaoshui): runtime sequence and outer strides, so one kernel is
+    # shared across request lengths.
     norm_rope_kernel[(q.shape[2], q.shape[1], q.shape[0])](
         q,
         k,

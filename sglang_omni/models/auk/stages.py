@@ -11,6 +11,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import nullcontext
 from functools import lru_cache
+from typing import Any
 
 import numpy as np
 import torch
@@ -32,7 +33,10 @@ from sglang_omni.models.auk.request_builders import (
     preprocess_auk_payload,
     set_auk_preprocessing_context,
 )
-from sglang_omni.models.auk.step_cuda_graph import build_step_graph_runner
+from sglang_omni.models.auk.step_cuda_graph import (
+    AuKStepCudaGraphRunner,
+    build_step_graph_runner,
+)
 from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
@@ -105,15 +109,24 @@ def load_flow(
     flow = AuKFlowMatching(dit, num_llm_layers=layer_weights.numel())
     load_dit_weights(flow, checkpoint)
     flow = flow.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
-    # Keyed by dtype and by the compile flag: both mutate the backbone, and a
-    # cached one would retroactively change every executor already built on it.
+    # note(Dayuxiaoshui): keyed by dtype and by the compile flag because both
+    # mutate the backbone, and a cached one would retroactively change every
+    # executor already built on it.
     flow.transformer.to(dtype=backbone_dtype)
     if compile_blocks:
         flow.transformer.enable_compiled_blocks()
     return flow
 
 
-def warmup_items(flow, device, *, batch, frames, ref, text):
+def warmup_items(
+    flow: AuKFlowMatching,
+    device: torch.device,
+    *,
+    batch: int,
+    frames: int,
+    ref: int,
+    text: int,
+) -> list[AuKSampleItem]:
     """A synthetic sampling batch shaped like one the server will be given."""
     return [
         AuKSampleItem(
@@ -132,28 +145,30 @@ def warmup_items(flow, device, *, batch, frames, ref, text):
     ]
 
 
-def warmup_flow(flow, device, dtype, sampling, step_graph=None):
+def warmup_flow(
+    flow: AuKFlowMatching,
+    device: torch.device,
+    dtype: torch.dtype,
+    sampling: dict[str, Any],
+    step_graph: AuKStepCudaGraphRunner | None = None,
+) -> None:
     """Pay the block compile, and every declared graph capture, at startup.
 
     The warmup enters at sample_batch, where a request does, so it compiles the
-    shapes a request runs: a batch that pads to a graph shape and one that does
-    not differ in the rope's batch dimension, and a single item that is not
-    padded differs again, so a warmup through one of them alone would leave the
-    first requests recompiling.
+    shapes a request runs rather than shapes that merely resemble them.
     """
     started = time.perf_counter()
-    # One step compiles and captures everything a trajectory needs; the rest of
-    # its steps replay or recompute the same shapes. The released time grid
-    # goes with them: it overrides steps where a checkpoint declares one, and
-    # only the shapes matter here, not where in the trajectory they sit.
+    # note(Dayuxiaoshui): the released time grid overrides steps where a
+    # checkpoint declares one, and only the shapes matter here, so it goes.
     one_step = {**sampling, "steps": 1, "t_grid": None}
     # Under inference_mode like the request path, so dynamo compiles once.
     with torch.inference_mode(), autocast(device, dtype):
-        # The eager path, which a batch too wide or too long for a declared
-        # graph still takes: a lone unpadded item, and the multi-item batch
-        # that carries explicit rope positions.
-        for batch in (1, 2):
-            items = warmup_items(flow, device, batch=batch, frames=64, ref=32, text=16)
+        # note(Dayuxiaoshui): the eager path a request takes when no declared
+        # graph covers it, over the three combinations dynamo guards on: a lone
+        # item carries no rope positions, and without a reference it carries no
+        # attention bias either.
+        for batch, ref in ((1, 0), (1, 32), (2, 32)):
+            items = warmup_items(flow, device, batch=batch, frames=64, ref=ref, text=16)
             flow.sample_batch(items, **one_step)
         if step_graph is not None:
             step_graph.capture_declared(
@@ -163,7 +178,7 @@ def warmup_flow(flow, device, dtype, sampling, step_graph=None):
                     step_graph=step_graph,
                 )
             )
-    logger.info("AuK DiT: warmed the sampler in %.1fs", time.perf_counter() - started)
+    logger.info(f"AuK DiT: warmed the sampler in {time.perf_counter() - started:.1f}s")
 
 
 def scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
@@ -316,13 +331,10 @@ def create_auk_engine_executor(
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
-    ``weight_dtype="float32"`` keeps fp32 weights under ``dtype`` autocast, the
-    upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
-    autocast. ``enable_dit_torch_compile`` fuses each block's elementwise chain,
-    and ``enable_dit_cuda_graph`` replays a whole Euler step from one captured
-    graph, padding the batch to the shapes in ``dit_cuda_graph_capture_shapes``
-    -- ``(batch, frames, reference frames, text tokens)`` each, captured at
-    startup -- to do so (see docs/cookbook/auk.md, Sampling).
+    A float32 weight_dtype keeps the weights under dtype autocast, the
+    upstream-exact recipe; bfloat16 stores the backbone in bf16 and skips
+    autocast. See docs/cookbook/auk.md, Sampling, for the compile and graph
+    options and the capture shape format.
     """
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
@@ -330,8 +342,8 @@ def create_auk_engine_executor(
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
-    # A non-fp32 backbone runs natively, and autocast reads fp32 as "off":
-    # autocast would only re-cast per op and force the norms back to fp32.
+    # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32
+    # backbone it would only re-cast per op and force the norms back to fp32.
     autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
     flow = load_flow(checkpoint, str(device), backbone_dtype, enable_dit_torch_compile)
     sampling = dict(
@@ -340,8 +352,8 @@ def create_auk_engine_executor(
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
     )
-    # Installed before the blocks compile and before the step graph captures
-    # them, so both carry the fused kernel instead of the unfused chain.
+    # note(Dayuxiaoshui): installed before the blocks compile and before the
+    # step graph captures them, so both carry the fused kernel.
     if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
         from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 

@@ -19,12 +19,8 @@ from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
 
-    freqs and scale are what x_transformers returns. cos and sin are the tables
-    the fused Q/K kernel reads, and are set only where that kernel runs. They
-    are built next to the rope, in AuKDit.forward, rather than cached inside
-    the fused path: the blocks compile, and a block that looked its tables up
-    in a python dict would guard on keys that change with every trajectory, so
-    it would recompile until dynamo gave up on it.
+    freqs and scale are what x_transformers returns; cos and sin are set only
+    where the fused Q/K kernel runs.
     """
 
     freqs: torch.Tensor
@@ -538,14 +534,10 @@ class AuKDit(nn.Module):
             block.attn.qk_fusion = fusion
 
     def enable_compiled_blocks(self) -> None:
-        """Fold each block's elementwise chain into its matmul stream.
-
-        Compiling the unbound class forward gives all blocks of a kind one
-        graph: inline_inbuilt_nn_modules feeds the parameters in as inputs, so
-        the 30 blocks of the released checkpoint cost two compiles, not 30.
-        Everything a block reads is a tensor or a shape, including the fused
-        kernel's rope tables, so a trajectory adds no guards of its own.
-        """
+        """Fold each block's elementwise chain into its matmul stream."""
+        # note(Dayuxiaoshui): compiling the unbound class forward gives all
+        # blocks of a kind one graph, because inline_inbuilt_nn_modules feeds
+        # the parameters in as inputs, so 30 blocks cost two compiles.
         for blocks in (self.transformer_blocks, self.single_transformer_blocks):
             compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
             for block in blocks:

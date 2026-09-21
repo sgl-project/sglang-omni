@@ -1,27 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Graph replay for one AuK Euler step, over a declared list of padded shapes.
 
-A DiT step is launch-bound at small batch. Block fusion cuts it from ~2400
-kernel launches to ~600, yet at batch size 1 the GPU still idles for about half
-the step, so the launch gap and not the math sets the step time. Everything a
-step reads except the noised latent and the timestep -- text conditioning,
-reference latent, padding masks, rope positions -- is fixed for a whole
-trajectory, so one captured graph serves every NFE step, and every later
-request whose shape fits the same declared shape.
-
-Padding is what lets one capture serve many requests. Target frames, reference
-frames, and text tokens each round up to a declared shape that covers them,
-with the real lengths carried in the masks the backbone already builds: the
--inf attention bias makes padded keys contribute exact zeros and the conv
-position embedding masks its own input, so a padded step computes what the
-unpadded one does plus waste. Requests already pad to the in-batch maximum
-whenever the sampling batch holds more than one item.
-
-Captures happen once, at startup, over the declared shapes. Entering a capture
-synchronizes the device and empties the allocator cache, which is not something
-to do underneath a request while the conditioning and decode stages share the
-process; a request whose shape no captured graph covers runs the step eagerly,
-and unpadded, since padding only pays for itself when it buys a replay.
+Everything a step reads except the noised latent and the timestep is constant
+for a whole trajectory, so one capture per declared shape serves every NFE step
+and every later request that shape covers.
 """
 
 from __future__ import annotations
@@ -48,37 +30,30 @@ class AuKGraphShape(NamedTuple):
     text: int
 
 
-# Target frames a capture is declared for. Dense where a step is launch-bound
-# and a graph roughly halves it, and stopping at 15s because a longer step
-# spends long enough inside its kernels that padding up to the next rung costs
-# more than the launches the replay saves.
-_FRAME_LADDER = (192, 320, 448, 576, 768)
+# note(Dayuxiaoshui): the ladder stops at 15s because a longer step spends long
+# enough inside its kernels that padding up to the next rung costs more than
+# the launches a replay saves.
+FRAME_LADDER = (192, 320, 448, 576, 768)
 
-# (reference frames, text tokens) a capture is declared for: a request with no
-# reference audio carries the instruction alone, one cloning a voice carries
-# that reference's own tokens alongside it. A request that fits neither -- a
-# long reference, say -- runs eager rather than padding to a shape this wide.
-_CONDITIONING = ((0, 192), (320, 384))
+CONDITIONING = ((0, 192), (320, 384))
 
+# note(Dayuxiaoshui): only narrow batches are declared. Measured on H200, a
+# graph takes batch 1 from 15.9 to 7.8 ms/step but batch 8 only from 38.4 to
+# 36.8, less than its padding costs.
 DEFAULT_CAPTURE_SHAPES: tuple[AuKGraphShape, ...] = tuple(
     AuKGraphShape(batch, frames, ref, text)
-    # Batch sizes a capture is declared for. A wide batch is not launch-bound:
-    # measured on H200, a graph takes batch 1 from 15.9 to 7.8 ms/step but
-    # batch 8 only from 38.4 to 36.8, less than the padding it needs costs.
     for batch in (1, 2)
-    for frames in _FRAME_LADDER
-    for ref, text in _CONDITIONING
+    for frames in FRAME_LADDER
+    for ref, text in CONDITIONING
 )
 
-# Step signature the runner captures: (constant inputs, timestep, latent).
 StepFn = Callable[[Mapping[str, Any], torch.Tensor, torch.Tensor], torch.Tensor]
 
 
 class CapturedStep(NamedTuple):
     """A recorded step and the buffers a replay reads from and writes into.
 
-    The graph is the platform's own object, so it is typed by the backend that
-    recorded it rather than by torch.cuda.
+    The graph is typed by the backend that recorded it rather than torch.cuda.
     """
 
     graph: Any
@@ -91,12 +66,7 @@ class CapturedStep(NamedTuple):
 def verify_capture_shapes(
     shapes: Iterable[Sequence[int]],
 ) -> tuple[AuKGraphShape, ...]:
-    """Normalize declared shapes, cheapest first, so a lookup takes the closest.
-
-    Ordering is by padded rows rather than by any one axis: the rows are what a
-    step pays for, and the first declared shape that covers a request is then
-    the least wasteful one that does.
-    """
+    """Normalize declared shapes, ordered by padded rows so a lookup takes the cheapest."""
     verified = set()
     for shape in shapes:
         shape = AuKGraphShape(*shape)
@@ -140,54 +110,48 @@ class AuKStepCudaGraphRunner:
         min_free_gb: float = 4.0,
         warmup_iters: int = 3,
     ) -> None:
-        self._backend = backend
-        self._device = device
-        self._module = torch.get_device_module(device)
-        self._declared = verify_capture_shapes(
+        self.backend = backend
+        self.device = device
+        self.module = torch.get_device_module(device)
+        self.declared = verify_capture_shapes(
             DEFAULT_CAPTURE_SHAPES if capture_shapes is None else capture_shapes
         )
         if warmup_iters < 1:
             raise ValueError("AuK DiT graph capture needs a warmup iteration")
-        self._min_free_bytes = int(min_free_gb * 1024**3)
-        self._warmup_iters = warmup_iters
-        self._graphs: dict[tuple, CapturedStep] = {}
-        # The declared shapes that hold a graph, and the one being captured now.
-        self._ready: set[AuKGraphShape] = set()
-        self._capturing: AuKGraphShape | None = None
-        self._pool: Any | None = None
-        self._graph_bytes = 0
+        self.min_free_bytes = int(min_free_gb * 1024**3)
+        self.warmup_iters = warmup_iters
+        self.graphs: dict[tuple, CapturedStep] = {}
+        self.ready: set[AuKGraphShape] = set()
+        self.capturing: AuKGraphShape | None = None
+        self.pool: Any | None = None
+        self.graph_bytes = 0
 
     def capture_declared(self, run_trajectory: Callable[[AuKGraphShape], Any]) -> None:
         """Capture every declared shape by running one trajectory through each.
 
         The trajectories come from the caller so that a capture records exactly
-        what a request runs, down to the padded input shapes and the sampling
-        settings baked into the step. A shape that fails to capture is simply
-        left out, and the requests that would have used it run eager.
+        what a request runs. A shape that fails is left out and runs eager.
         """
         started = time.perf_counter()
-        for shape in self._declared:
-            self._capturing = shape
+        for shape in self.declared:
+            self.capturing = shape
             try:
                 run_trajectory(shape)
             except Exception as exc:
-                # The trajectory, not just the capture inside it, can fail: a
-                # declared shape is a list the caller may set, and one too wide
-                # for the device should cost that shape rather than startup.
+                # note(Dayuxiaoshui): the trajectory, not just the capture
+                # inside it, can fail, and a declared shape too wide for the
+                # device should cost that shape rather than startup.
                 logger.warning(
-                    "AuK DiT step graph: %r did not capture (%s); it will run eager",
-                    shape,
-                    exc,
+                    f"AuK DiT step graph: {shape!r} did not capture ({exc}); "
+                    "it will run eager"
                 )
             finally:
-                self._capturing = None
+                self.capturing = None
         logger.info(
-            "AuK DiT step graphs: captured %d of %d declared shapes in %.1fs "
-            "(%.0fMiB new device memory)",
-            len(self._ready),
-            len(self._declared),
-            time.perf_counter() - started,
-            self._graph_bytes / 2**20,
+            f"AuK DiT step graphs: captured {len(self.ready)} of "
+            f"{len(self.declared)} declared shapes in "
+            f"{time.perf_counter() - started:.1f}s "
+            f"({self.graph_bytes / 2**20:.0f}MiB new device memory)"
         )
 
     def pad_lengths(
@@ -198,7 +162,7 @@ class AuKStepCudaGraphRunner:
         None means no captured graph covers this batch, so the caller should
         neither pad it nor try to bind it: an eager step is cheaper unpadded.
         """
-        shape = self._capturing or self.fit(
+        shape = self.capturing or self.fit(
             frames=frames, ref=ref, text=text, batch=batch
         )
         if shape is None:
@@ -209,9 +173,9 @@ class AuKStepCudaGraphRunner:
         self, *, frames: int, ref: int, text: int, batch: int
     ) -> AuKGraphShape | None:
         """The cheapest captured shape that covers this batch on every axis."""
-        for shape in self._declared:
+        for shape in self.declared:
             if (
-                shape in self._ready
+                shape in self.ready
                 and shape.batch == batch
                 and shape.frames >= frames
                 and shape.ref >= ref
@@ -231,21 +195,21 @@ class AuKStepCudaGraphRunner:
     ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None:
         """Load this trajectory's constants into a captured step, or return None.
 
-        baked names the values the step closes over rather than reads from
-        its inputs -- they select a different computation, so they belong in the
-        key. None means the caller runs the step eagerly instead.
+        baked names the values the step closes over rather than reads from its
+        inputs, so they belong in the key. None means the caller runs eagerly.
         """
         key = self.graph_key(inputs, x, baked)
-        entry = self._graphs.get(key)
+        entry = self.graphs.get(key)
         if entry is None:
-            # Outside capture_declared a miss stays a miss: a capture costs
-            # the whole device a synchronization and its allocator cache.
-            if self._capturing is None:
+            # note(Dayuxiaoshui): outside capture_declared a miss stays a miss,
+            # because a capture costs the whole device a synchronization and
+            # its allocator cache.
+            if self.capturing is None:
                 return None
             entry = self.prepare(key, step, inputs, x, time)
             if entry is None:
                 return None
-            self._ready.add(self._capturing)
+            self.ready.add(self.capturing)
         for name, value in inputs.items():
             if isinstance(value, torch.Tensor):
                 entry.static_inputs[name].copy_(value)
@@ -278,38 +242,32 @@ class AuKStepCudaGraphRunner:
         x: torch.Tensor,
         time: torch.Tensor,
     ) -> CapturedStep | None:
-        free, _ = self._module.mem_get_info(self._device)
-        if free < self._min_free_bytes:
+        free, _ = self.module.mem_get_info(self.device)
+        if free < self.min_free_bytes:
             logger.warning(
-                "AuK DiT step graph: free memory %.1fGB below the %.1fGB "
-                "headroom; x=%s will run eager",
-                free / 1024**3,
-                self._min_free_bytes / 1024**3,
-                tuple(x.shape),
+                f"AuK DiT step graph: free memory {free / 1024**3:.1f}GB below "
+                f"the {self.min_free_bytes / 1024**3:.1f}GB headroom; "
+                f"x={tuple(x.shape)} will run eager"
             )
             return None
         try:
-            with self._module.device(self._device):
+            with self.module.device(self.device):
                 entry = self.capture(step, inputs, x, time)
         except Exception as exc:
             logger.warning(
-                "AuK DiT step graph capture failed for x=%s: %s; "
-                "this shape will run eager",
-                tuple(x.shape),
-                exc,
+                f"AuK DiT step graph capture failed for x={tuple(x.shape)}: "
+                f"{exc}; this shape will run eager"
             )
             return None
-        self._graphs[key] = entry
-        # A capture's tensors live in the graph's own pool, which the allocator
-        # totals do not follow, and a warm server usually has cached blocks to
-        # lend it. The device free delta is the closest measure left, and it
-        # reads high if another tenant allocates during the capture.
-        self._graph_bytes += max(0, free - self._module.mem_get_info(self._device)[0])
+        self.graphs[key] = entry
+        # note(Dayuxiaoshui): a capture's tensors live in the graph's own pool,
+        # which the allocator totals do not follow, so the device free delta is
+        # the closest measure left and it reads high under another tenant.
+        self.graph_bytes += max(0, free - self.module.mem_get_info(self.device)[0])
         logger.debug(
-            "Captured AuK DiT step graph x=%s (%d cached, %.0fMiB new device memory)",
-            tuple(x.shape),
-            len(self._graphs),
-            self._graph_bytes / 2**20,
+            f"Captured AuK DiT step graph x={tuple(x.shape)} "
+            f"({len(self.graphs)} cached, {self.graph_bytes / 2**20:.0f}MiB "
+            "new device memory)"
         )
         return entry
 
@@ -325,28 +283,31 @@ class AuKStepCudaGraphRunner:
             for name, value in inputs.items()
         }
         static_x, static_time = x.clone(), time.clone()
-        # Warm up on a side stream: the block compile and the allocator blocks a
-        # first call needs must both be settled before the capture records.
-        stream = self._module.Stream(device=self._device)
-        stream.wait_stream(self._module.current_stream(self._device))
-        with self._module.stream(stream):
-            for _ in range(self._warmup_iters):
+        # note(Dayuxiaoshui): warming on a side stream settles the block compile
+        # and the allocator blocks a first call needs before the capture records.
+        stream = self.module.Stream(device=self.device)
+        stream.wait_stream(self.module.current_stream(self.device))
+        with self.module.stream(stream):
+            for _ in range(self.warmup_iters):
                 step(statics, static_time, static_x)
-        self._module.current_stream(self._device).wait_stream(stream)
-        self._module.synchronize(self._device)
+        self.module.current_stream(self.device).wait_stream(stream)
+        self.module.synchronize(self.device)
 
-        if self._pool is None:
-            self._pool = self._module.graph_pool_handle()
-        # thread_local: the conditioning and decode stages launch on their own
-        # streams in this process and must not poison this thread's capture.
-        with self._backend.capture(pool=self._pool, thread_local_errors=True) as graph:
+        if self.pool is None:
+            self.pool = self.module.graph_pool_handle()
+        # note(Dayuxiaoshui): thread_local because the conditioning and decode
+        # stages launch on their own streams in this process and must not
+        # poison this thread's capture.
+        with self.backend.capture(pool=self.pool, thread_local_errors=True) as graph:
             static_out = step(statics, static_time, static_x)
-        self._module.synchronize(self._device)
+        self.module.synchronize(self.device)
         return CapturedStep(graph, statics, static_x, static_time, static_out)
 
 
 __all__ = [
+    "CONDITIONING",
     "DEFAULT_CAPTURE_SHAPES",
+    "FRAME_LADDER",
     "AuKGraphShape",
     "AuKStepCudaGraphRunner",
     "build_step_graph_runner",

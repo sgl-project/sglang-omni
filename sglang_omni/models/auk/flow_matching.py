@@ -137,8 +137,8 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
-        # A runner declines a batch no captured shape covers, and that batch
-        # then neither pads nor binds: the padding carries both decisions.
+        # note(Dayuxiaoshui): a runner declines a batch no captured shape
+        # covers, so the padding carries both decisions: no padding, no bind.
         padding = None
         if step_graph is not None:
             padding = step_graph.pad_lengths(
@@ -172,8 +172,8 @@ class AuKFlowMatching(nn.Module):
             )
         y0 = pack(noise, frame_rows)
         mask = audio_positions = joint_positions = None
-        # Positions come from the real lengths, so a padded batch places each
-        # request's target frames where the unpadded single request would.
+        # note(Dayuxiaoshui): positions come from the real lengths, so a padded
+        # batch places each request's frames where the unpadded one would.
         if len(items) > 1 or padding is not None:
             target_positions = torch.arange(y0.shape[1], device=device)[None, :]
             mask = (
@@ -213,8 +213,9 @@ class AuKFlowMatching(nn.Module):
             c_mask=text_mask,
             ref=ref,
             ref_mask=ref_mask,
-            # The projected text is constant per trajectory either way; a graph
-            # holds it in its own buffers and must not write the python cache.
+            # note(Dayuxiaoshui): the projected text is constant per trajectory
+            # either way, and a graph holds it in its own buffers, so it must
+            # not also write the python cache.
             cache=padding is None,
             audio_positions=audio_positions,
             joint_positions=joint_positions,
