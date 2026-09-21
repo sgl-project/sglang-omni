@@ -274,8 +274,7 @@ class PackedDiT:
     ) -> torch.Tensor:
         # note (ratish): under autocast to_q, to_k and to_v would each cast the
         # float32 norm output again.
-        if torch.is_autocast_enabled(x.device.type):
-            x = x.to(torch.get_autocast_dtype(x.device.type))
+        x = x.to(attn.to_q.weight.dtype)
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
