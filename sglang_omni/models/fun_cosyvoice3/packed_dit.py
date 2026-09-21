@@ -260,7 +260,7 @@ class PackedDiT:
 
     def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
         """cos and sin, (1, total, rotary dims) each, in float32."""
-        # note(ratish): the DiT's rotary embedding has no xpos scale.
+        # note (ratish): the DiT's rotary embedding has no length scale.
         freqs, _ = self.dit.rotary_embed.forward_from_seq_len(rows.width)
         freqs = freqs[:, rows.positions]
         return freqs.cos(), freqs.sin()
@@ -272,27 +272,26 @@ class PackedDiT:
         rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
     ) -> torch.Tensor:
-        # note(ratish): x is the float32 norm output; cast here, to_q, to_k and
-        # to_v would otherwise each cast it again under autocast.
+        # note (ratish): under autocast to_q, to_k and to_v would each cast the
+        # float32 norm output again.
         x = x.to(attn.to_q.weight.dtype)
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
-        rotate(query, *rope)
-        rotate(key, *rope)
+        rotate_in_place(query, *rope)
+        rotate_in_place(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
 
 
-def rotate(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
-    """t: (1, total, heads * head_dim), turned in place. The same float32
-    arithmetic as x_transformers' apply_rotary_pos_emb, bit for bit."""
-    # note(ratish): the DiT turns only the first rotary dims of the flattened
-    # heads; apply_rotary_pos_emb also rebuilt the rest in float32 and cast it
-    # back, and took cos and sin again for every q and k.
-    turned = t[..., : cos.shape[-1]]
-    half = torch.stack((-turned[..., 1::2], turned[..., ::2]), dim=-1).flatten(-2)
-    turned.copy_(turned * cos + half * sin)
+def rotate_in_place(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
+    """x: (1, total, heads * head_dim). Interleaved RoPE in float32 on the
+    rotary dims, rounded back into x."""
+    # note (ratish): the DiT rotates only the first rotary dims of the
+    # flattened heads, so the rest of x is never copied.
+    rotary = x[..., : cos.shape[-1]]
+    half = torch.stack((-rotary[..., 1::2], rotary[..., ::2]), dim=-1).flatten(-2)
+    rotary.copy_(rotary * cos + half * sin)
 
 
 def solve_flow_euler_packed(
