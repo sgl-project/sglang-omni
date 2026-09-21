@@ -30,8 +30,42 @@ struct ShortcutCaptureTests {
     @Test func keyDownClearsAPendingModifier() {
         var capture = ShortcutCapture()
         _ = capture.flagsChanged(keyCode: 63, flags: .function)
-        #expect(capture.keyDown(keyCode: 0, flags: .function) == .reject)
+        #expect(capture.keyDown(keyCode: 0, flags: .function) == .record(keyCode: 0, modifiers: UInt64(NSEvent.ModifierFlags.function.rawValue)))
         #expect(capture.flagsChanged(keyCode: 63, flags: []) == .pending)
+    }
+
+    @Test func fnChordsPreserveOnlyAnExplicitlyHeldFnKey() {
+        var capture = ShortcutCapture()
+        _ = capture.flagsChanged(keyCode: 63, flags: .function)
+        _ = capture.flagsChanged(keyCode: 59, flags: [.function, .control])
+        #expect(capture.keyDown(keyCode: 1, flags: [.function, .control])
+            == .record(keyCode: 1, modifiers: UInt64(NSEvent.ModifierFlags([.function, .control]).rawValue)))
+        #expect(capture.flagsChanged(keyCode: 63, flags: .control) == .pending)
+        #expect(capture.flagsChanged(keyCode: 59, flags: []) == .pending)
+        #expect(capture.keyDown(keyCode: 123, flags: [.command, .function])
+            == .record(keyCode: 123, modifiers: UInt64(NSEvent.ModifierFlags.command.rawValue)))
+    }
+
+    @Test(arguments: [(122, "F1"), (120, "F2"), (99, "F3"), (118, "F4"), (96, "F5"),
+                      (97, "F6"), (98, "F7"), (100, "F8"), (101, "F9"), (109, "F10"),
+                      (103, "F11"), (111, "F12"), (105, "F13"), (107, "F14"), (113, "F15"),
+                      (106, "F16"), (64, "F17"), (79, "F18"), (80, "F19"), (90, "F20")])
+    func functionKeysRecordAndDisplayTheirNames(keyCode: UInt16, name: String) {
+        var capture = ShortcutCapture()
+        #expect(capture.keyDown(keyCode: keyCode, flags: .function) == .record(keyCode: keyCode, modifiers: 0))
+        #expect(ShortcutCapture.label(keyCode: keyCode, modifiers: 0) == name)
+    }
+
+    @Test @MainActor func shortcutLabelsNameKeysAndAllModifiers() {
+        let flags = UInt64(NSEvent.ModifierFlags([.control, .option, .shift, .command]).rawValue)
+        #expect(ShortcutCapture.label(keyCode: 123, modifiers: flags) == "⌃⌥⇧⌘←")
+        #expect(ShortcutCapture.label(keyCode: 63, modifiers: 0) == "Fn")
+        #expect(ShortcutCapture.label(keyCode: 122, modifiers: UInt64(NSEvent.ModifierFlags.function.rawValue)) == "Fn F1")
+        for code: UInt16 in [1, 7] {
+            let label = ShortcutCapture.label(keyCode: code, modifiers: 0)
+            #expect(label != L("shortcut.key", String(code)))
+            #expect(!label.isEmpty)
+        }
     }
 
     @Test func existingKeyDownRulesAreUnchanged() {

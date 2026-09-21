@@ -20,6 +20,8 @@ final class AudioCaptureSink: @unchecked Sendable {
     private var meter = 0.0
     private var framesWritten: AVAudioFrameCount = 0
     private let maximumFrames: AVAudioFrameCount = 300 * 16_000
+    private let meterFloorDecibels = -50.0
+    private let meterCeilingDecibels = -10.0
 
     init(input: AVAudioFormat, url: URL, onPCM: (@Sendable (Data) -> Void)? = nil) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -65,11 +67,14 @@ final class AudioCaptureSink: @unchecked Sendable {
         output.frameLength = min(output.frameLength, maximumFrames - framesWritten)
         guard output.frameLength > 0 else { return }
         if let samples = output.floatChannelData?[0] {
-            var squares: Double = 0
+            var squares = 0.0
             for index in 0..<Int(output.frameLength) {
-                squares += Double(samples[index]) * Double(samples[index])
+                let sample = samples[index].isFinite ? Double(samples[index]) : 0
+                squares += sample * sample
             }
-            meter = min(1, sqrt(squares / Double(output.frameLength)) * 5)
+            let rms = sqrt(squares / Double(output.frameLength))
+            let decibels = 20 * log10(max(rms, Double.leastNonzeroMagnitude))
+            meter = min(1, max(0, (decibels - meterFloorDecibels) / (meterCeilingDecibels - meterFloorDecibels)))
         }
         do {
             try file.write(from: output)
@@ -88,7 +93,7 @@ final class AudioCaptureSink: @unchecked Sendable {
     func level() -> Double {
         lock.lock()
         defer { lock.unlock() }
-        return meter
+        return file != nil && failure == nil ? meter : 0
     }
 
     func fail(_ error: Error) {
@@ -108,7 +113,11 @@ final class AudioCaptureSink: @unchecked Sendable {
 @MainActor
 final class AudioRecorder: ObservableObject {
     @Published private(set) var level = 0.0
-    @Published private(set) var elapsed = 0.0
+    private var startedAt: TimeInterval?
+    private var recordedDuration: TimeInterval = 0
+    var elapsed: TimeInterval {
+        startedAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? recordedDuration
+    }
 
     private var engine: AVAudioEngine?
     private var sink: AudioCaptureSink?
@@ -193,20 +202,19 @@ final class AudioRecorder: ObservableObject {
         self.engine = engine
         self.sink = sink
         outputURL = url
-        level = 0
-        elapsed = 0
+        recordedDuration = 0
+        startedAt = ProcessInfo.processInfo.systemUptime
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { _ in
             sink.fail(Failure("sys.micChanged"))
         }
-        let started = ProcessInfo.processInfo.systemUptime
         meterTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 50_000_000)
-                guard !Task.isCancelled, let self else { break }
-                self.level = sink.level()
-                self.elapsed = ProcessInfo.processInfo.systemUptime - started
+                guard !Task.isCancelled, let self else { return }
+                let level = sink.level()
+                if self.level != level { self.level = level }
             }
         }
     }
@@ -232,12 +240,15 @@ final class AudioRecorder: ObservableObject {
         releaseAudio()
         try? sink?.close()
         if let url { try? FileManager.default.removeItem(at: url) }
-        elapsed = 0
+        recordedDuration = 0
     }
 
     private func releaseAudio() {
         meterTask?.cancel()
         meterTask = nil
+        level = 0
+        recordedDuration = elapsed
+        startedAt = nil
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
         engine?.inputNode.removeTap(onBus: 0)
@@ -245,7 +256,6 @@ final class AudioRecorder: ObservableObject {
         engine = nil
         sink = nil
         outputURL = nil
-        level = 0
     }
 
     private static func inputDevices() -> [AudioDeviceID] {

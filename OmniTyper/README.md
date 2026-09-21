@@ -14,7 +14,7 @@ project and is not affiliated with Typeless.
 ## Requirements
 
 - macOS 14 or later on Apple Silicon.
-- Xcode Command Line Tools; a Swift 6 toolchain is required to run the tests.
+- Xcode Command Line Tools with Swift 6.0+ for building and testing.
 - Homebrew, installed before running setup.
 - At least 16 GB of memory is recommended, plus several GB of free disk space for
   the Python environment and model weights.
@@ -40,19 +40,72 @@ On first launch:
    requires these permissions to be granted through its system UI.
 2. Open **Settings → Local speech model → Download & prepare ASR**. The first run
    downloads model weights from Hugging Face. Cached weights support offline ASR.
-3. Place the cursor in the destination input field. Press **Control + Option +
-   Space**, wait for **Listening**, and speak. Press the shortcut again to finish.
+3. Place the cursor in the destination input field. In either popup style, hold **Control
+   + Option + Space** and move the pointer horizontally to choose Dictate,
+   Translate, Voice edit, or Ask. Move upward to expand the Edit window or
+   downward to select the Simple bar. Release to start, wait for **Listening**, and
+   speak. Press the shortcut again or click the stop button to finish.
    Keep the input focused until the result is inserted.
-4. Press **Esc** to cancel. To use push-to-talk, enable **Hold shortcut to talk**
-   in Settings, hold the entire shortcut while speaking, and release it to
-   finish. You can also record a custom shortcut, including a single modifier
-   key such as **Fn**: press and release it on its own while recording.
+4. Press **Esc** to cancel selection or recording. You can record a custom
+   shortcut, including a single modifier such as **Fn**. Both popup styles use
+   hold-to-select and release-to-start; the former hold-to-talk setting is retired.
 5. The default writing style is **verbatim**, which needs no text API. Configure
    [a text model](#text-model-api) when you want cleanup, translation, editing, or
    answers to questions.
 
 Clicking **Start speaking** in OmniTyper's main window produces a result you can
 copy. Use the global shortcut from the destination app for automatic insertion.
+
+The held-shortcut gesture chooses both voice mode and presentation; there is no
+separate Simple/Edit setting. Moving above the selection bar's top edge smoothly
+reveals the editor, and moving downward collapses it to the Simple bar. The
+editor grows above a stationary mode bar with a short easing motion, keeping
+that layout when the shortcut is released. Release commits the cursor's choice
+even during the animation and remembers it for the next invocation. Reduce
+Motion uses immediate resizing.
+Escape preserves the previous choice. The selected mode's circle opens under the
+cursor; move onto another circle to select it. Gaps and movement above the bar
+keep the current mode. The selector stays anchored while expanding, adjusting
+only when needed to remain on screen. Releasing into Simple mode shrinks the bar
+around the selected circle, keeping its screen position while it shrinks back to
+the normal marker size. Each invocation shows the markers directly in place.
+Pressing the Simple bar's marker smoothly spreads the circles back into the
+selector. Its vertical position stays fixed even when the press is off-center;
+drag onto another circle and release to choose it, or move upward to reveal the editor.
+Edit mode shows the text box from the start of loading and recording, then places
+the result in that same-sized window for review before **Insert** or **Copy**.
+Edit mode never inserts automatically. A pending editor draft survives selection,
+including a temporary switch to compact recording, and reopens with the result.
+Its four sections use the same icons as the main console; the recording bar keeps
+the selected mode icon between Cancel and Finish. A quick tap starts the current
+mode. Escape dismisses selection without recording. Dictate and Translate insert
+at the caret or replace the selected range. Voice edit revises selected text; with
+no selection it edits all text in the current nonempty, accessible field, clearly
+labelled **Editing all text**. Empty or unreadable fields require a selection.
+In Simple mode, both messages appear in a small matching banner above the bar,
+leaving its size and controls unchanged. After selecting text or focusing a
+nonempty field, start again with the microphone button or shortcut.
+Ask always opens its answer in the editable popup, including in Simple mode, and
+never inserts automatically.
+
+The editor stays open for a sequence of recordings. Place its caret or select a
+range, choose a mode using the buttons or held shortcut, and record again. New
+output inserts or replaces within the draft. Voice edit uses the draft selection,
+or the entire draft when nothing is selected. Cancel leaves the draft intact;
+Copy and Insert also keep the editor open. Clear empties the draft; Close ends it.
+Fold preserves the draft and cursor selection and copies finished text. Drag the
+compact bar’s center upward to reopen it, or horizontally to reselect the voice
+mode without interrupting recording. The top handle moves the window. A successful external
+Insert consumes the captured destination so it cannot be used twice.
+Drag the console’s full-width native title bar or the popup header to move the window. The
+compact recording bar has a small drag handle along its top edge. The popup
+position is remembered while the app is running. Right-click the recording popup to switch voice modes. The expanded popup also has a voice-mode picker. Mode
+selection locks during processing and while recording into a draft. Missing text-model settings and recording or
+processing errors appear in the popup. **Text API settings** opens the relevant
+settings section, and **Use verbatim dictation** bypasses the text API for that
+attempt, including per-app writing styles. After a processing failure, it reuses
+the saved recording and leaves the recovered text ready to copy. Press **Esc** or
+click the popup's close button to dismiss it.
 
 Closing the main window keeps OmniTyper in the menu bar. **Quit** exits the app
 and shuts down its model processes. To use **Open at login**, first place the app
@@ -67,8 +120,10 @@ environment available; this is a source build, not a self-contained installer.
 | Translate | Transcribe speech and translate it into the configured target language through the text API. |
 | Voice edit | Select text in another app, speak an editing instruction, and replace the selection. The original selection is not stored in history. |
 | Ask | Ask about selected text or a general topic. The answer appears in OmniTyper without replacing the selection. No web search is performed. |
-| Shortcuts | Custom shortcuts, toggle or hold-to-talk recording, Esc to cancel, and a floating recording panel that does not take focus. |
-| Audio | Microphone selection, a live level meter, start/stop sounds, and a five-minute recording limit. |
+| Shortcuts | Custom shortcuts, hold-and-slide selection in both popup styles, and Esc to cancel or finish editing. The recording panel preserves input focus until result editing. |
+| Recording popup | Draggable Simple/Edit modes; edit the final text and insert or copy directly from the popup. Errors expand the simple bar to show recovery controls. |
+| Model retention | Optional preload at launch and retention between recordings. Turn off to release the model when idle. |
+| Audio | Microphone selection, a breathing glow that responds to voice volume on the selected mode in both popup styles, start/stop sounds, and a five-minute recording limit. |
 | Dictionary | Preferred spelling, literal replacements, CSV import/export, and entries created from history corrections. |
 | Writing style | Global and per-app preferences: `verbatim`, `clean`, `casual`, `formal`, and `concise`. |
 | History | Search, mode filters, original transcripts, copying, corrections, export, deletion, and retention settings. |
@@ -130,11 +185,18 @@ it as a successful result.
 ## Live transcription
 
 OmniTyper starts or reuses the ASR service before recording. Wait for **Listening**
-before speaking. Preparing the model in Settings avoids the first-load delay.
-In hold-to-talk mode, releasing the shortcut during startup cancels that attempt.
+before speaking. Enable **Settings → Local speech model → Keep the speech model
+loaded** to preload at launch and keep it ready between recordings. This option
+is off by default; turning it off releases the model when idle. **Download &
+prepare ASR** can warm it for the next recording without enabling retention.
+Both popup styles start loading only after the selector is released. Cancel
+loading with Escape or the popup cancel button.
+
+Enable **Keep the speech model loaded** in Settings to preload at launch and
+retain it between recordings, using memory while idle.
 
 Audio is streamed to `/v1/realtime?intent=transcription`, with partial transcripts
-shown in the recording panel and main window. The current upstream defaults
+shown in the Edit-mode recording panel and main window. The current upstream defaults
 process approximately two seconds of new audio per partial update and segment
 long recordings at 30-second boundaries. Display latency also depends on inference
 time. Partial text can be revised; the client replaces revised segments rather
@@ -170,6 +232,11 @@ contents if no other copy has occurred. It does not permanently copy every resul
 Use **Copy** in the result or history view to keep text on the clipboard. Ask and
 retried recordings do not insert automatically.
 
+In Edit mode, **Insert** returns focus to the captured application and checks the
+original field, contents, and selection before writing your reviewed text. A
+changed destination leaves the draft open for copying. Starting from the main
+console or retrying history has no insertion destination, so use **Copy**.
+
 Password fields reported by Accessibility, and system secure-input mode, block
 recording and insertion. If target validation fails, the result remains available
 to copy. Some custom editors and remote desktops may not accept simulated paste.
@@ -200,22 +267,29 @@ Code ownership:
 
 | File | Responsibility |
 | --- | --- |
-| `Sources/OmniTyper/AppModel.swift` | Recording sessions, cancellation, retries, and insertion orchestration |
+| `Sources/OmniTyper/AppModel.swift` | Recording startup, popup recovery, cancellation, and shortcuts |
+| `Sources/OmniTyper/AppModel+Models.swift` | Background preload, model retention, offload, and text-model discovery |
+| `Sources/OmniTyper/AppModel+Processing.swift` | Request validation, text processing, result review, retries, and insertion orchestration |
 | `Sources/OmniTyper/AudioRecorder.swift` | Microphone capture, PCM conversion, and temporary WAV ownership |
 | `Sources/OmniTyper/GlobalShortcut.swift` | Keyboard event tap and held-key state |
 | `Sources/OmniTyper/TextInsertion.swift` | Accessibility, destination checks, and clipboard restoration |
 | `Sources/OmniTyper/ASRStream.swift` | Bounded WebSocket transport and transcript revisions |
 | `Sources/OmniTyper/WorkerClient.swift` | Worker process, JSON-lines framing, timeouts, and cancellation |
 | `Sources/OmniTyper/Store.swift` | Settings, history, dictionary, and retention |
-| `Sources/OmniTyper/Views.swift` | Main window, shared view components, and voice panel |
+| `Sources/OmniTyper/Views.swift` | Main window and shared view components |
+| `Sources/OmniTyper/VoicePanel.swift` | Recording popup, shared mode picker, and error recovery controls |
+| `Sources/OmniTyper/ViewControls.swift` | Padded icon buttons and full-row toggle/disclosure interactions |
 | `Sources/OmniTyper/LibraryViews.swift` | History, dictionary, writing rules, and import/export |
 | `Sources/OmniTyper/PreferencesView.swift` | Settings and shortcut capture |
 | `backend/worker.py` | Private request validation and ASR/text-processing orchestration |
 | `backend/server.py` | Pinned model setup and ownership of the native ASR process group |
 | `backend/text_api.py` | Text prompts and bounded OpenAI-compatible HTTP requests |
 
-The ASR service stays loaded between recordings. Quitting, cancelling, or stopping
-the worker cleans up its service process group. Initial model preparation allows
+With model retention enabled, the ASR service stays loaded between recordings,
+including after a recording is cancelled or an idle popup is dismissed. Cancelling
+an active worker request restarts the worker and preloads it again. Turning
+retention off, explicitly unloading, or quitting cleans up its service process
+group. Initial model preparation allows
 up to 30 minutes; ordinary worker requests allow up to 10 minutes. Text API
 connection and read timeouts are 10 and 180 seconds, respectively.
 
@@ -307,9 +381,21 @@ absolute path in `Info.plist`. It does not bundle Python or model weights. On
 another Mac, rerun setup or configure an existing compatible environment. Do not
 move or delete the repository or virtual environment while the app relies on it.
 
-Builds use ad-hoc signing by default. Set `CODE_SIGN_IDENTITY` to an appropriate
-code-signing identity for a stable designated requirement across rebuilds. Public
-distribution requires your own Developer ID signing and Apple notarization.
+Builds create and reuse an **OmniTyper Local Development** signing identity in the
+user's default Keychain. macOS may ask to let `codesign` use this private key;
+approve through the Keychain dialog. No root certificate is trusted. Signing
+failures stop the build instead of silently changing its identity. Keep this
+identity and the bundle identifier stable to preserve both Microphone and
+Accessibility grants across updates. Preview uses a separate bundle identifier
+and therefore separate grants. These are the app's two required privacy grants:
+Accessibility also covers its keyboard event tap and text insertion; no screen
+recording or Full Disk Access is requested.
+
+`CODE_SIGN_IDENTITY` can override the identity. An explicit `CODE_SIGN_IDENTITY=-`
+uses ad-hoc signing and can invalidate grants on each update. Public distribution
+requires your own Developer ID signing and Apple notarization. Run
+`bash OmniTyper/scripts/test-signing.sh` to verify that changed bundles keep the
+same designated requirement; it does not grant or reset any macOS permission.
 
 ### Migrating from OpenTypeless
 
@@ -334,9 +420,11 @@ fields. Switching apps or windows cancels automatic insertion.
 
 ### Permissions stop working after an update
 
-With the default ad-hoc signature, macOS ties an Accessibility grant to the build's
-code hash. Rebuilding can invalidate the grant while System Settings still shows
-its switch enabled. Toggling the stale entry may not fix it.
+Migrating from an old ad-hoc build to the persistent identity requires one new
+Microphone and Accessibility grant. Subsequent builds using the same identity and
+bundle identifier retain those grants. Changing or deleting the signing identity
+can invalidate them again. System Settings may still show a stale grant as enabled;
+toggling that stale entry may not fix it.
 
 Quit OmniTyper, remove its entry from **System Settings → Privacy & Security →
 Accessibility**, or reset that app's grant:
@@ -346,17 +434,15 @@ tccutil reset Accessibility org.sglang.OmniTyper
 ```
 
 Add the rebuilt app, enable access, and relaunch it. If microphone permission also
-stops working, grant it again under **Privacy & Security → Microphone**. Frequent
-local rebuilds can use a stable signing identity through `CODE_SIGN_IDENTITY`
-instead of ad-hoc signing.
+stops working, grant it again under **Privacy & Security → Microphone**. Permission
+approval remains a macOS system action; the build never changes the privacy database.
 
-### Hold-to-talk closes before recording starts
+### The shortcut starts recording when released
 
-Keep the entire shortcut held, including its modifier keys, until you finish
-speaking. Releasing it while the model is loading cancels startup. Use **Download
-& prepare ASR** before recording to avoid waiting for the initial load. Use a
-current build containing the physical-key-state fix if the panel closes while
-all keys remain held.
+This is the shared interaction for both popup styles: hold to select a mode,
+release to begin, and press again or click Finish to stop. The old hold-to-talk
+preference is no longer used. Wait for **Listening** before speaking; preloading
+reduces the wait.
 
 ### Microphone or ASR is unavailable
 

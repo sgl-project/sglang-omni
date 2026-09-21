@@ -23,6 +23,12 @@ enum VoiceMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum RecordingPresentation: String, Codable, CaseIterable, Identifiable {
+    case simple, edit
+    var id: String { rawValue }
+    var title: String { L("panel.presentation." + rawValue) }
+}
+
 struct TextAPISettings: Codable, Equatable {
     var baseURL = "http://127.0.0.1:11434/v1"
     var model = ""
@@ -70,7 +76,6 @@ struct Preferences: Codable, Equatable {
     var microphoneUID = ""
     var shortcutKeyCode: UInt16 = 49
     var shortcutModifiers: UInt64 = 786432 // Control + Option
-    var holdToTalk = false
     var sounds = true
     var autoPaste = true
     var saveHistory = true
@@ -81,6 +86,16 @@ struct Preferences: Codable, Equatable {
     var uiLanguage: String?
     // Note (Jiaxin Deng): Remember prior grants to distinguish invalidated permissions from first use.
     var accessibilityWasTrusted: Bool?
+    var keepModelLoaded: Bool?
+    var popupPresentation: RecordingPresentation?
+    var retainsSpeechModel: Bool {
+        get { keepModelLoaded ?? false }
+        set { keepModelLoaded = newValue }
+    }
+    var recordingPresentation: RecordingPresentation {
+        get { popupPresentation ?? .simple }
+        set { popupPresentation = newValue }
+    }
 
     static func combinedInstructions(_ defaults: String, _ app: String) throws -> String {
         guard [defaults, app].allSatisfy({ $0.unicodeScalars.count <= 1000 && !$0.contains("\0") }) else {

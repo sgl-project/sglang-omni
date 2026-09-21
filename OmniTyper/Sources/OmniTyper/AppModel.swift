@@ -11,45 +11,94 @@ final class AppModel: ObservableObject {
     let recorder = AudioRecorder()
     let worker = WorkerClient()
     private let shortcut = GlobalShortcut()
+    @Published private(set) var isCapturingShortcut = false
+    private var isShutDown = false
     @Published var phase: Phase = .idle
     @Published var mode: VoiceMode = .dictate
+    @Published var isVoicePanelVisible = false
+    @Published var verbatimDictation = false
+    @Published var consolePage: Page = .home
+    @Published var textAPISettingsRequest: UUID?
     @Published var resultText = ""
+    @Published var resultDraft = ""
+    @Published var questionText = ""
+    @Published var answerText = ""
+    var answerHistoryID: UUID?
+    var answerTarget: InsertionTarget?
+    @Published var draftSelection = NSRange(location: 0, length: 0)
+    @Published var unappliedResult = ""
+    var draftOperation: DraftSelection?
+    var focusDraft: (() -> Void)?
+    @Published var isEditingEntireField = false
+    @Published var isReviewingResult = false
+    @Published var editorFolded = false
+    var isReselectingMode = false
+    var selectionAllowsModeChange = true
+    var selectionPointerMoved = false
+    @Published var isSelectingMode = false
+    var modeSelectionTask: Task<Void, Never>?
+    var selectionInitialMode: VoiceMode = .dictate
+    var selectionPointerX: CGFloat = 0
+    var selectionTrackX: CGFloat = 0
+    var selectionPointerY: CGFloat = 0
+    var selectionInitialExpansion: CGFloat = 0
+    var selectionExpansionStartY: CGFloat = 0
+    var selectionPanelBottom: CGFloat = 0
+    var selectionBarOrigin = NSPoint.zero
+    var selectionExpansion: CGFloat = 0
+    static let presentationSelectionDistance: CGFloat = 100
+    static let modeSelectionStep: CGFloat = 64
     @Published var rawText = ""
     @Published var liveText = ""
     @Published var liveStatus = ""
     @Published var notice = ""
-    @Published var error = ""
+    @Published var error = "" { didSet { needsEditSelection = false } }
+    @Published private(set) var needsEditSelection = false
     @Published var lastApp = ""
     // ponytail: keys stay in memory for this session; use Keychain if persistence is needed.
     @Published var textAPIKey = ""
     @Published var textModels: [String] = []
-    private var sessionAPIKey = ""
+    var sessionAPIKey = ""
     @Published var microphoneAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @Published var accessibilityAllowed = false
-    // Note (Jiaxin Deng): Ad-hoc rebuilds can invalidate a grant still shown as enabled in System Settings.
-    @Published private(set) var accessibilityGrantStale = false
+    // Note (Codex): A previous grant does not reveal why macOS now reports access unavailable.
+    @Published private(set) var accessibilityNeedsRenewal = false
     var showMainWindow: (() -> Void)?
     var showVoicePanel: (() -> Void)?
     var hideVoicePanel: (() -> Void)?
-    private var target: InsertionTarget?
-    private var task: Task<Void, Never>?
-    private var speechStream: ASRStream?
-    private var generation = UUID()
+    var target: InsertionTarget?
+    var task: Task<Void, Never>?
+    var speechStream: ASRStream?
+    var generation = UUID()
     private var timer: Timer?
     private var preferencesSubscription: AnyCancellable?
-    private struct FailedRecording {
+    private let captureTarget: @MainActor () throws -> InsertionTarget
+    let insertText: @MainActor (String, InsertionTarget, Bool) async throws -> Void
+    var reviewTarget: InsertionTarget?
+    var resultHistoryID: UUID?
+    @Published var preloadTask: Task<[String: Any], Error>?
+    var isPreloading: Bool { preloadTask != nil }
+    struct FailedRecording {
         let url: URL
         let duration: Double
         let mode: VoiceMode
+        let verbatim: Bool
         let target: InsertionTarget?
         let appName: String
+        let draft: DraftSelection?
     }
-    private var retryRecording: FailedRecording?
-    private var sessionPreferences = Preferences()
+    var retryRecording: FailedRecording?
+    var sessionPreferences = Preferences()
 
-    init(store: AppStore? = nil) {
+    init(store: AppStore? = nil,
+         captureTarget: @escaping @MainActor () throws -> InsertionTarget = { try TextInsertion.capture() },
+         insertText: @escaping @MainActor (String, InsertionTarget, Bool) async throws -> Void = {
+             try await TextInsertion.insert($0, into: $1, restoringFocus: $2)
+         }) {
         let store = store ?? AppStore()
         self.store = store
+        self.captureTarget = captureTarget
+        self.insertText = insertText
         if store.preferences.pythonExecutable.isEmpty {
             store.preferences.pythonExecutable = Bundle.main.object(forInfoDictionaryKey: "OmniTyperPython") as? String
                 ?? FileManager.default.homeDirectoryForCurrentUser
@@ -67,6 +116,8 @@ final class AppModel: ObservableObject {
         configureShortcut(store.preferences)
         Diagnostics.record("app.start", [
             "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+            "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?",
+            "bundle": Bundle.main.bundleIdentifier ?? "?",
             "language": store.preferences.uiLanguage ?? "system",
             "style": store.preferences.style,
             // Note (Jiaxin Deng): Do not log the endpoint; it can identify a private host.
@@ -81,30 +132,43 @@ final class AppModel: ObservableObject {
                 self.store.prune()
             }
         }
+        if store.preferences.retainsSpeechModel { prepareModels() }
     }
 
-    var isBusy: Bool { phase != .idle }
+    var isBusy: Bool { phase != .idle || isSelectingMode }
     var shortcutLabel: String {
-        let p = store.preferences
-        var label = ""
-        if p.shortcutModifiers & CGEventFlags.maskControl.rawValue != 0 { label += "⌃" }
-        if p.shortcutModifiers & CGEventFlags.maskAlternate.rawValue != 0 { label += "⌥" }
-        if p.shortcutModifiers & CGEventFlags.maskShift.rawValue != 0 { label += "⇧" }
-        if p.shortcutModifiers & CGEventFlags.maskCommand.rawValue != 0 { label += "⌘" }
-        let names: [UInt16: String] = [49: L("shortcut.space"), 63: "Fn", 96: "F5", 97: "F6", 100: "F8", 101: "F9",
-                                       54: "⌘", 55: "⌘", 56: "⇧", 60: "⇧", 58: "⌥", 61: "⌥", 59: "⌃", 62: "⌃"]
-        return label + (names[p.shortcutKeyCode] ?? L("shortcut.key", String(p.shortcutKeyCode)))
+        ShortcutCapture.label(keyCode: store.preferences.shortcutKeyCode,
+                              modifiers: store.preferences.shortcutModifiers)
     }
 
     private func configureShortcut(_ preferences: Preferences) {
+        guard !isCapturingShortcut, !isShutDown else { return }
         shortcut.start(keyCode: preferences.shortcutKeyCode, modifiers: preferences.shortcutModifiers,
-                       hold: preferences.holdToTalk,
-                       onStart: { [weak self] in self?.toggle() },
-                       onStop: { [weak self] in
-                           if self?.phase == .recording { self?.finish() }
-                           else if self?.phase == .starting { self?.cancel() }
+                       hold: true,
+                       onStart: { [weak self] in
+                           guard let self, !self.isCapturingShortcut, !self.isShutDown else { return }
+                           self.shortcutPressed()
                        },
-                       onCancel: { [weak self] in if self?.isBusy == true { self?.cancel() } })
+                       onStop: { [weak self] in
+                           guard let self, !self.isCapturingShortcut, !self.isShutDown else { return }
+                           self.shortcutReleased()
+                       },
+                       onCancel: { [weak self] in
+                           if self?.isReviewingResult == true && self?.isBusy == false { self?.finishReview() }
+                           else if self?.isBusy == true || self?.isVoicePanelVisible == true { self?.cancel() }
+                       })
+    }
+
+    func beginShortcutCapture() {
+        isCapturingShortcut = true
+        shortcut.stop()
+        if isSelectingMode { cancel() }
+    }
+
+    func endShortcutCapture() {
+        guard isCapturingShortcut else { return }
+        isCapturingShortcut = false
+        configureShortcut(store.preferences)
     }
 
     func refreshPermissions() {
@@ -119,10 +183,10 @@ final class AppModel: ObservableObject {
         if microphoneAllowed != microphone { microphoneAllowed = microphone }
         if trusted {
             if store.preferences.accessibilityWasTrusted != true { store.preferences.accessibilityWasTrusted = true }
-            if accessibilityGrantStale { accessibilityGrantStale = false }
+            if accessibilityNeedsRenewal { accessibilityNeedsRenewal = false }
         } else {
             let stale = store.preferences.accessibilityWasTrusted == true
-            if accessibilityGrantStale != stale { accessibilityGrantStale = stale }
+            if accessibilityNeedsRenewal != stale { accessibilityNeedsRenewal = stale }
         }
         if trusted && !previous { configureShortcut(store.preferences) }
     }
@@ -137,42 +201,111 @@ final class AppModel: ObservableObject {
         if phase == .recording { finish(); return }
         guard phase == .idle else { return }
         if let requestedMode { mode = requestedMode }
+        verbatimDictation = false
         start()
     }
 
-    private func start() {
+    func selectMode(_ selection: VoiceMode) {
+        guard canSelectMode else { return }
+        mode = selection
+        verbatimDictation = false
+        if phase == .idle { sessionPreferences = store.preferences; sessionAPIKey = textAPIKey }
+        if isVoicePanelVisible {
+            if isReviewingResult { error = "" } else { _ = validateRecording() }
+            presentVoicePanel()
+        }
+    }
+
+    func useVerbatimDictation() {
+        guard canSelectMode else { return }
+        mode = .dictate
+        verbatimDictation = true
+        if canRetry { retryLast(mode: .dictate, verbatim: true) }
+        else if phase == .idle { start() }
+        else { _ = validateRecording(); presentVoicePanel() }
+    }
+
+    func presentVoicePanel() {
+        isVoicePanelVisible = true
+        showVoicePanel?()
+        if isReviewingResult && showsEditor && !isBusy {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isReviewingResult, self.isVoicePanelVisible, self.showsEditor, !self.isBusy else { return }
+                self.focusDraft?()
+            }
+        }
+    }
+
+    func dismissVoicePanel() {
+        isVoicePanelVisible = false
+        hideVoicePanel?()
+    }
+
+    func openTextAPISettings() {
+        guard phase == .idle else { return }
+        dismissVoicePanel()
+        consolePage = .settings
+        textAPISettingsRequest = UUID()
+        showMainWindow?()
+    }
+
+    func setError(_ failure: Error) {
+        error = failure.localizedDescription
+        needsEditSelection = (failure as? Failure)?.code == "error.editNeedsSelection"
+    }
+
+    private func validateRecording() -> Bool {
+        prepareEditSelection()
+        do { _ = try payload(audio: nil); error = ""; return true }
+        catch { setError(error); return false }
+    }
+
+    func start() {
+        guard phase == .idle, !isSelectingMode else { return }
+        if mode == .ask && !answerText.isEmpty {
+            editorFolded = false
+            presentVoicePanel()
+            return
+        }
+        discardRetryRecording()
         error = ""; notice = ""; target = nil; liveText = ""; liveStatus = L("status.loadingModel")
         sessionPreferences = store.preferences
         sessionAPIKey = textAPIKey
-        do {
-            let captured = try TextInsertion.capture()
-            if captured.bundleID != Bundle.main.bundleIdentifier { target = captured }
-        } catch TextInsertionError.secureField {
-            error = L("sys.secureField")
-            showMainWindow?()
-            return
-        } catch {
-            // Note (Jiaxin Deng): Keep copy-only dictation available and distinguish missing permissions from opaque fields.
-            notice = accessibilityAllowed ? L("notice.fieldNotAccessible")
-                : accessibilityGrantStale ? L("home.permissions.axStale") : L("sys.axPermission")
-            Diagnostics.record("capture.failed", ["reason": Diagnostics.code(of: error),
-                                                  "accessibility": String(accessibilityAllowed)])
-        }
-        if mode == .edit && (target?.selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
-            error = L("error.editNeedsSelection")
-            showMainWindow?()
-            return
+        draftOperation = isReviewingResult ? DraftSelection(text: resultDraft, range: draftSelection) : nil
+        unappliedResult = ""
+        if !isReviewingResult { resultDraft = ""; draftSelection = NSRange(location: 0, length: 0) }
+        if let draftOperation {
+            do { _ = try draftOperation.selectedText() }
+            catch { self.error = error.localizedDescription; presentVoicePanel(); return }
+        } else {
+            do {
+                let captured = try captureTarget()
+                if captured.bundleID != Bundle.main.bundleIdentifier { target = captured }
+            } catch TextInsertionError.secureField {
+                error = L("sys.secureField")
+                presentVoicePanel()
+                return
+            } catch {
+                // Note (Jiaxin Deng): Keep copy-only dictation available and distinguish missing permissions from opaque fields.
+                notice = accessibilityAllowed ? L("notice.fieldNotAccessible")
+                    : accessibilityNeedsRenewal ? L("home.permissions.axStale") : L("sys.axPermission")
+                Diagnostics.record("capture.failed", ["reason": Diagnostics.code(of: error),
+                                                      "accessibility": String(accessibilityAllowed)])
+            }
         }
         lastApp = target?.applicationName ?? "OmniTyper"
-        do { _ = try payload(audio: nil) }
-        catch { self.error = error.localizedDescription; showMainWindow?(); return }
+        guard validateRecording() else { presentVoicePanel(); return }
         phase = .starting
-        showVoicePanel?()
+        presentVoicePanel()
         let token = UUID(); generation = token
         task = Task { [self] in
             do {
-                let response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
+                let response: [String: Any]
+                if let preloadTask { response = try await preloadTask.value }
+                else {
+                    response = try await worker.request(["op": "prepare", "asr_model": sessionPreferences.asrModel],
                                                         python: sessionPreferences.pythonExecutable)
+                }
                 guard generation == token, !Task.isCancelled else { return }
                 do {
                     let stream = try ASRStream(url: response["realtime_url"] as? String ?? "", onPartial: { [weak self] text in
@@ -192,13 +325,13 @@ final class AppModel: ObservableObject {
                 }
                 try await recorder.start(deviceUID: sessionPreferences.microphoneUID, onPCM: speechStream?.audioInput)
                 guard generation == token, !Task.isCancelled else { recorder.cancel(); return }
-                discardRetryRecording()
-                phase = .recording; showVoicePanel?()
+                phase = .recording; presentVoicePanel()
                 if sessionPreferences.sounds { NSSound(named: "Tink")?.play() }
             } catch {
                 guard generation == token else { return }
                 speechStream?.cancel(); speechStream = nil
-                target = nil; phase = .idle; hideVoicePanel?(); self.error = error.localizedDescription; refreshPermissions(); showMainWindow?()
+                phase = .idle; self.error = error.localizedDescription; refreshPermissions(); presentVoicePanel()
+                releaseIdleModel()
             }
         }
     }
@@ -212,206 +345,42 @@ final class AppModel: ObservableObject {
             run(audio: audio, duration: duration, allowInsertion: true)
         } catch {
             speechStream?.cancel(); speechStream = nil
-            target = nil; phase = .idle; self.error = error.localizedDescription; hideVoicePanel?(); showMainWindow?()
+            phase = .idle; self.error = error.localizedDescription; presentVoicePanel()
+            releaseIdleModel()
         }
     }
 
-    private func payload(audio: URL?, text: String? = nil) throws -> [String: Any] {
-        let preferences = sessionPreferences
-        let rule = store.rules.first { $0.bundleID == target?.bundleID }
-        let instructions = try Preferences.combinedInstructions(preferences.instructions, rule?.instructions ?? "")
-        guard store.dictionary.count <= 200, store.dictionary.allSatisfy(\.isValid) else {
-            throw Failure("error.dictionaryInvalid")
-        }
-        let selectedText = (mode == .edit || mode == .ask) ? (target?.selectedText ?? "") : ""
-        guard selectedText.unicodeScalars.count <= 12_000, !selectedText.contains("\0") else {
-            throw Failure("error.selectionTooLong")
-        }
-        var request: [String: Any] = [
-            "op": audio == nil ? "process" : "transcribe",
-            "asr_model": preferences.asrModel,
-            "mode": mode.rawValue, "language": preferences.language,
-            "target_language": preferences.targetLanguage, "style": rule?.style ?? preferences.style,
-            "instructions": instructions,
-            "dictionary": store.dictionary.map { ["spoken": $0.spoken, "written": $0.written] },
-            "selected_text": selectedText, "app_name": lastApp
-        ]
-        if mode != .dictate || (rule?.style ?? preferences.style) != "verbatim" {
-            request.merge(try preferences.textSettings.payload(apiKey: sessionAPIKey)) { _, new in new }
-        }
-        if let audio { request["audio_path"] = audio.path }
-        if let text { request["text"] = text }
-        return request
-    }
-
-    private func run(audio: URL, duration: Double, allowInsertion: Bool) {
-        phase = .processing; error = ""; notice = ""
-        let token = UUID(); generation = token
-        let request = Result { try payload(audio: audio) }
-        let requestMode = mode
-        let capturedTarget = target
-        let preferences = sessionPreferences
-        let recording = FailedRecording(url: audio, duration: duration, mode: requestMode,
-                                        target: capturedTarget, appName: lastApp)
-        task = Task {
-            do {
-                var payload = try request.get()
-                var streamingWarning = ""
-                if let stream = speechStream {
-                    liveStatus = L("status.finalizing")
-                    do {
-                        let transcript = try await stream.finish()
-                        payload["op"] = "process"
-                        payload["audio_path"] = nil
-                        payload["text"] = transcript
-                    } catch {
-                        guard generation == token, !Task.isCancelled else { throw CancellationError() }
-                        streamingWarning = L("notice.streamRecovered")
-                    }
-                    stream.cancel(); speechStream = nil
-                }
-                try Task.checkCancellation()
-                liveStatus = payload["op"] as? String == "process" ? L("status.processingText") : L("status.transcribing")
-                let response = try await worker.request(payload, python: preferences.pythonExecutable)
-                guard generation == token, !Task.isCancelled else { try? FileManager.default.removeItem(at: audio); return }
-                let text = response["text"] as? String ?? ""
-                let raw = response["raw_text"] as? String ?? text
-                let warning = [streamingWarning, response["warning"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
-                resultText = text; rawText = raw
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    notice = L("notice.noSpeech")
-                    try? FileManager.default.removeItem(at: audio)
-                } else {
-                    let entry = HistoryEntry(mode: requestMode, appName: lastApp, rawText: raw, text: text,
-                                             duration: duration, warning: warning.isEmpty ? nil : warning)
-                    if let retentionError = store.add(entry, recording: audio) {
-                        retryRecording = recording
-                        self.error = retentionError
-                    }
-                    notice = warning
-                    if allowInsertion, preferences.autoPaste, requestMode != .ask, let capturedTarget {
-                        do {
-                            try await TextInsertion.insert(text, into: capturedTarget)
-                            guard generation == token else { return }
-                            if notice.isEmpty { notice = L("notice.inserted", capturedTarget.applicationName) }
-                        } catch {
-                            notice = L("notice.readyToCopy", error.localizedDescription)
-                            store.note(error.localizedDescription, on: entry.id)
-                            Diagnostics.record("insert.failed", ["destination": capturedTarget.bundleID,
-                                                                 "reason": Diagnostics.code(of: error)])
-                            showMainWindow?()
-                        }
-                    } else {
-                        if notice.isEmpty { notice = requestMode == .ask ? L("notice.answerReady") : L("notice.textReady") }
-                        showMainWindow?()
-                    }
-                }
-                guard generation == token else { return }
-                target = nil; phase = .idle; hideVoicePanel?()
-                if !self.error.isEmpty { showMainWindow?() }
-            } catch {
-                guard generation == token else { try? FileManager.default.removeItem(at: audio); return }
-                speechStream?.cancel(); speechStream = nil
-                retryRecording = recording
-                target = nil; phase = .idle; hideVoicePanel?()
-                self.error = error.localizedDescription
-                Diagnostics.record("dictation.failed", ["reason": Diagnostics.code(of: error)])
-                if let raw = (error as? WorkerFailure)?.rawText, !raw.isEmpty {
-                    rawText = raw; resultText = raw
-                    notice = L("notice.textFailed")
-                }
-                showMainWindow?()
-            }
-        }
-    }
-
-    var canRetry: Bool { retryRecording != nil && phase == .idle }
-    func retryLast() {
-        guard phase == .idle, let recording = retryRecording else { return }
-        retryRecording = nil
-        target = recording.target; mode = recording.mode; lastApp = recording.appName
-        sessionPreferences = store.preferences
-        sessionAPIKey = textAPIKey
-        run(audio: recording.url, duration: recording.duration, allowInsertion: false)
-    }
-
-    func retry(_ entry: HistoryEntry) {
-        guard phase == .idle, let audio = store.audioURL(for: entry) else { return }
-        if entry.mode == .edit || entry.mode == .ask {
-            error = L("error.retryNeedsRecording")
-            return
-        }
-        do {
-            let copy = FileManager.default.temporaryDirectory.appendingPathComponent("OmniTyper-\(UUID()).wav")
-            try FileManager.default.copyItem(at: audio, to: copy)
-            discardRetryRecording()
-            target = nil; mode = entry.mode; lastApp = entry.appName; sessionPreferences = store.preferences
-            sessionAPIKey = textAPIKey
-            run(audio: copy, duration: entry.duration, allowInsertion: false)
-        } catch { self.error = error.localizedDescription }
-    }
-
-    func prepareModels() {
-        guard phase == .idle else { return }
-        phase = .preparing; error = ""; notice = ""
-        let preferences = store.preferences
-        let token = UUID(); generation = token
-        task = Task {
-            do {
-                _ = try await worker.request(["op": "prepare", "asr_model": preferences.asrModel], python: preferences.pythonExecutable)
-                guard generation == token else { return }
-                notice = L("notice.modelReady")
-            } catch {
-                guard generation == token else { return }
-                self.error = error.localizedDescription
-            }
-            phase = .idle
-        }
-    }
-
-    func loadTextModels() {
-        guard phase == .idle else { return }
-        error = ""; notice = ""
-        do {
-            var request = try store.preferences.textSettings.payload(apiKey: textAPIKey, requireModel: false)
-            request["op"] = "models"
-            let python = store.preferences.pythonExecutable
-            phase = .preparing
-            let token = UUID(); generation = token
-            task = Task {
-                do {
-                    let response = try await worker.request(request, python: python)
-                    guard generation == token else { return }
-                    textModels = response["models"] as? [String] ?? []
-                    notice = textModels.isEmpty ? L("notice.modelsEmpty") : L("notice.modelsListed")
-                } catch {
-                    guard generation == token else { return }
-                    self.error = error.localizedDescription
-                }
-                phase = .idle
-            }
-        } catch { self.error = error.localizedDescription }
-    }
-
-    func releaseModels() { if phase == .idle { worker.stop(); notice = L("notice.modelUnloaded") } }
-
-    func cancel() {
+    func cancel(releaseModel: Bool = false) {
+        let keepDraft = isReviewingResult && !releaseModel
+        if isSelectingMode { mode = selectionInitialMode }
+        isSelectingMode = false
+        isReselectingMode = false
+        modeSelectionTask?.cancel(); modeSelectionTask = nil
+        let keepModel = !releaseModel && store.preferences.retainsSpeechModel
+        let interruptsWorker = worker.hasPendingRequest && preloadTask == nil
         generation = UUID(); task?.cancel(); task = nil
         speechStream?.cancel(); speechStream = nil; liveText = ""; liveStatus = ""
-        recorder.cancel(); worker.stop(); target = nil; phase = .idle; hideVoicePanel?()
+        recorder.cancel(); target = nil; phase = .idle; draftOperation = nil
+        if !keepDraft {
+            dismissVoicePanel()
+            isReviewingResult = false; resultDraft = ""; reviewTarget = nil; resultHistoryID = nil
+            questionText = ""; answerText = ""; answerTarget = nil; answerHistoryID = nil
+            unappliedResult = ""
+        }
+        isEditingEntireField = false
+        if !keepModel || interruptsWorker { stopModelWorker() }
+        if keepModel && !worker.isRunning && preloadTask == nil { prepareModels() }
+        verbatimDictation = false
         notice = L("notice.cancelled")
+        if keepDraft { presentVoicePanel() }
     }
 
     func shutdown() {
+        isShutDown = true
         preferencesSubscription?.cancel(); preferencesSubscription = nil
-        cancel(); shortcut.stop(); timer?.invalidate()
+        cancel(releaseModel: true); shortcut.stop(); timer?.invalidate()
         textAPIKey = ""; sessionAPIKey = ""
         discardRetryRecording()
-    }
-
-    private func discardRetryRecording() {
-        if let retryRecording { try? FileManager.default.removeItem(at: retryRecording.url) }
-        retryRecording = nil
     }
 
     func copyResult() { TextInsertion.copy(resultText); notice = L("notice.copied") }

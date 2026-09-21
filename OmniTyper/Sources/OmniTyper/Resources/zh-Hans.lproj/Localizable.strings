@@ -91,7 +91,7 @@
 "status.transcribing" = "正在转写录音…";
 "error.dictionaryInvalid" = "录音前请修正或删除无效的词典条目。每条词组需为 1–120 个字符且不含 NUL，最多 200 条。";
 "error.selectionTooLong" = "使用语音编辑或提问前，选中的文本不得超过 12,000 个字符且不能包含 NUL。";
-"error.editNeedsSelection" = "请先在其他应用中选中要修改的文字，再按快捷键。需要辅助功能权限。";
+"error.editNeedsSelection" = "请选择要修改的文字，或将光标放在非空文本框中编辑全文。文本框内容必须可访问。";
 "notice.fieldNotAccessible" = "当前输入框不可访问，结果将可供复制。";
 "notice.streamRecovered" = "实时转写中断，已从完整录音恢复。";
 "notice.noSpeech" = "未检测到语音，请靠近麦克风再试。";
@@ -136,7 +136,7 @@
 "home.title" = "说出来，它就是你的。";
 "home.subtitle" = "在任何应用里说话，剩下的交给你的 Mac。";
 "home.permissions.title" = "先完成两项授权";
-"home.permissions.axStale" = "之前授予的辅助功能权限已失效。更新会改变这次构建的签名，授权随之作废，但系统设置里仍显示为已开启。请在「隐私与安全性 → 辅助功能」中移除 OmniTyper，或执行 tccutil reset Accessibility org.sglang.OmniTyper，然后重新授权并重启 OmniTyper。";
+"home.permissions.axStale" = "之前已授予辅助功能权限，但 macOS 当前报告此权限不可用。请在「隐私与安全性」中确认已为 OmniTyper 开启权限。若已经开启，请先重启应用；仍不可用时，再移除并重新添加此应用。签名身份变更只是可能原因之一，此权限检查无法判断具体原因。";
 "home.permissions.body" = "两项 macOS 权限，把你的声音接到任何你写字的地方。";
 "home.permissions.mic" = "仅在录音时收听";
 "home.permissions.ax" = "使用快捷键并在光标处写入";
@@ -166,8 +166,26 @@
 "panel.waitListening" = "等出现「正在聆听」再开口。";
 "panel.placeholder" = "你的文字会显示在这里…";
 "panel.insertNote" = "结束后才会写入文字。";
+"panel.presentation.simple" = "简洁模式";
+"panel.presentation.edit" = "编辑模式";
+"panel.dragHint" = "拖动窗口顶部可移动窗口。";
+"panel.reviewTitle" = "检查识别结果";
+"panel.reviewNote" = "继续写作：切换模式，放置光标或选中文字，再次录音。完成后可复制或写入。";
+"panel.result" = "识别结果";
+"panel.copyOnly" = "复制后可在其他应用中使用";
+"panel.done" = "关闭";
+"panel.insert" = "写入";
 "panel.listening" = "正在聆听 · %@";
 "panel.elapsed" = "%d:%02d · 按 Esc 取消";
+"panel.ready" = "准备好录音";
+"panel.needsAttention" = "请先处理以下问题";
+"panel.chooseMode" = "在下方选择模式 · 按 Esc 关闭";
+"panel.textAPIRequired" = "此模式或写作风格需要使用文本模型 API。";
+"panel.speechOnly" = "逐字听写 · 仅使用本地语音识别";
+"panel.useVerbatim" = "改用逐字听写";
+"panel.textAPISettings" = "文本 API 设置";
+"control.expanded" = "已展开";
+"control.collapsed" = "已收起";
 "history.title" = "值得留下的想法。";
 "history.subtitle" = "搜索、复制、回看你记录过的文字。";
 "history.search" = "搜索历史";
@@ -268,6 +286,8 @@
 "settings.modelNote" = "SGLang-Omni 在 Apple Silicon 上完成语音识别。文字处理在下方单独配置。";
 "settings.prepareASR" = "下载并准备语音模型";
 "settings.unloadASR" = "卸载语音模型";
+"settings.keepModelLoaded" = "在后台保持语音模型加载";
+"settings.keepModelLoadedNote" = "启动应用时预加载，录音之间保留在内存中，下次可更快开始。关闭后会在空闲时释放，下次录音需重新加载。";
 "settings.runtime" = "运行环境位置";
 "settings.python" = "Python 可执行文件";
 "settings.runtimeNote" = "准备模型前请先用 OmniTyper/scripts/setup.sh 安装运行环境。";
@@ -312,3 +332,31 @@
 "settings.interfaceLanguage" = "界面语言";
 "settings.followSystem" = "跟随系统";
 "settings.interfaceLanguageNote" = "立即生效。macOS 的权限弹窗仍跟随系统语言。";
+"home.selectHint" = "按住：← → 语音模式 · ↑ 编辑 / ↓ 简洁 · 松开开始";
+"settings.simpleShortcutNote" = "按住快捷键：左右移动选择语音模式，向上展开编辑窗口，向下收起为简洁录音条。松开开始录音，再次按下或点击完成即可结束，Esc 取消。";
+"panel.editingAllText" = "未选中文字，将编辑当前文本框的全部内容。";
+"panel.allText" = "正在编辑全文";
+"panel.draftChanged" = "草稿已更改。新结果已单独保留，可复制到需要的位置。";
+"panel.copyNewResult" = "复制新结果";
+"panel.replaceSelection" = "替换选中文字";
+"panel.editorPreview" = "编辑窗口";
+"panel.editorPlaceholder" = "识别文字将在这里显示。你可以检查、修改，或继续用语音写作。";
+
+"panel.fold" = "折叠编辑器并复制文字";
+
+"panel.clear" = "清空";
+
+"panel.reselect" = "拖动以切换模式或展开编辑器";
+"panel.textTools" = "文本编辑";
+"panel.askTitle" = "问一个问题";
+"panel.singleQuestion" = "一问一答";
+"panel.pause" = "暂停";
+"panel.resume" = "继续";
+"panel.pauseHint" = "暂停后处理已录入的语音，继续后再次收音。";
+"panel.voicePaused" = "收音已暂停 · 准备好后继续";
+"panel.question" = "问题";
+"panel.answer" = "回答";
+"panel.questionPlaceholder" = "说出你的问题，然后暂停。";
+"panel.answerPlaceholder" = "回答将在这里显示。";
+"panel.askComplete" = "本轮已结束 · 刷新以开始新的提问";
+"panel.newQuestion" = "清空并开始新的提问";

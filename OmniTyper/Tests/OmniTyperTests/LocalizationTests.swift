@@ -122,9 +122,9 @@ struct LocalizationTests {
         let model = AppModel(store: store)
         defer { model.shutdown() }
         model.refreshPermissions()
-        #expect(model.accessibilityGrantStale == false)
+        #expect(model.accessibilityNeedsRenewal == false)
         store.preferences.accessibilityWasTrusted = true
         model.refreshPermissions()
-        #expect(model.accessibilityGrantStale == !model.accessibilityAllowed)
+        #expect(model.accessibilityNeedsRenewal == !model.accessibilityAllowed)
     }
 }

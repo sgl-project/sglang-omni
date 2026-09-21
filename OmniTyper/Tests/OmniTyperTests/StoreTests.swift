@@ -4,6 +4,23 @@ import Foundation
 @testable import OmniTyper
 
 struct StoreTests {
+    @Test @MainActor func popupAndModelPreferencesMigrateAndPersist() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var saved = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(Preferences())) as? [String: Any])
+        saved.removeValue(forKey: "keepModelLoaded")
+        saved.removeValue(forKey: "popupPresentation")
+        let old = try JSONDecoder().decode(Preferences.self, from: JSONSerialization.data(withJSONObject: saved))
+        #expect(!old.retainsSpeechModel)
+        #expect(old.recordingPresentation == .simple)
+        let store = AppStore(directory: root)
+        store.preferences.retainsSpeechModel = true
+        store.preferences.recordingPresentation = .edit
+        let restored = AppStore(directory: root).preferences
+        #expect(restored.retainsSpeechModel)
+        #expect(restored.recordingPresentation == .edit)
+    }
+
     @Test @MainActor func textAPIConfigurationKeepsOldLibrariesAndKeysPrivate() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
