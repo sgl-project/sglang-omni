@@ -1,0 +1,18 @@
+{"kind": "manifest", "url": "ws://127.0.0.1:0/v1/realtime?intent=conversation", "model": "mock-duplex", "started_at_wall": "2026-09-21T00:00:00+00:00", "input_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "input_duration_s": 0.24, "frame_ms": 80, "pace": 1.0, "scenario": "continuous", "client": "duplex-harness", "config": {"modalities": ["text", "audio"], "input_audio_format": "pcm16", "output_audio_format": "pcm16"}}
+{"kind": "entry", "t_s": 0.001, "direction": "s2c", "event": {"type": "session.created"}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.002, "direction": "c2s", "event": {"type": "session.update", "session": {"modalities": ["text", "audio"], "input_audio_format": "pcm16", "output_audio_format": "pcm16"}}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.003, "direction": "s2c", "event": {"type": "session.updated"}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.08, "direction": "c2s", "event": {"type": "input_audio_buffer.append", "audio": "VQ=="}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.16, "direction": "c2s", "event": {"type": "input_audio_buffer.append", "audio": "VQ=="}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.24, "direction": "c2s", "event": {"type": "input_audio_buffer.append", "audio": "VQ=="}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.25, "direction": "s2c", "event": {"type": "input_audio_buffer.speech_started"}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.251, "direction": "s2c", "event": {"type": "input_audio_buffer.speech_stopped"}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.252, "direction": "s2c", "event": {"type": "input_audio_buffer.committed"}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.253, "direction": "s2c", "event": {"type": "conversation.item.created", "item": {"role": "user"}}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.26, "direction": "s2c", "event": {"type": "response.created", "response": {"id": "resp_mock"}}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.28, "direction": "s2c", "event": {"type": "response.audio.delta", "response_id": "resp_mock"}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.36, "direction": "s2c", "event": {"type": "response.audio.delta", "response_id": "resp_mock"}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.44, "direction": "s2c", "event": {"type": "response.audio.delta", "response_id": "resp_mock"}, "audio_bytes": 2560}
+{"kind": "entry", "t_s": 0.441, "direction": "s2c", "event": {"type": "response.audio.done", "response_id": "resp_mock", "output_audio_bytes": 7680}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.442, "direction": "s2c", "event": {"type": "response.done", "response": {"id": "resp_mock", "status": "completed"}}, "audio_bytes": 0}
+{"kind": "entry", "t_s": 0.5, "direction": "c2s", "event": {"type": "client.close", "code": 1000}, "audio_bytes": 0}
