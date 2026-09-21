@@ -260,8 +260,8 @@ class PackedDiT:
 
     def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
         """cos and sin, (1, total, rotary dims) each, in float32."""
-        # note (ratish): the DiT's rotary embedding has no length scale.
-        freqs, _ = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+        assert not isinstance(scale, torch.Tensor), "the DiT's RoPE has no xpos scale"
         freqs = freqs[:, rows.positions]
         return freqs.cos(), freqs.sin()
 
@@ -274,7 +274,8 @@ class PackedDiT:
     ) -> torch.Tensor:
         # note (ratish): under autocast to_q, to_k and to_v would each cast the
         # float32 norm output again.
-        x = x.to(attn.to_q.weight.dtype)
+        if torch.is_autocast_enabled(x.device.type):
+            x = x.to(torch.get_autocast_dtype(x.device.type))
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
