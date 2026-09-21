@@ -289,6 +289,12 @@ def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
     assert CPUOmniPlatform().enable_tts_predictor_graph() is True
 
 
+def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+
+    assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
+
+
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
     """The accelerators that capture name a backend; the rest answer None.
 

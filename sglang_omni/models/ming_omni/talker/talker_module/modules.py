@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -246,10 +246,11 @@ class DiTBlock(nn.Module):
         pe_attn_head=None,
         attn_backend="flash_attn",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
+        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
         **kwargs,
     ):
         super().__init__()
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = norm_layer(hidden_size, 1e-6)
         self.attn = Attention(
             dim=hidden_size,
             heads=num_heads,
@@ -260,7 +261,7 @@ class DiTBlock(nn.Module):
             attn_backend=attn_backend,
             attn_mask_enabled=attn_mask_enabled,
         )
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = norm_layer(hidden_size, 1e-6)
         self.mlp = FeedForward(
             dim=hidden_size, mult=mlp_ratio, dropout=dropout, approximate="tanh"
         )
@@ -276,9 +277,14 @@ class FinalLayer(nn.Module):
     The final layer of DiT.
     """
 
-    def __init__(self, hidden_size, out_channels):
+    def __init__(
+        self,
+        hidden_size,
+        out_channels,
+        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
+    ):
         super().__init__()
-        self.norm_final = RMSNorm(hidden_size, eps=1e-6)
+        self.norm_final = norm_layer(hidden_size, 1e-6)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
     def forward(self, x):

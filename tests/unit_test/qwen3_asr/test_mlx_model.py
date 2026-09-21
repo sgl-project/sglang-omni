@@ -174,12 +174,12 @@ def test_runner_resolves_revision_and_checks_remote_code(monkeypatch, tmp_path) 
         "load_model",
         lambda model_path, **kwargs: ("loaded-model", {}),
     )
-    runner = object.__new__(Qwen3ASRMlxModelRunner)
+    runner = object.__new__(make_qwen3_asr_mlx_runner_class())
     runner.model_path = "org/model"
     runner.revision = "revision-sha"
     runner.trust_remote_code = True
 
-    runner.load_model()
+    runner._load_model()
 
     assert observed == {
         "model_path": "org/model",

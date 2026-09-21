@@ -108,17 +108,25 @@ def test_ming_tts_owns_tail_execution_geometry(
 
     aggregator_execution = captured["aggregator"]["execution_config"]
     dit_execution = captured["dit"]["execution_config"]
+    norm_layer = aggregator_execution.norm_layer
+    assert norm_layer is not None
+    assert dit_execution.norm_layer is norm_layer
+    rms_norm = norm_layer(8, 1e-6)
+    assert type(rms_norm) is sglang_model.RMSNorm
+    assert rms_norm.cast_x_before_out_mul is True
     assert aggregator_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
         rope_kernel=kernel,
         rope_seq_len=3,
         rope_max_batch_size=expected_aggregator_capacity,
+        norm_layer=norm_layer,
     )
     assert dit_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
         rope_kernel=kernel,
         rope_seq_len=6,
         rope_max_batch_size=2 * expected_tail_capacity,
+        norm_layer=norm_layer,
     )
     assert model._decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config

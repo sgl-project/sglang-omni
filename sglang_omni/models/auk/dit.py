@@ -7,11 +7,26 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from types import MethodType
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+
+
+class Rope(NamedTuple):
+    """Rotary tables for one axis of the sequence.
+
+    freqs and scale are what x_transformers returns; cos and sin are set only
+    where the fused Q/K kernel runs.
+    """
+
+    freqs: torch.Tensor
+    scale: torch.Tensor | float
+    cos: torch.Tensor | None = None
+    sin: torch.Tensor | None = None
 
 
 def attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
@@ -186,15 +201,14 @@ class Attention(nn.Module):
 
     @staticmethod
     def apply_rope(
-        q: torch.Tensor, k: torch.Tensor, rope
+        q: torch.Tensor, k: torch.Tensor, rope: Rope
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        freqs, xpos_scale = rope
         q_scale, k_scale = (
-            (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
+            (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
         )
         return (
-            apply_rotary_pos_emb(q, freqs, q_scale),
-            apply_rotary_pos_emb(k, freqs, k_scale),
+            apply_rotary_pos_emb(q, rope.freqs, q_scale),
+            apply_rotary_pos_emb(k, rope.freqs, k_scale),
         )
 
     @staticmethod
@@ -206,7 +220,7 @@ class Attention(nn.Module):
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
-    def norm_rope(self, q, k, q_norm, k_norm, rope):
+    def norm_rope(self, q, k, q_norm, k_norm, rope: Rope | None):
         if self.qk_fusion is not None and rope is not None:
             return self.qk_fusion(q, k, q_norm, k_norm, rope)
         q, k = q_norm(q), k_norm(k)
@@ -508,8 +522,26 @@ class AuKDit(nn.Module):
 
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
-        if self.qk_fusion is not None:
-            self.qk_fusion.clear()
+
+    def enable_fused_qk_norm_rope(self, fusion) -> None:
+        """Route every block's Q/K norm and rope through the fused kernel.
+
+        The backbone keeps its own reference because it is what builds the
+        kernel's trig tables, in forward, for the blocks to read.
+        """
+        self.qk_fusion = fusion
+        for block in (*self.transformer_blocks, *self.single_transformer_blocks):
+            block.attn.qk_fusion = fusion
+
+    def enable_compiled_blocks(self) -> None:
+        """Fold each block's elementwise chain into its matmul stream."""
+        # note(Dayuxiaoshui): compiling the unbound class forward gives all
+        # blocks of a kind one graph, because inline_inbuilt_nn_modules feeds
+        # the parameters in as inputs, so 30 blocks cost two compiles.
+        for blocks in (self.transformer_blocks, self.single_transformer_blocks):
+            compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
+            for block in blocks:
+                block.forward = MethodType(compiled, block)
 
     @property
     def dtype(self) -> torch.dtype:
@@ -518,6 +550,21 @@ class AuKDit(nn.Module):
     def project_text(self, text: torch.Tensor, drop_text: bool = False) -> torch.Tensor:
         c = self.txt_norm(self.txt_proj(text))
         return torch.zeros_like(c) if drop_text else c
+
+    def build_rope(self, seq_len: int, positions: torch.Tensor | None = None) -> Rope:
+        """Rotary tables for one axis, over a length or at explicit positions.
+
+        The fused kernel's cos and sin are built here, once per step for all of
+        the blocks, so that a compiled block reads them as plain tensors.
+        """
+        freqs, scale = (
+            self.rotary_embed.forward_from_seq_len(seq_len)
+            if positions is None
+            else self.rotary_embed(positions)
+        )
+        if self.qk_fusion is None:
+            return Rope(freqs, scale)
+        return Rope(freqs, scale, freqs.cos(), freqs.sin())
 
     def embed_audio(
         self,
@@ -622,12 +669,8 @@ class AuKDit(nn.Module):
 
         seq_len = x.shape[1]
         text_len = c.shape[1]
-        rope_audio = (
-            self.rotary_embed.forward_from_seq_len(seq_len)
-            if audio_positions is None
-            else self.rotary_embed(audio_positions)
-        )
-        rope_text = self.rotary_embed.forward_from_seq_len(text_len)
+        rope_audio = self.build_rope(seq_len, audio_positions)
+        rope_text = self.build_rope(text_len)
 
         joint_bias = single_bias = single_mask = None
         if audio_mask is not None:
@@ -651,11 +694,7 @@ class AuKDit(nn.Module):
             )
 
         x = torch.cat([c, x], dim=1)
-        rope = (
-            self.rotary_embed.forward_from_seq_len(text_len + seq_len)
-            if joint_positions is None
-            else self.rotary_embed(joint_positions)
-        )
+        rope = self.build_rope(text_len + seq_len, joint_positions)
         for block in self.single_transformer_blocks:
             x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
 
