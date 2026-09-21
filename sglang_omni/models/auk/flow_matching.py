@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.seacache import SeaCacheConfig, SeaCacheState
 
 
 def request_generator(
@@ -79,6 +80,8 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        seacache_config: SeaCacheConfig | None = None,
+        seacache_stats: dict[str, object] | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -86,6 +89,8 @@ class AuKFlowMatching(nn.Module):
             cfg_strength=cfg_strength,
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
+            seacache_config=seacache_config,
+            seacache_stats=seacache_stats,
         )[0]
 
     @torch.no_grad()
@@ -97,6 +102,8 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        seacache_config: SeaCacheConfig | None = None,
+        seacache_stats: dict[str, object] | None = None,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -185,6 +192,8 @@ class AuKFlowMatching(nn.Module):
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
             )
+            if seacache is not None:
+                kwargs["seacache"] = seacache
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
@@ -194,8 +203,23 @@ class AuKFlowMatching(nn.Module):
             return v_cond + (v_cond - v_uncond) * cfg_strength
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
+        seacache = (
+            SeaCacheState(config=seacache_config, total_steps=t.numel() - 1)
+            if seacache_config is not None
+            else None
+        )
         try:
             result = integrate(fn, y0, t)
+            if seacache is not None and seacache_stats is not None:
+                times = {"filter_ms": 0.0, "dit_ms": 0.0}
+                for name, start, end in seacache.timings:
+                    times[f"{name}_ms"] += start.elapsed_time(end)
+                seacache_stats.update(
+                    computed_steps=seacache.computed_steps,
+                    cached_steps=seacache.cached_steps,
+                    reasons=seacache.reasons.copy(),
+                    **times,
+                )
             return [latent[: item.target_frames] for item, latent in zip(items, result)]
         finally:
             self.transformer.clear_cache()
