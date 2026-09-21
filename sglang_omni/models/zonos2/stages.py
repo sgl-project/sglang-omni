@@ -46,7 +46,7 @@ _QUALITY_FEATURES = [
 _DEFAULT_QUALITY_BUCKETS = {"trailing_silence_s": 3}
 
 
-def _default_quality_list() -> list[int | None]:
+def default_quality_list() -> list[int | None]:
     return [_DEFAULT_QUALITY_BUCKETS.get(f) for f in _QUALITY_FEATURES]
 
 
@@ -72,7 +72,7 @@ def create_preprocessing_executor(
         rows = build_prompt_rows(
             state.text,
             language=state.language,
-            quality_buckets=_default_quality_list(),
+            quality_buckets=default_quality_list(),
             normalize=tts_norm,
         )
         state.input_ids = rows.to(torch.long)

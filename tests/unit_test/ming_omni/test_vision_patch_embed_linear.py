@@ -6,7 +6,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from sglang_omni.models.ming_omni.components.vision_encoder import _linear_patch_embed
+from sglang_omni.models.ming_omni.components.vision_encoder import linear_patch_embed
 
 
 class _TinyPatchEmbed(nn.Module):
@@ -63,7 +63,7 @@ def test_patch_embed_linear_matches_conv3d():
             pe.patch_size,
         )
     ).view(seq_len, pe.embed_dim)
-    linear_out = _linear_patch_embed(pe, x)
+    linear_out = linear_patch_embed(pe, x)
 
     torch.testing.assert_close(
         linear_out,

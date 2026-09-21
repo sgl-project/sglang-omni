@@ -530,7 +530,7 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
         relay, source, destination = await _start_pair()
         stage = make_stage(name="source")
         stage._running = True
-        source._task_done_callback = stage._on_background_task_done
+        source._task_done_callback = stage.on_background_task_done
 
         async def drop_data_ready(
             sockets: dict[str, Any], target_endpoint: str, message: Any
@@ -637,18 +637,18 @@ def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
         op = FakeOp({"transfer_info": {"size": 4}, "key": "kv-put"})
         lease = Mock()
         stage._comm._outbound_kv_requests["transfer"] = "request"
-        stage._comm._register_pending(
+        stage._comm.register_pending(
             "transfer",
             [op],
             lease=lease,
             retain_pending_on_failure=True,
         )
-        pending_task = stage._comm._arm_pending("transfer")
+        pending_task = stage._comm.arm_pending("transfer")
         await asyncio.sleep(0)
 
         try:
             if abort_first:
-                stage._on_abort("request")
+                stage.on_abort("request")
                 assert stage._comm._pending["transfer"].cleanup_requested
                 assert not pending_task.done()
                 lease.release.assert_not_called()
@@ -670,7 +670,7 @@ def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
                 assert await pending_task == abort_first
             await asyncio.sleep(0)
             if not abort_first:
-                stage._on_abort("request")
+                stage.on_abort("request")
 
             assert not pending_task.cancelled()
             assert "transfer" not in stage._comm._pending
@@ -707,7 +707,7 @@ def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
             to_stage="destination",
         )
 
-        await stage._send_kv_transfer(transfer)
+        await stage.send_kv_transfer(transfer)
 
         stage._comm.send_kv_pages.assert_awaited_once()
         if isinstance(error, KVTransferRejected):

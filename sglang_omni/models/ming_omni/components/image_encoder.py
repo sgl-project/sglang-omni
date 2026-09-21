@@ -25,7 +25,7 @@ from sglang_omni.platforms import current_platform
 logger = logging.getLogger(__name__)
 
 
-def _iter_weights_by_prefix(model_dir: Path, prefix: str):
+def iter_weights_by_prefix(model_dir: Path, prefix: str):
     """Iterate checkpoint weights with given prefix, stripping it."""
     from safetensors import safe_open
 
@@ -71,12 +71,12 @@ class MingImageEncoder(nn.Module):
         mlp_depth = config.mlp_depth
 
         # Need sglang TP context for VisionAttention and parallel layers
-        self._init_sglang_tp(tp_rank=tp_rank, tp_size=tp_size, nccl_port=nccl_port)
+        self.init_sglang_tp(tp_rank=tp_rank, tp_size=tp_size, nccl_port=nccl_port)
 
         # Build vision encoder
         from transformers import PretrainedConfig
 
-        vision_config_obj = PretrainedConfig(**self._vision_dict(vision_cfg))
+        vision_config_obj = PretrainedConfig(**self.vision_dict(vision_cfg))
         self.visual = MingOmniVisionEncoder(
             vision_config_obj, quant_config=None, prefix="visual"
         )
@@ -90,10 +90,10 @@ class MingImageEncoder(nn.Module):
 
         # Load weights
         loaded_vis = self.visual.load_weights(
-            _iter_weights_by_prefix(model_dir, "vision.")
+            iter_weights_by_prefix(model_dir, "vision.")
         )
         loaded_proj = self.linear_proj.load_weights(
-            _iter_weights_by_prefix(model_dir, "linear_proj.")
+            iter_weights_by_prefix(model_dir, "linear_proj.")
         )
         logger.info(
             "MingImageEncoder loaded: %d vision + %d projector weights",
@@ -105,7 +105,7 @@ class MingImageEncoder(nn.Module):
         self._spatial_merge_size = vision_cfg.spatial_merge_size
 
         # Move to device
-        torch_dtype = _resolve_dtype(dtype)
+        torch_dtype = resolve_dtype(dtype)
         self.to(device=device, dtype=torch_dtype)
         self.eval()
 
@@ -115,7 +115,7 @@ class MingImageEncoder(nn.Module):
         # request time.
 
     @staticmethod
-    def _vision_dict(vision_cfg: Any) -> dict:
+    def vision_dict(vision_cfg: Any) -> dict:
         """Convert VisionConfig dataclass to plain dict for PretrainedConfig."""
         if hasattr(vision_cfg, "__dataclass_fields__"):
             from dataclasses import asdict
@@ -126,7 +126,7 @@ class MingImageEncoder(nn.Module):
     _did_init_tp = False  # Track whether we initialized TP ourselves
 
     @classmethod
-    def _init_sglang_tp(
+    def init_sglang_tp(
         cls,
         *,
         tp_rank: int = 0,
@@ -186,7 +186,7 @@ class MingImageEncoder(nn.Module):
         dp._ATTN_TP_RANK = tp_rank
 
     @classmethod
-    def _cleanup_sglang_tp(cls):
+    def cleanup_sglang_tp(cls):
         """Destroy model parallel state so a later component (thinker) can reinit.
 
         Only cleans up if we were the ones who initialized it.
@@ -202,7 +202,7 @@ class MingImageEncoder(nn.Module):
             parallel_state.destroy_model_parallel()
             logger.info("Cleaned up model parallel state for thinker reuse")
 
-    def _encode(
+    def encode(
         self,
         pixel_values: torch.Tensor,
         grid_thw: torch.Tensor,
@@ -248,14 +248,12 @@ class MingImageEncoder(nn.Module):
         """
         result: dict[str, torch.Tensor] = {}
         if pixel_values is not None and image_grid_thw is not None:
-            image_embeds, image_token_counts = self._encode(
-                pixel_values, image_grid_thw
-            )
+            image_embeds, image_token_counts = self.encode(pixel_values, image_grid_thw)
             result["image_embeds"] = image_embeds
             result["image_grid_thw"] = image_grid_thw.to(device=self.visual.device)
             result["image_token_counts"] = image_token_counts
         if pixel_values_videos is not None and video_grid_thw is not None:
-            video_embeds, video_token_counts = self._encode(
+            video_embeds, video_token_counts = self.encode(
                 pixel_values_videos, video_grid_thw
             )
             result["video_embeds"] = video_embeds
@@ -264,7 +262,7 @@ class MingImageEncoder(nn.Module):
         return result
 
 
-def _resolve_dtype(dtype: str | None) -> torch.dtype:
+def resolve_dtype(dtype: str | None) -> torch.dtype:
     if dtype is None or dtype == "bfloat16":
         return torch.bfloat16
     if dtype == "float16":

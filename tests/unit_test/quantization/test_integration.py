@@ -28,7 +28,7 @@ class TestApplyOmniQuantizationAdapters:
         }
         model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
 
-        model_worker._apply_omni_quantization_adapters(model_config)
+        model_worker.apply_omni_quantization_adapters(model_config)
 
         # Stage prefix must be stripped for SGLang's AutoRoundConfig matching.
         assert quant_config["block_name_to_quantize"] == "model.layers"
@@ -44,7 +44,7 @@ class TestApplyOmniQuantizationAdapters:
         }
         model_config = _make_model_config("Qwen3OmniTalker", quant_config)
 
-        model_worker._apply_omni_quantization_adapters(model_config)
+        model_worker.apply_omni_quantization_adapters(model_config)
 
         # FP8 does not use stage-local block-name matching; leave it untouched.
         assert quant_config["block_name_to_quantize"] == "thinker.model.layers"
@@ -55,7 +55,7 @@ class TestApplyOmniQuantizationAdapters:
         model_config = _make_model_config("Qwen3OmniThinkerForCausalLM", None)
 
         # Must not raise.
-        model_worker._apply_omni_quantization_adapters(model_config)
+        model_worker.apply_omni_quantization_adapters(model_config)
 
     def test_nested_auto_round_config_is_detected(self) -> None:
         from sglang_omni.model_runner import model_worker
@@ -72,6 +72,6 @@ class TestApplyOmniQuantizationAdapters:
         )
         model_config = SimpleNamespace(hf_config=hf_config)
 
-        model_worker._apply_omni_quantization_adapters(model_config)
+        model_worker.apply_omni_quantization_adapters(model_config)
 
         assert quant_config["block_name_to_quantize"] == "model.layers"

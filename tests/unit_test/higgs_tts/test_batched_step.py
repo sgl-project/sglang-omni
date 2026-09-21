@@ -115,7 +115,7 @@ def test_reset_row_compiles_once_and_respects_last_codes_stride() -> None:
     from sglang_omni.models.higgs_tts import reset_kernels
 
     pool = HiggsBatchedSamplerState(33, N, device=DEVICE)
-    caches = reset_kernels._reset_sampler_row_kernel.device_caches
+    caches = reset_kernels.reset_sampler_row_kernel.device_caches
 
     def variants() -> int:
         return sum(len(entry[0]) for entry in caches.values())
@@ -394,14 +394,14 @@ def _tie_logits(B: int, device: str) -> torch.Tensor:
 
 
 def test_batched_greedy_temperature_zero_is_deterministic_argmax():
-    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+    from sglang_omni.models.higgs_tts.sampler import sample_independent_batched
 
     B = 4
     logits = _tie_logits(B, DEVICE)
     temperature = torch.zeros(B, device=DEVICE)
     expected = logits.argmax(dim=-1)
     outs = [
-        _sample_independent_batched(logits, temperature=temperature, top_p=None)
+        sample_independent_batched(logits, temperature=temperature, top_p=None)
         for _ in range(100)
     ]
     for o in outs:
@@ -410,7 +410,7 @@ def test_batched_greedy_temperature_zero_is_deterministic_argmax():
 
 @pytest.mark.accelerator
 def test_batched_greedy_top_k_one_is_argmax():
-    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+    from sglang_omni.models.higgs_tts.sampler import sample_independent_batched
 
     B = 4
     logits = _tie_logits(B, DEVICE)
@@ -418,7 +418,7 @@ def test_batched_greedy_top_k_one_is_argmax():
     top_k_buf = torch.ones(B, dtype=torch.long, device=DEVICE)  # top_k == 1
     expected = logits.argmax(dim=-1)
     outs = [
-        _sample_independent_batched(
+        sample_independent_batched(
             logits, temperature=temperature, top_p=None, top_k_buf=top_k_buf
         )
         for _ in range(50)
@@ -428,7 +428,7 @@ def test_batched_greedy_top_k_one_is_argmax():
 
 
 def test_batched_mixed_greedy_rows_deterministic_sampled_rows_free():
-    from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+    from sglang_omni.models.higgs_tts.sampler import sample_independent_batched
 
     B = 4
     logits = _tie_logits(B, DEVICE)
@@ -436,7 +436,7 @@ def test_batched_mixed_greedy_rows_deterministic_sampled_rows_free():
     temperature = torch.tensor([0.0, 1.0, 0.0, 1.0], device=DEVICE)
     expected = logits.argmax(dim=-1)
     for _ in range(50):
-        o = _sample_independent_batched(logits, temperature=temperature, top_p=None)
+        o = sample_independent_batched(logits, temperature=temperature, top_p=None)
         assert torch.equal(o[0], expected[0])
         assert torch.equal(o[2], expected[2])
         # stochastic rows still pick a tied-max token (5 or 7), never a -10 one

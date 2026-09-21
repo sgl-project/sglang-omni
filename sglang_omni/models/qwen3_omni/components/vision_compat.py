@@ -13,7 +13,7 @@ from transformers.utils.output_capturing import capture_outputs
 class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
     """HF vision encoder with the Transformers 5.6 interpolation arithmetic."""
 
-    def _legacy_pos_embed_interpolate(
+    def legacy_pos_embed_interpolate(
         self,
         grid_thw: torch.Tensor,
     ) -> torch.Tensor:
@@ -112,7 +112,7 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
         cu_seqlens = hf_modeling.get_vision_cu_seqlens(grid_thw, kwargs=kwargs)
 
         hidden_states = self.patch_embed(hidden_states)
-        pos_embeds = self._legacy_pos_embed_interpolate(grid_thw)
+        pos_embeds = self.legacy_pos_embed_interpolate(grid_thw)
         hidden_states = hidden_states + pos_embeds.to(hidden_states.dtype)
         rotary_pos_emb = self.rotary_pos_emb(position_ids)
 

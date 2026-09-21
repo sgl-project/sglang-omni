@@ -11,7 +11,7 @@ _MROPE_ROPE_SCALING_KEYS = frozenset(
 )
 
 
-def _normalize_rope_scaling(
+def normalize_rope_scaling(
     rope_scaling: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     if rope_scaling is None:
@@ -174,7 +174,7 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.partial_rotary_factor = partial_rotary_factor
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
@@ -357,7 +357,7 @@ class Qwen3OmniMoeTalkerCodePredictorConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.attention_bias = attention_bias
         self.sliding_window = sliding_window
         self.attention_dropout = attention_dropout

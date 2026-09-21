@@ -39,14 +39,14 @@ def load_ming_tokenizer(model_path: str):
     # Strategy 1: standard AutoTokenizer at root
     try:
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        return _attach_ming_tokenizer_compat(tokenizer)
+        return attach_ming_tokenizer_compat(tokenizer)
     except _TOKENIZER_LOAD_ERRORS:
         pass
 
     # Strategy 2: direct PreTrainedTokenizerFast at root
     try:
         tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
-        return _attach_ming_tokenizer_compat(tokenizer)
+        return attach_ming_tokenizer_compat(tokenizer)
     except Exception:
         pass
 
@@ -60,13 +60,13 @@ def load_ming_tokenizer(model_path: str):
         tokenizer = AutoTokenizer.from_pretrained(
             _TOKENIZER_FALLBACK, trust_remote_code=True
         )
-        return _attach_ming_tokenizer_compat(tokenizer)
+        return attach_ming_tokenizer_compat(tokenizer)
     except _TOKENIZER_LOAD_ERRORS:
         tokenizer = PreTrainedTokenizerFast.from_pretrained(_TOKENIZER_FALLBACK)
-        return _attach_ming_tokenizer_compat(tokenizer)
+        return attach_ming_tokenizer_compat(tokenizer)
 
 
-def _attach_ming_tokenizer_compat(tokenizer):
+def attach_ming_tokenizer_compat(tokenizer):
     """（wenyao）Patch tokenizer fields assumed by SGLang's scheduler.
 
     Ming V0 relies on ``Req.eos_token_ids`` only.  Newer upstream SGLang also

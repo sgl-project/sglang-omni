@@ -14,7 +14,7 @@ from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attenti
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
 
-def _rope_safe(rope, x: mx.array, offset: int) -> mx.array:
+def rope_safe(rope, x: mx.array, offset: int) -> mx.array:
     """Apply RoPE, working around an mx.fast.rope bug.
 
     For a 4D tensor (B, heads, L, dim) with L == 1 and B > 1, mx.fast.rope
@@ -29,17 +29,17 @@ def _rope_safe(rope, x: mx.array, offset: int) -> mx.array:
     return rope(x, offset=offset)
 
 
-def _floor_div(a: mx.array, b: int) -> mx.array:
+def floor_div(a: mx.array, b: int) -> mx.array:
     """Floor division matching Python semantics."""
     return mx.floor(a.astype(mx.float32) / b).astype(mx.int32)
 
 
-def _get_feat_extract_output_lengths(input_lengths: mx.array) -> mx.array:
+def get_feat_extract_output_lengths(input_lengths: mx.array) -> mx.array:
     """Compute output length of the convolutional layers."""
     input_lengths_leave = input_lengths % 100
-    feat_lengths = _floor_div(input_lengths_leave - 1, 2) + 1
+    feat_lengths = floor_div(input_lengths_leave - 1, 2) + 1
     output_lengths = (
-        _floor_div(_floor_div(feat_lengths - 1, 2) + 1 - 1, 2)
+        floor_div(floor_div(feat_lengths - 1, 2) + 1 - 1, 2)
         + 1
         + (input_lengths // 100) * 13
     )
@@ -196,7 +196,7 @@ class AudioEncoder(nn.Module):
         self.proj1 = nn.Linear(embed_dim, embed_dim)
         self.proj2 = nn.Linear(embed_dim, config.output_dim)
 
-    def _create_block_attention_mask(
+    def create_block_attention_mask(
         self, seq_len: int, cu_seqlens: List[int], dtype: mx.Dtype
     ) -> mx.array:
         """Create attention mask for ragged/block attention."""
@@ -220,7 +220,7 @@ class AudioEncoder(nn.Module):
             )
 
         feature_lens_np = np.array(feature_lens)
-        aftercnn_lens = _get_feat_extract_output_lengths(feature_lens)
+        aftercnn_lens = get_feat_extract_output_lengths(feature_lens)
         chunk_size = self.n_window * 2
         chunk_num = np.ceil(feature_lens_np / chunk_size).astype(np.int32)
 
@@ -264,7 +264,7 @@ class AudioEncoder(nn.Module):
 
         padded_feature = mx.stack(padded_chunks, axis=0)
 
-        feature_lens_after_cnn = _get_feat_extract_output_lengths(
+        feature_lens_after_cnn = get_feat_extract_output_lengths(
             mx.array(chunk_lengths)
         )
         feature_lens_after_cnn_np = np.array(feature_lens_after_cnn)
@@ -307,7 +307,7 @@ class AudioEncoder(nn.Module):
         cu_seqlens = np.cumsum(cu_chunk_lens).tolist()
 
         seq_len = hidden_states.shape[0]
-        attention_mask = self._create_block_attention_mask(
+        attention_mask = self.create_block_attention_mask(
             seq_len, cu_seqlens, hidden_states.dtype
         )
         attention_mask = attention_mask[None, None, :, :]
@@ -380,8 +380,8 @@ class TextAttention(nn.Module):
 
         if cache is not None:
             offset = cache.offset
-            queries = _rope_safe(self.rope, queries, offset)
-            keys = _rope_safe(self.rope, keys, offset)
+            queries = rope_safe(self.rope, queries, offset)
+            keys = rope_safe(self.rope, keys, offset)
         else:
             offset = 0
             queries = self.rope(queries)
@@ -519,7 +519,7 @@ class Qwen3ASRModel(nn.Module):
         """Encode audio features."""
         return self.audio_tower(input_features, feature_attention_mask)
 
-    def _build_inputs_embeds(
+    def build_inputs_embeds(
         self,
         input_ids: mx.array,
         audio_features: mx.array,
@@ -546,7 +546,7 @@ class Qwen3ASRModel(nn.Module):
         inputs_embeds[0, audio_start:audio_end, :] = audio_features
         return inputs_embeds
 
-    def _forward_last_logits(
+    def forward_last_logits(
         self,
         inputs_embeds: mx.array,
         cache: Optional[List[Any]] = None,

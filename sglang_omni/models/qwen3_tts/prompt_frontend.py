@@ -25,7 +25,7 @@ _TALKER_PREFIX = "talker."
 _SPEAKER_ENCODER_PREFIX = "speaker_encoder."
 
 
-class _PromptProjection(nn.Module):
+class PromptProjection(nn.Module):
     """Linear-SiLU-Linear with the talker checkpoint field names."""
 
     def __init__(self, in_size: int, intermediate_size: int, out_size: int) -> None:
@@ -38,7 +38,7 @@ class _PromptProjection(nn.Module):
         return self.linear_fc2(self.act(self.linear_fc1(x)))
 
 
-class _PromptEmbeddings(nn.Module):
+class PromptEmbeddings(nn.Module):
     def __init__(self, config: Any) -> None:
         super().__init__()
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -58,7 +58,7 @@ class _PromptEmbeddings(nn.Module):
         return self.text_embedding
 
 
-class _PromptPredictorEmbeddings(nn.Module):
+class PromptPredictorEmbeddings(nn.Module):
     def __init__(self, config: Any) -> None:
         super().__init__()
         cp_config = config.code_predictor_config
@@ -86,11 +86,11 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             "sample_rate",
             24000,
         )
-        self.text_projection = _PromptProjection(
+        self.text_projection = PromptProjection(
             config.text_hidden_size, config.text_hidden_size, config.hidden_size
         )
-        self.model = _PromptEmbeddings(config)
-        self.code_predictor = _PromptPredictorEmbeddings(config)
+        self.model = PromptEmbeddings(config)
+        self.code_predictor = PromptPredictorEmbeddings(config)
         if self.tts_model_type == "base":
             apply_qwen_tts_transformers_compatibility_patches()
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder

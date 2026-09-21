@@ -84,7 +84,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         max_mel = int(round(30.0 * self.sampling_rate / self.hop_length))
         return (max_mel + self.stride_lfr - 1) // self.stride_lfr
 
-    def _extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
+    def extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
         """Compute 80-mel log-mel fbank via Kaldi compliance (matches funasr WavFrontend).
 
         Mirrors ``funasr.frontends.wav_frontend.WavFrontend.forward``:
@@ -111,7 +111,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         )  # [T_mel, n_mels]
         return mat, mat.shape[0]
 
-    def _lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
+    def lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Low frame rate stacking (matches funasr ``apply_lfr``).
 
         Stacks ``num_frames_lfr`` frames every ``stride_lfr`` stride: left-pad by repeating
@@ -174,8 +174,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
 
         feats, masks = [], []
         for wav in waveforms:
-            fbank, t_mel = self._extract_fbank(wav)
-            lfr_feat, t_lfr = self._lfr(fbank)  # [t_lfr, num_frames_lfr*n_mels=560]
+            fbank, t_mel = self.extract_fbank(wav)
+            lfr_feat, t_lfr = self.lfr(fbank)  # [t_lfr, num_frames_lfr*n_mels=560]
             # Transpose to [num_frames_lfr * n_mels, t_lfr] = [560, t_lfr] (encoder expects [B, T, 560])
             lfr_feat = lfr_feat.t().contiguous()
             feats.append(lfr_feat)
@@ -248,7 +248,7 @@ class FunAsrNanoProcessor:
         )
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _get_feat_extract_output_lengths(self, input_lengths):
+    def get_feat_extract_output_lengths(self, input_lengths):
         """LFR frames -> adaptor audio-token count (3x stride-2)."""
         return fun_asr_low_frame_rate_length(input_lengths)
 
@@ -284,7 +284,7 @@ class FunAsrNanoProcessor:
                     AUDIO_PLACEHOLDER_TOKEN
                 )
                 feat_lengths = inputs["feature_attention_mask"].sum(dim=-1)
-                audio_token_counts = self._get_feat_extract_output_lengths(feat_lengths)
+                audio_token_counts = self.get_feat_extract_output_lengths(feat_lengths)
                 expanded = []
                 for seq_idx in range(input_ids.shape[0]):
                     ids = (

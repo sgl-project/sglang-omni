@@ -10,7 +10,7 @@ from __future__ import annotations
 from sglang_omni.serve.protocol import TranscriptionSegment
 
 
-def _format_timestamp(
+def format_timestamp(
     seconds: float, *, always_include_hours: bool, decimal_marker: str
 ) -> str:
     milliseconds = round(seconds * 1000.0)
@@ -21,7 +21,7 @@ def _format_timestamp(
     return f"{hours_marker}{minutes:02d}:{secs:02d}{decimal_marker}{milliseconds:03d}"
 
 
-def _cue_text(text: str) -> str:
+def cue_text(text: str) -> str:
     # Note (Akazaakane): A literal "-->" inside cue text breaks cue parsing.
     return text.strip().replace("-->", "->")
 
@@ -29,24 +29,24 @@ def _cue_text(text: str) -> str:
 def segments_to_srt(segments: list[TranscriptionSegment]) -> str:
     blocks = []
     for index, segment in enumerate(segments, start=1):
-        start = _format_timestamp(
+        start = format_timestamp(
             segment.start, always_include_hours=True, decimal_marker=","
         )
-        end = _format_timestamp(
+        end = format_timestamp(
             segment.end, always_include_hours=True, decimal_marker=","
         )
-        blocks.append(f"{index}\n{start} --> {end}\n{_cue_text(segment.text)}\n\n")
+        blocks.append(f"{index}\n{start} --> {end}\n{cue_text(segment.text)}\n\n")
     return "".join(blocks)
 
 
 def segments_to_vtt(segments: list[TranscriptionSegment]) -> str:
     cues = []
     for segment in segments:
-        start = _format_timestamp(
+        start = format_timestamp(
             segment.start, always_include_hours=False, decimal_marker="."
         )
-        end = _format_timestamp(
+        end = format_timestamp(
             segment.end, always_include_hours=False, decimal_marker="."
         )
-        cues.append(f"{start} --> {end}\n{_cue_text(segment.text)}\n\n")
+        cues.append(f"{start} --> {end}\n{cue_text(segment.text)}\n\n")
     return "WEBVTT\n\n" + "".join(cues)

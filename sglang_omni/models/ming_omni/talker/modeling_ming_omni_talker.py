@@ -51,7 +51,7 @@ except ImportError:
     _HAS_ONNX = False
 
 
-class _IdentityNormalizer:
+class IdentityNormalizer:
     """Fallback when TalkerTN (pynini) is not available."""
 
     def normalize(self, text: str) -> str:
@@ -74,7 +74,7 @@ class SpkembExtractor:
         )
         self.target_sr = target_sr
 
-    def _extract_spk_embedding(self, speech):
+    def extract_spk_embedding(self, speech):
         feat = cached_fbank(speech, num_mel_bins=80, sample_frequency=16000)
         feat = feat - feat.mean(dim=0, keepdim=True)
         embedding = (
@@ -93,7 +93,7 @@ class SpkembExtractor:
         return torch.tensor([embedding])
 
     def __call__(self, waveform, **kwargs) -> Optional[torch.Tensor]:
-        return self._extract_spk_embedding(waveform)
+        return self.extract_spk_embedding(waveform)
 
 
 class CFMGraphExecutor:
@@ -143,7 +143,7 @@ class CFMGraphExecutor:
         if not self.initialized:
             if abort_event is not None and abort_event.is_set():
                 raise asyncio.CancelledError()
-            self._initialize_graph(
+            self.initialize_graph(
                 input_tensor, his_lat, randn_tensor, sde_rnd, abort_event
             )
 
@@ -173,7 +173,7 @@ class CFMGraphExecutor:
 
         return gen_lat, inputs_embeds, stop_out
 
-    def _initialize_graph(
+    def initialize_graph(
         self, input_tensor, his_lat, randn_tensor, sde_rnd, abort_event=None
     ):
         self.last_hidden_state_placeholder = torch.empty_like(input_tensor)
@@ -234,9 +234,9 @@ class CFMGraphExecutorPool:
         self.pool_size = pool_size
         self.pool: Queue = Queue(maxsize=pool_size)
         self.lock = Lock()
-        self._initialize_pool()
+        self.initialize_pool()
 
-    def _initialize_pool(self):
+    def initialize_pool(self):
         for _ in range(self.pool_size):
             self.pool.put(
                 CFMGraphExecutor(self.config, self.cfm, self.aggregator, self.stop_head)
@@ -307,7 +307,7 @@ class MingOmniTalker(nn.Module):
 
         # --- External dependencies (set via setters) ---
         self.tokenizer = None
-        self.normalizer: Any = _IdentityNormalizer()
+        self.normalizer: Any = IdentityNormalizer()
         self.spkemb_extractor = None
         self.voice_json_dict: dict = {}
 
@@ -456,7 +456,7 @@ class MingOmniTalker(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
-    def _get_device_runtime(self) -> TalkerDeviceRuntime:
+    def get_device_runtime(self) -> TalkerDeviceRuntime:
         device_runtime = getattr(self, "device_runtime", None)
         if device_runtime is None:
             device_runtime = TalkerDeviceRuntime(self.device)
@@ -865,7 +865,7 @@ class MingOmniTalker(nn.Module):
         max_decode_steps: int | None = None,
     ):
         try:
-            device_runtime = self._get_device_runtime()
+            device_runtime = self.get_device_runtime()
             with device_runtime.create_stream_context(device_runtime.create_stream()):
                 for audio_token in self.omni_audio_generation_func(
                     prompt=prompt,
@@ -912,7 +912,7 @@ class MingOmniTalker(nn.Module):
         abort_event: threading.Event | None = None,
         max_decode_steps: int | None = None,
     ):
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             this_uuid = str(uuid.uuid1())
             token_queue = queue.Queue() if stream else None
@@ -1152,7 +1152,7 @@ class MingOmniTalker(nn.Module):
         spk_emb = msg["spk_emb"] if use_spk_emb else None
         return msg["prompt_wav_lat"], msg["prompt_wav_emb"], spk_emb
 
-    def _run_tts_segments(
+    def run_tts_segments(
         self,
         text,
         prompt,
@@ -1219,7 +1219,7 @@ class MingOmniTalker(nn.Module):
                 continue
 
             if should_process:
-                yield from self._process_segment(
+                yield from self.process_segment(
                     "".join(streaming_text),
                     prompt,
                     instruction,
@@ -1242,7 +1242,7 @@ class MingOmniTalker(nn.Module):
         if streaming_text and re.search(
             r"[a-zA-Z\u4e00-\u9fff1-9]", "".join(streaming_text)
         ):
-            yield from self._process_segment(
+            yield from self.process_segment(
                 "".join(streaming_text),
                 prompt,
                 instruction,
@@ -1260,7 +1260,7 @@ class MingOmniTalker(nn.Module):
                 abort_event,
             )
 
-    def _process_segment(
+    def process_segment(
         self,
         streaming_text,
         prompt,
@@ -1428,7 +1428,7 @@ class MingOmniTalker(nn.Module):
                 "loaded voice presets) or prompt_wav_path. Both are None."
             )
 
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
@@ -1439,7 +1439,7 @@ class MingOmniTalker(nn.Module):
                 use_zero_spk_emb=False,
             )
 
-            yield from self._run_tts_segments(
+            yield from self.run_tts_segments(
                 text,
                 prompt,
                 instruction,
@@ -1473,7 +1473,7 @@ class MingOmniTalker(nn.Module):
         **kwargs,
     ):
         abort_event = kwargs.get("abort_event")
-        device_runtime = self._get_device_runtime()
+        device_runtime = self.get_device_runtime()
         with device_runtime.create_stream_context(device_runtime.create_stream()):
             self.initial_graph()
 
@@ -1515,7 +1515,7 @@ class MingOmniTalker(nn.Module):
                 ):
                     yield this_tts_speech_dict["tts_speech"], None, None, None
             else:
-                yield from self._run_tts_segments(
+                yield from self.run_tts_segments(
                     text,
                     prompt,
                     instruction,

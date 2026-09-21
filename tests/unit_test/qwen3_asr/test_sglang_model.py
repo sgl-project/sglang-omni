@@ -108,7 +108,7 @@ def test_asr_text_rope_drops_only_multimodal_parameters() -> None:
         rope_scaling=original,
     )
 
-    sglang_model._normalize_asr_text_rope(config)
+    sglang_model.normalize_asr_text_rope(config)
 
     expected = {"rope_type": "default", "rope_theta": 1_000_000}
     assert config.rope_parameters == expected
@@ -140,12 +140,12 @@ def test_fused_asr_qk_norm_rope_is_bound_per_attention(
     )
     monkeypatch.setattr(sglang_model, "fused_qk_norm_rope", lambda *args: None)
 
-    sglang_model._enable_fused_asr_qk_norm_rope(language_model)
+    sglang_model.enable_fused_asr_qk_norm_rope(language_model)
 
     assert supported._asr_unfused_forward_prepare_native is original
     assert (
         supported.forward_prepare_native.__func__
-        is sglang_model._fused_asr_forward_prepare_native
+        is sglang_model.fused_asr_forward_prepare_native
     )
     assert unsupported.forward_prepare_native is original
 
@@ -165,7 +165,7 @@ def test_fused_asr_qk_norm_rope_is_not_bound_without_platform_kernel(
     )
     monkeypatch.setattr(sglang_model, "fused_qk_norm_rope", None)
 
-    sglang_model._enable_fused_asr_qk_norm_rope(language_model)
+    sglang_model.enable_fused_asr_qk_norm_rope(language_model)
 
     assert attention.forward_prepare_native is original
     assert not hasattr(attention, "_asr_unfused_forward_prepare_native")
@@ -180,7 +180,7 @@ def test_fused_asr_qk_norm_rope_falls_back_before_projection() -> None:
         _asr_unfused_forward_prepare_native=lambda positions, hidden_states: expected,
     )
 
-    actual = sglang_model._fused_asr_forward_prepare_native(
+    actual = sglang_model.fused_asr_forward_prepare_native(
         attention,
         torch.tensor([0], dtype=torch.int32),
         torch.zeros((1, 1, 8), dtype=torch.float16),

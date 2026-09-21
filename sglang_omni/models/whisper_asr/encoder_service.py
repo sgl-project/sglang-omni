@@ -62,7 +62,7 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _expected_audio_tokens(item: Any) -> int | None:
+def expected_audio_tokens(item: Any) -> int | None:
     num_tokens = item.num_audio_tokens
     return int(num_tokens) if num_tokens is not None else None
 
@@ -126,7 +126,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         self._pin_failures = 0
         self._prewarm_s = 0.0
         if self._pin_host_memory:
-            self._prewarm_pinned_pool(self._cache_capacity_entries)
+            self.prewarm_pinned_pool(self._cache_capacity_entries)
         self._namespace = cache_namespace
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -166,7 +166,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         """Whether cached states are held in page-locked host memory."""
         return self._pin_host_memory
 
-    def _new_pinned_host(self, tokens: int) -> torch.Tensor:
+    def new_pinned_host(self, tokens: int) -> torch.Tensor:
         return torch.empty(
             (tokens, self._hidden_size),
             dtype=self._dtype,
@@ -174,7 +174,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             pin_memory=True,
         )
 
-    def _prewarm_pinned_pool(self, entries: int) -> None:
+    def prewarm_pinned_pool(self, entries: int) -> None:
         """Pay the one-off cudaHostAlloc cost for the whole cache at start-up.
 
         Freed pinned blocks stay in PyTorch's caching host allocator, so
@@ -188,7 +188,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         blocks: list[torch.Tensor] = []
         try:
             for _ in range(int(entries)):
-                blocks.append(self._new_pinned_host(self._encoder_token_count))
+                blocks.append(self.new_pinned_host(self._encoder_token_count))
         except RuntimeError as exc:
             logger.warning(
                 "Whisper pre-LM cache: pinned host pool prewarm stopped after "
@@ -210,7 +210,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             self._prewarm_s,
         )
 
-    def _disable_pinning(self, exc: Exception) -> None:
+    def disable_pinning(self, exc: Exception) -> None:
         if not self._pin_host_memory:
             return
         self._pin_host_memory = False
@@ -229,7 +229,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             self._queue.put(_SHUTDOWN)
         self._thread.join(timeout=5)
 
-    def _enqueue(
+    def enqueue(
         self,
         item: Any,
         future: concurrent.futures.Future[torch.Tensor],
@@ -247,15 +247,15 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
 
     def encode_item(self, item: Any) -> None:
         """Block until item.precomputed_embeddings holds encoder states."""
-        expected_tokens = _expected_audio_tokens(item)
+        expected_tokens = expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
                 "Whisper pre-LM encode requires the item's num_audio_tokens"
             )
-        key = self._cache_key(item)
+        key = self.cache_key(item)
 
         if key is None:
-            future = self._submit(item)
+            future = self.submit(item)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
 
@@ -269,7 +269,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             future = self._inflight.get(key)
             if future is None:
                 cached = self._cache.get(key)
-                if cached is not None and self._is_valid(cached, expected_tokens):
+                if cached is not None and self.is_valid(cached, expected_tokens):
                     self._hits += 1
                 else:
                     cached = None
@@ -278,7 +278,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                     leader = True
                     self._misses += 1
                     try:
-                        self._submit(item, future)
+                        self.submit(item, future)
                     except Exception:
                         del self._inflight[key]
                         raise
@@ -300,7 +300,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                         del self._inflight[key]
         if leader:
             return
-        if not self._is_valid(embedding, expected_tokens):
+        if not self.is_valid(embedding, expected_tokens):
             with self._lock:
                 self._failed += 1
             raise RuntimeError(
@@ -315,11 +315,11 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         expected_tokens: int,
     ) -> torch.Tensor | None:
         """Return a validated cached embedding without starting an encode."""
-        key = self._cache_key_from_fingerprint(audio_fingerprint)
+        key = self.cache_key_from_fingerprint(audio_fingerprint)
         cached = self._cache.get(key)
         if cached is None:
             return None
-        if self._is_valid(cached, expected_tokens):
+        if self.is_valid(cached, expected_tokens):
             with self._lock:
                 self._hits += 1
             return cached
@@ -361,15 +361,15 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 "pin_prewarm_s": self._prewarm_s,
             }
 
-    def _cache_key(self, item: Any) -> str | None:
-        return self._cache_key_from_fingerprint(item.audio_fingerprint)
+    def cache_key(self, item: Any) -> str | None:
+        return self.cache_key_from_fingerprint(item.audio_fingerprint)
 
-    def _cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
+    def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
         if audio_fingerprint is None:
             return None
         return f"{self._namespace}:{audio_fingerprint}"
 
-    def _is_valid(self, embedding: Any, expected_tokens: int) -> bool:
+    def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
@@ -386,7 +386,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
-    def _drain_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+    def drain_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
         first = self._queue.get()
         if first is _SHUTDOWN:
             return [], True
@@ -409,11 +409,11 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
-    def _next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
-        return self._drain_batch()
+    def next_batch(self) -> tuple[list[QueueEntry[Any]], bool]:
+        return self.drain_batch()
 
     @contextlib.contextmanager
-    def _batch_context(self) -> Iterator[None]:
+    def batch_context(self) -> Iterator[None]:
         with torch.inference_mode():
             if self._stream is None:
                 yield
@@ -445,7 +445,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             )
         parts: list[torch.Tensor] = []
         for index, item in enumerate(items):
-            expected = _expected_audio_tokens(item)
+            expected = expected_audio_tokens(item)
             if expected is None:
                 raise RuntimeError(
                     "Whisper pre-LM encode item is missing its audio token count"
@@ -468,13 +468,13 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         the time cache_embedding gets this tensor the data is complete.
         Returns None when pinning is off or the item has no cache key.
         """
-        if not self._pin_host_memory or self._cache_key(item) is None:
+        if not self._pin_host_memory or self.cache_key(item) is None:
             return None
         try:
-            host = self._new_pinned_host(int(embedding.shape[0]))
+            host = self.new_pinned_host(int(embedding.shape[0]))
         except RuntimeError as exc:
             self._pin_failures += 1
-            self._disable_pinning(exc)
+            self.disable_pinning(exc)
             return None
         host.copy_(embedding, non_blocking=True)
         return host
@@ -489,14 +489,14 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         embedding: torch.Tensor,
         host_copy: torch.Tensor | None = None,
     ) -> None:
-        key = self._cache_key(item)
+        key = self.cache_key(item)
         if key is None:
             return
         # note (Jeffro): host_copy is complete here (synchronize_batch ran in
         # between) and already pinned, so the cache stores it without another copy.
         self._cache.put(key, host_copy if host_copy is not None else embedding)
 
-    def _retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
+    def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         if len(batch) == 1:
             return False
         logger.exception(
@@ -505,7 +505,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         )
         return True
 
-    def _on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
+    def on_batch_start(self, batch: list[QueueEntry[Any]]) -> None:
         dequeue_time = time.perf_counter()
         queue_waits = [
             dequeue_time - entry.enqueued_at
@@ -520,7 +520,7 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 max(queue_waits, default=0.0),
             )
 
-    def _on_batch_finished(
+    def on_batch_finished(
         self,
         batch: list[QueueEntry[Any]],
         batch_exc: Exception | None,

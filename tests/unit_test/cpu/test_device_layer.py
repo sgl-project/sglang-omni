@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 
 import sglang_omni.utils.device as dev
-from sglang_omni.platforms import _as_omni_platform, get_platform_spec
+from sglang_omni.platforms import as_omni_platform, get_platform_spec
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
 
@@ -54,7 +54,7 @@ def test_a_cpu_srt_platform_resolves_to_the_cpu_omni_platform():
         def is_xpu(self) -> bool:
             return False
 
-    resolved = _as_omni_platform(FakeCpuSRTPlatform())
+    resolved = as_omni_platform(FakeCpuSRTPlatform())
 
     assert isinstance(resolved, CPUOmniPlatform)
     assert get_platform_spec(resolved).endswith("CPUOmniPlatform")

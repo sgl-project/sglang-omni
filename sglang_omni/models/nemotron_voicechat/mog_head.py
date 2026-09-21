@@ -90,7 +90,7 @@ class MoGHead(nn.Module):
 
         logits_TN = self.proj_logits(hidden_TD)
         if top_p is not None:
-            logits_TN = self._nucleus(logits_TN, top_p)
+            logits_TN = self.nucleus(logits_TN, top_p)
         # Gumbel-max over the log-softmax draws one component per position.
         with torch.autocast(device_type=hidden_TD.device.type, enabled=False):
             gumbel = -torch.log(-torch.log(torch.rand_like(logits_TN.float())))
@@ -98,7 +98,7 @@ class MoGHead(nn.Module):
                 functional.log_softmax(logits_TN.float(), dim=-1) + gumbel
             ).argmax(-1)
 
-        coefficient_TR = self._component_matmul(
+        coefficient_TR = self.component_matmul(
             hidden_TD, self.proj_mus.weight, component_T, self.low_rank
         )
         mean_TO = einsum(
@@ -109,12 +109,12 @@ class MoGHead(nn.Module):
         log_std_T1 = self.proj_logs(hidden_TD).clamp_min(MIN_LOG_STD)
         return mean_TO * torch.exp(log_std_T1) + self.proj_else(hidden_TD), log_std_T1
 
-    def _component_matmul(self, hidden_TD, weight_ND, component_T, out_size):
+    def component_matmul(self, hidden_TD, weight_ND, component_T, out_size):
         blocks = rearrange(weight_ND, "(n r) d -> n r d", r=out_size)
         return einsum(hidden_TD, blocks[component_T], "t d, t r d -> t r")
 
     @staticmethod
-    def _nucleus(logits_TN, top_p: float):
+    def nucleus(logits_TN, top_p: float):
         ordered, order = logits_TN.sort(dim=-1, descending=True)
         cumulative = ordered.softmax(dim=-1).cumsum(dim=-1)
         drop = cumulative - ordered.softmax(dim=-1) > top_p

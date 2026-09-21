@@ -57,7 +57,7 @@ class MingSpeakerEmbeddingExtractor:
         return torch.as_tensor(embedding.reshape(1, -1), dtype=torch.float32)
 
 
-class _MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
+class MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
     """Cache text-independent reference conditioning by audio content."""
 
     model_revision = ""
@@ -81,7 +81,7 @@ class _MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
         return reference_path_cache_key(item, trust_stat=False)
 
     def encode_one(self, item: str) -> dict:
-        return self._encoder._encode_reference(item)
+        return self._encoder.encode_reference(item)
 
     def store_artifact(self, artifact: dict) -> dict:
         return dict(artifact)
@@ -122,17 +122,17 @@ class MingTTSReferenceEncoder:
         self._service: ReferenceEncodeService[str, dict, dict] | None = None
         if cache_model_identity is not None:
             self._service = ReferenceEncodeService(
-                _MingTTSReferenceEncodeHook(self, model_identity=cache_model_identity),
+                MingTTSReferenceEncodeHook(self, model_identity=cache_model_identity),
                 max_items=cache_max_items,
                 max_bytes=cache_max_bytes,
                 log_prefix="Ming-Omni-TTS ref cache",
             )
 
-    def _encode_reference(self, ref_audio: str) -> dict:
+    def encode_reference(self, ref_audio: str) -> dict:
         """Text-independent conditioning bundle for one reference audio."""
 
-        prompt_waveform, speaker_waveform = self._load_reference_waveform(ref_audio)
-        prompt_waveform = self._pad_waveform(prompt_waveform)
+        prompt_waveform, speaker_waveform = self.load_reference_waveform(ref_audio)
+        prompt_waveform = self.pad_waveform(prompt_waveform)
 
         with torch.inference_mode():
             waveform_length = torch.tensor(
@@ -140,7 +140,7 @@ class MingTTSReferenceEncoder:
                 dtype=torch.long,
                 device=self.device,
             )
-            prompt_waveform = self._prepare_audio_vae_waveform(prompt_waveform)
+            prompt_waveform = self.prepare_audio_vae_waveform(prompt_waveform)
             prompt_latent, _prompt_latent_length = self._audio_vae.encode_latent(
                 prompt_waveform,
                 waveform_length,
@@ -173,7 +173,7 @@ class MingTTSReferenceEncoder:
         if self._service is not None:
             artifact = self._service.get_or_encode(ref_audio, desc=repr(ref_audio))
         else:
-            artifact = self._encode_reference(ref_audio)
+            artifact = self.encode_reference(ref_audio)
 
         state.spk_emb = artifact["spk_emb"]
         state.prompt_latent = artifact["prompt_latent"]
@@ -203,7 +203,7 @@ class MingTTSReferenceEncoder:
 
         return store_ming_tts_state(payload, state)
 
-    def _load_reference_waveform(self, path: str) -> tuple[Any, Any]:
+    def load_reference_waveform(self, path: str) -> tuple[Any, Any]:
         waveform, sample_rate = torchaudio.load(path)
         if waveform.ndim != 2 or int(waveform.shape[0]) != 1:
             raise ValueError(
@@ -225,7 +225,7 @@ class MingTTSReferenceEncoder:
             )
         return waveform, speaker_waveform
 
-    def _pad_waveform(self, waveform: Any) -> Any:
+    def pad_waveform(self, waveform: Any) -> Any:
         pad_align = int(1 / 12.5 * self.patch_size * self.sample_rate)
         new_len = (int(waveform.shape[-1]) + pad_align - 1) // pad_align * pad_align
         if new_len == int(waveform.shape[-1]):
@@ -239,7 +239,7 @@ class MingTTSReferenceEncoder:
         padded[:, : int(waveform.shape[-1])] = waveform
         return padded
 
-    def _prepare_audio_vae_waveform(self, waveform: Any) -> Any:
+    def prepare_audio_vae_waveform(self, waveform: Any) -> Any:
         if not isinstance(waveform, torch.Tensor):
             waveform = torch.as_tensor(waveform)
         # Note (yzxiao): The official monolithic path reaches AudioVAE encode

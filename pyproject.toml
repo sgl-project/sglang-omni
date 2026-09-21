@@ -116,6 +116,11 @@ fun-cosyvoice3 = [
     "matplotlib",
 ]
 
+minicpm-o = [
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router-py = "sglang_omni_router.python.serve:main"
@@ -182,4 +187,5 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

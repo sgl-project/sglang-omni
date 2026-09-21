@@ -17,11 +17,11 @@ from sglang_omni.models.ming_omni.talker.audio_vae.configuration_audio_vae impor
 from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts import audio_decode as audio_decode_module
 from sglang_omni.models.ming_tts.audio_decode import (
+    AudioVAEFixedStreamingOutput,
+    AudioVAEFixedStreamingTransition,
+    CapturedAudioVAEGraph,
     MingAudioDecoder,
-    _AudioVAEFixedStreamingOutput,
-    _AudioVAEFixedStreamingTransition,
-    _CapturedAudioVAEGraph,
-    _MingAudioStreamingRunner,
+    MingAudioStreamingRunner,
     decode_ming_tts_audio_payload,
 )
 from sglang_omni.models.ming_tts.payload_types import MingTTSState
@@ -136,12 +136,12 @@ def _make_facade(
 
     monkeypatch.setattr(
         audio_decode_module,
-        "_AudioVAEFixedStreamingTransition",
+        "AudioVAEFixedStreamingTransition",
         FakeTransition,
     )
     monkeypatch.setattr(
         audio_decode_module,
-        "_MingAudioStreamingRunner",
+        "MingAudioStreamingRunner",
         FakeRunner,
     )
     audio_vae = _FakeAudioVAE()
@@ -248,10 +248,10 @@ class _ScriptedRunnerTransition:
     device = torch.device("cpu")
 
     def __init__(self) -> None:
-        self.decode_actions: deque[_AudioVAEFixedStreamingOutput | Exception] = deque()
+        self.decode_actions: deque[AudioVAEFixedStreamingOutput | Exception] = deque()
         self.decode_calls = 0
 
-    def decode(self, *_args, **_kwargs) -> _AudioVAEFixedStreamingOutput:
+    def decode(self, *_args, **_kwargs) -> AudioVAEFixedStreamingOutput:
         self.decode_calls += 1
         action = self.decode_actions.popleft()
         if isinstance(action, Exception):
@@ -261,8 +261,8 @@ class _ScriptedRunnerTransition:
 
 def _runner_output(
     *, sample_lengths: tuple[int, int] = (2, 1)
-) -> _AudioVAEFixedStreamingOutput:
-    return _AudioVAEFixedStreamingOutput(
+) -> AudioVAEFixedStreamingOutput:
+    return AudioVAEFixedStreamingOutput(
         waveform=torch.tensor(
             [[1.0, 2.0, 0.0, 0.0], [3.0, 0.0, 0.0, 0.0]],
             dtype=torch.float32,
@@ -274,7 +274,7 @@ def _runner_output(
 def _make_scripted_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[
-    _MingAudioStreamingRunner,
+    MingAudioStreamingRunner,
     _ScriptedRunnerTransition,
     _ScriptedGraph,
     _ScriptedCudaStream,
@@ -282,13 +282,11 @@ def _make_scripted_runner(
     transition = _ScriptedRunnerTransition()
     graph = _ScriptedGraph()
     stream = _ScriptedCudaStream()
-    runner = _MingAudioStreamingRunner.__new__(_MingAudioStreamingRunner)
+    runner = MingAudioStreamingRunner.__new__(MingAudioStreamingRunner)
     runner._transition = transition
     runner._cuda_graph_required_at_startup = True
     runner._startup_prepared = True
-    runner._captured_graph = _CapturedAudioVAEGraph(
-        graph=graph, output=_runner_output()
-    )
+    runner._captured_graph = CapturedAudioVAEGraph(graph=graph, output=_runner_output())
     runner._host_latents = torch.empty((2, 2, 3), dtype=torch.float32)
     runner._host_latent_lengths = torch.empty(2, dtype=torch.long)
     runner._host_exec_mask = torch.empty(2, dtype=torch.bool)
@@ -305,7 +303,7 @@ def _make_scripted_runner(
 
 
 def _run_scripted_runner(
-    runner: _MingAudioStreamingRunner,
+    runner: MingAudioStreamingRunner,
 ) -> tuple[torch.Tensor, ...]:
     return runner.run(
         slot_ids=(0,),
@@ -363,7 +361,7 @@ def test_graph_output_validation_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner, transition, graph, _stream = _make_scripted_runner(monkeypatch)
-    captured = _CapturedAudioVAEGraph(
+    captured = CapturedAudioVAEGraph(
         graph=graph,
         output=_runner_output(sample_lengths=(5, 0)),
     )
@@ -499,7 +497,7 @@ def _make_tiny_audio_vae() -> AudioVAE:
 
 
 def _decode_first_fixed_row_on_cpu(
-    transition: _AudioVAEFixedStreamingTransition,
+    transition: AudioVAEFixedStreamingTransition,
     latents: torch.Tensor,
     *,
     terminal: bool,
@@ -528,7 +526,7 @@ def _decode_first_fixed_row_on_cpu(
 
 
 def _snapshot_fixed_slot_state(
-    transition: _AudioVAEFixedStreamingTransition,
+    transition: AudioVAEFixedStreamingTransition,
     slot: int,
 ) -> dict[str, torch.Tensor]:
     return {
@@ -572,12 +570,12 @@ def test_fixed_streaming_transition_matches_dynamic_audio_vae_on_cpu(
 
     dynamic_parts = _dynamic_stream_parts(audio_vae, latents, chunk_patches)
     max_step_latents = max(chunk_patches) * 4
-    zero_tail = _AudioVAEFixedStreamingTransition(
+    zero_tail = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=max_step_latents,
     )
-    nonzero_tail = _AudioVAEFixedStreamingTransition(
+    nonzero_tail = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=max_step_latents,
@@ -634,7 +632,7 @@ def test_fixed_streaming_transition_matches_independent_heterogeneous_slots() ->
         _dynamic_stream_parts(audio_vae, latents, schedule)
         for latents, schedule in zip(slot_latents, chunk_schedules, strict=True)
     )
-    transition = _AudioVAEFixedStreamingTransition(
+    transition = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=3,
         max_step_latents=max(max(schedule) for schedule in chunk_schedules) * 4,
@@ -694,12 +692,12 @@ def test_fixed_terminal_transition_cleans_row_for_reuse_on_cpu() -> None:
         terminal = torch.randn(4, 4)
         reuse = torch.randn(4, 4)
 
-    transition = _AudioVAEFixedStreamingTransition(
+    transition = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=4,
     )
-    fresh = _AudioVAEFixedStreamingTransition(
+    fresh = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=4,
@@ -722,12 +720,12 @@ def test_fixed_transition_keeps_inactive_row_state_unchanged_on_cpu() -> None:
         continuation = torch.randn(4, 4)
         terminal = torch.randn(4, 4)
 
-    transition = _AudioVAEFixedStreamingTransition(
+    transition = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=2,
         max_step_latents=4,
     )
-    reference = _AudioVAEFixedStreamingTransition(
+    reference = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=4,
@@ -785,12 +783,12 @@ def test_fixed_transition_reset_clears_only_selected_row_and_allows_reuse() -> N
         audio_vae = _make_tiny_audio_vae()
         reuse = torch.randn(4, 4)
 
-    transition = _AudioVAEFixedStreamingTransition(
+    transition = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=2,
         max_step_latents=4,
     )
-    fresh = _AudioVAEFixedStreamingTransition(
+    fresh = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
         capacity=1,
         max_step_latents=4,
