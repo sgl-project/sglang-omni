@@ -258,30 +258,41 @@ class PackedDiT:
         padded = scatter_rows(h, rows, rows.width)
         return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
 
-    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, Any]:
-        freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
+    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
+        """cos and sin, (1, total, rotary dims) each, in float32."""
+        # note(ratish): the DiT's rotary embedding has no xpos scale.
+        freqs, _ = self.dit.rotary_embed.forward_from_seq_len(rows.width)
         freqs = freqs[:, rows.positions]
-        if isinstance(scale, torch.Tensor):
-            scale = scale[:, rows.positions]
-        return freqs, scale
+        return freqs.cos(), freqs.sin()
 
     @staticmethod
     def attend(
         attn: torch.nn.Module,
         x: torch.Tensor,
-        rope: tuple[torch.Tensor, Any],
+        rope: tuple[torch.Tensor, torch.Tensor],
         attention: PackedRowAttention,
     ) -> torch.Tensor:
-        from x_transformers.x_transformers import apply_rotary_pos_emb
-
-        freqs, scale = rope
+        # note(ratish): x is the float32 norm output; cast here, to_q, to_k and
+        # to_v would otherwise each cast it again under autocast.
+        x = x.to(attn.to_q.weight.dtype)
         query = attn.to_q(x)
         key = attn.to_k(x)
         value = attn.to_v(x)
-        query = apply_rotary_pos_emb(query, freqs, scale)
-        key = apply_rotary_pos_emb(key, freqs, scale**-1.0)
+        rotate(query, *rope)
+        rotate(key, *rope)
         out = attention(query, key, value).to(query.dtype)
         return attn.to_out[1](attn.to_out[0](out))
+
+
+def rotate(t: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> None:
+    """t: (1, total, heads * head_dim), turned in place. The same float32
+    arithmetic as x_transformers' apply_rotary_pos_emb, bit for bit."""
+    # note(ratish): the DiT turns only the first rotary dims of the flattened
+    # heads; apply_rotary_pos_emb also rebuilt the rest in float32 and cast it
+    # back, and took cos and sin again for every q and k.
+    turned = t[..., : cos.shape[-1]]
+    half = torch.stack((-turned[..., 1::2], turned[..., ::2]), dim=-1).flatten(-2)
+    turned.copy_(turned * cos + half * sin)
 
 
 def solve_flow_euler_packed(
