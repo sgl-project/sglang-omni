@@ -157,6 +157,37 @@ _QWEN3_TTS_VC_STREAM_P95 = {
     }
 }
 
+# note (luojiaxuan): docs/cookbook/qwen3_tts.md, 1.7B CustomVoice, Ryan/English,
+# concurrency 16 on one H200; single runs, so these are references to print
+# next to, not worst-of-N observations from the CI host.
+_QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE = {
+    16: {
+        "throughput_qps": 14.788,
+        "latency_mean_s": 1.075,
+        "rtf_mean": 0.2335,
+    }
+}
+_QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE = {
+    16: {
+        "throughput_qps": 10.098,
+        "latency_mean_s": 1.573,
+        "rtf_mean": 0.3380,
+    }
+}
+QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_REFERENCE,
+    THRESHOLD_SLACK_HIGHER,
+    THRESHOLD_SLACK_LOWER,
+)
+QWEN3_TTS_CUSTOM_VOICE_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_CUSTOM_VOICE_STREAM_REFERENCE,
+    THRESHOLD_SLACK_HIGHER,
+    THRESHOLD_SLACK_LOWER,
+)
+QWEN3_TTS_CUSTOM_VOICE_WER_CORPUS_THRESHOLD = apply_wer_slack(0.01608)
+QWEN3_TTS_CUSTOM_VOICE_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(0.02085)
+QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN = apply_mos_slack(4.1723)
+
 QWEN3_TTS_VC_NON_STREAM_THRESHOLDS = apply_slack(
     _QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
@@ -263,16 +294,17 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             startup_timeout=300,
             gate_thresholds=False,
         ),
-        # note (luojiaxuan): the Base arm's numbers, carried so the stages have
-        # something to print next to. This arm gates nothing until it is
-        # calibrated on the CI host, which a contract test enforces.
+        # note (luojiaxuan): printed next to the stage results; this arm gates
+        # nothing until it is calibrated on the CI host, which a contract test
+        # enforces. The similarity stage skips named voices, so that field is
+        # never read here.
         thresholds=TtsCiThresholdPreset(
-            non_stream_speed=QWEN3_TTS_VC_NON_STREAM_THRESHOLDS,
-            stream_speed=QWEN3_TTS_VC_STREAM_THRESHOLDS,
-            wer_corpus=QWEN3_TTS_VC_WER_CORPUS_THRESHOLD,
-            stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
-            similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
-            utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
+            non_stream_speed=QWEN3_TTS_CUSTOM_VOICE_NON_STREAM_THRESHOLDS,
+            stream_speed=QWEN3_TTS_CUSTOM_VOICE_STREAM_THRESHOLDS,
+            wer_corpus=QWEN3_TTS_CUSTOM_VOICE_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=QWEN3_TTS_CUSTOM_VOICE_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=0.0,
+            utmos_mean_min=QWEN3_TTS_CUSTOM_VOICE_UTMOS_MEAN_MIN,
             calibrated=False,
         ),
     ),

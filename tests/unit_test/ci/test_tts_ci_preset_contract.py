@@ -30,8 +30,12 @@ def test_a_named_voice_preset_carries_a_voice(name: str) -> None:
         assert model.voice, f"{name} sends no reference, so it needs a voice"
 
 
-def test_the_workflow_rotation_covers_every_preset() -> None:
-    """The random rotation and the preset registry name the same models."""
+def test_the_workflow_rotation_draws_registered_presets_only() -> None:
+    """Every model the random rotation can draw is a registered preset, and
+    the CustomVoice arm is not in the draw: it gates nothing until it is
+    calibrated on the CI host, so a random draw of it would spend a CI slot
+    without deciding anything. It runs by label or dispatch until then.
+    """
     from pathlib import Path
 
     import yaml
@@ -52,11 +56,11 @@ def test_the_workflow_rotation_covers_every_preset() -> None:
     )
     rotation = set(line[len("models=(") : line.rindex(")")].split())
 
-    assert rotation == set(TTS_CI_PRESETS), (
-        "the rotation and tts_ci_config.py disagree: "
-        f"rotation only {sorted(rotation - set(TTS_CI_PRESETS))}, "
-        f"registry only {sorted(set(TTS_CI_PRESETS) - rotation)}"
+    assert rotation <= set(TTS_CI_PRESETS), (
+        "the rotation names models tts_ci_config.py does not know: "
+        f"{sorted(rotation - set(TTS_CI_PRESETS))}"
     )
+    assert "qwen3-tts-custom-voice" not in rotation
 
 
 @pytest.mark.parametrize("name", sorted(TTS_CI_PRESETS))

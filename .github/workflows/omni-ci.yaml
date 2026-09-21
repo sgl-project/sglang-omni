@@ -62,6 +62,7 @@ env:
   MOSS_TTS_MODEL_PATH: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
   QWEN3_TTS_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-Base
   COSYVOICE3_MODEL_PATH: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+  QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
   FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
@@ -197,6 +198,7 @@ jobs:
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
             "${COSYVOICE3_MODEL_PATH}" \
+            "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             "${WHISPER_ASR_MODEL_PATH}"
 

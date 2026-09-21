@@ -13,6 +13,7 @@ TTS_MODEL_LABELS = {
     "qwen3-tts": "run-qwen3-tts",
     "cosyvoice3": "run-cosyvoice3",
     "qwen3-tts-custom-voice": "run-qwen3-tts-custom-voice",
+    "qwen3-tts-custom-voice": "run-qwen3-tts-custom-voice",
 }
 ASR_MODEL_LABELS = {
     "fun-asr": "run-fun-asr",
