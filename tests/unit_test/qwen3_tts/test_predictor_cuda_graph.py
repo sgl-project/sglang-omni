@@ -56,9 +56,7 @@ PRED_VOCAB = 16
 MAX_BS = 16
 BUCKETS = (1, 2, 4, 8, 16)
 DTYPE = torch.bfloat16
-# A GEMM of another M may pick another kernel and round a unit-scale bf16 output
-# one ulp apart; a causal or cache-slot error moves it by far more.
-BF16_ONE_ULP = {"atol": 2**-6, "rtol": 2**-7}
+BF16_GEMM_ROUNDING = {"atol": 2**-6, "rtol": 2**-7}
 
 
 class _TupleLinear(nn.Module):
@@ -541,17 +539,17 @@ def test_the_pair_pass_matches_two_one_token_passes(batch_size: int):
         )
 
     torch.testing.assert_close(
-        from_pair, torch.cat((first, second), dim=1), **BF16_ONE_ULP
+        from_pair, torch.cat((first, second), dim=1), **BF16_GEMM_ROUNDING
     )
     torch.testing.assert_close(
         pair._predictor_k_cache[:, :batch_size, :2],
         serial._predictor_k_cache[:, :batch_size, :2],
-        **BF16_ONE_ULP,
+        **BF16_GEMM_ROUNDING,
     )
     torch.testing.assert_close(
         pair._predictor_v_cache[:, :batch_size, :2],
         serial._predictor_v_cache[:, :batch_size, :2],
-        **BF16_ONE_ULP,
+        **BF16_GEMM_ROUNDING,
     )
 
 

@@ -40,6 +40,7 @@ def test_predictor_gqa_attention_cpu_matches_sdpa() -> None:
 
 
 def test_predictor_gqa_attention_pair_attends_causally() -> None:
+    torch.manual_seed(0)
     q = torch.randn(2, 4, 2, 8)
     key = torch.randn(2, 2, 2, 8)
     value = torch.randn(2, 2, 2, 8)
