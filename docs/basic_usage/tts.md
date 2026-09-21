@@ -1,6 +1,6 @@
 # TTS Model Usage
 
-This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as the example. The same `/v1/audio/speech` endpoint also serves Higgs TTS, Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, MOSS-TTS Local, dots.tts, and ZONOS2.
+This guide uses [Fish Speech S2-Pro](https://huggingface.co/fishaudio/s2-pro) as the example. The same `/v1/audio/speech` endpoint also serves Higgs TTS, Voxtral TTS, Qwen3-TTS, Ming-Omni-TTS, MOSS-TTS, MOSS-TTS Local, MOSS-TTS Nano, dots.tts, and ZONOS2.
 
 ## Prerequisites
 
@@ -45,6 +45,7 @@ for details.
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `--model-path` only | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, causal streaming, and buffered speed control |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |
+| [MOSS-TTS Nano](../cookbook/moss_tts_nano.md) | `examples/configs/moss_tts_nano.yaml` | CPU-first 100M model; 48 kHz stereo; reference-less or voice cloning |
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
 | [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
 | [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
