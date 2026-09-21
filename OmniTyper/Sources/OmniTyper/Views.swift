@@ -43,13 +43,6 @@ struct RootView: View {
                 Divider().opacity(0.5)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
-                        if !store.storageError.isEmpty { message(store.storageError, error: true) }
-                        if !model.error.isEmpty {
-                            message(model.error, error: true)
-                            if model.canRetry { Button(L("app.retryLast")) { model.retryLast() } }
-                        }
-                        if !model.notice.isEmpty { message(model.notice, error: false) }
-                        if model.phase == .preparing { PreparationCard(model: model, worker: model.worker) }
                         switch page {
                         case .home: HomeView(model: model, store: store)
                         case .history: HistoryView(model: model, store: store)
@@ -59,10 +52,15 @@ struct RootView: View {
                         }
                     }.padding(32).frame(maxWidth: 940, alignment: .leading).frame(maxWidth: .infinity)
                 }
+                .overlay(alignment: .topTrailing) {
+                    notificationLayer.frame(maxWidth: 520).padding(16)
+                }
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(accent)
+        .toggleStyle(FullRowToggleStyle())
+        .disclosureGroupStyle(FullRowDisclosureStyle(language: store.preferences.uiLanguage))
         .preferredColorScheme(store.preferences.appearance == "light" ? .light : store.preferences.appearance == "dark" ? .dark : nil)
         .onChange(of: model.resultText) { _, _ in page = .home }
     }
@@ -77,7 +75,7 @@ struct RootView: View {
                     Text("OmniTyper").font(.system(size: 16, weight: .semibold))
                     Text(L("app.tagline")).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
-            }.padding(.top, 35).padding(.horizontal, 18)
+            }.padding(.top, 20).padding(.horizontal, 18)
             VStack(spacing: 6) {
                 ForEach(Page.allCases, id: \.self) { item in
                     Button { page = item } label: {
@@ -109,14 +107,41 @@ struct RootView: View {
         }.frame(width: 218).background(cardBackground.opacity(0.48))
     }
 
-    private func message(_ text: String, error: Bool) -> some View {
+    private var notificationLayer: some View {
+        VStack(spacing: 10) {
+            if !store.storageError.isEmpty {
+                message(store.storageError, error: true) { store.storageError = "" }
+            }
+            if !model.error.isEmpty {
+                message(model.error, error: true, retry: model.canRetry) { model.error = "" }
+            }
+            if !model.notice.isEmpty {
+                message(model.notice, error: false) { model.notice = "" }
+            }
+            if model.phase == .preparing || model.isPreloading {
+                PreparationCard(model: model, worker: model.worker)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+            }
+        }
+    }
+
+    private func message(_ text: String, error: Bool, retry: Bool = false, dismiss: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: error ? "exclamationmark.circle" : "checkmark.circle")
-                .foregroundStyle(error ? .orange : accent)
-            Text(text).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            Button { if error { model.error = "" } else { model.notice = "" } } label: { Image(systemName: "xmark") }
-                .buttonStyle(.plain).accessibilityLabel(L("app.dismiss"))
-        }.padding(14).background((error ? Color.orange : accent).opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                .foregroundStyle(error ? .orange : accent).frame(height: 32)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(text).font(.system(size: 12)).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true).frame(minHeight: 32)
+                if retry { Button(L("app.retryLast")) { model.retryLast() } }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(IconButtonStyle()).accessibilityLabel(L("app.dismiss"))
+        }.padding(.horizontal, 14).padding(.vertical, 6)
+            .background((error ? Color.orange : accent).opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.08), lineWidth: 1).allowsHitTesting(false))
+            .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
     }
 }
 
@@ -262,7 +287,7 @@ private struct PreparationCard: View {
                 Text(L("prepare.title")).font(.system(size: 13, weight: .semibold))
                 Text(worker.status.isEmpty ? L("prepare.body") : worker.status).font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            Spacer(); Button(L("action.cancel")) { model.cancel() }
+            Spacer(); Button(L("action.cancel")) { model.cancel(releaseModel: true) }
         }.padding(20).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 }
@@ -274,24 +299,31 @@ struct VoicePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                if model.phase == .recording {
-                    HStack(alignment: .center, spacing: 3) {
-                        ForEach(0..<9) { index in
-                            Capsule().fill(accent).frame(width: 3, height: 5 + 30 * recorder.level * (index % 2 == 0 ? 1 : 0.55))
-                        }
-                    }.frame(width: 45, height: 38).animation(.easeOut(duration: 0.1), value: recorder.level)
-                } else { ProgressView().controlSize(.small).frame(width: 45) }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.phase == .recording ? L("panel.listening", model.mode.title) : model.phase == .starting ? L("status.loadingModel") : model.liveStatus)
-                        .font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Text(model.phase == .recording ? String(format: L("panel.elapsed"), Int(recorder.elapsed) / 60, Int(recorder.elapsed) % 60) : worker.status)
-                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 14) {
+                    if model.phase == .recording {
+                        HStack(alignment: .center, spacing: 3) {
+                            ForEach(0..<9) { index in
+                                Capsule().fill(accent).frame(width: 3, height: 5 + 30 * recorder.level * (index % 2 == 0 ? 1 : 0.55))
+                            }
+                        }.frame(width: 45, height: 38).animation(.easeOut(duration: 0.1), value: recorder.level)
+                    } else { ProgressView().controlSize(.small).frame(width: 45) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.phase == .recording ? L("panel.listening", model.mode.title) : model.phase == .starting ? L("status.loadingModel") : model.liveStatus)
+                            .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                        Text(model.phase == .recording ? String(format: L("panel.elapsed"), Int(recorder.elapsed) / 60, Int(recorder.elapsed) % 60) : worker.status)
+                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }.background(WindowDragArea()).help(L("panel.dragHint"))
+                HStack(spacing: 0) {
+                    if model.phase == .recording {
+                        Button { model.finish() } label: { Image(systemName: "stop.fill").foregroundStyle(accent) }.accessibilityLabel(L("home.finish"))
+                    }
+                    Button { model.cancel() } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.accessibilityLabel(L("panel.cancelRecording"))
                 }
-                Spacer(minLength: 0)
-                if model.phase == .recording {
-                    Button { model.finish() } label: { Image(systemName: "stop.fill").foregroundStyle(accent) }.buttonStyle(.plain).accessibilityLabel(L("home.finish"))
-                }
-                Button { model.cancel() } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }.buttonStyle(.plain).accessibilityLabel(L("panel.cancelRecording"))
+                .buttonStyle(IconButtonStyle())
+                // Note (Codex): Larger hit targets extend into the original panel inset.
+                .padding(.trailing, -8)
             }
             Divider()
             Text(model.liveText.isEmpty ? (model.phase == .starting ? L("panel.waitListening") : L("panel.placeholder")) : String(model.liveText.suffix(600)))
@@ -299,8 +331,10 @@ struct VoicePanel: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Text(model.phase == .recording ? model.liveStatus : L("panel.insertNote"))
                 .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-        }.padding(18).frame(width: 460, height: 190).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.2), lineWidth: 1))
+        }.padding(18).frame(width: 460, height: 190)
+            .background(alignment: .top) { WindowDragArea().frame(height: 18) }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.2), lineWidth: 1).allowsHitTesting(false))
     }
 }
 
