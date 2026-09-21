@@ -18,7 +18,7 @@ linked documentation. Python 3.11 is the verified configuration.
 | `triton-ascend` | Match the selected PyTorch and CANN releases | Yes | Yes | [Official documentation](https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/quick_start.md) |
 | `sgl-kernel-npu` | Match PyTorch, Python, CANN, hardware, and architecture | Yes | Yes | [Official documentation](https://github.com/sgl-project/sgl-kernel-npu/releases) |
 | `memfabric-hybrid` | Compatible release | No (PD disaggregation only) | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
-| SGLang for NPU | `v0.5.18` | Yes | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
+| SGLang for NPU | `v0.5.20` | Yes | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
 
 ## Install sglang-omni
 
@@ -34,9 +34,9 @@ bash scripts/npu/install_npu.sh --check
 bash scripts/npu/install_npu.sh
 ```
 
-The precheck accepts the SGLang `0.5.18` release line. This includes development,
+The precheck accepts the SGLang `0.5.20` release line. This includes development,
 pre-release, post-release, and local builds whose numeric release segment starts
-with `0.5.18`, such as `0.5.18.dev7+g<git-sha>`. It rejects other release lines,
+with `0.5.20`, such as `0.5.20.dev7+g<git-sha>`. It rejects other release lines,
 including later releases. On a mismatch it reports both the supported line and
 the installed version. The precheck also verifies the required Python packages,
 matching `torch` and `torch_npu` major-minor versions, NPU availability, and a
