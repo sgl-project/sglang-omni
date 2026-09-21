@@ -696,8 +696,7 @@ class RealtimeTranscriptionSession:
             interval_samples = (
                 self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
             )
-            while segment.next_refresh_sample <= end_sample:
-                segment.next_refresh_sample += interval_samples
+            segment.next_refresh_sample = end_sample + interval_samples
             start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
             pcm = bytes(self.audio_buffer.buf[start_byte:])
             if self.is_silent(pcm):
