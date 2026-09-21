@@ -161,14 +161,16 @@ def warmup_flow(
     # note(Dayuxiaoshui): the released time grid overrides steps where a
     # checkpoint declares one, and only the shapes matter here, so it goes.
     one_step = {**sampling, "steps": 1, "t_grid": None}
-    # Under inference_mode like the request path, so dynamo compiles once.
+    # note(Dayuxiaoshui): under inference_mode like the request path, so
+    # dynamo compiles once.
     with torch.inference_mode(), autocast(device, dtype):
         # note(Dayuxiaoshui): the eager path a request takes when no declared
         # graph covers it, over the three combinations dynamo guards on: a lone
         # item carries no rope positions, and without a reference it carries no
-        # attention bias either.
+        # attention bias either. The frame count shares no model axis, so
+        # dynamo cannot duck-size it to one and guard the audio length on it.
         for batch, ref in ((1, 0), (1, 32), (2, 32)):
-            items = warmup_items(flow, device, batch=batch, frames=64, ref=ref, text=16)
+            items = warmup_items(flow, device, batch=batch, frames=72, ref=ref, text=16)
             flow.sample_batch(items, **one_step)
         if step_graph is not None:
             step_graph.capture_declared(

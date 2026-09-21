@@ -37,9 +37,9 @@ FRAME_LADDER = (192, 320, 448, 576, 768)
 
 CONDITIONING = ((0, 192), (320, 384))
 
-# note(Dayuxiaoshui): only narrow batches are declared. Measured on H200, a
-# graph takes batch 1 from 15.9 to 7.8 ms/step but batch 8 only from 38.4 to
-# 36.8, less than its padding costs.
+# note(Dayuxiaoshui): only narrow batches are declared. A wide batch already
+# spends long enough inside each kernel to hide the issue time a replay saves,
+# so the graph buys it less than the padding it needs costs.
 DEFAULT_CAPTURE_SHAPES: tuple[AuKGraphShape, ...] = tuple(
     AuKGraphShape(batch, frames, ref, text)
     for batch in (1, 2)
@@ -218,7 +218,8 @@ class AuKStepCudaGraphRunner:
             entry.static_time.copy_(t)
             entry.static_x.copy_(x)
             entry.graph.replay()
-            # The next replay overwrites this buffer, so the caller gets a copy.
+            # note(Dayuxiaoshui): the next replay overwrites this buffer, so
+            # the caller gets a copy.
             return entry.static_out.clone()
 
         return replay

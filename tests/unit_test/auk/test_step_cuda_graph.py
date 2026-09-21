@@ -75,6 +75,8 @@ def test_fit_takes_the_cheapest_shape_that_covers_every_axis():
         (192, 400, 192, 1),  # a longer reference
         (192, 0, 500, 1),  # more text tokens
         (192, 0, 192, 3),  # a batch size never declared
+        # Covered on every other axis, but only by a shape of another batch.
+        (192, 300, 300, 1),
     ],
 )
 def test_fit_refuses_a_batch_wider_than_the_declared_shapes(frames, ref, text, batch):

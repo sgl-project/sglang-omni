@@ -108,9 +108,9 @@ class ShapePadding:
     """The step-graph runner's padding contract, with nothing to replay.
 
     It pads to one declared shape, and only for a batch that shape covers on
-    every axis, which is the runner's own lookup. ``bind`` returning None is
-    the runner's fallback for a shape it holds no graph for, so the padded
-    batch still runs through the eager backbone.
+    every axis, which is the runner's own lookup. A bind returning None is the
+    runner's fallback for a shape it holds no graph for, so the padded batch
+    still runs through the eager backbone.
     """
 
     batch = 8
