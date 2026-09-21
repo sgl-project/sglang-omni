@@ -38,7 +38,7 @@ class ModelWorkerConfig:
 
 
 @dataclass(slots=True)
-class _PrefillCudaGraphUsage:
+class PrefillCudaGraphUsage:
     replay_count: int = 0
     standard_eager_count: int = 0
     custom_eager_count: int = 0
@@ -78,17 +78,17 @@ class ModelWorker:
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
-        self._init_model_config()
-        effective_quantization = self._configure_backend_policy()
+        self.init_model_config()
+        effective_quantization = self.configure_backend_policy()
         from sglang.srt.runtime_context import publish
 
         publish(self.server_args, role="scheduler")
-        _initialize_model_worker_backend_globals(
+        initialize_model_worker_backend_globals(
             self.model_config, effective_quantization
         )
-        self._init_model_runner()
-        self._init_dllm_algorithm()
-        self._prefill_cuda_graph_usage = _PrefillCudaGraphUsage()
+        self.init_model_runner()
+        self.init_dllm_algorithm()
+        self._prefill_cuda_graph_usage = PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
         from sglang.srt.runtime_context import get_device
@@ -101,7 +101,7 @@ class ModelWorker:
         )[0]
         set_random_seed(self.random_seed)
 
-    def _init_model_config(self):
+    def init_model_config(self):
         if self.model_arch_override == "BailingMoeV2ForCausalLM":
             from sglang_omni.models.ming_omni.registration import (
                 register_ming_hf_config,
@@ -135,10 +135,10 @@ class ModelWorker:
         )
 
         if self.model_arch_override is not None:
-            self._apply_arch_override(self.model_config, self.model_arch_override)
+            self.apply_arch_override(self.model_config, self.model_arch_override)
 
     @staticmethod
-    def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
+    def apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
         model_config.hf_config.architectures = [arch]
         if arch == "WhisperForConditionalGeneration":
@@ -192,13 +192,13 @@ class ModelWorker:
             model_config.v_head_dim = model_config.head_dim
             model_config.vocab_size = int(text_cfg.vocab_size)
 
-    def _configure_backend_policy(self) -> str | None:
+    def configure_backend_policy(self) -> str | None:
         # Apply Omni-specific quantization adapters (stage-local checkpoint name
         # normalization) before SGLang builds its quant config, then run the
         # model_worker backend policy.
-        _apply_omni_quantization_adapters(self.model_config)
+        apply_omni_quantization_adapters(self.model_config)
 
-        _apply_model_worker_backend_common_policy(
+        apply_model_worker_backend_common_policy(
             self.server_args,
             self.model_arch_override,
         )
@@ -254,11 +254,11 @@ class ModelWorker:
     def get_pad_input_ids_func(self):
         return getattr(self.model_runner.model, "pad_input_ids", None)
 
-    def _init_model_runner(self):
+    def init_model_runner(self):
         from .sglang_model_runner import SGLModelRunner
 
         nccl_port = (
-            self.nccl_port if self.nccl_port is not None else _resolve_nccl_port()
+            self.nccl_port if self.nccl_port is not None else resolve_nccl_port()
         )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
@@ -276,7 +276,7 @@ class ModelWorker:
             kv_cache_bytes=self.kv_cache_bytes,
         )
 
-    def _init_dllm_algorithm(self):
+    def init_dllm_algorithm(self):
         if self.server_args.dllm_algorithm is None:
             self.dllm_algorithm = None
             return
@@ -319,7 +319,7 @@ class ModelWorker:
 
         out = self.model_runner.forward(forward_batch=forward_batch)
         logits_output, can_run_cuda_graph = out.logits_output, out.can_run_graph
-        self._record_prefill_cuda_graph_usage(
+        self.record_prefill_cuda_graph_usage(
             forward_batch,
             can_run_graph=bool(can_run_cuda_graph),
         )
@@ -330,7 +330,7 @@ class ModelWorker:
         )
         return batch_result
 
-    def _record_prefill_cuda_graph_usage(
+    def record_prefill_cuda_graph_usage(
         self,
         forward_batch: Any,
         *,
@@ -356,7 +356,7 @@ class ModelWorker:
         """Record a custom prefill forward that bypasses SGLang graph dispatch."""
         self._prefill_cuda_graph_usage.custom_eager_count += 1
 
-    def _prefill_cuda_graph_info(self) -> dict[str, Any]:
+    def prefill_cuda_graph_info(self) -> dict[str, Any]:
         from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
             PrefillCudaGraphRunner,
         )
@@ -399,7 +399,7 @@ class ModelWorker:
             "model_arch_override": self.model_arch_override,
             "supports_weight_update": True,
             "supports_weight_checker": True,
-            "prefill_cuda_graph": self._prefill_cuda_graph_info(),
+            "prefill_cuda_graph": self.prefill_cuda_graph_info(),
         }
 
     def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
@@ -433,7 +433,7 @@ class ModelWorker:
                 "update_weights_from_tensor requires a tensor data plane; "
                 "Omni admin control plane only carries metadata",
             )
-        return self._call_optional_weight_method("update_weights_from_tensor", payload)
+        return self.call_optional_weight_method("update_weights_from_tensor", payload)
 
     def init_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
         init = self.model_runner.init_weights_update_group
@@ -508,7 +508,7 @@ class ModelWorker:
             self._strict_weight_checker = checker
         return checker.run(action)
 
-    def _call_optional_weight_method(
+    def call_optional_weight_method(
         self,
         method_name: str,
         payload: dict[str, Any],
@@ -519,7 +519,7 @@ class ModelWorker:
         return bool(success), str(message)
 
 
-def _resolve_nccl_port() -> int:
+def resolve_nccl_port() -> int:
     master_port = os.environ.get("MASTER_PORT")
     if master_port:
         return int(master_port)
@@ -539,7 +539,7 @@ def _resolve_nccl_port() -> int:
     return port
 
 
-def _apply_model_worker_backend_common_policy(
+def apply_model_worker_backend_common_policy(
     server_args: ServerArgs,
     model_arch_override: str | None,
 ) -> str | None:
@@ -557,7 +557,7 @@ def _apply_model_worker_backend_common_policy(
         )
 
 
-def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
+def apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     """Apply Omni-specific quantization adapters before SGLang builds its config.
 
     SGLang owns detection, config parsing, layer construction, and post-load
@@ -573,7 +573,7 @@ def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
         normalize_quant_config(model_config)
 
 
-def _initialize_model_worker_backend_globals(
+def initialize_model_worker_backend_globals(
     model_config: ModelConfig,
     effective_quantization: str | None,
 ) -> None:

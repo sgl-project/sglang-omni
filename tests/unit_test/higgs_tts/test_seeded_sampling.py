@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from sglang_omni.models.higgs_tts.sampler import _sample_independent_batched
+from sglang_omni.models.higgs_tts.sampler import sample_independent_batched
 
 pytestmark = [
     pytest.mark.accelerator,
@@ -27,7 +27,7 @@ def _logits(seed):
 
 
 def _draw(logits, seeds_B, step):
-    return _sample_independent_batched(
+    return sample_independent_batched(
         logits,
         temperature=torch.ones(B, device="cuda"),
         top_p=None,
@@ -55,7 +55,7 @@ def test_per_row_seed_isolation():
     """A row's draw depends only on its own seed, not its batch neighbours."""
     logits = _logits(4)
     full = _draw(logits, [55, 77, 99], step=3)
-    alone = _sample_independent_batched(
+    alone = sample_independent_batched(
         logits[:1],
         temperature=torch.ones(1, device="cuda"),
         top_p=None,
@@ -69,7 +69,7 @@ def test_seeded_sampler_preserves_probability_distribution():
     batch = 20_000
     probs = torch.tensor([0.9, 0.1], device="cuda")
     logits = probs.log().view(1, 1, 2).expand(batch, 1, 2).contiguous()
-    sampled = _sample_independent_batched(
+    sampled = sample_independent_batched(
         logits,
         temperature=torch.ones(batch, device="cuda"),
         top_p=None,

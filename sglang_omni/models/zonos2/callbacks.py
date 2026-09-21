@@ -129,5 +129,5 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
 
 def zonos2_prefill_forward(runner, forward_batch, schedule_batch, requests):
     del schedule_batch
-    forward_batch.input_embeds = runner._build_prefill_embeds(forward_batch, requests)
+    forward_batch.input_embeds = runner.build_prefill_embeds(forward_batch, requests)
     return None

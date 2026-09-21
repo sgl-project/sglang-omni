@@ -253,7 +253,7 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     steady.slot = pool.acquire()
 
     participants = vocoder.select_step_participants()
-    frames = {vocoder._step_frames(state) for _, state in participants}
+    frames = {vocoder.step_frames(state) for _, state in participants}
     assert len(frames) == 1
     plan = vocoder.build_step_plan(participants)
     assert len({int(t.shape[1]) for t in plan.slot_latents.values()}) == 1

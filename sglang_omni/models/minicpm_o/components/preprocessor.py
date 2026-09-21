@@ -40,7 +40,7 @@ ASR_PROMPT_EN = (
 )
 
 
-def _first_batch_item(value: Any) -> Any:
+def first_batch_item(value: Any) -> Any:
     """Unwrap the batch dimension of a processor output (batch size is 1)."""
     if isinstance(value, list):
         return value[0] if value else None
@@ -49,7 +49,7 @@ def _first_batch_item(value: Any) -> Any:
     return value
 
 
-def _video_to_images(video: Any) -> list[Image.Image]:
+def video_to_images(video: Any) -> list[Image.Image]:
     """Convert one decoded video (T, C, H, W) tensor to RGB frames."""
     if isinstance(video, list) and all(
         isinstance(frame, Image.Image) for frame in video
@@ -267,7 +267,7 @@ class MiniCPMOPreprocessor:
             )
         else:
             videos, video_audios = [], None
-        video_images = [frame for video in videos for frame in _video_to_images(video)]
+        video_images = [frame for video in videos for frame in video_to_images(video)]
         images.extend(video_images)
         audios = await ensure_audio_list_async(raw_audios, target_sr=16000)
         if video_audios:
@@ -306,7 +306,7 @@ class MiniCPMOPreprocessor:
         mm_inputs: dict[str, Any] = {}
         encoder_inputs: dict[str, dict[str, Any]] = {}
         if images:
-            image_bound = _first_batch_item(processed["image_bound"])
+            image_bound = first_batch_item(processed["image_bound"])
             # note (MayDomine): slice order must match the placeholder bound order.
             pixel_values = [
                 slice_tensor
@@ -315,7 +315,7 @@ class MiniCPMOPreprocessor:
                     per_image if isinstance(per_image, list) else [per_image]
                 )
             ]
-            tgt_sizes = _first_batch_item(processed["tgt_sizes"])
+            tgt_sizes = first_batch_item(processed["tgt_sizes"])
             mm_inputs["image"] = {"bounds": image_bound, "cache_key": image_cache_key}
             encoder_inputs["image_encoder"] = {
                 "pixel_values": pixel_values,
@@ -323,8 +323,8 @@ class MiniCPMOPreprocessor:
                 "cache_key": image_cache_key,
             }
         if audios:
-            audio_bounds = _first_batch_item(processed["audio_bounds"])
-            audio_feature_lens = _first_batch_item(processed["audio_feature_lens"])
+            audio_bounds = first_batch_item(processed["audio_bounds"])
+            audio_feature_lens = first_batch_item(processed["audio_feature_lens"])
             mm_inputs["audio"] = {"bounds": audio_bounds, "cache_key": audio_cache_key}
             encoder_inputs["audio_encoder"] = {
                 "audio_features": processed["audio_features"],

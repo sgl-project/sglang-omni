@@ -31,7 +31,7 @@ from .tool_funcs.audio_lengths import fun_asr_low_frame_rate_length
 logger = logging.getLogger(__name__)
 
 
-def _sanm_mask_from_lengths(
+def sanm_mask_from_lengths(
     lengths: torch.Tensor, max_len: int, *, dtype: torch.dtype, device: torch.device
 ) -> torch.Tensor:
     # note (guozhihao): SenseVoice pad mask [B, 1, T], 1=valid.
@@ -39,20 +39,20 @@ def _sanm_mask_from_lengths(
     return (idx < lengths.unsqueeze(1)).to(dtype=dtype).unsqueeze(1)
 
 
-def _apply_time_mask(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+def apply_time_mask(x: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
     if mask is None:
         return x
     return x * mask.transpose(1, 2)
 
 
-def _additive_key_pad_mask(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+def additive_key_pad_mask(mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     # note (guozhihao): SenseVoice [B, 1, T] (1=valid) -> SDPA additive [B, 1, 1, T].
     return torch.zeros(
         mask.shape[0], 1, 1, mask.shape[-1], device=mask.device, dtype=dtype
     ).masked_fill(mask.unsqueeze(1).eq(0), torch.finfo(dtype).min)
 
 
-def _fused_qkv_project(
+def fused_qkv_project(
     x: torch.Tensor,
     q_proj: nn.Linear,
     k_proj: nn.Linear,
@@ -106,12 +106,12 @@ class MultiHeadedAttentionSANM(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Returns (attn_out, v) so FSMN can reuse the same value projection.
         b, t, _ = x.size()
-        q, k, v = _fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
+        q, k, v = fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
         q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)
         k_h = k.view(b, t, self.h, self.d_k).transpose(1, 2)
         v_h = v.view(b, t, self.h, self.d_k).transpose(1, 2)
 
-        attn_mask = None if mask is None else _additive_key_pad_mask(mask, q.dtype)
+        attn_mask = None if mask is None else additive_key_pad_mask(mask, q.dtype)
         dropout_p = self.attn_dropout_p if self.training else 0.0
         out = F.scaled_dot_product_attention(
             q_h,
@@ -148,11 +148,11 @@ class FunAsrNanoFSMN(nn.Module):
     ) -> torch.Tensor:
         # note (guozhihao): zero pad frames before/after the depthwise conv so
         # kernel_size windows cannot leak padded values into valid frames.
-        value_states = _apply_time_mask(value_states, mask)
+        value_states = apply_time_mask(value_states, mask)
         hidden_states = self.conv(self.pad(value_states.transpose(1, 2)))
         hidden_states = hidden_states.transpose(1, 2) + value_states
         hidden_states = self.dropout(hidden_states)
-        return _apply_time_mask(hidden_states, mask)
+        return apply_time_mask(hidden_states, mask)
 
 
 class FunAsrNanoMLP(nn.Module):
@@ -203,18 +203,18 @@ class EncoderLayerSANM(nn.Module):
         # note (guozhihao): attn returns v so FSMN does not recompute v_proj.
         attn_out, value_states = self.self_attn(x, mask)
         x = self.dropout(attn_out + self.self_attn.fsmn(value_states, mask))
-        x = _apply_time_mask(x, mask)
+        x = apply_time_mask(x, mask)
         if self.in_size == self.size:
             x = residual + x
         residual = x
         x = self.post_attention_layernorm(x)
         x = self.activation_dropout(self.activation(self.mlp.fc1(x)))
         x = residual + self.dropout(self.mlp.fc2(x))
-        x = _apply_time_mask(x, mask)
+        x = apply_time_mask(x, mask)
         if x.dtype == torch.float16:
             clamp_value = torch.finfo(x.dtype).max - 1000
             x = torch.clamp(x, min=-clamp_value, max=clamp_value)
-        return _apply_time_mask(self.final_layernorm(x), mask)
+        return apply_time_mask(self.final_layernorm(x), mask)
 
 
 class FunAsrNanoAudioEncoder(nn.Module):
@@ -297,12 +297,12 @@ class MultiHeadedAttention(nn.Module):
         self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         b, t, _ = x.size()
-        q, k, v = _fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
+        q, k, v = fused_qkv_project(x, self.q_proj, self.k_proj, self.v_proj)
         q_h = q.view(b, t, self.h, self.d_k).transpose(1, 2)
         k_h = k.view(b, t, self.h, self.d_k).transpose(1, 2)
         v_h = v.view(b, t, self.h, self.d_k).transpose(1, 2)
 
-        attn_mask = None if mask is None else _additive_key_pad_mask(mask, q.dtype)
+        attn_mask = None if mask is None else additive_key_pad_mask(mask, q.dtype)
         dropout_p = self.attn_dropout_p if self.training else 0.0
         out = F.scaled_dot_product_attention(
             q_h,
@@ -341,11 +341,11 @@ class AdaptorEncoderLayer(nn.Module):
         residual = x
         x = self.input_layernorm(x)
         x = residual + self.dropout(self.self_attn(x, mask))
-        x = _apply_time_mask(x, mask)
+        x = apply_time_mask(x, mask)
         residual = x
         x = self.post_attention_layernorm(x)
         x = residual + self.dropout(self.mlp.fc2(self.activation(self.mlp.fc1(x))))
-        return _apply_time_mask(x, mask)
+        return apply_time_mask(x, mask)
 
 
 class FunAsrNanoAdaptor(nn.Module):
@@ -393,7 +393,7 @@ class FunAsrNanoAdaptor(nn.Module):
         x = self.linear_1(x)
         x = self.act(x)
         x = self.linear_2(x)
-        x = _apply_time_mask(x, mask)
+        x = apply_time_mask(x, mask)
         for block in self.layers:
             x = block(x, mask)
         return x
@@ -526,7 +526,7 @@ class FunAsrNanoForConditionalGeneration(nn.Module):
                 sanm_mask: Optional[torch.Tensor] = None
             else:
                 ilens = torch.tensor(lengths, device=device, dtype=torch.long)
-                sanm_mask = _sanm_mask_from_lengths(
+                sanm_mask = sanm_mask_from_lengths(
                     ilens, t_max, dtype=xs.dtype, device=device
                 )
 

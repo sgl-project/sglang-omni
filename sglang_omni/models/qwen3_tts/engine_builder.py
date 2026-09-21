@@ -26,7 +26,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
 logger = logging.getLogger(__name__)
 
 
-def _is_truthy(value: Any) -> bool:
+def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -84,7 +84,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
-        qwen3_stages._register_qwen3_tts_hf_config()
+        qwen3_stages.register_qwen3_tts_hf_config()
 
     def generation_defaults(
         self,
@@ -126,7 +126,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         # note(ratish): the tokenizer and the predictor graphs live for the whole
         # process, so they are attached before sglang reads free memory for the pool.
         model = model_worker.model_runner.model
-        speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
+        speech_tokenizer = qwen3_stages.load_qwen3_tts_tokenizer(
             checkpoint_dir,
             device=device,
             dtype=self.dtype,
@@ -140,7 +140,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.wrapper = Qwen3TTSModel(
             model=model,
             processor=processor,
-            generate_defaults=qwen3_stages._load_qwen3_tts_generate_defaults(
+            generate_defaults=qwen3_stages.load_qwen3_tts_generate_defaults(
                 checkpoint_dir
             ),
         )
@@ -182,7 +182,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        if _is_truthy(overrides.get("enable_torch_compile", False)):
+        if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:

@@ -75,7 +75,7 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             ),
         )
 
-    def _process_sampling_logits(
+    def process_sampling_logits(
         self, logits_output: LogitsProcessorOutput, requests: list[SchedulerRequest]
     ) -> None:
         logits = logits_output.next_token_logits

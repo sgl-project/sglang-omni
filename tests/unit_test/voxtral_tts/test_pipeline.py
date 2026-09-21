@@ -97,7 +97,7 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         stages,
-        "_load_audio_tokenizer",
+        "load_audio_tokenizer",
         lambda _checkpoint, _config, device: (
             seen_devices.append(device) or SimpleNamespace()
         ),
@@ -150,7 +150,7 @@ def test_voxtral_radix_cache_is_namespaced_by_voice() -> None:
 
 
 def test_voxtral_speech_validation_accepts_supported_fields() -> None:
-    stages._validate_voxtral_speech_params(
+    stages.validate_voxtral_speech_params(
         inputs="hello",
         params={
             "max_new_tokens": 128,
@@ -197,7 +197,7 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
     field: str,
 ) -> None:
     with pytest.raises(ValueError, match=field):
-        stages._validate_voxtral_speech_params(
+        stages.validate_voxtral_speech_params(
             inputs=inputs,
             params=params,
             tts_params=tts_params,
@@ -207,7 +207,7 @@ def test_voxtral_speech_validation_rejects_ignored_fields(
 @pytest.mark.parametrize("audio_codes", [None, torch.empty((0, 0), dtype=torch.long)])
 def test_voxtral_vocoder_rejects_empty_audio_codes(audio_codes) -> None:
     with pytest.raises(ValueError, match="generated no audio codes"):
-        stages._ensure_non_empty_audio_codes(audio_codes)
+        stages.ensure_non_empty_audio_codes(audio_codes)
 
 
 def test_voxtral_audio_waveform_payload_is_compact() -> None:
@@ -274,7 +274,7 @@ def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
     monkeypatch.setattr(
         stages,
-        "_load_audio_tokenizer",
+        "load_audio_tokenizer",
         lambda *args, **kwargs: FakeAudioTokenizer(),
     )
 
@@ -345,7 +345,7 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
         ),
     ]
 
-    runner._collect_audio_step(result, schedule_batch, requests)
+    runner.collect_audio_step(result, schedule_batch, requests)
 
     assert result.next_token_ids.tolist() == [11, eos_id]
     assert requests[0].data.output_codes == []
@@ -575,12 +575,12 @@ def test_voxtral_generation_reenables_cuda_graph_after_bootstrap(
     )
     monkeypatch.setattr(
         stages,
-        "_write_voxtral_sglang_config",
+        "write_voxtral_sglang_config",
         lambda checkpoint_dir: f"{checkpoint_dir}/config.json",
     )
     monkeypatch.setattr(
         stages,
-        "_load_voxtral_voice_embeddings",
+        "load_voxtral_voice_embeddings",
         lambda checkpoint_dir, device: {},
     )
     monkeypatch.setattr(
@@ -679,7 +679,7 @@ def test_enable_inductor_gemm_autotune_sets_per_shape_autotuning() -> None:
     try:
         inductor_config.max_autotune_gemm = False
         inductor_config.max_autotune_gemm_backends = "ATEN"
-        stages._enable_inductor_gemm_autotune()
+        stages.enable_inductor_gemm_autotune()
         assert inductor_config.max_autotune_gemm is True
         assert inductor_config.max_autotune_gemm_backends == "TRITON,ATEN"
     finally:

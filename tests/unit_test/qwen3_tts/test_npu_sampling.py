@@ -64,7 +64,7 @@ def test_murmur_hash32_pytorch_matches_scalar_reference() -> None:
     seeds = torch.tensor([0, 17, -1], dtype=torch.int64)
     positions = torch.tensor([1_707_985_137, 3, 9], dtype=torch.int64)
 
-    actual = sampling_kernels._murmur_hash32_pytorch(seeds, positions, 4)
+    actual = sampling_kernels.murmur_hash32_pytorch(seeds, positions, 4)
     expected = torch.tensor(
         [
             [_reference_hash(seed, position, column) for column in range(4)]
@@ -84,8 +84,8 @@ def test_float32_seeded_sampling_is_repeatable() -> None:
     seeds = torch.tensor([11, 22], dtype=torch.int64)
     positions = torch.tensor([4, 8], dtype=torch.int64)
 
-    first = sampling_kernels._seeded_gumbel_argmax_float32(logprobs, seeds, positions)
-    second = sampling_kernels._seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    first = sampling_kernels.seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    second = sampling_kernels.seeded_gumbel_argmax_float32(logprobs, seeds, positions)
 
     torch.testing.assert_close(first, second, rtol=0, atol=0)
     assert first.dtype == torch.long
@@ -101,7 +101,7 @@ def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
         return original_log(value)
 
     monkeypatch.setattr(torch, "log", record_log_dtype)
-    sampling_kernels._seeded_gumbel_argmax_float32(
+    sampling_kernels.seeded_gumbel_argmax_float32(
         torch.tensor([[0.0, -1.0]], dtype=torch.float32),
         torch.tensor([5], dtype=torch.int64),
         torch.tensor([7], dtype=torch.int64),
@@ -113,10 +113,10 @@ def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
 def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:
     seeds = torch.tensor([0], dtype=torch.int64)
     positions = torch.tensor([1_707_985_137], dtype=torch.int64)
-    hashes = sampling_kernels._murmur_hash32_pytorch(seeds, positions, 2)
+    hashes = sampling_kernels.murmur_hash32_pytorch(seeds, positions, 2)
     assert hashes[0, 0].item() == _UINT32_MASK
 
-    sampled = sampling_kernels._seeded_gumbel_argmax_float32(
+    sampled = sampling_kernels.seeded_gumbel_argmax_float32(
         torch.tensor([[-100.0, 0.0]], dtype=torch.float32), seeds, positions
     )
 
@@ -129,8 +129,8 @@ def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
     seeds = torch.tensor([0, 17, -1], device=device, dtype=torch.int64)
     positions = torch.tensor([1_707_985_137, 3, 9], device=device, dtype=torch.int64)
 
-    hashes = sampling_kernels._murmur_hash32_pytorch(seeds, positions, 4)
-    sampled = sampling_kernels._seeded_gumbel_argmax_float32(
+    hashes = sampling_kernels.murmur_hash32_pytorch(seeds, positions, 4)
+    sampled = sampling_kernels.seeded_gumbel_argmax_float32(
         torch.tensor(
             [[0.0, -1.0, -2.0, -3.0]] * 3,
             device=device,
@@ -183,13 +183,13 @@ def test_triton_kernel_is_disabled_on_npu(monkeypatch) -> None:
     monkeypatch.setattr(sampling_kernels, "triton", object())
     monkeypatch.setattr(sampling_kernels.current_platform, "is_npu", lambda: True)
 
-    assert not sampling_kernels._has_triton_runtime()
+    assert not sampling_kernels.has_triton_runtime()
 
 
 def test_sorted_sampler_uses_float32_path_for_npu(monkeypatch) -> None:
     monkeypatch.setattr(
         sampling_kernels,
-        "_all_tensors_on_npu",
+        "all_tensors_on_npu",
         lambda *tensors: True,
     )
 

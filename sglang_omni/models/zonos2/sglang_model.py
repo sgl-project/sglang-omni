@@ -291,7 +291,7 @@ class Zonos2SGLangModel(nn.Module):
             out = out + self.embedders[i](rows[:, i].contiguous())
         return out
 
-    def _warmup_embed(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def warmup_embed(self, input_ids: torch.Tensor) -> torch.Tensor:
         """Fallback embed for engine warmup (flat dummy ids; runner stages real
         input_embeds for every served step)."""
         ids = input_ids.view(-1)
@@ -322,7 +322,7 @@ class Zonos2SGLangModel(nn.Module):
             if fm is not None and fm.is_decode():
                 input_embeds = self._decode_input_embedding(input_ids)
             else:
-                input_embeds = self._warmup_embed(input_ids)
+                input_embeds = self.warmup_embed(input_ids)
         x = input_embeds
         x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
 
@@ -349,7 +349,7 @@ class Zonos2SGLangModel(nn.Module):
     # ---- opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH) ----
 
     @torch.no_grad()
-    def _tail_compute(self, bs: int) -> None:
+    def tail_compute(self, bs: int) -> None:
         """Graph-capturable per-frame tail over the first ``bs`` static rows: head
         GEMM -> break-mask -> per-request sample (torch.multinomial, capturable)
         -> embed -> radix hash. Reads/writes the ``_cg`` buffers in place."""
@@ -413,13 +413,13 @@ class Zonos2SGLangModel(nn.Module):
         with torch.cuda.stream(s):
             for bs in self._tail_buckets:
                 for _ in range(3):
-                    self._tail_compute(bs)
+                    self.tail_compute(bs)
         torch.cuda.current_stream().wait_stream(s)
         torch.cuda.synchronize()
         for bs in self._tail_buckets:
             g = torch.cuda.CUDAGraph()
             with torch.cuda.graph(g):
-                self._tail_compute(bs)
+                self.tail_compute(bs)
             self._tail_graphs[bs] = g
         torch.cuda.synchronize()
 

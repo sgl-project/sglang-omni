@@ -19,7 +19,7 @@ PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
 
 
-def _preprocessing_stage(*, process: str) -> StageConfig:
+def preprocessing_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="preprocessing",
         process=process,
@@ -34,7 +34,7 @@ def _preprocessing_stage(*, process: str) -> StageConfig:
     )
 
 
-def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+def image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="image_encoder",
         process=process,
@@ -45,7 +45,7 @@ def _image_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
+def audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="audio_encoder",
         process=process,
@@ -57,7 +57,7 @@ def _audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _thinker_stage(
+def thinker_stage(
     *, gpu: int, process: str, speech_enabled: bool = False
 ) -> StageConfig:
     return EngineStageConfig(
@@ -85,7 +85,7 @@ def _thinker_stage(
     )
 
 
-def _decode_stage(*, process: str) -> StageConfig:
+def decode_stage(*, process: str) -> StageConfig:
     return StageConfig(
         name="decode",
         process=process,
@@ -95,7 +95,7 @@ def _decode_stage(*, process: str) -> StageConfig:
     )
 
 
-def _talker_stage(*, gpu: int, process: str) -> StageConfig:
+def talker_stage(*, gpu: int, process: str) -> StageConfig:
     return EngineStageConfig(
         name="talker",
         process=process,
@@ -109,39 +109,50 @@ def _talker_stage(*, gpu: int, process: str) -> StageConfig:
     )
 
 
-def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
+def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
     return StageConfig(
         name="code2wav",
         process=process,
         factory_path=f"{PKG}.stages.create_code2wav_executor",
+        factory=FactoryArgs(
+            max_batch_size=8,
+            max_batch_wait_ms=0.0,
+            batch_wait_when_idle=False,
+        ),
+        # Note (Chenyang): As a general comment and my usual understanding
+        # of SGLang Omni, SGLang Omni has a poor runtime which leads to a
+        # underutilized GPU/SMs. To address this, we recommend users to set
+        # batchs for your compute but never wait for grouping the batchs.
+        # As SGLang Omni Runtime moves better, we shall probably wait several
+        # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
         terminal=True,
     )
 
 
-def _default_stages() -> list[StageConfig]:
+def text_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="pipeline"),
+        preprocessing_stage(process="pipeline"),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
-        _thinker_stage(gpu=0, process="pipeline"),
-        _image_encoder_stage(process="pipeline", gpu=0),
-        _audio_encoder_stage(process="pipeline", gpu=0),
-        _decode_stage(process="pipeline"),
+        thinker_stage(gpu=0, process="pipeline"),
+        image_encoder_stage(process="pipeline", gpu=0),
+        audio_encoder_stage(process="pipeline", gpu=0),
+        decode_stage(process="pipeline"),
     ]
 
 
-def _speech_stages() -> list[StageConfig]:
+def speech_stages() -> list[StageConfig]:
     return [
-        _preprocessing_stage(process="pipeline"),
+        preprocessing_stage(process="pipeline"),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
-        _thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
-        _image_encoder_stage(process="pipeline", gpu=0),
-        _audio_encoder_stage(process="pipeline", gpu=0),
-        _decode_stage(process="pipeline"),
+        thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
+        image_encoder_stage(process="pipeline", gpu=0),
+        audio_encoder_stage(process="pipeline", gpu=0),
+        decode_stage(process="pipeline"),
         # note (MayDomine): each engine requires a separate process-global TP group.
-        _talker_stage(gpu=0, process="talker"),
+        talker_stage(gpu=0, process="talker"),
         # note (MayDomine): vocoding must not block the thinker's event loop.
-        _code2wav_stage(gpu=0, process="code2wav"),
+        code2wav_stage(gpu=0, process="code2wav"),
     ]
 
 
@@ -154,7 +165,7 @@ class MiniCPMOPipelineConfig(PipelineConfig):
     }
 
     model_path: str
-    stages: list[StageConfig] = Field(default_factory=_default_stages)
+    stages: list[StageConfig] = Field(default_factory=text_stages)
 
 
 class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
@@ -173,7 +184,7 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     )
 
     terminal_stages_fn: str | None = f"{PKG}.routing.resolve_terminal_stages"
-    stages: list[StageConfig] = Field(default_factory=_speech_stages)
+    stages: list[StageConfig] = Field(default_factory=speech_stages)
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name in (THINKER_STAGE, "preprocessing"):

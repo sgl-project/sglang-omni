@@ -39,7 +39,7 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
         outputs: list[tuple[torch.Tensor, int] | None] = [None] * len(items)
         buckets: dict[int, list[tuple[int, torch.Tensor]]] = {}
         for index, (_state, latents) in enumerate(items):
-            self._validate_latents(latents)
+            self.validate_latents(latents)
             frames = int(latents.shape[1])
             bucket = (frames + _LENGTH_BUCKET_FRAMES - 1) // _LENGTH_BUCKET_FRAMES
             buckets.setdefault(bucket, []).append((index, latents))
@@ -93,7 +93,7 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
             raise RuntimeError("dots.tts AudioVAE did not produce every batch result")
         return [output for output in outputs if output is not None]
 
-    def _validate_latents(self, latents: torch.Tensor) -> None:
+    def validate_latents(self, latents: torch.Tensor) -> None:
         if latents.ndim != 3 or latents.shape[0] != 1:
             raise ValueError(
                 "dots.tts latents must have shape [1, frames, latent_dim], "
@@ -132,20 +132,20 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
 
 
 @dataclass
-class _DotsStreamState:
+class DotsStreamState:
     slot: int | None = None
     pending: list[torch.Tensor] = field(default_factory=list)
     received_patches: int = 0
 
 
 @dataclass(frozen=True)
-class _DotsCoalescedStepPlan:
+class DotsCoalescedStepPlan:
     take_patches: int
     slot_latents: dict[int, torch.Tensor]
 
 
 class DotsTTSStreamingVocoder(
-    StreamingVocoderBase[_DotsStreamState, _DotsCoalescedStepPlan]
+    StreamingVocoderBase[DotsStreamState, DotsCoalescedStepPlan]
 ):
     """Streaming AudioVAE with slot-pooled equal-T batched eager decode."""
 
@@ -193,20 +193,20 @@ class DotsTTSStreamingVocoder(
     def ensure_slot_pool(self) -> DotsVocoderSlotPool:
         """Allocate the slot pool at executor setup (not the first live chunk)."""
         with self.codec.lock:
-            return self._get_or_create_pool_locked()
+            return self.get_or_create_pool_locked()
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
         _state, latents = self._batch_vocoder.prepare_item(payload)
-        self._batch_vocoder._validate_latents(latents)
+        self._batch_vocoder.validate_latents(latents)
 
-    def create_stream_state(self, request_id: str) -> _DotsStreamState:
+    def create_stream_state(self, request_id: str) -> DotsStreamState:
         del request_id
-        return _DotsStreamState()
+        return DotsStreamState()
 
     def validate_chunk(
         self,
         request_id: str,
-        state: _DotsStreamState,
+        state: DotsStreamState,
         codes: torch.Tensor,
     ) -> torch.Tensor:
         del request_id, state
@@ -222,22 +222,22 @@ class DotsTTSStreamingVocoder(
         return codes.to(self.codec.device)
 
     def ingest(
-        self, request_id: str, state: _DotsStreamState, codes: torch.Tensor
+        self, request_id: str, state: DotsStreamState, codes: torch.Tensor
     ) -> None:
         del request_id
         state.pending.append(codes)
         state.received_patches += 1
-        self._ensure_slot(state)
+        self.ensure_slot(state)
 
-    def should_decode(self, state: _DotsStreamState, *, is_final: bool) -> bool:
+    def should_decode(self, state: DotsStreamState, *, is_final: bool) -> bool:
         # note (guozhihao-224): coalesced serving uses select_step_participants;
         # this gate remains for direct decode_delta / stream-done callers.
         if is_final:
             return bool(state.pending)
-        return self._pending_ready(state)
+        return self.pending_ready(state)
 
     def decode_delta(
-        self, request_id: str, state: _DotsStreamState, *, is_final: bool
+        self, request_id: str, state: DotsStreamState, *, is_final: bool
     ) -> torch.Tensor | None:
         """Stream-done drain: pending -> slot step, flush, release.
 
@@ -248,7 +248,7 @@ class DotsTTSStreamingVocoder(
             return None
         chunks: list[torch.Tensor] = []
         with self.codec.lock:
-            pool = self._get_or_create_pool_locked()
+            pool = self.get_or_create_pool_locked()
             if state.slot is None and state.pending:
                 state.slot = pool.acquire()
             if state.slot is not None and state.pending:
@@ -271,7 +271,7 @@ class DotsTTSStreamingVocoder(
         return torch.cat(chunks, dim=-1)
 
     def final_result_data(
-        self, request_id: str, payload: StagePayload, state: _DotsStreamState
+        self, request_id: str, payload: StagePayload, state: DotsStreamState
     ) -> dict[str, Any]:
         del request_id, state
         tts_state = load_dots_tts_state(payload)
@@ -285,7 +285,7 @@ class DotsTTSStreamingVocoder(
         return result
 
     def fallback_full_decode(
-        self, request_id: str, payload: StagePayload, state: _DotsStreamState
+        self, request_id: str, payload: StagePayload, state: DotsStreamState
     ) -> torch.Tensor | None:
         del request_id, state
         tts_state = load_dots_tts_state(payload)
@@ -296,42 +296,40 @@ class DotsTTSStreamingVocoder(
                 tts_state.generated_latents.to(self.codec.device)
             )
 
-    def release_stream_resources(
-        self, request_id: str, state: _DotsStreamState
-    ) -> None:
+    def release_stream_resources(self, request_id: str, state: DotsStreamState) -> None:
         del request_id
         if state.slot is None:
             return
         with self.codec.lock:
-            self._get_or_create_pool_locked().release(state.slot)
+            self.get_or_create_pool_locked().release(state.slot)
         state.slot = None
 
-    def select_step_participants(self) -> list[tuple[str, _DotsStreamState]]:
+    def select_step_participants(self) -> list[tuple[str, DotsStreamState]]:
         slotted = [
             (request_id, state)
             for request_id, state in self.stream_state_items()
-            if state.slot is not None and self._pending_ready(state)
+            if state.slot is not None and self.pending_ready(state)
         ]
         if not slotted:
             return []
         # note (guozhihao-224): exact-T groups only; padding would change AudioVAE
         # convolution boundaries. Cap with max_batch_size so one pool.step does
         # not grow to stream_slots under high concurrency.
-        by_frames: dict[int, list[tuple[str, _DotsStreamState]]] = {}
+        by_frames: dict[int, list[tuple[str, DotsStreamState]]] = {}
         for entry in slotted:
-            frames = self._step_frames(entry[1])
+            frames = self.step_frames(entry[1])
             by_frames.setdefault(frames, []).append(entry)
         return max(by_frames.values(), key=len)[: self.stream_chunk_batch_max]
 
     def build_step_plan(
-        self, participants: list[tuple[str, _DotsStreamState]]
-    ) -> _DotsCoalescedStepPlan:
-        take_patches = self._take_patches(participants[0][1])
+        self, participants: list[tuple[str, DotsStreamState]]
+    ) -> DotsCoalescedStepPlan:
+        take_patches = self.take_patches(participants[0][1])
         slot_latents: dict[int, torch.Tensor] = {}
         for _, state in participants:
             if state.slot is None:
                 raise RuntimeError("dots.tts coalesced step is missing a vocoder slot")
-            if self._take_patches(state) != take_patches:
+            if self.take_patches(state) != take_patches:
                 raise RuntimeError("dots.tts coalesced step mixed unequal patch counts")
             patches = state.pending[:take_patches]
             latents = torch.cat(patches, dim=1)
@@ -342,18 +340,18 @@ class DotsTTSStreamingVocoder(
                     f"{take_patches * self.codec.patch_size}"
                 )
             slot_latents[state.slot] = latents
-        return _DotsCoalescedStepPlan(
+        return DotsCoalescedStepPlan(
             take_patches=take_patches,
             slot_latents=slot_latents,
         )
 
     def run_step(
         self,
-        participants: list[tuple[str, _DotsStreamState]],
-        plan: _DotsCoalescedStepPlan,
+        participants: list[tuple[str, DotsStreamState]],
+        plan: DotsCoalescedStepPlan,
     ) -> dict[str, torch.Tensor]:
         with self.codec.lock:
-            decoded = self._get_or_create_pool_locked().step(plan.slot_latents)
+            decoded = self.get_or_create_pool_locked().step(plan.slot_latents)
         out: dict[str, torch.Tensor] = {}
         for request_id, state in participants:
             del state.pending[: plan.take_patches]
@@ -364,7 +362,7 @@ class DotsTTSStreamingVocoder(
                 out[request_id] = waveform
         return out
 
-    def _get_or_create_pool_locked(self) -> DotsVocoderSlotPool:
+    def get_or_create_pool_locked(self) -> DotsVocoderSlotPool:
         # Caller must hold self.codec.lock (RLock).
         if self._slot_pool is None:
             self._slot_pool = DotsVocoderSlotPool(
@@ -381,27 +379,27 @@ class DotsTTSStreamingVocoder(
             )
         return self._slot_pool
 
-    def _ensure_slot(self, state: _DotsStreamState) -> None:
+    def ensure_slot(self, state: DotsStreamState) -> None:
         if state.slot is not None:
             return
         with self.codec.lock:
             if state.slot is None:
-                state.slot = self._get_or_create_pool_locked().acquire()
+                state.slot = self.get_or_create_pool_locked().acquire()
 
-    def _pending_ready(self, state: _DotsStreamState) -> bool:
+    def pending_ready(self, state: DotsStreamState) -> bool:
         if not state.pending:
             return False
         if state.received_patches <= 2:
             return True
         return len(state.pending) >= self.merge_steps
 
-    def _take_patches(self, state: _DotsStreamState) -> int:
+    def take_patches(self, state: DotsStreamState) -> int:
         if state.received_patches <= 2:
             return 1
         return min(self.merge_steps, len(state.pending))
 
-    def _step_frames(self, state: _DotsStreamState) -> int:
-        return self._take_patches(state) * self.codec.patch_size
+    def step_frames(self, state: DotsStreamState) -> int:
+        return self.take_patches(state) * self.codec.patch_size
 
 
 __all__ = ["DotsTTSBatchVocoder", "DotsTTSStreamingVocoder"]

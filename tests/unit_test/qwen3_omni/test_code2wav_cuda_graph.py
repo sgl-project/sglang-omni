@@ -408,7 +408,7 @@ def test_device_api_restores_original_stream_when_capture_exit_raises(
     )
 
     with pytest.raises(RuntimeError, match="fake capture_end failed"):
-        code2wav_cuda_graph._TorchDeviceApi().capture(
+        code2wav_cuda_graph.TorchDeviceApi().capture(
             _FakeModel(),
             torch.zeros((1, 16, 10), dtype=torch.long),
             pool=object(),
@@ -421,7 +421,7 @@ def test_device_api_restores_original_stream_when_capture_exit_raises(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
 def test_real_cuda_invalid_capture_preserves_current_stream() -> None:
-    api = code2wav_cuda_graph._TorchDeviceApi()
+    api = code2wav_cuda_graph.TorchDeviceApi()
     device = torch.device("cuda", torch.cuda.current_device())
     original_stream = torch.cuda.current_stream(device)
     side_stream = api.new_stream(device)
@@ -1068,7 +1068,7 @@ def test_the_mask_pin_refuses_a_concurrent_holder() -> None:
     outcome: list[str] = []
 
     def holder() -> None:
-        with code2wav_cuda_graph._unpacked_sequence_mask():
+        with code2wav_cuda_graph.unpacked_sequence_mask():
             held.set()
             release.wait(timeout=5)
 
@@ -1077,7 +1077,7 @@ def test_the_mask_pin_refuses_a_concurrent_holder() -> None:
     try:
         assert held.wait(timeout=5), "holder never acquired the pin"
         try:
-            with code2wav_cuda_graph._unpacked_sequence_mask():
+            with code2wav_cuda_graph.unpacked_sequence_mask():
                 outcome.append("acquired")
         except RuntimeError:
             outcome.append("refused")
@@ -1086,7 +1086,7 @@ def test_the_mask_pin_refuses_a_concurrent_holder() -> None:
         worker.join(timeout=5)
 
     assert outcome == ["refused"]
-    with code2wav_cuda_graph._unpacked_sequence_mask():
+    with code2wav_cuda_graph.unpacked_sequence_mask():
         pass
 
 
@@ -1098,11 +1098,11 @@ def test_a_failure_reading_the_mask_global_does_not_leak_the_lock(
     monkeypatch.delattr(masking_utils, "find_packed_sequence_indices")
 
     with pytest.raises(AttributeError):
-        with code2wav_cuda_graph._unpacked_sequence_mask():
+        with code2wav_cuda_graph.unpacked_sequence_mask():
             pass
 
     monkeypatch.undo()
-    with code2wav_cuda_graph._unpacked_sequence_mask():
+    with code2wav_cuda_graph.unpacked_sequence_mask():
         assert masking_utils.find_packed_sequence_indices([1, 2]) is None
 
 

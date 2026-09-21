@@ -84,13 +84,13 @@ class ArkasrForConditionalGeneration(nn.Module):
         outputs = []
         for start in range(0, len(items), self.encoder_max_batch_size):
             outputs.append(
-                self._encode_audio_batch(
+                self.encode_audio_batch(
                     items[start : start + self.encoder_max_batch_size]
                 )
             )
         return torch.cat(outputs, dim=0)
 
-    def _encode_audio_batch(self, items: List[MultimodalDataItem]) -> torch.Tensor:
+    def encode_audio_batch(self, items: List[MultimodalDataItem]) -> torch.Tensor:
         """Pad and encode one bounded batch of audio items."""
         device = next(self.audio_encoder.parameters()).device
         dtype = self.audio_encoder.dtype

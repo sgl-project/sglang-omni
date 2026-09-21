@@ -20,10 +20,10 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MiniCPMWhisperEncoder,
     MultiModalProjector,
-    _chunked_causal_mask,
-    _feature_lens_after_pooling,
-    _fuse_qkv,
-    _min_mel_frames,
+    chunked_causal_mask,
+    feature_lens_after_pooling,
+    fuse_qkv,
+    min_mel_frames,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -54,7 +54,7 @@ def _small_whisper_config():
 
 
 def _native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:
-    return _fuse_qkv(dict(encoder.state_dict()))
+    return fuse_qkv(dict(encoder.state_dict()))
 
 
 def _build_remote_encoder(checkpoint: Path, config):
@@ -107,7 +107,7 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
     seq_range = torch.arange(max_seq_len)
     valid = seq_range[None, :] < ((feat_lens - 1) // 2 + 1)[:, None]
     allowed = (
-        _chunked_causal_mask(max_seq_len, chunk, torch.device("cpu"))[None]
+        chunked_causal_mask(max_seq_len, chunk, torch.device("cpu"))[None]
         & valid[:, None, :]
     )
 
@@ -181,7 +181,7 @@ def test_padding_content_does_not_change_valid_output(padding: str) -> None:
         polluted_mel, original_mel, rtol=0, atol=0, equal_nan=True
     )
     pooled_short = int(
-        _feature_lens_after_pooling(torch.tensor([short_len]), encoder.audio_pool_step)
+        feature_lens_after_pooling(torch.tensor([short_len]), encoder.audio_pool_step)
     )
     # Rows are emitted in chunk order with each chunk trimmed to its pooled
     # length, so the short row sits at the end of the flattened output.
@@ -197,7 +197,7 @@ def test_short_audio_is_rejected_before_pooling() -> None:
     """A clip too short for one pooling window must raise a typed error."""
     pool_step = 5
     encoder = _tiny_audio_encoder(pool_step=pool_step)
-    too_short = _min_mel_frames(pool_step) - 1
+    too_short = min_mel_frames(pool_step) - 1
     mel = torch.randn(1, 80, too_short).to(encoder.dtype)
     lens = torch.tensor([too_short])
 
@@ -227,7 +227,7 @@ def test_minimum_length_audio_still_encodes() -> None:
     """The shortest accepted clip yields exactly one pooled frame."""
     pool_step = 5
     encoder = _tiny_audio_encoder(pool_step=pool_step)
-    shortest = _min_mel_frames(pool_step)
+    shortest = min_mel_frames(pool_step)
     mel = torch.randn(1, 80, shortest).to(encoder.dtype)
     lens = torch.tensor([shortest])
 

@@ -29,7 +29,7 @@ from torch import nn
 from sglang_omni.models.qwen3_omni.components.talker import (  # noqa: E501
     Qwen3OmniMoeTalkerDenseMLP,
     ResizeMLP,
-    _bind_default_weight_loaders,
+    bind_default_weight_loaders,
 )
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
@@ -62,7 +62,7 @@ _PREDICTOR_GRAPH_WARMUP_PASSES = 2
 _PREDICTOR_TOP_K_LADDER = (4, 8, 16, 32, 50, 64, 128, 256, 512, 1024)
 
 
-def _predictor_graph_env_override() -> bool | None:
+def predictor_graph_env_override() -> bool | None:
     """The operator's explicit choice, or None to leave it to the platform."""
     value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV)
     if value is None:
@@ -70,7 +70,7 @@ def _predictor_graph_env_override() -> bool | None:
     return value.strip().lower() not in ("0", "false", "off", "no")
 
 
-def _predictor_gqa_attention(
+def predictor_gqa_attention(
     q: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -106,7 +106,7 @@ def _predictor_gqa_attention(
     )
 
 
-def _quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
+def quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
     """Smallest ladder width covering max_top_k, or None to use the full sort."""
     for step in _PREDICTOR_TOP_K_LADDER:
         if step >= max_top_k:
@@ -114,7 +114,7 @@ def _quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
     return None
 
 
-def _predictor_signature_terms(
+def predictor_signature_terms(
     sampled_top_ks: list[int],
     sampled_top_ps: list[float],
     vocab_size: int,
@@ -130,7 +130,7 @@ def _predictor_signature_terms(
     if max_bounded_top_k > 0 and not has_unbounded_top_k:
         # Note: (Jiaxin Deng) ladder-quantized so predictor-graph keys are
         # shared across request top_k values; per-row masks keep true k.
-        quantized = _quantize_predictor_top_k(max_bounded_top_k, vocab_size)
+        quantized = quantize_predictor_top_k(max_bounded_top_k, vocab_size)
         if quantized is None:
             has_unbounded_top_k = True
         else:
@@ -138,7 +138,7 @@ def _predictor_signature_terms(
     return max_top_k, has_top_p, has_unbounded_top_k
 
 
-def _sample_seeded_categorical(
+def sample_seeded_categorical(
     logprobs: torch.Tensor,
     seeds: torch.Tensor,
     positions: torch.Tensor,
@@ -148,7 +148,7 @@ def _sample_seeded_categorical(
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
 
 
-class _PredictorDecodeGraph:
+class PredictorDecodeGraph:
     """Device graph over the full per-token predictor chain for one batch bucket.
 
     One graph per (bucket, sampling signature): the signature pins the host
@@ -315,7 +315,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
     def get_text_embeddings(self):
         return self.text_embedding
 
-    def _build_input_hidden_states(
+    def build_input_hidden_states(
         self,
         input_ids: torch.Tensor,
     ) -> torch.Tensor:
@@ -341,7 +341,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
             if is_decode:
                 hidden_states = self._decode_feedback_embedding(input_ids)
             else:
-                hidden_states = self._build_input_hidden_states(input_ids)
+                hidden_states = self.build_input_hidden_states(input_ids)
         else:
             hidden_states = input_embeds
 
@@ -468,7 +468,7 @@ class Qwen3TTSPromptBuilderMixin:
             for emb in voice_clone_prompt["ref_spk_embedding"]
         ]
 
-    def _build_instruct_embed(
+    def build_instruct_embed(
         self,
         instruct_id: torch.Tensor | None,
     ) -> torch.Tensor | None:
@@ -476,7 +476,7 @@ class Qwen3TTSPromptBuilderMixin:
             return None
         return self.text_projection(self.get_text_embeddings()(instruct_id))
 
-    def _build_tts_special_embeds(
+    def build_tts_special_embeds(
         self,
         *,
         dtype: torch.dtype,
@@ -494,7 +494,7 @@ class Qwen3TTSPromptBuilderMixin:
         )
         return self.text_projection(self.get_text_embeddings()(ids)).chunk(3, dim=1)
 
-    def _resolve_language_id(
+    def resolve_language_id(
         self,
         *,
         language: str,
@@ -513,14 +513,14 @@ class Qwen3TTSPromptBuilderMixin:
             return self.config.codec_language_id.get(dialect)
         return None
 
-    def _build_codec_prefill(
+    def build_codec_prefill(
         self,
         *,
         language: str,
         dtype: torch.dtype,
         voice: str | None = None,
     ) -> torch.Tensor:
-        language_id = self._resolve_language_id(language=language, voice=voice)
+        language_id = self.resolve_language_id(language=language, voice=voice)
         if language_id is None:
             codec_prefill = [
                 self.config.codec_nothink_id,
@@ -538,7 +538,7 @@ class Qwen3TTSPromptBuilderMixin:
             torch.tensor([codec_prefill], device=self.device, dtype=dtype)
         )
 
-    def _finish_text_prompt(
+    def finish_text_prompt(
         self,
         *,
         talker_input_embed: torch.Tensor,
@@ -590,17 +590,17 @@ class Qwen3TTSPromptBuilderMixin:
         )
         return talker_input_embed, trailing_text_hidden
 
-    def _apply_instruct_prefix(
+    def apply_instruct_prefix(
         self,
         talker_input_embed: torch.Tensor,
         instruct_id: torch.Tensor | None,
     ) -> torch.Tensor:
-        instruct_embed = self._build_instruct_embed(instruct_id)
+        instruct_embed = self.build_instruct_embed(instruct_id)
         if instruct_embed is None:
             return talker_input_embed
         return torch.cat([instruct_embed, talker_input_embed], dim=1)
 
-    def _build_conditioned_prompt_prefix(
+    def build_conditioned_prompt_prefix(
         self,
         *,
         input_id: torch.Tensor,
@@ -631,10 +631,10 @@ class Qwen3TTSPromptBuilderMixin:
         voice_clone_spk_embeds = self.generate_speaker_prompt(voice_clone_prompt)
         speaker_embed = voice_clone_spk_embeds[0]
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
             dtype=input_id.dtype
         )
-        codec_input_0 = self._build_codec_prefill(
+        codec_input_0 = self.build_codec_prefill(
             language=language,
             dtype=input_id.dtype,
         )
@@ -648,7 +648,7 @@ class Qwen3TTSPromptBuilderMixin:
         codec_input = torch.cat(
             [codec_input_0, speaker_embed.view(1, 1, -1), codec_input_1], dim=1
         )
-        talker_input_embed = self._build_conditioned_prompt_prefix(
+        talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
             tts_bos_embed=tts_bos_embed,
@@ -673,7 +673,7 @@ class Qwen3TTSPromptBuilderMixin:
             )
             talker_input_embed = torch.cat([talker_input_embed, icl_embed], dim=1)
         else:
-            talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+            talker_input_embed, trailing_text_hidden = self.finish_text_prompt(
                 talker_input_embed=talker_input_embed,
                 input_id=input_id,
                 codec_last_embed=codec_input[:, -1:],
@@ -682,7 +682,7 @@ class Qwen3TTSPromptBuilderMixin:
                 non_streaming_mode=non_streaming_mode,
             )
 
-        talker_input_embed = self._apply_instruct_prefix(
+        talker_input_embed = self.apply_instruct_prefix(
             talker_input_embed,
             instruct_id,
         )
@@ -714,10 +714,10 @@ class Qwen3TTSPromptBuilderMixin:
                 f"Supported speakers: {supported}"
             )
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
             dtype=input_id.dtype
         )
-        codec_input_0 = self._build_codec_prefill(
+        codec_input_0 = self.build_codec_prefill(
             language=language,
             dtype=input_id.dtype,
             voice=speaker_key,
@@ -735,13 +735,13 @@ class Qwen3TTSPromptBuilderMixin:
             )
         )
         codec_input = torch.cat([codec_input_0, speaker_embed, codec_input_1], dim=1)
-        talker_input_embed = self._build_conditioned_prompt_prefix(
+        talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
             tts_bos_embed=tts_bos_embed,
             tts_pad_embed=tts_pad_embed,
         )
-        talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+        talker_input_embed, trailing_text_hidden = self.finish_text_prompt(
             talker_input_embed=talker_input_embed,
             input_id=input_id,
             codec_last_embed=codec_input[:, -1:],
@@ -749,7 +749,7 @@ class Qwen3TTSPromptBuilderMixin:
             tts_eos_embed=tts_eos_embed,
             non_streaming_mode=non_streaming_mode,
         )
-        talker_input_embed = self._apply_instruct_prefix(
+        talker_input_embed = self.apply_instruct_prefix(
             talker_input_embed,
             instruct_id,
         )
@@ -769,10 +769,10 @@ class Qwen3TTSPromptBuilderMixin:
         if instruct_id is None:
             raise ValueError("Qwen3-TTS VoiceDesign requires instructions")
 
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._build_tts_special_embeds(
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
             dtype=input_id.dtype
         )
-        codec_input_0 = self._build_codec_prefill(
+        codec_input_0 = self.build_codec_prefill(
             language=language,
             dtype=input_id.dtype,
         )
@@ -784,13 +784,13 @@ class Qwen3TTSPromptBuilderMixin:
             )
         )
         codec_input = torch.cat([codec_input_0, codec_input_1], dim=1)
-        talker_input_embed = self._build_conditioned_prompt_prefix(
+        talker_input_embed = self.build_conditioned_prompt_prefix(
             input_id=input_id,
             codec_input=codec_input,
             tts_bos_embed=tts_bos_embed,
             tts_pad_embed=tts_pad_embed,
         )
-        talker_input_embed, trailing_text_hidden = self._finish_text_prompt(
+        talker_input_embed, trailing_text_hidden = self.finish_text_prompt(
             talker_input_embed=talker_input_embed,
             input_id=input_id,
             codec_last_embed=codec_input[:, -1:],
@@ -798,7 +798,7 @@ class Qwen3TTSPromptBuilderMixin:
             tts_eos_embed=tts_eos_embed,
             non_streaming_mode=non_streaming_mode,
         )
-        talker_input_embed = self._apply_instruct_prefix(
+        talker_input_embed = self.apply_instruct_prefix(
             talker_input_embed,
             instruct_id,
         )
@@ -969,7 +969,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             * predictor_len
             + self._predictor_positions[:, None]
         ).contiguous()
-        self._predictor_rope_stores_kv = self._resolve_predictor_rope_store(
+        self._predictor_rope_stores_kv = self.resolve_predictor_rope_store(
             cp_attn, device=device
         )
         self._sampled_token_ids = torch.zeros(
@@ -1015,11 +1015,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._sub_sampled_max_top_k = 0
         self._sub_sampled_has_unbounded_top_k = False
         self._decode_prep_rids: list | None = None
-        self._predictor_graph_batch_sizes = self._normalize_predictor_graph_batch_sizes(
+        self._predictor_graph_batch_sizes = self.normalize_predictor_graph_batch_sizes(
             server_args,
             max_batch_size=max_batch_size,
         )
-        self._predictor_graphs: dict[tuple, _PredictorDecodeGraph] = {}
+        self._predictor_graphs: dict[tuple, PredictorDecodeGraph] = {}
         self._predictor_graph_disabled: set[tuple] = set()
         # note(ratish): None until the startup capture, which runs before the
         # KV pool is sized, or the first decode resolves it.
@@ -1031,7 +1031,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._predictor_graph_startup_count = 0
         self._predictor_graph_pool = None
         self._predictor_capture_stream: torch.Stream | None = None
-        _bind_default_weight_loaders(self)
+        bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
 
@@ -1104,7 +1104,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 sample_rows.append(row_idx)
 
         predictor_vocab_size = int(self.config.code_predictor_config.vocab_size)
-        max_top_k, has_top_p, has_unbounded_top_k = _predictor_signature_terms(
+        max_top_k, has_top_p, has_unbounded_top_k = predictor_signature_terms(
             [sub_top_ks[row_idx] for row_idx in sample_rows],
             [sub_top_ps[row_idx] for row_idx in sample_rows],
             predictor_vocab_size,
@@ -1157,7 +1157,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             input_embeds=input_embeds,
         )
         if forward_batch.forward_mode.is_extend():
-            last_index = self._extend_last_index(forward_batch, hidden_states.device)
+            last_index = self.extend_last_index(forward_batch, hidden_states.device)
             hidden_states = hidden_states[last_index]
         logits, _ = self.codec_head(hidden_states)
         logits_output = LogitsProcessorOutput(
@@ -1166,7 +1166,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         return logits_output
 
-    def _extend_last_index(
+    def extend_last_index(
         self,
         forward_batch: ForwardBatch,
         device: torch.device,
@@ -1187,14 +1187,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             layer0_codes = layer0_codes.unsqueeze(1)
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
-        graph_result = self._predictor_forward_graphed(
+        graph_result = self.predictor_forward_graphed(
             layer0_codes,
             talker_hidden,
             semantic_positions,
         )
         if graph_result is not None:
             return graph_result
-        result_codes, summed_embeddings = self._code_predictor_forward_incremental(
+        result_codes, summed_embeddings = self.code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
             semantic_positions=semantic_positions,
@@ -1202,7 +1202,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         return result_codes, summed_embeddings
 
     @staticmethod
-    def _normalize_predictor_graph_batch_sizes(
+    def normalize_predictor_graph_batch_sizes(
         server_args: object,
         *,
         max_batch_size: int,
@@ -1227,13 +1227,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             normalized.append(int(max_batch_size))
         return tuple(normalized)
 
-    def _predictor_graph_bucket_size(self, batch_size: int) -> int | None:
+    def predictor_graph_bucket_size(self, batch_size: int) -> int | None:
         for bucket_size in self._predictor_graph_batch_sizes:
             if bucket_size >= batch_size:
                 return bucket_size
         return None
 
-    def _predictor_graph_signature(
+    def predictor_graph_signature(
         self,
         batch_size: int,
         semantic_positions: torch.Tensor | None,
@@ -1261,7 +1261,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
 
     @contextmanager
-    def _predictor_graph_capture_state(self, bucket_size: int, signature: tuple):
+    def predictor_graph_capture_state(self, bucket_size: int, signature: tuple):
         saved = (
             self._sub_batch_size,
             self._sub_has_sampled_rows,
@@ -1291,7 +1291,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 self._sub_has_argmax_rows,
             ) = saved
 
-    def _predictor_graph_memory_pool(self):
+    def predictor_graph_memory_pool(self):
         # Note: (Jiaxin Deng) one shared pool across keys; private per-graph
         # pools would retain intermediates per key and scale with diversity.
         if self._predictor_graph_pool is None:
@@ -1300,7 +1300,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             )
         return self._predictor_graph_pool
 
-    def _resolve_predictor_graph_enabled(self) -> bool:
+    def resolve_predictor_graph_enabled(self) -> bool:
         # Device first: a device that cannot record answers without published config.
         if current_platform.get_device_graph_backend(self._predictor_device) is None:
             return False
@@ -1308,7 +1308,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # graphed chain is only validated single-rank, so TP stays eager.
         if int(get_parallel().tp_size) != 1:
             return False
-        override = _predictor_graph_env_override()
+        override = predictor_graph_env_override()
         if override is None:
             should_capture = current_platform.enable_tts_predictor_graph()
         else:
@@ -1331,11 +1331,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         keys beyond it. The mixed signature skips bucket 1: a mixed batch holds
         a sampled row and an argmax row."""
         if self._predictor_graph_enabled is None:
-            self._predictor_graph_enabled = self._resolve_predictor_graph_enabled()
+            self._predictor_graph_enabled = self.resolve_predictor_graph_enabled()
         if not self._predictor_graph_enabled:
             return 0
         if do_sample:
-            max_top_k, has_top_p, has_unbounded_top_k = _predictor_signature_terms(
+            max_top_k, has_top_p, has_unbounded_top_k = predictor_signature_terms(
                 [int(top_k)],
                 [float(top_p)],
                 int(self.config.code_predictor_config.vocab_size),
@@ -1355,7 +1355,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 key = (bucket_size, *signature)
                 if key in self._predictor_graphs:
                     continue
-                self._predictor_graphs[key] = self._capture_predictor_graph(
+                self._predictor_graphs[key] = self.capture_predictor_graph(
                     bucket_size, signature
                 )
                 self._predictor_graph_capture_count += 1
@@ -1369,11 +1369,11 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         return captured
 
     @torch.no_grad()
-    def _capture_predictor_graph(
+    def capture_predictor_graph(
         self,
         bucket_size: int,
         signature: tuple,
-    ) -> _PredictorDecodeGraph:
+    ) -> PredictorDecodeGraph:
         """One stream per talker for warmups and captures: the allocator only
         reuses a pool block on the stream that freed it. Automatic collection
         is off for the capture because a graph finalizer reached by the
@@ -1386,7 +1386,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self._predictor_capture_stream = module.Stream(device=device)
         capture_stream = self._predictor_capture_stream
         current_stream = module.current_stream(device)
-        graph = _PredictorDecodeGraph(
+        graph = PredictorDecodeGraph(
             bucket_size,
             signature,
             device=device,
@@ -1398,7 +1398,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         capture_stream.wait_stream(current_stream)
 
         def run_once() -> Tuple[torch.Tensor, torch.Tensor]:
-            return self._code_predictor_forward_incremental(
+            return self.code_predictor_forward_incremental(
                 graph.layer0_codes,
                 graph.talker_hidden,
                 semantic_positions=graph.semantic_positions,
@@ -1414,13 +1414,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             with (
                 module.device(device),
                 current_platform.graph_capture_attention(),
-                self._predictor_graph_capture_state(bucket_size, signature),
+                self.predictor_graph_capture_state(bucket_size, signature),
                 module.stream(capture_stream),
             ):
                 for _ in range(_PREDICTOR_GRAPH_WARMUP_PASSES):
                     run_once()
                 with backend.capture(
-                    pool=self._predictor_graph_memory_pool(),
+                    pool=self.predictor_graph_memory_pool(),
                     stream=capture_stream,
                     thread_local_errors=True,
                 ) as captured:
@@ -1443,14 +1443,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             raise RuntimeError("Qwen3-TTS predictor graph captured no outputs")
         return graph
 
-    def _predictor_forward_graphed(
+    def predictor_forward_graphed(
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
         semantic_positions: torch.Tensor | None,
     ) -> Tuple[torch.Tensor, torch.Tensor] | None:
         if self._predictor_graph_enabled is None:
-            self._predictor_graph_enabled = self._resolve_predictor_graph_enabled()
+            self._predictor_graph_enabled = self.resolve_predictor_graph_enabled()
         if not self._predictor_graph_enabled:
             return None
         batch_size, seq_len = layer0_codes.shape
@@ -1465,10 +1465,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             return None
         if self._predictor_device_module.is_current_stream_capturing():
             return None
-        signature = self._predictor_graph_signature(batch_size, semantic_positions)
+        signature = self.predictor_graph_signature(batch_size, semantic_positions)
         if signature is None:
             return None
-        bucket_size = self._predictor_graph_bucket_size(batch_size)
+        bucket_size = self.predictor_graph_bucket_size(batch_size)
         if bucket_size is None:
             return None
         key = (bucket_size, *signature)
@@ -1492,7 +1492,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     )
                 return None
             try:
-                graph = self._capture_predictor_graph(bucket_size, signature)
+                graph = self.capture_predictor_graph(bucket_size, signature)
             except Exception:
                 self._predictor_graph_disabled.add(key)
                 self._predictor_graph_failure_count += 1
@@ -1515,7 +1515,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         result = graph.replay(layer0_codes, talker_hidden, semantic_positions)
         return result
 
-    def _code_predictor_forward_incremental(
+    def code_predictor_forward_incremental(
         self,
         layer0_codes: torch.Tensor,
         talker_hidden: torch.Tensor,
@@ -1527,7 +1527,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             talker_hidden = talker_hidden.unsqueeze(1)
 
         batch_size, seq_len = layer0_codes.shape
-        semantic_positions = self._normalize_semantic_positions(
+        semantic_positions = self.normalize_semantic_positions(
             semantic_positions,
             batch_size=batch_size,
             seq_len=seq_len,
@@ -1565,13 +1565,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             pos_summed.add_(layer0_embed[:, 0, :])
 
             cache_len = 0
-            self._predictor_forward_one_token(
+            self.predictor_forward_one_token(
                 token_embeds=talker_predictor_embed,
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
             cache_len += 1
-            last_hidden = self._predictor_forward_one_token(
+            last_hidden = self.predictor_forward_one_token(
                 token_embeds=layer0_predictor_embed,
                 batch_size=batch_size,
                 cache_len=cache_len,
@@ -1579,13 +1579,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             cache_len += 1
 
             sub_positions = (
-                self._sub_seed_positions(semantic_positions[:, pos])
+                self.sub_seed_positions(semantic_positions[:, pos])
                 if self._sub_has_sampled_rows
                 else None
             )
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self._sample_subtalker_token(
+                next_code = self.sample_subtalker_token(
                     logits[:, -1, :],
                     sub_positions=(
                         None if sub_positions is None else sub_positions[layer_idx]
@@ -1612,7 +1612,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     pos_summed.add_(new_embed[:, 0, :])
                 new_predictor_embed = self.code_predictor.project_input(new_embed)
                 if layer_idx < num_groups - 2:
-                    last_hidden = self._predictor_forward_one_token(
+                    last_hidden = self.predictor_forward_one_token(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
                         cache_len=cache_len,
@@ -1620,7 +1620,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     cache_len += 1
         return result_codes, summed_embeddings
 
-    def _normalize_semantic_positions(
+    def normalize_semantic_positions(
         self,
         semantic_positions: torch.Tensor | None,
         *,
@@ -1641,7 +1641,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         offsets = torch.arange(seq_len, device=device, dtype=torch.long)
         return base.unsqueeze(1) + offsets.unsqueeze(0)
 
-    def _sub_seed_positions(self, semantic_positions: torch.Tensor) -> torch.Tensor:
+    def sub_seed_positions(self, semantic_positions: torch.Tensor) -> torch.Tensor:
         """Seed positions of every sub-step of one decode position, sub-step
         first, so each sub-step reads its row without a kernel."""
         group_stride = max(int(self.config.num_code_groups) - 1, 1)
@@ -1651,7 +1651,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             alpha=group_stride,
         )
 
-    def _sample_subtalker_token(
+    def sample_subtalker_token(
         self,
         logits: torch.Tensor,
         *,
@@ -1666,7 +1666,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         if not self._sub_has_sampled_rows:
             return torch.argmax(logits, dim=-1).to(dtype=torch.long)
 
-        sampled_tokens = self._sample_subtalker_token_seeded(
+        sampled_tokens = self.sample_subtalker_token_seeded(
             logits,
             sub_positions=sub_positions,
         )
@@ -1679,7 +1679,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             argmax_tokens,
         )
 
-    def _sample_subtalker_token_seeded(
+    def sample_subtalker_token_seeded(
         self,
         logits: torch.Tensor,
         *,
@@ -1746,14 +1746,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         if sampled is not None:
             return sampled.to(torch.long)
 
-        sampled_rank = _sample_seeded_categorical(
+        sampled_rank = sample_seeded_categorical(
             sorted_logprobs,
             seeds,
             sub_positions,
         ).to(device=logits.device, dtype=torch.long)
         return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1).to(torch.long)
 
-    def _predictor_forward_one_token(
+    def predictor_forward_one_token(
         self,
         *,
         token_embeds: torch.Tensor,
@@ -1774,7 +1774,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     mlp_out, residual.reshape(-1, hidden_size)
                 )
                 residual = residual.reshape(batch_size, 1, hidden_size)
-            attn_input = self._predictor_cached_self_attention(
+            attn_input = self.predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
                 hidden_states=normed.reshape(batch_size, 1, hidden_size),
@@ -1782,7 +1782,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 batch_size=batch_size,
                 cache_len=cache_len,
             )
-            residual = self._predictor_o_proj_add_residual(
+            residual = self.predictor_o_proj_add_residual(
                 layer.self_attn.o_proj,
                 attn_input,
                 residual,
@@ -1795,7 +1795,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         return normed.reshape(batch_size, 1, hidden_size)
 
     @staticmethod
-    def _predictor_o_proj_add_residual(
+    def predictor_o_proj_add_residual(
         o_proj: nn.Module,
         attn_input: torch.Tensor,
         residual: torch.Tensor,
@@ -1851,7 +1851,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
 
     @staticmethod
-    def _resolve_predictor_rope_store(attn: Any, *, device: torch.device) -> bool:
+    def resolve_predictor_rope_store(attn: Any, *, device: torch.device) -> bool:
         """Resolve store support before capture: a supported CUDA head size
         does not imply CUDA dispatch when the backend override selects Torch."""
         return (
@@ -1862,7 +1862,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             not in (KernelBackend.TORCH, KernelBackend.TORCH_COMPILE)
         )
 
-    def _predictor_cached_self_attention(
+    def predictor_cached_self_attention(
         self,
         *,
         layer_idx: int,
@@ -1917,7 +1917,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         cached_v = self._predictor_v_cache[
             layer_idx, :batch_size, : cache_len + 1
         ].transpose(1, 2)
-        attn_output = _predictor_gqa_attention(
+        attn_output = predictor_gqa_attention(
             q,
             cached_k,
             cached_v,

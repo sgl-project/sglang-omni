@@ -84,7 +84,12 @@ speculative generality.
   preferred; if the repo uses `Optional`, match it.
 - Either `requires-python >= 3.10` (native `X | Y`) or `from __future__ import annotations`.
   Don't use `Optional` to work around forward refs — use quoted annotations
-  (`"ModelConfig"`). Type-only imports are covered in IMPORTS.
+  (`"ModelConfig"`).
+- Do not use `if TYPE_CHECKING:`. It hides imports from runtime and from
+  pre-commit. Import the name at module level, or write the concrete type in
+  the annotation (`tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]`
+  instead of a gated alias). If an import is circular, move the shared type
+  into a third module.
 - Closed value sets → `Literal[...]` or `Enum`, not bare strings in comparisons.
 - No mutable function defaults: `def f(x=[])`/`= {}` are bugs. Use a `None` sentinel.
 - Use concrete types, including model and decoder types, rather than `any`/`Any`
@@ -144,10 +149,11 @@ speculative generality.
 
 ## CONTROL FLOW
 
-- Validate inputs and preconditions before the main logic. When possible, organizing
- conditions into clear, mutually exclusive if/elif/else branches. Return early for
- invalid cases, and keep the main execution path in the final branch to avoid unnecessary
- lookups, repeated checks, and deeply nested logic.
+- Validate inputs and preconditions before the main logic. Organize conditions
+  into mutually exclusive if/elif/else branches. If an if assigns a variable
+  or returns a value, it must have the matching else (or elif/.../else).
+  Keep the main execution path in the final branch. Do not leave a lone if
+  that returns or assigns and then fall through.
 
 ## LOGGING
 
@@ -173,20 +179,37 @@ speculative generality.
 - Do not ship a YAML file that is "documentation only" and never loaded.
 - Define a constant used by only one module in that module; do not create a
   cross-file import solely for it.
+- Parameters flow top-down. A default owned by pipeline or stage config
+  (FactoryArgs, StageConfig, CLI) is written once at that layer and passed
+  down. Do not re-declare the same value as a lower-layer module constant or
+  factory default. The factory takes the knobs as required parameters and
+  forwards them; it does not invent a second copy of the policy.
+  Wrong: `CODE2WAV_MAX_BATCH_SIZE = 8` in stages.py plus
+  `FactoryArgs(max_batch_size=8)` in config.py. Right: only the config
+  FactoryArgs; `create_code2wav_executor(..., max_batch_size: int, ...)`.
 
 ## IMPORTS
 
 - Group: stdlib / third-party / local, blank-line separated, alphabetical within group.
 - Manage import paths consistently at the project level. Don’t patch sys.path ad hoc in individual files.
-- Prefer module-level imports; allow function-local imports for optional
-  dependencies, necessary initialization ordering, or documented
-  circular-dependency breaks. Put type-only cycle-breaking imports under
-  `if TYPE_CHECKING:` with quoted annotations.
+- Import at the top of the file. Do not lazy-import inside a function just
+  to keep the factory "light" or to hide a heavy dependency. Wrong: a
+  block of `from ... import ...` at the start of
+  `create_sglang_talker_executor_from_config`. Right: the same names at
+  module scope. Function-local imports are allowed only for optional
+  dependencies, necessary initialization ordering, or a documented
+  circular-dependency break. Do not use `if TYPE_CHECKING:` to keep an
+  import "type-only" or to silence pre-commit.
 - For repository-internal imports, import from the defining module using the full
   package path, such as `from xxx.yy.zzz import kkk`, rather than through
   `__init__.py`. Keep package re-exports minimal and define an explicit
   `__all__`; no wildcard imports. For third-party libraries, prefer their
   documented public import paths (e.g. `from pydantic import BaseModel`).
+- Do not import a class or factory from a sibling model package. Shared
+  runtime belongs in sglang_omni/scheduling (or another non-model module).
+  Wrong: MiniCPM-o stages importing Qwen3-Omni StreamingDetokenizeScheduler.
+  Right: both models import the shared scheduler and pass their own
+  build_result.
 
 ## TOOLING
 

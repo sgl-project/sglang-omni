@@ -44,7 +44,7 @@ class SpeakerArtifactCache:
 
     def get(self, key: SpeakerCacheKey) -> Any | None:
         with self._lock:
-            value = self._cache.get(_encode_key(key))
+            value = self._cache.get(encode_key(key))
             if value is None:
                 self._miss_count += 1
                 return None
@@ -53,13 +53,13 @@ class SpeakerArtifactCache:
 
     def put(self, key: SpeakerCacheKey, value: Any) -> None:
         with self._lock:
-            self._cache.put(_encode_key(key), value)
+            self._cache.put(encode_key(key), value)
 
     def clear_voice(self, voice_name: str) -> None:
         normalized_voice = voice_name.lower()
         with self._lock:
             removed_count = self._cache.remove_if(
-                lambda key: _encoded_key_voice_name(key).lower() == normalized_voice
+                lambda key: encoded_key_voice_name(key).lower() == normalized_voice
             )
             self._delete_invalidation_counter += removed_count
 
@@ -106,7 +106,7 @@ def estimate_cache_bytes(value: Any) -> int:
     return sys.getsizeof(value)
 
 
-def _encode_key(key: SpeakerCacheKey) -> str:
+def encode_key(key: SpeakerCacheKey) -> str:
     return _KEY_SEPARATOR.join(
         (
             key.model_type,
@@ -117,7 +117,7 @@ def _encode_key(key: SpeakerCacheKey) -> str:
     )
 
 
-def _encoded_key_voice_name(key: str) -> str:
+def encoded_key_voice_name(key: str) -> str:
     parts = key.split(_KEY_SEPARATOR, 3)
     return parts[1] if len(parts) == 4 else ""
 

@@ -239,12 +239,12 @@ class PackedDiT:
         dit = self.dit
         t = dit.time_embed(t)
         h = dit.input_embed.proj(torch.cat((x, cond, mu, spks), dim=-1))
-        h = self._conv_pos_embed(h, rows) + h
-        rope = self._rope(rows)
+        h = self.conv_pos_embed(h, rows) + h
+        rope = self.rope(rows)
         residual = h
         for block in dit.transformer_blocks:
             norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = block.attn_norm(h, emb=t)
-            h = h + gate_msa.unsqueeze(1) * self._attend(
+            h = h + gate_msa.unsqueeze(1) * self.attend(
                 block.attn, norm, rope, attention
             )
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
@@ -254,11 +254,11 @@ class PackedDiT:
         h = dit.norm_out(h, t)
         return dit.proj_out(h)
 
-    def _conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
+    def conv_pos_embed(self, h: torch.Tensor, rows: PackedRows) -> torch.Tensor:
         padded = scatter_rows(h, rows, rows.width)
         return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
 
-    def _rope(self, rows: PackedRows) -> tuple[torch.Tensor, Any]:
+    def rope(self, rows: PackedRows) -> tuple[torch.Tensor, Any]:
         freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
         freqs = freqs[:, rows.positions]
         if isinstance(scale, torch.Tensor):
@@ -266,7 +266,7 @@ class PackedDiT:
         return freqs, scale
 
     @staticmethod
-    def _attend(
+    def attend(
         attn: torch.nn.Module,
         x: torch.Tensor,
         rope: tuple[torch.Tensor, Any],

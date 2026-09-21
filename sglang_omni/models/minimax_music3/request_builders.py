@@ -29,20 +29,20 @@ _UNSUPPORTED_TTS_PARAMS = {
 }
 
 
-def _as_non_empty_string(value: Any, field: str) -> str:
+def as_non_empty_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"MiniMax Music 3 {field} must be a non-empty string")
     return value
 
 
-def _explicit_params(tts_params: dict[str, Any]) -> set[str]:
+def explicit_params(tts_params: dict[str, Any]) -> set[str]:
     raw = tts_params.get("explicit_generation_params", [])
     if isinstance(raw, (list, tuple, set)):
         return {str(x) for x in raw}
     return set()
 
 
-def _parse_seed(value: Any) -> int:
+def parse_seed(value: Any) -> int:
     if value is None:
         return 0
     if isinstance(value, bool) or not isinstance(value, int):
@@ -53,7 +53,7 @@ def _parse_seed(value: Any) -> int:
     return seed
 
 
-def _parse_max_frames(value: Any) -> int:
+def parse_max_frames(value: Any) -> int:
     if value is None:
         return DEFAULT_MAX_AUDIO_FRAMES
     if isinstance(value, bool) or not isinstance(value, int):
@@ -68,7 +68,7 @@ def _parse_max_frames(value: Any) -> int:
     return frames
 
 
-def _validate_tts_contract(tts_params: dict[str, Any]) -> None:
+def validate_tts_contract(tts_params: dict[str, Any]) -> None:
     unsupported = sorted(
         field
         for field in _UNSUPPORTED_TTS_PARAMS
@@ -98,15 +98,15 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         raise ValueError("MiniMax Music 3 requires a /v1/audio/speech request")
-    _validate_tts_contract(tts_params)
+    validate_tts_contract(tts_params)
 
-    lyrics = _as_non_empty_string(request.inputs, "lyrics (input)")
-    caption = _as_non_empty_string(
+    lyrics = as_non_empty_string(request.inputs, "lyrics (input)")
+    caption = as_non_empty_string(
         tts_params.get("instructions"), "caption (instructions)"
     )
 
     params = request.params or {}
-    unsupported = _explicit_params(tts_params) & _UNSUPPORTED_SAMPLING_PARAMS
+    unsupported = explicit_params(tts_params) & _UNSUPPORTED_SAMPLING_PARAMS
     if unsupported:
         raise ValueError(
             "MiniMax Music 3 does not support sampling parameters: "
@@ -118,8 +118,8 @@ def build_ttm_state(payload: StagePayload) -> MiniMaxMusic3State:
         caption=caption,
         lyrics=lyrics,
         prompt=build_prompt(caption, lyrics),
-        seed=_parse_seed(tts_params.get("seed")),
-        max_audio_frames=_parse_max_frames(params.get("max_new_tokens")),
+        seed=parse_seed(tts_params.get("seed")),
+        max_audio_frames=parse_max_frames(params.get("max_new_tokens")),
     )
     return state
 

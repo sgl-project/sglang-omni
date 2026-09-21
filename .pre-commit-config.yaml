@@ -72,3 +72,12 @@ repos:
         language: system
         files: ^sglang_omni_router/rust/.*\.rs$
         pass_filenames: false
+      # Matches every new/existing file under sglang_omni/, including models/*.
+      # --fix rewrites the current file in place, same pattern as isort.
+      - id: leading-underscore-names
+        name: leading-underscore class and function names
+        entry: python3 scripts/check_leading_underscore.py --fix
+        language: system
+        types: [python]
+        files: ^sglang_omni/
+        exclude: ^sglang_omni/vendor/
