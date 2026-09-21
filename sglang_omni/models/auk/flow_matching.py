@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -14,6 +15,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
 from sglang_omni.models.auk.seacache import SeaCacheConfig, SeaCacheState
+from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
 
 
 def request_generator(
@@ -29,6 +31,14 @@ def fuse_hidden_states(hidden_states, layer_weights, layer_scale):
     stacked = F.layer_norm(hidden_states[:, 1:], [d_llm])
     weights = F.softmax(layer_weights, dim=0)
     return (stacked * weights[None, :, None, None]).sum(dim=1) * layer_scale
+
+
+def pad_rows(tensor: torch.Tensor, rows: int) -> torch.Tensor:
+    """Pad axis 1 up to rows with zeros, i.e. False for a boolean mask."""
+    extra = rows - tensor.shape[1]
+    if extra <= 0:
+        return tensor
+    return F.pad(tensor, [0, 0] * (tensor.ndim - 2) + [0, extra])
 
 
 def build_time_grid(
@@ -80,6 +90,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
         seacache_config: SeaCacheConfig | None = None,
         seacache_stats: dict[str, object] | None = None,
     ) -> torch.Tensor:
@@ -89,6 +100,7 @@ class AuKFlowMatching(nn.Module):
             cfg_strength=cfg_strength,
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
+            step_graph=step_graph,
             seacache_config=seacache_config,
             seacache_stats=seacache_stats,
         )[0]
@@ -102,20 +114,25 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        step_graph: AuKStepCudaGraphRunner | None = None,
         seacache_config: SeaCacheConfig | None = None,
         seacache_stats: dict[str, object] | None = None,
     ) -> list[torch.Tensor]:
+        """Integrate the velocity field for a batch of requests."""
+        if step_graph is not None and seacache_config is not None:
+            raise ValueError("AuK SeaCache cannot be combined with step CUDA graphs")
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
         # Inputs follow the backbone dtype; y stays fp32 through type promotion.
         weight_dtype = self.transformer.dtype
 
-        def pack(tensors):
-            return (
+        def pack(tensors, rows=None):
+            packed = (
                 tensors[0].unsqueeze(0)
                 if len(tensors) == 1
                 else pad_sequence(tensors, batch_first=True)
             )
+            return packed if rows is None else pad_rows(packed, rows)
 
         references = [
             (
@@ -125,13 +142,27 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
-        ref = pack(references).to(weight_dtype)
+        # note(Dayuxiaoshui): a runner declines a batch no captured shape
+        # covers, so the padding carries both decisions: no padding, no bind.
+        padding = None
+        if step_graph is not None:
+            padding = step_graph.pad_lengths(
+                frames=max(item.target_frames for item in items),
+                ref=max(reference.shape[0] for reference in references),
+                text=max(item.conditioning.shape[0] for item in items),
+                batch=len(items),
+            )
+        frame_rows, ref_rows, text_rows = (
+            padding if padding is not None else (None, None, None)
+        )
+
+        ref = pack(references, ref_rows).to(weight_dtype)
         ref_mask = (
             torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
-        text = pack([item.conditioning for item in items]).to(weight_dtype)
-        text_mask = pack([item.text_mask for item in items])
+        text = pack([item.conditioning for item in items], text_rows).to(weight_dtype)
+        text_mask = pack([item.text_mask for item in items], text_rows)
         noise = []
         for item in items:
             generator = request_generator(item.seed, device)
@@ -144,9 +175,11 @@ class AuKFlowMatching(nn.Module):
                     generator=generator,
                 )
             )
-        y0 = pack(noise)
+        y0 = pack(noise, frame_rows)
         mask = audio_positions = joint_positions = None
-        if len(items) > 1:
+        # note(Dayuxiaoshui): positions come from the real lengths, so a padded
+        # batch places each request's frames where the unpadded one would.
+        if len(items) > 1 or padding is not None:
             target_positions = torch.arange(y0.shape[1], device=device)[None, :]
             mask = (
                 target_positions
@@ -179,19 +212,22 @@ class AuKFlowMatching(nn.Module):
                 dim=1,
             )
 
-        def fn(t, x):
-            kwargs = dict(
-                x=x.to(weight_dtype),
-                text=text,
-                time=t,
-                mask=mask,
-                c_mask=text_mask,
-                ref=ref,
-                ref_mask=ref_mask,
-                cache=True,
-                audio_positions=audio_positions,
-                joint_positions=joint_positions,
-            )
+        inputs = dict(
+            text=text,
+            mask=mask,
+            c_mask=text_mask,
+            ref=ref,
+            ref_mask=ref_mask,
+            # note(Dayuxiaoshui): the projected text is constant per trajectory
+            # either way, and a graph holds it in its own buffers, so it must
+            # not also write the python cache.
+            cache=padding is None,
+            audio_positions=audio_positions,
+            joint_positions=joint_positions,
+        )
+
+        def step(inputs, t, x):
+            kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
             if seacache is not None:
                 kwargs["seacache"] = seacache
             if cfg_strength < 1e-5:
@@ -208,8 +244,11 @@ class AuKFlowMatching(nn.Module):
             if seacache_config is not None
             else None
         )
+        fn = None
+        if padding is not None:
+            fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
         try:
-            result = integrate(fn, y0, t)
+            result = integrate(fn or partial(step, inputs), y0, t)
             if seacache is not None and seacache_stats is not None:
                 times = {"filter_ms": 0.0, "dit_ms": 0.0}
                 for name, start, end in seacache.timings:

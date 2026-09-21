@@ -59,3 +59,43 @@ models/<model>/
 Only model-local behavior belongs here. The framework-owned layers are still
 `Stage`, `Coordinator`, schedulers, model-runner bases, relay, runtime prep, and
 runners.
+
+## Naming and lint checks
+
+Use public names for classes, functions, and methods defined in `sglang_omni/`.
+The leading-underscore lint hook checks these definitions in every Python file
+under that directory, including new model packages. It ignores vendor copies,
+dunder names such as `__init__`, a lone `_`, and definitions inside functions.
+It does not check every underscore in variables or attribute references.
+
+Keep third-party API names exactly as the dependency provides them. For example,
+this Transformers reference needs no lint exemption:
+
+```python
+hf_modeling._get_feat_extract_output_lengths(lengths)
+```
+
+When a local definition must preserve a name required by an external interface,
+put `# noqa: leading-underscore` on its `def` or `class` line and explain why:
+
+```python
+class ExternalAdapter(ExternalBase):
+    # ExternalBase calls this hook by its exact name.
+    def _required_external_hook(self):  # noqa: leading-underscore
+        return self.state
+```
+
+The exemption keeps the definition out of lint violations and automatic renames.
+Its references retain the same name. A comment such as
+`# skip leading-underscore class and function names` is not an exemption.
+
+The pre-commit hook runs `scripts/check_leading_underscore.py --fix`, which renames
+violating definitions and supported references within the same file. It does not
+update callers in other files. Review the diff, preserve third-party API names,
+and update any affected cross-file callers explicitly. To check without editing:
+
+```bash
+python scripts/check_leading_underscore.py
+```
+
+Run `pre-commit run --all-files` before submitting a change.

@@ -127,4 +127,26 @@ struct LocalizationTests {
         model.refreshPermissions()
         #expect(model.accessibilityGrantStale == !model.accessibilityAllowed)
     }
+
+    /// "Settings → Text API" tells the user where to go. The other half of the
+    /// same sentence offers verbatim without saying that it is set on a different
+    /// page, leaving the user who cannot configure a text API nowhere to look.
+    /// Both paths have to keep matching the labels the interface shows.
+    @Test func theTextAPIMessagesSayWhereEachSettingLives() throws {
+        for language in L10n.supported {
+            let table = try Self.table(language)
+            let settings = try #require(table["nav.Settings"])
+            let textAPI = try #require(table["settings.textAPI"])
+            let writingStyle = try #require(table["nav.Writingstyle"])
+            let defaultStyle = try #require(table["rules.defaultStyle"])
+            let model = try #require(table["error.model"])
+            let baseURL = try #require(table["error.baseURL"])
+            #expect(model.contains("\(settings) → \(textAPI)"),
+                    "\(language) error.model no longer points at \(settings) → \(textAPI)")
+            for (key, value) in [("error.model", model), ("error.baseURL", baseURL)] {
+                #expect(value.contains("\(writingStyle) → \(defaultStyle)"),
+                        "\(language) \(key) offers verbatim without saying where it is set")
+            }
+        }
+    }
 }
