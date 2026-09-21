@@ -24,6 +24,7 @@ from sglang_omni.models.auk.flow_matching import (
     request_generator,
 )
 from sglang_omni.models.auk.hf_config import make_runtime_config
+from sglang_omni.models.auk.packed import probe_flash_attention
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.request_builders import (
@@ -251,12 +252,18 @@ def create_auk_engine_executor(
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
     weight_dtype: str = "float32",
+    enable_packed_dit: bool | None = None,
 ) -> SimpleScheduler:
     """Build the DiT sampling stage.
 
     ``weight_dtype="float32"`` keeps fp32 weights under ``dtype`` autocast, the
     upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
     autocast (see docs/cookbook/auk.md, Sampling).
+
+    ``enable_packed_dit=None`` packs multi-request DiT batches wherever the
+    device, weight dtype, checkpoint and FlashAttention build allow it and logs
+    the reason when it falls back to the padded path; ``True`` makes the same
+    checks fatal and ``False`` never packs.
     """
     # Named dtypes are checked before resolve_checkpoint, which downloads.
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
@@ -264,6 +271,35 @@ def create_auk_engine_executor(
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
+    dit_config = AuKDitConfig.from_dict(config.arch)
+
+    def disable_packed(reason: str, cause: BaseException | None = None) -> bool:
+        if enable_packed_dit:
+            raise ValueError(reason) from cause
+        else:
+            logger.warning(f"Packed AuK DiT disabled: {reason}")
+            return False
+
+    # Resolved before _load_flow so an unusable device, checkpoint or kernel is
+    # reported at startup, not on the first multi-request batch.
+    if enable_packed_dit is False:
+        packed = False
+    elif device.type != "cuda" or backbone_dtype != torch.bfloat16:
+        packed = disable_packed(
+            "Packed AuK DiT requires CUDA and weight_dtype=bfloat16"
+        )
+    elif not dit_config.attn_mask_enabled:
+        packed = disable_packed(
+            "Packed AuK DiT requires a checkpoint with attn_mask_enabled=true"
+        )
+    else:
+        try:
+            probe_flash_attention(
+                device, heads=dit_config.heads, head_dim=dit_config.dim_head
+            )
+            packed = True
+        except (ImportError, RuntimeError, ValueError) as exc:
+            packed = disable_packed(str(exc), exc)
     # A non-fp32 backbone runs natively, and _autocast reads fp32 as "off":
     # autocast would only re-cast per op and force the norms back to fp32.
     autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
@@ -273,17 +309,16 @@ def create_auk_engine_executor(
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
+        enable_packed_dit=packed,
     )
     if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
-        from sglang_omni.models.auk.fused_qk_norm_rope import QKFusion
+        from sglang_omni.models.auk.fused_qk_norm_rope import fused_norm_rope
 
-        fusion = QKFusion()
-        flow.transformer.qk_fusion = fusion
         for block in (
             *flow.transformer.transformer_blocks,
             *flow.transformer.single_transformer_blocks,
         ):
-            block.attn.qk_fusion = fusion
+            block.attn.qk_fusion = fused_norm_rope
     return scheduler(
         lambda payloads: sample_batch(
             payloads,

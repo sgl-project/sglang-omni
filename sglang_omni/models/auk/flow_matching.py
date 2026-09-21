@@ -13,6 +13,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.packed import PackedLayout
 
 
 def request_generator(
@@ -97,6 +98,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        enable_packed_dit: bool = False,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -172,38 +174,50 @@ class AuKFlowMatching(nn.Module):
                 dim=1,
             )
 
-        def fn(t, x):
-            kwargs = dict(
-                x=x.to(weight_dtype),
-                text=text,
-                time=t,
-                mask=mask,
-                c_mask=text_mask,
-                ref=ref,
-                ref_mask=ref_mask,
-                cache=True,
-                audio_positions=audio_positions,
-                joint_positions=joint_positions,
+        cfg = cfg_strength >= 1e-5
+        if not enable_packed_dit or len(items) == 1:
+            packed_layout = None
+        elif not self.transformer.attn_mask_enabled:
+            raise ValueError("Packed AuK DiT requires attn_mask_enabled")
+        else:
+            audio_mask, packed_text_mask = torch.cat((ref_mask, mask), dim=1), text_mask
+            if cfg:
+                # CFG stacks the conditional rows above the unconditional ones.
+                audio_mask = audio_mask.repeat(2, 1)
+                packed_text_mask = text_mask.repeat(2, 1)
+            packed_layout = PackedLayout.build(
+                audio_mask,
+                packed_text_mask,
+                ref.shape[1],
+                y0.shape[1],
+                max(
+                    item.conditioning.shape[0] + item.ref_length + item.target_frames
+                    for item in items
+                ),
             )
-            if cfg_strength < 1e-5:
-                return self.transformer(
-                    **kwargs, drop_audio_cond=False, drop_text=False
-                )
-            pred = self.transformer(**kwargs, cfg_infer=True)
-            v_cond, v_uncond = torch.chunk(pred, 2, dim=0)
-            return v_cond + (v_cond - v_uncond) * cfg_strength
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
-        try:
-            result = integrate(fn, y0, t)
-            return [latent[: item.target_frames] for item, latent in zip(items, result)]
-        finally:
-            self.transformer.clear_cache()
-
-
-def integrate(fn, y0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-    """Fixed-grid Euler integration, matching the released inference recipe."""
-    y = y0
-    for step in range(t.numel() - 1):
-        y = y + (t[step + 1] - t[step]) * fn(t[step], y)
-    return y
+        plan = self.transformer.prepare(
+            text=text,
+            text_mask=text_mask,
+            ref=ref,
+            ref_mask=ref_mask,
+            target_mask=mask,
+            target_len=y0.shape[1],
+            audio_positions=audio_positions,
+            joint_positions=joint_positions,
+            packed_layout=packed_layout,
+            time_grid=t,
+            cfg=cfg,
+        )
+        # Fixed-grid Euler integration, matching the released inference recipe.
+        y = y0
+        for step in range(t.numel() - 1):
+            pred = self.transformer(
+                y.to(weight_dtype), plan.time_embeddings[step : step + 1], plan
+            )
+            if cfg:
+                v_cond, v_uncond = torch.chunk(pred, 2, dim=0)
+                pred = v_cond + (v_cond - v_uncond) * cfg_strength
+            y = y + (t[step + 1] - t[step]) * pred
+        return [latent[: item.target_frames] for item, latent in zip(items, y)]

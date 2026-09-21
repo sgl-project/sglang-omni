@@ -13,9 +13,37 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
+from sglang_omni.models.auk.packed import (
+    PackedLayout,
+    flash_attention,
+    gather_rope,
+    gather_rows,
+)
+
+
+def modulation(value: torch.Tensor, packed: bool) -> torch.Tensor:
+    """Broadcast the trajectory's modulation row [1, D] over padded [B, T, D]
+    or packed [rows, D] activations."""
+    return value[0] if packed else value[:, None]
+
+
+@dataclass(frozen=True)
+class RopeTable:
+    """Rotary frequencies of one token stream plus the trig tables the fused
+    Q/K kernel reads, built once per trajectory."""
+
+    freqs: torch.Tensor
+    scale: torch.Tensor | float
+    cos: torch.Tensor
+    sin: torch.Tensor
+
+    @classmethod
+    def build(cls, freqs: torch.Tensor, scale: torch.Tensor | float) -> RopeTable:
+        return cls(freqs, scale, freqs.cos(), freqs.sin())
+
 
 def attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    """Additive SDPA bias ``[B, 1, 1, K]`` from a boolean key-padding mask ``[B, K]``."""
+    """Additive SDPA bias [B, 1, 1, K] from a boolean key-padding mask [B, K]."""
     # -inf is safe: every request has at least one valid text token and audio
     # frame, so no softmax row is fully masked.
     bias = torch.zeros(key_mask.shape, dtype=dtype, device=key_mask.device)
@@ -96,13 +124,15 @@ class AdaLayerNorm(nn.Module):
         self.linear = nn.Linear(dim, dim * 6)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor | None = None):
+    def forward(self, x: torch.Tensor, emb: torch.Tensor, packed: bool = False):
         emb = self.linear(self.silu(emb))
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
             emb, 6, dim=1
         )
 
-        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = self.norm(x) * (1 + modulation(scale_msa, packed)) + modulation(
+            shift_msa, packed
+        )
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -115,10 +145,14 @@ class AdaLayerNormFinal(nn.Module):
         self.linear = nn.Linear(dim, dim * 2)
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, emb: torch.Tensor, packed: bool = False
+    ) -> torch.Tensor:
         emb = self.linear(self.silu(emb))
         scale, shift = torch.chunk(emb, 2, dim=1)
-        return self.norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return self.norm(x) * (1 + modulation(scale, packed)) + modulation(
+            shift, packed
+        )
 
 
 class SwiGLU(nn.Module):
@@ -186,45 +220,48 @@ class Attention(nn.Module):
 
     @staticmethod
     def apply_rope(
-        q: torch.Tensor, k: torch.Tensor, rope
+        q: torch.Tensor, k: torch.Tensor, rope: RopeTable
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        freqs, xpos_scale = rope
-        q_scale, k_scale = (
-            (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
-        )
         return (
-            apply_rotary_pos_emb(q, freqs, q_scale),
-            apply_rotary_pos_emb(k, freqs, k_scale),
+            apply_rotary_pos_emb(q, rope.freqs, rope.scale),
+            apply_rotary_pos_emb(k, rope.freqs, rope.scale**-1.0),
         )
 
     @staticmethod
     def attend(q, k, v, bias: torch.Tensor | None):
-        """SDPA with an optional additive key bias ``[B, 1, 1, K]``, then merge heads."""
+        """SDPA with an optional additive key bias [B, 1, 1, K], then merge heads."""
         batch = q.shape[0]
         out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=bias, dropout_p=0.0, is_causal=False
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
-    def norm_rope(self, q, k, q_norm, k_norm, rope):
-        if self.qk_fusion is not None and rope is not None:
+    def norm_rope(self, q, k, q_norm, k_norm, rope: RopeTable):
+        if self.qk_fusion is not None:
             return self.qk_fusion(q, k, q_norm, k_norm, rope)
-        q, k = q_norm(q), k_norm(k)
-        return self.apply_rope(q, k, rope) if rope is not None else (q, k)
+        return self.apply_rope(q_norm(q), k_norm(k), rope)
 
     def forward(
         self,
         x: torch.Tensor,
         c: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
-        rope=None,
-        c_rope=None,
+        rope: RopeTable | None = None,
+        c_rope: RopeTable | None = None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
+        packed_layout: PackedLayout | None = None,
     ):
-        if c is None:
+        if packed_layout is not None:
+            return self.forward_packed(x, c, rope, c_rope, packed_layout)
+        elif c is None:
             return self.forward_self(x, mask=mask, rope=rope, bias=bias)
+        else:
+            return self.forward_joint(
+                x, c, mask=mask, rope=rope, c_rope=c_rope, c_mask=c_mask, bias=bias
+            )
 
+    def forward_joint(self, x, c, *, mask, rope, c_rope, c_mask, bias):
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         c_query, c_key, c_value = self.to_qkv_c(c).chunk(3, dim=-1)
@@ -259,11 +296,45 @@ class Attention(nn.Module):
             c_out = c_out.masked_fill(~c_mask.unsqueeze(-1), 0.0)
         return x_out, c_out
 
+    def forward_packed(self, x, c, rope, c_rope, layout):
+        """Attention over packed [tokens, D] rows bounded by layout.cu_seqlens."""
+
+        def project(rows, linear, q_norm, k_norm, positions):
+            q, k, v = linear(rows).view(rows.shape[0], 3, self.heads, -1).unbind(1)
+            # norm_rope and the fused kernel take [B, heads, seq, dim]; the
+            # packed rows are one sequence whose rope was gathered per row.
+            q, k = self.norm_rope(
+                q.transpose(0, 1)[None],
+                k.transpose(0, 1)[None],
+                q_norm,
+                k_norm,
+                positions,
+            )
+            return q[0].transpose(0, 1), k[0].transpose(0, 1), v
+
+        q, k, v = project(x, self.to_qkv, self.q_norm, self.k_norm, rope)
+        if c is None:
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            return self.to_out[1](self.to_out[0](out))
+        else:
+            cq, ck, cv = project(c, self.to_qkv_c, self.c_q_norm, self.c_k_norm, c_rope)
+            # Interleave the audio and text streams request by request so each
+            # request's joint sequence is contiguous for the varlen kernel.
+            q, k, v = (
+                torch.cat((a, b)).index_select(0, layout.double_order)
+                for a, b in ((q, cq), (k, ck), (v, cv))
+            )
+            out = flash_attention(q, k, v, layout).flatten(1).to(q.dtype)
+            out = out.index_select(0, layout.double_inverse)
+            return self.to_out[1](self.to_out[0](out[: x.shape[0]])), self.to_out_c(
+                out[x.shape[0] :]
+            )
+
     def forward_self(
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None,
-        rope=None,
+        rope: RopeTable,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
@@ -303,16 +374,22 @@ class DiTBlock(nn.Module):
         x: torch.Tensor,
         t: torch.Tensor,
         mask: torch.Tensor | None = None,
-        rope=None,
+        rope: RopeTable | None = None,
         bias: torch.Tensor | None = None,
+        packed_layout: PackedLayout | None = None,
     ) -> torch.Tensor:
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
-        x = x + gate_msa.unsqueeze(1) * self.attn(
-            x=norm, mask=mask, rope=rope, bias=bias
+        packed = packed_layout is not None
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
+            x, emb=t, packed=packed
+        )
+        x = x + modulation(gate_msa, packed) * self.attn(
+            x=norm, mask=mask, rope=rope, bias=bias, packed_layout=packed_layout
         )
 
-        norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-        return x + gate_mlp.unsqueeze(1) * self.ff(norm)
+        norm = self.ff_norm(x) * (1 + modulation(scale_mlp, packed)) + modulation(
+            shift_mlp, packed
+        )
+        return x + modulation(gate_mlp, packed) * self.ff(norm)
 
 
 class MMDiTBlock(nn.Module):
@@ -351,16 +428,18 @@ class MMDiTBlock(nn.Module):
         c: torch.Tensor,
         t: torch.Tensor,
         mask: torch.Tensor | None = None,
-        rope=None,
-        c_rope=None,
+        rope: RopeTable | None = None,
+        c_rope: RopeTable | None = None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
+        packed_layout: PackedLayout | None = None,
     ):
+        packed = packed_layout is not None
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t
+            c, emb=t, packed=packed
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t
+            x, emb=t, packed=packed
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -370,15 +449,20 @@ class MMDiTBlock(nn.Module):
             c_rope=c_rope,
             c_mask=c_mask,
             bias=bias,
+            packed_layout=packed_layout,
         )
 
-        c = c + c_gate_msa.unsqueeze(1) * c_attn
-        norm_c = self.ff_norm_c(c) * (1 + c_scale_mlp[:, None]) + c_shift_mlp[:, None]
-        c = c + c_gate_mlp.unsqueeze(1) * self.ff_c(norm_c)
+        c = c + modulation(c_gate_msa, packed) * c_attn
+        norm_c = self.ff_norm_c(c) * (1 + modulation(c_scale_mlp, packed)) + modulation(
+            c_shift_mlp, packed
+        )
+        c = c + modulation(c_gate_mlp, packed) * self.ff_c(norm_c)
 
-        x = x + x_gate_msa.unsqueeze(1) * x_attn
-        norm_x = self.ff_norm_x(x) * (1 + x_scale_mlp[:, None]) + x_shift_mlp[:, None]
-        x = x + x_gate_mlp.unsqueeze(1) * self.ff_x(norm_x)
+        x = x + modulation(x_gate_msa, packed) * x_attn
+        norm_x = self.ff_norm_x(x) * (1 + modulation(x_scale_mlp, packed)) + modulation(
+            x_shift_mlp, packed
+        )
+        x = x + modulation(x_gate_mlp, packed) * self.ff_x(norm_x)
         return c, x
 
 
@@ -390,24 +474,38 @@ class AudioPromptEmbedding(nn.Module):
         self.linear = nn.Linear(in_dim, out_dim)
         self.conv_pos_embed = ConvPositionEmbedding(out_dim)
 
-    def embed(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         x = self.linear(x)
         return self.conv_pos_embed(x, mask=mask) + x
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        ref: torch.Tensor | None = None,
-        drop_audio_cond: bool = False,
-        mask: torch.Tensor | None = None,
-        ref_mask: torch.Tensor | None = None,
-    ):
-        x_emb = self.embed(x, mask=mask)
-        if ref is None:
-            return x_emb
-        if drop_audio_cond:
-            ref = torch.zeros_like(ref)
-        return x_emb, self.embed(ref, mask=ref_mask)
+
+@dataclass(frozen=True, kw_only=True)
+class AuKDitPlan:
+    """Inputs one trajectory's Euler steps share, embedded once by
+    AuKDit.prepare so that a step only embeds the noised latent.
+
+    audio_mask covers the reference and target frames, single_mask the text
+    and audio rows of the single-stream blocks; a packed plan carries its rows
+    already gathered and no masks.
+    """
+
+    text: torch.Tensor
+    text_mask: torch.Tensor | None
+    ref: torch.Tensor | None
+    target_mask: torch.Tensor | None
+    audio_mask: torch.Tensor | None
+    single_mask: torch.Tensor | None
+    joint_bias: torch.Tensor | None
+    single_bias: torch.Tensor | None
+    rope_audio: RopeTable
+    rope_text: RopeTable
+    rope_joint: RopeTable
+    time_embeddings: torch.Tensor
+    packed_layout: PackedLayout | None
+    cfg: bool
+    prompt_len: int
 
 
 @dataclass
@@ -486,10 +584,6 @@ class AuKDit(nn.Module):
         self.norm_out = AdaLayerNormFinal(dim)
         self.proj_out = nn.Linear(dim, latent_dim)
 
-        self.text_cond: torch.Tensor | None = None
-        self.text_uncond: torch.Tensor | None = None
-        self.qk_fusion = None
-
         self.initialize_weights()
 
     def initialize_weights(self) -> None:
@@ -506,121 +600,62 @@ class AuKDit(nn.Module):
         nn.init.constant_(self.proj_out.weight, 0)
         nn.init.constant_(self.proj_out.bias, 0)
 
-    def clear_cache(self) -> None:
-        self.text_cond, self.text_uncond = None, None
-        if self.qk_fusion is not None:
-            self.qk_fusion.clear()
-
     @property
     def dtype(self) -> torch.dtype:
         return self.proj_out.weight.dtype
 
-    def project_text(self, text: torch.Tensor, drop_text: bool = False) -> torch.Tensor:
-        c = self.txt_norm(self.txt_proj(text))
-        return torch.zeros_like(c) if drop_text else c
-
-    def embed_audio(
+    def prepare(
         self,
-        x: torch.Tensor,
-        ref: torch.Tensor | None,
-        drop_audio_cond: bool,
-        mask: torch.Tensor | None,
-        ref_mask: torch.Tensor | None,
-    ):
-        if ref is not None and ref.shape[1] == 0:
-            ref = None
-            ref_mask = None
-
-        if ref is None:
-            return (
-                self.audio_embed(x, drop_audio_cond=drop_audio_cond, mask=mask),
-                mask,
-                0,
-            )
-
-        x_emb, ref_emb = self.audio_embed(
-            x,
-            ref=ref,
-            drop_audio_cond=drop_audio_cond,
-            mask=mask,
-            ref_mask=ref_mask,
-        )
-        prompt_len = ref_emb.shape[1]
-        audio = torch.cat([ref_emb, x_emb], dim=1)
-
-        batch, n = x_emb.shape[:2]
-        if mask is None:
-            mask = torch.ones(batch, n, dtype=torch.bool, device=x_emb.device)
-        if ref_mask is None:
-            ref_mask = torch.ones(
-                batch, prompt_len, dtype=torch.bool, device=ref_emb.device
-            )
-        return audio, torch.cat([ref_mask, mask], dim=1), prompt_len
-
-    def forward(
-        self,
-        x: torch.Tensor,
+        *,
         text: torch.Tensor,
-        time: torch.Tensor,
-        mask: torch.Tensor | None = None,
-        c_mask: torch.Tensor | None = None,
-        drop_audio_cond: bool = False,
-        drop_text: bool = False,
-        cfg_infer: bool = False,
-        cache: bool = False,
-        ref: torch.Tensor | None = None,
-        ref_mask: torch.Tensor | None = None,
-        audio_positions: torch.Tensor | None = None,
-        joint_positions: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        batch = x.shape[0]
-        if time.ndim == 0:
-            time = time.repeat(batch)
-        t = self.time_embed(time)
+        text_mask: torch.Tensor,
+        ref: torch.Tensor,
+        ref_mask: torch.Tensor,
+        target_mask: torch.Tensor | None,
+        target_len: int,
+        audio_positions: torch.Tensor | None,
+        joint_positions: torch.Tensor | None,
+        packed_layout: PackedLayout | None,
+        time_grid: torch.Tensor,
+        cfg: bool,
+    ) -> AuKDitPlan:
+        """Embed the inputs one trajectory's Euler steps share.
 
-        if c_mask is None:
-            c_mask = text.abs().sum(-1) > 0
-
-        if cfg_infer:
-            if cache and self.text_cond is not None:
-                c_cond = self.text_cond
+        ref may be zero-width. target_mask and the position rows are None for
+        a singleton batch, which then runs exactly as upstream does. time_grid
+        holds the steps' start times plus the final one.
+        """
+        batch = text.shape[0]
+        c = self.txt_norm(self.txt_proj(text))
+        prompt_len = ref.shape[1]
+        if prompt_len == 0:
+            ref_emb, audio_mask = None, target_mask
+        else:
+            ref_emb = self.audio_embed(ref, mask=ref_mask)
+            if target_mask is None:
+                target_mask_rows = torch.ones(
+                    batch, target_len, dtype=torch.bool, device=text.device
+                )
             else:
-                c_cond = self.project_text(text, drop_text=False)
-                if cache:
-                    self.text_cond = c_cond
-            x_cond, a_mask_cond, prompt_len = self.embed_audio(
-                x, ref, drop_audio_cond=False, mask=mask, ref_mask=ref_mask
-            )
-
-            if cache and self.text_uncond is not None:
-                c_uncond = self.text_uncond
-            else:
-                c_uncond = self.project_text(text, drop_text=True)
-                if cache:
-                    self.text_uncond = c_uncond
-            x_uncond, a_mask_uncond, _ = self.embed_audio(
-                x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
-            )
-
-            x = torch.cat((x_cond, x_uncond), dim=0)
-            c = torch.cat((c_cond, c_uncond), dim=0)
-            t = torch.cat((t, t), dim=0)
-            audio_mask = (
-                torch.cat((a_mask_cond, a_mask_uncond), dim=0)
-                if a_mask_cond is not None and a_mask_uncond is not None
-                else None
-            )
-            c_mask = torch.cat((c_mask, c_mask), dim=0)
+                target_mask_rows = target_mask
+            audio_mask = torch.cat([ref_mask, target_mask_rows], dim=1)
+        if cfg:
+            # The unconditional twins drop the text and the reference; their
+            # rows are stacked below the conditional ones.
+            c = torch.cat((c, torch.zeros_like(c)), dim=0)
+            if ref_emb is not None:
+                ref_emb = torch.cat(
+                    (ref_emb, self.audio_embed(torch.zeros_like(ref), mask=ref_mask)),
+                    dim=0,
+                )
+            text_mask = text_mask.repeat(2, 1)
+            if audio_mask is not None:
+                audio_mask = audio_mask.repeat(2, 1)
             if audio_positions is not None:
                 audio_positions = audio_positions.repeat(2, 1)
                 joint_positions = joint_positions.repeat(2, 1)
-        else:
-            c = self.project_text(text, drop_text=drop_text)
-            x, audio_mask, prompt_len = self.embed_audio(
-                x, ref, drop_audio_cond=drop_audio_cond, mask=mask, ref_mask=ref_mask
-            )
 
-        seq_len = x.shape[1]
+        seq_len = prompt_len + target_len
         text_len = c.shape[1]
         rope_audio = (
             self.rotary_embed.forward_from_seq_len(seq_len)
@@ -628,36 +663,98 @@ class AuKDit(nn.Module):
             else self.rotary_embed(audio_positions)
         )
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
-
-        joint_bias = single_bias = single_mask = None
-        if audio_mask is not None:
-            single_mask = torch.cat([c_mask, audio_mask], dim=1)
-            if self.attn_mask_enabled:
-                joint_bias = attention_bias(
-                    torch.cat([audio_mask, c_mask], dim=1), x.dtype
-                )
-                single_bias = attention_bias(single_mask, x.dtype)
-
-        for block in self.transformer_blocks:
-            c, x = block(
-                x,
-                c,
-                t,
-                mask=audio_mask,
-                rope=rope_audio,
-                c_rope=rope_text,
-                c_mask=c_mask,
-                bias=joint_bias,
-            )
-
-        x = torch.cat([c, x], dim=1)
-        rope = (
+        rope_joint = (
             self.rotary_embed.forward_from_seq_len(text_len + seq_len)
             if joint_positions is None
             else self.rotary_embed(joint_positions)
         )
-        for block in self.single_transformer_blocks:
-            x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
+        if packed_layout is not None:
+            rows = packed_layout.batch
+            rope_audio = gather_rope(rope_audio, packed_layout.audio_indices, rows)
+            rope_text = gather_rope(rope_text, packed_layout.text_indices, rows)
+            rope_joint = gather_rope(rope_joint, packed_layout.joint_indices, rows)
+            c = gather_rows(c, packed_layout.text_indices)
+            # Packed rows carry no padding, so there is nothing to mask.
+            text_mask = audio_mask = single_mask = joint_bias = single_bias = None
+        elif audio_mask is None:
+            single_mask = joint_bias = single_bias = None
+        else:
+            single_mask = torch.cat([text_mask, audio_mask], dim=1)
+            if self.attn_mask_enabled:
+                joint_bias = attention_bias(
+                    torch.cat([audio_mask, text_mask], dim=1), self.dtype
+                )
+                single_bias = attention_bias(single_mask, self.dtype)
+            else:
+                joint_bias = single_bias = None
+        return AuKDitPlan(
+            text=c,
+            text_mask=text_mask,
+            ref=ref_emb,
+            target_mask=target_mask,
+            audio_mask=audio_mask,
+            single_mask=single_mask,
+            joint_bias=joint_bias,
+            single_bias=single_bias,
+            rope_audio=RopeTable.build(*rope_audio),
+            rope_text=RopeTable.build(*rope_text),
+            rope_joint=RopeTable.build(*rope_joint),
+            time_embeddings=self.time_embed(time_grid[:-1]),
+            packed_layout=packed_layout,
+            cfg=cfg,
+            prompt_len=prompt_len,
+        )
 
-        x = x[:, text_len + prompt_len :]
-        return self.proj_out(self.norm_out(x, t))
+    def forward(
+        self, x: torch.Tensor, time_embedding: torch.Tensor, plan: AuKDitPlan
+    ) -> torch.Tensor:
+        """Velocity of the noised latent x [B, T, latent_dim] at one step.
+
+        time_embedding is that step's row of plan.time_embeddings; with cfg
+        the result stacks the conditional rows above the unconditional ones.
+        """
+        layout = plan.packed_layout
+        packed = layout is not None
+        x = self.audio_embed(x, mask=plan.target_mask)
+        if plan.cfg:
+            x = torch.cat((x, x), dim=0)
+        if plan.ref is not None:
+            x = torch.cat([plan.ref, x], dim=1)
+        if packed:
+            x = gather_rows(x, layout.audio_indices)
+
+        c = plan.text
+        for block in self.transformer_blocks:
+            c, x = block(
+                x,
+                c,
+                time_embedding,
+                mask=plan.audio_mask,
+                rope=plan.rope_audio,
+                c_rope=plan.rope_text,
+                c_mask=plan.text_mask,
+                bias=plan.joint_bias,
+                packed_layout=layout,
+            )
+
+        if packed:
+            x = torch.cat([c, x], dim=0).index_select(0, layout.single_order)
+        else:
+            x = torch.cat([c, x], dim=1)
+        for block in self.single_transformer_blocks:
+            x = block(
+                x,
+                time_embedding,
+                mask=plan.single_mask,
+                rope=plan.rope_joint,
+                bias=plan.single_bias,
+                packed_layout=layout,
+            )
+
+        if packed:
+            x = x.index_select(0, layout.target_rows)
+            x = self.proj_out(self.norm_out(x, time_embedding, packed=True))
+            return layout.unpack_target(x)
+        else:
+            x = x[:, plan.text.shape[1] + plan.prompt_len :]
+            return self.proj_out(self.norm_out(x, time_embedding))
