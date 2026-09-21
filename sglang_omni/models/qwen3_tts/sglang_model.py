@@ -1582,7 +1582,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 batch_size=batch_size,
                 cache_len=0,
             )[:, 1:, :].contiguous()
-            cache_len = 2
+            cache_len = pair_embeds.shape[1]
 
             sub_positions = (
                 self.sub_seed_positions(semantic_positions[:, pos])
