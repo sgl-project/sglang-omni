@@ -23,7 +23,7 @@ class FunCosyVoice3State(DeclarativeStateBase):
     text: str = wire("", codec="str")
     language: str = wire("auto", codec="str_or")
     instructions: str | None = None
-    ref_audio: Any | None = None
+    ref_audio: object = None
     ref_text: str | None = None
     stream: bool = wire(False, codec="bool")
     speed: float = wire(1.0, codec="float")

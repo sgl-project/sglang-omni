@@ -24,7 +24,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     language: str = wire("auto", codec="str_or")
     voice: str | None = None
     instructions: str | None = None
-    ref_audio: Any | None = None
+    ref_audio: object = None
     ref_text: str | None = None
     uploaded_voice_name: str | None = None
     uploaded_voice_created_at: int | None = None

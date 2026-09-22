@@ -29,7 +29,7 @@ class Zonos2State(DeclarativeStateBase):
 
     # request inputs (preprocessing)
     text: str = wire("", codec="str")
-    ref_audio: Any | None = None  # path / bytes / data-uri for voice cloning
+    ref_audio: object = None  # path / bytes / data-uri for voice cloning
     ref_text: str | None = None
     language: str | None = None
     speaking_rate: float | None = None
