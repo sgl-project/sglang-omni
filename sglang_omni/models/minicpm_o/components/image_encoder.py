@@ -61,8 +61,10 @@ def init_sglang_tp() -> None:
     except ValueError:
         set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
 
+    from sglang_omni.platforms import current_platform
+
     parallel_state.init_distributed_environment(
-        backend="nccl",
+        backend=current_platform.get_torch_distributed_backend_str(),
         world_size=1,
         rank=0,
         local_rank=0,
