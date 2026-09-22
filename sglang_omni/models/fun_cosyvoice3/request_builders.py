@@ -163,7 +163,7 @@ def _cosyvoice3_reference_input_key(source: object) -> str | None:
     return None
 
 
-def _clone_reference_tensor(value: Any) -> torch.Tensor:
+def _clone_reference_tensor(value: object) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         value = torch.as_tensor(value)
     return value.detach().cpu().clone()
@@ -522,7 +522,7 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
 
 def _normalize_cosyvoice3_inputs(
     inputs: object,
-) -> tuple[str, list[dict[str, Any]], Any | None, str | None]:
+) -> tuple[str, list[dict[str, object]], object, str | None]:
     """Normalize flat and structured speech-reference request shapes."""
     if isinstance(inputs, str):
         return inputs, [], None, None

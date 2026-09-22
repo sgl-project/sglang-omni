@@ -427,7 +427,7 @@ def build_qwen3_tts_state(
     )
 
 
-def normalize_qwen3_tts_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]]:
+def normalize_qwen3_tts_inputs(inputs: object) -> tuple[str, list[dict[str, object]]]:
     if isinstance(inputs, str):
         return inputs, []
     if isinstance(inputs, dict):
@@ -443,9 +443,9 @@ def normalize_qwen3_tts_inputs(inputs: object) -> tuple[str, list[dict[str, Any]
 
 
 def resolve_voice_clone_reference(
-    references: list[dict[str, Any]],
+    references: list[dict[str, object]],
     tts_params: dict[str, TTSParamValueT],
-) -> tuple[Any, str | None]:
+) -> tuple[object, str | None]:
     reference = references[0] if references else {}
     ref_audio = (
         reference.get("audio_path")
@@ -463,7 +463,7 @@ def resolve_voice_clone_reference(
 
 
 def has_voice_clone_reference(
-    references: list[dict[str, Any]],
+    references: list[dict[str, object]],
     tts_params: dict[str, TTSParamValueT],
 ) -> bool:
     if references_contain_audio(references) or references_contain_text(references):
@@ -474,7 +474,7 @@ def has_voice_clone_reference(
     )
 
 
-def references_contain_audio(references: list[dict[str, Any]]) -> bool:
+def references_contain_audio(references: list[dict[str, object]]) -> bool:
     return any(
         reference.get(key) is not None
         for reference in references
@@ -482,7 +482,7 @@ def references_contain_audio(references: list[dict[str, Any]]) -> bool:
     )
 
 
-def references_contain_text(references: list[dict[str, Any]]) -> bool:
+def references_contain_text(references: list[dict[str, object]]) -> bool:
     return any(reference.get("text") is not None for reference in references)
 
 

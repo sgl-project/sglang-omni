@@ -86,7 +86,7 @@ def build_generation_kwargs(
     return generation
 
 
-def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]]:
+def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, object]]]:
     if isinstance(inputs, str):
         return inputs, []
     if not isinstance(inputs, dict):
@@ -101,7 +101,7 @@ def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]]:
     ]
 
 
-def _reference_from_value(value: object) -> dict[str, Any]:
+def _reference_from_value(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return dict(value)
     if isinstance(value, str) and value.startswith("data:"):
@@ -113,7 +113,7 @@ def _reference_from_value(value: object) -> dict[str, Any]:
     return {"audio_path": str(value)}
 
 
-def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, Any]:
+def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, object]:
     if reference.get("audio_path") is not None:
         return {"audio_path": str(reference["audio_path"])}
     for key in ("ref_audio", "audio"):

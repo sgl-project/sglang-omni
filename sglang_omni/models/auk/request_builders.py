@@ -68,9 +68,7 @@ def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, Any]], Any | 
     return text, references, ref_audio
 
 
-def _resolve_reference(
-    references: list[dict[str, Any]], fallback: object
-) -> Any | None:
+def _resolve_reference(references: list[dict[str, object]], fallback: object) -> object:
     if fallback is not None:
         return fallback
     if not references:

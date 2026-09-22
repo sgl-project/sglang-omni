@@ -9,7 +9,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -217,7 +217,7 @@ def pop_prepared_moss_tts_request(
     return prepared
 
 
-def normalize_moss_tts_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]]:
+def normalize_moss_tts_inputs(inputs: object) -> tuple[str, list[dict[str, object]]]:
     if isinstance(inputs, str):
         return inputs, []
     if isinstance(inputs, dict):
@@ -231,9 +231,9 @@ def normalize_moss_tts_inputs(inputs: object) -> tuple[str, list[dict[str, Any]]
 
 
 def resolve_moss_reference(
-    references: list[dict[str, Any]],
-    tts_params: dict[str, Any],
-) -> tuple[Any | None, str | None]:
+    references: list[dict[str, object]],
+    tts_params: Mapping[str, object],
+) -> tuple[object, str | None]:
     reference = references[0] if references else {}
     ref_audio = (
         reference.get("audio_path")
