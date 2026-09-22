@@ -12,6 +12,13 @@ from sglang_omni.models.auk.flow_matching import AuKFlowMatching
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 
 
+@pytest.fixture(autouse=True)
+def torch_backend(monkeypatch):
+    monkeypatch.setattr(
+        "sglang.srt.hardware_backend.mlx.runtime.use_mlx", lambda: False
+    )
+
+
 def make_rope(freqs: torch.Tensor) -> Rope:
     """What AuKDit.forward hands a block once the fused kernel is on."""
     return Rope(freqs, 1.0, freqs.cos(), freqs.sin())

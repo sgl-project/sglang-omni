@@ -22,6 +22,13 @@ from sglang_omni.pipeline.control_plane import deserialize_message, serialize_me
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
 
 
+@pytest.fixture(autouse=True)
+def torch_backend(monkeypatch):
+    monkeypatch.setattr(
+        "sglang.srt.hardware_backend.mlx.runtime.use_mlx", lambda: False
+    )
+
+
 def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
     device = torch.device("cpu")
 
