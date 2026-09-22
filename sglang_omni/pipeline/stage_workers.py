@@ -74,8 +74,10 @@ class StageLaunchConfig:
     # wiring). Typed group kwargs are overlaid against the factory's
     # signature in the child, which imports the factory anyway.
     factory_kwargs: dict[str, Any] = field(default_factory=dict)
-    typed_kwargs: dict[str, Any] = field(default_factory=dict)
-    factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
+    typed_kwargs: dict[str, object] = field(default_factory=dict)
+    factory_arg_defaults: dict[str, str | int | float | None] = field(
+        default_factory=dict
+    )
     require_factory_gpu_id: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
@@ -96,7 +98,7 @@ class StageLaunchConfig:
     project_payload: dict[str, str] = field(default_factory=dict)
 
     # Communication pool/options. Transport selection belongs to CommRouter.
-    comm_config: dict[str, Any] = field(default_factory=dict)
+    comm_config: dict[str, int | str | None] = field(default_factory=dict)
 
     # Endpoints
     recv_endpoint: str = ""

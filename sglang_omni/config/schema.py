@@ -822,7 +822,7 @@ class PipelineConfig(BaseModel):
         return dict(self.env_defaults)
 
     @classmethod
-    def generation_admission_defaults(cls) -> dict[str, Any]:
+    def generation_admission_defaults(cls) -> dict[str, int]:
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
 

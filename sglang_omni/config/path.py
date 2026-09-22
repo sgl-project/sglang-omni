@@ -427,7 +427,7 @@ class ConfigPath:
                 raw=self.raw,
             )
 
-    def read(self, source: BaseModel | dict[str, Any]) -> object:
+    def read(self, source: BaseModel | dict[str, ValueT]) -> object:
         """Read the value at this path from a config instance or a dumped dict."""
         current: object = source
         if isinstance(current, BaseModel):
@@ -436,7 +436,7 @@ class ConfigPath:
             current = _read_segment(current, segment, path=self.raw)
         return current
 
-    def write(self, data: dict[str, Any], value: object) -> None:
+    def write(self, data: dict[str, object], value: object) -> None:
         """Assign ``value`` at this path inside a dumped config dict, in place.
 
         ``data`` is expected to be the output of ``PipelineConfig.model_dump()``.
