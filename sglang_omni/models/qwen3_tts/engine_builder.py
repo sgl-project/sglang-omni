@@ -91,8 +91,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
-        # note(ratish): the decode graph and compile ladders follow the running
-        # bound, so they are not set here.
+        # note(ratish): the decode graph ladder follows the running bound, so it
+        # is not set here.
         return {
             "max_running_requests": 64,
             "max_queued_requests": 64,
