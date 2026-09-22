@@ -91,11 +91,11 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        # note(ratish): the decode graph and compile ladders follow the running
+        # bound, so they are not set here.
         return {
-            "max_running_requests": 16,
-            "max_queued_requests": 16,
-            "cuda_graph_max_bs": 32,
-            "torch_compile_max_bs": 32,
+            "max_running_requests": 64,
+            "max_queued_requests": 64,
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
