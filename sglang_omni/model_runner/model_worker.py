@@ -5,6 +5,7 @@ import os
 import socket
 from bisect import bisect_left
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
@@ -396,7 +397,9 @@ class ModelWorker:
             "prefill_cuda_graph": self._prefill_cuda_graph_info(),
         }
 
-    def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def update_weights_from_disk(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         model_path = payload.get("model_path")
         if not model_path:
             return False, "model_path is required"
@@ -454,7 +457,9 @@ class ModelWorker:
         )
         return bool(success), str(message)
 
-    def destroy_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def destroy_weights_update_group(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         destroy = self.model_runner.destroy_weights_update_group
         success, message = destroy(payload.get("group_name") or "weight_update_group")
         return bool(success), str(message)

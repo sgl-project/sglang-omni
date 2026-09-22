@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -162,7 +161,7 @@ class PackedDiT:
         padded = scatter_rows(h, rows, rows.width)
         return gather_rows(self.dit.input_embed.conv_pos_embed(padded), rows)
 
-    def _rope(self, rows: PackedRows) -> tuple[torch.Tensor, Any]:
+    def _rope(self, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor | float]:
         freqs, scale = self.dit.rotary_embed.forward_from_seq_len(rows.width)
         freqs = freqs[:, rows.positions]
         if isinstance(scale, torch.Tensor):
@@ -173,7 +172,7 @@ class PackedDiT:
     def _attend(
         attn: torch.nn.Module,
         x: torch.Tensor,
-        rope: tuple[torch.Tensor, Any],
+        rope: tuple[torch.Tensor, torch.Tensor | float],
         attention: RowAttention,
     ) -> torch.Tensor:
         from x_transformers.x_transformers import apply_rotary_pos_emb

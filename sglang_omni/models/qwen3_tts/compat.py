@@ -6,7 +6,7 @@ from __future__ import annotations
 import inspect
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, ParamSpec, Protocol, TypeVar, overload
+from typing import TYPE_CHECKING, ParamSpec, Protocol, TypeVar, overload
 
 import torch
 
@@ -63,8 +63,8 @@ def _make_mask_factory_compat(
     original: Callable[..., Result], name: str
 ) -> Callable[..., Result]:
     def mask_factory_compat(
-        *args: Any,
-        **kwargs: Any,
+        *args: object,
+        **kwargs: object,
     ) -> Result:
         if "input_embeds" in kwargs:
             kwargs.setdefault("inputs_embeds", kwargs.pop("input_embeds"))
