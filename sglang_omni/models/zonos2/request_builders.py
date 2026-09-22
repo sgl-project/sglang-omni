@@ -123,6 +123,7 @@ _AR_SAMPLING_FIELDS = {
 
 @dataclass
 class Zonos2SGLangRequestData(SGLangARRequestData):
+    enforce_request_limits: bool = True
     prompt_rows: torch.Tensor | None = None
     speaker_emb: torch.Tensor | None = None
     speaker_position: int = -1

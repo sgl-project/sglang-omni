@@ -164,6 +164,8 @@ def clone_reference_tensor(value: Any) -> torch.Tensor:
 class CosyVoice3SGLangRequestData(SGLangARRequestData):
     """Fun-CosyVoice3 scheduler-owned request state."""
 
+    enforce_request_limits: bool = True
+
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0

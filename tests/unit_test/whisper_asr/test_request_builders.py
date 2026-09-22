@@ -131,6 +131,12 @@ def test_request_builder_accepts_a_full_window_chunk(monkeypatch) -> None:
     assert data.audio_duration_s == pytest.approx(30.0)
 
 
+def test_request_builder_enforces_scheduler_request_limits(monkeypatch) -> None:
+    data = _build(monkeypatch)
+
+    assert data.enforce_request_limits is True
+
+
 def test_request_builder_without_prompt_keeps_prefix_only(monkeypatch) -> None:
     data = _build(monkeypatch)
 

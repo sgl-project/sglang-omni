@@ -1033,3 +1033,12 @@ def test_prepared_request_cleanup_and_missing_marker_are_explicit() -> None:
     )
     with pytest.raises(RuntimeError, match="state is missing"):
         pop_prepared_cosyvoice3_request(marked)
+
+
+def test_request_data_asks_the_scheduler_to_enforce_limits() -> None:
+    """Without this flag validate_input_length never runs for this model."""
+    from sglang_omni.models.fun_cosyvoice3.request_builders import (
+        CosyVoice3SGLangRequestData,
+    )
+
+    assert CosyVoice3SGLangRequestData().enforce_request_limits is True

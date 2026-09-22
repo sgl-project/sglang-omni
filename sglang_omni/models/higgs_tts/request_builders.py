@@ -33,6 +33,8 @@ from sglang_omni.scheduling.streaming_vocoder import (
 class HiggsSGLangRequestData(SGLangARRequestData):
     """Per-request state for the Higgs TTS scheduler."""
 
+    enforce_request_limits: bool = True
+
     reference_codes_delayed: list[list[int]] | None = None
     num_codebooks: int = 8
     codebook_size: int = 1026
