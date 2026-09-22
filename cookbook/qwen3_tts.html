@@ -658,11 +658,11 @@ initial and follow-up vocoder graph-capture paths (<code class="docutils literal
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.max_running_requests</span></code></p></td>
 <td><p>Concurrent running slots</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">16</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">64</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.engine.max_queued_requests</span></code></p></td>
 <td><p>Waiting-queue depth before fast-reject</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">16</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">64</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -711,8 +711,8 @@ fallback rate to zero.</p>
 default costs extra graph capture during startup. Raising
 <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs_prefill</span></code> on its own regrows the default ladder to the
 new cap; declaring <code class="docutils literal notranslate"><span class="pre">cuda_graph_bs_prefill</span></code> yourself keeps your list as is.</p>
-<p>Raising <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> does <strong>not</strong> automatically raise the waiting
-bound. For a ceiling-32 experiment:</p>
+<p>To change the ceiling, set <code class="docutils literal notranslate"><span class="pre">max_running_requests</span></code> and <code class="docutils literal notranslate"><span class="pre">max_queued_requests</span></code>
+together:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-0.6B-Base<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_0_6b.yaml<span class="w"> </span><span class="se">\</span>
