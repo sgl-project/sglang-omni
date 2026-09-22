@@ -93,13 +93,9 @@ cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore C
 It cannot be pinned even as a range: every published wheel requires `flashinfer_python[cu13]` and the
 `nvidia-*` runtime, so **any** specifier pulls the CUDA stack over `torch+xpu`. Build from source:
 
-The revision below contains the Torch 2.13-compatible TorchCodec-XPU 0.15
-manifest used for qualification. It is pinned until that dependency fix lands
-in upstream SGLang.
-
 ```bash
-git clone https://github.com/yao-matrix/sglang && cd sglang
-git checkout --detach 7343154cce3255afac252e57d80e7c253fdccccc
+git clone https://github.com/sgl-project/sglang && cd sglang
+git checkout v0.5.20   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
