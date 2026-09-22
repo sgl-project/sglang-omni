@@ -8,7 +8,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -374,7 +374,7 @@ class TTSWebSocketProxy:
         )
 
 
-def _session_route_facts(message: dict[str, Any]) -> SpeechRouteFacts:
+def _session_route_facts(message: Mapping[str, object]) -> SpeechRouteFacts:
     text = message.get("text")
     if not isinstance(text, str):
         return extract_speech_route_facts({}, RouteKind.SPEECH)
@@ -770,7 +770,7 @@ def _safe_close_code(code: int) -> int:
     return code if 1000 <= code < 5000 else 1011
 
 
-def _message_size(message: dict[str, Any]) -> int:
+def _message_size(message: Mapping[str, object]) -> int:
     text = message.get("text")
     if isinstance(text, str):
         return len(text.encode("utf-8"))

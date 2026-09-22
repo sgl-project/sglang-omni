@@ -831,15 +831,15 @@ def _pool_summary(
     *,
     status: str,
     include_workers: bool = True,
-    overlay: Callable[[Worker], dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+    overlay: Callable[[Worker], dict[str, object]] | None = None,
+) -> dict[str, object]:
     healthy = sum(1 for worker in workers if worker.is_healthy)
     dead = sum(1 for worker in workers if worker.is_dead)
     unhealthy = sum(1 for worker in workers if worker.state == HEALTH_STATE_UNHEALTHY)
     unknown = sum(1 for worker in workers if worker.state == HEALTH_STATE_UNKNOWN)
     disabled = sum(1 for worker in workers if worker.disabled)
     routable = sum(1 for worker in workers if worker.is_routable)
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "status": status,
         "healthy_workers": healthy,
         "dead_workers": dead,
@@ -864,8 +864,8 @@ def _worker_pool_status_response(
     *,
     available_status: str,
     unavailable_status: str,
-    extra: dict[str, Any] | None = None,
-    overlay: Callable[[Worker], dict[str, Any]] | None = None,
+    extra: dict[str, object] | None = None,
+    overlay: Callable[[Worker], dict[str, object]] | None = None,
 ) -> JSONResponse:
     routable = sum(1 for worker in workers if worker.is_routable)
     status_code = 200 if routable > 0 else 503

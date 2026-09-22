@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Set
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 import httpx
 
@@ -141,7 +141,7 @@ class VoiceRoutingState:
         if self._mutations_inflight == 0:
             self._refresh_requested.set()
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | bool | None]:
         owner = self.owner()
         if owner is None:
             registry_state = "unassigned"
