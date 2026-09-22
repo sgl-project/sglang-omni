@@ -1386,3 +1386,8 @@ JiaxinD 在 #2216 上要求在"只等队头 build"的新 head 上重测,在 #221
 rps 1 -1.5、rps 20 -1.2 ms。两个一起 -8.9 ms(50.5 → 41.6),可闻 -8.6 ms。
 与第二十轮"两个 PR 合计 -13"相比小了,差额就是被去掉的自适应等待和那一轮 main 自身更慢的基线,方向一致。
 数字已进两个 PR 正文并回复到评论;#2216、#2094 已 approve。
+
+**合并(2026-09-22 04:20 PT)**:#2094 → main `e7168592`,#2216 → main `e57fd94d`,均为 squash、自写正文、JiaxinD 记 Co-authored-by。
+#2094 合并前 rebase 过一次:main 在同一批文件里新进了 cosyvoice3 臂,两臂都保留,契约测试从"轮换 == 已校准集合"改成
+"轮换只抽注册过的 preset 且不含 CustomVoice"。#2217(只留首块编译)等 review;#2293(延迟阶段)两臂在 Tilde 上各跑一遍全过,
+CustomVoice 臂 1 rps 中位 31.8 ms、20 rps 53.5 ms(CI 部署形态:经 router、vocoder 独立进程),Base 臂 79.6 / 160.1 ms。
