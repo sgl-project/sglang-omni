@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from sglang.srt.models.gemma3_causal import Gemma3ForCausalLM
-from sglang.srt.server_args import get_global_server_args
+from sglang.srt.runtime_context import get_schedule
 from torch import nn
 from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
@@ -237,7 +237,7 @@ class NemotronVoiceChatTalker(nn.Module):
             torch.zeros(speech["prompt_frames"], talker_config["hidden_size"]),
         )
         hidden_size = talker_config["hidden_size"]
-        max_batch = get_global_server_args().max_running_requests
+        max_batch = get_schedule().max_running_requests
         embed_dtype = torch.get_default_dtype()
         device = "cuda"
         self._fusion_buffer = torch.zeros(

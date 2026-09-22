@@ -11,6 +11,7 @@ TTS_MODEL_LABELS = {
     "higgs": "run-higgs",
     "moss": "run-moss",
     "qwen3-tts": "run-qwen3-tts",
+    "cosyvoice3": "run-cosyvoice3",
 }
 ASR_MODEL_LABELS = {
     "fun-asr": "run-fun-asr",

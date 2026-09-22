@@ -393,9 +393,10 @@ class OmniScheduler:
         self.is_mixed_chunk = (
             self.chunked_prefill_size is not None and get_schedule().enable_mixed_chunk
         )
-        self.enable_dynamic_chunking = False
-        self.prefill_decode_interval = get_schedule().prefill_decode_interval
+        self.dynamic_chunk_sizer = None
+        self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
         self._prefill_decode_interval_remaining = 0
+        self.processed_tokens_counter = 0
 
         # Schedule policy
         from sglang.srt.managers.schedule_policy import SchedulePolicy
@@ -431,6 +432,7 @@ class OmniScheduler:
         self.enable_trace = False
         self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
+        self.enable_unified_cache_external_linker = False
         self.enable_kv_cache_events = False
         self.is_generation = True
         self.skip_tokenizer_init = True
@@ -501,6 +503,7 @@ class OmniScheduler:
         self.ipc_channels = OmniIpcChannels(self)
         self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
         self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        self.scheduler_stage_metrics = self.metrics_reporter.scheduler_stage_metrics
         self.init_upstream_scheduler_components()
 
         self._running = False
@@ -825,6 +828,17 @@ class OmniScheduler:
 
     def recv_requests(self):
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
+        if self.is_entry_rank:
+            # note (ratish): only this rank reads the clock. The failed request
+            # makes the coordinator broadcast an abort, which reaches followers
+            # the way every other abort does.
+            for timeout_abort in self._poll_timeout_aborts():
+                if timeout_abort.rid in self._aborted_request_ids:
+                    continue
+                self.emit_request_error(
+                    timeout_abort.rid, RuntimeError(timeout_abort.abort_message)
+                )
+                self.abort(timeout_abort.rid)
         recv_msgs = self.recv_scheduler_messages()
         new_reqs: list = []
         for msg in recv_msgs:
@@ -1437,6 +1451,8 @@ class OmniScheduler:
         batch.launch_ts = time.monotonic()
         batch.after_idle_gap = self._sched_idled
         self._sched_idled = False
+        if batch.extend_num_tokens:
+            self.processed_tokens_counter += batch.extend_num_tokens
 
     def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.

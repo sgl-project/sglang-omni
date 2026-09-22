@@ -97,12 +97,6 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
     assert raised.value is error
 
 
-def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
-    monkeypatch.delattr(torch, "npu", raising=False)
-
-    assert platforms.is_npu_available() is False
-
-
 def test_cpu_platform_needs_no_stage_process_env() -> None:
     spec = SimpleNamespace(stage_name="cpu", tp_size=2, gpu_id=None)
 

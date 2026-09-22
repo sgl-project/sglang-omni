@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from sglang.srt.runtime_context import get_schedule
 from torch import nn
 
 from sglang_omni.models.higgs_tts.hf_config import HiggsMultimodalQwen3Config
@@ -27,8 +27,6 @@ from sglang_omni.models.higgs_tts.sampler import (
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 from sglang_omni.sampling.seed import resolve_row_seed
 
-logger = logging.getLogger(__name__)
-
 # Higgs ckpt prefixes → sglang Qwen3ForCausalLM parameter tree (under ``backbone.``).
 _BACKBONE_PREFIX_MAP: dict[str, str] = {
     "tied.embedding.text_embedding.": "backbone.model.embed_tokens.",
@@ -45,20 +43,6 @@ class HiggsGenParams:
     temperature: float = 1.0
     top_p: float | None = None
     top_k: int | None = None
-
-
-def resolve_max_running_requests() -> int:
-    try:
-        from sglang.srt.server_args import get_global_server_args
-
-        return int(get_global_server_args().max_running_requests)
-    except (ImportError, AttributeError, TypeError, ValueError) as exc:
-        fallback = 64
-        logger.warning(
-            f"Falling back to Higgs max_running_requests={fallback} because "
-            f"SGLang global server args are unavailable: {exc}"
-        )
-        return fallback
 
 
 def flat_sampling_attr(sampling_info, attr: str) -> list | None:
@@ -156,7 +140,7 @@ class HiggsTTSModel(nn.Module):
                 self.multimodal_embedding.modality_embedding_0.weight
             )
 
-        self._sampler_pool_max_running_requests = resolve_max_running_requests()
+        self._sampler_pool_max_running_requests = get_schedule().max_running_requests
         pool_size = self._sampler_pool_max_running_requests + 1
         self._sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,

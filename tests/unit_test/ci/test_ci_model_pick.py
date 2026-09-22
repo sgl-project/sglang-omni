@@ -28,6 +28,7 @@ TTS_LABELS = {
     "higgs": "RUN_HIGGS_LABEL",
     "moss": "RUN_MOSS_LABEL",
     "qwen3-tts": "RUN_QWEN3_TTS_LABEL",
+    "cosyvoice3": "RUN_COSYVOICE3_LABEL",
 }
 ASR_LABELS = {
     "fun": "RUN_FUN_ASR_LABEL",
@@ -75,6 +76,7 @@ def _run_one(
         "RUN_HIGGS_LABEL": "false",
         "RUN_MOSS_LABEL": "false",
         "RUN_QWEN3_TTS_LABEL": "false",
+        "RUN_COSYVOICE3_LABEL": "false",
         "RUN_FUN_ASR_LABEL": "false",
         "RUN_QWEN3_ASR_LABEL": "false",
         "RUN_WHISPER_ASR_LABEL": "false",

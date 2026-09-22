@@ -109,9 +109,9 @@ def test_configure_talker_server_args_writes_through_the_mutation_guard() -> Non
     assert resolution_result(server_args, "chunked_prefill_size") == 0
     assert server_args.disable_radix_cache is False
     audited_overrides = {}
-    for source, fields in server_args._runtime_mutations:
-        assert source == "qwen3_omni.talker"
-        audited_overrides.update(fields)
+    for source, fields in server_args._resolved_overrides:
+        if source == "qwen3_omni.talker":
+            audited_overrides.update(fields)
     assert audited_overrides == {
         "disable_radix_cache": True,
         "chunked_prefill_size": 0,
@@ -685,14 +685,8 @@ def test_qwen_predictor_decode_graph_uses_configured_batch_buckets(
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Qwen3-Omni predictor graph requires CUDA"
 )
-def test_qwen_predictor_decode_graph_matches_eager(monkeypatch: pytest.MonkeyPatch):
+def test_qwen_predictor_decode_graph_matches_eager():
     """Default graph replay matches eager predictor outputs for single-token decode."""
-    monkeypatch.setattr(
-        talker_module,
-        "get_global_server_args",
-        lambda: SimpleNamespace(max_running_requests=4),
-    )
-
     device = torch.device("cuda")
     talker = _build_fake_predictor_graph_talker(device)
     layer0_codes = torch.tensor([[1], [7]], dtype=torch.int, device=device)
@@ -766,16 +760,8 @@ def test_qwen_predictor_decode_graph_covers_real_incremental_step(
     not torch.cuda.is_available() or torch.cuda.device_count() < 2,
     reason="requires two visible CUDA devices",
 )
-def test_qwen_predictor_decode_graph_uses_tensor_device_when_current_device_differs(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_qwen_predictor_decode_graph_uses_tensor_device_when_current_device_differs():
     """Graph capture follows predictor tensors, not the process-current device."""
-    monkeypatch.setattr(
-        talker_module,
-        "get_global_server_args",
-        lambda: SimpleNamespace(max_running_requests=4),
-    )
-
     torch.cuda.set_device(0)
     device = torch.device("cuda:1")
     talker = _build_fake_predictor_graph_talker(device)
@@ -1553,6 +1539,7 @@ def test_abort_filters_subsequent_stream_messages_via_recv_requests() -> None:
     and driving the dispatch loop.
     """
     scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.is_entry_rank = True
     scheduler._aborted_request_ids = set()
     scheduler._aborted_request_id_order = deque()
     scheduler._pending_stream_ingress = {}
@@ -1730,6 +1717,7 @@ def test_rollback_decode_prep_after_skip_is_noop_for_prefill_batches() -> None:
 def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) -> None:
     schedule_batch_mod = pytest.importorskip("sglang.srt.managers.schedule_batch")
     ScheduleBatch = schedule_batch_mod.ScheduleBatch
+    from sglang.srt.runtime_context import get_context
 
     batch = ScheduleBatch.__new__(ScheduleBatch)
     reqs = [
@@ -1774,9 +1762,9 @@ def test_prepare_for_decode_rollback_type_contract_with_upstream(monkeypatch) ->
         "alloc_for_decode",
         _fake_alloc_for_decode,
     )
-    monkeypatch.setattr(schedule_batch_mod, "mamba_extra_buffer_enabled", lambda: False)
 
-    ScheduleBatch.prepare_for_decode(batch)
+    with get_context().override_server_args():
+        ScheduleBatch.prepare_for_decode(batch)
     assert batch.seq_lens_sum is None
     assert reqs[0].kv.kv_allocated_len == 12
     assert reqs[0].kv.kv_committed_len == 11

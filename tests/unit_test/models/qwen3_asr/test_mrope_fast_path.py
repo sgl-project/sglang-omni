@@ -81,7 +81,11 @@ def test_non_degenerate_falls_back():
 
 def test_extend_falls_back():
     mm = [_mm_input(20)]
-    fields = {"extend_lens": [4], "prefix_lens": [16]}
+    fields = {
+        "extend_lens": [4],
+        "prefix_lens": [16],
+        "reqs": [SimpleNamespace(session=None)],
+    }
 
     fast = _run(_FAST, ForwardMode.EXTEND, [20], mm, **fields)
 

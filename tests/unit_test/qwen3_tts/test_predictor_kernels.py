@@ -29,12 +29,31 @@ def test_predictor_gqa_attention_cpu_matches_sdpa() -> None:
     key = torch.randn(2, 2, 5, 8)
     value = torch.randn(2, 2, 5, 8)
 
-    actual = predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=False
+    )
     expected = F.scaled_dot_product_attention(
         q, key, value, is_causal=False, enable_gqa=True
     )
 
     torch.testing.assert_close(actual, expected)
+
+
+def test_predictor_gqa_attention_pair_attends_causally() -> None:
+    torch.manual_seed(0)
+    q = torch.randn(2, 4, 2, 8)
+    key = torch.randn(2, 2, 2, 8)
+    value = torch.randn(2, 2, 2, 8)
+
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=True
+    )
+    first = F.scaled_dot_product_attention(
+        q[:, :, :1], key[:, :, :1], value[:, :, :1], enable_gqa=True
+    )
+    second = F.scaled_dot_product_attention(q[:, :, 1:], key, value, enable_gqa=True)
+
+    torch.testing.assert_close(actual, torch.cat((first, second), dim=2))
 
 
 @pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
@@ -44,7 +63,9 @@ def test_predictor_npu_fused_attention_matches_sdpa() -> None:
     key = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
     value = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
 
-    actual = predictor_gqa_attention(q, key, value, num_heads=4, num_key_value_heads=2)
+    actual = predictor_gqa_attention(
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=False
+    )
     expected = F.scaled_dot_product_attention(
         q, key, value, is_causal=False, enable_gqa=True
     )

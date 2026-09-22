@@ -22,7 +22,47 @@ MODEL_PATH="$(
 
 ### 🍎 Apple Silicon (MLX/MLP)
 
+### 🍎 Apple Silicon (MLX/MLP)
+
 #### MLX
+
+The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+
+```bash
+brew install ffmpeg@7
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
+supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
+directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
+
+macOS may remove `DYLD_*` variables when a SIP-protected system executable
+launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
+for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
+`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
+can succeed without loading FFmpeg.
+
+Create one virtual environment for both repositories, then install the pinned
+SGLang tag from source with its `all_mps` dependencies before installing
+SGLang-Omni:
+
+```bash
+git clone --branch v0.5.20 https://github.com/sgl-project/sglang.git
+git clone https://github.com/sgl-project/sglang-omni.git
+
+uv venv -p 3.12 sglang-omni/.venv-apple
+source sglang-omni/.venv-apple/bin/activate
+
+cd sglang
+cp python/pyproject_other.toml python/pyproject.toml
+uv pip install -e "python[all_mps]"
+
+cd ../sglang-omni
+uv pip install -e .
+```
 
 This installs MLX through SGLang. It does not install or use the `mlx-audio`
 package. Before downloading a model, verify both Metal and FFmpeg loading:

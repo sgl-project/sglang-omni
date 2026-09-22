@@ -42,16 +42,6 @@ docker run -it --device /dev/dri --shm-size 32g --ipc host --network host sglang
 Built on Intel Deep Learning Essentials with the `+xpu` torch wheels. It deliberately does **not**
 source oneAPI — see [Runtime environment](#runtime-environment-important).
 
-Pinning SGLang does not pin the SYCL kernels: its XPU manifest requires `sgl-kernel-xpu`
-from git with no revision. The Dockerfile therefore pins that commit itself, so rebuilds
-are reproducible by default. Override it only to move deliberately:
-
-```bash
-docker build -f docker/xpu.Dockerfile \
-  --build-arg SGL_KERNEL_XPU_REF=<sgl-kernel-xpu commit sha> \
-  -t sglang-omni:xpu .
-```
-
 ## 🛠️ Option B: Install into an existing XPU env (recommended here)
 
 The helper swaps in `pyproject_xpu.toml`, installs with the XPU index, then restores the CUDA one:
@@ -91,7 +81,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.19   # the pinned release
+git checkout v0.5.20   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
