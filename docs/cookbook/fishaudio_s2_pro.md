@@ -22,6 +22,44 @@ Then download the model:
 hf download fishaudio/s2-pro
 ```
 
+## Apple Silicon
+
+S2-Pro runs on Apple Silicon through native MLX and a Torch/MPS compatibility
+path. Install with the
+[Apple Silicon installer](../get_started/installation.md#-option-b-macos-apple-silicon-installer)
+and follow its environment-activation and `DYLD_LIBRARY_PATH` steps, then
+install the DAC codec dependencies listed above into `.venv-apple`.
+
+Both backends load the official `fishaudio/s2-pro` checkpoint with unquantized
+BF16 weights; no converted MLX artifact or `mlx-audio` runtime package is
+needed. Inference runs one request at a time and additional requests queue. The
+request context is bounded to 4,096 tokens, and quantized checkpoints are
+rejected. Plain TTS, voice cloning, streaming PCM, and the `seed` parameter are
+supported on either backend.
+
+### MLX
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000 --allowed-local-media-path .
+```
+
+`SGLANG_USE_MLX=1` off Apple Metal fails at startup instead of silently falling
+back.
+
+### Torch/MPS
+
+Without `SGLANG_USE_MLX=1`, the same checkpoint runs through PyTorch MPS:
+
+```bash
+SGLANG_USE_MLX=0 sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --port 8000 --allowed-local-media-path .
+```
+
 ## Server Configuration
 
 ```bash

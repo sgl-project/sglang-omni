@@ -14,6 +14,15 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import
 )
 
 
+@pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
+    # profile tests independent of the caller's SGLANG_USE_MLX environment.
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+
+
 def test_npu_kvcache_attention_uses_fused_infer_attention(
     monkeypatch,
 ) -> None:
@@ -114,7 +123,7 @@ def test_fast_ar_attention_rejects_unsupported_device_clearly() -> None:
     k_cache = torch.zeros(1, 11, 4, 8)
     v_cache = torch.zeros(1, 11, 4, 8)
 
-    with pytest.raises(RuntimeError, match="supports CUDA and NPU"):
+    with pytest.raises(RuntimeError, match="supports CUDA, NPU, and MPS"):
         fish_audio_decoder.flash_attn_kvcache_op(
             q=q,
             k_cache=k_cache,
