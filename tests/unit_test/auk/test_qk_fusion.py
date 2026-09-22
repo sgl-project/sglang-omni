@@ -62,6 +62,7 @@ def test_qk_fusion_supports_native_bf16_backbone():
     assert all(torch.isfinite(output).all() for output in actual)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA Triton")
 def test_request_lengths_do_not_specialize_the_kernel():
     pytest.importorskip("triton")
     from sglang_omni.models.auk.fused_qk_norm_rope import norm_rope_kernel
