@@ -11,10 +11,19 @@ from typing import BinaryIO
 import pytest
 import requests
 
+from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.tasks import asr
+from benchmarks.tasks.tts import _build_tts_payload
 from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
+
+SEEDTTS_SAMPLE = SampleInput(
+    sample_id="sample-1",
+    ref_text="reference",
+    ref_audio="ref.wav",
+    target_text="hello world",
+)
 
 
 @pytest.mark.parametrize(
@@ -141,6 +150,71 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     assert config.seed == 7
     assert config.output_dir == "custom-results"
     assert config.server_config == "custom.yaml"
+
+
+def test_fun_cosyvoice3_cli_default_omits_max_new_tokens(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["benchmark", "--model", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"]
+    )
+    args, _ = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
+    payload = _build_tts_payload(
+        SEEDTTS_SAMPLE,
+        config.model,
+        **tts._build_generation_kwargs(
+            config
+        ),  # noqa: leading-underscore  # production name
+    )
+    assert "max_new_tokens" not in payload
+
+
+@pytest.mark.parametrize(
+    "model, max_new_tokens",
+    [
+        ("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", None),
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", 2048),
+    ],
+)
+def test_max_new_tokens_default_applies_without_cli(model, max_new_tokens):
+    # note (Yucheng Hu): TTS CI builds the config directly, so the per-model
+    # default has to resolve at request-build time, not only in _parse_args.
+    config = tts.TtsSeedttsBenchmarkConfig(model=model, meta="meta.lst")
+    payload = _build_tts_payload(
+        SEEDTTS_SAMPLE,
+        model,
+        **tts._build_generation_kwargs(
+            config
+        ),  # noqa: leading-underscore  # production name
+    )
+    assert payload.get("max_new_tokens") == max_new_tokens
+
+
+def test_explicit_max_new_tokens_overrides_fun_cosyvoice3_profile(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark",
+            "--model",
+            "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            "--max-new-tokens",
+            "2048",
+        ],
+    )
+    args, _ = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
+    payload = _build_tts_payload(
+        SEEDTTS_SAMPLE,
+        config.model,
+        **tts._build_generation_kwargs(
+            config
+        ),  # noqa: leading-underscore  # production name
+    )
+    assert payload["max_new_tokens"] == 2048
 
 
 def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
