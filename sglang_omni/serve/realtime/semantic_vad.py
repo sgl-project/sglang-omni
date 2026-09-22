@@ -7,38 +7,21 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
-import torch
-from silero_vad import load_silero_vad
 
-from .vad import VAD_FRAME_SAMPLES, VAD_SAMPLE_RATE, Emit, VADEvent
+from .vad import (
+    VAD_FRAME_SAMPLES,
+    VAD_SAMPLE_RATE,
+    Emit,
+    SileroSpeechModel,
+    SpeechProbabilityModel,
+    VADEvent,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class SemanticEOUModel(Protocol):
     def predict(self, audio: np.ndarray, sample_rate: int) -> float: ...
-
-
-class SpeechProbabilityModel(Protocol):
-    def predict(self, frame: np.ndarray, sample_rate: int) -> float: ...
-
-    def reset(self) -> None: ...
-
-
-class SileroSpeechModel:
-    def __init__(self) -> None:
-        self.model = load_silero_vad(onnx=True)
-
-    def predict(self, frame: np.ndarray, sample_rate: int) -> float:
-        with torch.inference_mode():
-            tensor = torch.from_numpy(frame).unsqueeze(0)
-            return float(self.model(tensor, sample_rate).item())
-
-    def reset(self) -> None:
-        if hasattr(self.model, "reset_states"):
-            self.model.reset_states()  # type: ignore[union-attr]
-        else:
-            pass
 
 
 @dataclass(frozen=True)
@@ -78,8 +61,6 @@ class SemanticVADConfig:
         }
         if eagerness not in presets:
             raise ValueError(f"Unsupported semantic VAD eagerness: {eagerness}")
-        else:
-            pass
         return cls(eagerness=eagerness, **presets[eagerness])
 
 
@@ -103,13 +84,11 @@ class SemanticTurnDetector:
         self.silence_run_samples = 0
         self.candidate_probability: float | None = None
         self.utterance_audio = bytearray()
-        self.eou_broken = False
+        self._eou_broken = False
 
     def process(self, pcm_bytes: bytes) -> list[Emit]:
         if not pcm_bytes:
             return []
-        else:
-            pass
         self.leftover_pcm.extend(pcm_bytes)
         emits: list[Emit] = []
         frame_bytes_count = VAD_FRAME_SAMPLES * 2
@@ -139,30 +118,20 @@ class SemanticTurnDetector:
                             max(0, frame_start - padding),
                         )
                     )
-                else:
-                    pass
                 self.utterance_audio.extend(frame_bytes)
                 continue
-            else:
-                pass
 
             if not self.is_speech:
                 continue
-            else:
-                pass
 
             self.utterance_audio.extend(frame_bytes)
             self.silence_run_samples += VAD_FRAME_SAMPLES
             silence_ms = self.silence_run_samples * 1000 // VAD_SAMPLE_RATE
 
-            if self.eou_broken:
+            if self._eou_broken:
                 if silence_ms >= self.config.fallback_silence_ms:
                     emits.append(self.end_turn())
-                else:
-                    pass
                 continue
-            else:
-                pass
 
             if (
                 self.candidate_probability is None
@@ -175,14 +144,10 @@ class SemanticTurnDetector:
                         "Smart Turn inference failed; using fixed-silence fallback",
                         exc_info=True,
                     )
-                    self.eou_broken = True
+                    self._eou_broken = True
                     if silence_ms >= self.config.fallback_silence_ms:
                         emits.append(self.end_turn())
-                    else:
-                        pass
                     continue
-            else:
-                pass
 
             required_silence_ms = self.config.max_pause_ms
             if (
@@ -202,12 +167,8 @@ class SemanticTurnDetector:
                     self.config.candidate_pause_ms,
                     self.config.confidence_silence_ms,
                 )
-            else:
-                pass
             if silence_ms >= required_silence_ms:
                 emits.append(self.end_turn())
-            else:
-                pass
 
         return emits
 
@@ -217,8 +178,6 @@ class SemanticTurnDetector:
         max_samples = self.config.max_utterance_seconds * VAD_SAMPLE_RATE
         if audio.size > max_samples:
             audio = audio[-max_samples:]
-        else:
-            pass
         return float(self.eou_model.predict(audio, VAD_SAMPLE_RATE))
 
     def end_turn(self) -> Emit:
@@ -236,5 +195,5 @@ class SemanticTurnDetector:
         self.silence_run_samples = 0
         self.candidate_probability = None
         self.utterance_audio.clear()
-        self.eou_broken = False
+        self._eou_broken = False
         self.speech_model.reset()
