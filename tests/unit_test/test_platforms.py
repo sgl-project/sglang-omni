@@ -121,6 +121,7 @@ def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         "NCCL_NVLS_ENABLE": "0",
+        "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0",
     }
 
 

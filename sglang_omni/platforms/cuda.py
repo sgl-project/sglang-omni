@@ -91,6 +91,10 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             "NCCL_NVLS_ENABLE" not in spec.env_defaults
         ):
             env_updates["NCCL_NVLS_ENABLE"] = "0"
+        if "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2" not in source_env and (
+            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2" not in spec.env_defaults
+        ):
+            env_updates["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"] = "0"
         return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
