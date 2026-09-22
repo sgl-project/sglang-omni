@@ -43,13 +43,13 @@ _BUNDLED_CODEC_CONFIG_PATH = os.path.join(
 
 
 @dataclass
-class _DecodeCudaGraph:
+class DecodeCudaGraph:
     graph: torch.cuda.CUDAGraph
     input_codes: torch.Tensor
     output_audio: torch.Tensor
 
 
-def _capture_safe_quantizer_decode(quantizer: Any, codes: torch.Tensor) -> torch.Tensor:
+def capture_safe_quantizer_decode(quantizer: Any, codes: torch.Tensor) -> torch.Tensor:
     """Equivalent RVQ decode without a pageable CPU-to-GPU scalar copy.
 
     Transformers 5.6 initializes the accumulator with
@@ -66,7 +66,7 @@ def _capture_safe_quantizer_decode(quantizer: Any, codes: torch.Tensor) -> torch
     return quantized_out
 
 
-def _to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
+def to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
     """Normalise (Tensor | ndarray) waveform to mono ``[1, 1, L]``."""
     if isinstance(waveform, np.ndarray):
         wav = torch.from_numpy(np.ascontiguousarray(waveform))
@@ -88,7 +88,7 @@ def _to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
     raise ValueError(f"waveform must be 1-, 2- or 3-D, got {wav.ndim}-D")
 
 
-def _resolve_ckpt_dir(model_path: str | Path) -> str:
+def resolve_ckpt_dir(model_path: str | Path) -> str:
     """Local dir or HF repo id → local snapshot dir."""
     p = str(model_path)
     if os.path.isdir(p):
@@ -96,7 +96,7 @@ def _resolve_ckpt_dir(model_path: str | Path) -> str:
     return snapshot_download(p)
 
 
-def _load_codec_state_dict(tts_ckpt_dir: str) -> dict[str, torch.Tensor]:
+def load_codec_state_dict(tts_ckpt_dir: str) -> dict[str, torch.Tensor]:
     """Pull all ``tied.embedding.modality_embeddings.0.model.*`` tensors out of
     the TTS checkpoint's shards into a state dict keyed by the codec's own
     parameter names (prefix stripped)."""
@@ -138,7 +138,7 @@ class HiggsAudioCodec:
         self.model = model
         self.device = device
         self._dtype = next(model.parameters()).dtype
-        self._decode_cuda_graphs: dict[int, _DecodeCudaGraph] = {}
+        self._decode_cuda_graphs: dict[int, DecodeCudaGraph] = {}
         self._decode_cuda_graph_hits = 0
         self._decode_cuda_graph_misses = 0
         self._decode_cuda_graph_missed_shapes: set[int] = set()
@@ -166,12 +166,12 @@ class HiggsAudioCodec:
         — opt in only if you've validated quality at your sample rate.
         """
         device = torch.device(device)
-        ckpt_dir = _resolve_ckpt_dir(model_path)
+        ckpt_dir = resolve_ckpt_dir(model_path)
 
         config = HiggsAudioV2TokenizerConfig.from_json_file(_BUNDLED_CODEC_CONFIG_PATH)
         model = HiggsAudioV2TokenizerModel(config).to(dtype=dtype).eval()
 
-        state = _load_codec_state_dict(ckpt_dir)
+        state = load_codec_state_dict(ckpt_dir)
         if not state:
             raise FileNotFoundError(
                 f"No codec weights found under {_CODEC_IN_TTS_CKPT_PREFIX!r} in "
@@ -196,9 +196,9 @@ class HiggsAudioCodec:
     def capture_decode_cuda_graphs(self, frame_counts: tuple[int, ...]) -> None:
         """Capture and publish decode graphs while decode is quiescent."""
         with self._decode_single_flight_lock:
-            self._capture_decode_cuda_graphs_locked(frame_counts)
+            self.capture_decode_cuda_graphs_locked(frame_counts)
 
-    def _capture_decode_cuda_graphs_locked(self, frame_counts: tuple[int, ...]) -> None:
+    def capture_decode_cuda_graphs_locked(self, frame_counts: tuple[int, ...]) -> None:
         """Capture fixed-shape single-item codec decode graphs at startup.
 
         Higgs' streaming cursor has a finite set of single-item decode-window
@@ -222,10 +222,10 @@ class HiggsAudioCodec:
         capture_stream.wait_stream(current_stream)
         original_quantizer_decode = self.model.quantizer.decode
         self.model.quantizer.decode = types.MethodType(
-            _capture_safe_quantizer_decode,
+            capture_safe_quantizer_decode,
             self.model.quantizer,
         )
-        captured: dict[int, _DecodeCudaGraph] = {}
+        captured: dict[int, DecodeCudaGraph] = {}
         try:
             # Bind the device: CUDAGraph and graph_pool_handle act on the
             # current device, which need not be the codec's.
@@ -263,7 +263,7 @@ class HiggsAudioCodec:
                         graph, pool=graph_pool, stream=capture_stream
                     ):
                         output_audio = self.model.decode(input_codes).audio_values
-                    captured[frame_count] = _DecodeCudaGraph(
+                    captured[frame_count] = DecodeCudaGraph(
                         graph=graph,
                         input_codes=input_codes,
                         output_audio=output_audio,
@@ -292,7 +292,7 @@ class HiggsAudioCodec:
         ``[-1, 1]``. Resamples to 24 kHz; clips < 1 s are zero-padded since
         the encoder errors otherwise.
         """
-        wav = _to_mono_3d(waveform).to(torch.float32)
+        wav = to_mono_3d(waveform).to(torch.float32)
         sr = sample_rate or self.SAMPLE_RATE
         if sr != self.SAMPLE_RATE:
             wav = torchaudio.functional.resample(wav, sr, self.SAMPLE_RATE)
@@ -303,7 +303,7 @@ class HiggsAudioCodec:
         codes_BNT = self.model.encode(wav).audio_codes
         return codes_BNT.squeeze(0).transpose(0, 1).to(torch.long).cpu()
 
-    def _bucketed_batch(
+    def bucketed_batch(
         self,
         items: list[torch.Tensor],
         *,
@@ -343,7 +343,7 @@ class HiggsAudioCodec:
         # Offline/bulk encoding utility.
         padded: list[torch.Tensor] = []
         for w in waveforms:
-            wav = _to_mono_3d(w).to(torch.float32)
+            wav = to_mono_3d(w).to(torch.float32)
             if wav.shape[-1] < self.SAMPLE_RATE:
                 wav = F.pad(wav, (0, self.SAMPLE_RATE - wav.shape[-1]))
             padded.append(wav)
@@ -353,7 +353,7 @@ class HiggsAudioCodec:
             codes_BNT = self.model.encode(batch).audio_codes.to(torch.long).cpu()
             return [codes_BNT[j].transpose(0, 1) for j in range(len(batch_items))]
 
-        return self._bucketed_batch(
+        return self.bucketed_batch(
             padded,
             bucket_key_fn=lambda w: w.shape[-1],
             single_fn=self.encode_reference,
@@ -365,9 +365,9 @@ class HiggsAudioCodec:
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         """``[T, num_codebooks]`` → mono waveform ``[L]``."""
         with self._decode_single_flight_lock:
-            return self._decode_one(codes_TN)
+            return self.decode_one(codes_TN)
 
-    def _decode_one(self, codes_TN: torch.Tensor) -> torch.Tensor:
+    def decode_one(self, codes_TN: torch.Tensor) -> torch.Tensor:
         if codes_TN.ndim != 2:
             raise ValueError(
                 f"codes must be 2-D [T, num_codebooks], got {tuple(codes_TN.shape)}"
@@ -424,10 +424,10 @@ class HiggsAudioCodec:
             return [audio[j, 0] for j in range(len(batch_items))]
 
         with self._decode_single_flight_lock:
-            return self._bucketed_batch(
+            return self.bucketed_batch(
                 codes_list,
                 bucket_key_fn=lambda c: c.shape[0],
-                single_fn=self._decode_one,
+                single_fn=self.decode_one,
                 batch_fn=_batch_fn,
                 error_label="decode_batch",
             )

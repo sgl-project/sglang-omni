@@ -4,12 +4,14 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
+DEFAULT_DEEPSTACK_VISUAL_INDEXES = [8, 16, 24]
+
 _MROPE_ROPE_SCALING_KEYS = frozenset(
     {"interleaved", "mrope_interleaved", "mrope_section"}
 )
 
 
-def _normalize_rope_scaling(
+def normalize_rope_scaling(
     rope_scaling: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     if rope_scaling is None:
@@ -92,12 +94,15 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
         temporal_patch_size=2,
         out_hidden_size=3584,
         num_position_embeddings=2304,
-        deepstack_visual_indexes=[8, 16, 24],
+        deepstack_visual_indexes=...,
         tokens_per_second=None,
         initializer_range=0.02,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        if deepstack_visual_indexes is ...:
+            deepstack_visual_indexes = DEFAULT_DEEPSTACK_VISUAL_INDEXES
 
         self.depth = depth
         self.hidden_size = hidden_size
@@ -169,7 +174,7 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.partial_rotary_factor = partial_rotary_factor
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
@@ -352,7 +357,7 @@ class Qwen3OmniMoeTalkerCodePredictorConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.attention_bias = attention_bias
         self.sliding_window = sliding_window
         self.attention_dropout = attention_dropout

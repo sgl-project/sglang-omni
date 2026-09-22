@@ -121,17 +121,17 @@ def test_whisper_forward_caches_encoder_kv_before_decoder(
 
     monkeypatch.setattr(
         model,
-        "_batch_precomputed_encoder_states",
+        "batch_precomputed_encoder_states",
         lambda batch: encoder_states if use_precomputed_states else None,
     )
     monkeypatch.setattr(
         model,
-        "_batch_audio_inputs",
+        "batch_audio_inputs",
         lambda batch: (torch.randn(1, 4, 4), [3]),
     )
     monkeypatch.setattr(
         model,
-        "_run_encoder",
+        "run_encoder",
         lambda features: encoder_states.unsqueeze(0),
     )
     monkeypatch.setattr(

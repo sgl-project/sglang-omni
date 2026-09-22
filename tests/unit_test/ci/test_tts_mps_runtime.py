@@ -363,7 +363,7 @@ def test_scheduler_model_path_activity_is_monotonic_and_default_off(
 
     path = recorder.start("run-unit", str(tmp_path), "tts_engine")
     monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
-    monkeypatch.setattr(event_recorder, "_read_host_boot_id", lambda: "boot-test")
+    monkeypatch.setattr(event_recorder, "read_host_boot_id", lambda: "boot-test")
     event_recorder.emit_model_path_start("request-on")
     event_recorder.emit_model_path_end("request-on", status="success")
     recorder.stop()

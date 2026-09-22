@@ -50,9 +50,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
         if self.optimize and int(cfg.max_running_requests) == 1:
-            from sglang_omni.models.dots_tts.stages import _configure_optimized_kernels
+            from sglang_omni.models.dots_tts.stages import configure_optimized_kernels
 
-            _configure_optimized_kernels()
+            configure_optimized_kernels()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {

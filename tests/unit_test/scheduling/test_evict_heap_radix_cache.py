@@ -105,6 +105,22 @@ def test_factory_selects_evict_heap_only_for_lru():
         assert type(build(policy)) is RadixCache, policy
 
 
+def test_factory_passes_the_eviction_policy_config_to_the_strategy():
+    from sglang.srt.runtime_context import get_context
+
+    from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
+
+    with get_context().override_server_args(
+        disable_radix_cache=False,
+        chunked_prefill_size=None,
+        radix_eviction_policy="slru",
+        radix_eviction_policy_config={"protected_threshold": 4},
+    ):
+        cache = create_tree_cache(None, _MockAllocator(), 1)
+
+    assert cache.eviction_strategy.protected_threshold == 4
+
+
 def test_heap_stays_bounded_and_recovers():
     cache = _make(EvictHeapRadixCache)
     _run_trace(cache, seed=7, steps=2000, drain=False)

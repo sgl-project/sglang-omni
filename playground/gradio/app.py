@@ -183,9 +183,8 @@ def make_chat_handler(api_base: str):
                     yield display_out, new_api_history, audio_path
                 elif chunk["type"] == "audio":
                     raw = base64.b64decode(chunk["value"])
-                    tmp = tempfile.NamedTemporaryFile(suffix=".wav")
-                    tmp.write(raw)
-                    tmp.close()
+                    with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+                        tmp.write(raw)
                     audio_path = tmp.name
                     yield display_out, new_api_history, audio_path
         except Exception as exc:

@@ -56,7 +56,7 @@ _STREAM_WITHHOLD_TAIL = N_CODEBOOKS - 1
 _STREAM_EOS_GUARD_FRAMES = ZONOS2_STREAM_LOOKAHEAD_FRAMES - _STREAM_WITHHOLD_TAIL
 
 
-def _get_vocoder(device: str) -> Zonos2DACVocoder:
+def get_vocoder(device: str) -> Zonos2DACVocoder:
     global _vocoder_cache
     if _vocoder_cache is None or _vocoder_cache[0] != device:
         _vocoder_cache = (device, Zonos2DACVocoder(device=device))
@@ -79,7 +79,7 @@ def decode_to_pcm(
     Returns:
         1-D ``float32`` PCM tensor at 44.1 kHz on CPU.
     """
-    return _get_vocoder(device).decode(audio_codes, eos_frame=eos_frame)
+    return get_vocoder(device).decode(audio_codes, eos_frame=eos_frame)
 
 
 def decode_batch(
@@ -91,13 +91,13 @@ def decode_batch(
 
     Reuses the process-wide DAC cache, so no second checkpoint load.
     """
-    return _get_vocoder(device).decode_batch(audio_codes_list, eos_frames)
+    return get_vocoder(device).decode_batch(audio_codes_list, eos_frames)
 
 
 # ---- streaming (incremental raised-cosine OLA) ----
 
 
-class _Zonos2OLADecoder:
+class Zonos2OLADecoder:
     """Incremental de-shear + DAC decode of delayed rows with OLA cross-fade.
 
     Reuses ``Zonos2DACVocoder.decode`` per window: given delayed rows
@@ -118,13 +118,13 @@ class _Zonos2OLADecoder:
         # note (Yue Yin): the cross-fade window is fixed for the decoder's life
         # (overlap*hop), so build the raised-cosine ramps once instead of per chunk.
         hold = self.overlap * self.hop
-        self._ramp_up, self._ramp_down = self._ramps(hold) if hold > 0 else (None, None)
+        self._ramp_up, self._ramp_down = self.ramps(hold) if hold > 0 else (None, None)
 
     def add(self, rows: list[torch.Tensor]) -> None:
         self.rows.extend(rows)
 
     @staticmethod
-    def _ramps(n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    def ramps(n: int) -> tuple[torch.Tensor, torch.Tensor]:
         i = torch.arange(n, dtype=torch.float32)
         up = 0.5 * (1.0 - torch.cos(math.pi * i / max(n - 1, 1)))
         return up, 1.0 - up
@@ -184,14 +184,14 @@ class _Zonos2OLADecoder:
 
 
 @dataclass
-class _Zonos2StreamState:
-    decoder: _Zonos2OLADecoder | None = None
+class Zonos2StreamState:
+    decoder: Zonos2OLADecoder | None = None
     n_codebooks: int = N_CODEBOOKS
     initial_chunk_frames: int = 0
     latched: bool = False
 
 
-class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, None]):
+class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, None]):
     """Decode ZONOS2 delayed code rows incrementally with raised-cosine OLA.
 
     The base owns the streaming lifecycle; this scheduler owns the OLA cursor,
@@ -237,14 +237,14 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
 
     # ---- streaming hooks ----
 
-    def create_stream_state(self, request_id: str) -> _Zonos2StreamState:
+    def create_stream_state(self, request_id: str) -> Zonos2StreamState:
         del request_id
-        return _Zonos2StreamState()
+        return Zonos2StreamState()
 
     def latch_stream_contract(
         self,
         request_id: str,
-        state: _Zonos2StreamState,
+        state: Zonos2StreamState,
         source: StagePayload | Mapping[str, Any],
         *,
         origin: str,
@@ -269,7 +269,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         state.latched = True
 
     def validate_chunk(
-        self, request_id: str, state: _Zonos2StreamState, codes: torch.Tensor
+        self, request_id: str, state: Zonos2StreamState, codes: torch.Tensor
     ) -> torch.Tensor:
         del request_id
         # Accept either a single [9] row or a coalesced [k, 9] batch (the AR engine
@@ -280,26 +280,26 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         return rows_t[:, : state.n_codebooks]
 
     def ingest(
-        self, request_id: str, state: _Zonos2StreamState, codes: torch.Tensor
+        self, request_id: str, state: Zonos2StreamState, codes: torch.Tensor
     ) -> None:
         del request_id
         if state.decoder is None:
-            state.decoder = _Zonos2OLADecoder(
+            state.decoder = Zonos2OLADecoder(
                 self._device, self._overlap_frames, DAC_HOP_LENGTH
             )
         state.decoder.add([codes[i] for i in range(codes.shape[0])])
 
     def decode_delta(
-        self, request_id: str, state: _Zonos2StreamState, *, is_final: bool
+        self, request_id: str, state: Zonos2StreamState, *, is_final: bool
     ) -> torch.Tensor | None:
         if is_final:
-            return self._flush(request_id, state)
+            return self.flush(request_id, state)
         if state.decoder is None:
             return None
         chunk_frames = (
             state.initial_chunk_frames
             if (
-                not self._stream_has_emitted(request_id)
+                not self.stream_has_emitted(request_id)
                 and state.initial_chunk_frames > 0
             )
             else self._steady_chunk_frames
@@ -310,7 +310,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         pcms = [
             pcm
             for pcm in state.decoder.pull(
-                _get_vocoder(self._device), chunk_frames=chunk_frames, flush=False
+                get_vocoder(self._device), chunk_frames=chunk_frames, flush=False
             )
             if pcm.numel() > 0
         ]
@@ -318,7 +318,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
             return None
         return torch.cat(pcms) if len(pcms) > 1 else pcms[0]
 
-    def _flush(self, request_id: str, state: _Zonos2StreamState) -> torch.Tensor | None:
+    def flush(self, request_id: str, state: Zonos2StreamState) -> torch.Tensor | None:
         zstate = Zonos2State.from_dict(self.stream_payloads[request_id].data)
         # note (Yue Yin): coalescing (stream_emit_chunk_frames>1) or retraction can
         # leave the streamed OLA decoder SHORT of the full aligned length (a held or
@@ -331,7 +331,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
             full = torch.as_tensor(zstate.audio_codes, dtype=torch.long)
             if full.shape[0] > 0:
                 if state.decoder is None:
-                    state.decoder = _Zonos2OLADecoder(
+                    state.decoder = Zonos2OLADecoder(
                         self._device, self._overlap_frames, DAC_HOP_LENGTH
                     )
                 have = len(state.decoder.rows)
@@ -342,7 +342,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         pcms = [
             pcm
             for pcm in state.decoder.pull(
-                _get_vocoder(self._device),
+                get_vocoder(self._device),
                 chunk_frames=self._steady_chunk_frames,
                 flush=True,
                 eos_frame=zstate.eos_frame,
@@ -354,7 +354,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         return torch.cat(pcms) if len(pcms) > 1 else pcms[0]
 
     def fallback_full_decode(
-        self, request_id: str, payload: StagePayload, state: _Zonos2StreamState
+        self, request_id: str, payload: StagePayload, state: Zonos2StreamState
     ) -> torch.Tensor | None:
         # Nothing streamed (slot-starved / sub-window utterance): fall back to the
         # one-shot decode so streaming output matches the non-stream path.
@@ -378,7 +378,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         )
 
     def final_result_data(
-        self, request_id: str, payload: StagePayload, state: _Zonos2StreamState
+        self, request_id: str, payload: StagePayload, state: Zonos2StreamState
     ) -> dict[str, Any]:
         del request_id, state
         zstate = Zonos2State.from_dict(payload.data)

@@ -99,9 +99,9 @@ class Latent2Wav(nn.Module):
         hidden_BCT = rearrange(latent_TD, "t d -> 1 d t")
         for layer in self.layers:
             hidden_BCT = layer(hidden_BCT)
-        return self._spectrogram_to_wave(hidden_BCT.float())
+        return self.spectrogram_to_wave(hidden_BCT.float())
 
-    def _spectrogram_to_wave(self, spectrum_BCT):
+    def spectrogram_to_wave(self, spectrum_BCT):
         magnitude_BFT, phase_BFT = spectrum_BCT.chunk(2, dim=1)
         magnitude_BFT = MAX_MAGNITUDE * torch.exp(
             -functional.softplus(-magnitude_BFT + math.log(MAX_MAGNITUDE))
@@ -110,9 +110,9 @@ class Latent2Wav(nn.Module):
         imaginary_BFT = magnitude_BFT * torch.sin(phase_BFT)
         imaginary_BFT[:, 0] = 0.0
         imaginary_BFT[:, -1] = 0.0
-        return self._inverse_stft(torch.complex(real_BFT, imaginary_BFT))
+        return self.inverse_stft(torch.complex(real_BFT, imaginary_BFT))
 
-    def _inverse_stft(self, spectrum_BFT):
+    def inverse_stft(self, spectrum_BFT):
         window_length = self.n_fft
         frames = spectrum_BFT.shape[-1]
         window_W = torch.hann_window(window_length, device=spectrum_BFT.device)

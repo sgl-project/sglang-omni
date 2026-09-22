@@ -10,7 +10,7 @@ from sglang_omni.model_runner.base import ModelRunner
 
 
 @dataclass(slots=True)
-class _MlxSchedulerPendingStep:
+class MlxSchedulerPendingStep:
     launch: Any
     reqs: list[Any]
     scheduler_output: Any
@@ -26,13 +26,13 @@ class MlxSchedulerModelRunner(ModelRunner):
 
         # Note (yexiaodong): The scheduler still owns every pending handle;
         # this reference is only the lazy decode root used to build its successor.
-        self._last_mlx_pending: _MlxSchedulerPendingStep | None = None
+        self._last_mlx_pending: MlxSchedulerPendingStep | None = None
         self._resolve_skip_rids: set[str] = set()
         # Note (yexiaodong): MLX 0.32 streams are thread-local, so the
         # scheduler thread needs its own stream for async evaluation.
         self._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
 
-    def _mlx_stream_context(self):
+    def mlx_stream_context(self):
         import mlx.core as mx
 
         return mx.stream(self._mlx_thread_stream)
@@ -50,7 +50,7 @@ class MlxSchedulerModelRunner(ModelRunner):
                 return False
         return super().lookahead_eligible(batch)
 
-    def _build_forward_batch(self, scheduler_output: Any):
+    def build_forward_batch(self, scheduler_output: Any):
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
@@ -66,7 +66,7 @@ class MlxSchedulerModelRunner(ModelRunner):
         requests: list[Any],
     ) -> Any:
         del requests
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
                 batch=schedule_batch,
                 forward_batch=forward_batch,
@@ -79,7 +79,7 @@ class MlxSchedulerModelRunner(ModelRunner):
         requests: list[Any],
     ) -> Any:
         del requests
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             return self.tp_worker.forward_batch_generation(
                 batch=schedule_batch,
                 forward_batch=forward_batch,
@@ -102,7 +102,7 @@ class MlxSchedulerModelRunner(ModelRunner):
 
         reqs = list(schedule_batch.reqs)
         previous = self._last_mlx_pending
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             if previous is None:
                 launch = self.tp_worker.async_forward_batch_generation_mlx(
                     schedule_batch
@@ -122,7 +122,7 @@ class MlxSchedulerModelRunner(ModelRunner):
                 launch = self.tp_worker.async_chained_decode_mlx(previous.launch.decode)
 
         schedule_batch_copy = schedule_batch.copy()
-        pending = _MlxSchedulerPendingStep(
+        pending = MlxSchedulerPendingStep(
             launch=launch,
             reqs=reqs,
             scheduler_output=replace(
@@ -134,12 +134,12 @@ class MlxSchedulerModelRunner(ModelRunner):
         self._last_mlx_pending = pending
         return pending
 
-    def execute_resolve(self, pending: _MlxSchedulerPendingStep | None):
+    def execute_resolve(self, pending: MlxSchedulerPendingStep | None):
         if pending is None:
             return None
 
         try:
-            with self._mlx_stream_context():
+            with self.mlx_stream_context():
                 batch_result = self.tp_worker.finalize_mlx_result(
                     pending.launch,
                     pending.reqs,
@@ -167,11 +167,11 @@ class MlxSchedulerModelRunner(ModelRunner):
         skip_rids = {
             request.request_id
             for request in pending.scheduler_output.requests
-            if request.data.req.finished() or self._req_is_retracted(request.data.req)
+            if request.data.req.finished() or self.req_is_retracted(request.data.req)
         }
         self._resolve_skip_rids = skip_rids
         try:
-            return self._finalize(
+            return self.finalize(
                 batch_result,
                 None,
                 pending.schedule_batch,
@@ -229,7 +229,7 @@ def create_mlx_model_worker(
             return self.ps.tp_rank
 
         def _init_model_runner(self):
-            MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
+            MlxModelRunnerStub.validate_startup_weight_load_mode()
             if model_arch == "FunCosyVoice3SGLangModel":
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
                 # 6,761-codec-token vocabulary rather than Qwen2 text tokens.

@@ -110,7 +110,7 @@ class DotsTTSPipelineConfig(PipelineConfig):
         # on the next merge).
         stream_slots = self.stage_named("vocoder").factory.stream_slots
         if stream_slots is not None:
-            derived = self._latent_max_running_requests(
+            derived = self.latent_max_running_requests(
                 self.stage_named("latent_engine")
             )
             if int(stream_slots) != derived:
@@ -132,14 +132,14 @@ class DotsTTSPipelineConfig(PipelineConfig):
             }
         if stage_name == "vocoder":
             return {
-                "stream_slots": self._latent_max_running_requests(
+                "stream_slots": self.latent_max_running_requests(
                     self.stage_named("latent_engine")
                 )
             }
         return {}
 
     @staticmethod
-    def _latent_max_running_requests(latent_engine: StageConfig) -> int:
+    def latent_max_running_requests(latent_engine: StageConfig) -> int:
         engine = latent_engine.engine
         value = engine.max_running_requests if engine is not None else None
         if value is None:

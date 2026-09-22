@@ -14,7 +14,7 @@ _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
 
 @triton.jit
-def _seeded_gumbel_argmax_kernel(
+def seeded_gumbel_argmax_kernel(
     scores_ptr,
     seeds_ptr,
     positions_ptr,
@@ -116,7 +116,7 @@ def seeded_gumbel_argmax(
             f"seeded Gumbel one-pass vocabulary exceeds 2048: {vocab_size}"
         )
     result = output[:rows]
-    _seeded_gumbel_argmax_kernel[(rows,)](
+    seeded_gumbel_argmax_kernel[(rows,)](
         scores,
         seeds,
         positions,
@@ -161,7 +161,7 @@ MAX_FUSED_SAMPLE_VOCAB = 2048
 
 
 @triton.jit
-def _fused_seeded_sample_kernel(
+def fused_seeded_sample_kernel(
     logits_ptr,
     temperature_ptr,
     top_p_ptr,
@@ -310,7 +310,7 @@ def sample_seeded_fused(
     logits = logits.float().contiguous()
     out = torch.empty(rows, device=logits.device, dtype=torch.int64)
     block = triton.next_power_of_2(vocab)
-    _fused_seeded_sample_kernel[(rows,)](
+    fused_seeded_sample_kernel[(rows,)](
         logits,
         temperature.float().contiguous(),
         top_p.float().contiguous(),

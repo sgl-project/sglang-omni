@@ -73,7 +73,7 @@ class AggregatedInput(InputHandler):
         if expected_sources is None and self._expected_sources_fn is not None:
             resolved = self._expected_sources_fn(request_id, from_stage, data)
             if resolved is not None:
-                expected_sources = self._normalize_expected_sources(
+                expected_sources = self.normalize_expected_sources(
                     request_id,
                     resolved,
                 )
@@ -100,7 +100,7 @@ class AggregatedInput(InputHandler):
 
         return None
 
-    def _normalize_expected_sources(
+    def normalize_expected_sources(
         self,
         request_id: str,
         sources: str | Iterable[str],

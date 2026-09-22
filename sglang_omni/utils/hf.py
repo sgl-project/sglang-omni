@@ -89,7 +89,7 @@ def try_resolve_arch_from_mistral_config(
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
-def _load_raw_config(model_path: str, revision: str | None = None) -> dict | None:
+def load_raw_config(model_path: str, revision: str | None = None) -> dict | None:
     """Read ``config.json`` as plain JSON, from a local dir or a Hub repo id."""
     local_config = os.path.join(model_path, "config.json")
     if os.path.isfile(local_config):
@@ -117,7 +117,7 @@ def try_resolve_arch_from_nemo_config(
     speech-to-speech model is recognisable all the same: its config carries
     both a speech-understanding and a speech-generation section.
     """
-    raw = _load_raw_config(model_path, revision)
+    raw = load_raw_config(model_path, revision)
     if raw is None:
         return None
     model = raw.get("model")
@@ -138,7 +138,7 @@ def try_resolve_arch_from_raw_config(
     module is unavailable).  We parse the JSON directly to extract
     ``architectures`` or map ``model_type``.
     """
-    raw = _load_raw_config(model_path, revision)
+    raw = load_raw_config(model_path, revision)
     if raw is None:
         return None
 
@@ -178,7 +178,7 @@ def try_resolve_arch_from_cosyvoice3_layout(
     return _COSYVOICE3_ARCHITECTURE
 
 
-def _auk_architecture_from_config(path: str) -> str | None:
+def auk_architecture_from_config(path: str) -> str | None:
     """Return the AuK architecture if the file names AuK or AuK-Flash."""
     import yaml
 
@@ -207,7 +207,7 @@ def try_resolve_arch_from_auk_layout(
     for filename in _AUK_CONFIG_NAMES:
         local = os.path.join(model_path, filename)
         if os.path.isfile(local):
-            return _auk_architecture_from_config(local)
+            return auk_architecture_from_config(local)
     if os.path.isdir(model_path):
         for marker in _AUK_WEIGHT_MARKERS:
             if os.path.isfile(os.path.join(model_path, marker)):
@@ -220,7 +220,7 @@ def try_resolve_arch_from_auk_layout(
             )
         except Exception:
             continue
-        architecture = _auk_architecture_from_config(cached)
+        architecture = auk_architecture_from_config(cached)
         if architecture is not None:
             return architecture
     return None

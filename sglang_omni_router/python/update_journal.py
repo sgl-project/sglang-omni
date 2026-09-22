@@ -110,7 +110,7 @@ class UpdateJournal:
     def exists(self) -> bool:
         return os.path.exists(self._path)
 
-    def _read_document(self) -> dict | None:
+    def read_document(self) -> dict | None:
         try:
             with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -132,7 +132,7 @@ class UpdateJournal:
         Raises JournalUnreadableError if the file is present but corrupt, so
         callers can fail closed instead of treating it as "no transaction".
         """
-        data = self._read_document()
+        data = self.read_document()
         if data is None:
             return []
         workers = data.get("worker_ids")
@@ -151,7 +151,7 @@ class UpdateJournal:
             return True
 
     def begin(self, path: str, worker_ids: list[str]) -> None:
-        self._write({"path": path, "worker_ids": sorted(worker_ids)})
+        self.write({"path": path, "worker_ids": sorted(worker_ids)})
 
     def keep(self, worker_ids: list[str]) -> None:
         """Persist the still-unresolved target set (empty clears)."""
@@ -160,7 +160,7 @@ class UpdateJournal:
             return
         document: dict = {"worker_ids": sorted(worker_ids)}
         try:
-            existing = self._read_document()
+            existing = self.read_document()
         except JournalUnreadableError:
             existing = None
         # Note (Jiaxin Deng): the admin path is the only durable clue to which
@@ -168,7 +168,7 @@ class UpdateJournal:
         # behind; narrowing the target set must not erase it.
         if existing is not None and isinstance(existing.get("path"), str):
             document["path"] = existing["path"]
-        self._write(document)
+        self.write(document)
 
     def discard(self, worker_id: str) -> bool:
         """Remove one id; False when the entry could not be durably resolved.
@@ -198,13 +198,13 @@ class UpdateJournal:
             # directory fsync, so absence is not durability; sync again rather
             # than report a resolution that a crash can undo.
             if os.path.isdir(directory):
-                self._fsync_dir()
+                self.fsync_dir()
             return
         except OSError as exc:
             raise JournalUnwritableError(f"{self._path}: {exc}") from exc
-        self._fsync_dir()
+        self.fsync_dir()
 
-    def _write(self, data: dict) -> None:
+    def write(self, data: dict) -> None:
         directory = os.path.dirname(self._path) or "."
         tmp_path = f"{self._path}.tmp"
         try:
@@ -212,8 +212,8 @@ class UpdateJournal:
             # once its own entry in the parent is synced. Without this the whole
             # endpoint directory can vanish in a host crash and take the journal
             # with it, which is exactly the case the journal exists to survive.
-            for created in reversed(_make_private_dir(directory)):
-                _fsync_directory(os.path.dirname(created) or ".")
+            for created in reversed(make_private_dir(directory)):
+                fsync_directory(os.path.dirname(created) or ".")
             fd = os.open(
                 tmp_path,
                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW,
@@ -226,13 +226,13 @@ class UpdateJournal:
             os.replace(tmp_path, self._path)
         except OSError as exc:
             raise JournalUnwritableError(f"{self._path}: {exc}") from exc
-        self._fsync_dir()
+        self.fsync_dir()
 
-    def _fsync_dir(self) -> None:
-        _fsync_directory(os.path.dirname(self._path) or ".")
+    def fsync_dir(self) -> None:
+        fsync_directory(os.path.dirname(self._path) or ".")
 
 
-def _fsync_directory(directory: str) -> None:
+def fsync_directory(directory: str) -> None:
     # Note (Jiaxin Deng): a rename/unlink is only durable across a host crash
     # once the parent directory entry is synced; non-POSIX hosts expose no
     # directory handle, so there the file fsync is the cap.
@@ -250,7 +250,7 @@ def _fsync_directory(directory: str) -> None:
         os.close(fd)
 
 
-def _make_private_dir(path: str) -> list[str]:
+def make_private_dir(path: str) -> list[str]:
     """makedirs; returns the directories this call created, innermost first.
 
     A pre-existing directory keeps its own permissions: the state directory may
@@ -315,8 +315,8 @@ def ensure_state_dir(state_dir: str) -> str:
     # both fail closed on a directory that is perfectly writable.
     probe_path = os.path.join(state_dir, f".write-probe.{os.getpid()}")
     try:
-        for created in reversed(_make_private_dir(state_dir)):
-            _fsync_directory(os.path.dirname(created) or ".")
+        for created in reversed(make_private_dir(state_dir)):
+            fsync_directory(os.path.dirname(created) or ".")
         fd = os.open(
             probe_path,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW,
@@ -337,7 +337,7 @@ def ensure_state_dir(state_dir: str) -> str:
     return state_dir
 
 
-def _endpoint_key(host: str, port: int) -> str:
+def endpoint_key(host: str, port: int) -> str:
     """A filename-safe, per-endpoint directory name.
 
     Sanitizing alone would fold distinct endpoints together (`::1` and `__1`),
@@ -357,7 +357,7 @@ def default_journal_path(host: str, port: int, state_dir: str | None = None) -> 
     host:port so the same endpoint always finds its own transaction.
     """
     return os.path.join(
-        resolve_state_dir(state_dir), _endpoint_key(host, port), "update_journal.json"
+        resolve_state_dir(state_dir), endpoint_key(host, port), "update_journal.json"
     )
 
 
@@ -370,7 +370,7 @@ def build_journal(
     try:
         resolved = ensure_state_dir(resolve_state_dir(state_dir))
         return UpdateJournal(
-            os.path.join(resolved, _endpoint_key(host, port), "update_journal.json")
+            os.path.join(resolved, endpoint_key(host, port), "update_journal.json")
         )
     except JournalUnwritableError as exc:
         logger.error(f"weight updates will be refused: {exc}")

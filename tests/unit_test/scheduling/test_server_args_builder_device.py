@@ -180,7 +180,7 @@ def test_a_platform_with_no_preference_leaves_the_decode_backend_alone(
 
     monkeypatch.setattr(
         server_args_builder,
-        "_apply_platform_decode_cuda_graph_backend",
+        "apply_platform_decode_cuda_graph_backend",
         lambda kwargs: None,
     )
     ungated = _build(monkeypatch)

@@ -42,8 +42,8 @@ def test_ming_thinker_runner_source_injects_multimodal_embeds() -> None:
     assert "class MingThinkerModelRunner(ModelRunner)" in source
     assert "audio_embeds" in source
     assert "image_embeds" in source
-    assert "_resolve_match_id" in source
-    assert "_validate_final_consumption" in source
+    assert "resolve_match_id" in source
+    assert "validate_final_consumption" in source
     assert "continue" in source
     assert ".clamp(" in source
     assert "self._embed_tokens.num_embeddings - 1" in source
@@ -83,15 +83,15 @@ def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
     init_body = source.split("    @staticmethod", 1)[0]
 
     assert (
-        "_init_sglang_tp(" in init_body
+        "init_sglang_tp(" in init_body
     ), "TP context must be initialized in __init__, not deferred to forward"
-    assert "_cleanup_sglang_tp()" not in init_body
+    assert "cleanup_sglang_tp()" not in init_body
 
 
 def test_ming_image_encoder_tp_init_requires_parallel_state() -> None:
     source = _read(MING_IMAGE_ENCODER_PATH)
-    init_fn = source.split("def _init_sglang_tp", 1)[1].split(
-        "    @classmethod\n    def _cleanup_sglang_tp", 1
+    init_fn = source.split("def init_sglang_tp", 1)[1].split(
+        "    @classmethod\n    def cleanup_sglang_tp", 1
     )[0]
 
     assert "parallel_state.model_parallel_is_initialized()" in init_fn
@@ -116,10 +116,10 @@ def test_ming_vision_block_kwargs_include_head_size(
     )
 
     from sglang_omni.models.ming_omni.components.vision_encoder import (
-        _build_qwen3_vision_block_kwargs,
+        build_qwen3_vision_block_kwargs,
     )
 
-    kwargs = _build_qwen3_vision_block_kwargs(
+    kwargs = build_qwen3_vision_block_kwargs(
         dim=1152,
         num_heads=16,
         head_size=72,
@@ -229,7 +229,7 @@ def test_ming_preprocessor_builds_placeholder_input_ids_directly(monkeypatch) ->
         module.IMAGE_PATCH
     )
 
-    prompt_text, input_ids, audio_positions = processor._build_prompt(
+    prompt_text, input_ids, audio_positions = processor.build_prompt(
         [
             {
                 "role": "user",
@@ -365,7 +365,7 @@ def test_ming_runner_uses_pad_value_when_token_id_is_none(monkeypatch) -> None:
     )
     forward_batch, schedule_batch = _fake_batch(torch, [12, 1], req)
 
-    input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
+    input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert torch.equal(input_embeds[0], audio_embeds[0])
     assert req.omni_model_inputs is None
@@ -379,7 +379,7 @@ def test_ming_runner_raises_when_embeds_are_short(monkeypatch) -> None:
     forward_batch, schedule_batch = _fake_batch(torch, [3, 3], req)
 
     with pytest.raises(ValueError, match="image.*short-image.*needed=2.*available=1"):
-        runner._inject_multimodal_embeds(forward_batch, schedule_batch)
+        runner.inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert req.omni_model_inputs is not None
 
@@ -397,7 +397,7 @@ def test_ming_runner_successful_final_injection_consumes_and_clears(
     )
     forward_batch, schedule_batch = _fake_batch(torch, [3, 5, 1], req)
 
-    input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
+    input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert torch.equal(input_embeds[0], image_embeds[0])
     assert torch.equal(input_embeds[1], audio_embeds[0])
@@ -413,7 +413,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     req = _fake_req(model_inputs, inflight_middle_chunks=1, rid="chunked-image")
     forward_batch, schedule_batch = _fake_batch(torch, [3, 1], req)
 
-    input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
+    input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert torch.equal(input_embeds[0], image_embeds[0])
     assert req.omni_model_inputs is model_inputs
@@ -422,7 +422,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     req.inflight_middle_chunks = 0
     forward_batch, schedule_batch = _fake_batch(torch, [3, 2], req)
 
-    input_embeds = runner._inject_multimodal_embeds(forward_batch, schedule_batch)
+    input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
 
     assert torch.equal(input_embeds[0], image_embeds[1])
     assert req.omni_model_inputs is None
@@ -471,7 +471,7 @@ def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
     )
 
     assert not has_forward_context()
-    result = runner._forward_with_omni_embeds(forward_batch, torch.ones(1, 2))
+    result = runner.forward_with_omni_embeds(forward_batch, torch.ones(1, 2))
 
     assert seen == [attn_backend, attn_backend]
     assert result.logits_output == "logits"

@@ -7,7 +7,7 @@ import subprocess
 import threading
 from contextlib import nullcontext
 
-from torch.profiler import ProfilerActivity, profile
+from torch.profiler import ProfilerActivity, profile, supported_activities
 
 from sglang_omni.platforms import current_platform
 
@@ -26,6 +26,15 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def profiler_activities() -> list[ProfilerActivity]:
+    """CPU plus whichever device activity this torch build supports."""
+    device = sorted(
+        (a for a in supported_activities() if a != ProfilerActivity.CPU),
+        key=lambda a: a.name,
+    )
+    return [ProfilerActivity.CPU, *device]
 
 
 class TorchProfiler(ProfilerBase):
@@ -73,7 +82,7 @@ class TorchProfiler(ProfilerBase):
                 cls._active_run_id = None
                 cls._trace_template = ""
 
-            rank = cls._get_rank()
+            rank = cls.get_rank()
 
             # 2. Make path absolute
             trace_path_template = os.path.abspath(trace_path_template)
@@ -117,7 +126,7 @@ class TorchProfiler(ProfilerBase):
             # Expensive flags are env-var opt-in (default off keeps the
             # trace tens of MB; all on can hit multi-GB).
             cls._profiler = profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                activities=profiler_activities(),
                 on_trace_ready=trace_handler,
                 record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
                 == "1",
@@ -145,7 +154,7 @@ class TorchProfiler(ProfilerBase):
             if cls._profiler is None:
                 return None
 
-            rank = cls._get_rank()
+            rank = cls.get_rank()
             active = cls._active_run_id
 
             if run_id is not None and active is not None and active != run_id:
@@ -215,12 +224,12 @@ class TorchNPUProfiler(TorchProfiler):
     def start(cls, trace_path_template: str, run_id: str | None = None) -> str:
         with cls._lock:
             trace_path_template = os.path.abspath(trace_path_template)
-            rank = cls._get_rank()
+            rank = cls.get_rank()
             if cls._profiler is not None:
                 if run_id is not None and cls._active_run_id == run_id:
                     return trace_path_template
 
-                rank = cls._get_rank()
+                rank = cls.get_rank()
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
                     rank,
@@ -271,7 +280,7 @@ class TorchNPUProfiler(TorchProfiler):
             if cls._profiler is None:
                 return None
 
-            rank = cls._get_rank()
+            rank = cls.get_rank()
             active = cls._active_run_id
             trace_path = cls._trace_template
 

@@ -1,11 +1,11 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> asr-ci -> tts-ci -> qwen3-omni-ci
-#                  |         |          |         |              |
-#                  +-- pick-asr-model --+         |
-#                  +-- pick-tts-model ------------+
-#                  +---------+----------+---------+--------------+-> cleanup (dispatch only)
+#   preflight -> pick-omni-model -> setup -> pr-test -> asr-ci -> tts-ci -> qwen3-omni-ci
+#                                   |                   |         |
+#                                   +-- pick-asr-model --+         |
+#                                   +-- pick-tts-model ------------+
+#   setup + unit/model suites -> cleanup (dispatch only)
 #
 # Benchmark suites wait for the previous suite to finish but use always() so a
 # failed unit/benchmark suite does not skip later suites. Only setup blocks all
@@ -38,6 +38,11 @@ on:
         required: false
         type: string
         default: ""
+      omni_ci_model:
+        description: "Omni CI model preset (qwen3-omni or minicpmo). Defaults to qwen3-omni."
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
@@ -59,7 +64,7 @@ env:
   COSYVOICE3_MODEL_PATH: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
-  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf@972ee603a3abb40a66c802ffaa9ba0ce88742b60
+  FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
   WHISPER_ASR_MODEL_PATH: openai/whisper-large-v3
 
 
@@ -130,8 +135,8 @@ jobs:
 
   setup:
     name: setup - omni venv
-    needs: preflight
-    if: needs.preflight.result == 'success'
+    needs: [preflight, pick-omni-model]
+    if: needs.preflight.result == 'success' && needs.pick-omni-model.result == 'success'
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -181,6 +186,7 @@ jobs:
         env:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OMNI_CI_MODEL: ${{ needs.pick-omni-model.outputs.omni_ci_model }}
         run: |
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
@@ -193,6 +199,10 @@ jobs:
             "${COSYVOICE3_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             "${WHISPER_ASR_MODEL_PATH}"
+
+          if [[ "${OMNI_CI_MODEL}" == "minicpmo" ]]; then
+            bash .github/scripts/ensure_hf_models.sh omni openbmb/MiniCPM-o-4_5
+          fi
 
       - name: Mark PR environment complete
         shell: bash
@@ -400,6 +410,43 @@ jobs:
           retention-days: 7
           overwrite: true
 
+  pick-omni-model:
+    name: pick Omni model
+    needs: preflight
+    runs-on: ubuntu-latest
+    outputs:
+      omni_ci_model: ${{ steps.pick.outputs.omni_ci_model }}
+    steps:
+      - name: Select Omni model
+        id: pick
+        shell: bash
+        env:
+          RUN_QWEN3_OMNI_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-omni') }}
+          RUN_MINICPMO_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-minicpmo') }}
+          OMNI_CI_MODEL_OVERRIDE: ${{ github.event.inputs.omni_ci_model }}
+        run: |
+          if [[ "${RUN_QWEN3_OMNI_LABEL}" == "true" && "${RUN_MINICPMO_LABEL}" == "true" ]]; then
+            echo "::error::run-qwen3-omni and run-minicpmo are mutually exclusive"
+            exit 1
+          fi
+
+          selected="${OMNI_CI_MODEL_OVERRIDE,,}"
+          if [[ -z "${selected}" ]]; then
+            selected="qwen3-omni"
+            if [[ "${RUN_MINICPMO_LABEL}" == "true" ]]; then
+              selected="minicpmo"
+            fi
+          fi
+          case "${selected}" in
+            qwen3-omni|minicpmo) ;;
+            *)
+              echo "::error::Unsupported omni_ci_model=${OMNI_CI_MODEL_OVERRIDE}; expected qwen3-omni or minicpmo"
+              exit 1
+              ;;
+          esac
+          echo "Selected Omni CI model: ${selected}"
+          echo "omni_ci_model=${selected}" >> "$GITHUB_OUTPUT"
+
   asr-ci:
     name: ASR CI
     needs: [setup, pr-test, pick-asr-model]
@@ -436,13 +483,15 @@ jobs:
     secrets: inherit
 
   qwen3-omni-ci:
-    name: Qwen3-Omni CI
-    needs: [setup, pr-test, asr-ci, tts-ci]
+    name: Omni model CI (${{ needs.pick-omni-model.outputs.omni_ci_model }})
+    needs: [setup, pr-test, asr-ci, tts-ci, pick-omni-model]
     if: >-
       always() && !cancelled() &&
-      needs.setup.result == 'success'
+      needs.setup.result == 'success' &&
+      needs.pick-omni-model.result == 'success'
     uses: ./.github/workflows/test-qwen3-omni-ci.yaml
     with:
+      omni_ci_model: ${{ needs.pick-omni-model.outputs.omni_ci_model }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)

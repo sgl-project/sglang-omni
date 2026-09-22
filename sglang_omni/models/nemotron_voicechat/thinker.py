@@ -5,7 +5,7 @@ from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.nemotron_h import NemotronHForCausalLM
-from sglang.srt.server_args import get_global_server_args
+from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -33,7 +33,7 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         )
         self.fusion = AddFusion(config.duplex)
         embedding = self.llm.get_input_embeddings().weight
-        max_batch = get_global_server_args().max_running_requests
+        max_batch = get_schedule().max_running_requests
         self._fusion_buffer = torch.zeros(
             max_batch,
             config.hidden_size,
@@ -67,12 +67,12 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         hidden = self.llm.model.forward(
             input_ids, positions, forward_batch, None, input_embeds
         )
-        self._sample_function_ids(hidden, forward_batch)
+        self.sample_function_ids(hidden, forward_batch)
         return self.llm.logits_processor(
             input_ids, hidden, self.llm.lm_head, forward_batch
         )
 
-    def _sample_function_ids(self, hidden, forward_batch):
+    def sample_function_ids(self, hidden, forward_batch):
         if forward_batch.forward_mode == ForwardMode.EXTEND:
             last = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden = hidden[last]
@@ -81,7 +81,7 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         # The function id is only sampled at greedy sampling
         self._function_ids[:batch] = logits.argmax(dim=-1)
 
-    def _backbone_weights_stream(self, parameters, weights):
+    def backbone_weights_stream(self, parameters, weights):
         # Drop RNN weights from the stream.
         for name, weight in weights:
             if name == FUNCTION_HEAD_KEY:
@@ -95,7 +95,7 @@ class NemotronVoiceChatForCausalLM(nn.Module):
 
     def load_weights(self, weights):
         parameters = dict(self.named_parameters())
-        self.llm.load_weights(self._backbone_weights_stream(parameters, weights))
+        self.llm.load_weights(self.backbone_weights_stream(parameters, weights))
 
 
 EntryClass = NemotronVoiceChatForCausalLM

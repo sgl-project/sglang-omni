@@ -99,8 +99,8 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     fake_nvml = _FakeNVML()
     fake_torch = _FakeTorch()
     fake_torch.cuda.properties.reverse()
-    monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "1,0"},
@@ -141,8 +141,8 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
 
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
-    monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,2"},
@@ -167,8 +167,8 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
 
     fake_nvml = _PartiallyFailingNVML()
     fake_torch = _FakeTorch()
-    monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "0,1"},
@@ -200,8 +200,8 @@ def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> No
             uuid="MIG-instance-uuid",
         )
     ]
-    monkeypatch.setattr(gpu_diagnostics, "_cuda_runtime_version", lambda: "13.3")
-    monkeypatch.setattr(gpu_diagnostics, "_backend_inventory", lambda: [])
+    monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
     report = gpu_diagnostics.collect_gpu_diagnostics(
         env={"CUDA_VISIBLE_DEVICES": "MIG-instance-uuid"},
@@ -225,16 +225,16 @@ def test_backend_inventory_reports_installed_but_unimportable(monkeypatch) -> No
     )
     monkeypatch.setattr(
         gpu_diagnostics,
-        "_distribution_info",
+        "distribution_info",
         lambda module: ("nixl", "1.3.1"),
     )
     monkeypatch.setattr(
         gpu_diagnostics,
-        "_module_import_error",
+        "module_import_error",
         lambda module: "exited with code 1: OSError: libcudart.so",
     )
 
-    backend = gpu_diagnostics._backend_inventory()[0]
+    backend = gpu_diagnostics.backend_inventory()[0]
 
     assert backend["installed"] is True
     assert backend["importable"] is False
@@ -251,7 +251,7 @@ def test_backend_inventory_resolves_cuda_variant_distributions(monkeypatch) -> N
             ("communication", "mooncake", "mooncake.engine"),
         ),
     )
-    monkeypatch.setattr(gpu_diagnostics, "_module_import_error", lambda module: None)
+    monkeypatch.setattr(gpu_diagnostics, "module_import_error", lambda module: None)
     monkeypatch.setattr(
         gpu_diagnostics.importlib.metadata,
         "packages_distributions",
@@ -270,7 +270,7 @@ def test_backend_inventory_resolves_cuda_variant_distributions(monkeypatch) -> N
         lambda distribution: versions[distribution],
     )
 
-    backends = gpu_diagnostics._backend_inventory()
+    backends = gpu_diagnostics.backend_inventory()
 
     assert [(backend["distribution"], backend["version"]) for backend in backends] == [
         ("nixl", "1.2.0"),
@@ -281,7 +281,7 @@ def test_backend_inventory_resolves_cuda_variant_distributions(monkeypatch) -> N
 
 
 def test_module_import_probe_survives_hard_crash(tmp_path, monkeypatch) -> None:
-    assert gpu_diagnostics._module_import_error("json") is None
+    assert gpu_diagnostics.module_import_error("json") is None
 
     module = tmp_path / "crashing_backend.py"
     module.write_text(
@@ -290,14 +290,14 @@ def test_module_import_probe_survives_hard_crash(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
 
-    error = gpu_diagnostics._module_import_error("crashing_backend")
+    error = gpu_diagnostics.module_import_error("crashing_backend")
 
     assert error is not None
     assert "terminated by signal" in error
 
 
 def test_module_import_probe_reports_import_error() -> None:
-    error = gpu_diagnostics._module_import_error("_missing_sglang_omni_backend")
+    error = gpu_diagnostics.module_import_error("_missing_sglang_omni_backend")
 
     assert error is not None
     assert "ModuleNotFoundError" in error

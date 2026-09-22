@@ -13,8 +13,8 @@ from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import apply_tts_result
 from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
     S2ProVocoderScheduler,
-    _apply_stream_crossfade,
-    _StreamVocoderState,
+    StreamVocoderState,
+    apply_stream_crossfade,
     build_stream_vocoder_chunk,
     flush_stream_vocoder_chunk,
 )
@@ -171,7 +171,7 @@ def test_streaming_vocoder_chunk_cadence() -> None:
 
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
     codec = _ContextCodec()
-    state = _StreamVocoderState()
+    state = StreamVocoderState()
     full_codes = torch.arange(11 * 7, dtype=torch.long).reshape(11, 7)
     chunks = []
 
@@ -206,12 +206,12 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
 
 
 def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None:
-    state = _StreamVocoderState(
+    state = StreamVocoderState(
         pending_tail=torch.tensor([10.0, 20.0, 30.0]),
     )
     delta_audio = torch.tensor([100.0, 200.0, 300.0, 400.0])
 
-    output = _apply_stream_crossfade(
+    output = apply_stream_crossfade(
         state,
         delta_audio,
         stream_crossfade_samples=2,
@@ -225,7 +225,7 @@ def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None
 
 def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
     codec = _FakeCodec()
-    state = _StreamVocoderState()
+    state = StreamVocoderState()
 
     first = build_stream_vocoder_chunk(
         state,
@@ -257,7 +257,7 @@ def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> Non
 
 def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
     codec = _FakeCodec()
-    state = _StreamVocoderState(
+    state = StreamVocoderState(
         codes=[torch.arange(11, dtype=torch.long).reshape(11, 1)],
         last_vocode_tokens=1,
         total_tokens=1,
@@ -503,7 +503,7 @@ def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None
         scheduler.abort(payload.request_id)
         return payload
 
-    scheduler._vocode_payload = _abort_during_vocode
+    scheduler.vocode_payload = _abort_during_vocode
 
     scheduler.handle_stream_done("req")
 
@@ -536,7 +536,7 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
         stream_crossfade_samples=0,
     )
     with pytest.raises(ValueError, match="req-zero"):
-        scheduler._vocode_payloads(
+        scheduler.vocode_payloads(
             [
                 _payload("req-good", stream=False),
                 _zero_length_payload("req-zero"),
@@ -591,7 +591,7 @@ def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:
         stream_crossfade_samples=0,
     )
 
-    result = scheduler._vocode_payload(payload)
+    result = scheduler.vocode_payload(payload)
 
     assert result.data["finish_reason"] == "length"
 

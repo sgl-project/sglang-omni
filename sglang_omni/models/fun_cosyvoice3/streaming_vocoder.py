@@ -11,7 +11,6 @@ the next step (or the stream-done flush) is when they become audio.
 
 from __future__ import annotations
 
-import heapq
 import logging
 import time
 from collections.abc import Callable
@@ -43,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 24000
 
-NextDecode = Literal["causal_window", "leftover", "wait"]
+NextDecode = Literal["causal_window", "leftover", "fallback", "wait"]
 
 
 @dataclass
@@ -56,6 +55,7 @@ class CosyVoice3StreamState:
     embedding: torch.Tensor | None = None
     hift_mel: torch.Tensor | None = None
     speech_offset: int = 0
+    leftover: torch.Tensor | None = None
     done: bool = False
     ready_since: float | None = None
     first_emit_at: float | None = None
@@ -64,8 +64,10 @@ class CosyVoice3StreamState:
         causal_token_end = self.token_offset + self.hop_len + PRE_LOOKAHEAD_LEN
         if self.prompt_token is not None and len(self.tokens) >= causal_token_end:
             return "causal_window"
-        elif self.done:
+        elif self.done and self.tokens:
             return "leftover"
+        elif self.done:
+            return "fallback"
         else:
             return "wait"
 
@@ -117,6 +119,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
             max_batch_cost=max_batch_cost,
         )
 
+    def pump_one_step(self) -> list[str] | None:
+        with self.vocoder.stream_context:
+            return super().pump_one_step()
+
     async def vocode_payload(self, payload: StagePayload) -> StagePayload:
         results = await self.vocoder.decode_payloads([payload])
         return results[0]
@@ -126,6 +132,36 @@ class FunCosyVoice3StreamingVocoderScheduler(
 
     def create_stream_state(self, request_id: str) -> CosyVoice3StreamState:
         return CosyVoice3StreamState(hop_len=self.token_hop_len)
+
+    def warmup_now(self) -> None:
+        # note(ratish): one hop and one final through Flow and HiFT before the
+        # stage publishes readiness, so the first request pays neither the
+        # attention kernel load nor the f0 cast.
+        flow = self.vocoder.flow
+        item = FlowBatchInput(
+            token=torch.zeros(
+                1, self.token_hop_len + PRE_LOOKAHEAD_LEN, dtype=torch.int32
+            ),
+            prompt_token=torch.zeros(1, self.token_hop_len, dtype=torch.int32),
+            prompt_feat=torch.zeros(
+                1, self.token_hop_len * TOKEN_MEL_RATIO, flow.output_size
+            ),
+            embedding=torch.zeros(1, flow.spk_embed_affine_layer.in_features),
+        )
+        # note(ratish): under the vocoder's stream, so the warmup and not the
+        # first request builds that stream's memory pool and cuBLAS workspaces,
+        # which PyTorch keeps per stream.
+        started = time.monotonic()
+        with self.vocoder.stream_context:
+            mel = self.vocoder.hop_batch([item])[0]
+            self.vocoder.hift_delta(mel, hift_mel=None, speech_offset=0, finalize=False)
+            hop_s = time.monotonic() - started
+            mel = self.vocoder.leftover_batch([item])[0]
+            self.vocoder.hift_delta(mel, hift_mel=None, speech_offset=0, finalize=True)
+        final_s = time.monotonic() - started - hop_s
+        logger.info(
+            f"Fun-CosyVoice3 vocoder warmup: hop {hop_s:.1f} s, final {final_s:.1f} s"
+        )
 
     def latch_stream_contract(
         self,
@@ -273,37 +309,35 @@ class FunCosyVoice3StreamingVocoderScheduler(
         self,
     ) -> list[tuple[str, CosyVoice3StreamState]]:
         now = self.clock()
-        ready: list[tuple[float, float, str, CosyVoice3StreamState]] = []
+        started: list[tuple[float, float, str, CosyVoice3StreamState]] = []
+        unstarted: list[tuple[float, str, CosyVoice3StreamState]] = []
         for request_id, state in self.stream_state_items():
             if state.next_decode() == "wait" or self.is_aborted(request_id):
                 continue
-            else:
-                if state.first_emit_at is None:
-                    playback_slack = 0.0
-                else:
-                    playback_slack = state.speech_offset / self.sample_rate - (
-                        now - state.first_emit_at
-                    )
+            elif state.first_emit_at is None:
                 assert state.ready_since is not None
-                ready.append((playback_slack, state.ready_since, request_id, state))
-        if not ready:
+                unstarted.append((state.ready_since, request_id, state))
+            else:
+                assert state.ready_since is not None
+                playback_slack = state.speech_offset / self.sample_rate - (
+                    now - state.first_emit_at
+                )
+                started.append((playback_slack, state.ready_since, request_id, state))
+        ranked = [(request_id, state) for _, _, request_id, state in sorted(started)]
+        ranked += [(request_id, state) for _, request_id, state in sorted(unstarted)]
+        if not ranked:
             return []
         else:
-            _, _, head_id, head = min(ready)
-            if head.next_decode() == "leftover":
-                return [(head_id, head)]
+            head_decode = ranked[0][1].next_decode()
+            if head_decode == "fallback":
+                return ranked[:1]
             else:
-                token_offset = head.token_offset
-                hop_len = head.hop_len
                 peers = [
-                    (playback_slack, ready_since, request_id, state)
-                    for playback_slack, ready_since, request_id, state in ready
-                    if state.next_decode() == "causal_window"
-                    and state.token_offset == token_offset
-                    and state.hop_len == hop_len
+                    (request_id, state)
+                    for request_id, state in ranked
+                    if state.next_decode() == head_decode
                 ]
-                selected = heapq.nsmallest(self.max_batch_size, peers)
-                return [(request_id, state) for _, _, request_id, state in selected]
+                return peers[: self.max_batch_size]
 
     def build_step_plan(
         self, participants: list[tuple[str, CosyVoice3StreamState]]
@@ -318,21 +352,42 @@ class FunCosyVoice3StreamingVocoderScheduler(
         plan: NextDecode,
     ) -> dict[str, torch.Tensor]:
         assert plan != "wait"
-        if plan == "leftover":
+        if plan == "fallback":
             request_id, _ = participants[0]
             self.complete_stream_request(request_id, self.finish_stream(request_id))
             return {}
-        decoded: dict[str, torch.Tensor] = {}
-        if len(participants) > 1:
-            # note (guozhihao-224, chenyang): B>1 uses packed inference_causal;
-            # B=1 keeps native CosyVoice Flow.inference.
-            head = participants[0][1]
-            token_offset = head.token_offset
-            token_end = token_offset + head.hop_len + PRE_LOOKAHEAD_LEN
+        elif plan == "leftover":
+            items = [
+                FlowBatchInput(
+                    token=torch.tensor(state.tokens, dtype=torch.int32).unsqueeze(0),
+                    prompt_token=state.prompt_token,
+                    prompt_feat=state.prompt_feat,
+                    embedding=state.embedding,
+                )
+                for _, state in participants
+            ]
+            logger.info(f"Fun-CosyVoice3 leftover Flow batch size={len(items)}")
+            mels = self.vocoder.leftover_batch(items)
+            for (_, state), mel in zip(participants, mels, strict=True):
+                state.leftover, state.hift_mel, state.speech_offset = (
+                    self.vocoder.hift_delta(
+                        mel[:, :, state.token_offset * TOKEN_MEL_RATIO :],
+                        hift_mel=state.hift_mel,
+                        speech_offset=state.speech_offset,
+                        finalize=True,
+                    )
+                )
+            for request_id, _ in participants:
+                self.complete_stream_request(request_id, self.finish_stream(request_id))
+            return {}
+        else:
             items = [
                 FlowBatchInput(
                     token=torch.tensor(
-                        state.tokens[:token_end], dtype=torch.int32
+                        state.tokens[
+                            : state.token_offset + state.hop_len + PRE_LOOKAHEAD_LEN
+                        ],
+                        dtype=torch.int32,
                     ).unsqueeze(0),
                     prompt_token=state.prompt_token,
                     prompt_feat=state.prompt_feat,
@@ -340,46 +395,33 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 )
                 for _, state in participants
             ]
-            logger.info(
-                f"Fun-CosyVoice3 causal Flow batch size={len(items)} "
-                f"hop={head.hop_len} token_offset={token_offset}"
-            )
-            mels = self.vocoder.first_hop_batch(items)
-            offset_frames = token_offset * TOKEN_MEL_RATIO
+            logger.info(f"Fun-CosyVoice3 causal Flow batch size={len(items)}")
+            mels = self.vocoder.hop_batch(items)
+            decoded: dict[str, torch.Tensor] = {}
             for (request_id, state), mel in zip(participants, mels, strict=True):
                 delta, state.hift_mel, state.speech_offset = self.vocoder.hift_delta(
-                    mel[:, :, offset_frames:],
+                    mel[:, :, state.token_offset * TOKEN_MEL_RATIO :],
                     hift_mel=state.hift_mel,
                     speech_offset=state.speech_offset,
                     finalize=False,
                 )
                 if delta.numel() > 0:
                     decoded[request_id] = delta
-        else:
-            request_id, state = participants[0]
-            delta = self.run_flow_hift(
-                state,
-                token_end=state.token_offset + state.hop_len + PRE_LOOKAHEAD_LEN,
-                streaming=True,
-                finalize=False,
-            )
-            if delta.numel() > 0:
-                decoded[request_id] = delta
-        now = self.clock()
-        for request_id, state in participants:
-            state.token_offset += state.hop_len
-            state.hop_len = next_stream_hop_len(
-                state.hop_len,
-                max_hop_len=self.token_max_hop_len,
-                disable_growth=self.disable_hop_growth,
-            )
-            if request_id in decoded and state.first_emit_at is None:
-                state.first_emit_at = now
-            if state.next_decode() != "wait":
-                state.ready_since = now
-            else:
-                state.ready_since = None
-        return decoded
+            now = self.clock()
+            for request_id, state in participants:
+                state.token_offset += state.hop_len
+                state.hop_len = next_stream_hop_len(
+                    state.hop_len,
+                    max_hop_len=self.token_max_hop_len,
+                    disable_growth=self.disable_hop_growth,
+                )
+                if request_id in decoded and state.first_emit_at is None:
+                    state.first_emit_at = now
+                if state.next_decode() != "wait":
+                    state.ready_since = now
+                else:
+                    state.ready_since = None
+            return decoded
 
     def decode_delta(
         self,
@@ -388,80 +430,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
         *,
         is_final: bool,
     ) -> torch.Tensor | None:
-        if not is_final:
-            if state.next_decode() != "causal_window":
-                return None
-            else:
-                delta = self.run_flow_hift(
-                    state,
-                    token_end=state.token_offset + state.hop_len + PRE_LOOKAHEAD_LEN,
-                    streaming=True,
-                    finalize=False,
-                )
-                state.token_offset += state.hop_len
-                state.hop_len = next_stream_hop_len(
-                    state.hop_len,
-                    max_hop_len=self.token_max_hop_len,
-                    disable_growth=self.disable_hop_growth,
-                )
-                if delta.numel() > 0:
-                    return delta
-                else:
-                    return None
+        # note(ratish): hops and leftovers run in steps, so the per-chunk
+        # decode never emits and the final flush returns the batched leftover.
+        if is_final:
+            return state.leftover
         else:
-            pieces: list[torch.Tensor] = []
-            while state.next_decode() == "causal_window":
-                delta = self.run_flow_hift(
-                    state,
-                    token_end=state.token_offset + state.hop_len + PRE_LOOKAHEAD_LEN,
-                    streaming=True,
-                    finalize=False,
-                )
-                state.token_offset += state.hop_len
-                state.hop_len = next_stream_hop_len(
-                    state.hop_len,
-                    max_hop_len=self.token_max_hop_len,
-                    disable_growth=self.disable_hop_growth,
-                )
-                pieces.append(delta)
-            if state.tokens:
-                pieces.append(
-                    self.run_flow_hift(
-                        state,
-                        token_end=len(state.tokens),
-                        streaming=False,
-                        finalize=True,
-                    )
-                )
-            pieces = [piece for piece in pieces if piece.numel() > 0]
-            if not pieces:
-                return None
-            else:
-                return torch.cat(pieces, dim=-1)
-
-    def run_flow_hift(
-        self,
-        state: CosyVoice3StreamState,
-        *,
-        token_end: int,
-        streaming: bool,
-        finalize: bool,
-    ) -> torch.Tensor:
-        token = torch.tensor(state.tokens[:token_end], dtype=torch.int32).unsqueeze(0)
-        wav, hift_mel, speech_offset = self.vocoder.token2wav_chunk(
-            token=token,
-            prompt_token=state.prompt_token,
-            prompt_feat=state.prompt_feat,
-            embedding=state.embedding,
-            token_offset=state.token_offset,
-            streaming=streaming,
-            finalize=finalize,
-            hift_mel=state.hift_mel,
-            speech_offset=state.speech_offset,
-        )
-        state.hift_mel = hift_mel
-        state.speech_offset = speech_offset
-        return wav
+            return None
 
     def fallback_full_decode(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from sglang.srt.models.gemma3_causal import Gemma3ForCausalLM
-from sglang.srt.server_args import get_global_server_args
+from sglang.srt.runtime_context import get_schedule
 from torch import nn
 from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
@@ -128,7 +128,7 @@ class EarTtsTalker(nn.Module):
         self.embed_code = nn.Linear(int(config["latent_size"]), hidden_size, bias=False)
 
     def embed_codes(self, codes_TQ):
-        return self.embed_code(self._depth_sum(codes_TQ, self.num_quantizers))
+        return self.embed_code(self.depth_sum(codes_TQ, self.num_quantizers))
 
     def quantise(self, latent_TD, codes_TQ, first_level: int, count: int):
         residual_TD = latent_TD
@@ -166,7 +166,7 @@ class EarTtsTalker(nn.Module):
         for count in counts.tolist():
             if count == 0:
                 continue
-            depth_TD = self.embed_code(self._depth_sum(codes_TQ, assigned))
+            depth_TD = self.embed_code(self.depth_sum(codes_TQ, assigned))
             fed_TD = depth_TD + hidden_TD
             if guidance_scale > 0:
                 fed_TD = torch.cat([fed_TD, depth_TD + uncond_TD])
@@ -181,7 +181,7 @@ class EarTtsTalker(nn.Module):
             assigned += count
         return codes_TQ
 
-    def _depth_sum(self, codes_TQ, levels: int):
+    def depth_sum(self, codes_TQ, levels: int):
         if levels == 0:
             return torch.zeros(
                 codes_TQ.shape[0],
@@ -237,7 +237,7 @@ class NemotronVoiceChatTalker(nn.Module):
             torch.zeros(speech["prompt_frames"], talker_config["hidden_size"]),
         )
         hidden_size = talker_config["hidden_size"]
-        max_batch = get_global_server_args().max_running_requests
+        max_batch = get_schedule().max_running_requests
         embed_dtype = torch.get_default_dtype()
         device = "cuda"
         self._fusion_buffer = torch.zeros(

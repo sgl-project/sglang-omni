@@ -28,6 +28,7 @@ def create_tree_cache(
         page_size=page_size,
         chunked_prefill_size=get_schedule().chunked_prefill_size,
         eviction_policy=get_memory().radix_eviction_policy,
+        eviction_policy_config=get_memory().radix_eviction_policy_config,
     )
 
     if get_memory().disable_radix_cache:

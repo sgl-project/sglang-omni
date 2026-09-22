@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _StreamVocoderState:
+class StreamVocoderState:
     codes: list[torch.Tensor] = field(default_factory=list)
     code_start_token: int = 0
     last_vocode_tokens: int = 0
@@ -46,7 +46,7 @@ def resolve_stream_overlap_tokens(
 
 
 def build_stream_vocoder_chunk(
-    state: _StreamVocoderState,
+    state: StreamVocoderState,
     codes: torch.Tensor,
     *,
     codec: Any,
@@ -83,7 +83,7 @@ def build_stream_vocoder_chunk(
 
 
 def flush_stream_vocoder_chunk(
-    state: _StreamVocoderState,
+    state: StreamVocoderState,
     *,
     codec: Any,
     device: torch.device,
@@ -98,7 +98,7 @@ def flush_stream_vocoder_chunk(
 
     if not has_codes and has_pending_tail:
         state.pending_tail = None
-        return _build_audio_chunk_payload(
+        return build_audio_chunk_payload(
             pending_tail,
             sample_rate=codec.sample_rate,
         )
@@ -117,7 +117,7 @@ def flush_stream_vocoder_chunk(
 
 
 def _build_stream_vocoder_chunk(
-    state: _StreamVocoderState,
+    state: StreamVocoderState,
     *,
     codec: Any,
     device: torch.device,
@@ -138,7 +138,7 @@ def _build_stream_vocoder_chunk(
         if pending_tail is None or pending_tail.numel() == 0:
             return None
         state.pending_tail = None
-        return _build_audio_chunk_payload(
+        return build_audio_chunk_payload(
             pending_tail,
             sample_rate=codec.sample_rate,
         )
@@ -160,7 +160,7 @@ def _build_stream_vocoder_chunk(
 
     delta_audio = audio_tensor[overlap_samples:]
     if stream_crossfade_samples > 0:
-        delta_audio = _apply_stream_crossfade(
+        delta_audio = apply_stream_crossfade(
             state,
             delta_audio,
             stream_crossfade_samples=stream_crossfade_samples,
@@ -181,14 +181,14 @@ def _build_stream_vocoder_chunk(
             keep_from_token=max(0, total_tokens - stream_overlap_tokens),
         )
 
-    return _build_audio_chunk_payload(
+    return build_audio_chunk_payload(
         delta_audio,
         sample_rate=codec.sample_rate,
     )
 
 
-def _apply_stream_crossfade(
-    state: _StreamVocoderState,
+def apply_stream_crossfade(
+    state: StreamVocoderState,
     delta_audio: torch.Tensor,
     *,
     stream_crossfade_samples: int,
@@ -236,7 +236,7 @@ def _apply_stream_crossfade(
 
 
 def trim_retained_stream_codes(
-    state: _StreamVocoderState, *, keep_from_token: int
+    state: StreamVocoderState, *, keep_from_token: int
 ) -> None:
     retained_codes = state.codes
     if not retained_codes:
@@ -263,7 +263,7 @@ def trim_retained_stream_codes(
     state.code_start_token = code_start_token
 
 
-def _build_audio_chunk_payload(
+def build_audio_chunk_payload(
     audio_data: torch.Tensor, *, sample_rate: int
 ) -> dict[str, Any]:
     return audio_waveform_payload(
@@ -306,11 +306,11 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             codec, stream_overlap_tokens
         )
         self._stream_crossfade_samples = int(stream_crossfade_samples)
-        self.stream_states: dict[str, _StreamVocoderState] = {}
+        self.stream_states: dict[str, StreamVocoderState] = {}
 
         super().__init__(
-            self._vocode_payload,
-            batch_compute_fn=self._vocode_payloads,
+            self.vocode_payload,
+            batch_compute_fn=self.vocode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
         )
@@ -320,16 +320,16 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         return self._is_streaming_payload(payload)
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
-        self._validate_payload_state(payload)
+        self.validate_payload_state(payload)
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
         del payload
-        self.stream_states.setdefault(request_id, _StreamVocoderState())
+        self.stream_states.setdefault(request_id, StreamVocoderState())
 
     def on_stream_chunk(
         self, request_id: str, chunk: StreamItem
     ) -> list[OutgoingMessage]:
-        state = self.stream_states.setdefault(request_id, _StreamVocoderState())
+        state = self.stream_states.setdefault(request_id, StreamVocoderState())
         codes = chunk.data
         if not isinstance(codes, torch.Tensor):
             raise TypeError(
@@ -383,7 +383,7 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
 
         payload = self._payloads[request_id]
         if output is None and not had_streamed_audio:
-            result = self._vocode_payload(payload)
+            result = self.vocode_payload(payload)
             messages.append(
                 OutgoingMessage(
                     request_id=request_id,
@@ -423,10 +423,10 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
     def clear_stream_state(self, request_id: str) -> None:
         self.stream_states.pop(request_id, None)
 
-    def _vocode_payload(self, payload: StagePayload) -> StagePayload:
-        return self._vocode_payloads([payload])[0]
+    def vocode_payload(self, payload: StagePayload) -> StagePayload:
+        return self.vocode_payloads([payload])[0]
 
-    def _validate_payload_state(self, payload: StagePayload) -> S2ProState:
+    def validate_payload_state(self, payload: StagePayload) -> S2ProState:
         state = S2ProState.from_dict(payload.data)
         if (
             state.output_codes is None
@@ -438,8 +438,8 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
             )
         return state
 
-    def _vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
-        states = [self._validate_payload_state(payload) for payload in payloads]
+    def vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
+        states = [self.validate_payload_state(payload) for payload in payloads]
         code_batches = [state.output_codes[1:].to(self._device) for state in states]
         lengths = [int(codes.shape[-1]) for codes in code_batches]
         max_len = max(lengths)
@@ -458,10 +458,10 @@ class S2ProVocoderScheduler(StreamingSimpleScheduler):
         for idx, (payload, state, length) in enumerate(zip(payloads, states, lengths)):
             sample_len = int(length * samples_per_token)
             audio_np = audio[idx, 0, :sample_len].float().cpu()
-            results.append(self._store_audio(payload, state, audio_np))
+            results.append(self.store_audio(payload, state, audio_np))
         return results
 
-    def _store_audio(
+    def store_audio(
         self,
         payload: StagePayload,
         state: S2ProState,

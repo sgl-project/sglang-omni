@@ -12,7 +12,7 @@ from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
 )
 
 from sglang_omni.models.qwen3_omni.mrope_positions import (
-    _feat_extract_output_lengths,
+    feat_extract_output_lengths,
     get_rope_index_qwen3_omni_vectorized,
 )
 
@@ -95,14 +95,14 @@ def _video_span(grid_thw: list[int]) -> list[int]:
 
 
 def _audio_span(audio_seqlen: int) -> list[int]:
-    audio_len = _feat_extract_output_lengths(audio_seqlen)
+    audio_len = feat_extract_output_lengths(audio_seqlen)
     return [AUDIO_START_TOKEN_ID] + [AUDIO_TOKEN_ID] * audio_len + [AUDIO_END_TOKEN_ID]
 
 
 def _audio_in_video_span(grid_thw: list[int], audio_seqlen: int) -> list[int]:
     t, h, w = grid_thw
     video_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
-    audio_len = _feat_extract_output_lengths(audio_seqlen)
+    audio_len = feat_extract_output_lengths(audio_seqlen)
     # bos_len=2: vision_start, audio_start; then interleaved placeholders;
     # eos_len=2: vision_end, audio_end (order only affects st cursor length)
     return (
@@ -119,7 +119,7 @@ def test_feat_extract_lengths_matches_sglang() -> None:
     )
 
     for n in (1, 50, 100, 101, 250, 1000):
-        assert _feat_extract_output_lengths(n) == int(
+        assert feat_extract_output_lengths(n) == int(
             _get_feat_extract_output_lengths(torch.tensor(n)).item()
         )
 
@@ -288,7 +288,7 @@ def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from sglang_omni.models.qwen3_omni import mrope_positions as mp
-    from sglang_omni.models.qwen3_omni.request_builders import _compute_mrope_positions
+    from sglang_omni.models.qwen3_omni.request_builders import compute_mrope_positions
 
     real_vectorized = mp.get_rope_index_qwen3_omni_vectorized
     calls: list[int] = []
@@ -312,7 +312,7 @@ def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
         audio_start_token_id=AUDIO_START_TOKEN_ID,
         position_id_per_seconds=POSITION_ID_PER_SECONDS,
     )
-    result = _compute_mrope_positions(input_ids, model_inputs, thinker_config)
+    result = compute_mrope_positions(input_ids, model_inputs, thinker_config)
     assert calls, "hot path must call get_rope_index_qwen3_omni_vectorized"
     assert result is not None
     positions, delta = result
@@ -577,7 +577,7 @@ def test_build_talker_request_uses_linear_mrope_without_mm_markers(
     def _fail_compute(*args, **kwargs):
         raise AssertionError("linear gate must skip _compute_mrope_positions")
 
-    monkeypatch.setattr(rb, "_compute_mrope_positions", _fail_compute)
+    monkeypatch.setattr(rb, "compute_mrope_positions", _fail_compute)
 
     data = rb.build_sglang_talker_request(
         thinker_hidden_states=torch.empty(0),
