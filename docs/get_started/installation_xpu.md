@@ -72,7 +72,7 @@ Or do it manually (the same steps the script automates):
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
 # Ubuntu example; the selected FFmpeg build must include VAAPI.
-apt-get update && apt-get install -y ffmpeg libva2 vainfo
+apt-get update && apt-get install -y ffmpeg libva2 vainfo intel-media-va-driver-non-free
 ffmpeg -hide_banner -hwaccels | grep -x vaapi
 # Install CUDA Triton metadata first, then make triton-xpu the shared module
 # implementation. The project install installs openai-whisper last.
