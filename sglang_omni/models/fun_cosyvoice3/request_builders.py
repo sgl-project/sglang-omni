@@ -7,7 +7,7 @@ import hashlib
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -176,7 +176,7 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     output_codes: list[torch.Tensor] = None
     prompt_input_embeds: torch.Tensor | None = None
     engine_start_s: float = 0.0
-    stream_metadata: dict[str, Any] | None = None
+    stream_metadata: Mapping[str, object] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
     stream_code_seen: int = 0
     stream_code_next_flush: int = 0

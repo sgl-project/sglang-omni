@@ -88,7 +88,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     seed: int | None = None
     sampling_seed: int = field(default_factory=_new_moss_tts_sampling_seed)
     engine_start_s: float = 0.0
-    stream_metadata: dict[str, Any] | None = None
+    stream_metadata: dict[str, object] | None = None
     stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
     stream_first_batch_sent: bool = False
 
@@ -354,12 +354,12 @@ def build_moss_tts_local_stream_metadata(
     payload: StagePayload,
     *,
     n_vq: int,
-) -> dict[str, Any] | None:
+) -> dict[str, object] | None:
     """Stream contract attached to every forwarded row of a streaming request."""
     params = payload.request.params if isinstance(payload.request.params, dict) else {}
     if not params.get("stream"):
         return None
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         "stream": True,
         "modality": "audio_codes",
         "n_vq": int(n_vq),

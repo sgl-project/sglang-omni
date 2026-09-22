@@ -133,13 +133,13 @@ class Zonos2SGLangRequestData(SGLangARRequestData):
     speaker_emb: torch.Tensor | None = None
     speaker_position: int = -1
     params: TTSSamplingParams = field(default_factory=TTSSamplingParams)
-    output_codes: list = field(default_factory=list)
+    output_codes: list[torch.Tensor] = field(default_factory=list)
     rep_hist: list = field(default_factory=list)
     eos_frame: int | None = None
     eos_countdown: int = 0
     generation_step: int = 0
     engine_start_s: float = 0.0
-    stream_metadata: dict | None = None
+    stream_metadata: dict[str, Literal["audio_codes", True] | int] | None = None
     _stream_emit_idx: int = 0
 
 

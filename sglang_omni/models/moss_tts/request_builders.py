@@ -584,9 +584,9 @@ def _moss_stream_metadata(
     data: MossTTSSGLangRequestData,
     *,
     n_vq: int,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     config = data.model_config
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         "modality": "audio_codes",
         "stream": True,
         "n_vq": int(n_vq),
