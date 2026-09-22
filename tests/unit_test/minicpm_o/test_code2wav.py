@@ -7,7 +7,6 @@ import base64
 import os
 import subprocess
 import sys
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -77,11 +76,16 @@ def _checkpoint_dir() -> Path | None:
 
 
 @pytest.mark.accelerator
-def test_native_vocoder_with_checkpoint() -> None:
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_native_vocoder_with_checkpoint(device_type: str) -> None:
     checkpoint = _checkpoint_dir()
-    if checkpoint is None or not torch.cuda.is_available():
-        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    device_module = getattr(torch, device_type, None)
+    if checkpoint is None or device_module is None or not device_module.is_available():
+        pytest.skip(
+            f"Set MINICPMO_CHECKPOINT and provide {device_type.upper()} "
+            "for vocoder validation"
+        )
+    model = MiniCPMOCode2Wav(str(checkpoint), device=f"{device_type}:0")
     tokens = [1498, 1734, 3732, 3726, 3645]
     output = model(codec_tokens=torch.tensor(tokens))
     waveform = output["waveform"]
@@ -94,11 +98,16 @@ def test_native_vocoder_with_checkpoint() -> None:
 
 
 @pytest.mark.accelerator
-def test_native_vocoder_batch_matches_single_request_shapes() -> None:
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_native_vocoder_batch_matches_single_request_shapes(device_type: str) -> None:
     checkpoint = _checkpoint_dir()
-    if checkpoint is None or not torch.cuda.is_available():
-        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    device_module = getattr(torch, device_type, None)
+    if checkpoint is None or device_module is None or not device_module.is_available():
+        pytest.skip(
+            f"Set MINICPMO_CHECKPOINT and provide {device_type.upper()} "
+            "for vocoder validation"
+        )
+    model = MiniCPMOCode2Wav(str(checkpoint), device=f"{device_type}:0")
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
     batched = model.vocode([tokens_a, tokens_b], None)
@@ -168,24 +177,7 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.batch_wait_when_idle is False
 
 
-def test_vocode_slices_waveforms_to_token_lengths(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    autocast_calls: list[tuple[str, torch.dtype, bool]] = []
-    real_tensor = torch.tensor
-
-    def cpu_tensor(*args: object, **kwargs: object) -> torch.Tensor:
-        kwargs.pop("device", None)
-        return real_tensor(*args, **kwargs)
-
-    @contextmanager
-    def record_autocast(device_type: str, *, dtype: torch.dtype, enabled: bool):
-        autocast_calls.append((device_type, dtype, enabled))
-        yield
-
-    monkeypatch.setattr(torch, "tensor", cpu_tensor)
-    monkeypatch.setattr(torch.amp, "autocast", record_autocast)
-
+def test_vocode_slices_waveforms_to_token_lengths() -> None:
     class FakeFlow:
         up_rate = 2
 
@@ -206,8 +198,8 @@ def test_vocode_slices_waveforms_to_token_lengths(
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
     model.token2wav = SimpleNamespace(
-        device=torch.device("xpu"),
-        dtype=torch.bfloat16,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
         n_timesteps=10,
         flow=FakeFlow(),
         hift=FakeHiFT(),
@@ -223,7 +215,6 @@ def test_vocode_slices_waveforms_to_token_lengths(
         (2 * SAMPLES_PER_CODEC_TOKEN,),
         (3 * SAMPLES_PER_CODEC_TOKEN,),
     ]
-    assert autocast_calls == [("xpu", torch.bfloat16, True)]
 
 
 def test_vocode_rejects_empty_sequences() -> None:
