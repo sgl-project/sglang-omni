@@ -25,6 +25,7 @@ import base64
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -484,7 +485,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int | None = 2048,
     max_running_requests: int = 64,
     cuda_graph_max_bs: int = 64,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     enable_async_decode: bool = False,
     async_decode_min_batch_size: int = 2,
     stream_stride: int = DEFAULT_HIGGS_STREAM_STRIDE,

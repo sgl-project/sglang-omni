@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler

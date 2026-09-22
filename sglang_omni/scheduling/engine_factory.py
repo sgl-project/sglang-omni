@@ -79,7 +79,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         device: str | None = None,
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
-        server_args_overrides: dict[str, Any] | None = None,
+        server_args_overrides: Mapping[str, object] | None = None,
     ) -> "OmniScheduler[RequestDataT]":
         from sglang_omni.platforms import current_platform
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap

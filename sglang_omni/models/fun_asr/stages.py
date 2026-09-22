@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -128,7 +129,7 @@ def create_sglang_fun_asr_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> "OmniScheduler":
     if pre_lm_max_batch_size < 1:
         raise ValueError(

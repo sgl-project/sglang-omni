@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
@@ -102,7 +102,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
         MossTranscribeDiarizeEngineBuilder,

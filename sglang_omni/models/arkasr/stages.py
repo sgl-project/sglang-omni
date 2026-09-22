@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 
 def create_sglang_arkasr_executor(
@@ -35,7 +35,7 @@ def create_sglang_arkasr_executor(
     pre_lm_max_pending: int = 32,
     enable_encoder_cuda_graph: bool = False,
     stream_emit_interval_s: float = 0.05,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.arkasr.engine_builder import ArkasrEngineBuilder
 

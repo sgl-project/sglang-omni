@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
@@ -441,7 +442,7 @@ def create_sglang_latent_engine_executor(
     num_steps: int = 4,
     device: str | None = None,
     gpu_id: int | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> "OmniScheduler[DotsTTSSGLangRequestData]":
     from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 

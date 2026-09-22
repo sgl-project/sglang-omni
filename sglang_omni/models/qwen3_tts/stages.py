@@ -7,7 +7,7 @@ import functools
 import logging
 import os
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -251,7 +251,7 @@ def create_sglang_tts_engine_executor(
     attn_implementation: str | None = None,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),

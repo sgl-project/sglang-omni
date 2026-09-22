@@ -1224,7 +1224,7 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     mlx_model_path: str | None = None,
     mlx_model_revision: str | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     onnx_intra_op_threads: int = 16,
     token_hop_len: int = TOKEN_HOP_LEN,
 ) -> OmniScheduler:

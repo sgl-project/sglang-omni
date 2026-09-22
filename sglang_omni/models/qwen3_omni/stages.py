@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -1081,7 +1081,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
@@ -1236,7 +1236,7 @@ def create_talker_ar_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",

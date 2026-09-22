@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -382,7 +383,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     ras_window: int = 16,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
     del top_k

@@ -9,6 +9,7 @@ import os
 import queue
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
@@ -514,7 +515,7 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> "OmniScheduler":
     overrides = dict(server_args_overrides or {})
     # Note (Jiaxin Deng): a declared stage fraction only reserves the card on paper, so

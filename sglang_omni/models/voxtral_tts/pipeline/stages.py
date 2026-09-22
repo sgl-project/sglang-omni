@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -176,7 +177,7 @@ def create_generation_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> "OmniScheduler":
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
