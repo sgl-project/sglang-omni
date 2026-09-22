@@ -574,7 +574,7 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </div>
 <p>The script is idempotent and creates (or reuses) <code class="docutils literal notranslate"><span class="pre">.venv-apple</span></code>, installs the
 Homebrew formulae <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> and <code class="docutils literal notranslate"><span class="pre">uv</span></code> (and <code class="docutils literal notranslate"><span class="pre">git</span></code> only when a working git is not
-already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.19</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
+already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.20</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
 extra, and installs this checkout with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span></code>. SGLang’s optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
 <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is intentional: <code class="docutils literal notranslate"><span class="pre">torchcodec==0.15.0</span></code> ships loaders for FFmpeg 4 through 8
@@ -589,7 +589,7 @@ Homebrew’s bootstrapper. Use <code class="docutils literal notranslate"><span 
 disable Homebrew auto-update in CI, <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_VENV=/path/to/venv</span></code> to choose a virtualenv, and
 <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3</span></code> to enable optional extras.
 The persistent SGLang source checkout defaults to
-<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.19</span></code> and can be changed with
+<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.20</span></code> and can be changed with
 <code class="docutils literal notranslate"><span class="pre">SGLANG_SOURCE_DIR</span></code>. Slow or proxied networks can override the installer’s uv
 defaults with <code class="docutils literal notranslate"><span class="pre">UV_HTTP_TIMEOUT</span></code> and <code class="docutils literal notranslate"><span class="pre">UV_HTTP_RETRIES</span></code>.</p>
 <p>This path currently supports macOS 14 or newer on <code class="docutils literal notranslate"><span class="pre">arm64</span></code> only (the pinned
@@ -629,7 +629,7 @@ use it only when that trade-off is acceptable:</p>
 <p>Build prerequisites first:</p>
 <ul class="simple">
 <li><p><strong>UCX 1.20.x</strong> with CUDA + verbs — <a class="reference external" href="https://github.com/openucx/ucx">upstream</a>, or reuse flags in <a class="reference download internal" download="" href="../_downloads/9c6d2dd30e172995ff9466799d6f77ed/Dockerfile"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">docker/Dockerfile</span></code></span></a>.</p></li>
-<li><p><strong>flash-attn-4</strong> <code class="docutils literal notranslate"><span class="pre">&gt;=4.0.0b18</span></code>, matching <code class="docutils literal notranslate"><span class="pre">torch==2.13.0</span></code> and SGLang 0.5.19’s <code class="docutils literal notranslate"><span class="pre">nvidia-cutlass-dsl</span></code> 4.6.2 pin.</p></li>
+<li><p><strong>flash-attn-4</strong> <code class="docutils literal notranslate"><span class="pre">&gt;=4.0.0b18</span></code>, matching <code class="docutils literal notranslate"><span class="pre">torch==2.13.0</span></code> and SGLang 0.5.20’s <code class="docutils literal notranslate"><span class="pre">nvidia-cutlass-dsl</span></code> 4.6.2 pin.</p></li>
 </ul>
 <p>Then:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip

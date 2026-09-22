@@ -566,14 +566,6 @@ docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </s
 </div>
 <p>Built on Intel Deep Learning Essentials with the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> torch wheels. It deliberately does <strong>not</strong>
 source oneAPI — see <a class="reference internal" href="#runtime-environment-important"><span class="std std-ref">Runtime environment</span></a>.</p>
-<p>Pinning SGLang does not pin the SYCL kernels: its XPU manifest requires <code class="docutils literal notranslate"><span class="pre">sgl-kernel-xpu</span></code>
-from git with no revision. The Dockerfile therefore pins that commit itself, so rebuilds
-are reproducible by default. Override it only to move deliberately:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>docker/xpu.Dockerfile<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">SGL_KERNEL_XPU_REF</span><span class="o">=</span>&lt;sgl-kernel-xpu<span class="w"> </span>commit<span class="w"> </span>sha&gt;<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-t<span class="w"> </span>sglang-omni:xpu<span class="w"> </span>.
-</pre></div>
-</div>
 </section>
 <section id="option-b-install-into-an-existing-xpu-env-recommended-here">
 <h2>🛠️ Option B: Install into an existing XPU env (recommended here)<a class="headerlink" href="#option-b-install-into-an-existing-xpu-env-recommended-here" title="Link to this heading">#</a></h2>
@@ -606,7 +598,7 @@ cp<span class="w"> </span>-f<span class="w"> </span>.pyproject.cuda.bak<span cla
 It cannot be pinned even as a range: every published wheel requires <code class="docutils literal notranslate"><span class="pre">flashinfer_python[cu13]</span></code> and the
 <code class="docutils literal notranslate"><span class="pre">nvidia-*</span></code> runtime, so <strong>any</strong> specifier pulls the CUDA stack over <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code>. Build from source:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>sglang
-git<span class="w"> </span>checkout<span class="w"> </span>v0.5.19<span class="w">   </span><span class="c1"># the pinned release</span>
+git<span class="w"> </span>checkout<span class="w"> </span>v0.5.20<span class="w">   </span><span class="c1"># the pinned release</span>
 <span class="nb">cd</span><span class="w"> </span>python<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>pyproject_xpu.toml<span class="w"> </span>pyproject.toml
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-build-isolation<span class="w"> </span>--extra-index-url<span class="w"> </span>https://download.pytorch.org/whl/xpu
 pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span><span class="nv">xgrammar</span><span class="o">==</span><span class="m">0</span>.1.33
