@@ -6,10 +6,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import torch
 
 logger = logging.getLogger(__name__)
+
+TensorT = TypeVar("TensorT")
 
 WEIGHT_FILE_CANDIDATES = (
     "auk_base.safetensors",
@@ -97,9 +100,7 @@ def strip_prefix(key: str) -> str:
     return key
 
 
-def normalize_state_dict(
-    state_dict: dict[str, torch.Tensor],
-) -> dict[str, torch.Tensor]:
+def normalize_state_dict(state_dict: dict[str, TensorT]) -> dict[str, TensorT]:
     """Drop EMA/DDP wrappers so keys match the transformer module tree."""
     return {strip_prefix(k): v for k, v in state_dict.items()}
 

@@ -14,6 +14,11 @@ ENGINE_STAGE = "auk_engine"
 DECODE_STAGE = "decode"
 
 
+def stage_batch_size(default: int) -> int:
+    """Default Apple batches to one request to preserve unified-memory headroom."""
+    return 1 if current_platform.is_mps() else default
+
+
 class AuKPipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "AuKForConditionalGeneration"
     architecture_aliases: ClassVar[tuple[str, ...]] = ("AuK", "AuK-Flash")
@@ -35,7 +40,7 @@ class AuKPipelineConfig(PipelineConfig):
                 device=current_platform.device_type,
                 dtype="bfloat16",
                 text_encoder_path=C.DEFAULT_TEXT_ENCODER,
-                max_batch_size=8,
+                max_batch_size=stage_batch_size(8),
                 max_batch_wait_ms=10,
             ),
             gpu=0,
@@ -53,11 +58,11 @@ class AuKPipelineConfig(PipelineConfig):
                 cfg_strength=C.DEFAULT_CFG_STRENGTH,
                 sway_sampling_coef=C.DEFAULT_SWAY_SAMPLING_COEF,
                 max_seconds=C.MAX_SECONDS,
-                max_batch_size=16,
+                max_batch_size=stage_batch_size(16),
                 max_batch_wait_ms=10,
                 weight_dtype="bfloat16",
-                enable_dit_torch_compile=True,
-                enable_dit_cuda_graph=True,
+                enable_dit_torch_compile=not current_platform.is_mps(),
+                enable_dit_cuda_graph=not current_platform.is_mps(),
             ),
             gpu=0,
             next=DECODE_STAGE,
@@ -66,7 +71,10 @@ class AuKPipelineConfig(PipelineConfig):
             name=DECODE_STAGE,
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_decode_executor",
-            factory=FactoryArgs(device=current_platform.device_type, max_batch_size=4),
+            factory=FactoryArgs(
+                device=current_platform.device_type,
+                max_batch_size=stage_batch_size(4),
+            ),
             gpu=0,
             terminal=True,
         ),

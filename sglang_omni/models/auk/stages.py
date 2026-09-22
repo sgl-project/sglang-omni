@@ -18,14 +18,18 @@ import torch
 from safetensors import safe_open
 
 from sglang_omni.models.auk import constants as C
-from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
+from sglang_omni.models.auk.dit import AuKDit
 from sglang_omni.models.auk.flow_matching import (
     AuKFlowMatching,
     AuKSampleItem,
     fuse_hidden_states,
     request_generator,
 )
-from sglang_omni.models.auk.hf_config import make_runtime_config
+from sglang_omni.models.auk.hf_config import (
+    AuKDitConfig,
+    AuKVAEConfig,
+    make_runtime_config,
+)
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.request_builders import (
@@ -37,7 +41,7 @@ from sglang_omni.models.auk.step_cuda_graph import (
     AuKStepCudaGraphRunner,
     build_step_graph_runner,
 )
-from sglang_omni.models.auk.vae import AuKVAEConfig, BigVGANFlowVAE
+from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.models.auk.weight_loader import (
     load_dit_weights,
     load_vae_weights,
@@ -84,10 +88,6 @@ def load_vae(checkpoint: str, device: str):
     return vae.to(device=device).eval().requires_grad_(False)
 
 
-# Order matches the ``fuse_hidden_states`` signature.
-_FUSION_PARAMETERS = ("layer_weights", "layer_scale")
-
-
 @lru_cache(maxsize=None)
 def load_fusion(checkpoint: str, device: str):
     # Read straight from the file so a conditioning-only process does not have to
@@ -96,7 +96,7 @@ def load_fusion(checkpoint: str, device: str):
         keys = {key.rsplit(".", 1)[-1]: key for key in weights.keys()}
         return tuple(
             weights.get_tensor(keys[name]).to(device=device, dtype=torch.float32)
-            for name in _FUSION_PARAMETERS
+            for name in C.FUSION_PARAMETERS
         )
 
 
@@ -278,22 +278,37 @@ def create_conditioning_executor(
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler:
-    compute_dtype = resolve_dtype(field="dtype", name=dtype)
-    device = resolve_concrete_device(device, gpu_id)
-    checkpoint = resolve_checkpoint(model_path)
-    encoder = AuKConditionEncoder(
-        text_encoder_path, device=device, dtype=torch.bfloat16
-    )
-    vae = load_vae(checkpoint, str(device))
-    fusion = load_fusion(checkpoint, str(device))
-    return scheduler(
-        lambda payloads: condition_batch(
-            payloads, encoder, vae, fusion, device, compute_dtype
-        ),
-        device,
-        max_batch_size,
-        max_batch_wait_ms,
-    )
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    if use_mlx():
+        from sglang_omni.models.auk.mlx import stages as mlx_stages
+
+        return mlx_stages.create_conditioning_executor(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            text_encoder_path=text_encoder_path,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
+    else:
+        compute_dtype = resolve_dtype(field="dtype", name=dtype)
+        device = resolve_concrete_device(device, gpu_id)
+        checkpoint = resolve_checkpoint(model_path)
+        encoder = AuKConditionEncoder(
+            text_encoder_path, device=device, dtype=torch.bfloat16
+        )
+        vae = load_vae(checkpoint, str(device))
+        fusion = load_fusion(checkpoint, str(device))
+        return scheduler(
+            lambda payloads: condition_batch(
+                payloads, encoder, vae, fusion, device, compute_dtype
+            ),
+            device,
+            max_batch_size,
+            max_batch_wait_ms,
+        )
 
 
 def sample_batch(payloads, flow, device, dtype, max_frames, sampling):
@@ -350,63 +365,90 @@ def create_auk_engine_executor(
     autocast. See docs/cookbook/auk.md, Sampling, for the compile and graph
     options and the capture shape format.
     """
-    # Named dtypes are checked before resolve_checkpoint, which downloads.
-    compute_dtype = resolve_dtype(field="dtype", name=dtype)
-    backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
-    device = resolve_concrete_device(device, gpu_id)
-    checkpoint = resolve_checkpoint(model_path)
-    config = make_runtime_config(checkpoint)
-    # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32
-    # backbone it would only re-cast per op and force the norms back to fp32.
-    autocast_dtype = compute_dtype if backbone_dtype == torch.float32 else torch.float32
-    flow = load_flow(checkpoint, str(device), backbone_dtype, enable_dit_torch_compile)
-    sampling = dict(
-        steps=C.FLASH_NFE if config.is_flash else nfe,
-        cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
-        sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
-        t_grid=C.FLASH_T_GRID if config.is_flash else None,
-    )
-    # note(Dayuxiaoshui): installed before the blocks compile and before the
-    # step graph captures them, so both carry the fused kernel.
-    if enable_dit_fused_qk_norm_rope and device.type == "cuda" and not config.is_flash:
-        from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
-        flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)
+    if use_mlx():
+        from sglang_omni.models.auk.mlx import stages as mlx_stages
+
+        return mlx_stages.create_auk_engine_executor(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            weight_dtype=weight_dtype,
+            nfe=nfe,
+            cfg_strength=cfg_strength,
+            sway_sampling_coef=sway_sampling_coef,
+            max_seconds=max_seconds,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
     else:
-        pass
-    step_graph = None
-    if enable_dit_cuda_graph:
-        if not flow.transformer.attn_mask_enabled:
-            raise ValueError(
-                "AuK enable_dit_cuda_graph needs attn_mask_enabled: without the "
-                "attention bias, padded rows would reach the valid ones"
-            )
+        # Named dtypes are checked before resolve_checkpoint, which downloads.
+        compute_dtype = resolve_dtype(field="dtype", name=dtype)
+        backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
+        device = resolve_concrete_device(device, gpu_id)
+        checkpoint = resolve_checkpoint(model_path)
+        config = make_runtime_config(checkpoint)
+        # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32
+        # backbone it would only re-cast per op and force the norms back to fp32.
+        autocast_dtype = (
+            compute_dtype if backbone_dtype == torch.float32 else torch.float32
+        )
+        flow = load_flow(
+            checkpoint, str(device), backbone_dtype, enable_dit_torch_compile
+        )
+        sampling = dict(
+            steps=C.FLASH_NFE if config.is_flash else nfe,
+            cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
+            sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
+            t_grid=C.FLASH_T_GRID if config.is_flash else None,
+        )
+        # note(Dayuxiaoshui): installed before the blocks compile and before the
+        # step graph captures them, so both carry the fused kernel.
+        if (
+            enable_dit_fused_qk_norm_rope
+            and device.type == "cuda"
+            and not config.is_flash
+        ):
+            from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
+
+            flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)
         else:
             pass
-        step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
-    else:
-        pass
-    if enable_dit_torch_compile or step_graph is not None:
-        warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
-    else:
-        pass
-    if step_graph is not None:
-        sampling["step_graph"] = step_graph
-    else:
-        pass
-    return scheduler(
-        lambda payloads: sample_batch(
-            payloads,
-            flow,
+        step_graph = None
+        if enable_dit_cuda_graph:
+            if not flow.transformer.attn_mask_enabled:
+                raise ValueError(
+                    "AuK enable_dit_cuda_graph needs attn_mask_enabled: without the "
+                    "attention bias, padded rows would reach the valid ones"
+                )
+            else:
+                pass
+            step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
+        else:
+            pass
+        if enable_dit_torch_compile or step_graph is not None:
+            warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
+        else:
+            pass
+        if step_graph is not None:
+            sampling["step_graph"] = step_graph
+        else:
+            pass
+        return scheduler(
+            lambda payloads: sample_batch(
+                payloads,
+                flow,
+                device,
+                autocast_dtype,
+                config.seconds_to_frames(max_seconds),
+                sampling,
+            ),
             device,
-            autocast_dtype,
-            config.seconds_to_frames(max_seconds),
-            sampling,
-        ),
-        device,
-        max_batch_size,
-        max_batch_wait_ms,
-    )
+            max_batch_size,
+            max_batch_wait_ms,
+        )
 
 
 def decode_batch(payloads, vae, device):
@@ -452,12 +494,25 @@ def create_decode_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler:
-    device = resolve_concrete_device(device, gpu_id)
-    checkpoint = resolve_checkpoint(model_path)
-    vae = load_vae(checkpoint, str(device))
-    return scheduler(
-        lambda payloads: decode_batch(payloads, vae, device),
-        device,
-        max_batch_size,
-        max_batch_wait_ms,
-    )
+    from sglang.srt.hardware_backend.mlx.runtime import use_mlx
+
+    if use_mlx():
+        from sglang_omni.models.auk.mlx import stages as mlx_stages
+
+        return mlx_stages.create_decode_executor(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
+    else:
+        device = resolve_concrete_device(device, gpu_id)
+        checkpoint = resolve_checkpoint(model_path)
+        vae = load_vae(checkpoint, str(device))
+        return scheduler(
+            lambda payloads: decode_batch(payloads, vae, device),
+            device,
+            max_batch_size,
+            max_batch_wait_ms,
+        )

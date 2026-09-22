@@ -14,6 +14,9 @@ DEFAULT_VOICE_DESCRIPTION: str = "A clear, natural voice."
 QWEN_AUDIO_SAMPLE_RATE: int = 16000
 NO_PROMPT_AUDIO_MARKER: str = "|<no_prompt_audio>|"
 
+# note (Codex): Parameter order must match the hidden-state fusion signature.
+FUSION_PARAMETERS: tuple[str, str] = ("layer_weights", "layer_scale")
+
 DEFAULT_NFE: int = 32
 DEFAULT_CFG_STRENGTH: float = 2.0
 DEFAULT_SWAY_SAMPLING_COEF: float = -1.0

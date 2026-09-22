@@ -27,6 +27,57 @@ python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
 python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 ```
 
+## Apple Silicon (native MLX)
+
+After the [Apple Silicon installation](../get_started/installation.md), enable
+the native backend for either official checkpoint:
+
+```bash
+SGLANG_USE_MLX=1 python -m sglang_omni.cli serve \
+  --model-path tencent/AuK-Flash --port 8000
+```
+
+Replace the model path with `tencent/AuK` for the base model. The loader reads
+the original AuK and `Qwen/Qwen2.5-Omni-3B` checkpoints directly. To use a local
+conditioner, set `--conditioning.factory.text_encoder_path /path/to/Qwen2.5-Omni-3B`.
+No `mlx-audio` package is needed. Text/audio conditioning, DiT sampling and VAE
+encoding/decoding execute in MLX; audio preprocessing and stage payloads use CPU
+tensors. The existing speech, cloning and editing APIs remain the same.
+
+Apple defaults to one request per stage batch. Larger batches can be selected
+with each stage's `max_batch_size` after checking unified-memory use. Outputs are
+complete waveforms; incremental audio streaming is not implemented. CUDA graph,
+Torch compilation and CUDA fusion settings do not select MLX kernels.
+
+The conditioner and DiT use BF16 matrix weights by default. Text residuals,
+hidden-state fusion, rotary positions, VAE computation and Euler integration
+retain FP32. For a strict FP32 comparison, set `MLX_ENABLE_TF32=0` before Python
+starts and set all three options to `float32`:
+`--conditioning.factory.dtype`, `--auk_engine.factory.dtype`, and
+`--auk_engine.factory.weight_dtype`. The MLX engine requires matching compute
+and weight precision. This path currently supports BF16 and FP32, not FP16 or
+quantized checkpoints.
+
+Reference audio uses posterior sampling, matching the original PyTorch recipe.
+Reference and generation noise have independent request-local streams. A fixed
+seed is reproducible within a backend; it does not imply identical Torch/MLX
+random samples or bitwise equality across batch shapes.
+
+Run component tests and opt-in real-checkpoint parity on an Apple GPU:
+
+```bash
+MLX_ENABLE_TF32=0 python -m pytest tests/unit_test/auk/test_mlx_*.py -q
+AUK_MLX_CHECKPOINT=/path/to/AuK-Flash \
+AUK_QWEN_CHECKPOINT=/path/to/Qwen2.5-Omni-3B MLX_ENABLE_TF32=0 \
+  python -m pytest tests/test_model/test_auk_mlx.py -q
+AUK_MLX_SERVER_URL=http://localhost:8000 \
+  python -m pytest tests/test_model/test_auk_mlx_http.py -q
+```
+
+Repeat the checkpoint and HTTP tests with the base model. Component parity uses
+identical weights and explicit noise, and complements end-to-end speech-quality
+evaluation; it does not establish quality or throughput on its own.
+
 ## Speech Generation
 
 `/v1/audio/speech` takes the text in `input`. Without reference audio, `instructions` describes the voice and defaults to `A clear, natural voice.` An explicit target duration is required in this mode:
