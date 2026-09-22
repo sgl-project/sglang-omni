@@ -13,6 +13,26 @@ INSTALLER = Path(__file__).resolve().parents[3] / "install.sh"
 RELEASE = "v0.5.19"
 
 
+def test_help_documents_bootstrap_and_override_controls():
+    result = subprocess.run(
+        ["bash", str(INSTALLER), "--help"],
+        text=True,
+        capture_output=True,
+        check=True,
+        timeout=15,
+    )
+    assert "SGLANG_OMNI_EXTRAS" in result.stdout
+    assert "qwen-tts" in INSTALLER.read_text()
+    assert "SGLANG_OMNI_BOOTSTRAP_HOMEBREW=0" in result.stdout
+
+
+def test_shared_apple_audio_formulas_are_installer_defaults():
+    source = INSTALLER.read_text()
+    assert "readonly APPLE_BREW_FORMULAS=(ffmpeg@7 sox uv)" in source
+    assert "readonly APPLE_OMNI_EXTRAS=(fun-cosyvoice3)" in source
+    assert "readonly APPLE_NO_DEPS_PACKAGES=(qwen-tts==0.1.1 einops)" in source
+
+
 def git(repo: Path, *args: str, check: bool = True):
     return subprocess.run(
         [
