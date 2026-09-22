@@ -8,10 +8,12 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_NPU="${REPO_ROOT}/pyproject_npu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 LOCK="${REPO_ROOT}/.pyproject.npu.lock"
-SGLANG_SUPPORTED_RELEASE="0.5.20"
+SGLANG_SUPPORTED_RELEASE=""
 
 EDITABLE="-e"
 CHECK_ONLY=0
+INSTALL_SYSTEM_DEPS=0
+WITH_QWEN_TTS=0
 SKIP_DEVICE_CHECK=0
 EXTRAS=""
 TARGET="."
@@ -23,12 +25,14 @@ usage() {
 Usage: scripts/npu/install_npu.sh [OPTIONS]
 
 Install sglang-omni against an existing Ascend software stack. Prerequisites
-are checked but never installed or modified by this script.
+are checked before installing Omni and its declared Python dependencies.
 
 Options:
+  --install-system-deps Install pinned FFmpeg, libsndfile and SoX (requires root).
+  --with-qwen-tts       Install the Qwen3-TTS package without replacing core dependencies.
   --extras NAME[,NAME]  Install eval, all, or fun-cosyvoice3 extras.
   --no-editable         Perform a non-editable installation.
-  --skip-device-check   Skip NPU availability and MatMul checks.
+  --skip-device-check   Check package metadata only (no driver or NPU required).
   --check               Check prerequisites and show commands without installing.
   -h, --help            Show this help message.
 EOF
@@ -37,6 +41,14 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --install-system-deps)
+        INSTALL_SYSTEM_DEPS=1
+        shift
+        ;;
+      --with-qwen-tts)
+        WITH_QWEN_TTS=1
+        shift
+        ;;
       --no-editable)
         EDITABLE=""
         shift
@@ -105,6 +117,24 @@ print_summary() {
   echo "  editable:    $([[ -n "${EDITABLE}" ]] && echo yes || echo no)"
 }
 
+install_system_dependencies() {
+  local -a system_packages=(
+    "ffmpeg=${FFMPEG_VERSION:-7:4.4.2-0ubuntu0.22.04.1}"
+    "libsndfile1=${LIBSNDFILE_VERSION:-1.0.31-2ubuntu0.2}"
+    "sox=${SOX_VERSION:-14.4.2+git20190427-2+deb11u2ubuntu0.22.04.1}"
+  )
+  if [[ "${CHECK_ONLY}" -eq 1 ]]; then
+    echo "[--check] would install system dependencies:"
+    printf '%q ' apt-get install -y --no-install-recommends "${system_packages[@]}"
+    printf '\n'
+    return
+  fi
+  [[ "${EUID}" -eq 0 ]] || { echo "ERROR: --install-system-deps requires root" >&2; exit 1; }
+  apt-get update
+  apt-get install -y --no-install-recommends "${system_packages[@]}"
+  rm -rf /var/lib/apt/lists/*
+}
+
 check_sglang_version() {
   local supported_line="${SGLANG_SUPPORTED_RELEASE} release line"
   local installed_version="not installed"
@@ -165,6 +195,12 @@ import sys
 from importlib.metadata import PackageNotFoundError, version
 from re import match
 
+
+def major_minor(value: str) -> tuple[str, str] | None:
+    parsed = match(r"^(\d+)\.(\d+)", value)
+    return parsed.groups() if parsed else None
+
+
 ASCEND_PYTORCH_URL = (
     "https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download"
 )
@@ -176,6 +212,31 @@ SGL_KERNEL_NPU_URL = "https://github.com/sgl-project/sgl-kernel-npu/releases"
 errors = []
 torch = None
 torch_npu = None
+
+# Image builds have no host driver libraries. Inspect installed distributions
+# without importing accelerator extensions in this mode.
+if os.environ["SGLANG_OMNI_SKIP_NPU_DEVICE_CHECK"] == "1":
+    versions = {}
+    for package in ("torch", "torch_npu", "triton-ascend", "sgl-kernel-npu"):
+        try:
+            versions[package] = version(package)
+            print(f"  {package}: {versions[package]}")
+        except PackageNotFoundError:
+            errors.append(f"{package} is not installed")
+    if "torch" in versions and "torch_npu" in versions:
+        torch_version = major_minor(versions["torch"])
+        npu_version = major_minor(versions["torch_npu"])
+        if (
+            torch_version is None
+            or npu_version is None
+            or torch_version != npu_version
+        ):
+            errors.append("torch and torch_npu must have matching major.minor versions")
+    if errors:
+        print("\nERROR: " + "; ".join(errors), file=sys.stderr)
+        sys.exit(1)
+    print("  NPU health: skipped (--skip-device-check; metadata only)")
+    sys.exit(0)
 
 try:
     import torch
@@ -226,33 +287,26 @@ except ImportError:
     )
 
 if torch is not None and torch_npu is not None:
-    def major_minor(value):
-        parsed = match(r"^(\d+)\.(\d+)", value)
-        return parsed.groups() if parsed else None
-
     if major_minor(torch.__version__) != major_minor(torch_npu.__version__):
         errors.append(
             f"torch {torch.__version__} and torch_npu {torch_npu.__version__} "
             "must have matching major.minor versions"
         )
 
-    if os.environ["SGLANG_OMNI_SKIP_NPU_DEVICE_CHECK"] == "1":
-        print("  NPU health:  skipped (--skip-device-check)")
-    else:
-        try:
-            if not torch.npu.is_available():
-                raise RuntimeError("torch.npu.is_available() returned False")
-            count = torch.npu.device_count()
-            if count < 1:
-                raise RuntimeError(f"torch.npu.device_count() returned {count}")
-            lhs = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="npu")
-            actual = (lhs @ lhs).cpu()
-            expected = torch.tensor([[7.0, 10.0], [15.0, 22.0]])
-            if not torch.equal(actual, expected):
-                raise RuntimeError(f"MatMul result mismatch: {actual}")
-            print(f"  NPU devices: {count}; MatMul: ok")
-        except Exception as exc:
-            errors.append(f"NPU health check failed: {exc}")
+    try:
+        if not torch.npu.is_available():
+            raise RuntimeError("torch.npu.is_available() returned False")
+        count = torch.npu.device_count()
+        if count < 1:
+            raise RuntimeError(f"torch.npu.device_count() returned {count}")
+        lhs = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="npu")
+        actual = (lhs @ lhs).cpu()
+        expected = torch.tensor([[7.0, 10.0], [15.0, 22.0]])
+        if not torch.equal(actual, expected):
+            raise RuntimeError(f"MatMul result mismatch: {actual}")
+        print(f"  NPU devices: {count}; MatMul: ok")
+    except Exception as exc:
+        errors.append(f"NPU health check failed: {exc}")
 
 if errors:
     print("\nERROR: NPU prerequisites are missing or incompatible.", file=sys.stderr)
@@ -358,10 +412,12 @@ verify_install() {
     echo "  [warn] sgl-omni not on PATH (check the environment's bin directory)"
   fi
 
-  if "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
+  if [[ "${SKIP_DEVICE_CHECK}" -eq 1 ]]; then
+    echo "  [skip] sglang runtime import (package version checked above)"
+  elif "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
     echo "  [ok] sglang is importable"
   else
-    echo "  [warn] sglang is not installed. Follow the Ascend NPU guide for"
+    echo "  [warn] sglang could not be imported. Follow the Ascend NPU guide for"
     echo "         a supported SGLang ${SGLANG_SUPPORTED_RELEASE} release-line installation:"
     echo "         https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu"
   fi
@@ -373,21 +429,43 @@ verify_install() {
   fi
 }
 
+install_qwen_tts() {
+  # qwen-tts pins Transformers 4.57.3; retain Omni's Transformers version.
+  local -a command=("${PYBIN}" -m pip install --no-deps "qwen-tts==0.1.1")
+  printf '%q ' "${command[@]}"
+  printf '\n'
+  if [[ "${CHECK_ONLY}" -eq 0 ]]; then
+    "${command[@]}"
+  fi
+}
+
 main() {
   parse_args "$@"
   configure_install
+  SGLANG_SUPPORTED_RELEASE="$("${PYBIN}" "${REPO_ROOT}/scripts/npu/config.py" --get sglang-version)"
   print_summary
   precheck
   acquire_lock
   check_stale_backup
 
+  if [[ "${INSTALL_SYSTEM_DEPS}" -eq 1 ]]; then
+    install_system_dependencies
+  fi
+
   if [[ "${CHECK_ONLY}" -eq 1 ]]; then
     show_dry_run
+    if [[ "${WITH_QWEN_TTS}" -eq 1 ]]; then
+      install_qwen_tts
+    fi
     return
   fi
 
   install_project
+  if [[ "${WITH_QWEN_TTS}" -eq 1 ]]; then
+    install_qwen_tts
+  fi
   verify_install
+  (cd / && "${PYBIN}" -c "import librosa; import soundfile")
 
   echo
   echo "=== done. Next: ==="

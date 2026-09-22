@@ -129,3 +129,57 @@ def test_fix_skips_same_scope_public_name_collision() -> None:
         assert result.returncode == 1
         assert "_load_checkpoint" in result.stderr
         assert "def _load_checkpoint" in probe.read_text(encoding="utf-8")
+
+
+def test_fix_preserves_third_party_attribute_with_same_name() -> None:
+    source = """
+from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+
+def _get_feat_extract_output_lengths(lengths):
+    return hf_modeling._get_feat_extract_output_lengths(lengths)
+
+lengths = _get_feat_extract_output_lengths([100, 200])
+"""
+    with _probe_model_file(source) as (_checker, probe):
+        result = _run_checker(str(probe))
+        assert result.returncode == 1
+        assert "1 leading-underscore" in result.stderr
+
+        result = _run_checker("--fix", str(probe))
+        assert result.returncode == 0, result.stderr
+        expected = source.replace(
+            "def _get_feat_extract_output_lengths(",
+            "def get_feat_extract_output_lengths(",
+        ).replace(
+            "lengths = _get_feat_extract_output_lengths(",
+            "lengths = get_feat_extract_output_lengths(",
+        )
+        assert probe.read_text(encoding="utf-8") == expected
+
+
+def test_fix_preserves_noqa_definitions_and_references() -> None:
+    kept = """
+def _required_external_hook():  # noqa: leading-underscore
+    return None
+
+class _ExternalAdapter:  # noqa: leading-underscore
+    def _required_external_hook(self):  # noqa: leading-underscore
+        return _required_external_hook()
+
+    def run(self):
+        return self._required_external_hook()
+
+adapter = _ExternalAdapter()
+hook = _ExternalAdapter._required_external_hook
+"""
+    local = "\ndef _local_helper():\n    return None\n\n_local_helper()\n"
+    with _probe_model_file(kept) as (_checker, probe):
+        result = _run_checker(str(probe))
+        assert result.returncode == 0, result.stderr
+
+        probe.write_text(kept + local, encoding="utf-8")
+        result = _run_checker("--fix", str(probe))
+        assert result.returncode == 0, result.stderr
+        assert probe.read_text(encoding="utf-8") == kept + local.replace(
+            "_local_helper", "local_helper"
+        )

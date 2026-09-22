@@ -15,6 +15,7 @@ from sglang_omni.models.auk.stages import (
     create_auk_engine_executor,
     decode_batch,
     sample_batch,
+    warmup_flow,
 )
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
@@ -158,7 +159,7 @@ def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
         autocast.append(torch.is_autocast_enabled("cpu"))
         return [torch.zeros(item.target_frames, 64) for item in items]
 
-    def load_flow(checkpoint, device, backbone_dtype):
+    def load_flow(checkpoint, device, backbone_dtype, compile_blocks):
         requested.append(backbone_dtype)
         flow = Mock()
         flow.sample_batch.side_effect = sample_batch
@@ -182,3 +183,81 @@ def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
         )
     assert requested == [torch.bfloat16, torch.float32]
     assert autocast == [False, True]
+
+
+def engine_payload():
+    return StagePayload(
+        request_id="test",
+        request=OmniRequest(inputs="hello"),
+        data=AuKState(
+            gen_frames=10,
+            conditioning=torch.zeros(6, 16),
+            text_mask=torch.ones(6, dtype=torch.bool),
+        ).to_dict(),
+    )
+
+
+def stub_flow():
+    flow = Mock()
+    flow.transformer.attn_mask_enabled = True
+    flow.sample_batch.return_value = [torch.zeros(10, 64)]
+    return flow
+
+
+def test_block_compilation_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
+    """Compiling mutates the backbone, so a cached flow must not be reused."""
+    requested = []
+    warmups = []
+
+    def load_flow(checkpoint, device, backbone_dtype, compile_blocks):
+        requested.append(compile_blocks)
+        return stub_flow()
+
+    monkeypatch.setattr(stages, "load_flow", load_flow)
+    monkeypatch.setattr(stages, "warmup_flow", lambda *args: warmups.append(args[0]))
+    for compile_blocks in (True, False):
+        create_auk_engine_executor(
+            "stub", device="cpu", enable_dit_torch_compile=compile_blocks
+        )
+    assert requested == [True, False]
+    assert len(warmups) == 1
+
+
+def test_the_step_graph_is_skipped_where_the_platform_records_none(stages, monkeypatch):
+    flow = stub_flow()
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
+    scheduler = create_auk_engine_executor(
+        "stub", device="cpu", enable_dit_cuda_graph=True
+    )
+    scheduler._fn(engine_payload())
+    assert "step_graph" not in flow.sample_batch.call_args.kwargs
+
+
+def test_the_step_graph_is_refused_without_the_attention_bias(stages, monkeypatch):
+    """Padding is only neutral because masked keys are biased to -inf."""
+    flow = stub_flow()
+    flow.transformer.attn_mask_enabled = False
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
+    with pytest.raises(ValueError, match="attn_mask_enabled"):
+        create_auk_engine_executor("stub", device="cpu", enable_dit_cuda_graph=True)
+
+
+def test_the_warmup_covers_a_request_that_carries_no_reference():
+    """An instruction-only request guards on no bias, and would recompile both blocks."""
+    flow = stub_flow()
+    flow.transformer.txt_proj.in_features = 16
+    flow.transformer.latent_dim = 64
+
+    warmup_flow(flow, torch.device("cpu"), torch.float32, dict(steps=8))
+
+    batches = [items for (items,), _ in flow.sample_batch.call_args_list]
+    lone = [
+        items[0] for items in batches if len(items) == 1 and not items[0].ref_length
+    ]
+    assert lone and lone[0].ref_latent is None
+    # The other two guards dynamo separates: a reference, and a padded batch.
+    assert {(len(items), bool(items[0].ref_length)) for items in batches} == {
+        (1, False),
+        (1, True),
+        (2, True),
+    }
