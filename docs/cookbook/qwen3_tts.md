@@ -125,8 +125,8 @@ Two SGLang generation-stage knobs bound how the server behaves past saturation:
 
 | Knob | Meaning | Qwen3-TTS default |
 |---|---|---|
-| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `16` |
-| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `16` |
+| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `64` |
+| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `64` |
 
 Every request enters the waiting queue first, so `max_queued_requests`
 must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
