@@ -7,6 +7,7 @@ import base64
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -167,7 +168,24 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.batch_wait_when_idle is False
 
 
-def test_vocode_slices_waveforms_to_token_lengths() -> None:
+def test_vocode_slices_waveforms_to_token_lengths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    autocast_calls: list[tuple[str, torch.dtype, bool]] = []
+    real_tensor = torch.tensor
+
+    def cpu_tensor(*args: object, **kwargs: object) -> torch.Tensor:
+        kwargs.pop("device", None)
+        return real_tensor(*args, **kwargs)
+
+    @contextmanager
+    def record_autocast(device_type: str, *, dtype: torch.dtype, enabled: bool):
+        autocast_calls.append((device_type, dtype, enabled))
+        yield
+
+    monkeypatch.setattr(torch, "tensor", cpu_tensor)
+    monkeypatch.setattr(torch.amp, "autocast", record_autocast)
+
     class FakeFlow:
         up_rate = 2
 
@@ -188,8 +206,8 @@ def test_vocode_slices_waveforms_to_token_lengths() -> None:
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
     model.token2wav = SimpleNamespace(
-        device=torch.device("cpu"),
-        dtype=torch.float32,
+        device=torch.device("xpu"),
+        dtype=torch.bfloat16,
         n_timesteps=10,
         flow=FakeFlow(),
         hift=FakeHiFT(),
@@ -205,6 +223,7 @@ def test_vocode_slices_waveforms_to_token_lengths() -> None:
         (2 * SAMPLES_PER_CODEC_TOKEN,),
         (3 * SAMPLES_PER_CODEC_TOKEN,),
     ]
+    assert autocast_calls == [("xpu", torch.bfloat16, True)]
 
 
 def test_vocode_rejects_empty_sequences() -> None:

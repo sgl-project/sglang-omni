@@ -41,9 +41,7 @@ class MiniCPMOCode2Wav(nn.Module):
 
         dev = torch.device(device)
         if dev.type not in {"cuda", "xpu"}:
-            raise ValueError(
-                f"Token2wav requires a CUDA or XPU device, got {device}"
-            )
+            raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
         self.device_context = torch.get_device_module(dev).device(dev.index or 0)
 
         model_dir = str(resolve_model_path(model_path))
