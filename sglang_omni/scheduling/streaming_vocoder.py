@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from typing import Any
 
 import torch
 from typing_extensions import Generic, TypeVar
@@ -461,7 +460,7 @@ class StreamingVocoderBase(
     @abstractmethod
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: StreamStateT
-    ) -> dict[str, Any]:
+    ) -> Mapping[str, object]:
         """Terminal ``result`` payload data (metadata-only or full audio)."""
 
     def fallback_full_decode(

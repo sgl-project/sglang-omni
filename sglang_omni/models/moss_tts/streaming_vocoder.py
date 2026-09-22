@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Mapping
 
 import torch
 
@@ -262,7 +262,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         request_id: str,
         payload: StagePayload,
         state: _MossStreamState,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         del request_id
         final_state = load_moss_tts_state(payload)
         final_state.delayed_audio_codes = None

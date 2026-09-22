@@ -25,7 +25,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from sglang_omni.models.ming_omni.io import MingOmniEvent, MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.merge import decode_events
@@ -255,7 +255,7 @@ class MingStreamingDetokenizeScheduler:
 
     def _build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         state = load_state(payload)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
@@ -310,7 +310,7 @@ class MingStreamingDetokenizeScheduler:
         return result
 
 
-def _event_to_dict(event: MingOmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: MingOmniEvent) -> dict[str, object]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -339,7 +339,7 @@ def text_output_requested(request: OmniRequest) -> bool:
 
 
 def _attach_decode_final_metadata(
-    result: dict[str, Any],
+    result: dict[str, object],
     state: MingOmniPipelineState,
     thinker_out: dict[str, ThinkerValueT],
 ) -> None:

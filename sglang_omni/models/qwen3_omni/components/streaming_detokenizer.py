@@ -16,7 +16,7 @@ import logging
 import queue as _queue_mod
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from transformers import AutoTokenizer
 
@@ -43,7 +43,7 @@ _DONE_SEEN_MAX = 10000
 _DONE_SEEN_EVICT_TO = 5000
 
 
-def _event_to_dict(event: Qwen3OmniEvent) -> dict[str, Any]:
+def _event_to_dict(event: Qwen3OmniEvent) -> dict[str, object]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -222,7 +222,7 @@ class StreamingDetokenizeScheduler:
 
     def _build_result(
         self, payload: StagePayload, *, is_streaming: bool = False
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         state = Qwen3OmniPipelineState.from_dict(payload.data)
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
@@ -245,7 +245,7 @@ class StreamingDetokenizeScheduler:
         )
         event_dicts = [_event_to_dict(event) for event in events]
 
-        result: dict[str, Any] = {"events": event_dicts}
+        result: dict[str, object] = {"events": event_dicts}
         final_event = next(
             (
                 e
