@@ -158,8 +158,8 @@ default costs extra graph capture during startup. Raising
 `cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
 new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
 
-Raising `max_running_requests` does **not** automatically raise the waiting
-bound. For a ceiling-32 experiment:
+To change the ceiling, set `max_running_requests` and `max_queued_requests`
+together:
 
 ```bash
 sgl-omni serve \
