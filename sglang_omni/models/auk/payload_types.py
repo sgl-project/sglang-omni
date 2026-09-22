@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
@@ -27,11 +27,11 @@ class AuKState(DeclarativeStateBase):
 
     gen_frames: int = wire(0, codec="int")
     seed: int | None = None
-    conditioning: Any | None = wire(None, codec="tensor_cpu")
-    text_mask: Any | None = wire(None, codec="tensor_cpu")
+    conditioning: torch.Tensor | None = wire(None, codec="tensor_cpu")
+    text_mask: torch.Tensor | None = wire(None, codec="tensor_cpu")
     ref_latent: torch.Tensor | None = wire(None, codec="tensor_cpu")
     ref_length: int = wire(0, codec="int")
-    latent: Any | None = wire(None, codec="tensor_cpu")
+    latent: torch.Tensor | None = wire(None, codec="tensor_cpu")
 
     @property
     def gen_seconds(self) -> float:

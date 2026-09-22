@@ -986,7 +986,7 @@ class Qwen3OmniTalker(nn.Module):
         self._sampling_staging_event = (
             torch.get_device_module().Event() if device.type != "cpu" else None
         )
-        self._decode_prep_rids: list | None = None
+        self._decode_prep_rids: list[str] | None = None
         self._decode_prep_out_lens: list[int] = []
         self._decode_prep_rep_rows: torch.Tensor | None = None
         self._output_codes = torch.zeros(

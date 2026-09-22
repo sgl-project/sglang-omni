@@ -1033,7 +1033,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._sub_sampled_has_top_p = False
         self._sub_sampled_max_top_k = 0
         self._sub_sampled_has_unbounded_top_k = False
-        self._decode_prep_rids: list | None = None
+        self._decode_prep_rids: list[tuple[str, int]] | None = None
         self._predictor_graph_batch_sizes = self._normalize_predictor_graph_batch_sizes(
             server_args,
             max_batch_size=max_batch_size,
@@ -1063,7 +1063,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         # an unchanged batch composition can reuse the previous staging wholesale.
         # Request ids alone are reusable across request lifetimes, so identity is
         # (request_id, per-data epoch); test doubles without request_id restage.
-        rids: list | None = []
+        rids: list[tuple[str, int]] | None = []
         for sched_req in requests:
             rid = getattr(sched_req, "request_id", None)
             if rid is None:

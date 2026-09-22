@@ -313,10 +313,10 @@ class MingOmniTalker(nn.Module):
 
         # --- Internal state ---
         self.lock = threading.Lock()
-        self.tts_speech_token_dict: dict = {}
-        self.llm_end_dict: dict = {}
+        self.tts_speech_token_dict: dict[str, list[tuple[torch.Tensor, bool]]] = {}
+        self.llm_end_dict: dict[str, bool] = {}
         self.vae_cache: dict = {}
-        self.sil_holder_cache: dict = {}
+        self.sil_holder_cache: dict[str, dict[str, list[torch.Tensor]] | None] = {}
 
         self.initialized = None
         self.initial_lock = threading.Lock()
