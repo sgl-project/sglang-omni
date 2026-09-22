@@ -35,7 +35,8 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_VERSION="v0.5.20"
+SGLANG_VERIFIED_REPO="https://github.com/yao-matrix/sglang.git"
+SGLANG_VERIFIED_REVISION="ba0e74e9e27e7fd8972fa5357713d86daac138ba"
 TRITON_VERSION="3.7.1"
 TRITON_XPU_VERSION="3.7.2"
 
@@ -218,9 +219,9 @@ if "${PYBIN}" -c "import sglang" >/dev/null 2>&1; then
   echo "  [ok] sglang is importable"
 else
   echo "  [warn] sglang is NOT installed — it is intentionally not a dependency here."
-  echo "         Build the XPU SGLang from source (${SGLANG_VERIFIED_VERSION}):"
-  echo "           git clone https://github.com/sgl-project/sglang && cd sglang"
-  echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
+  echo "         Build the verified XPU SGLang revision from source:"
+  echo "           git clone ${SGLANG_VERIFIED_REPO} && cd sglang"
+  echo "           git checkout --detach ${SGLANG_VERIFIED_REVISION}"
   echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --extra-index-url ${XPU_INDEX}"
   echo "           pip install --no-deps xgrammar==0.1.33"
