@@ -86,7 +86,8 @@ class TimestepEmbedding(nn.Module):
         self.time_mlp = [nn.Linear(freq_embed_dim, dim), nn.Linear(dim, dim)]
 
     def __call__(self, timestep: mx.array) -> mx.array:
-        x = self.time_embed(timestep)
+        # note(yuhui): Keep FP32 sinusoidal encoding from promoting the DiT activations.
+        x = self.time_embed(timestep).astype(self.time_mlp[0].weight.dtype)
         x = nn.silu(self.time_mlp[0](x))
         return self.time_mlp[1](x)
 

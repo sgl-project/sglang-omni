@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -204,6 +205,38 @@ def test_flow_noise_is_cast_to_model_dtype():
     assert output.dtype == mx.float16
 
 
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16, mx.float32])
+def test_flow_preserves_model_dtype(tmp_path: Path, dtype: mx.Dtype) -> None:
+    mx.random.seed(19)
+    _write_tiny_artifact(tmp_path)
+    vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
+    flow = vocoder.flow
+    inputs = dict(
+        token=mx.array([[1, 2, 3]]),
+        token_len=mx.array([3]),
+        prompt_token=mx.array([[4, 5]]),
+        prompt_token_len=mx.array([2]),
+        prompt_feat=mx.zeros((1, 4, 4)),
+        prompt_feat_len=mx.array([4]),
+        embedding=mx.ones((1, 3)),
+        n_timesteps=3,
+    )
+    reference = flow.inference(**inputs)
+    mx.eval(reference)
+
+    flow.set_dtype(dtype)
+    inputs["prompt_feat"] = inputs["prompt_feat"].astype(dtype)
+    inputs["embedding"] = inputs["embedding"].astype(dtype)
+    actual = flow.inference(**inputs)
+    mx.eval(actual)
+
+    assert actual.dtype == dtype
+    assert actual.shape == (1, 4, 6)
+    assert mx.allclose(
+        actual.astype(mx.float32), reference, rtol=0.03, atol=0.03
+    ).item()
+
+
 def test_load_and_decode_tiny_converted_artifact(tmp_path):
     _write_tiny_artifact(tmp_path)
     vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
@@ -222,6 +255,32 @@ def test_load_and_decode_tiny_converted_artifact(tmp_path):
     assert np.isfinite(waveform).all()
     assert vocoder.sample_rate == 24000
     assert vocoder.token_mel_ratio == 2
+
+
+@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16, mx.float32])
+def test_hift_mixed_precision_preserves_excitation(
+    tmp_path: Path, dtype: mx.Dtype
+) -> None:
+    mx.random.seed(23)
+    _write_tiny_artifact(tmp_path)
+    hift = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path)).hift
+    hift.set_dtype(dtype)
+    # note(yuhui): Voiced frames expose pitch errors in the harmonic excitation.
+    hift.f0_predictor.classifier.bias = mx.full((1,), 120.0, dtype=dtype)
+    mel = mx.random.normal((1, 4, 256)).astype(dtype)
+
+    actual, source = hift.inference(mel)
+    mx.eval(actual, source)
+    hift.set_dtype(mx.float32)
+    reference, reference_source = hift.inference(mel.astype(mx.float32))
+    mx.eval(reference, reference_source)
+
+    assert actual.dtype == mx.float32
+    assert source.dtype == mx.float32
+    assert mx.array_equal(source, reference_source).item()
+    assert actual.shape == reference.shape
+    assert mx.all(mx.isfinite(actual)).item()
+    assert mx.allclose(actual, reference, rtol=0.03, atol=0.03).item()
 
 
 def test_loaded_vocoder_decodes_on_scheduler_thread(tmp_path):
