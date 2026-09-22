@@ -7,8 +7,8 @@
 
 FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
-ARG SGLANG_XPU_REPO=https://github.com/yao-matrix/sglang.git
-ARG SGLANG_XPU_REVISION=7343154cce3255afac252e57d80e7c253fdccccc
+ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
+ARG SGLANG_XPU_BRANCH=v0.5.20
 ARG TRITON_VERSION=3.7.1
 ARG TRITON_XPU_VERSION=3.7.2
 
