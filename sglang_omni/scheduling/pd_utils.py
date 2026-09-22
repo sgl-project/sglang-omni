@@ -320,7 +320,7 @@ def req_from_continuation(
     return req
 
 
-def _sampling_params_to_dict(params: object) -> dict[str, Any]:
+def _sampling_params_to_dict(params: object) -> dict[str, object]:
     allowed = inspect.signature(type(params)).parameters
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")

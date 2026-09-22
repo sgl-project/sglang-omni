@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from itertools import count
-from typing import Any, Callable
+from typing import Callable
 from uuid import uuid4
 
 import msgspec
@@ -379,7 +380,7 @@ class CommEngine:
         source_page_indices: tuple[int, ...],
         target_pool_id: str,
         to_stage: str,
-        metadata: dict[str, Any] | None = None,
+        metadata: Mapping[str, object] | None = None,
         transfer_id: str | None = None,
         lease: KVPageLease | None = None,
     ) -> DataRef:
