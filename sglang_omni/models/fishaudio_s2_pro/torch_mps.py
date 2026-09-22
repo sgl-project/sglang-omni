@@ -203,7 +203,7 @@ class S2ProTorchMpsTextModel(S2ProSGLangTextModel):
             else self.lm_head(hidden)
         )
         if self._vq_ready:
-            self._decode_codebooks(logits, hidden)
+            self.decode_codebooks(logits, hidden)
         self._request_caches[request_id] = caches
         return logits, hidden
 

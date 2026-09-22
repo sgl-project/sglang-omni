@@ -120,7 +120,7 @@ class FishMlxSchedulerRunner(FishS2ProModelRunner):
     def before_prefill(self, forward_batch, schedule_batch, requests):
         if len(requests) != 1:
             raise ValueError("Fish MLX requires max_running_requests=1")
-        self._sync_decode_state(requests)
+        self.sync_decode_state(requests)
 
     def before_decode(
         self, forward_batch, schedule_batch, requests, *, is_lookahead=False
