@@ -22,6 +22,11 @@ enum Page: String, CaseIterable {
         switch self { case .home: return "square.grid.2x2"; case .history: return "clock.arrow.circlepath"
         case .dictionary: return "book.closed"; case .rules: return "slider.horizontal.3"; case .settings: return "gearshape" }
     }
+    /// Whether the page shows preparation progress next to the control that starts it, which makes
+    /// the window-level card a duplicate.
+    var placesOwnPreparationProgress: Bool {
+        switch self { case .settings: return true; default: return false }
+    }
 }
 
 struct RootView: View {
@@ -49,7 +54,9 @@ struct RootView: View {
                             if model.canRetry { Button(L("app.retryLast")) { model.retryLast() } }
                         }
                         if !model.notice.isEmpty { message(model.notice, error: false) }
-                        if model.phase == .preparing { PreparationCard(model: model, worker: model.worker) }
+                        if model.phase == .preparing && !page.placesOwnPreparationProgress {
+                            PreparationCard(model: model, worker: model.worker)
+                        }
                         switch page {
                         case .home: HomeView(model: model, store: store)
                         case .history: HistoryView(model: model, store: store)
@@ -126,6 +133,23 @@ struct Card<Content: View>: View {
         content.padding(22).frame(maxWidth: .infinity, alignment: .leading)
             .background(cardBackground, in: RoundedRectangle(cornerRadius: 18))
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(.primary.opacity(0.055), lineWidth: 1))
+    }
+}
+
+/// Shared so a page can place preparation progress beside the control that started the work,
+/// rather than only at the top of the window.
+struct PreparationCard: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var worker: WorkerClient
+    var body: some View {
+        HStack(spacing: 14) {
+            ProgressView().controlSize(.small)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(L("prepare.title")).font(.system(size: 13, weight: .semibold))
+                Text(worker.status.isEmpty ? L("prepare.body") : worker.status).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer(); Button(L("action.cancel")) { model.cancel() }
+        }.padding(20).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -249,21 +273,6 @@ struct HomeView: View {
                 Text(title).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
-    }
-}
-
-private struct PreparationCard: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var worker: WorkerClient
-    var body: some View {
-        HStack(spacing: 14) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(L("prepare.title")).font(.system(size: 13, weight: .semibold))
-                Text(worker.status.isEmpty ? L("prepare.body") : worker.status).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer(); Button(L("action.cancel")) { model.cancel() }
-        }.padding(20).background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
