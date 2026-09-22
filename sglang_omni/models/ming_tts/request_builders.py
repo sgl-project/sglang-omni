@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any, SupportsFloat, SupportsIndex, TypeVar
+from typing import SupportsFloat, SupportsIndex, SupportsInt, TypeVar
 
 from typing_extensions import Buffer
 
@@ -82,7 +82,11 @@ def preprocess_ming_tts_payload(
                     return source[name]
         return None
 
-    def resolve_int(name: str, value: Any, default: int | None = None) -> int:
+    def resolve_int(
+        name: str,
+        value: str | Buffer | SupportsInt | SupportsIndex | None,
+        default: int | None = None,
+    ) -> int:
         if value is None:
             if default is None:
                 raise ValueError(f"Ming-Omni-TTS {name} must be an integer")

@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from copy import copy
-from typing import TYPE_CHECKING, Any, Iterable, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Iterable, Optional, Sequence, Tuple, TypeVar
 
 import torch
 from sglang.srt.distributed import get_pp_group, get_tensor_model_parallel_world_size
@@ -834,7 +834,11 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
         head_weights = [getattr(head, "weight", None) for head in self.lm_heads]
         return embed_weights, head_weights
 
-    def set_embed_and_head(self, embed_list: list[Any], head_list: list[Any]) -> None:
+    def set_embed_and_head(
+        self,
+        embed_list: Sequence[torch.Tensor | None] | None,
+        head_list: Sequence[torch.Tensor | None] | None,
+    ) -> None:
         if embed_list is not None:
             for idx, embed in enumerate(embed_list[: len(self.embedding_list)]):
                 if embed is not None and hasattr(self.embedding_list[idx], "weight"):

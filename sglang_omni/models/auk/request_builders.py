@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Any, SupportsFloat, SupportsIndex
+from typing import Any, SupportsFloat, SupportsIndex, SupportsInt
 from urllib.parse import unquote, urlparse
 
 import numpy as np
@@ -96,7 +96,7 @@ def _resolve_float(
     return value
 
 
-def _resolve_seed(raw: Any) -> int | None:
+def _resolve_seed(raw: str | Buffer | SupportsInt | SupportsIndex | None) -> int | None:
     if raw is None:
         return None
     if isinstance(raw, bool):

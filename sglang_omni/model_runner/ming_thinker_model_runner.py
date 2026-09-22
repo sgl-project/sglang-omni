@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, SupportsIndex, SupportsInt
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from typing_extensions import Buffer
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
@@ -65,7 +66,12 @@ class MingThinkerModelRunner(ModelRunner):
         return embed_tokens
 
     @staticmethod
-    def _token_id(config: object, name: str, *, fallback: Any = None) -> int | None:
+    def _token_id(
+        config: object,
+        name: str,
+        *,
+        fallback: str | Buffer | SupportsInt | SupportsIndex | None = None,
+    ) -> int | None:
         value = getattr(config, name, None)
         if value is None:
             value = fallback
