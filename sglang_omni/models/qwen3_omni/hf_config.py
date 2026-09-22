@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from transformers import PretrainedConfig
 
@@ -12,8 +12,8 @@ _MROPE_ROPE_SCALING_KEYS = frozenset(
 
 
 def _normalize_rope_scaling(
-    rope_scaling: dict[str, Any] | None
-) -> dict[str, Any] | None:
+    rope_scaling: Mapping[str, object] | None,
+) -> dict[str, object] | None:
     if rope_scaling is None:
         return None
 

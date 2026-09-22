@@ -390,7 +390,7 @@ class FunAsrNanoConfig(PretrainedConfig):
     """Configuration for the Fun-ASR-Nano checkpoint."""
 
     model_type = "fun_asr_nano"
-    sub_configs: ClassVar[dict[str, Any]] = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "audio_config": FunAsrNanoEncoderConfig,
         "adaptor_config": FunAsrNanoAdaptorConfig,
     }

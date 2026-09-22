@@ -41,7 +41,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeGuard
+from typing import TYPE_CHECKING, TypeGuard
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
@@ -89,7 +89,7 @@ def build_cache_namespace(
     """Digest identifying this process's encoder pipeline for cache keying."""
     config = getattr(model, "config", None)
     if hasattr(config, "to_dict"):
-        model_config: Any = config.to_dict()
+        model_config: object = config.to_dict()
     else:
         model_config = repr(config)
     reference = next(model.audio_encoder.parameters())
