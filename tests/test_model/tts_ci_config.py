@@ -264,7 +264,9 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
                 "--tts_engine.gpu_memory_fraction 0.85 "
                 "--vocoder.gpu_memory_fraction 0.10"
             ),
-            startup_timeout=300,
+            # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
+            # shapes at startup, which takes two workers past five minutes.
+            startup_timeout=900,
             gate_thresholds=True,
         ),
         thresholds=TtsCiThresholdPreset(
@@ -291,7 +293,9 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
                 "--tts_engine.gpu_memory_fraction 0.85 "
                 "--vocoder.gpu_memory_fraction 0.10"
             ),
-            startup_timeout=300,
+            # note (luojiaxuan): a cold Inductor cache compiles the vocoder steady
+            # shapes at startup, which takes two workers past five minutes.
+            startup_timeout=900,
             gate_thresholds=False,
         ),
         # note (luojiaxuan): printed next to the stage results; this arm gates
