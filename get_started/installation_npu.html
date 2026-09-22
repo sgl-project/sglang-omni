@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Installation — Ascend NPU &#8212; SGLang</title>
+    <title>🚀 Installation — Ascend NPU &#8212; SGLang</title>
   
   
   
@@ -207,7 +207,7 @@
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="installation.html">🚀 Installation</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — Ascend NPU</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">🚀 Installation — Ascend NPU</a></li>
 <li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">🚀 Installation — Intel XPU</a></li>
 <li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">🚀 Installation — Intel CPU</a></li>
 </ul>
@@ -487,7 +487,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>Installation — Ascend NPU</h1>
+    <h1>🚀 Installation — Ascend NPU</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -498,8 +498,17 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torcodec-installation-for-tts-models">Torcodec installation for TTS models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">🐳 Option A: Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a3-image-installation">A3 image installation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">🛠️ Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Prerequisites</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
+</ul>
+</li>
 </ul>
             </nav>
         </div>
@@ -512,13 +521,146 @@
                 <article class="bd-article">
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-ascend-npu">
-<h1>Installation — Ascend NPU<a class="headerlink" href="#installation-ascend-npu" title="Link to this heading">#</a></h1>
+<h1>🚀 Installation — Ascend NPU<a class="headerlink" href="#installation-ascend-npu" title="Link to this heading">#</a></h1>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<p>Both installation methods require Ascend host drivers and firmware compatible
+with your hardware and selected CANN release. Follow the
+<a class="reference external" href="https://www.hiascend.com/hardware/firmware-drivers/community">HDK driver and firmware installation guide</a>
+and the <a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu">Ascend software compatibility guide</a>
+to select and install matching versions. For Docker, match the CANN version in
+the image tag.</p>
+<p>Verify the host installation before continuing:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npu-smi<span class="w"> </span>info
+</pre></div>
+</div>
+</section>
+<section id="option-a-docker-recommended">
+<h2>🐳 Option A: Docker (recommended)<a class="headerlink" href="#option-a-docker-recommended" title="Link to this heading">#</a></h2>
+<p>The ARM64 image includes SGLang-Omni source, the SGLang/CANN/PyTorch runtime
+selected by <a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a>, and common audio
+dependencies. Model weights, host drivers and TorchCodec are not included.
+Model support on NPU and optional dependencies must be checked separately.</p>
+<section id="a3-image-installation">
+<h3>A3 image installation<a class="headerlink" href="#a3-image-installation" title="Link to this heading">#</a></h3>
+<p>Use an ARM64 Linux host with Docker and Ascend A3 devices.</p>
+<p><strong>1. Pull the image</strong></p>
+<p>Pull the image matching your hardware from
+<a class="reference external" href="https://hub.docker.com/r/lmsysorg/sglang-omni/tags">Docker Hub</a>:</p>
+<ul class="simple">
+<li><p><strong>Release:</strong> use <code class="docutils literal notranslate"><span class="pre">v&lt;version&gt;-cann9.0.0-a3</span></code> for deployments, replacing
+<code class="docutils literal notranslate"><span class="pre">v&lt;version&gt;</span></code> with a published version tag from Docker Hub.</p></li>
+<li><p><strong>Development:</strong> use <code class="docutils literal notranslate"><span class="pre">main-cann9.0.0-a3</span></code> for the latest published development
+build. Scheduled or manual publications update this rolling tag.</p></li>
+</ul>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Release (replace v&lt;version&gt; with a published version):</span>
+<span class="c1"># IMAGE=lmsysorg/sglang-omni:v&lt;version&gt;-cann9.0.0-a3</span>
+
+<span class="c1"># Development (A3):</span>
+<span class="nv">IMAGE</span><span class="o">=</span>lmsysorg/sglang-omni:main-cann9.0.0-a3
+
+docker<span class="w"> </span>pull<span class="w"> </span><span class="s2">"</span><span class="nv">$IMAGE</span><span class="s2">"</span>
+</pre></div>
+</div>
+<p>For reproducible deployments, set <code class="docutils literal notranslate"><span class="pre">IMAGE</span></code> to
+<code class="docutils literal notranslate"><span class="pre">lmsysorg/sglang-omni&#64;sha256:&lt;digest&gt;</span></code>.</p>
+<p><strong>2. Start the container</strong></p>
+<p>Download your model weights into a host directory and mount it into the
+container. The example exposes device 0; adjust device IDs and driver paths
+for your host. <code class="docutils literal notranslate"><span class="pre">--privileged</span></code> grants broad host access and is only suitable for
+a trusted host; production deployments should use restricted device access.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MODEL_DIR</span><span class="o">=</span>&lt;your_own_path&gt;
+docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-it<span class="w"> </span>--name<span class="w"> </span>omni-npu<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--privileged<span class="w"> </span>--network<span class="w"> </span>host<span class="w"> </span>--shm-size<span class="w"> </span>8g<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/davinci0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/davinci_manager<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/devmm_svm<span class="w"> </span>--device<span class="w"> </span>/dev/hisi_hdc<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/sbin:/usr/local/sbin:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/etc/ascend_install.info:/etc/ascend_install.info:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">"</span><span class="nv">$MODEL_DIR</span><span class="s2">:/models:ro"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ASCEND_RT_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">OMP_NUM_THREADS</span><span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">"</span><span class="nv">$IMAGE</span><span class="s2">"</span><span class="w"> </span>bash
+
+<span class="c1"># Inside the container:</span>
+<span class="nb">source</span><span class="w"> </span>/usr/local/Ascend/ascend-toolkit/set_env.sh
+</pre></div>
+</div>
+<p>When selecting another device, update both <code class="docutils literal notranslate"><span class="pre">/dev/davinci0</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ASCEND_RT_VISIBLE_DEVICES</span></code>. Device indices in the pipeline configuration are
+relative to the visible devices (<code class="docutils literal notranslate"><span class="pre">gpu:</span> <span class="pre">0</span></code> selects the first visible device).</p>
+<details>
+<summary>A2 image installation details (click)</summary>
+<p>Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.</p>
+<p><strong>1. Pull the image</strong></p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">v&lt;version&gt;-cann9.0.0-910b</span></code> for a release, or
+<code class="docutils literal notranslate"><span class="pre">main-cann9.0.0-910b</span></code> for the latest published development build.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Release (replace v&lt;version&gt; with a published version):</span>
+<span class="c1"># IMAGE=lmsysorg/sglang-omni:v&lt;version&gt;-cann9.0.0-910b</span>
+
+<span class="c1"># Development (A2 / 910B):</span>
+<span class="nv">IMAGE</span><span class="o">=</span>lmsysorg/sglang-omni:main-cann9.0.0-910b
+
+docker<span class="w"> </span>pull<span class="w"> </span><span class="s2">"</span><span class="nv">$IMAGE</span><span class="s2">"</span>
+</pre></div>
+</div>
+<p>For reproducible deployments, set <code class="docutils literal notranslate"><span class="pre">IMAGE</span></code> to
+<code class="docutils literal notranslate"><span class="pre">lmsysorg/sglang-omni&#64;sha256:&lt;digest&gt;</span></code>.</p>
+<p><strong>2. Start the container</strong></p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">MODEL_DIR</span></code> to your model directory. The example exposes device 0;
+adjust device IDs and driver paths for your host. Use <code class="docutils literal notranslate"><span class="pre">--privileged</span></code> only
+on a trusted host; production deployments should use restricted device access.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MODEL_DIR</span><span class="o">=</span>&lt;your_own_path&gt;
+docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>-it<span class="w"> </span>--name<span class="w"> </span>omni-npu<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--privileged<span class="w"> </span>--network<span class="w"> </span>host<span class="w"> </span>--shm-size<span class="w"> </span>8g<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/davinci0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/davinci_manager<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/devmm_svm<span class="w"> </span>--device<span class="w"> </span>/dev/hisi_hdc<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/Ascend/driver:/usr/local/Ascend/driver:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/Ascend/firmware:/usr/local/Ascend/firmware:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/usr/local/sbin:/usr/local/sbin:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span>/etc/ascend_install.info:/etc/ascend_install.info:ro<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-v<span class="w"> </span><span class="s2">"</span><span class="nv">$MODEL_DIR</span><span class="s2">:/models:ro"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">ASCEND_RT_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-e<span class="w"> </span><span class="nv">OMP_NUM_THREADS</span><span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">"</span><span class="nv">$IMAGE</span><span class="s2">"</span><span class="w"> </span>bash
+
+<span class="c1"># Inside the container:</span>
+<span class="nb">source</span><span class="w"> </span>/usr/local/Ascend/ascend-toolkit/set_env.sh
+</pre></div>
+</div>
+<p>When selecting another device, update both <code class="docutils literal notranslate"><span class="pre">/dev/davinci0</span></code> and
+<code class="docutils literal notranslate"><span class="pre">ASCEND_RT_VISIBLE_DEVICES</span></code>. Pipeline device indices are relative to the
+visible devices (<code class="docutils literal notranslate"><span class="pre">gpu:</span> <span class="pre">0</span></code> selects the first visible device).</p>
+</details>
+</section>
+<section id="launch-the-server">
+<h3>Launch the server<a class="headerlink" href="#launch-the-server" title="Link to this heading">#</a></h3>
+<p>The runtime is already installed. Skip the source installation below and do
+not run the TorchCodec stack-upgrade script inside this image.
+Qwen3-TTS dependencies are included; skip its cookbook’s dependency installation.
+Continue with the <a class="reference internal" href="apiserver_quickstart.html"><span class="std std-doc">API Server Quickstart</span></a> to launch
+<code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span></code> and send requests. Use the container model path under <code class="docutils literal notranslate"><span class="pre">/models</span></code>
+and pass the selected model’s NPU pipeline configuration with <code class="docutils literal notranslate"><span class="pre">--config</span></code> when
+required. Model-specific inputs belong in the corresponding cookbook, such as
+the <a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS guide</span></a>; GPU-specific configurations
+there should not be assumed to work unchanged on NPU.</p>
+</section>
+</section>
+<section id="option-b-manual-install">
+<h2>🛠️ Option B: Manual install<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h2>
 <p>Install the Ascend software stack and NPU build of SGLang before installing
 <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>. The helper script
 <a class="reference download internal" download="" href="../_downloads/47812adeb5aad40728a13ebdd72b804d/install_npu.sh"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">install_npu.sh</span></code></span></a> installs only
-<code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>; it does not install or change any prerequisite in the table below.</p>
-<section id="prerequisites">
-<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
+<code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> and the Python dependencies declared in
+<a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a>, using the
+same installation flow as Docker. Prepare
+FFmpeg, libsndfile and SoX separately, or pass <code class="docutils literal notranslate"><span class="pre">--install-system-deps</span></code> as root.
+The Ascend software stack and SGLang must already be installed.</p>
+<section id="id1">
+<h3>Prerequisites<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>Select mutually compatible versions for your Ascend hardware by following the
 linked documentation. Python 3.11 is the verified configuration.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -537,38 +679,32 @@ linked documentation. Python 3.11 is the verified configuration.</p>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/900/softwareinst/instg/instg_0008.html">Official documentation</a></p></td>
 </tr>
-<tr class="row-odd"><td><p>HDK (driver and firmware)</p></td>
-<td><p>Match the hardware and CANN release</p></td>
-<td><p>Yes</p></td>
-<td><p>Yes</p></td>
-<td><p><a class="reference external" href="https://www.hiascend.com/hardware/firmware-drivers/community">Official documentation</a></p></td>
-</tr>
-<tr class="row-even"><td><p>PyTorch and <code class="docutils literal notranslate"><span class="pre">torch_npu</span></code></p></td>
+<tr class="row-odd"><td><p>PyTorch and <code class="docutils literal notranslate"><span class="pre">torch_npu</span></code></p></td>
 <td><p>Matching releases</p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://www.hiascend.com/developer/software/ai-frameworks/pytorch/download?versionId=177&amp;ids=89dda9ba9de741349efa03687a487678%2C204%2C200%2C1%2C6%2C177%2C">Official documentation</a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">triton-ascend</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">triton-ascend</span></code></p></td>
 <td><p>Match the selected PyTorch and CANN releases</p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/quick_start.md">Official documentation</a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sgl-kernel-npu</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sgl-kernel-npu</span></code></p></td>
 <td><p>Match PyTorch, Python, CANN, hardware, and architecture</p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://github.com/sgl-project/sgl-kernel-npu/releases">Official documentation</a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">memfabric-hybrid</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">memfabric-hybrid</span></code></p></td>
 <td><p>Compatible release</p></td>
 <td><p>No (PD disaggregation only)</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu">Official documentation</a></p></td>
 </tr>
-<tr class="row-even"><td><p>SGLang for NPU</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">v0.5.18</span></code></p></td>
+<tr class="row-odd"><td><p>SGLang for NPU</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sglang-version</span></code> in <a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu">Official documentation</a></p></td>
@@ -578,7 +714,7 @@ linked documentation. Python 3.11 is the verified configuration.</p>
 </div>
 </section>
 <section id="install-sglang-omni">
-<h2>Install sglang-omni<a class="headerlink" href="#install-sglang-omni" title="Link to this heading">#</a></h2>
+<h3>Install sglang-omni<a class="headerlink" href="#install-sglang-omni" title="Link to this heading">#</a></h3>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git
 <span class="nb">cd</span><span class="w"> </span>sglang-omni
 <span class="nb">source</span><span class="w"> </span>/usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -590,9 +726,12 @@ bash<span class="w"> </span>scripts/npu/install_npu.sh<span class="w"> </span>--
 bash<span class="w"> </span>scripts/npu/install_npu.sh
 </pre></div>
 </div>
-<p>The precheck accepts the SGLang <code class="docutils literal notranslate"><span class="pre">0.5.18</span></code> release line. This includes development,
-pre-release, post-release, and local builds whose numeric release segment starts
-with <code class="docutils literal notranslate"><span class="pre">0.5.18</span></code>, such as <code class="docutils literal notranslate"><span class="pre">0.5.18.dev7+g&lt;git-sha&gt;</span></code>. It rejects other release lines,
+<p>The precheck reads the supported SGLang release from
+<code class="docutils literal notranslate"><span class="pre">[tool.sglang-omni.npu]</span></code> in <code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code> before swapping the install
+manifest. This includes development, pre-release, post-release and local builds
+of that release line. To print the configured release (Python 3.11+, or Python
+3.10 with <code class="docutils literal notranslate"><span class="pre">tomli</span></code> installed), run <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">scripts/npu/config.py</span> <span class="pre">--get</span> <span class="pre">sglang-version</span></code>.
+It rejects other release lines,
 including later releases. On a mismatch it reports both the supported line and
 the installed version. The precheck also verifies the required Python packages,
 matching <code class="docutils literal notranslate"><span class="pre">torch</span></code> and <code class="docutils literal notranslate"><span class="pre">torch_npu</span></code> major-minor versions, NPU availability, and a
@@ -600,8 +739,8 @@ small NPU matrix multiplication. Run <code class="docutils literal notranslate">
 for optional extras, non-editable installation, and environments where devices
 are intentionally not exposed during the build.</p>
 </section>
-<section id="torcodec-installation-for-tts-models">
-<h2>Torcodec installation for TTS models<a class="headerlink" href="#torcodec-installation-for-tts-models" title="Link to this heading">#</a></h2>
+<section id="torchcodec-installation-for-tts-models">
+<h3>TorchCodec installation for TTS models<a class="headerlink" href="#torchcodec-installation-for-tts-models" title="Link to this heading">#</a></h3>
 <p>Models in the TTS models utilize <strong><code class="docutils literal notranslate"><span class="pre">torchcodec</span></code></strong> for high-efficiency, native-streaming audio decoding directly into PyTorch tensors.</p>
 <p>The helper script <code class="docutils literal notranslate"><span class="pre">scripts/npu/install_npu_torchcodec.sh</span></code> automatically installs:</p>
 <ul class="simple">
@@ -614,6 +753,7 @@ are intentionally not exposed during the build.</p>
 bash<span class="w"> </span>scripts/npu/install_npu_torchcodec.sh<span class="w"> </span>A3
 </pre></div>
 </div>
+</section>
 </section>
 </section>
 
@@ -665,8 +805,17 @@ bash<span class="w"> </span>scripts/npu/install_npu_torchcodec.sh<span class="w"
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torcodec-installation-for-tts-models">Torcodec installation for TTS models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">🐳 Option A: Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a3-image-installation">A3 image installation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">🛠️ Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Prerequisites</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
