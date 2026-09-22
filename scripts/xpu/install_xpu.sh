@@ -137,7 +137,7 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo
   echo "[--check] would run:"
   echo "  # require FFmpeg with VAAPI support"
-  echo "  ffmpeg -hide_banner -hwaccels | grep -qx vaapi"
+  echo "  ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi"
   echo "  cp pyproject.toml .pyproject.cuda.bak"
   echo "  cp pyproject_xpu.toml pyproject.toml"
   echo "  ${TRITON_CMD}"
@@ -151,7 +151,7 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ERROR: FFmpeg is required by torchcodec-xpu but was not found" >&2
   exit 1
 fi
-if ! ffmpeg -hide_banner -hwaccels 2>/dev/null | grep -qx vaapi; then
+if ! ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi; then
   echo "ERROR: torchcodec-xpu requires an FFmpeg build with VAAPI support" >&2
   exit 1
 fi

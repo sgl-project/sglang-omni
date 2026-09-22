@@ -75,7 +75,7 @@ RUN add-apt-repository -y ppa:kobuk-team/intel-graphics \
 
 # TorchCodec-XPU requires an FFmpeg build with VAAPI support. Device/driver
 # initialization is checked at runtime because build stages do not expose /dev/dri.
-RUN ffmpeg -hide_banner -hwaccels 2>/dev/null | grep -qx vaapi
+RUN ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi
 
 # Minors differ on purpose: the XPU channel ships no torchaudio newer than 2.11+xpu.
 RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
