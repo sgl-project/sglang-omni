@@ -131,9 +131,9 @@ override-dependencies = [
 
 # Shared by the installer and image builds. This metadata does not install SGLang.
 [tool.sglang-omni.npu]
-sglang-version = "0.5.19"
-base-image-a3 = "lmsysorg/sglang:v0.5.19-cann9.0.0-a3@sha256:55b9ca3b9f2bd67817054f51c55ff64603013f2b211535f77837ed47c3ae05d1"
-base-image-910b = "lmsysorg/sglang:v0.5.19-cann9.0.0-910b@sha256:19beb175fe8b5a636a14c0f8a95aa92686a36e09b826f214be476b2ae22e7188"
+sglang-version = "0.5.20"
+base-image-a3 = "lmsysorg/sglang:v0.5.20-cann9.0.0-a3@sha256:0756b534a0379863c435ec8b7896ba17a18fccda2c8889326fb1dc9453de9be4"
+base-image-910b = "lmsysorg/sglang:v0.5.20-cann9.0.0-910b@sha256:ee030245e37859d4534f226791919c6c28761a3b4c16c79eb780f9673b92ac8a"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
