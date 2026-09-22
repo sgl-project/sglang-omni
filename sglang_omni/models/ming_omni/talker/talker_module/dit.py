@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer
+from .modules import DiTBlock, FinalLayer, RMSNorm
 from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 #################################################################################
@@ -121,6 +121,7 @@ class DiT(nn.Module):
         )
         if execution_config.attn_backend is not None:
             kwargs["attn_backend"] = execution_config.attn_backend
+        norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -145,11 +146,21 @@ class DiT(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **kwargs)
+                DiTBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    norm_layer=norm_layer,
+                    **kwargs,
+                )
                 for _ in range(depth)
             ]
         )
-        self.final_layer = FinalLayer(hidden_size, self.out_channels)
+        self.final_layer = FinalLayer(
+            hidden_size,
+            self.out_channels,
+            norm_layer=norm_layer,
+        )
         self.initialize_weights()
 
     def initialize_weights(self):

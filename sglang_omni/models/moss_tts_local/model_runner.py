@@ -9,7 +9,7 @@ import torch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-from sglang_omni.models.moss_tts_local.radix_hash import gpu_radix_row_hash
+from sglang_omni.models.moss_tts_local.radix_hash import build_rows_and_radix_token_ids
 from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
 )
@@ -22,7 +22,7 @@ class MossTTSLocalModelRunner(ModelRunner):
     """Drives the per-frame local-transformer decode and feedback embeddings.
 
     Per step: the backbone (radix-cached, CUDA-graphed) produces one hidden
-    state per request; :meth:`_collect_frame` then runs the batched local
+    state per request; :meth:`collect_frame` then runs the batched local
     micro-decode — a binary continue/stop decision and 12 sequentially
     sampled RVQ codes — and stages the next frame's summed embedding through
     ``model._decode_input_embedding`` so the next decode step stays
@@ -256,17 +256,18 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         if not requests:
             return
-        rows, end_id = self.run_frame_decode(result, forward_batch, requests)
-        # Radix key is a capture-safe GPU hash: a device op, no host sync.
-        next_text = rows[:, 0]
-        next_token_ids = self.row_radix_token_ids(rows, next_text, end_id)
+        rows, end_id, next_token_ids = self.run_frame_decode(
+            result, forward_batch, requests
+        )
         result.next_token_ids = next_token_ids
+        # note (Zhang Yiyang): Avoid pageable readback blocking reference CUDA work.
+        self.stage_token_ids(result, next_token_ids)
 
     def run_frame_decode(self, result: Any, forward_batch: Any, requests: list):
-        """GPU half shared by sync ``_collect_frame`` and async
-        ``post_decode_launch``. Returns ``(rows, end_id)`` and does NOT publish
-        ``next_token_ids``; the caller does, because the async path keeps a
-        private device snapshot of the published ids for resolve to restore.
+        """GPU half shared by sync ``collect_frame`` and async
+        ``post_decode_launch``. Returns ``(rows, end_id, next_token_ids)`` and
+        does NOT publish the ids; the caller does, because the async path keeps
+        a private device snapshot of the published ids for resolve to restore.
         """
         try:
             hidden_states = result.logits_output.hidden_states
@@ -322,15 +323,20 @@ class MossTTSLocalModelRunner(ModelRunner):
         # Advance the launch-side counter only for emitted rows; non-final
         # chunked rows take a read-only position so a mid-prefill chunk's frame
         # cannot shift the final chunk's sampling position off the no-chunk path.
-        emit_set = {
+        emit_indices = [
             i
             for i, sched_req in enumerate(requests)
             if not self.is_chunked_request(sched_req)
-        }
-        gen_steps = torch.maximum(
-            pool.sampling_steps[row_t].to(device=device),
-            pool.generation_steps[row_t].to(device=device),
-        )
+        ]
+        if self._async_enabled:
+            # note (Zhang Yiyang): Lookahead sampling can lead the committed step.
+            gen_steps = torch.maximum(
+                pool.sampling_steps[row_t].to(device=device),
+                pool.generation_steps[row_t].to(device=device),
+            )
+        else:
+            # note (Zhang Yiyang): Sync counters agree; skip the extra gather/max.
+            gen_steps = pool.generation_steps[row_t].to(device=device)
         rep_penalties = pool.audio_repetition_penalty[row_t].to(
             device=device, dtype=torch.float32
         )
@@ -399,39 +405,49 @@ class MossTTSLocalModelRunner(ModelRunner):
 
         slot_id = int(cfg.audio_assistant_slot_token_id)
         end_id = int(cfg.audio_end_token_id)
-        next_text = torch.where(
-            stop_choice == 0,
-            torch.full((batch_size,), slot_id, dtype=torch.long, device=device),
-            torch.full((batch_size,), end_id, dtype=torch.long, device=device),
+        rows, next_token_ids = build_rows_and_radix_token_ids(
+            stop_choice,
+            codes,
+            slot_id,
+            end_id,
         )
-
-        rows = torch.empty((batch_size, num_channels), dtype=torch.long, device=device)
-        rows[:, 0] = next_text
-        rows[:, 1:] = codes
+        next_text = rows[:, 0]
 
         if embeds is None:
             embeds = self.model.prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
-        emit_indices = sorted(emit_set)
         if emit_indices:
-            emit_index_t = torch.tensor(
-                emit_indices, dtype=torch.long, device=rows.device
-            )
             emit_pool_rows = [pool_rows[i] for i in emit_indices]
-            emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
-            emit_rows = rows.index_select(0, emit_index_t)
-            emit_steps = gen_steps.index_select(
-                0, emit_index_t.to(device=gen_steps.device)
-            )
+            all_emit = len(emit_indices) == batch_size
+            if all_emit:
+                # The normal decode path emits every request. Reuse the rows
+                # and embeddings already built above instead of launching two
+                # gather copies; retain index_select for chunked subsets.
+                emit_row_t = row_t
+                emit_rows = rows
+                emit_steps = gen_steps
+                emit_embeds = embeds
+                emit_next_text = next_text
+            else:
+                emit_index_t = torch.tensor(
+                    emit_indices, dtype=torch.long, device=rows.device
+                )
+                emit_row_t = row_t[emit_index_t.to(device=row_t.device)]
+                emit_rows = rows.index_select(0, emit_index_t)
+                emit_steps = gen_steps.index_select(
+                    0, emit_index_t.to(device=gen_steps.device)
+                )
+                emit_embeds = embeds.index_select(
+                    0, emit_index_t.to(device=embeds.device)
+                )
+                if has_audio_repetition_penalty:
+                    emit_next_text = emit_rows[:, 0]
             pool.sampling_steps[emit_row_t] = (emit_steps + 1).to(
                 device=pool.sampling_steps.device, dtype=torch.int64
             )
             if has_audio_repetition_penalty:
-                keep_history = (
-                    next_text.index_select(0, emit_index_t.to(device=next_text.device))
-                    != end_id
-                )
+                keep_history = emit_next_text != end_id
                 emit_penalty_active = (
                     pool.audio_repetition_penalty[emit_row_t]
                     .to(device=keep_history.device)
@@ -442,7 +458,6 @@ class MossTTSLocalModelRunner(ModelRunner):
                     emit_row_t[keep_history.to(device=emit_row_t.device)],
                     emit_rows[keep_history.to(device=emit_rows.device)],
                 )
-            emit_embeds = embeds.index_select(0, emit_index_t.to(device=embeds.device))
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device,
                 dtype=pool.feedback_embeds.dtype,
@@ -454,11 +469,11 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         # Always return rows so both the sync inline path and the async launch
         # publish next_token_ids; an all-chunked batch just attaches no journal.
-        return rows, end_id
+        return rows, end_id, next_token_ids
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
         """Async-decode GPU half of ``post_decode``: run the frame micro-decode
-        (``_run_frame_decode``) and publish the device-computed radix ids, no
+        (``run_frame_decode``) and publish the device-computed radix ids, no
         host sync. Returns a private device snapshot of those ids for resolve:
         the base aliases ``next_token_ids`` onto ``output_ids``, which the next
         step overwrites in place before this step's lagged resolve, clobbering
@@ -467,8 +482,9 @@ class MossTTSLocalModelRunner(ModelRunner):
         """
         if not requests:
             return None
-        rows, end_id = self.run_frame_decode(result, forward_batch, requests)
-        next_token_ids = self.row_radix_token_ids(rows, rows[:, 0], end_id)
+        rows, end_id, next_token_ids = self.run_frame_decode(
+            result, forward_batch, requests
+        )
         result.next_token_ids = next_token_ids
         return next_token_ids.clone()
 
@@ -481,41 +497,13 @@ class MossTTSLocalModelRunner(ModelRunner):
         requests: list,
     ) -> None:
         """Async-decode host half: restore the launch-time ``next_token_ids``
-        snapshot (a pointer swap) so the shared ``_finalize`` tail reads the real
+        snapshot (a pointer swap) so the shared ``finalize`` tail reads the real
         stop id, which the next step's in-place write clobbered from the aliased
         tensor before this lagged resolve.
         """
         del forward_batch, schedule_batch, requests
         if launch_buf is not None and result is not None:
             result.next_token_ids = launch_buf
-
-    @staticmethod
-    def row_radix_token_ids(
-        rows: torch.Tensor,
-        next_text: torch.Tensor,
-        end_id: int,
-    ) -> torch.Tensor:
-        """Radix-cache token ids for generated frames.
-
-        The scheduler appends one token id per frame to the request's KV
-        chain, and the radix tree keys on those ids. The text channel alone is
-        the same assistant-slot id for every continuing frame of every
-        request, so a re-prefill after retraction could falsely prefix-match
-        into another identical-prompt request's cached generated region. Hash
-        the full multi-channel row — the same keying used for prompt rows —
-        so a radix match implies identical audio content (a per-position id
-        clash is ~1/151643 and only matters on top of an identical full
-        prefix). The hash is folded below the special-token band because the
-        scheduler finishes any request whose generated id crosses the vocab
-        boundary (``Req._check_vocab_boundary_finish``); the stop decision
-        keeps the raw audio_end id so eos detection still fires.
-
-        Unlike the prompt path (``build_row_cache_key_ids``'s host-side
-        blake2b), this runs every decode step on a device tensor, so it uses
-        the capture-safe tensor-native polynomial hash in :mod:`radix_hash` —
-        no GPU->CPU sync. See ``docs/design/gpu_radix_hash.md``.
-        """
-        return gpu_radix_row_hash(rows, next_text, end_id)
 
     @staticmethod
     def advance_sampling_position(data: Any) -> int:

@@ -170,7 +170,7 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     logits = mx.full((1, TOTAL_VOCAB_SIZE), -10.0, dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
     logits = logits.at[0, 6].add(9.0)
-    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) != 5
@@ -193,7 +193,7 @@ def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
     logits = logits.at[0, 6].add(9.0)
-    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) == 5
@@ -216,7 +216,7 @@ def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 6].add(10.0)
     logits = logits.at[0, 5].add(9.0)
-    tokens, _ = runner.select_tokens_with_logprobs(logits, ["req"], [[]])
+    tokens, _ = runner._select_tokens_with_logprobs(logits, ["req"], [[]])
 
     mx.eval(tokens)
     assert int(tokens[0].item()) == 6

@@ -234,3 +234,25 @@ def test_mlx_scheduler_runner_uses_future_map_bridge(monkeypatch) -> None:
 
     assert resolved == [(scheduler_output.batch_data, bridge.future_map)]
     assert bridge.published == [(pending.schedule_batch, "token-ids")]
+
+
+def test_native_mlx_runners_override_sglang_load_hook():
+    mlx_model_runner = pytest.importorskip(
+        "sglang.srt.hardware_backend.mlx.model_runner"
+    )
+    base = mlx_model_runner.MlxModelRunner
+
+    from sglang_omni.models.fun_cosyvoice3.mlx.runner import (
+        make_fun_cosyvoice3_mlx_runner_class,
+    )
+    from sglang_omni.models.qwen3_asr.mlx.runner import make_qwen3_asr_mlx_runner_class
+
+    for make_runner_class in (
+        make_qwen3_asr_mlx_runner_class,
+        make_fun_cosyvoice3_mlx_runner_class,
+    ):
+        runner_class = make_runner_class()
+        assert runner_class._load_model is not base._load_model, (
+            f"{runner_class.__name__} no longer overrides SGLang's _load_model hook; "
+            "the native MLX model would silently not load"
+        )
