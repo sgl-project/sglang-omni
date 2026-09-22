@@ -89,6 +89,10 @@ class ARRequestData:
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None
     decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
+    prefill_coalesce_after_build_drain_hint: bool | None = field(
+        default=None,
+        kw_only=True,
+    )
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:

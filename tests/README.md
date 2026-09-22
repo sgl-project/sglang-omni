@@ -179,6 +179,7 @@ tests/
     │   ├── test_encoder_cuda_graph.py
     │   ├── test_encoder_service.py
     │   ├── test_pipeline.py
+    │   ├── test_request_builders.py
     │   └── test_stream_output_builder.py
     ├── moss_transcribe_diarize/
     │   ├── test_encoder_cache.py
@@ -581,8 +582,11 @@ that happened to contain an older version of the test.
 - `unit_test/arkasr/`: ARK-ASR-3B unit tests:
   - asynchronous pre-LM encoder submission, bounded queue backpressure,
     single-flight deduplication, CPU cache validation, and failure recovery
-  - pipeline config, stage factory concurrency defaults, encoder CUDA-graph
-    working-set precapture, async-decode default, and the dotted `factory.enable_async_decode` CLI override
+  - request building: valid early cache hits skip mel extraction, misses preserve
+    feature/mask forwarding and deferred admission, predicted token counts match
+    Whisper front-end boundaries, and hit/miss waves carry explicit pacing hints
+  - pipeline config, stage factory concurrency defaults, async-decode default,
+    and factory overrides
   - encoder CUDA graph runner: 2-D `(batch, T)` buckets aligned to
     `merge_factor`, batch buckets derived from `encoder_max_batch_size`,
     startup working-set precapture (no request-path capture), eager
