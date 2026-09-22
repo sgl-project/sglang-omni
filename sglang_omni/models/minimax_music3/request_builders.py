@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 
 from sglang_omni.proto import StagePayload
 
@@ -35,7 +35,7 @@ def _as_non_empty_string(value: object, field: str) -> str:
     return value
 
 
-def _explicit_params(tts_params: dict[str, Any]) -> set[str]:
+def _explicit_params(tts_params: Mapping[str, object]) -> set[str]:
     raw = tts_params.get("explicit_generation_params", [])
     if isinstance(raw, (list, tuple, set)):
         return {str(x) for x in raw}
@@ -68,7 +68,7 @@ def _parse_max_frames(value: object) -> int:
     return frames
 
 
-def _validate_tts_contract(tts_params: dict[str, Any]) -> None:
+def _validate_tts_contract(tts_params: Mapping[str, object]) -> None:
     unsupported = sorted(
         field
         for field in _UNSUPPORTED_TTS_PARAMS

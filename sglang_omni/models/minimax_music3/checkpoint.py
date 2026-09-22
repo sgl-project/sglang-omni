@@ -66,7 +66,7 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_torch_state(path: str | Path, *, device: torch.device) -> dict[str, Any]:
+def load_torch_state(path: str | Path, *, device: torch.device) -> dict[str, object]:
     """Load a .pth state dict without accepting arbitrary object payloads."""
 
     state = torch.load(

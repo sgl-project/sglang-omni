@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from types import MethodType
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 from torch import Tensor, nn
+
+StateValueT = TypeVar("StateValueT")
 
 
 def snake(x: Tensor, alpha: Tensor) -> Tensor:
@@ -145,7 +148,7 @@ class MiniMaxMusic3DAV(nn.Module):
 _REQUIRED_DECODER_PREFIXES = ("dec_in_proj.", "decoder.")
 
 
-def select_decoder_state(state: dict[str, Any]) -> dict[str, Any]:
+def select_decoder_state(state: Mapping[str, StateValueT]) -> dict[str, StateValueT]:
     return {
         key: value
         for key, value in state.items()
