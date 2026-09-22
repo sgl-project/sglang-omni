@@ -22,7 +22,7 @@ def _platform_device_type() -> str:
     return current_platform.device_type
 
 
-def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
+def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, object]) -> None:
     """Translate Omni's legacy public knobs to SGLang's decode fields."""
     for legacy_name, decode_name in _DECODE_CUDA_GRAPH_ALIASES.items():
         if legacy_name not in kwargs:
@@ -36,7 +36,7 @@ def _normalize_decode_cuda_graph_overrides(kwargs: dict[str, Any]) -> None:
         kwargs[decode_name] = legacy_value
 
 
-def pin_resolved_device_type(overrides: dict[str, Any], resolved_type: str) -> None:
+def pin_resolved_device_type(overrides: dict[str, object], resolved_type: str) -> None:
     """Write the placement-resolved device type into ServerArgs overrides."""
     requested_type = overrides.get("device")
     if requested_type is not None and requested_type != resolved_type:
@@ -48,7 +48,7 @@ def pin_resolved_device_type(overrides: dict[str, Any], resolved_type: str) -> N
     overrides["device"] = resolved_type
 
 
-def _apply_platform_decode_cuda_graph_backend(kwargs: dict[str, Any]) -> None:
+def _apply_platform_decode_cuda_graph_backend(kwargs: dict[str, object]) -> None:
     """SGLang applies this after its disable switches, and a stage may name cpu
     on an accelerator host, so both are checked before it is set."""
     from sglang_omni.platforms import current_platform
@@ -72,7 +72,7 @@ def build_sglang_server_args(
     max_prefill_tokens: int = 16384,
     max_running_requests: int = 16,
     mem_fraction_static: float | None = None,
-    **overrides: Any,
+    **overrides: object,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
     kwargs: dict[str, Any] = {
