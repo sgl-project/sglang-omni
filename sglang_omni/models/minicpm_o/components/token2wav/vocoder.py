@@ -24,6 +24,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     CausalMaskedDiffWithXvec,
+    FlowCudaGraphRunner,
+    build_default_flow_cuda_graph_shapes,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
@@ -103,6 +105,10 @@ class Token2Wav(torch.nn.Module):
         device: torch.device,
         dtype: torch.dtype = torch.float32,
         n_timesteps: int = 10,
+        enable_flow_variable_length: bool = False,
+        enable_dit_torch_compile: bool = True,
+        enable_flow_cuda_graph: bool = True,
+        flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     ) -> None:
         super().__init__()
         if n_timesteps <= 0:
@@ -137,6 +143,11 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.flow.to(device).eval()
+        self.flow.decoder.estimator.enable_variable_length = enable_flow_variable_length
+        if enable_dit_torch_compile:
+            self.flow.decoder.estimator.enable_compiled_blocks()
+        else:
+            pass
         self.hift = HiFTGenerator()
         weights = torch.load(
             model_path / "hift.pt", map_location="cpu", weights_only=True
@@ -146,6 +157,23 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.hift.to(device).eval()
+        if enable_flow_cuda_graph:
+            capture_shapes = (
+                build_default_flow_cuda_graph_shapes()
+                if flow_cuda_graph_capture_shapes is None
+                else flow_cuda_graph_capture_shapes
+            )
+            if enable_flow_variable_length:
+                capture_shapes = tuple(
+                    shape for shape in capture_shapes if shape[0] == 1
+                )
+            else:
+                pass
+            runner = FlowCudaGraphRunner(self.flow.decoder, device=device)
+            runner.capture(capture_shapes)
+            self.flow.decoder.graph_runner = runner
+        else:
+            pass
 
     @torch.inference_mode()
     def prepare_prompt(self, source: str | bytes | io.BytesIO) -> SpeakerPrompt:

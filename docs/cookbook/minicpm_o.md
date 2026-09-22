@@ -47,3 +47,27 @@ serially, or set `MINICPMO_PROMPT_CACHE_CAPACITY` to change the cache capacity.
 Both settings must be positive integers and are read when Code2Wav is created.
 The stage drains reference preparation on shutdown; a closed vocoder rejects
 new preparation calls.
+
+## Flow execution options
+
+The Code2Wav stage compiles the DiT blocks and captures one Flow Euler step
+by default. The graph table covers batch size 1 and mel-frame lengths
+`128..1024`, every 16 frames from 272 through 720 and at most 32 frames
+apart elsewhere:
+
+```text
+--code2wav.factory.enable_dit_torch_compile false
+--code2wav.factory.enable_flow_cuda_graph false
+```
+
+Compile runs before graph capture when both options are enabled. Graph shapes
+are `(batch size, mel frames)` and must have a frame count divisible by 16.
+They are captured at startup; each Euler step replays the smallest resident
+graph with the same batch size that covers the request's 16-frame rounded
+length. Other shapes run the eager solver without request-time capture. A
+capture that fails or would leave less than 3 GiB free is skipped while the
+remaining buckets stay usable.
+Resident graphs consume GPU memory even when requests do not hit them.
+Override `flow_cuda_graph_capture_shapes` when a measured serving workload has
+different resident shapes. With variable-length DiT enabled, only batch-1
+shapes are captured; larger batches use packed DiT eagerly.

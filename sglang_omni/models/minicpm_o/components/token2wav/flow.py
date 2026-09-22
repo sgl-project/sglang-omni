@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
+from threading import Lock
 from typing import Literal
 
 import torch
@@ -29,6 +32,21 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 
+logger = logging.getLogger(__name__)
+FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
+# note (wirybeaver): SeedTTS EN uses 260-714 frames; sparse tails retain coverage.
+FLOW_CUDA_GRAPH_FRAME_BUCKETS = (
+    *range(128, 257, 32),
+    *range(272, 721, 16),
+    *range(752, 1009, 32),
+    1024,
+)
+
+
+def build_default_flow_cuda_graph_shapes() -> tuple[tuple[int, int], ...]:
+    """Build the default batch/frame graph grid."""
+    return tuple((1, frames) for frames in FLOW_CUDA_GRAPH_FRAME_BUCKETS)
+
 
 class CausalConditionalCFM(torch.nn.Module):
 
@@ -37,6 +55,7 @@ class CausalConditionalCFM(torch.nn.Module):
         self.estimator = estimator
         self.inference_cfg_rate = inference_cfg_rate
         self.out_channels = estimator.out_channels
+        self.graph_runner: FlowCudaGraphRunner | None = None
         self.register_buffer(
             "rand_noise",
             torch.randn([1, self.out_channels, 50 * 600]),
@@ -52,31 +71,58 @@ class CausalConditionalCFM(torch.nn.Module):
         spks: torch.Tensor,
         cond: torch.Tensor,
     ) -> torch.Tensor:
-        batch_size = x.size(0)
-        t = t_span[0].expand(batch_size)
+        t = t_span[0].expand(x.size(0))
         dt = t_span[1] - t_span[0]
         assert self.inference_cfg_rate > 0, "inference_cfg_rate better > 0"
         mask_in = torch.cat([mask, mask], dim=0)
         mu_in = torch.cat([mu, torch.zeros_like(mu)], dim=0)
         spks_in = torch.cat([spks, torch.zeros_like(spks)], dim=0)
         cond_in = torch.cat([cond, torch.zeros_like(cond)], dim=0)
+        graph_runner = self.graph_runner
+        graph_key = graph_runner.fit(x) if graph_runner is not None else None
         for step in range(1, len(t_span)):
-            x_in = torch.cat([x, x], dim=0)
-            t_in = torch.cat([t, t], dim=0)
-            dphi_dt = self.estimator.forward(
-                x_in, mask_in, mu_in, t_in, spks_in, cond_in
+            graphed = (
+                graph_runner.run_step(
+                    graph_key, x, t, dt, mu_in, mask_in, spks_in, cond_in
+                )
+                if graph_key is not None
+                else None
             )
-            dphi_dt, cfg_dphi_dt = torch.split(dphi_dt, [x.size(0), x.size(0)], dim=0)
-            dphi_dt = (
-                1.0 + self.inference_cfg_rate
-            ) * dphi_dt - self.inference_cfg_rate * cfg_dphi_dt
-            x = x + dt * dphi_dt
+            x = (
+                self.euler_step(x, t, dt, mu_in, mask_in, spks_in, cond_in)
+                if graphed is None
+                else graphed
+            )
             t = t + dt
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t_span[step]
             else:
                 pass
         return x
+
+    def euler_step(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        dt: torch.Tensor,
+        mu_in: torch.Tensor,
+        mask_in: torch.Tensor,
+        spks_in: torch.Tensor,
+        cond_in: torch.Tensor,
+    ) -> torch.Tensor:
+        dphi_dt = self.estimator.forward(
+            torch.cat([x, x], dim=0),
+            mask_in,
+            mu_in,
+            torch.cat([t, t], dim=0),
+            spks_in,
+            cond_in,
+        )
+        conditional, unconditional = dphi_dt.chunk(2, dim=0)
+        velocity = (
+            1.0 + self.inference_cfg_rate
+        ) * conditional - self.inference_cfg_rate * unconditional
+        return x + dt * velocity
 
     @torch.inference_mode()
     def forward(
@@ -105,6 +151,200 @@ class CausalConditionalCFM(torch.nn.Module):
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span, mu, mask, spks, cond)
+
+
+@dataclass
+class CapturedFlowGraph:
+    graph: torch.cuda.CUDAGraph
+    inputs: tuple[torch.Tensor, ...]
+    output: torch.Tensor
+
+
+class FlowCudaGraphRunner:
+    """Replay one Euler step from startup-captured batch/frame shapes."""
+
+    def __init__(
+        self,
+        decoder: CausalConditionalCFM,
+        *,
+        device: torch.device,
+        min_free_gb: float = 3.0,
+    ) -> None:
+        if device.type != "cuda":
+            raise ValueError("Flow CUDA graphs require a CUDA device")
+        else:
+            pass
+        self.decoder = decoder
+        self.device = torch.device(
+            "cuda",
+            device.index if device.index is not None else torch.cuda.current_device(),
+        )
+        self.dtype = next(decoder.parameters()).dtype
+        self.min_free_bytes = int(min_free_gb * 1024**3)
+        self.graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
+        self.pool: tuple[int, int] | None = None
+        self.lock = Lock()
+        self.graph_replays = 0
+        self.graph_misses = 0
+
+    @torch.inference_mode()
+    def capture(self, shapes: tuple[tuple[int, int], ...]) -> None:
+        if not shapes or len(set(shapes)) != len(shapes):
+            raise ValueError("Flow CUDA graph shapes must be nonempty and unique")
+        else:
+            pass
+        if any(
+            batch_size <= 0
+            or frames <= 0
+            or frames % FLOW_CUDA_GRAPH_FRAME_BUCKET != 0
+            or frames > self.decoder.rand_noise.shape[2]
+            for batch_size, frames in shapes
+        ):
+            raise ValueError(
+                "Flow CUDA graph shapes need positive batches and 16-aligned "
+                "frames within the noise limit"
+            )
+        else:
+            pass
+
+        current_stream = torch.cuda.current_stream(self.device)
+        stream = torch.cuda.Stream(device=self.device)
+        stream.wait_stream(current_stream)
+        graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
+        with torch.cuda.device(self.device), torch.cuda.stream(stream):
+            self.pool = torch.cuda.graph_pool_handle()
+            for batch_size, frames in sorted(
+                shapes, key=lambda shape: shape[0] * shape[1], reverse=True
+            ):
+                free, _ = torch.cuda.mem_get_info(self.device)
+                if free < self.min_free_bytes:
+                    logger.warning(
+                        f"MiniCPM-o Flow CUDA graph skipped batch={batch_size} "
+                        f"frames={frames}: free VRAM {free / 1024**3:.1f} GB "
+                        f"is below {self.min_free_bytes / 1024**3:.1f} GB headroom"
+                    )
+                    continue
+                else:
+                    pass
+                try:
+                    x = (
+                        self.decoder.rand_noise[:, :, :frames]
+                        .expand(batch_size, -1, -1)
+                        .clone()
+                    )
+                    t = torch.zeros(batch_size, device=self.device, dtype=self.dtype)
+                    dt = torch.tensor(0.1, device=self.device, dtype=self.dtype)
+                    mu_in = torch.zeros(
+                        2 * batch_size,
+                        self.decoder.out_channels,
+                        frames,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    mask_in = torch.ones(
+                        2 * batch_size,
+                        1,
+                        frames,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    spks_in = torch.zeros(
+                        2 * batch_size,
+                        self.decoder.out_channels,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    cond_in = torch.zeros_like(mu_in)
+                    inputs = (x, t, dt, mu_in, mask_in, spks_in, cond_in)
+                    with torch.autocast(
+                        "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+                    ):
+                        for _ in range(3):
+                            self.decoder.euler_step(*inputs)
+                        graph = torch.cuda.CUDAGraph()
+                        with torch.cuda.graph(
+                            cuda_graph=graph,
+                            pool=self.pool,
+                            stream=stream,
+                            capture_error_mode="thread_local",
+                        ):
+                            output = self.decoder.euler_step(*inputs)
+                    graphs[(batch_size, frames)] = CapturedFlowGraph(
+                        graph, inputs, output
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"MiniCPM-o Flow CUDA graph capture failed for "
+                        f"batch={batch_size} frames={frames}: {exc}; using eager"
+                    )
+        current_stream.wait_stream(stream)
+        self.graphs = graphs
+        logger.info(f"Captured {len(graphs)} MiniCPM-o Flow step CUDA graph shapes")
+
+    def fit(self, x: torch.Tensor) -> tuple[int, int] | None:
+        actual_frames = x.shape[2]
+        bucket_frames = (
+            (actual_frames + FLOW_CUDA_GRAPH_FRAME_BUCKET - 1)
+            // FLOW_CUDA_GRAPH_FRAME_BUCKET
+            * FLOW_CUDA_GRAPH_FRAME_BUCKET
+        )
+        candidates = (
+            key
+            for key in self.graphs
+            if key[0] == x.shape[0] and key[1] >= bucket_frames
+        )
+        key = min(
+            candidates, key=lambda value: (value[0] * value[1], value), default=None
+        )
+        if x.device != self.device or x.dtype != self.dtype or key is None:
+            self.graph_misses += 1
+            return None
+        else:
+            pass
+        return key
+
+    def run_step(
+        self,
+        key: tuple[int, int],
+        x: torch.Tensor,
+        t: torch.Tensor,
+        dt: torch.Tensor,
+        mu_in: torch.Tensor,
+        mask_in: torch.Tensor,
+        spks_in: torch.Tensor,
+        cond_in: torch.Tensor,
+    ) -> torch.Tensor | None:
+        actual_frames = x.shape[2]
+        with self.lock:
+            captured = self.graphs.get(key)
+            if captured is None:
+                self.graph_misses += 1
+                return None
+            else:
+                pass
+            for target, source in zip(
+                captured.inputs,
+                (x, t, dt, mu_in, mask_in, spks_in, cond_in),
+                strict=True,
+            ):
+                if source.ndim in (2, 3):
+                    value = source
+                    if source.ndim == 3 and source.shape[-1] != key[1]:
+                        value = F.pad(source, (0, key[1] - actual_frames))
+                    else:
+                        pass
+                    target.copy_(value)
+                else:
+                    target.copy_(source)
+            try:
+                captured.graph.replay()
+            except RuntimeError:
+                self.graphs.clear()
+                self.pool = None
+                logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
+                raise
+            self.graph_replays += 1
+            return captured.output[: x.shape[0], :, :actual_frames].clone()
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from types import MethodType
 
 import torch
 import torch.nn as nn
@@ -378,6 +379,12 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, self.out_channels)
         self.initialize_weights()
 
+    def enable_compiled_blocks(self) -> None:
+        """Compile the shared block forward for inference."""
+        compiled = torch.compile(DiTBlock.forward, dynamic=True)
+        for block in self.blocks:
+            block.forward = MethodType(compiled, block)
+
     def initialize_weights(self) -> None:
 
         def initialize_linear(module: nn.Module) -> None:
@@ -428,6 +435,8 @@ class DiT(nn.Module):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
                 return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
+        else:
+            pass
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x, t, attn_mask)
