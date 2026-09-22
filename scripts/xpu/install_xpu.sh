@@ -35,8 +35,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_REPO="https://github.com/yao-matrix/sglang.git"
-SGLANG_VERIFIED_REVISION="7343154cce3255afac252e57d80e7c253fdccccc"
+SGLANG_VERIFIED_VERSION="v0.5.20"
 TRITON_VERSION="3.7.1"
 TRITON_XPU_VERSION="3.7.2"
 
