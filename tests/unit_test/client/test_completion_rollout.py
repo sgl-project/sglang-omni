@@ -217,7 +217,7 @@ def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
 
 
 def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
-    bundle = {"version": 1, "tensors": {}}
+    bundle: dict[str, object] = {"version": 1, "tensors": {}}
     request = GenerateRequest(
         prompt_token_ids=[1, 2, 3],
         multimodal_train_inputs=bundle,

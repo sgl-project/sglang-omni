@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
@@ -130,7 +131,7 @@ def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, object]:
     raise ValueError("Audar-TTS reference has no audio payload")
 
 
-def _validate_generation_kwargs(generation: dict[str, Any]) -> None:
+def _validate_generation_kwargs(generation: Mapping[str, int | float]) -> None:
     if generation["max_new_tokens"] <= 0:
         raise ValueError("Audar-TTS max_new_tokens must be positive")
     if generation["temperature"] < 0:

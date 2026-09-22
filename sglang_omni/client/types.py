@@ -100,14 +100,14 @@ class GenerateRequest:
 
     sampling: SamplingParams = field(default_factory=SamplingParams)
     stage_sampling: dict[str, SamplingParams] | None = None
-    stage_params: dict[str, dict[str, Any]] | None = None
-    extra_params: dict[str, Any] = field(default_factory=dict)
+    stage_params: dict[str, dict[str, object]] | None = None
+    extra_params: dict[str, object] = field(default_factory=dict)
     stream: bool = True
     max_tokens: int | None = None
 
     # Multi-modal support
     output_modalities: list[str] | None = None
-    multimodal_train_inputs: dict[str, Any] | None = None
+    multimodal_train_inputs: dict[str, object] | None = None
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -143,7 +143,7 @@ class GenerateChunk:
     text: str = ""
     logprobs: list[float] | None = None
     output_token_logprobs: list[list[float | int]] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    omni_rollout: dict[str, object] | None = None
     finish_reason: str | None = None
     usage: UsageInfo | None = None
     weight_version: str | None = None
@@ -215,7 +215,7 @@ class CompletionResult:
     finish_reason: str = "stop"
     usage: UsageInfo | None = None
     output_token_logprobs: list[list[float | int]] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    omni_rollout: dict[str, object] | None = None
     weight_version: str | None = None
     language: str | None = None
 

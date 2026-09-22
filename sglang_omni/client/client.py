@@ -107,7 +107,7 @@ class Client:
         finish_reason: str | None = None
         logprobs_parts: list[list[float | int]] = []
         saw_output_token_logprobs = False
-        omni_rollout: dict[str, Any] | None = None
+        omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
 

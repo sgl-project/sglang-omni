@@ -936,8 +936,8 @@ def _build_speech_prompt(
     return request.input
 
 
-def _build_extra_params(request: CreateSpeechRequest) -> dict[str, int]:
-    extra_params: dict[str, int] = {}
+def _build_extra_params(request: CreateSpeechRequest) -> dict[str, object]:
+    extra_params: dict[str, object] = {}
     if request.initial_codec_chunk_frames is not None:
         extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames
