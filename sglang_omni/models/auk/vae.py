@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, fields
 
 import torch
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
+
+from sglang_omni.models.auk.hf_config import AuKVAEConfig
 
 LRELU_SLOPE = 0.1
 
@@ -731,36 +732,6 @@ class AMPBlock1(nn.Module):
             remove_weight_norm(layer)
         for layer in self.convs2:
             remove_weight_norm(layer)
-
-
-@dataclass
-class AuKVAEConfig:
-    upsample_rates: list = field(default_factory=lambda: [5, 4, 3, 2, 2, 2])
-    upsample_kernel_sizes: list = field(default_factory=lambda: [10, 8, 6, 4, 4, 4])
-    upsample_initial_channel: int = 1536
-    resblock_kernel_sizes: list = field(default_factory=lambda: [3, 7, 11])
-    resblock_dilation_sizes: list = field(
-        default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
-    )
-    downsample_rates: list = field(default_factory=lambda: [2, 2, 2, 3, 4, 5])
-    downsample_channels: list = field(
-        default_factory=lambda: [12, 24, 48, 96, 192, 384, 768]
-    )
-    snake_logscale: bool = True
-    latent_dim: int = 64
-    use_vae: bool = True
-    causal: bool = True
-    flow_hidden_channels: int = 256
-    act_causal: bool = True
-
-    @property
-    def hop_size(self) -> int:
-        return math.prod(self.downsample_rates)
-
-    @classmethod
-    def from_dict(cls, config_dict: dict | None) -> AuKVAEConfig:
-        valid = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in (config_dict or {}).items() if k in valid})
 
 
 class BigVGANFlowVAE(nn.Module):

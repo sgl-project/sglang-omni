@@ -1,13 +1,14 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Copyright (C) 2026 Tencent. All rights reserved.
 """AuK checkpoint configuration."""
 
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from omegaconf import OmegaConf
 
@@ -16,6 +17,17 @@ from sglang_omni.models.auk import constants as C
 logger = logging.getLogger(__name__)
 
 CONFIG_YAML_NAMES = ("config.yaml", "config.yml")
+
+SectionT = TypeVar("SectionT", bound="FromCheckpointSection")
+
+
+class FromCheckpointSection:
+    """Ignore training-only keys when reading inference config dataclasses."""
+
+    @classmethod
+    def from_dict(cls: type[SectionT], config_dict: dict[str, Any] | None) -> SectionT:
+        valid = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in (config_dict or {}).items() if k in valid})
 
 
 @dataclass
@@ -133,3 +145,47 @@ def make_runtime_config(
     else:
         pass
     return config
+
+
+@dataclass
+class AuKDitConfig(FromCheckpointSection):
+    """Backbone hyperparameters."""
+
+    dim: int = 1024
+    heads: int = 16
+    dim_head: int = 64
+    dropout: float = 0.1
+    ff_mult: float = 2.0
+    text_hidden_dim: int = 2048
+    num_layers: int = 8
+    num_single_layers: int = 24
+    latent_dim: int = 64
+    attn_mask_enabled: bool = True
+    depth: int = 8
+
+
+@dataclass
+class AuKVAEConfig(FromCheckpointSection):
+    upsample_rates: list[int] = field(default_factory=lambda: [5, 4, 3, 2, 2, 2])
+    upsample_kernel_sizes: list[int] = field(
+        default_factory=lambda: [10, 8, 6, 4, 4, 4]
+    )
+    upsample_initial_channel: int = 1536
+    resblock_kernel_sizes: list[int] = field(default_factory=lambda: [3, 7, 11])
+    resblock_dilation_sizes: list[list[int]] = field(
+        default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+    )
+    downsample_rates: list[int] = field(default_factory=lambda: [2, 2, 2, 3, 4, 5])
+    downsample_channels: list[int] = field(
+        default_factory=lambda: [12, 24, 48, 96, 192, 384, 768]
+    )
+    snake_logscale: bool = True
+    latent_dim: int = 64
+    use_vae: bool = True
+    causal: bool = True
+    flow_hidden_channels: int = 256
+    act_causal: bool = True
+
+    @property
+    def hop_size(self) -> int:
+        return math.prod(self.downsample_rates)

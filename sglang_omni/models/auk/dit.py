@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields
 from types import MethodType
 from typing import NamedTuple
 
@@ -14,6 +13,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+
+from sglang_omni.models.auk.hf_config import AuKDitConfig
+
+__all__ = ["AuKDit", "AuKDitConfig"]
 
 
 class Rope(NamedTuple):
@@ -446,28 +449,6 @@ class AudioPromptEmbedding(nn.Module):
         else:
             pass
         return x_emb, self.embed(ref, mask=ref_mask)
-
-
-@dataclass
-class AuKDitConfig:
-    """Backbone hyperparameters."""
-
-    dim: int = 1024
-    heads: int = 16
-    dim_head: int = 64
-    dropout: float = 0.1
-    ff_mult: float = 2.0
-    text_hidden_dim: int = 2048
-    num_layers: int = 8
-    num_single_layers: int = 24
-    latent_dim: int = 64
-    attn_mask_enabled: bool = True
-    depth: int = 8
-
-    @classmethod
-    def from_dict(cls, config_dict: dict | None) -> AuKDitConfig:
-        valid = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in (config_dict or {}).items() if k in valid})
 
 
 class AuKDit(nn.Module):
