@@ -17,6 +17,15 @@ from sglang_omni.models.fishaudio_s2_pro.torch_mps import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
+    # profile tests independent of the caller's SGLANG_USE_MLX environment.
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+
+
 def tiny_model():
     torch.manual_seed(19)
     config = FishQwen3Config(
@@ -154,7 +163,7 @@ def test_seeded_sampler_matches_independent_murmur3_vectors(
     model = tiny_model()
     probs = torch.tensor([[0.15, 0.25, 0.6]])
     seeds, steps = torch.tensor([seed]), torch.tensor([step])
-    actual = model._sample_semantic_choice(
+    actual = model.sample_semantic_choice(
         probs.to(device), seeds.to(device), steps.to(device)
     )
     assert actual.item() == expected

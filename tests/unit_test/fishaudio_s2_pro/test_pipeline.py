@@ -43,6 +43,15 @@ from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
 @pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
+    # profile tests independent of the caller's SGLANG_USE_MLX environment.
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def fast_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "sglang.srt.sampling.sampling_params.SamplingParams.normalize",

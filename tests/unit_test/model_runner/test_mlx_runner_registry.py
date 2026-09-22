@@ -77,7 +77,7 @@ def test_standard_runner_preserves_sglang_constructor(pool_size):
         enable_deterministic_inference=True,
         max_total_tokens=pool_size,
     ):
-        runner = worker._create_registered_runner(Runner)
+        runner = worker.create_registered_runner(Runner)
     expected = dict(
         model_path="model",
         trust_remote_code=False,
@@ -105,4 +105,4 @@ def test_custom_runner_owns_initialization():
         def __init__(self, **kwargs):
             pytest.fail("Standard constructor must not run for custom adapter")
 
-    assert worker._create_registered_runner(Runner) is sentinel
+    assert worker.create_registered_runner(Runner) is sentinel

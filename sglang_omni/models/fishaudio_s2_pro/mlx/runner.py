@@ -41,7 +41,7 @@ class FishMlxModel(S2ProSGLangTextModel):
             rep_history_len=ras_window,
         )
 
-    def _sample_semantic_choice(self, probs, seeds, positions):
+    def sample_semantic_choice(self, probs, seeds, positions):
         return (
             torch.multinomial(probs, num_samples=1)
             if int(seeds[0]) < 0
@@ -90,7 +90,7 @@ class FishMlxModel(S2ProSGLangTextModel):
                 embeds = native.audio_decoder.mix_embeddings(embeds, codes)
         logits, hidden = native.text_model(embeds[None], cache)
         mx.eval(logits, hidden, [state.state for state in cache])
-        semantic = self._sample_semantic_token(to_torch(logits))
+        semantic = self.sample_semantic_token(to_torch(logits))
         token = int(semantic[0])
         semantic_code = (
             0
@@ -111,7 +111,7 @@ class FishMlxSchedulerRunner(FishS2ProModelRunner):
     def lookahead_eligible(self, batch):
         return False
 
-    def _build_forward_batch(self, scheduler_output):
+    def build_forward_batch(self, scheduler_output):
         batch = scheduler_output.batch_data
         if batch is None:
             return None
@@ -127,7 +127,7 @@ class FishMlxSchedulerRunner(FishS2ProModelRunner):
     ):
         self.before_prefill(forward_batch, schedule_batch, requests)
 
-    def _forward(self, requests, *, prefill):
+    def run_forward(self, requests, *, prefill):
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         self.model.forward_request(requests[0], prefill=prefill)
@@ -138,10 +138,10 @@ class FishMlxSchedulerRunner(FishS2ProModelRunner):
         )
 
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
-        return self._forward(requests, prefill=True)
+        return self.run_forward(requests, prefill=True)
 
     def custom_decode_forward(self, forward_batch, schedule_batch, requests):
-        return self._forward(requests, prefill=False)
+        return self.run_forward(requests, prefill=False)
 
     def on_request_finished(self, request_id, req_data):
         self.model.clear_request(request_id)

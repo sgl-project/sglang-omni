@@ -69,7 +69,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         self.tokenizer: Any | None = None
         self._apple_runner: Any | None = None
 
-    def _uses_torch_mps(self) -> bool:
+    def uses_torch_mps(self) -> bool:
         return str(getattr(self, "device", "")).split(":")[0] == "mps"
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -79,7 +79,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             if not current_platform.is_mps():
                 raise ValueError("Fish MLX requires Apple Metal")
             self.model_arch_override = "FishS2ProMlxModel"
-        elif self._uses_torch_mps():
+        elif self.uses_torch_mps():
             self.model_arch_override = "S2ProTorchMpsTextModel"
         del checkpoint_dir
         from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
@@ -94,7 +94,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         del dtype
-        if use_mlx() or self._uses_torch_mps():
+        if use_mlx() or self.uses_torch_mps():
             return {
                 "max_running_requests": 1,
                 "disable_cuda_graph": True,
@@ -139,7 +139,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
-        if use_mlx() or self._uses_torch_mps():
+        if use_mlx() or self.uses_torch_mps():
             expected = self.generation_defaults(dtype="bfloat16")
             for key, value in expected.items():
                 if overrides.get(key) != value:
@@ -188,7 +188,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
             self.adapter = S2ProTokenizerAdapter(self.tokenizer)
             model.configure(self.adapter, self.ras_window)
             return
-        if not self._uses_torch_mps():
+        if not self.uses_torch_mps():
             fish_bootstrap.truncate_rope_to_bf16(model)
         audio_decoder, num_codebooks, codebook_size, tokenizer = (
             fish_bootstrap.load_audio_decoder(
@@ -241,7 +241,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
 
             self._apple_runner = FishMlxSchedulerRunner(model_worker, output_proc)
             return self._apple_runner
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             from sglang_omni.models.fishaudio_s2_pro.torch_mps import (
                 FishS2ProTorchMpsRunner,
             )

@@ -216,7 +216,7 @@ def test_registry_adapter_binds_fish_model_and_preserves_cache_ownership(monkeyp
     from sglang.srt.runtime_context import get_context
 
     from sglang_omni.model_runner.mlx_model_worker import (
-        _create_registered_runner,
+        create_registered_runner,
         resolve_mlx_runner_factory,
     )
     from sglang_omni.models.fishaudio_s2_pro.mlx import runner
@@ -233,7 +233,7 @@ def test_registry_adapter_binds_fish_model_and_preserves_cache_ownership(monkeyp
     with get_context().override_server_args(
         model_path="checkpoint", context_length=4096, max_total_tokens=4096
     ):
-        adapter = _create_registered_runner(factory())
+        adapter = create_registered_runner(factory())
     assert adapter.scheduler_model is model
     assert adapter.pool_size == 4096
     adapter.prepare_for_kv_cache_release(SimpleNamespace(rid="r"))

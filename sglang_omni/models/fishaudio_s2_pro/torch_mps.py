@@ -142,7 +142,7 @@ class S2ProTorchMpsTextModel(S2ProSGLangTextModel):
     def clear_request(self, request_id: str) -> None:
         self._request_caches.pop(request_id, None)
 
-    def _sample_semantic_choice(self, probs, seeds, positions):
+    def sample_semantic_choice(self, probs, seeds, positions):
         # The upstream seeded sampler uses uint64 and float64, unsupported by
         # MPS. Only its small top-k distribution crosses to CPU; preserve its
         # exact hash/Gumbel algorithm without invoking torch.compile.
@@ -214,7 +214,7 @@ class FishS2ProTorchMpsRunner(FishS2ProModelRunner):
     def lookahead_eligible(self, batch):
         return False
 
-    def _forward_native(self, forward_batch, schedule_batch, requests, *, prefill):
+    def run_native_forward(self, forward_batch, schedule_batch, requests, *, prefill):
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         if len(requests) != 1:
@@ -232,12 +232,12 @@ class FishS2ProTorchMpsRunner(FishS2ProModelRunner):
         )
 
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
-        return self._forward_native(
+        return self.run_native_forward(
             forward_batch, schedule_batch, requests, prefill=True
         )
 
     def custom_decode_forward(self, forward_batch, schedule_batch, requests):
-        return self._forward_native(
+        return self.run_native_forward(
             forward_batch, schedule_batch, requests, prefill=False
         )
 

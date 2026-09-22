@@ -42,7 +42,7 @@ def resolve_mlx_runner_factory(model_arch: str | None) -> Callable[[], type]:
     return getattr(import_module(module_name), attribute)
 
 
-def _create_registered_runner(
+def create_registered_runner(
     runner_class: type, *, model_path: str | None = None, revision: str | None = None
 ) -> Any:
     """Use SGLang's constructor contract unless the runner supplies an adapter.
@@ -292,7 +292,7 @@ def create_mlx_model_worker(
                     "model_path": config.mlx_model_path,
                     "revision": config.mlx_model_revision,
                 }
-            self._mlx_runner = _create_registered_runner(
+            self._mlx_runner = create_registered_runner(
                 runner_factory(), **runner_overrides
             )
             self._model_runner = MlxModelRunnerStub(

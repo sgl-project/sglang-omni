@@ -387,10 +387,10 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         _ras_top_p=torch.ones(1),
         _sampling_top_p=torch.ones(1),
         _sampling_rep_penalty=torch.ones(1),
-        _sample_semantic_token=lambda logits: S2ProSGLangTextModel._sample_semantic_token(
+        sample_semantic_token=lambda logits: S2ProSGLangTextModel.sample_semantic_token(
             model, logits
         ),
-        _sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel._sample_semantic_choice(
+        sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel.sample_semantic_choice(
             None, probs, seeds, positions
         ),
         _sampling_seeds=torch.full((1,), -1, dtype=torch.long),
@@ -472,10 +472,10 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
         _ras_top_p=torch.ones(batch, device=device),
         _sampling_top_p=torch.ones(batch, device=device),
         _sampling_rep_penalty=torch.ones(batch, device=device),
-        _sample_semantic_token=lambda logits: S2ProSGLangTextModel._sample_semantic_token(
+        sample_semantic_token=lambda logits: S2ProSGLangTextModel.sample_semantic_token(
             model, logits
         ),
-        _sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel._sample_semantic_choice(
+        sample_semantic_choice=lambda probs, seeds, positions: S2ProSGLangTextModel.sample_semantic_choice(
             None, probs, seeds, positions
         ),
         _sampling_seeds=torch.arange(1, batch + 1, dtype=torch.long, device=device),

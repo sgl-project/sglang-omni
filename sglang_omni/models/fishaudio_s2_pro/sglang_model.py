@@ -420,7 +420,7 @@ class S2ProSGLangTextModel(nn.Module):
         """
         bs = logits.shape[0]
 
-        semantic_token = self._sample_semantic_token(logits)
+        semantic_token = self.sample_semantic_token(logits)
 
         # Batched codebook loop
         self._audio_decoder.reset_caches()
@@ -450,7 +450,7 @@ class S2ProSGLangTextModel(nn.Module):
 
         self._output_semantic_ids[:bs] = semantic_token
 
-    def _sample_semantic_token(self, logits: Tensor) -> Tensor:
+    def sample_semantic_token(self, logits: Tensor) -> Tensor:
         """Shared Fish semantic mask, RAS, repetition penalty, and top-k/top-p."""
         bs = logits.shape[0]
         biased_logits = logits + self._semantic_bias
@@ -501,14 +501,14 @@ class S2ProSGLangTextModel(nn.Module):
         )
         # Seeded rows draw reproducibly from (seed, step); unseeded rows keep the
         # legacy torch.multinomial draw, so unseeded decode is unchanged.
-        choice = self._sample_semantic_choice(
+        choice = self.sample_semantic_choice(
             probs, self._sampling_seeds[:bs], self._step_count[:bs]
         )
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
 
         return semantic_token
 
-    def _sample_semantic_choice(self, probs, seeds, positions):
+    def sample_semantic_choice(self, probs, seeds, positions):
         unseeded_choice = torch.multinomial(probs, num_samples=1)
         seeded_choice = multinomial_with_seed(
             torch.log(probs), seeds.clamp_min(0), positions

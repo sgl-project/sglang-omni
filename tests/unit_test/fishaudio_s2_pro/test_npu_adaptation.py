@@ -14,6 +14,15 @@ from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic import
 )
 
 
+@pytest.fixture(autouse=True)
+def _select_non_mlx_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    # Backend-specific tests opt into MLX explicitly. Keep CUDA/ROCm/Torch MPS
+    # profile tests independent of the caller's SGLANG_USE_MLX environment.
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+
+
 def test_npu_kvcache_attention_uses_fused_infer_attention(
     monkeypatch,
 ) -> None:
