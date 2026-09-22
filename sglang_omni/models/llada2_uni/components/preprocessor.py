@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -287,7 +288,7 @@ class LLaDA2Preprocessor:
 
     @staticmethod
     def _extract_raw_images(
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
     ) -> tuple[list[object], list[tuple[int, int]]]:
         """Return (images, image_counts_per_msg) with per-message image counts."""
         raw_images: list[object] = []
@@ -325,7 +326,7 @@ class LLaDA2Preprocessor:
 
     def _build_prompt(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         image_parts_by_msg: dict[int, list[str]] | None = None,
     ) -> str:
         """Build LLaDA2-Uni chat format prompt.

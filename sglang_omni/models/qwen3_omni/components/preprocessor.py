@@ -287,14 +287,14 @@ class Qwen3OmniPreprocessor:
         if num_images == 0 and num_audios == 0 and num_videos == 0:
             return messages
 
-        result: list[dict[str, Any]] = []
+        result: list[dict[str, object]] = []
         for i, msg in enumerate(messages):
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
-                content_parts: list[dict[str, Any]] = []
+                content_parts: list[dict[str, object]] = []
                 # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})

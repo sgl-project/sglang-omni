@@ -318,7 +318,7 @@ class MingPreprocessor:
         return pixel_values, image_grid_thw, token_counts
 
     def _process_videos(
-        self, videos: list[Any]
+        self, videos: list[object]
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
         """Process video frames into pixel_values_videos, video_grid_thw, token counts.
 

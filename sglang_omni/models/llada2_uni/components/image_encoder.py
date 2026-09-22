@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -333,7 +332,7 @@ class LLaDA2ImageEncoder(nn.Module):
     @torch.no_grad()
     def forward(
         self, pixel_values: torch.Tensor, image_grid_thw: torch.Tensor, **kwargs
-    ) -> dict[str, Any]:
+    ) -> dict[str, list[list[int]]]:
         """Run ViT encoder + VQ-VAE quantization.
 
         Args:
