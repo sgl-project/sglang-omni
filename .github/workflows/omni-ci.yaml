@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tts_ci_model:
-        description: "Optional TTS CI model preset to run (higgs, moss, qwen3-tts or cosyvoice3). Leave empty for random."
+        description: "Optional TTS CI model preset to run (higgs, moss, qwen3-tts, cosyvoice3 or qwen3-tts-custom-voice). Leave empty for random."
         required: false
         type: string
         default: ""
@@ -62,6 +62,7 @@ env:
   MOSS_TTS_MODEL_PATH: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
   QWEN3_TTS_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-Base
   COSYVOICE3_MODEL_PATH: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
+  QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
   QWEN3_ASR_MODEL_PATH: Qwen/Qwen3-ASR-1.7B
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
   FUN_ASR_MODEL_PATH: FunAudioLLM/Fun-ASR-Nano-2512-hf
@@ -197,6 +198,7 @@ jobs:
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
             "${COSYVOICE3_MODEL_PATH}" \
+            "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             "${WHISPER_ASR_MODEL_PATH}"
 
@@ -296,26 +298,27 @@ jobs:
           RUN_MOSS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-moss') }}
           RUN_QWEN3_TTS_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-tts') }}
           RUN_COSYVOICE3_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-cosyvoice3') }}
+          RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL: ${{ contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-tts-custom-voice') }}
           TTS_CI_MODEL_OVERRIDE: ${{ github.event.inputs.tts_ci_model }}
           EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           models=(higgs moss qwen3-tts cosyvoice3)
           override="${TTS_CI_MODEL_OVERRIDE,,}"
           label_count=0
-          for flag in "${RUN_HIGGS_LABEL}" "${RUN_MOSS_LABEL}" "${RUN_QWEN3_TTS_LABEL}" "${RUN_COSYVOICE3_LABEL}"; do
+          for flag in "${RUN_HIGGS_LABEL}" "${RUN_MOSS_LABEL}" "${RUN_QWEN3_TTS_LABEL}" "${RUN_COSYVOICE3_LABEL}" "${RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL}"; do
             [[ "${flag}" == "true" ]] && label_count=$((label_count + 1))
           done
           if [[ "${label_count}" -gt 1 ]]; then
-            echo "::error::run-higgs, run-moss, run-qwen3-tts and run-cosyvoice3 are mutually exclusive"
+            echo "::error::run-higgs, run-moss, run-qwen3-tts, run-cosyvoice3 and run-qwen3-tts-custom-voice are mutually exclusive"
             exit 1
           fi
 
           selection_digest=""
           if [[ -n "${override}" ]]; then
             case "${override}" in
-              higgs|moss|qwen3-tts|cosyvoice3) ;;
+              higgs|moss|qwen3-tts|cosyvoice3|qwen3-tts-custom-voice) ;;
               *)
-                echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs, moss, qwen3-tts or cosyvoice3"
+                echo "::error::unsupported tts_ci_model=${TTS_CI_MODEL_OVERRIDE}; expected higgs, moss, qwen3-tts, cosyvoice3 or qwen3-tts-custom-voice"
                 exit 1
                 ;;
             esac
@@ -333,6 +336,9 @@ jobs:
           elif [[ "${RUN_COSYVOICE3_LABEL}" == "true" ]]; then
             selected_model="cosyvoice3"
             selection_reason="run-cosyvoice3_label"
+          elif [[ "${RUN_QWEN3_TTS_CUSTOM_VOICE_LABEL}" == "true" ]]; then
+            selected_model="qwen3-tts-custom-voice"
+            selection_reason="run-qwen3-tts-custom-voice_label"
           else
             selection_digest="$(printf "%s" "${GITHUB_RUN_ID}" | sha256sum | awk '{print $1}')"
             selection_index=$((16#${selection_digest: -1} % ${#models[@]}))

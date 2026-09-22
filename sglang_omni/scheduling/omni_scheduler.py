@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from itertools import islice
 from typing import Any, Callable
 
@@ -162,6 +163,10 @@ class NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
+
+
+# note (luojiaxuan): a build done this soon joins the next batch, not the one after.
+_REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
 class OmniScheduler:
@@ -886,6 +891,7 @@ class OmniScheduler:
         recv_reqs, rejected = self.stage_request_build_payloads(recv_reqs)
         for payload in rejected:
             self.reject_queue_full(payload)
+        submitted_build = False
         for payload in recv_reqs:
             req_id = payload.request_id
             with self._request_admission_lock:
@@ -933,6 +939,7 @@ class OmniScheduler:
                     future = request_build_executor.submit(
                         self.run_request_builder, payload, active_stage
                     )
+                    submitted_build = True
                     self._pending_request_builds[req_id] = (
                         payload,
                         pending_stream_done,
@@ -951,6 +958,14 @@ class OmniScheduler:
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
+        if submitted_build:
+            # note (luojiaxuan): the drain admits from the head of the pending
+            # builds and stops at the first unfinished one, so only the head
+            # decides whether waiting admits anything.
+            with self._request_admission_lock:
+                head = next(iter(self._pending_request_builds.values()), None)
+            if head is not None:
+                wait_futures([head[2]], timeout=_REQUEST_BUILD_ADMISSION_WAIT_S)
         self.drain_request_build_results()
         self.drain_request_admission_results()
 
