@@ -131,3 +131,7 @@ def test_rejects_invalid_values_eagerly():
         manager.merge_config([("tts_engine.factory.prefill_coalesce_requests", "-1")])
     with pytest.raises(ValueError, match="prefill_coalesce_wait_ms"):
         manager.merge_config([("tts_engine.factory.prefill_coalesce_wait_ms", "0")])
+    with pytest.raises(ValueError, match="prefill_coalesce_min_expected_arrivals"):
+        manager.merge_config(
+            [("tts_engine.factory.prefill_coalesce_min_expected_arrivals", "-1")]
+        )
