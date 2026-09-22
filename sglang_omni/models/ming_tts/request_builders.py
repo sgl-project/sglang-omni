@@ -55,7 +55,7 @@ def preprocess_ming_tts_payload(
         text_value = str(value).strip()
         return text_value or None
 
-    def has_non_empty_value(source: dict[str, Any], field: str) -> bool:
+    def has_non_empty_value(source: Mapping[str, object], field: str) -> bool:
         if field not in source:
             return False
         value = source[field]
@@ -67,7 +67,7 @@ def preprocess_ming_tts_payload(
             return bool(value)
         return True
 
-    def explicit_generation_fields(tts_source: dict[str, Any]) -> set[str]:
+    def explicit_generation_fields(tts_source: Mapping[str, object]) -> set[str]:
         raw = tts_source.get("explicit_generation_params")
         if isinstance(raw, (list, tuple, set)):
             return {str(field) for field in raw}

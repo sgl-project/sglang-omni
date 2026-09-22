@@ -27,7 +27,7 @@ import os
 import threading
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 import torchaudio.functional as F_audio
@@ -115,7 +115,7 @@ def _reference_audio_cache_key(reference_audio: object) -> str | None:
     return hash_media_item(raw)
 
 
-def _without_consumed_reference_media(inputs: Any) -> Any:
+def _without_consumed_reference_media(inputs: object) -> object:
     """Return inputs with the reference media preprocessing already consumed."""
     if not isinstance(inputs, dict):
         return inputs

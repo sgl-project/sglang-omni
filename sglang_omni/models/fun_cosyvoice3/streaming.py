@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 import torch
 
@@ -16,7 +16,7 @@ STREAM_SCALE_FACTOR = 2
 TOKEN_MAX_HOP_LEN = TOKEN_HOP_LEN * 4
 
 
-def prompt_token_len(prompt_token: Any) -> int:
+def prompt_token_len(prompt_token: object) -> int:
     """Time-axis length of a Flow prompt-token tensor, or 0 when missing."""
     if prompt_token is None:
         return 0
@@ -144,7 +144,7 @@ def pad_flow_prompt_to_hop(
     )
 
 
-def as_flow_prompt_token(value: Any | None) -> torch.Tensor:
+def as_flow_prompt_token(value: object) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 0, dtype=torch.int32)
     token = torch.as_tensor(value, dtype=torch.int32)
@@ -158,7 +158,7 @@ def as_flow_prompt_token(value: Any | None) -> torch.Tensor:
     return token
 
 
-def as_flow_prompt_feat(value: Any | None) -> torch.Tensor:
+def as_flow_prompt_feat(value: object) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 0, 80)
     feat = torch.as_tensor(value)
@@ -172,7 +172,7 @@ def as_flow_prompt_feat(value: Any | None) -> torch.Tensor:
     return feat
 
 
-def as_flow_embedding(value: Any | None) -> torch.Tensor:
+def as_flow_embedding(value: object) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 192)
     embedding = torch.as_tensor(value)

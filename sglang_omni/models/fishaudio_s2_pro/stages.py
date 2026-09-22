@@ -194,7 +194,7 @@ class _FishReferenceInput:
     media_type: str | None = None
 
 
-def _fish_reference_payload_is_supported(ref_data: dict[str, Any]) -> bool:
+def _fish_reference_payload_is_supported(ref_data: Mapping[str, object]) -> bool:
     return (
         ref_data.get("audio_path") is not None
         or ref_data.get("bytes") is not None
