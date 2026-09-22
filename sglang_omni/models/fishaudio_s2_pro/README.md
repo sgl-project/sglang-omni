@@ -103,7 +103,7 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 The CUDA rows are official reference results and are directional comparisons;
 the accelerator and software stacks differ from the NPU run.
 
-## Apple Silicon Support (Experimental)
+## Apple Silicon Support
 
 S2-Pro also runs on Apple Metal, through a native MLX path
 (`SGLANG_USE_MLX=1`) or a Torch/MPS compatibility path (`SGLANG_USE_MLX=0`).
