@@ -28,6 +28,8 @@ Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API serve
 
 - Python ≥ 3.10, and an Intel GPU driver (`/dev/dri/renderD*` present).
 - `setuptools` ≥ 77.0.0 in the target environment (see the note above).
+- FFmpeg built with VAAPI support. TorchCodec-XPU assumes VAAPI is available;
+  verify the build with `ffmpeg -hide_banner -hwaccels | grep -x vaapi`.
 - The **PyTorch XPU stack** and an **XPU SGLang build** — reuse an existing working
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
@@ -69,6 +71,14 @@ Or do it manually (the same steps the script automates):
 ```bash
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
+# Ubuntu example; the selected FFmpeg build must include VAAPI.
+apt-get update && apt-get install -y ffmpeg libva2 vainfo
+ffmpeg -hide_banner -hwaccels | grep -x vaapi
+# Install CUDA Triton metadata first, then make triton-xpu the shared module
+# implementation. The project install installs openai-whisper last.
+pip install triton==3.7.1
+pip install --force-reinstall --no-deps triton-xpu==3.7.2 \
+  --extra-index-url https://download.pytorch.org/whl/xpu
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
 ```
@@ -95,6 +105,11 @@ selects `+xpu`.
 ## Verify
 
 ```bash
+# FFmpeg is compiled with VAAPI, and the Intel media driver can initialize
+# against the container's mapped /dev/dri devices.
+ffmpeg -hide_banner -hwaccels | grep -x vaapi
+vainfo --display drm --device /dev/dri/renderD128
+
 # import works from anywhere now (package installed, not just cwd-on-path)
 python -c "import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"
 which sgl-omni

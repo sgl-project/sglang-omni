@@ -38,7 +38,8 @@ dependencies = [
     "torch==2.13.0+xpu",
     "torchvision==0.28.0+xpu",
     "torchaudio==2.11.0+xpu",
-    "torchcodec==0.13.0",
+    "torchcodec==0.15.0",
+    "torchcodec-xpu==0.15.0",
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
@@ -67,6 +68,11 @@ dependencies = [
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
 
+    # --- MiniCPM-o ---------------------------------------------------------
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
+    "openai-whisper==20250625",
+
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML
     "x-transformers",         # AuK DiT rotary embeddings
@@ -77,13 +83,12 @@ dependencies = [
 eval = [
     "s3prl>=0.4.18",
     "jiwer",
-    "openai-whisper==20250625",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
 # `all` aliases `eval`.
 all = [
-    "s3prl>=0.4.18", "jiwer", "openai-whisper==20250625",
+    "s3prl>=0.4.18", "jiwer",
     "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
 ]
 

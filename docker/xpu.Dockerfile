@@ -9,6 +9,8 @@ FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
 ARG SGLANG_XPU_BRANCH=v0.5.20
+ARG TRITON_VERSION=3.7.1
+ARG TRITON_XPU_VERSION=3.7.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
@@ -71,12 +73,17 @@ RUN add-apt-repository -y ppa:kobuk-team/intel-graphics \
         intel-igc-core-2 intel-igc-opencl-2 \
     && rm -rf /var/lib/apt/lists/*
 
+# TorchCodec-XPU requires an FFmpeg build with VAAPI support. Device/driver
+# initialization is checked at runtime because build stages do not expose /dev/dri.
+RUN ffmpeg -hide_banner -hwaccels 2>/dev/null | grep -qx vaapi
+
 # Minors differ on purpose: the XPU channel ships no torchaudio newer than 2.11+xpu.
 RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
         torch==2.13.0+xpu \
         torchvision==0.28.0+xpu \
         torchaudio==2.11.0+xpu \
-        torchcodec==0.13.0
+        torchcodec==0.15.0 \
+        torchcodec-xpu==0.15.0
 
 # SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
 # download torch again and compile Rust extensions this image never loads, so it
@@ -89,6 +96,13 @@ RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} s
 
 # --no-deps avoids installing NVIDIA Triton over the XPU Triton stack.
 RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
+
+# openai-whisper requires the CUDA triton distribution by package metadata.
+# Install it first, then overwrite the shared Python module with triton-xpu.
+# The sglang-omni install below installs openai-whisper last.
+RUN pip install --no-cache-dir triton==${TRITON_VERSION} \
+    && pip install --no-cache-dir --force-reinstall --no-deps \
+        --extra-index-url ${TORCH_XPU_INDEX} triton-xpu==${TRITON_XPU_VERSION}
 
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
