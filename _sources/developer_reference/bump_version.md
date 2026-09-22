@@ -294,7 +294,7 @@ any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
 GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`; `run-fun-asr`, `run-qwen3-asr`,
+`run-moss`, `run-qwen3-tts`, `run-cosyvoice3`; `run-fun-asr`, `run-qwen3-asr`,
 `run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
