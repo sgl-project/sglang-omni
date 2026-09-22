@@ -228,6 +228,7 @@ def make_qwen3_asr_scheduler_adapters(
             else ([], "")
         )
         temperature = float(params.get("temperature") or 0.0)
+        repetition_penalty = float(params.get("repetition_penalty", 1.0))
         if greedy_only and temperature != 0.0:
             raise ValueError(
                 "Qwen3-ASR Apple backend currently supports only greedy decoding; "
@@ -404,12 +405,14 @@ def make_qwen3_asr_scheduler_adapters(
 
         logger.debug(
             f"[qwen3-asr] sampling temp={temperature} "
+            f"repetition_penalty={repetition_penalty} "
             f"max_new_tokens={request_max_new_tokens} params={dict(params)}"
         )
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
             top_p=1.0,
+            repetition_penalty=repetition_penalty,
             stop_token_ids=[eos_token_id],
         )
         sampling_params.normalize(tokenizer=None)

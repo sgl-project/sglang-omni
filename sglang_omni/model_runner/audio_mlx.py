@@ -12,6 +12,16 @@ import torch
 class AudioMlxModelRunner:
     model_name = "Audio ASR"
 
+    def _apply_audio_decode_constraints(
+        self,
+        logits: mx.array,
+        req_ids: list[str],
+        pending_tokens: mx.array | None = None,
+    ) -> mx.array:
+        """Let model-specific runners adjust logits before greedy selection."""
+        del req_ids, pending_tokens
+        return logits
+
     @classmethod
     def audio_item(cls, req: Any) -> Any:
         mm_inputs = req.multimodal_inputs
@@ -122,7 +132,10 @@ class AudioMlxModelRunner:
         # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
         # needs_logits is always true; retain the argument for the SGLang API.
         del needs_logits
-        lazy_token = mx.argmax(logits[:, -1, :], axis=-1)
+        constrained_logits = self._apply_audio_decode_constraints(
+            logits[:, -1, :], [req_id]
+        )
+        lazy_token = mx.argmax(constrained_logits, axis=-1)
         return MlxPendingPrefill(
             lazy_token=lazy_token,
             cache=cache,
@@ -164,7 +177,8 @@ class AudioMlxModelRunner:
             dtype=mx.int32,
         )
         lazy_logits = self._decode_with_native_cache([cache], [input_ids])
-        lazy_tokens = mx.argmax(lazy_logits, axis=-1)
+        constrained_logits = self._apply_audio_decode_constraints(lazy_logits, [req_id])
+        lazy_tokens = mx.argmax(constrained_logits, axis=-1)
         return MlxPendingDecode(
             lazy_tokens=lazy_tokens,
             req_ids=[req_id],
@@ -188,7 +202,12 @@ class AudioMlxModelRunner:
             prev.caches,
             [prev.lazy_tokens[:, None]],
         )
-        lazy_tokens = mx.argmax(lazy_logits, axis=-1)
+        constrained_logits = self._apply_audio_decode_constraints(
+            lazy_logits,
+            prev.req_ids,
+            pending_tokens=prev.lazy_tokens,
+        )
+        lazy_tokens = mx.argmax(constrained_logits, axis=-1)
         return MlxPendingDecode(
             lazy_tokens=lazy_tokens,
             req_ids=prev.req_ids,
