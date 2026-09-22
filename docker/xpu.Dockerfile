@@ -88,10 +88,8 @@ RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
 # SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
 # download torch again and compile Rust extensions this image never loads, so it
 # builds against the torch installed above, without setuptools-rust.
-RUN git clone ${SGLANG_XPU_REPO} sglang \
-    && cd sglang \
-    && git checkout --detach ${SGLANG_XPU_REVISION} \
-    && cd python \
+RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} sglang \
+    && cd sglang/python \
     && cp pyproject_xpu.toml pyproject.toml \
     && pip install --no-cache-dir 'setuptools>=77.0.0' setuptools-scm wheel \
     && pip install --no-cache-dir . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
