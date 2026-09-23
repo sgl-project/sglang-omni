@@ -12,6 +12,7 @@ import torch
 import sglang_omni.models.fun_asr.configuration_fun_asr  # noqa: F401
 
 if TYPE_CHECKING:
+    from sglang_omni.models.fun_asr.request_builders import FunASRRequestData
     from sglang_omni.models.fun_asr.sglang_model import (
         FunAsrNanoForConditionalGeneration,
     )
@@ -130,7 +131,7 @@ def create_sglang_fun_asr_executor(
     request_build_max_pending: int | None = 32,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
-) -> "OmniScheduler":
+) -> OmniScheduler[FunASRRequestData]:
     if pre_lm_max_batch_size < 1:
         raise ValueError(
             f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
@@ -179,7 +180,7 @@ def create_sglang_fun_asr_executor(
     )
 
 
-def create_fun_asr_executor(*args, **kwargs) -> "OmniScheduler":
+def create_fun_asr_executor(*args, **kwargs) -> OmniScheduler[FunASRRequestData]:
     return create_sglang_fun_asr_executor(*args, **kwargs)
 
 

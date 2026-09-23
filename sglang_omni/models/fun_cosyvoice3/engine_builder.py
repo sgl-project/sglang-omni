@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
+class FunCosyVoice3EngineBuilder(TtsEngineBuilder["CosyVoice3SGLangRequestData"]):
     model_name = "Fun-CosyVoice3"
     context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
@@ -295,5 +295,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_cosyvoice3_request
 
-    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self, scheduler: OmniScheduler[CosyVoice3SGLangRequestData], model_runner: Any
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

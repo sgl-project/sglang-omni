@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class FunASREngineBuilder(AsrEngineBuilder):
+class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
     model_name = "Fun-ASR"
     model_arch_override = "FunAsrNanoForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from sglang_omni.models.zonos2.components.streaming_vocoder import (
         Zonos2StreamingVocoderScheduler,
     )
+    from sglang_omni.models.zonos2.request_builders import Zonos2SGLangRequestData
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -247,7 +248,7 @@ def create_sglang_omni_tts_engine_executor(
     max_running_requests: int = 16,
     cuda_graph_max_bs: int = 16,
     server_args_overrides: dict | None = None,
-) -> "OmniScheduler":
+) -> OmniScheduler[Zonos2SGLangRequestData]:
     from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
 
     return Zonos2EngineBuilder(

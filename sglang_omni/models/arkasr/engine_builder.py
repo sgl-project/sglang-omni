@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ArkasrEngineBuilder(AsrEngineBuilder):
+class ArkasrEngineBuilder(AsrEngineBuilder["ArkASRRequestData"]):
     model_name = "ARK-ASR"
     model_arch_override = "ArkasrForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True

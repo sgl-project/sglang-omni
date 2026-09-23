@@ -148,7 +148,7 @@ def _resolve_encoder_graph_buckets(
     return tuple(sorted(resolved))
 
 
-class WhisperASREngineBuilder(AsrEngineBuilder):
+class WhisperASREngineBuilder(AsrEngineBuilder["WhisperASRRequestData"]):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True

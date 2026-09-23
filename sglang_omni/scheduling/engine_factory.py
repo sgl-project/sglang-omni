@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 
@@ -38,8 +38,6 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
-
-ResultRequestT = TypeVar("ResultRequestT")
 
 
 def _normalize_context_length(value: object, *, model_name: str) -> int:
@@ -355,9 +353,10 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         raise NotImplementedError
 
     @abstractmethod
-    def make_adapters(
-        self, model: Any
-    ) -> tuple[Callable[[StagePayload], RequestDataT | DeferredAdmission] | None, Any]:
+    def make_adapters(self, model: Any) -> tuple[
+        Callable[[StagePayload], RequestDataT | DeferredAdmission] | None,
+        Callable[[RequestDataT], object] | None,
+    ]:
         raise NotImplementedError
 
     def _build_runtime(
@@ -417,7 +416,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         request_builder: (
             Callable[[StagePayload], RequestDataT | DeferredAdmission] | None
         ),
-        result_adapter: Callable[[ResultRequestT], object] | None,
+        result_adapter: Callable[[RequestDataT], object] | None,
         extra_scheduler_kwargs: Mapping[str, object],
     ) -> "OmniScheduler[RequestDataT]":
         from sglang_omni.scheduling import omni_scheduler
@@ -520,7 +519,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
         request_builder: (
             Callable[[StagePayload], RequestDataT | DeferredAdmission] | None
         ),
-        result_adapter: Callable[[ResultRequestT], object] | None,
+        result_adapter: Callable[[RequestDataT], object] | None,
     ) -> "OmniScheduler[RequestDataT]":
         return self._make_scheduler(
             model_worker=model_worker,

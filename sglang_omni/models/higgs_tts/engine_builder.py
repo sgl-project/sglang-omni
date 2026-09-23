@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class HiggsTtsEngineBuilder(TtsEngineBuilder):
+class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
     model_name = "Higgs TTS"
     context_length = 4096
     supports_breakable_prefill_cuda_graph = True
@@ -183,5 +183,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
-    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self, scheduler: OmniScheduler[HiggsSGLangRequestData], model_runner: Any
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

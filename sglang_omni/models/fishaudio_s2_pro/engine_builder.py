@@ -67,7 +67,7 @@ def _resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
     return backend
 
 
-class FishS2ProEngineBuilder(TtsEngineBuilder):
+class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangRequestData]):
     model_name = "FishAudio S2-Pro"
     context_length = 4096
 

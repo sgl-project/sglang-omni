@@ -41,7 +41,7 @@ def _is_truthy(value: object) -> bool:
     return False
 
 
-class MingTtsEngineBuilder(TtsEngineBuilder):
+class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
     model_name = "Ming-Omni-TTS"
     context_length = 0
 

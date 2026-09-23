@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
         FunCosyVoice3StreamingVocoderScheduler,
     )
+    from sglang_omni.models.fun_cosyvoice3.request_builders import (
+        CosyVoice3SGLangRequestData,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
@@ -1227,7 +1230,7 @@ def create_sglang_tts_engine_executor(
     server_args_overrides: Mapping[str, object] | None = None,
     onnx_intra_op_threads: int = 16,
     token_hop_len: int = TOKEN_HOP_LEN,
-) -> OmniScheduler:
+) -> OmniScheduler[CosyVoice3SGLangRequestData]:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
     )

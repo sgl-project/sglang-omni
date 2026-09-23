@@ -66,7 +66,7 @@ def _is_truthy(value: object) -> bool:
 QWEN3_TTS_PREFILL_CUDA_GRAPH_BS = (1,) + tuple(build_default_prefill_cuda_graph_bs(512))
 
 
-class Qwen3TtsEngineBuilder(TtsEngineBuilder):
+class Qwen3TtsEngineBuilder(TtsEngineBuilder["Qwen3TTSSGLangRequestData"]):
     model_name = "Qwen3-TTS"
     context_length = 8192
     model_arch_override = "Qwen3TTSTalker"
@@ -221,7 +221,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler, model_runner: object
+        self, scheduler: OmniScheduler[Qwen3TTSSGLangRequestData], model_runner: object
     ) -> None:
         del model_runner
         schedule = get_schedule()

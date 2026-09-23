@@ -25,6 +25,7 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 
 if TYPE_CHECKING:
     from sglang_omni.models.voxtral_tts.audio_tokenizer import VoxtralTTSAudioTokenizer
+    from sglang_omni.models.voxtral_tts.request_builders import VoxtralSGLangRequestData
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ def create_generation_executor(
     gpu_id: int | None = None,
     max_new_tokens: int = 4096,
     server_args_overrides: Mapping[str, object] | None = None,
-) -> "OmniScheduler":
+) -> OmniScheduler[VoxtralSGLangRequestData]:
     """Factory for the SGLang-backed AR generation stage."""
     del max_new_tokens
     from sglang_omni.models.voxtral_tts.pipeline.engine_builder import (

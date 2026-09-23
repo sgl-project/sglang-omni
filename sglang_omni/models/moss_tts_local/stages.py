@@ -58,6 +58,9 @@ if TYPE_CHECKING:
         MossLoadedProcessor,
         MossLocalReferences,
     )
+    from sglang_omni.models.moss_tts_local.request_builders import (
+        MossTTSLocalSGLangRequestData,
+    )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -625,7 +628,7 @@ def create_sglang_tts_engine_executor(
     total_gpu_memory_fraction: float | None = None,
     process_total_gpu_memory_fraction: float | None = None,
     codec_mem_reserve: float = 0.0,
-) -> OmniScheduler:
+) -> OmniScheduler[MossTTSLocalSGLangRequestData]:
     from sglang_omni.models.moss_tts_local.engine_builder import (
         MossTtsLocalEngineBuilder,
     )

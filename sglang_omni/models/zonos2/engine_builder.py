@@ -126,7 +126,7 @@ def _cuda_graph_buckets(max_bs: int) -> list[int]:
     return bs
 
 
-class Zonos2EngineBuilder(TtsEngineBuilder):
+class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
     model: Zonos2SGLangModel | None
 
     model_name = "ZONOS2"
@@ -263,5 +263,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
     def extra_scheduler_kwargs(self) -> dict[str, bool]:
         return {"enable_async_decode": self.async_decode}
 
-    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self, scheduler: OmniScheduler[Zonos2SGLangRequestData], model_runner: Any
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

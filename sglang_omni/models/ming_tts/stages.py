@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         AudioVAE,
     )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
+    from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
     from sglang_omni.models.ming_tts.streaming_vocoder import (
         MingTTSStreamingVocoderScheduler,
     )
@@ -135,7 +136,7 @@ def create_sglang_tts_engine_executor(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-) -> "OmniScheduler":
+) -> OmniScheduler[MingTTSSGLangRequestData]:
     from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 
     user_overrides = dict(server_args_overrides or {})
@@ -161,7 +162,9 @@ def create_sglang_tts_engine_executor(
     )
 
 
-def create_tts_engine_executor(*args, **kwargs) -> "OmniScheduler":
+def create_tts_engine_executor(
+    *args, **kwargs
+) -> OmniScheduler[MingTTSSGLangRequestData]:
     return create_sglang_tts_engine_executor(*args, **kwargs)
 
 

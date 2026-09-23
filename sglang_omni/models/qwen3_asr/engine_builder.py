@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class Qwen3ASREngineBuilder(AsrEngineBuilder):
+class Qwen3ASREngineBuilder(AsrEngineBuilder["Qwen3ASRRequestData"]):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = True
@@ -235,7 +235,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self,
         model_worker: ModelWorker | MlxTpModelWorker,
         output_proc: SGLangOutputProcessor,
-    ) -> ModelRunner:
+    ) -> ModelRunner[Qwen3ASRRequestData]:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
@@ -432,7 +432,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         return self._torch_mps_model_runner.abort_request
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler, model_runner: object
+        self, scheduler: OmniScheduler[Qwen3ASRRequestData], model_runner: object
     ) -> None:
         del model_runner
         self._should_wait_for_encode = scheduler.request_build_queue_fits_workers

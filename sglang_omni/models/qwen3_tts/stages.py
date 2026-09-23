@@ -38,6 +38,7 @@ from sglang_omni.utils.json import JsonValue
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSTokenizer
 
+    from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ def create_sglang_tts_engine_executor(
     reference_encoder_cuda_graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
-) -> "OmniScheduler":
+) -> OmniScheduler[Qwen3TTSSGLangRequestData]:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
     return Qwen3TtsEngineBuilder(

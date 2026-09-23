@@ -38,6 +38,7 @@ from sglang_omni.models.nemotron_voicechat.talker_scheduler import (
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 TALKER_SPEAKER = "Aria"
 TALKER_PROMPT_FRAMES = 37
@@ -94,7 +95,7 @@ def _talker_config(source: Path) -> dict:
     }
 
 
-class _VoiceChatEngineBuilder(TtsEngineBuilder):
+class _VoiceChatEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     scheduler_class: type
 
     def __init__(self, *, max_running_requests: int = 1) -> None:

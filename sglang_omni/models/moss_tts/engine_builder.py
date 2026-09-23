@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.types import RequestOutput
 
 
-class MossTtsEngineBuilder(TtsEngineBuilder):
+class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
     model_name = "MOSS-TTS"
     context_length = MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     model_arch_override = "MossTTSDelaySGLangModel"

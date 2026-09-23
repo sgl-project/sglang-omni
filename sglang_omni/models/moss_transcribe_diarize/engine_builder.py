@@ -34,7 +34,9 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.types import RequestOutput
 
 
-class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
+class MossTranscribeDiarizeEngineBuilder(
+    AsrEngineBuilder["MossTranscribeDiarizeRequestData"]
+):
     model_name = "MOSS-Transcribe-Diarize"
     model_arch_override = "MossTranscribeDiarizeForConditionalGeneration"
     supports_breakable_prefill_cuda_graph = (

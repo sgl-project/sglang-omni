@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     )
 
 
-class VoxtralTtsEngineBuilder(TtsEngineBuilder):
+class VoxtralTtsEngineBuilder(TtsEngineBuilder["VoxtralSGLangRequestData"]):
     model_name = "Voxtral TTS"
     context_length = 8192
 

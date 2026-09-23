@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     )
 
 
-class MossTtsLocalEngineBuilder(TtsEngineBuilder):
+class MossTtsLocalEngineBuilder(TtsEngineBuilder["MossTTSLocalSGLangRequestData"]):
     model_name = "MOSS-TTS Local"
     context_length = MOSS_TTS_DEFAULT_CONTEXT_LENGTH
     model_arch_override = "MossTTSLocalSGLangModel"
@@ -208,5 +208,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
-    def post_scheduler_setup(self, scheduler: OmniScheduler, model_runner: Any) -> None:
+    def post_scheduler_setup(
+        self, scheduler: OmniScheduler[MossTTSLocalSGLangRequestData], model_runner: Any
+    ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)
