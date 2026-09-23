@@ -274,6 +274,45 @@ def test_a_replicated_tp_process_is_skipped_not_rejected(tmp_path) -> None:
     assert plan.follower_process_names == {"gen@r1"}
 
 
+def test_replicated_non_engine_process_keeps_loading_normally(tmp_path, caplog) -> None:
+    config = _make_config(
+        tmp_path,
+        stages=[
+            _engine_stage(),
+            StageConfig(
+                name="vocoder",
+                process="vocoder",
+                factory_path=f"{__name__}.noop_factory",
+                gpu=0,
+                terminal=True,
+            ),
+        ],
+        processes={
+            "gen": ProcessConfig(num_replicas=2, replica_devices=[0, 0]),
+            "vocoder": ProcessConfig(num_replicas=2, replica_devices=[0, 0]),
+        },
+    )
+    specs = [
+        _spec("gen@r0", stage_name="engine@r0", gpu_id=0),
+        _spec("gen@r1", stage_name="engine@r1", gpu_id=0),
+        _spec("vocoder@r0", stage_name="vocoder@r0", gpu_id=0),
+        _spec("vocoder@r1", stage_name="vocoder@r1", gpu_id=0),
+    ]
+
+    with caplog.at_level("INFO", logger="sglang_omni.pipeline.weight_share"):
+        plan = _plan(config, specs, tmp_path)
+
+    assert plan is not None
+    (group,) = plan.groups
+    assert group.logical_process == "gen"
+    assert group.leader == "gen@r0"
+    assert group.followers == ("gen@r1",)
+    assert plan.follower_process_names == {"gen@r1"}
+    for name in ("vocoder@r0", "vocoder@r1"):
+        assert plan.env_by_process[name] == {ENV_WEIGHT_SHARE_COMPAT: "1"}
+    assert "process 'vocoder': no SGLang engine stage" in caplog.text
+
+
 def test_cpu_only_replicas_are_not_a_sharing_group(tmp_path) -> None:
     config = _make_config(
         tmp_path,
