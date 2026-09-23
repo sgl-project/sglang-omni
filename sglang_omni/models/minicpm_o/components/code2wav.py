@@ -35,6 +35,7 @@ class MiniCPMOCode2Wav(nn.Module):
         dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
+        enable_flow_variable_length: bool = False,
     ) -> None:
         super().__init__()
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
@@ -65,6 +66,9 @@ class MiniCPMOCode2Wav(nn.Module):
             self.token2wav = Token2Wav(
                 Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
             )
+        self.token2wav.flow.decoder.estimator.enable_variable_length = (
+            enable_flow_variable_length
+        )
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
