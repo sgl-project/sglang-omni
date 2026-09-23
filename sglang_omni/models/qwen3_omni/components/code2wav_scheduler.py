@@ -26,7 +26,7 @@ from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.event_recorder import get_recorder as _get_recorder
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot

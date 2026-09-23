@@ -20,7 +20,7 @@ from sglang_omni.models.minicpm_o.routing import (
     payload_with_state,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 if TYPE_CHECKING:

@@ -12,7 +12,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable
 
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 

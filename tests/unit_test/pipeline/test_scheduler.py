@@ -28,7 +28,7 @@ from sglang.srt.runtime_context import get_context
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler

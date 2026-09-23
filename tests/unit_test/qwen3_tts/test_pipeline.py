@@ -56,7 +56,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,

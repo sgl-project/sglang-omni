@@ -22,7 +22,7 @@ from sglang.srt.runtime_context import get_schedule
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 

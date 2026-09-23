@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 

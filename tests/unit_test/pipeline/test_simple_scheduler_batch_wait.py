@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Any
 
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
 WINDOW_MS = 200

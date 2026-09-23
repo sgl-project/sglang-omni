@@ -29,7 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     set_cosyvoice3_preprocessing_context,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 

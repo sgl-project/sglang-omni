@@ -39,7 +39,7 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
     QwenTalkerScheduler,
     configure_talker_server_args,
 )
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from tests.unit_test.fixtures.qwen_fakes import FakeQwenTokenizer

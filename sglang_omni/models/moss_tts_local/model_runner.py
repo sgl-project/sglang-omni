@@ -14,7 +14,7 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     MOSS_STREAM_TRANSPORT_BATCH_FRAMES,
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
 

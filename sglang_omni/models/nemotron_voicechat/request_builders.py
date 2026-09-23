@@ -8,7 +8,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 logger = logging.getLogger(__name__)

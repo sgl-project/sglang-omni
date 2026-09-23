@@ -19,7 +19,7 @@ from sglang_omni.models.ming_tts.audio_decode import (
 from sglang_omni.models.ming_tts.payload_types import load_ming_tts_state
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 

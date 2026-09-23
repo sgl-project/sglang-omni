@@ -17,6 +17,7 @@ from sglang_omni.pipeline.replicas import (
     RoundRobinBindingPolicy,
     assign_replica_bindings,
 )
+from sglang_omni.pipeline.sessions import CoordinatorSessions
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import (
     AbortMessage,
@@ -46,7 +47,7 @@ class AdminPendingOperation:
     future: asyncio.Future | None = None
 
 
-class Coordinator:
+class Coordinator(CoordinatorSessions):
     """Central coordinator for the multi-stage pipeline.
 
     Responsibilities:
@@ -86,6 +87,7 @@ class Coordinator:
                 are already tracked. Intended as generation capacity
                 (max_running_requests + max_queued_requests).
         """
+        super().__init__()
         self.entry_stage = entry_stage
         self._terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
@@ -148,6 +150,7 @@ class Coordinator:
 
     async def stop(self) -> None:
         """Stop the coordinator."""
+        await self.stop_sessions()
         self._running = False
         self.control_plane.close()
         logger.info("Coordinator stopped")
@@ -173,10 +176,13 @@ class Coordinator:
                 )
         self._requests.clear()
         self._partial_results.clear()
+        # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
+        await self.fail_sessions(message)
 
     async def shutdown_stages(self, stage_names: Sequence[str] | None = None) -> None:
         """Send shutdown to registered stages, or only to *stage_names*."""
         selected = None if stage_names is None else set(stage_names)
+        await self.shutdown_stage_sessions(selected)
         for name, info in self._stages.items():
             if selected is not None and name not in selected:
                 continue
@@ -351,6 +357,7 @@ class Coordinator:
 
     async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
         """Submit a request to the pipeline and wait for completion."""
+        self.reject_session_metadata(request)
         await self.submit_request(request_id, request)
 
         future = self._completion_futures[request_id]
@@ -366,6 +373,7 @@ class Coordinator:
         """Submit a request and yield stream events until completion."""
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
 
+        self.reject_session_metadata(request)
         try:
             await self.submit_request(request_id, request, stream_queue=queue)
             expected_terminal_stages = self.expected_terminal_stages(request_id)
@@ -408,6 +416,10 @@ class Coordinator:
         request: OmniRequest | Any,
         *,
         stream_queue: asyncio.Queue[CompleteMessage | StreamMessage] | None = None,
+        target_stage: str | None = None,
+        terminal_stages: set[str] | None = None,
+        replica_bindings: dict[str, int] | None = None,
+        should_bypass_admission: bool = False,
     ) -> None:
         """Submit a request without waiting for completion."""
         if self._fatal_error is not None:
@@ -415,7 +427,11 @@ class Coordinator:
         if self.request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
 
-        if self.max_in_flight is not None and len(self._requests) >= self.max_in_flight:
+        if (
+            not should_bypass_admission
+            and self.max_in_flight is not None
+            and len(self._requests) >= self.max_in_flight
+        ):
             logger.warning(
                 "Rejecting request %s before pipeline submit: in-flight cap "
                 "(max_in_flight=%s)",
@@ -427,11 +443,12 @@ class Coordinator:
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
 
-        replica_bindings = assign_replica_bindings(
-            self._logical_process_plan, self._binding_policy, request_id
-        )
+        if replica_bindings is None:
+            replica_bindings = assign_replica_bindings(
+                self._logical_process_plan, self._binding_policy, request_id
+            )
         bindings = replica_bindings or {}
-        entry_instance = (
+        entry_instance = target_stage or (
             self._replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
             if self._replica_topology.is_replicated(self.entry_stage)
             else self.entry_stage
@@ -445,7 +462,11 @@ class Coordinator:
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
-            terminal_stages=self.resolve_terminal_stages(request),
+            terminal_stages=(
+                self.resolve_terminal_stages(request)
+                if terminal_stages is None
+                else terminal_stages
+            ),
         )
 
         # Create future for completion
@@ -483,13 +504,11 @@ class Coordinator:
         if info is not None:
             info.state = RequestState.RUNNING
 
-        logger.info(
-            "Coordinator submitted req=%s to %s at %s bindings=%s",
-            request_id,
-            entry_instance,
-            entry_info.control_endpoint,
-            replica_bindings,
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Coordinator submitted req={request_id} to {entry_instance} "
+                f"at {entry_info.control_endpoint} bindings={replica_bindings}"
+            )
 
     def request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
@@ -722,6 +741,10 @@ class Coordinator:
     async def handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
         request_id = msg.request_id
+        handler = self.session_stream_handlers.get(request_id)
+        if handler is not None:
+            handler(msg)
+            return
         if request_id not in self._stream_queues:
             return
         _emit_event(

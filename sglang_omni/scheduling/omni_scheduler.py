@@ -61,7 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
     ADMIN_WEIGHTS_CHECKER,
 )
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
 
 logger = logging.getLogger(__name__)
