@@ -131,7 +131,6 @@ class FunCosyVoice3ModelRunner(ModelRunner):
 
         self.apply_repetition_penalty(logits_output, requests)
         self.apply_codec_suppress_tokens(logits_output, requests)
-        self.install_sampling_seeds(forward_batch, requests)
         sampling_info = forward_batch.sampling_info
         installed_seeds = sampling_info.sampling_seed
         rng_context = nullcontext()

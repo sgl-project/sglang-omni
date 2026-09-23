@@ -840,7 +840,8 @@ class ModelRunner:
     ) -> Any:
         self.apply_codec_suppress_tokens(logits_output, requests)
         self.process_sampling_logits(logits_output, requests)
-        self.install_sampling_seeds(forward_batch, requests)
+        if forward_batch.sampling_info.sampling_seed is not None:
+            self.validate_seeded_sampling_supported(forward_batch.sampling_info)
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
             self.enable_sampler_logprobs(forward_batch, len(requests))
@@ -870,25 +871,17 @@ class ModelRunner:
     def process_sampling_logits(self, logits_output: Any, requests: list) -> None:
         pass
 
-    def install_sampling_seeds(self, forward_batch: Any, requests: list) -> None:
-        """Install per-row ``seed``s onto ``sampling_info`` so SGLang routes to
-        ``multinomial_with_seed``. No-op when no request set a seed, or when a
-        subclass already installed its own (e.g. Qwen3-TTS).
-
-        Runs once per decode step. User-provided seeds are resolved once and
-        cached back onto ``sampling_params.sampling_seed``. In a mixed
-        seeded/unseeded batch the SGLang sampler is batch-wide, so unseeded rows
-        receive a request-id-derived fallback seed instead of a rank-local random
-        seed; this keeps TP ranks in sync without mutating the public request seed.
-        """
-        sampling_info = forward_batch.sampling_info
-        if sampling_info.sampling_seed is not None:
-            self.validate_seeded_sampling_supported(sampling_info)
-            return
+    def install_sampling_seeds(self, schedule_batch: Any, requests: list) -> None:
+        """Install request seeds on the scheduler-owned sampling batch."""
+        sampling_info = schedule_batch.sampling_info
         sampling_params = [sr.data.req.sampling_params for sr in requests]
         if all(sp.sampling_seed is None for sp in sampling_params):
+            sampling_info.sampling_seed = None
             return
         self.validate_seeded_sampling_supported(sampling_info)
+        if sampling_info.sampling_seed is not None:
+            if len(sampling_info.sampling_seed) == len(requests):
+                return
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed

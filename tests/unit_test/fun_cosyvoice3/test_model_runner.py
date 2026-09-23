@@ -126,7 +126,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
 ) -> None:
     from contextlib import nullcontext
 
-    sampling_info = SimpleNamespace(sampling_seed=None, is_all_greedy=True)
+    sampling_info = SimpleNamespace(sampling_seed=torch.tensor([7]), is_all_greedy=True)
     sampled_with = []
 
     class _Runner(FunCosyVoice3ModelRunner):
@@ -135,10 +135,6 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
 
         def apply_codec_suppress_tokens(self, logits_output, requests):
             del logits_output, requests
-
-        def install_sampling_seeds(self, forward_batch, requests):
-            del requests
-            forward_batch.sampling_info.sampling_seed = torch.tensor([7])
 
     runner = object.__new__(_Runner)
     runner._cosyvoice3_recent_tokens = {}

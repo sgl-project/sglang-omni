@@ -1496,6 +1496,10 @@ class OmniScheduler:
             SchedulerRequest(request_id=req.rid, data=req._omni_data)
             for req in batch.reqs
         ]
+        if self.server_args.enable_deterministic_inference:
+            self._model_runner.validate_seeded_sampling_supported(batch.sampling_info)
+        else:
+            self._model_runner.install_sampling_seeds(batch, sched_reqs)
         return SchedulerOutput(requests=sched_reqs, batch_data=batch)
 
     def emit_stream_output(self, sched_output, mr_output, skip_rids=()) -> None:
