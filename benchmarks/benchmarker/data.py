@@ -27,3 +27,7 @@ class RequestResult:
     text_ttft_s: float | None = None
     audio_chunk_count: int = 0
     first_audio_payload_bytes: int = 0
+    scheduled_s: float | None = None
+    dispatched_s: float | None = None
+    completed_s: float | None = None
+    first_audio_s: float | None = None

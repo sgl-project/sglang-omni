@@ -99,6 +99,10 @@ def find_available_port(host: str, port: int) -> int:
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # Note (Jiaxin Deng): allow a stopped server's TIME_WAIT connections,
+            # so sequential trials can reuse the same port.
+            if os.name == "posix":
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return port
     except OSError as exc:

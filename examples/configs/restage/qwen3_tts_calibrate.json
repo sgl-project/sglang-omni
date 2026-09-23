@@ -1,0 +1,31 @@
+{
+  "model_path": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "task": "tts",
+  "lang": "en",
+  "slo_rtf": 1.0,
+  "port": 8140,
+  "concurrencies": [
+    4,
+    8,
+    16,
+    32
+  ],
+  "sender_options": {
+    "voice": "Ryan",
+    "no_ref_audio": true
+  },
+  "stages": {
+    "tts_engine": {
+      "weights_gib": 3.4,
+      "kv_bytes_per_token": 20480
+    },
+    "vocoder": {
+      "weights_gib": 1.0
+    }
+  },
+  "samples": {
+    "source": "zhaochenyang20/seed-tts-eval-arrow",
+    "split": "en",
+    "max_samples": 64
+  }
+}
