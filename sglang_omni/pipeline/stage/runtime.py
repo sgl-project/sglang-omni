@@ -1894,10 +1894,22 @@ class Stage:
     async def send_failure(self, request_id: str, error: str) -> None:
         if not self.record_aborted_request_id(request_id):
             return
-        with suppress(Exception):
+        try:
             self.scheduler.abort(request_id)
-        with suppress(Exception):
+        except Exception:
+            logger.exception(
+                "Stage %s failed to abort scheduler request %s",
+                self.name,
+                request_id,
+            )
+        try:
             self._comm.cleanup(request_id)
+        except Exception:
+            logger.exception(
+                "Stage %s failed to clean communication state for request %s",
+                self.name,
+                request_id,
+            )
         try:
             if not self._owns_external_io:
                 raise RuntimeError(f"Follower stage {self.name} failed: {error}")
