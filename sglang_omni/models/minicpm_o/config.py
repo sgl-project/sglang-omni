@@ -24,6 +24,7 @@ def preprocessing_stage(*, process: str) -> StageConfig:
         name="preprocessing",
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
+        factory=FactoryArgs(max_concurrency=4),
         next=["image_encoder", "audio_encoder", "thinker"],
         route_fn=f"{PKG}.routing.resolve_preprocessing_next_stages",
         project_payload={
