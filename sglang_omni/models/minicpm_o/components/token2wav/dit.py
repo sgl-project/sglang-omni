@@ -11,12 +11,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
+from torch.nn.attention.varlen import varlen_attn
 
 TIMESTEP_MAX_PERIOD = 10000
 
 
 class MLP(torch.nn.Module):
-
     def __init__(
         self,
         in_features: int,
@@ -50,7 +50,6 @@ class MLP(torch.nn.Module):
 
 
 class Attention(torch.nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -104,13 +103,28 @@ class Attention(torch.nn.Module):
         x = self.proj_drop(x)
         return x
 
+    def forward_packed(
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor, max_length: int
+    ) -> torch.Tensor:
+        q = self.to_q(x).view(-1, self.num_heads, self.head_dim)
+        k = self.to_k(x).view(-1, self.num_heads, self.head_dim)
+        v = self.to_v(x).view(-1, self.num_heads, self.head_dim)
+        attention_dtype = q.dtype
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+        q = q.to(attention_dtype)
+        k = k.to(attention_dtype)
+        v = v.to(attention_dtype)
+        x = varlen_attn(q, k, v, cu_seqlens, cu_seqlens, max_length, max_length)
+        x = self.proj(x.reshape(-1, self.inner_dim))
+        return self.proj_drop(x)
+
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale) + shift
 
 
 class TimestepEmbedder(nn.Module):
-
     def __init__(self, hidden_size: int, frequency_embedding_size: int = 256) -> None:
         super().__init__()
         self.mlp = nn.Sequential(
@@ -147,7 +161,6 @@ class TimestepEmbedder(nn.Module):
 
 
 class Transpose(torch.nn.Module):
-
     def __init__(self, dim0: int, dim1: int) -> None:
         super().__init__()
         self.dim0 = dim0
@@ -159,7 +172,6 @@ class Transpose(torch.nn.Module):
 
 
 class CausalConv1d(torch.nn.Conv1d):
-
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
         super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size)
         self.causal_padding = (kernel_size - 1, 0)
@@ -171,7 +183,6 @@ class CausalConv1d(torch.nn.Conv1d):
 
 
 class CausalConvBlock(nn.Module):
-
     def __init__(
         self, in_channels: int, out_channels: int, kernel_size: int = 3
     ) -> None:
@@ -200,9 +211,27 @@ class CausalConvBlock(nn.Module):
             x = x * mask
         return x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        positions: torch.Tensor,
+        guarded_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        guarded_length = guarded_valid.shape[0]
+        guarded = x.new_zeros(guarded_length, x.shape[1])
+        guarded[positions] = x
+
+        guarded = self.block[1](guarded.transpose(0, 1).unsqueeze(0))
+        guarded = guarded.squeeze(0).transpose(0, 1)
+        guarded = self.block[3](guarded)
+        guarded = self.block[4](guarded)
+        guarded = guarded * guarded_valid.unsqueeze(1)
+        guarded = self.block[6](guarded.transpose(0, 1).unsqueeze(0))
+        guarded = guarded.squeeze(0).transpose(0, 1)
+        return guarded[positions]
+
 
 class DiTBlock(nn.Module):
-
     def __init__(
         self, hidden_size: int, num_heads: int, head_dim: int, mlp_ratio: float = 4.0
     ) -> None:
@@ -253,9 +282,41 @@ class DiTBlock(nn.Module):
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        c: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_length: int,
+        conv_positions: torch.Tensor,
+        conv_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        (
+            shift_msa,
+            scale_msa,
+            gate_msa,
+            shift_mlp,
+            scale_mlp,
+            gate_mlp,
+            shift_conv,
+            scale_conv,
+            gate_conv,
+        ) = self.adaLN_modulation(c).chunk(9, dim=-1)
+        x = x + gate_msa * self.attn.forward_packed(
+            modulate(self.norm1(x), shift_msa, scale_msa),
+            cu_seqlens,
+            max_length,
+        )
+        x = x + gate_conv * self.conv.forward_packed(
+            modulate(self.norm3(x), shift_conv, scale_conv),
+            conv_positions,
+            conv_valid,
+        )
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        return x
+
 
 class FinalLayer(nn.Module):
-
     def __init__(self, hidden_size: int, out_channels: int) -> None:
         super().__init__()
         self.adaLN_modulation = nn.Sequential(
@@ -272,7 +333,6 @@ class FinalLayer(nn.Module):
 
 
 class DiT(nn.Module):
-
     def __init__(
         self,
         in_channels: int,
@@ -282,10 +342,12 @@ class DiT(nn.Module):
         num_heads: int = 8,
         head_dim: int = 64,
         hidden_size: int = 256,
+        enable_variable_length: bool = False,
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.enable_variable_length = enable_variable_length
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.in_proj = nn.Linear(in_channels, hidden_size)
         self.blocks = nn.ModuleList(
@@ -334,9 +396,54 @@ class DiT(nn.Module):
             x = pack([x, cond], "b * t")[0]
         x = x.transpose(1, 2)
         attn_mask = mask.bool()
+        lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
+        if self.enable_variable_length and x.shape[0] > 2:
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                packed_input = self.in_proj(x).to(torch.bfloat16)
+                return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x, t, attn_mask)
         x = self.final_layer(x, t)
         x = x.transpose(1, 2)
         return x
+
+    def forward_packed(
+        self, x: torch.Tensor, conditioning: torch.Tensor, lengths: torch.Tensor
+    ) -> torch.Tensor:
+        batch_size, padded_length, _ = x.shape
+        valid = torch.arange(padded_length, device=x.device).unsqueeze(
+            0
+        ) < lengths.unsqueeze(1)
+        x = x[valid]
+        conditioning = torch.repeat_interleave(conditioning.squeeze(1), lengths, dim=0)
+        cu_seqlens = torch.nn.functional.pad(
+            lengths.cumsum(0, dtype=torch.int32), (1, 0)
+        )
+        max_length = padded_length
+        guard_width = self.blocks[0].conv.kernel_size - 1
+        sequence_ids = torch.repeat_interleave(
+            torch.arange(batch_size, device=x.device), lengths
+        )
+        conv_positions = (
+            torch.arange(x.shape[0], device=x.device) + (sequence_ids + 1) * guard_width
+        )
+        conv_valid = torch.zeros(
+            x.shape[0] + batch_size * guard_width,
+            device=x.device,
+            dtype=torch.bool,
+        )
+        conv_valid[conv_positions] = True
+        for block in self.blocks:
+            x = block.forward_packed(
+                x,
+                conditioning,
+                cu_seqlens,
+                max_length,
+                conv_positions,
+                conv_valid,
+            )
+        x = self.final_layer(x, conditioning)
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid] = x
+        return dense.transpose(1, 2)

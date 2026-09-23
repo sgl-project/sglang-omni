@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from collections import OrderedDict
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
@@ -210,12 +212,26 @@ def test_invalid_reference_does_not_silently_use_default() -> None:
         code2wav_reference_audio(payload)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_variable_length_option_reaches_dit(
+    enabled: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "assets" / "token2wav").mkdir(parents=True)
+    token2wav = MagicMock()
+    monkeypatch.setattr(vocoder, "Token2Wav", lambda *args, **kwargs: token2wav)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
+    MiniCPMOCode2Wav(str(tmp_path), enable_flow_variable_length=enabled)
+    assert token2wav.flow.decoder.estimator.enable_variable_length is enabled
+
+
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
     code2wav = next(stage for stage in config.stages if stage.name == "code2wav")
     assert code2wav.factory.max_batch_size == 8
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
+    assert code2wav.factory.dtype is None
+    assert code2wav.factory.enable_flow_variable_length is True
 
 
 def test_vocode_slices_waveforms_to_token_lengths() -> None:
