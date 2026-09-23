@@ -101,6 +101,7 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_admission_env.py
     │   ├── test_talker_codec_coalesce.py
     │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
@@ -648,6 +649,10 @@ that happened to contain an older version of the test.
     HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
+  - Talker admission estimate: the stage env preserves platform defaults and
+    explicit overrides, reaches only the talker process, and rejects conflicting
+    thinker/talker defaults in a shared process (`test_talker_admission_env.py`,
+    `test_config_manager.py`)
   - full-model fixture overrides target the preprocessing and thinker context
     limits without leaking thinker-only arguments into the decode stage
   - `Qwen3OmniPipelineState` request builders, including projected payload container
