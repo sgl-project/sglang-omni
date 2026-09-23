@@ -30,7 +30,7 @@ from tests.test_model.omni_router_utils import (
 )
 from tests.utils import MetricCheckCollector, assert_speed_thresholds
 
-CONCURRENCY = 16
+CONCURRENCY_BY_MODEL = {"qwen3-omni": 96, "minicpmo": 16}
 
 
 def _build_args(
@@ -50,7 +50,7 @@ def _build_args(
         max_tokens=32,
         temperature=0.0,
         warmup=0,
-        max_concurrency=CONCURRENCY,
+        max_concurrency=CONCURRENCY_BY_MODEL[omni_ci_model.name],
         request_rate=float("inf"),
         timeout_s=300,
         save_audio=False,
@@ -114,7 +114,10 @@ def test_mmsu_accuracy_and_speed(
 
     if thresholds.calibrated:
         assert_speed_thresholds(
-            results["speed"], thresholds.speed, CONCURRENCY, collector=checks
+            results["speed"],
+            thresholds.speed,
+            args.max_concurrency,
+            collector=checks,
         )
     thresholds.require_calibrated(omni_ci_model.name, "mmsu", checks)
     checks.assert_all()
