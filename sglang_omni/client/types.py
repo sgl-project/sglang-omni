@@ -143,6 +143,9 @@ class GenerateChunk:
     language: str | None = None
     audio_data: Any = None
     sample_rate: int | None = None
+    image: str | None = None  # base64-encoded PNG from the terminal result
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +165,9 @@ class GenerateChunk:
             "language": self.language,
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
+            "image": self.image,
+            "content": self.content,
+            "images": self.images,
         }
 
 
@@ -208,6 +214,9 @@ class CompletionResult:
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
     language: str | None = None
+    image: str | None = None  # base64-encoded PNG
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass

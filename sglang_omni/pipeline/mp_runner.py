@@ -128,9 +128,9 @@ def build_stage_groups(
     single_stage_specs: dict[str, StageLaunchConfig] = {}
     tp_groups: list[StageGroup] = []
     for stage_cfg in stages_cfg:
-        tp_size = stage_cfg.tp_size
+        parallel_size = stage_cfg.parallel_size
         gpu_ids = resolve_stage_gpu_ids(placement_plan, stage_cfg)
-        nccl_port = nccl_port_counter.allocate() if tp_size > 1 else None
+        nccl_port = nccl_port_counter.allocate() if parallel_size > 1 else None
 
         same_process_targets = resolve_same_process_targets(
             stage_cfg,
@@ -176,7 +176,7 @@ def build_stage_groups(
             disable_direct_cuda_ipc_payload=stage_cfg.disable_direct_cuda_ipc_payload,
             replica_topology=replica_topology.to_dict(),
         )
-        if tp_size == 1:
+        if parallel_size == 1:
             single_stage_specs[stage_cfg.name] = build_single_stage_spec(
                 stage_cfg=stage_cfg,
                 config=config,
@@ -200,8 +200,8 @@ def build_stage_groups(
             )
             process_specs = [
                 StageWorkerProcessSpec(
-                    process_name=process_plan.tp_stage_to_processes[stage_cfg.name][
-                        spec.tp_rank
+                    process_name=process_plan.rank_processes(stage_cfg.name)[
+                        spec.parallel_rank
                     ],
                     stage_specs=[spec],
                     log_level=log_level,
@@ -270,7 +270,7 @@ def resolve_same_process_targets(
     process_plan: ProcessTopologyPlan,
     replica_topology: ReplicaTopology | None = None,
 ) -> set[str]:
-    if stage_cfg.tp_size > 1:
+    if stage_cfg.parallel_size > 1:
         return set()
     source_process = process_plan.stage_to_process.get(stage_cfg.name)
     if source_process is None:
@@ -289,7 +289,7 @@ def resolve_same_process_targets(
     for raw_target in raw_targets:
         for target in replica_topology.instances(raw_target):
             target_cfg = stage_cfg_by_name.get(target)
-            if target_cfg is None or target_cfg.tp_size > 1:
+            if target_cfg is None or target_cfg.parallel_size > 1:
                 continue
             if process_plan.stage_to_process.get(target) == source_process:
                 same_process_targets.add(target)
@@ -350,53 +350,48 @@ def build_tp_stage_specs(
     typed_kwargs: dict[str, Any],
     stage_kwargs: dict[str, Any],
 ) -> list[StageLaunchConfig]:
-    follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
-    follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
-    follower_admin_result_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
+    follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.parallel_size - 1)]
+    follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.parallel_size - 1)]
+    follower_admin_result_queues = [
+        ctx.Queue() for _ in range(stage_cfg.parallel_size - 1)
+    ]
     specs: list[StageLaunchConfig] = []
 
-    for tp_rank in range(stage_cfg.tp_size):
-        gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
+    for rank in range(stage_cfg.parallel_size):
+        tp_rank = rank if stage_cfg.tp_size > 1 else 0
+        sp_rank = rank if stage_cfg.sp_size > 1 else 0
+        role = "leader" if rank == 0 else "follower"
+        gpu_id = gpu_ids[rank]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
         factory_kwargs = dict(base_factory_kwargs)
-        factory_kwargs["tp_rank"] = tp_rank
-        factory_kwargs["tp_size"] = stage_cfg.tp_size
+        factory_kwargs[f"{stage_cfg.parallel_kind}_rank"] = rank
+        factory_kwargs[f"{stage_cfg.parallel_kind}_size"] = stage_cfg.parallel_size
         factory_kwargs["nccl_port"] = nccl_port
+        if stage_cfg.sp_size > 1:
+            factory_kwargs["stage_role"] = role
 
         comm_config = resolve_comm_config(stage_cfg, gpu_id=gpu_id)
 
-        if tp_rank == 0:
-            specs.append(
-                StageLaunchConfig(
-                    role="leader",
-                    tp_rank=tp_rank,
-                    tp_size=stage_cfg.tp_size,
-                    placement_gpu_id=gpu_id,
-                    gpu_id=gpu_id,
-                    nccl_port=nccl_port,
-                    factory_kwargs=factory_kwargs,
-                    typed_kwargs=dict(typed_kwargs),
-                    factory_arg_defaults=resolve_stage_factory_arg_defaults(
-                        stage_cfg, config, gpu_id=gpu_id
-                    ),
-                    **stage_byte_budget_kwargs(stage_cfg),
-                    comm_config=comm_config,
-                    recv_endpoint=recv_endpoint,
-                    follower_work_queues=follower_work_queues,
-                    follower_abort_queues=follower_abort_queues,
-                    follower_admin_result_queues=follower_admin_result_queues,
-                    **stage_kwargs,
-                )
-            )
-            continue
-
-        idx = tp_rank - 1
+        if rank == 0:
+            control_kwargs = {
+                "follower_work_queues": follower_work_queues,
+                "follower_abort_queues": follower_abort_queues,
+                "follower_admin_result_queues": follower_admin_result_queues,
+            }
+        else:
+            control_kwargs = {
+                "internal_work_queue": follower_work_queues[rank - 1],
+                "internal_abort_queue": follower_abort_queues[rank - 1],
+                "internal_admin_result_queue": follower_admin_result_queues[rank - 1],
+            }
         specs.append(
             StageLaunchConfig(
-                role="follower",
+                role=role,
                 tp_rank=tp_rank,
                 tp_size=stage_cfg.tp_size,
+                sp_rank=sp_rank,
+                sp_size=stage_cfg.sp_size,
                 placement_gpu_id=gpu_id,
                 gpu_id=gpu_id,
                 nccl_port=nccl_port,
@@ -407,10 +402,8 @@ def build_tp_stage_specs(
                 ),
                 **stage_byte_budget_kwargs(stage_cfg),
                 comm_config=comm_config,
-                recv_endpoint="",
-                internal_work_queue=follower_work_queues[idx],
-                internal_abort_queue=follower_abort_queues[idx],
-                internal_admin_result_queue=follower_admin_result_queues[idx],
+                recv_endpoint=recv_endpoint if rank == 0 else "",
+                **control_kwargs,
                 **stage_kwargs,
             )
         )
