@@ -14,6 +14,7 @@ from sglang_omni.models.weight_loader import (
     resolve_dtype,
     resolve_model_path,
 )
+from sglang_omni.platforms import current_platform
 
 STACKED_QKV = [
     ("self_attn.qkv_proj", "self_attn.q_proj", "q"),
@@ -62,7 +63,7 @@ def init_sglang_tp() -> None:
         set_global_server_args_for_scheduler(ServerArgs(model_path="dummy"))
 
     parallel_state.init_distributed_environment(
-        backend="nccl",
+        backend=current_platform.get_torch_distributed_backend_str(),
         world_size=1,
         rank=0,
         local_rank=0,
