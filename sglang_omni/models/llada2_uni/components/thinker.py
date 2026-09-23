@@ -205,18 +205,12 @@ class LLaDA2MoeGate(nn.Module):
                 dtype=self.params_dtype,
             ),
         )
-        if getattr(config, "moe_router_enable_expert_bias", False):
-            self.expert_bias = nn.Parameter(
-                torch.empty((config.num_experts,), dtype=torch.float32),
-            )
-        else:
-            self.expert_bias = None
+        self.register_buffer(
+            "expert_bias", torch.zeros(config.num_experts, dtype=torch.float32)
+        )
 
     def forward(self, hidden_states):
-        logits = F.linear(hidden_states.to(self.weight.dtype), self.weight, None).to(
-            hidden_states.dtype
-        )
-        return logits
+        return F.linear(hidden_states.float(), self.weight.float(), None)
 
 
 class LLaDA2MoeSparseMoeBlock(nn.Module):
@@ -311,12 +305,12 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             router_logits=router_logits,
         )
         y = self.experts(hidden_states, topk_output)
+        output_dtype = y.dtype
 
-        # Add shared expert output
         if self.shared_experts is not None:
-            y = y + self.shared_experts(identity)
+            y = y.float() + self.shared_experts(identity).float()
 
-        return y
+        return y.to(output_dtype)
 
     def group_limited_topk(
         self, scores: torch.Tensor
@@ -462,6 +456,7 @@ class LLaDA2MoeTextModel(nn.Module):
         )
 
         params_dict = dict(self.named_parameters())
+        params_dict.update(dict(self.named_buffers()))
 
         for name, loaded_weight in weights:
             prefix = "model."
