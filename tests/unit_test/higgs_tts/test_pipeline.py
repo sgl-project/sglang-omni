@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import contextlib
 import logging
 import queue
 import threading
@@ -1564,7 +1565,7 @@ def test_higgs_vocoder_fails_startup_when_cuda_graph_capture_fails(
         SimpleNamespace(
             device_type="cuda",
             is_npu=lambda: False,
-            enable_code2wav_graph=lambda: True,
+            enable_codec_decode_graph=lambda: True,
         ),
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
@@ -2129,6 +2130,98 @@ def _make_fake_codec(call_log: list[tuple[int, int]]):
     codec._decode_cuda_graph_missed_shapes = set()
     codec._decode_single_flight_lock = threading.Lock()
     return codec
+
+
+def test_codec_capture_refuses_a_platform_with_no_graph_backend(monkeypatch) -> None:
+    from sglang_omni.models.higgs_tts import audio_codec
+    from sglang_omni.platforms.cpu import CPUOmniPlatform
+
+    monkeypatch.setattr(audio_codec, "current_platform", CPUOmniPlatform())
+    codec = _make_fake_codec([])
+
+    with pytest.raises(RuntimeError, match="names no device graph backend"):
+        codec.capture_decode_cuda_graphs((1, 2))
+
+
+def test_codec_capture_names_placement_when_the_device_is_not_the_platforms(
+    monkeypatch,
+) -> None:
+    from sglang_omni.models.higgs_tts import audio_codec
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
+
+    monkeypatch.setattr(audio_codec, "current_platform", CUDAOmniPlatform())
+    codec = _make_fake_codec([])
+
+    with pytest.raises(RuntimeError, match="place the vocoder stage on a cuda device"):
+        codec.capture_decode_cuda_graphs((1, 2))
+
+
+def test_codec_capture_records_through_the_platform_backend(monkeypatch) -> None:
+    from sglang_omni.models.higgs_tts import audio_codec
+
+    class FakeGraph:
+        def __init__(self) -> None:
+            self.replays = 0
+
+        def replay(self) -> None:
+            self.replays += 1
+
+    class FakeStream:
+        def wait_stream(self, other) -> None:
+            pass
+
+        def synchronize(self) -> None:
+            pass
+
+    class FakeBackend:
+        def __init__(self) -> None:
+            self.captures: list[tuple[object, object, FakeGraph]] = []
+
+        @contextlib.contextmanager
+        def capture(self, *, pool=None, stream=None, thread_local_errors=False):
+            graph = FakeGraph()
+            self.captures.append((pool, stream, graph))
+            yield graph
+
+    backend = FakeBackend()
+    capture_stream = FakeStream()
+    pool = object()
+    device_module = SimpleNamespace(
+        current_stream=lambda device: FakeStream(),
+        Stream=lambda device: capture_stream,
+        device=lambda device: contextlib.nullcontext(),
+        stream=lambda stream: contextlib.nullcontext(),
+        graph_pool_handle=lambda: pool,
+        synchronize=lambda device: None,
+    )
+    monkeypatch.setattr(
+        audio_codec,
+        "current_platform",
+        SimpleNamespace(
+            device_type="cpu", get_device_graph_backend=lambda device: backend
+        ),
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda device: device_module)
+
+    call_log: list[tuple[int, int]] = []
+    codec = _make_fake_codec(call_log)
+    codec.model.config.num_quantizers = 8
+    quantizer_decode = object()
+    codec.model.quantizer = SimpleNamespace(decode=quantizer_decode)
+
+    codec.capture_decode_cuda_graphs((1, 2))
+
+    assert [(p, s) for p, s, _ in backend.captures] == [(pool, capture_stream)] * 2
+    assert {
+        frame_count: graph.graph
+        for frame_count, graph in codec._decode_cuda_graphs.items()
+    } == {2: backend.captures[0][2], 1: backend.captures[1][2]}
+    assert codec.model.quantizer.decode is quantizer_decode
+
+    eager_calls = len(call_log)
+    codec.decode(torch.zeros(2, 8, dtype=torch.long))
+    assert codec._decode_cuda_graphs[2].graph.replays == 1
+    assert len(call_log) == eager_calls
 
 
 def test_decode_batch_buckets_by_length() -> None:

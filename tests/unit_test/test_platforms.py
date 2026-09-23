@@ -382,3 +382,19 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
 
     assert calls == [list(platform.get_graph_capture_sdpa_backends())]
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
+
+
+def test_only_cuda_opts_into_the_codec_decode_graph() -> None:
+    assert CUDAOmniPlatform().enable_codec_decode_graph() is True
+    for platform_type in (
+        OmniPlatform,
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ):
+        assert platform_type().enable_codec_decode_graph() is False, platform_type
+
+    assert XPUOmniPlatform().enable_code2wav_graph() is True

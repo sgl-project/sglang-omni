@@ -583,17 +583,15 @@ def create_vocoder_executor(
             )
             codec.model.decode = eager_decode
     elif decode_cuda_graph_frame_counts:
-        # This is an explicitly selected performance contract. Failing startup
-        # is preferable to silently serving through the eager path and
-        # discovering the regression only in a latency/throughput CI job.
-        if not current_platform.enable_code2wav_graph():
+        if not current_platform.enable_codec_decode_graph():
             logger.warning(
-                "decode_cuda_graph_frame_counts was requested but the current "
-                "platform (%s) does not support Higgs codec CUDA graphs; "
-                "falling back to eager vocoder decode",
-                current_platform.device_type,
+                f"decode_cuda_graph_frame_counts was requested but the current "
+                f"platform ({current_platform.device_type}) does not opt into "
+                f"Higgs codec decode graphs; falling back to eager vocoder decode"
             )
         else:
+            # A failed capture fails startup rather than silently serving eager
+            # and surfacing only as a latency/throughput CI regression.
             codec.capture_decode_cuda_graphs(
                 tuple(int(value) for value in decode_cuda_graph_frame_counts)
             )

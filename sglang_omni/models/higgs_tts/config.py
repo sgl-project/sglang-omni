@@ -99,11 +99,9 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 # bounded by the default 75-row stride plus its 75-row
                 # follow-up. Capture that complete finite domain so terminal
                 # flushes cannot silently fall back to eager execution.
-                # Only CUDA captures decode CUDA graphs; other platforms (e.g.
-                # Ascend NPU) keep the domain empty and always decode eagerly.
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
-                    if current_platform.enable_code2wav_graph()
+                    if current_platform.enable_codec_decode_graph()
                     else ()
                 ),
             }

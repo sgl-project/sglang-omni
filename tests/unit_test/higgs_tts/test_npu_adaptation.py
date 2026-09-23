@@ -15,6 +15,8 @@ from sglang_omni.models.higgs_tts import npu_fallback
 from sglang_omni.models.higgs_tts import sampler as higgs_sampler
 from sglang_omni.models.higgs_tts import stages as higgs_stages
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
 
 
 class _FakePlatform:
@@ -25,7 +27,7 @@ class _FakePlatform:
     def is_npu(self) -> bool:
         return self._npu
 
-    def enable_code2wav_graph(self) -> bool:
+    def enable_codec_decode_graph(self) -> bool:
         return not self._npu
 
 
@@ -108,17 +110,20 @@ def test_stage_devices_resolve_from_platform_type() -> None:
             assert stage.factory.device == current_platform.device_type
 
 
-def test_vocoder_decode_graph_domain_follows_platform_capability() -> None:
+def test_vocoder_decode_graph_domain_follows_platform_capability(monkeypatch) -> None:
+    from sglang_omni.models.higgs_tts import config as higgs_config
     from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 
     config = HiggsTtsPipelineConfig(model_path="unused")
-    vocoder_kwargs = config.stage_factory_kwargs("vocoder")
 
-    counts = vocoder_kwargs["decode_cuda_graph_frame_counts"]
-    if current_platform.enable_code2wav_graph():
-        assert counts == tuple(range(1, 151))
-    else:
-        assert counts == ()
+    for enabled, expected in ((True, tuple(range(1, 151))), (False, ())):
+        monkeypatch.setattr(
+            higgs_config,
+            "current_platform",
+            SimpleNamespace(enable_codec_decode_graph=lambda enabled=enabled: enabled),
+        )
+        vocoder_kwargs = config.stage_factory_kwargs("vocoder")
+        assert vocoder_kwargs["decode_cuda_graph_frame_counts"] == expected
 
 
 class _FakeTokenizer:
@@ -242,6 +247,27 @@ def test_vocoder_decode_cuda_graphs_skipped_on_npu(monkeypatch) -> None:
 
     higgs_stages.create_vocoder_executor(
         "model", device="npu:0", decode_cuda_graph_frame_counts=(1, 2, 3)
+    )
+
+    assert captured == []
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "device"),
+    [(ROCMOmniPlatform, "cuda:0"), (MUSAOmniPlatform, "musa:0")],
+)
+def test_vocoder_explicit_decode_graphs_follow_the_codec_hook(
+    monkeypatch, platform_type, device
+) -> None:
+    codec = _fake_vocoder_codec()
+    captured: list[tuple] = []
+    codec.capture_decode_cuda_graphs = lambda frame_counts: captured.append(
+        frame_counts
+    )
+    _install_vocoder_fakes(monkeypatch, platform_type(), codec)
+
+    higgs_stages.create_vocoder_executor(
+        "model", device=device, decode_cuda_graph_frame_counts=(1, 2, 3)
     )
 
     assert captured == []
