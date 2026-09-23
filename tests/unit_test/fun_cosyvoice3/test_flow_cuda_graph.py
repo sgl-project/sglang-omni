@@ -38,6 +38,7 @@ def _flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
         pre_lookahead_layer=lambda x, context=None: x,
         pre_lookahead_len=3,
         cuda_graph_runner=None,
+        packed_estimator=None,
     )
 
 
@@ -54,6 +55,16 @@ class _ReplayGraph:
         self._static_output.copy_(
             self._static_inputs[0] + self._static_inputs[2] + self._static_inputs[5]
         )
+
+
+class _ReturningRunner:
+    def __init__(self, result: torch.Tensor | None) -> None:
+        self.result = result
+        self.calls = 0
+
+    def run(self, *args, **kwargs) -> torch.Tensor | None:
+        self.calls += 1
+        return self.result
 
 
 def _runner() -> stages.FlowCudaGraphRunner:
@@ -125,6 +136,169 @@ def test_resident_replay_crops_to_actual_frames() -> None:
     assert torch.equal(output, noisy_mel + token_condition + prompt_mel)
 
 
+def test_generate_flow_prefers_cuda_graph_over_packed(monkeypatch) -> None:
+    flow = _flow()
+    graph_result = torch.full((1, 4, 17), 7.0)
+    runner = _ReturningRunner(graph_result)
+    flow.cuda_graph_runner = runner
+    flow.packed_estimator = object()
+    packed_calls: list[object] = []
+    eager_calls: list[object] = []
+    mask_calls: list[object] = []
+    original_mask = stages._flow_mel_mask
+
+    def build_mask(conditioning):
+        mask_calls.append(conditioning)
+        return original_mask(conditioning)
+
+    monkeypatch.setattr(stages, "_flow_mel_mask", build_mask)
+    monkeypatch.setattr(
+        stages,
+        "_solve_prepared_flow_packed",
+        lambda *args, **kwargs: packed_calls.append(args),
+    )
+    monkeypatch.setattr(
+        stages,
+        "solve_flow_euler",
+        lambda *args, **kwargs: eager_calls.append(args),
+    )
+
+    generated = stages.generate_flow(flow, _packed_tokens(flow))
+
+    assert generated is graph_result
+    assert runner.calls == 1
+    assert len(mask_calls) == 1
+    assert packed_calls == []
+    assert eager_calls == []
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [None, _ReturningRunner(None)],
+    ids=["graph-disabled", "graph-miss"],
+)
+def test_generate_flow_uses_packed_when_cuda_graph_does_not_run(
+    monkeypatch, runner
+) -> None:
+    flow = _flow()
+    flow.cuda_graph_runner = runner
+    flow.packed_estimator = object()
+    prepare_calls: list[object] = []
+    packed_calls: list[tuple[object, object, bool]] = []
+    eager_calls: list[object] = []
+    original_prepare = stages.prepare_flow_conditioning
+
+    def prepare(*args, **kwargs):
+        prepare_calls.append(args)
+        return original_prepare(*args, **kwargs)
+
+    packed_result = torch.full((1, 4, 17), 8.0)
+
+    def packed_solve(flow_arg, conditioning, *, streaming):
+        packed_calls.append((flow_arg, conditioning, streaming))
+        return packed_result
+
+    monkeypatch.setattr(stages, "prepare_flow_conditioning", prepare)
+    monkeypatch.setattr(stages, "_solve_prepared_flow_packed", packed_solve)
+    monkeypatch.setattr(
+        stages,
+        "solve_flow_euler",
+        lambda *args, **kwargs: eager_calls.append(args),
+    )
+
+    generated = stages.generate_flow(flow, _packed_tokens(flow))
+
+    assert generated is packed_result
+    assert len(prepare_calls) == 1
+    assert len(packed_calls) == 1
+    assert packed_calls[0][2] is False
+    assert eager_calls == []
+    if runner is not None:
+        assert runner.calls == 1
+
+
+def test_generate_flow_skips_mask_for_graph_disabled_packed_flow(monkeypatch) -> None:
+    flow = _flow()
+    flow.packed_estimator = object()
+    packed_result = torch.full((1, 4, 17), 8.0)
+    monkeypatch.setattr(
+        stages,
+        "_flow_mel_mask",
+        lambda *args, **kwargs: pytest.fail("PackedDiT path built a native mask"),
+    )
+    monkeypatch.setattr(
+        stages,
+        "_solve_prepared_flow_packed",
+        lambda *args, **kwargs: packed_result,
+    )
+
+    generated = stages.generate_flow(flow, _packed_tokens(flow))
+
+    assert generated is packed_result
+
+
+@pytest.mark.parametrize(
+    ("streaming", "finalize"),
+    [(True, True), (True, False), (False, False)],
+)
+def test_generate_flow_keeps_compatibility_path_outside_buffered_route(
+    monkeypatch, streaming, finalize
+) -> None:
+    flow = _flow()
+    graph_result = torch.full((1, 4, 17), 7.0)
+    runner = _ReturningRunner(graph_result)
+    flow.cuda_graph_runner = runner
+    flow.packed_estimator = object()
+    eager_result = torch.full((1, 4, 17), 9.0)
+    eager_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def eager_solve(*args, **kwargs):
+        eager_calls.append((args, kwargs))
+        return eager_result
+
+    monkeypatch.setattr(stages, "solve_flow_euler", eager_solve)
+
+    generated = stages.generate_flow(
+        flow,
+        _packed_tokens(flow),
+        streaming=streaming,
+        finalize=finalize,
+    )
+
+    assert generated is eager_result
+    assert runner.calls == 0
+    assert len(eager_calls) == 1
+    assert eager_calls[0][1]["streaming"] is streaming
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [None, _ReturningRunner(None)],
+    ids=["graph-disabled", "graph-miss"],
+)
+def test_generate_flow_uses_native_fallback_without_packed_estimator(
+    monkeypatch, runner
+) -> None:
+    flow = _flow()
+    flow.cuda_graph_runner = runner
+    eager_result = torch.full((1, 4, 17), 9.0)
+    eager_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def eager_solve(*args, **kwargs):
+        eager_calls.append((args, kwargs))
+        return eager_result
+
+    monkeypatch.setattr(stages, "solve_flow_euler", eager_solve)
+
+    generated = stages.generate_flow(flow, _packed_tokens(flow))
+
+    assert generated is eager_result
+    assert len(eager_calls) == 1
+    assert eager_calls[0][1]["streaming"] is False
+    if runner is not None:
+        assert runner.calls == 1
+
+
 def test_nonresident_shape_returns_none() -> None:
     runner = _runner()
     _install(runner, (2, 496))
@@ -133,8 +307,14 @@ def test_nonresident_shape_returns_none() -> None:
 
 def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) -> None:
     eager_calls: list[object] = []
+    packed_calls: list[object] = []
     monkeypatch.setattr(
         stages, "solve_flow_euler", lambda *args, **kwargs: eager_calls.append(args)
+    )
+    monkeypatch.setattr(
+        stages,
+        "_solve_prepared_flow_packed",
+        lambda *args, **kwargs: packed_calls.append(args),
     )
 
     class _FailingRunner:
@@ -143,6 +323,8 @@ def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) ->
 
     flow = _flow(max_frames=64)
     flow.cuda_graph_runner = _FailingRunner()
+    flow.packed_estimator = object()
     with pytest.raises(RuntimeError, match="replay failed"):
         stages.generate_flow(flow, _packed_tokens(flow))
     assert eager_calls == []
+    assert packed_calls == []
