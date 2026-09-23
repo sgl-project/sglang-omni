@@ -199,6 +199,28 @@ def stop_managed_workers(workers: list[ManagedWorkerProcess]) -> None:
 
     for worker in remaining:
         worker.process.wait(timeout=10)
+        deadline = time.monotonic() + 10
+        while process_group_has_live_members(worker.process_group_id):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Managed Omni worker group {worker.process_group_id} did not exit"
+                )
+            time.sleep(0.05)
+
+
+def process_group_has_live_members(process_group_id: int) -> bool:
+    with os.scandir("/proc") as processes:
+        for process in processes:
+            if not process.name.isdecimal():
+                continue
+            try:
+                with open(f"/proc/{process.name}/stat") as stat_file:
+                    fields = stat_file.read().rsplit(")", 1)[1].split()
+            except FileNotFoundError:
+                continue
+            if fields[2] == str(process_group_id) and fields[0] not in {"Z", "X"}:
+                return True
+    return False
 
 
 def record_cleanup_process_group(process_group_id: int | None) -> None:

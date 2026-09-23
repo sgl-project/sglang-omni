@@ -5,6 +5,7 @@ import json
 import logging
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -639,7 +640,12 @@ def test_managed_shutdown_kills_remaining_group(
         assert process_group_id == 8011
         group_signals.append(sig)
 
+    def group_exited(process_group_id: int) -> bool:
+        assert process_group_id == 8011
+        return False
+
     monkeypatch.setattr(local_launcher.os, "killpg", signal_group)
+    monkeypatch.setattr(local_launcher, "process_group_has_live_members", group_exited)
     process = FakeProcess()
     worker = local_launcher.ManagedWorkerProcess(
         url="http://127.0.0.1:8011",
@@ -656,6 +662,46 @@ def test_managed_shutdown_kills_remaining_group(
     assert group_signals == (
         [signal.SIGKILL] if parent_timed_out else [0, signal.SIGKILL]
     )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux process groups")
+def test_managed_shutdown_waits_for_orphaned_worker_child() -> None:
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys; "
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            "print('ready', flush=True)",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        assert parent.stdout is not None
+        assert parent.stdout.readline().strip() == "ready"
+        parent.wait(timeout=5)
+        assert local_launcher.process_group_has_live_members(parent.pid)
+
+        worker = local_launcher.ManagedWorkerProcess(
+            url="http://127.0.0.1:8011",
+            port=8011,
+            cuda_visible_devices=None,
+            process=parent,
+            process_group_id=parent.pid,
+        )
+        local_launcher.stop_managed_workers([worker])
+
+        assert not local_launcher.process_group_has_live_members(parent.pid)
+    finally:
+        try:
+            local_launcher.os.killpg(parent.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        parent.wait(timeout=5)
+        if parent.stdout is not None:
+            parent.stdout.close()
 
 
 @pytest.mark.parametrize(
