@@ -17,7 +17,7 @@ from sglang_omni.models.ming_omni.components.streaming_talker import (
 from sglang_omni.models.ming_omni.components.streaming_text import text_to_uint8_tensor
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
 class _FakeTalker:

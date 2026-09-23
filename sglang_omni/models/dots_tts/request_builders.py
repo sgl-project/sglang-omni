@@ -16,7 +16,7 @@ from sglang_omni.models.dots_tts.payload_types import (
     store_dots_tts_state,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 if TYPE_CHECKING:

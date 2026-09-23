@@ -50,8 +50,9 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -1270,6 +1271,44 @@ class Stage:
         if not self._owns_external_io:
             self.clear_request_state(request_id)
             return
+        session_operation = (
+            find_session_operation(result.request.metadata)
+            if isinstance(result, StagePayload)
+            else None
+        )
+        if session_operation is not None and session_operation.operation != "append":
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=True,
+                    result=result.data,
+                )
+            )
+            self.clear_request_state(request_id)
+            return
+        if session_operation is not None:
+            owners = session_operation.stages
+            if self.name not in owners or self._stream_targets:
+                await self.send_failure(
+                    request_id, "session route must use fixed, linear payload edges"
+                )
+                return
+            index = owners.index(self.name)
+            if index + 1 < len(owners):
+                expected = self.logical_source(owners[index + 1])
+            else:
+                expected = None
+            actual = self.get_next(request_id, result)
+            if isinstance(actual, list) and len(actual) == 1:
+                actual_target = actual[0]
+            else:
+                actual_target = actual
+            if actual_target != expected:
+                await self.send_failure(
+                    request_id, "session route differs from the stage payload route"
+                )
+                return
         # Send stream done to the active stream targets for this request.
         stream_targets = self._stream_targets
         if self.get_stream_done_targets is not None:
@@ -1288,7 +1327,9 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
+        next_stages = (
+            self.get_next(request_id, result) if session_operation is None else actual
+        )
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(

@@ -32,7 +32,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import _FakeFlow as _PackedFlow
 
 AR_INITIAL_FLUSH_TOKENS = TOKEN_HOP_LEN + PRE_LOOKAHEAD_LEN

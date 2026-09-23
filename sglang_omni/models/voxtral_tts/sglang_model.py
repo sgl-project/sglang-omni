@@ -9,6 +9,7 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.runtime_context import get_model, get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -174,10 +175,7 @@ class VoxtralSGLangTTSModel(nn.Module):
     def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         del config, quant_config, prefix
         super().__init__()
-        server_args = __import__(
-            "sglang.srt.server_args", fromlist=["get_global_server_args"]
-        ).get_global_server_args()
-        self.model_path = server_args.model_path
+        self.model_path = get_model().model_path
         self.voxtral_config = VoxtralModelConfig.from_model_path(self.model_path)
         text_cfg = self.voxtral_config.text_config
         self.language_model = VoxtralSGLangTextModel(text_cfg)
@@ -189,7 +187,7 @@ class VoxtralSGLangTTSModel(nn.Module):
         )
         self.audio_token_id = self.voxtral_config.audio_model_args.audio_token_id
         self.hidden_size = text_cfg.dim
-        max_batch_size = server_args.max_running_requests
+        max_batch_size = get_schedule().max_running_requests
         embed_weight = next(self.language_model.embed_tokens.parameters())
         self._decode_input_embed_buffer = torch.zeros(
             max_batch_size,

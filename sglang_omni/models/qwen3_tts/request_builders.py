@@ -32,7 +32,7 @@ from sglang_omni.sampling.seed import (
     derive_sampling_seed,
     new_random_sampling_seed,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,

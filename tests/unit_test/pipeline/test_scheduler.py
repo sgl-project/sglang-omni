@@ -6,9 +6,11 @@ import collections
 import gc
 import importlib
 import threading
+import time
 import weakref
 from array import array
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from queue import Empty, Queue
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,12 +18,17 @@ from unittest.mock import Mock
 import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import torch
+from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.observability.scheduler_stage_metrics import (
+    SchedulerStageMetricsRecorder,
+)
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -36,6 +43,12 @@ def _serving_bag(monkeypatch):
     serving = SimpleNamespace(weight_version=None)
     monkeypatch.setattr(omni_scheduler_module, "get_serving", lambda: serving)
     monkeypatch.setattr(sglang_scheduler_module, "get_serving", lambda: serving)
+
+
+@pytest.fixture
+def published_config():
+    with get_context().override_server_args():
+        yield
 
 
 def _ingress(*chunks, done: bool = False) -> omni_scheduler_module.PendingStreamIngress:
@@ -60,6 +73,7 @@ def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler._async_pending = None
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.processed_tokens_counter = 0
     if not hasattr(scheduler, "max_queued_requests"):
         scheduler.max_queued_requests = None
     if not hasattr(scheduler, "_deferred_request_payloads"):
@@ -390,6 +404,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         batch_is_full=True,
         is_prefill_only=True,
         is_extend_in_batch=False,
+        extend_num_tokens=None,
     )
     failed_reqs = list(batch.reqs)
     for req in failed_reqs:
@@ -476,6 +491,7 @@ def _requeue_scheduler() -> OmniScheduler:
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
     scheduler.enable_hierarchical_cache = False
+    scheduler.processed_tokens_counter = 0
     return scheduler
 
 
@@ -883,8 +899,9 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     scheduler._prefill_end_done = set()
     scheduler.forward_ct = 0
     scheduler._sched_idled = True
+    scheduler.processed_tokens_counter = 0
 
-    def _batch():
+    def _batch(extend_num_tokens: int | None):
         return SimpleNamespace(
             reqs=[
                 SimpleNamespace(
@@ -893,21 +910,24 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
             ],
             is_prefill_only=False,
             is_extend_in_batch=False,
+            extend_num_tokens=extend_num_tokens,
         )
 
-    sync_batch = _batch()
+    sync_batch = _batch(extend_num_tokens=7)
     scheduler.run_batch(sync_batch)
     assert scheduler.forward_ct == 1, "sync run_batch must advance forward_ct"
     assert sync_batch.forward_iter == 1
     assert isinstance(sync_batch.launch_ts, float)
     assert sync_batch.after_idle_gap is True
+    assert scheduler.processed_tokens_counter == 7
 
-    async_batch = _batch()
+    async_batch = _batch(extend_num_tokens=None)
     scheduler.run_batch_launch(async_batch)
     assert scheduler.forward_ct == 2, "async launch must advance forward_ct"
     assert async_batch.forward_iter == 2
     assert async_batch.launch_ts >= sync_batch.launch_ts
     assert async_batch.after_idle_gap is False
+    assert scheduler.processed_tokens_counter == 7
 
 
 def test_omni_scheduler_resolve_drops_retracted_req() -> None:
@@ -1902,6 +1922,75 @@ def test_completed_request_id_is_cleared_on_explicit_readmission(
     assert scheduler.recv_requests() == []
 
 
+@pytest.mark.parametrize(
+    "timeout_env,placement",
+    [
+        ("SGLANG_REQ_WAITING_TIMEOUT", "waiting"),
+        ("SGLANG_REQ_RUNNING_TIMEOUT", "running"),
+    ],
+)
+def test_request_timeout_fails_only_the_expired_request(
+    timeout_env: str, placement: str
+) -> None:
+    """The entry rank fails an expired request once and leaves its neighbor alone."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.tp_size = 1
+    scheduler.is_entry_rank = True
+    scheduler.ps = SimpleNamespace(pp_size=1)
+    scheduler.outbox = Queue()
+    scheduler.inbox = Queue()
+    scheduler._idle_wait_message = None
+    scheduler._abort_callback = None
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._completed_request_ids = {}
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    _init_sync_request_build_state(scheduler)
+
+    long_ago = time.perf_counter() - 60.0
+    just_now = time.perf_counter()
+    expired = _make_abortable_req(
+        "req-expired",
+        time_stats=SimpleNamespace(
+            wait_queue_entry_time=long_ago, forward_entry_time=long_ago
+        ),
+    )
+    fresh = _make_abortable_req(
+        "req-fresh",
+        time_stats=SimpleNamespace(
+            wait_queue_entry_time=just_now, forward_entry_time=just_now
+        ),
+    )
+    queued = [expired, fresh] if placement == "waiting" else []
+    running = [expired, fresh] if placement == "running" else []
+    scheduler.waiting_queue = queued
+    scheduler.running_batch = SimpleNamespace(reqs=running, batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+
+    with getattr(envs, timeout_env).override(30.0):
+        assert scheduler.recv_requests() == []
+        assert scheduler.recv_requests() == []
+
+    failures = []
+    while not scheduler.outbox.empty():
+        failures.append(scheduler.outbox.get_nowait())
+    assert [(out.request_id, out.type) for out in failures] == [
+        ("req-expired", "error")
+    ]
+    assert "timeout" in str(failures[0].data)
+    if placement == "waiting":
+        assert scheduler.waiting_queue == [fresh]
+    else:
+        assert expired.to_finish is not None
+        assert fresh.to_finish is None
+
+
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_LIMIT", 3)
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_RETAINED", 2)
@@ -2054,6 +2143,92 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     assert model_path_starts == ["req-delayed"]
 
 
+def _scheduler_with_build_pool(monkeypatch, builder) -> OmniScheduler:
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_event", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_model_path_start",
+        lambda _request_id: None,
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.outbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler.max_req_len = 16
+    scheduler.max_req_input_len = 16
+    _init_sync_request_build_state(scheduler)
+    scheduler._request_build_executor = ThreadPoolExecutor(max_workers=1)
+    # note (luojiaxuan): a fresh pool runs its first submit before the caller
+    # continues, which would let the fast build land without any wait.
+    scheduler._request_build_executor.submit(lambda: None).result()
+    scheduler.request_build_max_pending = 4
+    scheduler._request_build_backlog_limit = None
+    scheduler._request_builder = builder
+    return scheduler
+
+
+def _built_request(request_id: str) -> SimpleNamespace:
+    req = SimpleNamespace(
+        rid=request_id,
+        origin_input_ids=[1, 2, 3],
+        origin_input_ids_unpadded=[1, 2, 3],
+        sampling_params=SimpleNamespace(max_new_tokens=1, min_new_tokens=0),
+        output_ids=[],
+        priority=None,
+    )
+    return SimpleNamespace(req=req, enforce_request_limits=False, max_new_tokens=1)
+
+
+def test_a_fast_request_build_joins_the_waiting_queue_in_the_same_iteration(
+    monkeypatch,
+) -> None:
+    built = _built_request("req-fast")
+    scheduler = _scheduler_with_build_pool(monkeypatch, lambda payload: built)
+
+    try:
+        scheduler.process_input_requests([_new_stage_payload("req-fast")])
+    finally:
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler.waiting_queue == [built.req]
+    assert scheduler._pending_request_builds == {}
+
+
+def test_a_slow_request_build_does_not_hold_the_loop(monkeypatch) -> None:
+    release = threading.Event()
+    built = _built_request("req-slow")
+
+    def slow_builder(payload):
+        release.wait(timeout=5)
+        return built
+
+    scheduler = _scheduler_with_build_pool(monkeypatch, slow_builder)
+    try:
+        started = time.monotonic()
+        scheduler.process_input_requests([_new_stage_payload("req-slow")])
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.5
+        assert scheduler.waiting_queue == []
+        assert "req-slow" in scheduler._pending_request_builds
+
+        release.set()
+        scheduler._pending_request_builds["req-slow"][2].result(timeout=5)
+        scheduler.process_input_requests([])
+    finally:
+        release.set()
+        scheduler._request_build_executor.shutdown()
+
+    assert scheduler.waiting_queue == [built.req]
+
+
 def test_omni_scheduler_normalizes_req_token_arrays() -> None:
     origin = [1, 2, 3]
     req = SimpleNamespace(
@@ -2076,6 +2251,7 @@ def _construct_omni_scheduler(
     *,
     return_runtime_context: bool = False,
     server_max_queued_requests: int | None = 7,
+    prefill_decode_interval: int | None = 0,
     **kwargs,
 ) -> OmniScheduler | tuple[OmniScheduler, object]:
     """Build an OmniScheduler over the minimum stub surface __init__ touches."""
@@ -2099,6 +2275,7 @@ def _construct_omni_scheduler(
             SimpleNamespace(
                 reset_metrics=lambda: None,
                 is_stats_logging_rank=False,
+                scheduler_stage_metrics=SchedulerStageMetricsRecorder(enabled=False),
             ),
         ),
         raising=False,
@@ -2129,7 +2306,7 @@ def _construct_omni_scheduler(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
-        prefill_decode_interval=0,
+        prefill_decode_interval=prefill_decode_interval,
     )
 
     class StrictParallelContext:
@@ -2234,6 +2411,16 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
         )
     ]
     assert scheduler._abort_on_queued_limit(object()) is False
+
+
+def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None:
+    """An unset interval leaves the borrowed prefill deferral disarmed."""
+    scheduler = _construct_omni_scheduler(monkeypatch, prefill_decode_interval=None)
+    extend_batch = SimpleNamespace(forward_mode=SimpleNamespace(is_extend=lambda: True))
+
+    scheduler._arm_prefill_decode_interval(extend_batch)
+
+    assert scheduler._should_defer_prefill() is False
 
 
 def test_refresh_upstream_parallel_state_reads_dcp_from_the_parallel_bag(
@@ -2354,6 +2541,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
             SimpleNamespace(
                 reset_metrics=lambda: None,
                 is_stats_logging_rank=False,
+                scheduler_stage_metrics=SchedulerStageMetricsRecorder(enabled=False),
             ),
         ),
         raising=False,
@@ -2743,6 +2931,7 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
     assert scheduler._deferred_request_payloads == {}
 
 
+@pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     """Preserves upstream max_new_tokens clamping for custom request builders."""
     scheduler = object.__new__(OmniScheduler)
@@ -2781,6 +2970,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     assert scheduler.outbox.empty()
 
 
+@pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
     """Clamp requests that pass the surface KV check but cannot be prefetched."""
     scheduler = object.__new__(OmniScheduler)
@@ -2837,6 +3027,7 @@ def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
     assert scheduler.outbox.empty()
 
 
+@pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     """Covers context-length validation for custom request builders."""
     scheduler = object.__new__(OmniScheduler)
@@ -2890,6 +3081,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert request_data.req is req
 
 
+@pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> None:
     """Request-limit and KV-capacity rejections are entry-rank emissions only."""
     monkeypatch.setattr(

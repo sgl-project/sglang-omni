@@ -20,7 +20,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 
 

@@ -97,12 +97,6 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
     assert raised.value is error
 
 
-def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
-    monkeypatch.delattr(torch, "npu", raising=False)
-
-    assert platforms.is_npu_available() is False
-
-
 def test_cpu_platform_needs_no_stage_process_env() -> None:
     spec = SimpleNamespace(stage_name="cpu", tp_size=2, gpu_id=None)
 
@@ -287,6 +281,12 @@ def test_xpu_captures_the_qwen3_tts_code_predictor() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_tts_predictor_graph() is True
     assert OmniPlatform().enable_tts_predictor_graph() is True
     assert CPUOmniPlatform().enable_tts_predictor_graph() is True
+
+
+def test_musa_captures_the_qwen3_tts_code_predictor() -> None:
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+
+    assert MUSAOmniPlatform().enable_tts_predictor_graph() is True
 
 
 def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:

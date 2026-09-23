@@ -24,14 +24,6 @@ def is_musa_available() -> bool:
     return bool(musa.is_available())
 
 
-def is_npu_available() -> bool:
-    try:
-        npu = torch.npu
-    except AttributeError:
-        return False
-    return bool(npu.is_available())
-
-
 def is_apple_silicon_mps_available() -> bool:
     return (
         host_platform.system() == "Darwin"
@@ -64,14 +56,14 @@ def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
         return CPUOmniPlatform()
     if platform.is_xpu():
         return XPUOmniPlatform()
+    if platform.is_npu():
+        return NPUOmniPlatform()
     # Note (yexiaodong): Explicit CPU and registered platform selections must
     # win. SGLang otherwise leaves Apple Metal on its generic platform.
     if type(platform) is SRTPlatform and is_apple_silicon_mps_available():
         return AppleOmniPlatform()
     if type(platform) is SRTPlatform and is_musa_available():
         return MUSAOmniPlatform()
-    if type(platform) is SRTPlatform and is_npu_available():
-        return NPUOmniPlatform()
     qualname = f"{type(platform).__module__}.{type(platform).__qualname__}"
     return load_platform_class(qualname)()
 

@@ -31,7 +31,7 @@ open OmniTyper/dist/OmniTyper.app
 
 The setup script reuses the repository's [installer](../install.sh). It creates
 `OmniTyper/.venv` with Python 3.12 and installs the Apple Silicon dependencies for
-SGLang `v0.5.19`, the current SGLang-Omni checkout, and `ffmpeg@7`. It does not
+SGLang `v0.5.20`, the current SGLang-Omni checkout, and `ffmpeg@7`. It does not
 install CUDA packages or replace system Python.
 
 On first launch:

@@ -19,7 +19,7 @@ from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
     MingStreamingDetokenizeScheduler,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 # ---------------------------------------------------------------------------
 # Mock helpers

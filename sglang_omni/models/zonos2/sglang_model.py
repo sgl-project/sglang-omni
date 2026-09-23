@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.runtime_context import get_schedule
 
 from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
@@ -238,15 +239,12 @@ class Zonos2SGLangModel(nn.Module):
             torch.empty(self.audio_vocab * self.n_codebooks, cfg.dim)
         )
 
-        try:
-            from sglang.srt.server_args import get_global_server_args
-
-            max_bs = int(get_global_server_args().max_running_requests or 1)
-        except Exception:
-            max_bs = 256
         w = self.embedders[0].weight
         self._decode_input_embedding = nn.Embedding(
-            max_bs, cfg.dim, device=w.device, dtype=w.dtype
+            get_schedule().max_running_requests,
+            cfg.dim,
+            device=w.device,
+            dtype=w.dtype,
         )
         self._decode_input_embedding.weight.requires_grad_(False)
         # note (Yue Yin): on-device per-request decode state (feedback + EOS +

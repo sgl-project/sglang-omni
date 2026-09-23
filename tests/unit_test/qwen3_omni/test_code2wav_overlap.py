@@ -29,7 +29,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.utils import cuda_staging
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from tests.unit_test.fixtures.accelerator import require_cuda

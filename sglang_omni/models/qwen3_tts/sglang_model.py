@@ -21,7 +21,7 @@ from sglang.srt.layers.quantization.unquant import (
     get_bf16_gemm_backend,
 )
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.runtime_context import get_exec, get_parallel
+from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
@@ -49,7 +49,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -77,9 +76,10 @@ def predictor_gqa_attention(
     *,
     num_heads: int,
     num_key_value_heads: int,
+    is_causal: bool,
 ) -> torch.Tensor:
-    """Run Predictor GQA, preferring Ascend's inference kernel on NPU."""
-    if q.device.type == "npu":
+    """Run Predictor GQA, preferring Ascend's inference kernel on NPU for one query."""
+    if q.device.type == "npu" and not is_causal:
         fused_attention = getattr(
             getattr(torch.ops, "npu", None),
             "npu_fused_infer_attention_score",
@@ -101,7 +101,7 @@ def predictor_gqa_attention(
         q,
         key,
         value,
-        is_causal=False,
+        is_causal=is_causal,
         enable_gqa=True,
     )
 
@@ -289,7 +289,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        max_batch_size = get_global_server_args().max_running_requests
+        max_batch_size = get_schedule().max_running_requests
         self._feedback_buffer = torch.zeros(
             max_batch_size,
             config.hidden_size,
@@ -923,8 +923,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = None
         self.speech_tokenizer = None
 
-        server_args = get_global_server_args()
-        max_batch_size = server_args.max_running_requests
+        server_args = get_context().server_args
+        max_batch_size = get_schedule().max_running_requests
         hidden_size = config.hidden_size
         predictor_len = config.num_code_groups + 1
         device = self.model.codec_embedding.weight.device
@@ -969,6 +969,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             * predictor_len
             + self._predictor_positions[:, None]
         ).contiguous()
+        # note(ratish): the first pass carries two tokens per request, request by
+        # request, so a batch's positions and cache slots are a prefix of these.
+        self._predictor_pair_positions = self._predictor_positions[:2].repeat(
+            max_batch_size
+        )
+        self._predictor_pair_cache_slots = (
+            self._predictor_cache_slots[:2].t().reshape(-1)
+        )
         self._predictor_rope_stores_kv = self.resolve_predictor_rope_store(
             cp_attn, device=device
         )
@@ -1549,34 +1557,31 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             layer0_embed = self.get_input_embeddings()(layer0_code).to(
                 dtype=predictor_dtype
             )
-            layer0_predictor_embed = self.code_predictor.project_input(layer0_embed)
             pos_codes = result_codes[:, :, pos]
             pos_summed = summed_embeddings[:, pos, :]
             pos_summed.zero_()
-            talker_slice = talker_hidden[:, pos : pos + 1, :]
-            talker_predictor_embed = self.code_predictor.project_input(talker_slice).to(
-                dtype=predictor_dtype
-            )
-            if talker_predictor_embed is talker_slice:
-                # note(ratish): the fused o_proj epilogue overwrites its residual,
-                # which on the first layer is this tensor.
-                talker_predictor_embed = talker_slice.clone()
             pos_codes[:, 0].copy_(layer0_code[:, 0])
             pos_summed.add_(layer0_embed[:, 0, :])
 
-            cache_len = 0
-            self.predictor_forward_one_token(
-                token_embeds=talker_predictor_embed,
-                batch_size=batch_size,
-                cache_len=cache_len,
+            # note(ratish): the talker hidden and the layer 0 embedding are the
+            # first two tokens; one causal pass reads the predictor weights once.
+            pair_embeds = self.code_predictor.project_input(
+                torch.cat(
+                    (
+                        talker_hidden[:, pos : pos + 1, :].to(dtype=predictor_dtype),
+                        layer0_embed,
+                    ),
+                    dim=1,
+                )
             )
-            cache_len += 1
-            last_hidden = self.predictor_forward_one_token(
-                token_embeds=layer0_predictor_embed,
+            # note(ratish): dense rows, the gemv and cutedsl lm_head GEMMs view
+            # their input as 2D and read it with a fixed row stride.
+            last_hidden = self.predictor_forward_tokens(
+                token_embeds=pair_embeds,
                 batch_size=batch_size,
-                cache_len=cache_len,
-            )
-            cache_len += 1
+                cache_len=0,
+            )[:, 1:, :].contiguous()
+            cache_len = pair_embeds.shape[1]
 
             sub_positions = (
                 self.sub_seed_positions(semantic_positions[:, pos])
@@ -1612,7 +1617,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     pos_summed.add_(new_embed[:, 0, :])
                 new_predictor_embed = self.code_predictor.project_input(new_embed)
                 if layer_idx < num_groups - 2:
-                    last_hidden = self.predictor_forward_one_token(
+                    last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
                         cache_len=cache_len,
@@ -1753,18 +1758,27 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         ).to(device=logits.device, dtype=torch.long)
         return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1).to(torch.long)
 
-    def predictor_forward_one_token(
+    def predictor_forward_tokens(
         self,
         *,
         token_embeds: torch.Tensor,
         batch_size: int,
         cache_len: int,
     ) -> torch.Tensor:
-        hidden_size = token_embeds.shape[-1]
-        positions = self._predictor_position_rows[cache_len, :batch_size]
+        """Run the predictor stack on token_embeds [batch, tokens, hidden] at slots
+        cache_len onward: one token at any slot, or the pair at slots 0 and 1."""
+        num_tokens, hidden_size = token_embeds.shape[1:]
+        if num_tokens == 1:
+            positions = self._predictor_position_rows[cache_len, :batch_size]
+            cache_slots = self._predictor_cache_slots[cache_len, :batch_size]
+        else:
+            assert (num_tokens, cache_len) == (2, 0), "pair tables hold slots 0 and 1"
+            positions = self._predictor_pair_positions[: 2 * batch_size]
+            cache_slots = self._predictor_pair_cache_slots[: 2 * batch_size]
+        num_rows = batch_size * num_tokens
         # note(ratish): 2D rows for the fused add and norm, which every
         # backend's kernel expects and which writes both operands in place.
-        residual = token_embeds
+        residual = token_embeds.reshape(num_rows, 1, hidden_size)
         mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
             if mlp_out is None:
@@ -1773,13 +1787,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 normed, residual = layer.input_layernorm(
                     mlp_out, residual.reshape(-1, hidden_size)
                 )
-                residual = residual.reshape(batch_size, 1, hidden_size)
+                residual = residual.reshape(num_rows, 1, hidden_size)
             attn_input = self.predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
-                hidden_states=normed.reshape(batch_size, 1, hidden_size),
+                hidden_states=normed.reshape(batch_size, num_tokens, hidden_size),
                 positions=positions,
-                batch_size=batch_size,
+                cache_slots=cache_slots,
                 cache_len=cache_len,
             )
             residual = self.predictor_o_proj_add_residual(
@@ -1792,7 +1806,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         normed, _ = self.code_predictor.model.norm(
             mlp_out, residual.reshape(-1, hidden_size)
         )
-        return normed.reshape(batch_size, 1, hidden_size)
+        return normed.reshape(batch_size, num_tokens, hidden_size)
 
     @staticmethod
     def predictor_o_proj_add_residual(
@@ -1869,12 +1883,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         attn: Qwen3OmniMoeThinkerTextAttention,
         hidden_states: torch.Tensor,
         positions: torch.Tensor,
-        batch_size: int,
+        cache_slots: torch.Tensor,
         cache_len: int,
     ) -> torch.Tensor:
-        _, seq_len, hidden_size = hidden_states.shape
-        if seq_len != 1:
-            raise ValueError("Qwen3-TTS predictor cache expects one token")
+        batch_size, num_tokens, hidden_size = hidden_states.shape
         flat_hidden = hidden_states.reshape(-1, hidden_size)
         qkv, _ = attn.qkv_proj(flat_hidden)
         q_linear, k_linear, v = qkv.split(
@@ -1893,7 +1905,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 value=v,
                 k_buffer=self._predictor_k_rows[layer_idx],
                 v_buffer=self._predictor_v_rows[layer_idx],
-                cache_loc=self._predictor_cache_slots[cache_len, :batch_size],
+                cache_loc=cache_slots,
             )
         else:
             store = None
@@ -1903,29 +1915,29 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             k,
             fused_set_kv_buffer_arg=store,
         )
+        end = cache_len + num_tokens
         if store is None:
-            self._predictor_k_cache[layer_idx, :batch_size, cache_len].copy_(
-                k.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            self._predictor_k_cache[layer_idx, :batch_size, cache_len:end].copy_(
+                k.view(batch_size, num_tokens, attn.num_kv_heads, attn.head_dim)
             )
-            self._predictor_v_cache[layer_idx, :batch_size, cache_len].copy_(
-                v.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            self._predictor_v_cache[layer_idx, :batch_size, cache_len:end].copy_(
+                v.view(batch_size, num_tokens, attn.num_kv_heads, attn.head_dim)
             )
-        q = q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
-        cached_k = self._predictor_k_cache[
-            layer_idx, :batch_size, : cache_len + 1
-        ].transpose(1, 2)
-        cached_v = self._predictor_v_cache[
-            layer_idx, :batch_size, : cache_len + 1
-        ].transpose(1, 2)
+        q = q.reshape(batch_size, num_tokens, attn.num_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        cached_k = self._predictor_k_cache[layer_idx, :batch_size, :end].transpose(1, 2)
+        cached_v = self._predictor_v_cache[layer_idx, :batch_size, :end].transpose(1, 2)
         attn_output = predictor_gqa_attention(
             q,
             cached_k,
             cached_v,
             num_heads=attn.num_heads,
             num_key_value_heads=attn.num_kv_heads,
+            is_causal=num_tokens > 1,
         )
         attn_output = attn_output.transpose(1, 2).reshape(
-            batch_size, attn.num_heads * attn.head_dim
+            batch_size * num_tokens, attn.num_heads * attn.head_dim
         )
         return attn_output
 

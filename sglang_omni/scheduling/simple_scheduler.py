@@ -17,7 +17,7 @@ import threading
 import time
 from typing import Any, Awaitable, Callable
 
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,10 @@ class SimpleScheduler:
             self._abort_callback(request_id)
         except Exception:
             logger.exception("SimpleScheduler: abort cleanup failed for %s", request_id)
+
+    def is_aborted(self, request_id: str) -> bool:
+        with self._abort_lock:
+            return request_id in self._aborted
 
     def consume_if_aborted(self, request_id: str) -> bool:
         with self._abort_lock:

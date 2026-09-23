@@ -52,7 +52,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,

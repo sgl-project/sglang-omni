@@ -19,7 +19,7 @@ import torch
 
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
 @dataclass

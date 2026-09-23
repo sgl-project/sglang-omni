@@ -229,7 +229,7 @@ def create_mlx_model_worker(
             return self.ps.tp_rank
 
         def _init_model_runner(self):
-            MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
+            MlxModelRunnerStub.validate_startup_weight_load_mode()
             if model_arch == "FunCosyVoice3SGLangModel":
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
                 # 6,761-codec-token vocabulary rather than Qwen2 text tokens.

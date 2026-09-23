@@ -20,7 +20,7 @@ from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class _FakeCodec:

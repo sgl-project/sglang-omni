@@ -11,6 +11,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.runner_utils.capture_mode import get_is_capture_mode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.runtime_context import get_context, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import add_prefix
 from torch import nn
@@ -44,7 +45,6 @@ from sglang_omni.vendor.sglang.layers import (
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
 from sglang_omni.vendor.sglang.models import apply_qk_norm
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
 
 logger = logging.getLogger(__name__)
@@ -470,7 +470,7 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
 
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers_to_capture = []
-        max_batch_size = get_global_server_args().max_running_requests
+        max_batch_size = get_schedule().max_running_requests
         self._cp_enabled = True
         self._feedback_buffer = torch.zeros(
             max_batch_size,
@@ -882,8 +882,8 @@ class Qwen3OmniTalker(nn.Module):
         device = self.model.codec_embedding.weight.device
         hidden_size = config.text_config.hidden_size
         predictor_len = config.num_code_groups + 1
-        server_args = get_global_server_args()
-        max_batch_size = server_args.max_running_requests
+        server_args = get_context().server_args
+        max_batch_size = get_schedule().max_running_requests
         self._cp_enabled = self.model._cp_enabled
         self._feedback_buffer = self.model._feedback_buffer
         self._feedback_mask = self.model._feedback_mask

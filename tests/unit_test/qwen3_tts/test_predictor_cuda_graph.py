@@ -56,6 +56,7 @@ PRED_VOCAB = 16
 MAX_BS = 16
 BUCKETS = (1, 2, 4, 8, 16)
 DTYPE = torch.bfloat16
+BF16_GEMM_ROUNDING = {"atol": 2**-6, "rtol": 2**-7}
 
 
 class _TupleLinear(nn.Module):
@@ -112,6 +113,14 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker._predictor_positions = positions
     talker._predictor_position_rows = (
         positions[:, None].expand(predictor_len, MAX_BS).contiguous()
+    )
+    talker._predictor_cache_slots = (
+        torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * predictor_len
+        + positions[:, None]
+    ).contiguous()
+    talker._predictor_pair_positions = positions[:2].repeat(MAX_BS)
+    talker._predictor_pair_cache_slots = (
+        talker._predictor_cache_slots[:2].t().reshape(-1)
     )
     talker._predictor_k_cache = torch.zeros(
         1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
@@ -409,7 +418,7 @@ def _predictor_one_token_out_of_place(
             attn=layer.self_attn,
             hidden_states=normed.reshape(batch_size, 1, hidden_size),
             positions=positions,
-            batch_size=batch_size,
+            cache_slots=talker._predictor_cache_slots[cache_len, :batch_size],
             cache_len=cache_len,
         )
         residual = talker.predictor_o_proj_add_residual(
@@ -440,7 +449,7 @@ def test_eager_predictor_in_place_residual_norms_match_the_out_of_place_form(
         expected = _predictor_one_token_out_of_place(
             reference, embeds.clone(), cache_len=0
         )
-        actual = in_place.predictor_forward_one_token(
+        actual = in_place.predictor_forward_tokens(
             token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
         )
 
@@ -474,9 +483,7 @@ def test_eager_predictor_adds_each_residual_inside_the_norm_that_follows(
     monkeypatch.setattr(RMSNorm, "forward", recording_forward)
     embeds = torch.randn(2, 1, HIDDEN, device=device, dtype=DTYPE)
     with torch.no_grad():
-        talker.predictor_forward_one_token(
-            token_embeds=embeds, batch_size=2, cache_len=0
-        )
+        talker.predictor_forward_tokens(token_embeds=embeds, batch_size=2, cache_len=0)
 
     assert all(dim == 2 for dim, _ in calls)
     fused_calls = [fused for _, fused in calls]
@@ -496,17 +503,54 @@ def test_eager_predictor_output_survives_the_next_token():
     ]
 
     with torch.no_grad():
-        first = talker.predictor_forward_one_token(
+        first = talker.predictor_forward_tokens(
             token_embeds=embeds[0], batch_size=2, cache_len=0
         )
         snapshot = first.clone()
-        second = talker.predictor_forward_one_token(
+        second = talker.predictor_forward_tokens(
             token_embeds=embeds[1], batch_size=2, cache_len=1
         )
 
     assert torch.equal(first, snapshot)
     assert second.data_ptr() != first.data_ptr()
     assert not torch.equal(second, first)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 3, 16])
+def test_the_pair_pass_matches_two_one_token_passes(batch_size: int):
+    device = torch.device("cuda")
+    pair = _with_predictor_layers(_build_talker(device), 2)
+    serial = _with_predictor_layers(_build_talker(device), 2)
+    generator = torch.Generator(device="cpu").manual_seed(batch_size)
+    embeds = torch.randn(
+        batch_size, 2, HIDDEN, generator=generator, dtype=torch.float32
+    ).to(device, DTYPE)
+
+    with torch.no_grad():
+        from_pair = pair.predictor_forward_tokens(
+            token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
+        )
+        first = serial.predictor_forward_tokens(
+            token_embeds=embeds[:, :1].clone(), batch_size=batch_size, cache_len=0
+        )
+        second = serial.predictor_forward_tokens(
+            token_embeds=embeds[:, 1:].clone(), batch_size=batch_size, cache_len=1
+        )
+
+    torch.testing.assert_close(
+        from_pair, torch.cat((first, second), dim=1), **BF16_GEMM_ROUNDING
+    )
+    torch.testing.assert_close(
+        pair._predictor_k_cache[:, :batch_size, :2],
+        serial._predictor_k_cache[:, :batch_size, :2],
+        **BF16_GEMM_ROUNDING,
+    )
+    torch.testing.assert_close(
+        pair._predictor_v_cache[:, :batch_size, :2],
+        serial._predictor_v_cache[:, :batch_size, :2],
+        **BF16_GEMM_ROUNDING,
+    )
 
 
 @pytest.mark.accelerator
@@ -521,10 +565,10 @@ def test_eager_predictor_accepts_a_strided_input_and_leaves_its_neighbours():
     contiguous = strided.clone()
 
     with torch.no_grad():
-        from_strided = strided_talker.predictor_forward_one_token(
+        from_strided = strided_talker.predictor_forward_tokens(
             token_embeds=strided, batch_size=2, cache_len=0
         )
-        from_contiguous = contiguous_talker.predictor_forward_one_token(
+        from_contiguous = contiguous_talker.predictor_forward_tokens(
             token_embeds=contiguous, batch_size=2, cache_len=0
         )
 
@@ -1730,8 +1774,34 @@ def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
         torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * predictor_len
         + positions[:, None]
     ).contiguous()
+    talker._predictor_pair_positions = positions[:2].repeat(MAX_BS)
+    talker._predictor_pair_cache_slots = (
+        talker._predictor_cache_slots[:2].t().reshape(-1)
+    )
     talker._predictor_rope_stores_kv = stores
     return talker
+
+
+def _rope_attention(device: torch.device) -> SimpleNamespace:
+    return SimpleNamespace(
+        q_size=ROPE_NUM_HEADS * ROPE_HEAD_DIM,
+        kv_size=ROPE_NUM_KV_HEADS * ROPE_HEAD_DIM,
+        num_heads=ROPE_NUM_HEADS,
+        num_kv_heads=ROPE_NUM_KV_HEADS,
+        head_dim=ROPE_HEAD_DIM,
+        q_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        k_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        alt_stream=None,
+        qkv_proj=_TupleLinear(
+            ROPE_HIDDEN, (ROPE_NUM_HEADS + 2 * ROPE_NUM_KV_HEADS) * ROPE_HEAD_DIM
+        ).to(device, DTYPE),
+        # A fresh rotary resolves this fixture's dispatch instead of reusing
+        # get_rope's process-wide cache from another parameterized case.
+        rotary_emb=RotaryEmbedding(
+            ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000, True, DTYPE
+        ).to(device),
+        compatible_with_fused_kv_buffer=True,
+    )
 
 
 def _rope_copy_reference(
@@ -1803,25 +1873,7 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
     # Other tests isolate the graph machinery with a stub; this test covers
     # the actual normalized Q/K tensors handed to the upstream rotary.
     monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
-    attn = SimpleNamespace(
-        q_size=ROPE_NUM_HEADS * ROPE_HEAD_DIM,
-        kv_size=ROPE_NUM_KV_HEADS * ROPE_HEAD_DIM,
-        num_heads=ROPE_NUM_HEADS,
-        num_kv_heads=ROPE_NUM_KV_HEADS,
-        head_dim=ROPE_HEAD_DIM,
-        q_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
-        k_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
-        alt_stream=None,
-        qkv_proj=_TupleLinear(
-            ROPE_HIDDEN, (ROPE_NUM_HEADS + 2 * ROPE_NUM_KV_HEADS) * ROPE_HEAD_DIM
-        ).to(device, DTYPE),
-        # A fresh rotary resolves this fixture's dispatch instead of reusing
-        # get_rope's process-wide cache from another parameterized case.
-        rotary_emb=RotaryEmbedding(
-            ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000, True, DTYPE
-        ).to(device),
-        compatible_with_fused_kv_buffer=True,
-    )
+    attn = _rope_attention(device)
     stores = Qwen3TTSTalker.resolve_predictor_rope_store(attn, device=device)
     stored = _rope_store_talker(device, stores=stores)
     copied = _rope_store_talker(device, stores=False)
@@ -1847,7 +1899,7 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
                     attn=attn,
                     hidden_states=hidden_steps[slot],
                     positions=talker._predictor_position_rows[slot, :batch_size],
-                    batch_size=batch_size,
+                    cache_slots=talker._predictor_cache_slots[slot, :batch_size],
                     cache_len=slot,
                 )
                 for slot in range(ROPE_PREDICTOR_LEN)
@@ -1902,6 +1954,42 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
             hidden_steps.normal_()
             graph.replay()
             assert_matches_reference(replay_output)
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_rope_store_writes_the_pair_where_the_copy_path_writes(
+    batch_size: int,
+    predictor_rope_dispatch: str,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    device = torch.device("cuda")
+    torch.manual_seed(13)
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
+    attn = _rope_attention(device)
+    stores = Qwen3TTSTalker.resolve_predictor_rope_store(attn, device=device)
+    stored = _rope_store_talker(device, stores=stores)
+    copied = _rope_store_talker(device, stores=False)
+    hidden = torch.randn(batch_size, 2, ROPE_HIDDEN, device=device, dtype=DTYPE)
+
+    def run_pair(talker: Qwen3TTSTalker) -> torch.Tensor:
+        return talker.predictor_cached_self_attention(
+            layer_idx=0,
+            attn=attn,
+            hidden_states=hidden,
+            positions=talker._predictor_pair_positions[: 2 * batch_size],
+            cache_slots=talker._predictor_pair_cache_slots[: 2 * batch_size],
+            cache_len=0,
+        )
+
+    with torch.no_grad():
+        output = run_pair(stored)
+        expected = run_pair(copied)
+
+    assert stores == (predictor_rope_dispatch == "cuda")
+    assert torch.equal(output, expected)
+    assert torch.equal(stored._predictor_k_cache, copied._predictor_k_cache)
+    assert torch.equal(stored._predictor_v_cache, copied._predictor_v_cache)
 
 
 if __name__ == "__main__":

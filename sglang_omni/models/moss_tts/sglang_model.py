@@ -28,6 +28,7 @@ from sglang.srt.model_executor.forward_batch_info import (
 )
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
+from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.moss_tts.payload_types import moss_tts_special_token_defaults
@@ -156,16 +157,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             persistent=False,
         )
 
-        max_batch_size = getattr(getattr(self, "config", None), "max_batch_size", None)
-        try:
-            from sglang.srt.server_args import get_global_server_args
-
-            max_batch_size = get_global_server_args().max_running_requests
-        except Exception:
-            max_batch_size = max_batch_size or 1
         weight = self.first_embedding_weight()
         self._decode_input_embedding = torch.nn.Embedding(
-            int(max_batch_size or 1),
+            get_schedule().max_running_requests,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,

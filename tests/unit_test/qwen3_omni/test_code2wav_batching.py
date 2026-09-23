@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     serial_window_frames,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 

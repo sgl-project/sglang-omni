@@ -16,7 +16,7 @@ from sglang_omni.models.ming_tts.payload_types import (
 )
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 

@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_parallel, get_stream
+from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -41,7 +41,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
 
 fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
@@ -229,7 +228,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             not isinstance(self.rotary_emb, MRotaryEmbedding)
         ) and self.head_dim in (64, 128, 256)
         self.use_fused_qk_norm_rope = (
-            get_global_server_args().enable_fused_qk_norm_rope
+            get_exec().kernel.enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope
             and fused_qk_norm_rope is not None
         )
@@ -412,8 +411,7 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         )
 
         self.experts = get_moe_impl_class(quant_config)(
-            num_experts=config.num_experts
-            + get_global_server_args().ep_num_redundant_experts,
+            num_experts=config.num_experts + get_exec().moe.ep_num_redundant_experts,
             top_k=config.num_experts_per_tok,
             layer_id=layer_id,
             hidden_size=config.hidden_size,

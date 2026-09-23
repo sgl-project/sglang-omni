@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData
 

@@ -33,9 +33,6 @@ class MUSAOmniPlatform(CUDAOmniPlatform):
         # its own implementation and validation of this capability.
         return None
 
-    def enable_tts_predictor_graph(self) -> bool:
-        return False
-
     def apply_model_worker_backend_policy(
         self,
         server_args: ServerArgs,

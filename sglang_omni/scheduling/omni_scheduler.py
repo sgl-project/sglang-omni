@@ -21,6 +21,7 @@ import types
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from itertools import islice
 from typing import Any, Callable
 
@@ -60,7 +61,7 @@ from sglang_omni.proto.admin import (
     ADMIN_UPDATE_WEIGHTS_FROM_TENSOR,
     ADMIN_WEIGHTS_CHECKER,
 )
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,10 @@ class NoOpGrammarManager:
 
     def __len__(self) -> int:
         return 0
+
+
+# note (luojiaxuan): a build done this soon joins the next batch, not the one after.
+_REQUEST_BUILD_ADMISSION_WAIT_S = 0.002
 
 
 class OmniScheduler:
@@ -393,9 +398,10 @@ class OmniScheduler:
         self.is_mixed_chunk = (
             self.chunked_prefill_size is not None and get_schedule().enable_mixed_chunk
         )
-        self.enable_dynamic_chunking = False
-        self.prefill_decode_interval = get_schedule().prefill_decode_interval
+        self.dynamic_chunk_sizer = None
+        self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
         self._prefill_decode_interval_remaining = 0
+        self.processed_tokens_counter = 0
 
         # Schedule policy
         from sglang.srt.managers.schedule_policy import SchedulePolicy
@@ -431,6 +437,7 @@ class OmniScheduler:
         self.enable_trace = False
         self.enable_hierarchical_cache = False
         self.enable_hicache_storage = False
+        self.enable_unified_cache_external_linker = False
         self.enable_kv_cache_events = False
         self.is_generation = True
         self.skip_tokenizer_init = True
@@ -501,6 +508,7 @@ class OmniScheduler:
         self.ipc_channels = OmniIpcChannels(self)
         self.init_metrics_collector(self.tp_rank, self.pp_rank, self.dp_rank)
         self.init_metrics_reporter(self.tp_rank, self.pp_rank, self.dp_rank)
+        self.scheduler_stage_metrics = self.metrics_reporter.scheduler_stage_metrics
         self.init_upstream_scheduler_components()
 
         self._running = False
@@ -825,6 +833,17 @@ class OmniScheduler:
 
     def recv_requests(self):
         """Drain inbox on rank 0 and broadcast scheduler inputs to TP followers."""
+        if self.is_entry_rank:
+            # note (ratish): only this rank reads the clock. The failed request
+            # makes the coordinator broadcast an abort, which reaches followers
+            # the way every other abort does.
+            for timeout_abort in self._poll_timeout_aborts():
+                if timeout_abort.rid in self._aborted_request_ids:
+                    continue
+                self.emit_request_error(
+                    timeout_abort.rid, RuntimeError(timeout_abort.abort_message)
+                )
+                self.abort(timeout_abort.rid)
         recv_msgs = self.recv_scheduler_messages()
         new_reqs: list = []
         for msg in recv_msgs:
@@ -872,6 +891,7 @@ class OmniScheduler:
         recv_reqs, rejected = self.stage_request_build_payloads(recv_reqs)
         for payload in rejected:
             self.reject_queue_full(payload)
+        submitted_build = False
         for payload in recv_reqs:
             req_id = payload.request_id
             with self._request_admission_lock:
@@ -919,6 +939,7 @@ class OmniScheduler:
                     future = request_build_executor.submit(
                         self.run_request_builder, payload, active_stage
                     )
+                    submitted_build = True
                     self._pending_request_builds[req_id] = (
                         payload,
                         pending_stream_done,
@@ -937,6 +958,14 @@ class OmniScheduler:
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
+        if submitted_build:
+            # note (luojiaxuan): the drain admits from the head of the pending
+            # builds and stops at the first unfinished one, so only the head
+            # decides whether waiting admits anything.
+            with self._request_admission_lock:
+                head = next(iter(self._pending_request_builds.values()), None)
+            if head is not None:
+                wait_futures([head[2]], timeout=_REQUEST_BUILD_ADMISSION_WAIT_S)
         self.drain_request_build_results()
         self.drain_request_admission_results()
 
@@ -1437,6 +1466,8 @@ class OmniScheduler:
         batch.launch_ts = time.monotonic()
         batch.after_idle_gap = self._sched_idled
         self._sched_idled = False
+        if batch.extend_num_tokens:
+            self.processed_tokens_counter += batch.extend_num_tokens
 
     def _run_batch(self, batch, pp_proxy_tensors=None):
         """Run a batch through the model runner.
