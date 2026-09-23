@@ -536,6 +536,9 @@ class Client:
             if isinstance(language, str):
                 chunk.language = language
             Client._set_audio_data(chunk, result)
+            image_b64 = result.get("image_b64")
+            if isinstance(image_b64, str):
+                chunk.image_b64 = image_b64
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):

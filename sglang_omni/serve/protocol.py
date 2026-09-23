@@ -288,6 +288,30 @@ class GenerateResponse(BaseModel):
     meta_info: GenerateMetaInfo
 
 
+class ImageGenerationRequest(BaseModel):
+    """First-pass SenseNova T2I request (base64 PNG only)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str | None = None
+    prompt: str = Field(min_length=1)
+    size: str = "2048x2048"
+    n: int = Field(default=1, ge=1, le=1)
+    response_format: Literal["b64_json"] = "b64_json"
+    seed: int = Field(default=42, ge=0)
+    num_inference_steps: int = Field(default=50, ge=1)
+    guidance_scale: float = Field(default=4.0, ge=0, allow_inf_nan=False)
+
+
+class ImageGenerationData(BaseModel):
+    b64_json: str
+
+
+class ImageGenerationResponse(BaseModel):
+    created: int
+    data: list[ImageGenerationData]
+
+
 SUPPORTED_TTS_RESPONSE_FORMATS = frozenset({"wav", "mp3", "flac", "pcm", "aac", "opus"})
 SUPPORTED_TTS_LANGUAGES = frozenset(
     {
