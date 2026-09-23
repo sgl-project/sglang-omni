@@ -6,6 +6,7 @@ import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.profiler.base_profiler import ProfilerBase
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -37,7 +38,7 @@ class NPUOmniPlatform(OmniPlatform):
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False
 
-    def get_torch_profiler(self) -> TorchProfiler:
+    def get_torch_profiler(self) -> type[ProfilerBase]:
         from sglang_omni.profiler.torch_profiler import TorchNPUProfiler
 
         return TorchNPUProfiler

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.platforms.device_mixin import PlatformEnum
+from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform

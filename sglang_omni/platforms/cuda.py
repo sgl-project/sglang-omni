@@ -6,10 +6,13 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.platforms.cuda import CudaDeviceMixin
+from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
+from sglang_omni.transport import TransportKind
 from sglang_omni.utils.misc import model_config_has_moe, normalize_quantization
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -94,8 +97,6 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
-        from sglang_omni.comm.data_ref import TransportKind
-
         return TransportKind.CUDA_IPC
 
     def get_fused_qk_norm_rope(self):

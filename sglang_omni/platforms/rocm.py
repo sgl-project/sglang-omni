@@ -8,6 +8,7 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.transport import TransportKind
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -65,8 +66,6 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         return env_updates
 
     def get_intra_node_transport(self):
-        from sglang_omni.comm.data_ref import TransportKind
-
         return TransportKind.SHM
 
     def get_fused_qk_norm_rope(self):

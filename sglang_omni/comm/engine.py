@@ -15,13 +15,7 @@ import msgspec
 import torch
 
 from sglang_omni.comm import stage_io
-from sglang_omni.comm.data_ref import (
-    BackendRef,
-    DataKind,
-    DataLayout,
-    DataRef,
-    TransportKind,
-)
+from sglang_omni.comm.data_ref import BackendRef, DataKind, DataLayout, DataRef
 from sglang_omni.comm.kv_transfer import (
     KVPageDestination,
     KVPageLease,
@@ -42,6 +36,7 @@ from sglang_omni.proto import (
     StagePayload,
 )
 from sglang_omni.relay.base import Relay
+from sglang_omni.transport import TransportKind
 
 logger = logging.getLogger(__name__)
 

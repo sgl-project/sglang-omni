@@ -8,11 +8,11 @@ from typing import Any
 
 import torch
 
-from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.comm_trace import enabled as _comm_trace_enabled
 from sglang_omni.relay.base import Relay, create_relay
+from sglang_omni.transport import TransportKind
 
 logger = logging.getLogger(__name__)
 

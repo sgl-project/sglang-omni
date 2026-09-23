@@ -7,12 +7,7 @@ from typing import Any
 
 import msgspec
 
-
-class TransportKind(str, Enum):
-    LOCAL_OBJECT = "local_object"
-    CUDA_IPC = "cuda_ipc"
-    SHM = "shm"
-    MOONCAKE = "mooncake"
+from sglang_omni.transport import TransportKind
 
 
 class DataKind(str, Enum):

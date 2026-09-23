@@ -6,11 +6,12 @@ from __future__ import annotations
 import pickle
 import random
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import torch
 import torch.distributed as dist
+from sglang.srt.configs.model_config import ModelConfig
 
 
 def get_layer_id(weight_name):

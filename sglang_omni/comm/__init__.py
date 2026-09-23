@@ -8,7 +8,6 @@ from sglang_omni.comm.data_ref import (
     DataRef,
     MetadataTensorRef,
     TensorMeta,
-    TransportKind,
 )
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.comm.kv_transfer import (
@@ -20,6 +19,7 @@ from sglang_omni.comm.kv_transfer import (
     KVReceiver,
 )
 from sglang_omni.comm.router import CommRouter
+from sglang_omni.transport import TransportKind
 
 __all__ = [
     "BackendRef",

@@ -19,10 +19,10 @@ from sglang_omni.comm.data_ref import (
     DataRef,
     MetadataTensorRef,
     TensorMeta,
-    TransportKind,
 )
 from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.relay.base import Relay
+from sglang_omni.transport import TransportKind
 
 _TORCH_DTYPES: dict[str, torch.dtype] = {
     "torch.bool": torch.bool,

@@ -10,6 +10,7 @@ import torch
 from sglang.srt.platforms.device_mixin import PlatformEnum
 
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.transport import TransportKind
 
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
@@ -96,8 +97,6 @@ class AppleOmniPlatform(OmniPlatform):
         return {}
 
     def get_intra_node_transport(self):
-        from sglang_omni.comm.data_ref import TransportKind
-
         return TransportKind.SHM
 
     def empty_cache(self) -> None:

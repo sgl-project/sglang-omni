@@ -161,6 +161,8 @@ select = [
     "B010",     # Constant-name setattr
     "E722",     # No bare except
     "F403",     # No wildcard imports
+    "F821",     # Undefined names
+    "F823",     # Local variable read before assignment
     "N801",     # Class names
     "N815",     # Class-scope variable names
     "N816",     # Module-scope variable names
