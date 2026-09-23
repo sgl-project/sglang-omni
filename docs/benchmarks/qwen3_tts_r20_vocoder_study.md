@@ -1396,3 +1396,18 @@ CustomVoice 臂 1 rps 中位 31.8 ms、20 rps 53.5 ms(CI 部署形态:经 router
 GPU CI 恢复了(hyper/eval-h100 改由 Radix 平台分配),`pick TTS model` 按 `run-qwen3-tts` 标签选中 qwen3-tts,stage 1 日志里
 `TTS_CI_MODEL: qwen3-tts`、加载 `Qwen3-TTS-12Hz-1.7B-Base`,TTS CI 五个 stage 全部 success,确认测的是改动路径。
 luojiaxuan 同时授权:之后凡已 approve 的我方 PR 直接合。
+
+## 第三十四轮:C7 已由上游完成;下一步改查"CI 部署形态为什么多花 12 到 15 ms"(2026-09-23 PT,决策记录)
+
+**C7 不用做了**:准备动手时发现 Ratish 的 #2286(09-21 23:50 PT 合入)已经把 predictor 的两个 prologue token 合成一次因果前向,
+做法与我计划的一致(对齐参照实现的两 token prefill)。#2294 里标为已由 #2286 完成。
+
+**决策四件套**
+- 问题:predictor 侧只剩 C6(采样内核,约 0.3 ms/帧,要保持逐位一致的并列语义)和 C5(约 0.2 ms/帧),下一步做什么。
+- 默认:先不做 C6,改做一个不改代码的对照——同一个 main build,在三种部署形态下量首帧:出厂默认(D0)、
+  CI 形态即 vocoder 独立进程加显存份额(D1)、历轮 harness 形态 `max_running 48`(D2),出厂默认首尾各一次。
+- 理由:#2293 在 CI 形态下量到 CustomVoice 20 rps 首帧 53.5 ms,而同卡同树在 harness 形态下是 38 到 42 ms,
+  差 12 到 15 ms,比剩下任何一个 kernel 候选大一个数量级;而 `--vocoder.process vocoder` 正是 CI 和 cookbook 的推荐形态。
+  如果差距主要来自 vocoder 独立进程,那才是用户实际能拿到的最大一块。这个对照零代码、单卡约 80 分钟。
+- 回滚:这只是测量,不改任何默认;若结果显示差距来自 router 或别处,再回到 C6。
+- 外审:这是低成本侦察而非方向性投入,未单独发审;若结果要求改默认部署形态,落地前发审。
