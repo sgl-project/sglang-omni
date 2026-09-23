@@ -169,8 +169,13 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 
-        if self.cfg["n_kv_heads"] != self.cfg["n_heads"]:
-            raise ValueError("Native decoder requires equal Q/KV heads")
+        if (
+            self.cfg["n_kv_heads"] != self.cfg["n_heads"]
+            or self.cfg["n_heads"] % self.runtime.ulysses_degree
+        ):
+            raise ValueError(
+                "Native decoder requires equal Q/KV heads divisible by Ulysses degree"
+            )
         else:
             pass
         if self.cfg["all_patch_size"] != (2,) or self.cfg["all_f_patch_size"] != (1,):
@@ -238,46 +243,54 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         spatial = self.spatial_config
         if self.native_cache is None or self.native_cache[0] != key:
-            if any(image.shape != x[0].shape for image in x) or any(
-                cap.shape != cap_feats[0].shape for cap in cap_feats
-            ):
-                raise ValueError(
-                    "Native decoder requires a uniform latent/semantic batch"
+            with self.runtime.preparation("native input preparation"):
+                self.runtime.validate()
+                if any(image.shape != x[0].shape for image in x) or any(
+                    cap.shape != cap_feats[0].shape for cap in cap_feats
+                ):
+                    raise ValueError(
+                        "Native decoder requires a uniform latent/semantic batch"
+                    )
+                else:
+                    pass
+                full = torch.stack(x)
+                if full.shape[2] != 1:
+                    raise ValueError("Native spatial decoder supports one image frame")
+                else:
+                    pass
+                ratio = spatial.vae_config.arch_config.spatial_compression_ratio
+                batch = SimpleNamespace(
+                    raw_latent_shape=tuple(full.shape),
+                    height=full.shape[-2] * ratio,
+                    width=full.shape[-1] * ratio,
+                    prompt_embeds=[cap_feats],
+                    prompt_seq_lens=[[cap.shape[0] for cap in cap_feats]],
                 )
-            else:
-                pass
-            full = torch.stack(x)
-            if full.shape[2] != 1:
-                raise ValueError("Native spatial decoder supports one image frame")
-            else:
-                pass
-            ratio = spatial.vae_config.arch_config.spatial_compression_ratio
-            batch = SimpleNamespace(
-                raw_latent_shape=tuple(full.shape),
-                height=full.shape[-2] * ratio,
-                width=full.shape[-1] * ratio,
-                prompt_embeds=[cap_feats],
-                prompt_seq_lens=[[cap.shape[0] for cap in cap_feats]],
-            )
-            cond = spatial.prepare_pos_cond_kwargs(
-                batch, full.device, self.model.rotary_emb, full.dtype
-            )
-            batch.prompt_embeds = None
-            target = cond["image_seq_len_target"]
-            full_tokens = (full.shape[-2] // patch_size) * (
-                full.shape[-1] // patch_size
-            )
-            if target is not None and target != ((full_tokens + 31) // 32) * 32:
-                raise ValueError(
-                    "Native decoder changed the learned-padding token count"
+                local, _ = spatial.shard_latents_for_sp(batch, full)
+                if local.numel() == 0:
+                    raise ValueError(
+                        "Native decoder spatial plan produced an empty rank"
+                    )
+                else:
+                    pass
+                cond = spatial.prepare_pos_cond_kwargs(
+                    batch, full.device, self.model.rotary_emb, full.dtype
                 )
-            else:
-                pass
-            self.native_cache = (
-                key,
-                batch,
-                cond,
-            )
+                batch.prompt_embeds = None
+                target = cond["image_seq_len_target"]
+                full_tokens = (full.shape[-2] // patch_size) * (
+                    full.shape[-1] // patch_size
+                )
+                if (
+                    target is not None
+                    and target * self.runtime.sp_size != ((full_tokens + 31) // 32) * 32
+                ):
+                    raise ValueError(
+                        "Native SP layout changed the learned-padding token count"
+                    )
+                else:
+                    pass
+            self.native_cache = (key, batch, cond)
         else:
             pass
         _, batch, cond = self.native_cache
@@ -294,7 +307,13 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 f_patch_size=f_patch_size,
                 **cond,
             )
-        # Native forward returns -velocity. SP1 gather is an identity operation.
+        if not isinstance(prediction, torch.Tensor) or prediction.shape != local.shape:
+            raise RuntimeError(
+                "Native decoder must return the local [B, C, F, H, W] shape"
+            )
+        else:
+            pass
+        # Native forward returns -velocity before spatial gathering.
         return list((-spatial.gather_noise_pred_for_sp(batch, prediction)).unbind(0))
 
     def forward(
