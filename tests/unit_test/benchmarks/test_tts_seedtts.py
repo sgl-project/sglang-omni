@@ -11,11 +11,12 @@ from typing import BinaryIO
 import pytest
 import requests
 
+from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.tasks import asr
-from benchmarks.tasks.tts import _build_tts_payload
+from benchmarks.tasks.tts import _build_tts_payload, _parse_response_headers
 from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
 
 SEEDTTS_SAMPLE = SampleInput(
@@ -215,6 +216,15 @@ def test_explicit_max_new_tokens_overrides_fun_cosyvoice3_profile(monkeypatch):
         ),  # noqa: leading-underscore  # production name
     )
     assert payload["max_new_tokens"] == 2048
+
+
+def test_response_headers_carry_finish_reason():
+    result = RequestResult(request_id="sample-1")
+    _parse_response_headers(
+        result, {"X-Completion-Tokens": "2048", "X-Finish-Reason": "length"}
+    )
+    assert result.completion_tokens == 2048
+    assert result.finish_reason == "length"
 
 
 def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(

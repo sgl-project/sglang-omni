@@ -1111,12 +1111,15 @@ def _parse_response_headers(result: RequestResult, headers: dict) -> None:
     prompt_tok = headers.get("X-Prompt-Tokens")
     comp_tok = headers.get("X-Completion-Tokens")
     eng_time = headers.get("X-Engine-Time")
+    finish_reason = headers.get("X-Finish-Reason")
     if prompt_tok is not None:
         result.prompt_tokens = int(prompt_tok)
     if comp_tok is not None:
         result.completion_tokens = int(comp_tok)
     if eng_time is not None:
         result.engine_time_s = float(eng_time)
+    if finish_reason is not None:
+        result.finish_reason = finish_reason
     if result.completion_tokens > 0 and result.engine_time_s > 0:
         result.tok_per_s = result.completion_tokens / result.engine_time_s
 
