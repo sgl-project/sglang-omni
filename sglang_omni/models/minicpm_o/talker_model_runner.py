@@ -3,22 +3,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections import Counter
 
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-
-if TYPE_CHECKING:
-    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
-    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-
-    from sglang_omni.scheduling.types import SchedulerRequest
+from sglang_omni.scheduling.types import SchedulerRequest
 
 # note (MayDomine): the checkpoint penalizes only the most recent 16 codec tokens.
 REP_PENALTY_WINDOW = 16
@@ -81,46 +78,42 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
-        vocab = logits.shape[1]
-        device = logits.device
-        penalized_rows: list[int] = []
-        penalties: list[float] = []
-        windows: list[list[int]] = []
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            penalty = float(data.talker_model_inputs.get("rep_penalty", 1.0))
-            if penalty == 1.0:
-                continue
-            window = [
-                tok
-                for tok in map(int, data.req.output_ids[-REP_PENALTY_WINDOW:])
-                if 0 <= tok < vocab
-            ]
-            if not window:
-                continue
-            penalized_rows.append(row_idx)
-            penalties.append(penalty)
-            windows.append(window)
-        if not penalized_rows:
-            return
-        # note (MayDomine): a dummy vocabulary bin excludes ragged-window padding.
-        num = len(windows)
-        window_ids = torch.full((num, REP_PENALTY_WINDOW), vocab, dtype=torch.long)
-        for i, window in enumerate(windows):
-            window_ids[i, : len(window)] = torch.tensor(window, dtype=torch.long)
-        window_ids = window_ids.to(device)
-        counts = torch.zeros(num, vocab + 1, dtype=torch.float32, device=device)
-        counts.scatter_add_(
-            1, window_ids, torch.ones_like(window_ids, dtype=torch.float32)
-        )
-        counts = counts[:, :vocab]
-        alphas = (
-            torch.tensor(penalties, dtype=torch.float32, device=device).unsqueeze(1)
-            ** counts
-        )
-        rows_t = torch.tensor(penalized_rows, dtype=torch.long, device=device)
-        orig_dtype = logits.dtype
-        scores = logits[rows_t].to(torch.float32)
-        penalized = torch.where(scores < 0, scores * alphas, scores / alphas)
-        scores = torch.where(counts > 0, penalized, scores)
-        logits[rows_t] = scores.to(orig_dtype)
+        else:
+            vocabulary_size = logits.shape[1]
+            token_coordinates: list[tuple[int, int]] = []
+            penalty_frequencies: list[tuple[float, int]] = []
+            for row_index, request in enumerate(requests):
+                penalty = float(
+                    request.data.talker_model_inputs.get("rep_penalty", 1.0)
+                )
+                if penalty == 1.0 or not request.data.req.output_ids:
+                    continue
+                else:
+                    frequencies = Counter(
+                        token_id
+                        for token_id in map(
+                            int, request.data.req.output_ids[-REP_PENALTY_WINDOW:]
+                        )
+                        if 0 <= token_id < vocabulary_size
+                    )
+                    for token_id, frequency in frequencies.items():
+                        token_coordinates.append((row_index, token_id))
+                        penalty_frequencies.append((penalty, frequency))
+
+            if not token_coordinates:
+                return
+            else:
+                # note (koppx): unique coordinates preserve counts without repeated writes.
+                coordinates = torch.tensor(
+                    token_coordinates, dtype=torch.long, device=logits.device
+                )
+                penalties = torch.tensor(
+                    penalty_frequencies, dtype=torch.float32, device=logits.device
+                )
+                scaling_factors = penalties[:, 0].pow(penalties[:, 1])
+                row_indices, token_indices = coordinates.unbind(dim=1)
+                scores = logits[row_indices, token_indices].to(torch.float32)
+                penalized_scores = torch.where(
+                    scores < 0, scores * scaling_factors, scores / scaling_factors
+                )
+                logits[row_indices, token_indices] = penalized_scores.to(logits.dtype)
