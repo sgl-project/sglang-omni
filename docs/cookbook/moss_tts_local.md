@@ -150,7 +150,10 @@ with open("output_data_uri.wav", "wb") as f:
     f.write(resp.content)
 ```
 
-Reference encodes are cached (LRU) and coalesced into batched codec calls, so resending the same reference clip skips re-encoding.
+Reference encodes are cached (LRU). Cache misses use a canonical solo codec
+encode, while concurrent requests for the same reference are deduplicated
+through single-flight. Resending the same reference clip skips re-encoding.
+Each lookup still decodes the reference to compute its waveform-based cache key.
 
 ### Streaming
 

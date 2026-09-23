@@ -1488,18 +1488,37 @@ class MossAudioTokenizerEncoder(nn.Module):
         return input_values, input_lengths, input_lengths_cpu
 
     @torch.no_grad()
-    def batch_encode(
+    def encode(
         self,
-        waveforms: list[torch.Tensor],
+        waveform: torch.Tensor,
         num_quantizers: int | None = None,
-        chunk_duration: float | None = None,
     ) -> MossAudioTokenizerEncoderOutput:
-        if chunk_duration is not None:
+        """Encode one waveform without entering the batched preparation path."""
+        if self.number_channels == 1 and waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        if waveform.dim() != 2 or waveform.shape[0] != self.number_channels:
             raise ValueError(
-                "repository-local MOSS encoder only supports full non-streaming "
-                "batch_encode (chunk_duration=None)"
+                f"waveform must have shape ({self.number_channels}, T), "
+                f"got {tuple(waveform.shape)}"
             )
-        hidden, lengths, lengths_cpu = self.prepare_waveform_batch(waveforms)
+        length = int(waveform.shape[-1])
+        hidden = waveform.unsqueeze(0)
+        lengths = torch.tensor([length], device=waveform.device, dtype=torch.long)
+        return self.encode_prepared(
+            hidden,
+            lengths,
+            [length],
+            num_quantizers=num_quantizers,
+        )
+
+    def encode_prepared(
+        self,
+        hidden: torch.Tensor,
+        lengths: torch.Tensor,
+        lengths_cpu: list[int],
+        *,
+        num_quantizers: int | None,
+    ) -> MossAudioTokenizerEncoderOutput:
         hidden, lengths, lengths_cpu = self.flatten_channels(
             hidden,
             lengths,
@@ -1528,6 +1547,26 @@ class MossAudioTokenizerEncoder(nn.Module):
             audio_codes=codes[:, :, :max_valid_length],
             audio_codes_lengths=code_lengths,
             encoder_hidden_states=hidden[:, :, :max_valid_length].float(),
+        )
+
+    @torch.no_grad()
+    def batch_encode(
+        self,
+        waveforms: list[torch.Tensor],
+        num_quantizers: int | None = None,
+        chunk_duration: float | None = None,
+    ) -> MossAudioTokenizerEncoderOutput:
+        if chunk_duration is not None:
+            raise ValueError(
+                "repository-local MOSS encoder only supports full non-streaming "
+                "batch_encode (chunk_duration=None)"
+            )
+        hidden, lengths, lengths_cpu = self.prepare_waveform_batch(waveforms)
+        return self.encode_prepared(
+            hidden,
+            lengths,
+            lengths_cpu,
+            num_quantizers=num_quantizers,
         )
 
 
@@ -1615,6 +1654,30 @@ class MossAudioEncoder:
             codes[:, index, : int(lengths[index])].transpose(0, 1).contiguous()
             for index in range(int(codes.shape[1]))
         ]
+
+    def encode_waveform(
+        self,
+        waveform: torch.Tensor,
+        sample_rate: int,
+        *,
+        num_quantizers: int,
+    ) -> torch.Tensor:
+        prepared = self.prepare_waveform(waveform, sample_rate)
+        with torch.inference_mode():
+            encoded = self.model.encode(
+                prepared,
+                num_quantizers=int(num_quantizers),
+            )
+        codes = encoded.audio_codes
+        lengths = encoded.audio_codes_lengths
+        valid_length = int(lengths[0].detach().to("cpu"))
+        return (
+            codes[:, 0, :valid_length]
+            .transpose(0, 1)
+            .contiguous()
+            .detach()
+            .to(device="cpu", dtype=torch.long)
+        )
 
     def prepare_waveform(
         self,

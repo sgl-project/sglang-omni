@@ -15,6 +15,7 @@ import sglang_omni.models.moss_tts.attention as attention_impl
 import sglang_omni.models.moss_tts.vocoder_kernels as vocoder_kernels
 from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerAttention,
+    MossAudioTokenizerEncoder,
     MossAudioTokenizerProjectedTransformer,
     MossAudioTokenizerTransformerLayer,
     MossAudioTokenizerVocoderDecoder,
@@ -1415,6 +1416,42 @@ def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
     assert source.layer_scale_2.calls == 1
     assert source.ffn[0].calls == 1
     assert source.ffn[2].calls == 1
+
+
+def test_encoder_solo_matches_single_item_batch_for_unaligned_waveform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(17)
+    encoder = MossAudioTokenizerEncoder(
+        {
+            "sampling_rate": 24000,
+            "downsample_rate": 4,
+            "number_channels": 2,
+            "enable_channel_interleave": True,
+            "compute_dtype": "float32",
+            "encoder_kwargs": [{"module_type": "PatchedPretransform", "patch_size": 4}],
+            "quantizer_kwargs": {
+                "input_dim": 4,
+                "num_quantizers": 2,
+                "codebook_size": 8,
+                "codebook_dim": 4,
+            },
+        },
+        parameter_device="cpu",
+    )
+    waveform = torch.randn(2, 11)
+
+    batched = encoder.batch_encode([waveform], num_quantizers=2)
+    monkeypatch.setattr(
+        encoder,
+        "prepare_waveform_batch",
+        Mock(side_effect=AssertionError("solo encoding entered batch preparation")),
+    )
+    solo = encoder.encode(waveform, num_quantizers=2)
+
+    assert torch.equal(solo.audio_codes, batched.audio_codes)
+    assert torch.equal(solo.audio_codes_lengths, batched.audio_codes_lengths)
+    assert solo.audio_codes.shape == (2, 1, 5)
 
 
 def test_vocoder_decoder_wraps_supported_stage_types() -> None:

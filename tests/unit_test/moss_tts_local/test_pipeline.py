@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import struct
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -98,10 +100,12 @@ class _FakeAudioTokenizerModel:
     def __init__(self) -> None:
         self.config = types.SimpleNamespace(sampling_rate=48000, number_channels=2)
         self.calls: list[tuple[list[torch.Tensor], int]] = []
+        self.solo_calls: list[tuple[torch.Tensor, int]] = []
 
-    def batch_encode(self, wavs: list[torch.Tensor], *, num_quantizers: int):
-        assert all(wav.ndim == 2 and wav.shape[0] == 2 for wav in wavs)
-        self.calls.append((wavs, int(num_quantizers)))
+    @staticmethod
+    def encode_outputs(
+        wavs: list[torch.Tensor], num_quantizers: int
+    ) -> _FakeEncodedAudio:
         max_len = max(int(wav.shape[-1]) for wav in wavs)
         audio_codes = torch.zeros(num_quantizers, len(wavs), max_len, dtype=torch.long)
         audio_codes_lengths = torch.tensor(
@@ -116,6 +120,42 @@ class _FakeAudioTokenizerModel:
                 + torch.arange(length, dtype=torch.long).view(1, -1)
             )
         return _FakeEncodedAudio(audio_codes, audio_codes_lengths)
+
+    def encode(self, wav: torch.Tensor, *, num_quantizers: int):
+        assert wav.ndim == 2 and wav.shape[0] == 2
+        self.solo_calls.append((wav, int(num_quantizers)))
+        return self.encode_outputs([wav], int(num_quantizers))
+
+    def batch_encode(self, wavs: list[torch.Tensor], *, num_quantizers: int):
+        assert all(wav.ndim == 2 and wav.shape[0] == 2 for wav in wavs)
+        self.calls.append((wavs, int(num_quantizers)))
+        return self.encode_outputs(wavs, int(num_quantizers))
+
+
+class _FakeCanonicalReferenceEncoder:
+    def __init__(self, codes: torch.Tensor) -> None:
+        self.codes = codes
+        self.encode_count = 0
+
+    @staticmethod
+    def source_bytes(source: str | bytes | bytearray | memoryview) -> bytes:
+        if isinstance(source, str) and source.startswith("data:"):
+            return base64.b64decode(source.partition(",")[2])
+        if isinstance(source, str):
+            return Path(source).read_bytes()
+        return bytes(source)
+
+    def load(self, source):
+        from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceInput
+
+        raw = self.source_bytes(source)
+        waveform = torch.tensor([len(raw)], dtype=torch.float32)
+        return MossLocalReferenceInput(waveform, 24000, f"waveform:{raw.hex()}")
+
+    def encode_input(self, item):
+        assert item.sample_rate == 24000
+        self.encode_count += 1
+        return self.codes.clone()
 
 
 # Local transformer numerics
@@ -1082,6 +1122,8 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
 
     class _FakeAudioTokenizer:
         device = "cpu"
+        sample_rate = 48000
+        number_channels = 1
 
         def encode_paths(self, paths, *, num_quantizers):
             assert num_quantizers == N_VQ
@@ -1125,6 +1167,7 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
 
 
 def test_create_preprocessing_executor_uses_shared_encoder(monkeypatch):
+    from sglang_omni.models.moss_tts_local import request_builders as rb
     from sglang_omni.models.moss_tts_local import stages
 
     processor = _FakeProcessor()
@@ -1158,6 +1201,42 @@ def test_create_preprocessing_executor_uses_shared_encoder(monkeypatch):
             },
         )
     ]
+    reference_encoder = rb._QUEUE.snapshot().context.reference_encoder
+    assert isinstance(reference_encoder, stages.MossLocalReferenceEncoder)
+    assert isinstance(
+        reference_encoder._service.hook._encoder,
+        stages.CanonicalReferenceEncoder,
+    )
+
+
+def test_replacing_preprocessing_context_closes_reference_workers():
+    from sglang_omni.models.moss_tts_local import stages
+
+    audio_encoder = types.SimpleNamespace(
+        device="cpu", sample_rate=48000, number_channels=1
+    )
+    workers = [
+        stages.CanonicalReferenceEncoder(audio_encoder, n_vq=N_VQ) for _ in range(2)
+    ]
+    encoders = [
+        stages.MossLocalReferenceEncoder(worker, n_vq=N_VQ) for worker in workers
+    ]
+
+    try:
+        set_moss_tts_local_preprocessing_context(
+            processor=_FakeProcessor(), reference_encoder=encoders[0]
+        )
+        set_moss_tts_local_preprocessing_context(
+            processor=_FakeProcessor(), reference_encoder=encoders[1]
+        )
+        assert not workers[0]._thread.is_alive()
+
+        clear_moss_tts_local_preprocessing_context()
+        assert not workers[1]._thread.is_alive()
+    finally:
+        clear_moss_tts_local_preprocessing_context()
+        for encoder in encoders:
+            encoder.close()
 
 
 def test_preprocess_and_result_adapter():
@@ -1521,6 +1600,77 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     assert calls[0] == [2, 5]
 
 
+def test_moss_audio_encoder_solo_path_bypasses_batch_encode():
+    model = _FakeAudioTokenizerModel()
+    encoder = MossAudioEncoder(model, device="cpu")
+
+    codes = encoder.encode_waveform(
+        torch.ones(2, 4),
+        48000,
+        num_quantizers=N_VQ,
+    )
+
+    assert codes.shape == (4, N_VQ)
+    assert len(model.solo_calls) == 1
+    assert model.calls == []
+
+
+def test_cached_reference_misses_are_serial_solo_encodes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import concurrent.futures
+    import threading
+    import time
+
+    from sglang_omni.models.moss_tts_local import stages
+
+    barrier = threading.Barrier(2)
+    active = 0
+    max_active = 0
+    encode_count = 0
+    batch_sizes: list[int] = []
+
+    class _BatchSensitiveAudioEncoder:
+        device = "cpu"
+        sample_rate = 24000
+        number_channels = 1
+
+        def encode_waveform(self, waveform, sample_rate, *, num_quantizers):
+            nonlocal active, encode_count, max_active
+            assert sample_rate == self.sample_rate
+            assert num_quantizers == N_VQ
+            active += 1
+            max_active = max(max_active, active)
+            encode_count += 1
+            time.sleep(0.02)
+            active -= 1
+            return torch.full((2, N_VQ), int(waveform[0]))
+
+        def encode_waveforms(self, waveforms, *, num_quantizers):
+            batch_sizes.append(len(waveforms))
+            return [torch.full((2, num_quantizers), len(waveforms)) for _ in waveforms]
+
+    def fake_load_audio(source, **kwargs):
+        assert kwargs["target_sample_rate"] == 24000
+        assert kwargs["mono"] is True
+        barrier.wait(timeout=5)
+        return np.asarray([1 if source == "a.wav" else 2], dtype=np.float32)
+
+    monkeypatch.setattr(stages, "load_audio", fake_load_audio)
+    canonical = stages.CanonicalReferenceEncoder(
+        _BatchSensitiveAudioEncoder(), n_vq=N_VQ
+    )
+    encoder = stages.MossLocalReferenceEncoder(canonical, n_vq=N_VQ)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(encoder.encode, ("a.wav", "b.wav")))
+
+    assert [int(result[0, 0]) for result in results] == [1, 2]
+    assert max_active == 1
+    assert encode_count == 2
+    assert batch_sizes == []
+
+
 # _MossLocalReferenceEncoder
 
 
@@ -1537,16 +1687,13 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
 
     ref_file = tmp_path / "ref.wav"
     ref_file.write_bytes(b"fake wav bytes for T5")
-    encode_count = 0
+    codes = torch.full((10, N_VQ), 1023, dtype=torch.long)
+    codes[0, 0] = len(str(ref_file)) % 1024
 
-    class _FakeBatched:
+    class _FakeUncached:
         def encode(self, path: str) -> torch.Tensor:
-            nonlocal encode_count
-            encode_count += 1
-            # Boundary value 1023 exercises int32 round-trip; varies by path length.
-            codes = torch.full((10, N_VQ), 1023, dtype=torch.long)
-            codes[0, 0] = len(path) % 1024
-            return codes
+            assert path == str(ref_file)
+            return codes.clone()
 
     class _RefAwareProcessor:
         """Folds reference tensor sum into rows so bit-identity is non-trivial."""
@@ -1582,29 +1729,30 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
         )
 
     processor = _RefAwareProcessor()
-    fake_batched = _FakeBatched()
+    fake_uncached = _FakeUncached()
 
     # OFF: raw encoder, no cache wrapper
     prepared_off = prepare_moss_tts_local_request(
-        _ref_payload("t5-off"), processor=processor, reference_encoder=fake_batched
+        _ref_payload("t5-off"), processor=processor, reference_encoder=fake_uncached
     )
-    assert encode_count == 1
 
     # ON-miss: first call to _MossLocalReferenceEncoder (cache empty)
+    canonical = _FakeCanonicalReferenceEncoder(codes)
     cached_enc = MossLocalReferenceEncoder(
-        fake_batched, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
-    encode_count = 0
     prepared_miss = prepare_moss_tts_local_request(
         _ref_payload("t5-miss"), processor=processor, reference_encoder=cached_enc
     )
-    assert encode_count == 1, "ON-miss must call underlying encode exactly once"
+    assert (
+        canonical.encode_count == 1
+    ), "ON-miss must call underlying encode exactly once"
 
     # ON-hit: second call, same file — cache must serve without re-encoding
     prepared_hit = prepare_moss_tts_local_request(
         _ref_payload("t5-hit"), processor=processor, reference_encoder=cached_enc
     )
-    assert encode_count == 1, "ON-hit must NOT call underlying encode again"
+    assert canonical.encode_count == 1, "ON-hit must NOT call underlying encode again"
 
     # Hard gate: all three paths produce identical prompt_rows and input_ids_list
     assert torch.equal(prepared_off.prompt_rows, prepared_miss.prompt_rows)
@@ -1625,12 +1773,11 @@ def test_cached_reference_encoder_return_value_isolation(tmp_path):
     ref = tmp_path / "iso.wav"
     ref.write_bytes(b"isolation test")
 
-    class _FakeBatched:
-        def encode(self, path: str) -> torch.Tensor:
-            return torch.full((4, N_VQ), 99, dtype=torch.long)
-
+    canonical = _FakeCanonicalReferenceEncoder(
+        torch.full((4, N_VQ), 99, dtype=torch.long)
+    )
     enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
     enc.encode(str(ref))  # miss — populates cache
 
@@ -1641,78 +1788,71 @@ def test_cached_reference_encoder_return_value_isolation(tmp_path):
     assert torch.all(hit2 == 99), "cache was corrupted by mutation of first hit result"
 
 
-def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
+def test_cached_reference_encoder_duration_gate(monkeypatch):
     """T8: references over 100 s are rejected before touching the cache."""
-    torchaudio = pytest.importorskip("torchaudio")
+    from sglang_omni.models.moss_tts_local import stages
 
-    from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceEncoder
-
-    ref = tmp_path / "long.wav"
-    ref.write_bytes(b"fake long audio")
-    encode_count = 0
-
-    class _FakeBatched:
-        def encode(self, path: str) -> torch.Tensor:
-            nonlocal encode_count
-            encode_count += 1
-            return torch.zeros((5, N_VQ), dtype=torch.long)
-
-    # Patch torchaudio.info to report a 200-second file
-    class _FakeInfo:
-        num_frames = 200 * 48000
-        sample_rate = 48000
-
-    monkeypatch.setattr(torchaudio, "info", lambda path: _FakeInfo(), raising=False)
-
-    enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+    audio_encoder = types.SimpleNamespace(
+        device="cpu", sample_rate=10, number_channels=1
     )
+    canonical = stages.CanonicalReferenceEncoder(audio_encoder, n_vq=N_VQ)
+    monkeypatch.setattr(
+        stages,
+        "load_audio",
+        lambda *args, **kwargs: np.zeros(2000, dtype=np.float32),
+    )
+    enc = stages.MossLocalReferenceEncoder(canonical, n_vq=N_VQ)
 
-    # _BatchedReferenceEncoder.encode checks duration before enqueuing;
-    # _MossLocalReferenceEncoder calls through so the duration check still fires.
     with pytest.raises(ValueError, match="100"):
-        enc.encode(str(ref))
+        enc.encode(b"long reference")
 
-    assert encode_count == 0, "oversized reference must not reach the codec"
     assert enc.stats()["entries"] == 0
     assert len(enc._service._inflight) == 0
 
 
-def test_cached_reference_encoder_revalidate_skips_duration_gate(tmp_path, monkeypatch):
+def test_cached_reference_file_duration_gate_before_decode(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    from sglang_omni.models.moss_tts_local import stages
+
+    ref = tmp_path / "long.wav"
+    ref.write_bytes(b"reference")
+    info = types.SimpleNamespace(frames=200 * 48000, samplerate=48000)
+    monkeypatch.setattr(sf, "info", lambda path: info)
+    monkeypatch.setattr(
+        stages,
+        "load_audio",
+        lambda *args, **kwargs: pytest.fail("oversized file was decoded"),
+    )
+    audio_encoder = types.SimpleNamespace(
+        device="cpu", sample_rate=48000, number_channels=1
+    )
+    canonical = stages.CanonicalReferenceEncoder(audio_encoder, n_vq=N_VQ)
+
+    with pytest.raises(ValueError, match="100"):
+        canonical.load(str(ref))
+    canonical.close()
+
+
+def test_cached_reference_encoder_keys_loaded_waveform(tmp_path):
     from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceEncoder
 
     ref = tmp_path / "ref.wav"
-    ref.write_bytes(b"revalidate reference")
-    info_calls = 0
-
-    class _FakeInfo:
-        num_frames = 48000
-        sample_rate = 48000
-
-    def info(path):
-        nonlocal info_calls
-        assert path == str(ref)
-        info_calls += 1
-        if info_calls > 1:
-            raise ValueError("duration gate should not run during revalidate")
-        return _FakeInfo()
-
-    monkeypatch.setitem(sys.modules, "torchaudio", types.SimpleNamespace(info=info))
-
-    class _FakeBatched:
-        def encode(self, path: str) -> torch.Tensor:
-            assert path == str(ref)
-            return torch.zeros((5, N_VQ), dtype=torch.long)
-
+    ref.write_bytes(b"first")
+    canonical = _FakeCanonicalReferenceEncoder(torch.zeros((5, N_VQ), dtype=torch.long))
     enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
 
-    result = enc.encode(str(ref))
+    enc.encode(str(ref))
+    ref.write_bytes(b"second")
+    enc.encode(str(ref))
+    enc.encode(str(ref))
 
-    assert torch.equal(result, torch.zeros((5, N_VQ), dtype=torch.long))
-    assert info_calls == 1
-    assert enc.stats()["entries"] == 1
+    assert canonical.encode_count == 2
+    assert enc.stats()["misses"] == 2
+    assert enc.stats()["hits"] == 1
+    assert enc.stats()["entries"] == 2
 
 
 # Data-URI reference path
@@ -1747,27 +1887,22 @@ def _make_wav_data_uri(
 
 
 def test_cached_reference_encoder_data_uri_hit_miss(tmp_path):
-    """bytes: keyspace: same data-URI encoded twice -> one codec encode."""
+    """The same data-URI encoded twice results in one codec encode."""
     from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceEncoder
 
     pytest.importorskip("soundfile")
     data_uri, _ = _make_wav_data_uri()
-    wav_call_count = 0
-
-    class _FakeBatched:
-        def encode_wav(self, wav, sample_rate):
-            nonlocal wav_call_count
-            wav_call_count += 1
-            return torch.full((5, N_VQ), 42, dtype=torch.long)
-
+    canonical = _FakeCanonicalReferenceEncoder(
+        torch.full((5, N_VQ), 42, dtype=torch.long)
+    )
     enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
     enc.encode_data_uri(data_uri)
-    assert wav_call_count == 1, "first call must encode"
+    assert canonical.encode_count == 1, "first call must encode"
 
     result2 = enc.encode_data_uri(data_uri)
-    assert wav_call_count == 1, "second call must hit cache"
+    assert canonical.encode_count == 1, "second call must hit cache"
     assert torch.equal(result2, torch.full((5, N_VQ), 42, dtype=torch.long))
 
     stats = enc.stats()
@@ -1802,9 +1937,11 @@ def test_uncached_data_uri_uses_reference_encoder():
     assert message["reference"][0].shape[1] == N_VQ
 
 
-def test_cached_reference_encoder_file_bytes_keyspaces_do_not_collide(tmp_path):
-    """file: and bytes: keys are independent; same-content file ≠ data-URI in cache."""
-    from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceEncoder
+def test_cached_reference_encoder_unifies_file_data_uri_and_bytes(tmp_path):
+    from sglang_omni.models.moss_tts_local.stages import (
+        CanonicalReferenceEncoder,
+        MossLocalReferenceEncoder,
+    )
 
     pytest.importorskip("soundfile")
     data_uri, raw = _make_wav_data_uri()
@@ -1813,28 +1950,33 @@ def test_cached_reference_encoder_file_bytes_keyspaces_do_not_collide(tmp_path):
     ref_file = tmp_path / "ref.wav"
     ref_file.write_bytes(raw)
 
-    encode_count = 0
+    class _FakeAudioEncoder:
+        device = "cpu"
+        sample_rate = 16000
+        number_channels = 1
 
-    class _FakeBatched:
-        def encode(self, path: str) -> torch.Tensor:
-            nonlocal encode_count
-            encode_count += 1
+        def __init__(self) -> None:
+            self.encode_count = 0
+
+        def encode_waveform(self, waveform, sample_rate, *, num_quantizers):
+            assert waveform.shape == (100,)
+            assert sample_rate == self.sample_rate
+            assert num_quantizers == N_VQ
+            self.encode_count += 1
             return torch.full((5, N_VQ), 7, dtype=torch.long)
 
-        def encode_wav(self, wav, sample_rate):
-            nonlocal encode_count
-            encode_count += 1
-            return torch.full((5, N_VQ), 7, dtype=torch.long)
-
+    audio_encoder = _FakeAudioEncoder()
+    canonical = CanonicalReferenceEncoder(audio_encoder, n_vq=N_VQ)
     enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
-    enc.encode(str(ref_file))  # populates file: key
-    enc.encode_data_uri(data_uri)  # must NOT hit file: entry
+    enc.encode(str(ref_file))
+    enc.encode_data_uri(data_uri)
+    enc.encode_bytes(raw)
 
-    assert (
-        enc.stats()["misses"] == 2
-    ), "file: and bytes: are independent keyspaces; data-URI must be a fresh miss"
+    assert audio_encoder.encode_count == 1
+    assert enc.stats()["misses"] == 1
+    assert enc.stats()["hits"] == 2
 
 
 def test_cached_reference_encoder_data_uri_duration_gate():
@@ -1842,7 +1984,10 @@ def test_cached_reference_encoder_data_uri_duration_gate():
     import base64
     import io
 
-    from sglang_omni.models.moss_tts_local.stages import MossLocalReferenceEncoder
+    from sglang_omni.models.moss_tts_local.stages import (
+        CanonicalReferenceEncoder,
+        MossLocalReferenceEncoder,
+    )
 
     pytest.importorskip("soundfile")
     import soundfile as sf
@@ -1857,12 +2002,12 @@ def test_cached_reference_encoder_data_uri_duration_gate():
     raw = buf.getvalue()
     uri = f"data:audio/wav;base64,{base64.b64encode(raw).decode()}"
 
-    class _FakeBatched:
-        def encode_wav(self, wav, sample_rate):
-            return torch.zeros((5, N_VQ), dtype=torch.long)
-
+    audio_encoder = types.SimpleNamespace(
+        device="cpu", sample_rate=48000, number_channels=1
+    )
+    canonical = CanonicalReferenceEncoder(audio_encoder, n_vq=N_VQ)
     enc = MossLocalReferenceEncoder(
-        _FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
+        canonical, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
     with pytest.raises(ValueError, match="100"):
         enc.encode_data_uri(uri)
