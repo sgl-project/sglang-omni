@@ -144,12 +144,25 @@ class MiniCPMWhisperEncoder(nn.Module):
         positions: torch.Tensor | None = None,
         prefix_extra_frames: int = 0,
         suffix_extra_frames: int = 0,
+        original_mel_frame_counts: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Encode mel frames; when streaming, key_value_states holds the batch history and positions holds each row's frame positions."""
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
         hidden_states = F.gelu(self.conv1(hidden_states))
+        if original_mel_frame_counts is not None:
+            # note (wirybeaver): conv2 must see each request's original tensor boundary.
+            mel_frame_indices = torch.arange(
+                hidden_states.shape[-1], device=hidden_states.device
+            )
+            hidden_states = hidden_states.masked_fill(
+                mel_frame_indices[None, None, :]
+                >= original_mel_frame_counts.to(hidden_states.device)[:, None, None],
+                0.0,
+            )
+        else:
+            pass
         hidden_states = F.gelu(self.conv2(hidden_states))
         # note (Junnan Li): Context mel frames affect convolution, but never enter KV.
         prefix_rows = (prefix_extra_frames + 1) // 2

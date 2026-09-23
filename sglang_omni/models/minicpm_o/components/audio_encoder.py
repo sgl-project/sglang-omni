@@ -181,6 +181,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         *,
         audio_features: torch.Tensor | None = None,
         audio_feature_lens: torch.Tensor | None = None,
+        original_mel_frame_counts: torch.Tensor | None = None,
         **_: object,
     ) -> dict[str, torch.Tensor]:
         """Return (sum(pooled_lens), hidden) embeddings in audio-chunk order."""
@@ -225,7 +226,11 @@ class MiniCPMOAudioEncoder(nn.Module):
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
         attn_mask = attn_mask.unsqueeze(1)
 
-        audio_states = self.apm(wavforms, attn_mask)
+        audio_states = self.apm(
+            wavforms,
+            attn_mask,
+            original_mel_frame_counts=original_mel_frame_counts,
+        )
         audio_embeds = self.audio_projection_layer(audio_states)
 
         audio_embeds = audio_embeds.transpose(1, 2)
