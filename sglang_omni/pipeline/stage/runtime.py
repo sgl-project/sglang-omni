@@ -1296,9 +1296,13 @@ class Stage:
                     f"TP follower stage {self.name} cannot publish a KV transfer"
                 )
             elif out.type == "error":
-                raise RuntimeError(
-                    f"TP follower stage {self.name} received scheduler error: {out.data}"
+                logger.warning(
+                    "TP follower stage %s failed request %s: %s",
+                    self.name,
+                    out.request_id,
+                    out.data,
                 )
+                self.clear_request_state(out.request_id)
 
     def launch_kv_transfer(self, transfer: KVPageTransfer) -> None:
         started = False

@@ -230,6 +230,21 @@ def test_follower_preserves_pending_work_until_last_terminal(parallel_kind):
     asyncio.run(run())
 
 
+def test_follower_request_error_does_not_stop_stage():
+    stage, _, _ = make_stage(follower=True)
+
+    async def run():
+        await stage.execute(SimpleNamespace(request_id="r"), dispatch_id=1)
+        stage.scheduler.outbox.put(
+            OutgoingMessage(request_id="r", type="error", data="decode failed")
+        )
+        await stage.drain_outbox()
+        assert "r" not in stage._active_requests
+        assert not stage.control_plane.completions
+
+    asyncio.run(run())
+
+
 def test_sp_failure_is_idempotent_and_drains_pending_work(monkeypatch):
     computed, cleaned, aborted = [], [], []
     scheduler = SimpleScheduler(
