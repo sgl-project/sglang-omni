@@ -231,7 +231,7 @@ def create_sglang_omni_tts_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    mem_fraction_static: float = 0.5,
+    mem_fraction_static: float | None = None,
     fp8: bool = False,
     frame_graph: bool = False,
     compile_sampler: bool = False,

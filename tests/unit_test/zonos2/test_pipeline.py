@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.platforms as platforms
 from sglang_omni.client import Client
 from sglang_omni.config import resolve_stage_factory_args
 from sglang_omni.models.zonos2 import callbacks
@@ -14,7 +15,10 @@ from sglang_omni.models.zonos2.config import (
     Zonos2MultiGPUPipelineConfig,
     Zonos2PipelineConfig,
 )
-from sglang_omni.models.zonos2.engine_builder import Zonos2EngineBuilder
+from sglang_omni.models.zonos2.engine_builder import (
+    ZONOS2_DEFAULT_MEM_FRACTION_STATIC,
+    Zonos2EngineBuilder,
+)
 from sglang_omni.models.zonos2.request_builders import (
     build_zonos2_state,
     build_zonos2_stream_metadata,
@@ -22,6 +26,9 @@ from sglang_omni.models.zonos2.request_builders import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms.cpu import CPUOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 from sglang_omni.serve.speech_service import SpeechRequestValidator
@@ -218,6 +225,183 @@ def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:
     builder = Zonos2EngineBuilder()
     assert builder.resolve_checkpoint("fake-zonos2") == "/tmp/shim"
     assert builder.context_length == 6144
+
+
+def _host_platform(monkeypatch: pytest.MonkeyPatch, platform: OmniPlatform) -> None:
+    """Stand the process on a host platform, both places the builder reads it."""
+    monkeypatch.setattr(platforms, "current_platform", platform)
+    monkeypatch.setattr(eb, "current_platform", platform)
+
+
+MEASURED_XPU_TOTAL_BYTES = 25_669_140_480
+MEASURED_XPU_MEM_FRACTION_STATIC = 0.85
+
+
+class _SizedXPUPlatform(XPUOmniPlatform):
+    """An XPU host reporting a card of this size, with none present."""
+
+    def __init__(self, total_bytes: int = MEASURED_XPU_TOTAL_BYTES) -> None:
+        super().__init__()
+        self._total_bytes = total_bytes
+
+    def get_device_total_memory(self, device_id: int = 0) -> int:
+        return self._total_bytes
+
+
+@pytest.mark.parametrize(
+    ("platform_class", "device", "captures"),
+    [
+        (XPUOmniPlatform, "xpu:0", True),
+        (XPUOmniPlatform, "cpu", False),
+        (CPUOmniPlatform, "cpu", False),
+    ],
+)
+def test_zonos2_shipped_frame_graph_default_captures_only_where_its_device_records(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_class: type[OmniPlatform],
+    device: str,
+    captures: bool,
+) -> None:
+    """The shipped default asks for a tail graph, so a graph-less device must serve."""
+    _host_platform(monkeypatch, platform_class())
+
+    kwargs = Zonos2PipelineConfig(model_path="fake-model").stage_factory_kwargs(
+        "tts_engine"
+    )
+    assert kwargs["frame_graph"] is True
+    builder = Zonos2EngineBuilder(**kwargs)
+    captured: list[list[int]] = []
+    model = SimpleNamespace(
+        device=torch.device(device),
+        capture_tail_graphs=lambda buckets, params: captured.append(buckets),
+    )
+
+    builder.post_cuda_graph_setup(model, server_args=None)
+
+    assert bool(captured) is captures
+    assert builder.frame_graph is captures
+
+
+class _QuantizingPlatform(CPUOmniPlatform):
+    """A build whose loader really does convert the bf16 experts to FP8."""
+
+    def supports_online_fp8_quantization(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("fp8", "configured_fraction", "expected_fraction"),
+    [
+        (True, None, MEASURED_XPU_MEM_FRACTION_STATIC),
+        (False, None, MEASURED_XPU_MEM_FRACTION_STATIC),
+        (True, 0.6, 0.6),
+        (False, 0.95, 0.95),
+    ],
+)
+def test_zonos2_bf16_static_pool_floor_lifts_only_an_unset_stage_fraction(
+    monkeypatch: pytest.MonkeyPatch,
+    fp8: bool,
+    configured_fraction: float | None,
+    expected_fraction: float,
+) -> None:
+    """The floor follows the doubled expert weights, not the reason for them --
+    but it moves the stage's own default only, never a configured fraction."""
+    _host_platform(monkeypatch, _SizedXPUPlatform())
+    builder = Zonos2EngineBuilder(fp8=fp8, mem_fraction_static=configured_fraction)
+    builder.device = "xpu:0"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert "quantization" not in defaults
+    assert defaults["mem_fraction_static"] == expected_fraction
+
+
+def test_zonos2_bf16_experts_keep_the_stage_default_where_no_floor_is_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One card's measurement must not be imported onto hardware it is not."""
+    _host_platform(monkeypatch, CPUOmniPlatform())
+    builder = Zonos2EngineBuilder(fp8=False)
+    builder.device = "cpu"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert "quantization" not in defaults
+    assert defaults["mem_fraction_static"] == ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+
+
+def test_zonos2_bf16_floor_under_the_stage_default_leaves_it_where_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A card roomier than the measured one holds the same pool under a smaller
+    fraction, which the stage default already covers."""
+    _host_platform(monkeypatch, _SizedXPUPlatform(4 * MEASURED_XPU_TOTAL_BYTES))
+    builder = Zonos2EngineBuilder(fp8=False)
+    builder.device = "xpu:0"
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["mem_fraction_static"] == ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+
+
+def test_zonos2_fp8_experts_leave_the_stage_default_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Halved experts fit the stage default, so the bf16 floor must not apply."""
+    _host_platform(monkeypatch, _QuantizingPlatform())
+    builder = Zonos2EngineBuilder(fp8=True)
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["quantization"] == "fp8"
+    assert defaults["mem_fraction_static"] == ZONOS2_DEFAULT_MEM_FRACTION_STATIC
+
+
+@pytest.mark.parametrize(
+    ("stage_device", "compiles", "expected_fraction"),
+    [
+        ("xpu:0", False, MEASURED_XPU_MEM_FRACTION_STATIC),
+        ("cpu", True, ZONOS2_DEFAULT_MEM_FRACTION_STATIC),
+    ],
+)
+def test_zonos2_engine_policies_follow_the_stage_device_not_the_host(
+    monkeypatch: pytest.MonkeyPatch,
+    stage_device: str,
+    compiles: bool,
+    expected_fraction: float,
+) -> None:
+    """An XPU host can place this stage on cpu, where torch.compile is worth its
+    startup cost and no card's memory-pool fraction applies."""
+    _host_platform(monkeypatch, _SizedXPUPlatform())
+    builder = Zonos2EngineBuilder(fp8=True)
+    builder.device = stage_device
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["enable_torch_compile"] is compiles
+    assert defaults["mem_fraction_static"] == expected_fraction
+    assert "quantization" not in defaults, "neither device's MoE runs FP8 weights"
+
+
+@pytest.mark.parametrize(
+    ("stage_device", "compiles"), [("xpu:0", False), ("cpu", True)]
+)
+def test_zonos2_sampler_compile_follows_the_stage_device(
+    monkeypatch: pytest.MonkeyPatch, stage_device: str, compiles: bool
+) -> None:
+    """Sampler and engine share one switch, and the stage's device throws it."""
+    from sglang_omni.models.zonos2 import model_runner
+
+    _host_platform(monkeypatch, XPUOmniPlatform())
+    monkeypatch.setattr(
+        model_runner, "Zonos2ModelRunner", lambda *args, **kwargs: kwargs
+    )
+    builder = Zonos2EngineBuilder(compile_sampler=True)
+    builder.device = stage_device
+
+    runner_kwargs = builder.make_model_runner(None, None)
+
+    assert runner_kwargs["compile_sampler"] is compiles
 
 
 def test_zonos2_engine_builder_keeps_power_of_two_cuda_graph_buckets() -> None:

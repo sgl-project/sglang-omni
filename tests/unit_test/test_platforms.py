@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import builtins
+import importlib
 import sys
 from contextlib import nullcontext
-from types import ModuleType, SimpleNamespace
+from types import FunctionType, ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -18,9 +19,12 @@ from sglang.srt.platforms.xpu import XpuSRTPlatform
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+from sglang_omni.platforms.apple import AppleOmniPlatform
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
+from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
@@ -271,6 +275,13 @@ def test_xpu_captures_the_qwen3_omni_talker_decode() -> None:
     assert CPUOmniPlatform().enable_talker_graph() is True
 
 
+def test_xpu_keeps_the_zonos2_ar_engine_uncompiled() -> None:
+    """Inductor's per-bucket autotune here costs more than the startup budget."""
+    assert xpu_platform.XPUOmniPlatform().enable_zonos2_torch_compile() is False
+    assert OmniPlatform().enable_zonos2_torch_compile() is True
+    assert CPUOmniPlatform().enable_zonos2_torch_compile() is True
+
+
 def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
@@ -332,6 +343,20 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
 
 
+def test_a_cpu_placed_stage_reads_cpu_answers_on_an_accelerator_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hooks taking no device are answered for the stage's resolved one, and a cpu
+    placement compiles, quantizes and sizes its pool as cpu, not as the host."""
+    host = XPUOmniPlatform()
+    monkeypatch.setattr(platforms, "current_platform", host)
+
+    for device in ("cpu", torch.device("cpu")):
+        assert type(platforms.platform_for_device(device)) is CPUOmniPlatform
+    assert platforms.platform_for_device("xpu:1") is host
+    assert platforms.platform_for_device(None) is host
+
+
 def test_xpu_names_the_sdpa_backends_a_graph_capture_can_use() -> None:
     from torch.nn.attention import SDPBackend
 
@@ -382,3 +407,147 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
 
     assert calls == [list(platform.get_graph_capture_sdpa_backends())]
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
+
+
+def _fake_fp8_kernel(**module_globals: object) -> SimpleNamespace:
+    """An fp8_kernel stand-in whose scaled_fp8_quant carries the given globals."""
+    namespace = dict(module_globals)
+    quantize = FunctionType((lambda: None).__code__, namespace, "scaled_fp8_quant")
+    namespace["scaled_fp8_quant"] = quantize
+    return SimpleNamespace(scaled_fp8_quant=quantize)
+
+
+@pytest.mark.parametrize(
+    ("module_globals", "quantizes"),
+    [
+        pytest.param({"sgl_per_tensor_quant_fp8": object()}, True, id="sgl_kernel"),
+        pytest.param({"_is_hip": True}, True, id="hip"),
+        pytest.param({}, False, id="no_quantizer"),
+    ],
+)
+def test_load_time_fp8_is_probed_from_the_installed_sglang(
+    monkeypatch: pytest.MonkeyPatch, module_globals: dict[str, object], quantizes: bool
+) -> None:
+    """Whether bf16 converts to FP8 at load is a build property, not a device one."""
+    fake = _fake_fp8_kernel(**module_globals)
+    monkeypatch.setattr(importlib, "import_module", lambda name: fake)
+
+    assert OmniPlatform().supports_online_fp8_quantization() is quantizes
+
+
+def test_load_time_fp8_keeps_probing_past_a_module_that_ships_no_quantizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first module answering for the whole build would keep bf16 wrongly."""
+    modules = {
+        "sglang.srt.layers.quantization.fp8_kernel": _fake_fp8_kernel(),
+        "sglang.kernels.ops.quantization.fp8_kernel": _fake_fp8_kernel(
+            sgl_per_tensor_quant_fp8=object()
+        ),
+    }
+    monkeypatch.setattr(importlib, "import_module", lambda name: modules[name])
+
+    assert OmniPlatform().supports_online_fp8_quantization() is True
+
+
+def test_load_time_fp8_answers_no_when_the_quantizer_module_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrecognisable build keeps bf16 rather than betting on a NameError."""
+
+    def absent(name: str) -> ModuleType:
+        raise ImportError(name)
+
+    monkeypatch.setattr(importlib, "import_module", absent)
+
+    assert OmniPlatform().supports_online_fp8_quantization() is False
+
+
+def test_a_build_shipping_the_quantizer_turns_fp8_on_only_where_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The quantizer being installed says nothing about the MoE runner taking it."""
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda name: _fake_fp8_kernel(sgl_per_tensor_quant_fp8=object()),
+    )
+
+    for platform_class in (CUDAOmniPlatform, ROCMOmniPlatform, MUSAOmniPlatform):
+        assert (
+            platform_class().supports_online_fp8_quantization() is True
+        ), platform_class.__name__
+    for platform_class in (
+        xpu_platform.XPUOmniPlatform,
+        NPUOmniPlatform,
+        CPUOmniPlatform,
+        AppleOmniPlatform,
+    ):
+        assert (
+            platform_class().supports_online_fp8_quantization() is False
+        ), platform_class.__name__
+
+
+MEASURED_XPU_TOTAL_BYTES = 25_669_140_480
+
+
+class _SizedXPUPlatform(XPUOmniPlatform):
+    """An XPU platform reporting a card of this size, with none present."""
+
+    def __init__(self, total_bytes: int) -> None:
+        super().__init__()
+        self._total_bytes = total_bytes
+
+    def get_device_total_memory(self, device_id: int = 0) -> int:
+        return self._total_bytes
+
+
+def test_the_bf16_static_pool_floor_is_a_fraction_of_the_cards_own_capacity() -> None:
+    """The measurement is a pool in bytes, so what fraction buys it depends on the
+    card -- and a card that cannot hold it gets no fraction at all."""
+    pool = xpu_platform.ZONOS2_BF16_STATIC_POOL_BYTES
+    device = torch.device("xpu", 0)
+
+    measured_fraction = xpu_platform.ZONOS2_BF16_MAX_MEM_FRACTION_STATIC
+    measured = _SizedXPUPlatform(MEASURED_XPU_TOTAL_BYTES)
+    assert (
+        measured.zonos2_bf16_mem_fraction_static(device) == measured_fraction
+    ), "the card this was measured on gets the fraction it served at"
+
+    roomier_total = 4 * MEASURED_XPU_TOTAL_BYTES
+    roomier = _SizedXPUPlatform(roomier_total).zonos2_bf16_mem_fraction_static(device)
+    assert 0.0 < roomier < measured_fraction, "a roomier card needs less of itself"
+    assert roomier * roomier_total >= pool, "and still holds all of the pool"
+
+    smaller = _SizedXPUPlatform(16 * 1024**3)
+    assert (
+        smaller.zonos2_bf16_mem_fraction_static(device) is None
+    ), "a card the pool does not fit in gets no fraction"
+
+
+def test_the_bf16_static_pool_floor_reads_no_card_for_a_cpu_placed_stage() -> None:
+    """A stage on cpu is on no card, which is answerable without asking one."""
+
+    class _CardlessXPUPlatform(XPUOmniPlatform):
+        def get_device_total_memory(self, device_id: int = 0) -> int:
+            raise AssertionError("read a card's capacity for a cpu-placed stage")
+
+    platform = _CardlessXPUPlatform()
+    assert platform.zonos2_bf16_mem_fraction_static(torch.device("cpu")) is None
+
+
+def test_only_xpu_names_a_measured_bf16_static_pool_floor() -> None:
+    """The bf16 floor is one platform's measurement of its own cards."""
+    for platform_class in (
+        OmniPlatform,
+        CUDAOmniPlatform,
+        ROCMOmniPlatform,
+        MUSAOmniPlatform,
+        NPUOmniPlatform,
+        CPUOmniPlatform,
+        AppleOmniPlatform,
+    ):
+        for device in (torch.device("cpu"), torch.device("cuda", 0)):
+            assert (
+                platform_class().zonos2_bf16_mem_fraction_static(device) is None
+            ), platform_class.__name__

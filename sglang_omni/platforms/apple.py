@@ -123,5 +123,8 @@ class AppleOmniPlatform(OmniPlatform):
     def enable_code2wav_graph(self) -> bool:
         return False
 
+    def supports_online_fp8_quantization(self) -> bool:
+        return False
+
 
 __all__ = ["AppleOmniPlatform"]

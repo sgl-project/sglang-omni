@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -12,6 +13,11 @@ from sglang.srt.platforms.device_mixin import PlatformEnum
 from sglang_omni.platforms.interface import OmniPlatform
 
 logger = logging.getLogger(__name__)
+
+# Measured serving ZONOS2 on one Arc Pro B60 (23.91 GiB): 14.34 GiB of bf16 experts
+# and the 5.98 GiB KV pool they leave, taking 0.85 of that card.
+ZONOS2_BF16_STATIC_POOL_BYTES = int(20.32 * 1024**3)
+ZONOS2_BF16_MAX_MEM_FRACTION_STATIC = 0.85
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -54,6 +60,36 @@ class XPUOmniPlatform(OmniPlatform):
     def enable_thinker_decode_graph(self) -> bool:
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
+
+    def enable_zonos2_torch_compile(self) -> bool:
+        return False
+
+    def supports_online_fp8_quantization(self) -> bool:
+        return False
+
+    def get_device_total_memory(self, device_id: int = 0) -> int:
+        return int(torch.xpu.get_device_properties(device_id).total_memory)
+
+    def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
+        if device.type != self.device_type:
+            return None
+        total = self.get_device_total_memory(device.index or 0)
+        floor = math.ceil(ZONOS2_BF16_STATIC_POOL_BYTES / total * 100) / 100
+        if floor > ZONOS2_BF16_MAX_MEM_FRACTION_STATIC:
+            logger.warning(
+                "No measured ZONOS2 mem_fraction_static for %s: bf16 experts and "
+                "their KV pool took %.2f GiB, which is %s of this %.2f GiB card and "
+                "more of it than the %s the measurement leaves room beside. Set "
+                "--tts_engine.engine.mem_fraction_static to serve the model on this "
+                "card at all.",
+                device,
+                ZONOS2_BF16_STATIC_POOL_BYTES / 1024**3,
+                floor,
+                total / 1024**3,
+                ZONOS2_BF16_MAX_MEM_FRACTION_STATIC,
+            )
+            return None
+        return floor
 
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
