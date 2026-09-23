@@ -148,12 +148,27 @@ class MiniCPMWhisperEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(config.d_model)
 
     def forward(
-        self, input_features: torch.Tensor, attn_mask: torch.Tensor
+        self,
+        input_features: torch.Tensor,
+        attn_mask: torch.Tensor,
+        original_mel_frame_counts: torch.Tensor | None = None,
     ) -> torch.Tensor:
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
         hidden_states = F.gelu(self.conv1(hidden_states))
+        if original_mel_frame_counts is not None:
+            # note (wirybeaver): conv2 must see each request's original tensor boundary.
+            mel_frame_indices = torch.arange(
+                hidden_states.shape[-1], device=hidden_states.device
+            )
+            hidden_states = hidden_states.masked_fill(
+                mel_frame_indices[None, None, :]
+                >= original_mel_frame_counts.to(hidden_states.device)[:, None, None],
+                0.0,
+            )
+        else:
+            pass
         hidden_states = F.gelu(self.conv2(hidden_states))
         hidden_states = hidden_states.permute(0, 2, 1)
 
@@ -255,6 +270,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         *,
         audio_features: torch.Tensor | None = None,
         audio_feature_lens: torch.Tensor | None = None,
+        original_mel_frame_counts: torch.Tensor | None = None,
         **_: object,
     ) -> dict[str, torch.Tensor]:
         """Return (sum(pooled_lens), hidden) embeddings in audio-chunk order."""
@@ -299,7 +315,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
         attn_mask = attn_mask.unsqueeze(1)
 
-        audio_states = self.apm(wavforms, attn_mask)
+        audio_states = self.apm(wavforms, attn_mask, original_mel_frame_counts)
         audio_embeds = self.audio_projection_layer(audio_states)
 
         audio_embeds = audio_embeds.transpose(1, 2)

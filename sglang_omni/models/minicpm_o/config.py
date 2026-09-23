@@ -51,6 +51,7 @@ def audio_encoder_stage(*, gpu: int, process: str) -> StageConfig:
         name="audio_encoder",
         process=process,
         factory_path=f"{PKG}.stages.create_audio_encoder_executor",
+        factory=FactoryArgs(max_batch_size=8, max_batch_wait_ms=0),
         gpu=gpu,
         disable_direct_cuda_ipc_payload=True,
         next="thinker",
