@@ -108,6 +108,15 @@ def create_sglang_dllm_thinker_executor_from_config(
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
     }
+    if dllm_algorithm == "LowConfidenceCFG":
+        from sglang_omni.models.llada2_uni.bootstrap import register_llada2_uni_cfg
+        from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+            CFG_ATTENTION_BACKEND,
+        )
+
+        register_llada2_uni_cfg()
+        overrides["attention_backend"] = CFG_ATTENTION_BACKEND
+        overrides["dllm_fdfo"] = False
     overrides.update(server_args_overrides or {})
     pin_resolved_device_type(overrides, concrete_device.type)
 
