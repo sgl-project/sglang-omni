@@ -951,7 +951,9 @@ def _multi_terminal_replica_runtime():
     )
 
 
-def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
+def test_coordinator_projects_one_process_choice_onto_member_stages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def _run() -> None:
         logical_plan, replica_topology = _linear_replica_runtime(tail=2)
         coordinator = Coordinator(
@@ -980,7 +982,10 @@ def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
             "normalize",
         ]
 
-    asyncio.run(_run())
+    with caplog.at_level("DEBUG", logger="sglang_omni.pipeline.coordinator"):
+        asyncio.run(_run())
+    assert "Coordinator submitted req=req-0" in caplog.text
+    assert "bindings={'decode': 1, 'postprocess': 1}" in caplog.text
 
 
 def test_binding_validation_precedes_request_registration() -> None:
