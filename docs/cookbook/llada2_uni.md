@@ -70,8 +70,13 @@ For editing, use an instruction such as `"Change the background to a beach."`
 and include one source `image_url` content item alongside the text in the user
 message. Set `cfg_text_scale` and `cfg_image_scale` in `image_generation` to
 control editing guidance. Omitting those values retains task-specific defaults.
-Only `mode: "normal"` is supported; thinking and interleaved generation are
-not part of this pipeline.
+For text-to-image requests, set `mode: "thinking"` to generate a description
+before the image tokens. Use `modalities: ["text", "image"]` to return both
+the thinking text and the image; `["image"]` returns only the image.
+The text pass has a 2048-token budget and stops at `<boi>`. The image pass
+retains the generated context and applies CFG to the VQ tokens. Both passes
+must fit the thinker's configured context length. Thinking mode does not
+support editing.
 
 The server selects a patch-aligned source grid near a 512x512 pixel budget,
 then resizes proportionally and center-crops the image to that grid. Small
@@ -193,10 +198,9 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 
 ### Incoming Features
 
-- Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
-- Thinking mode and interleaved generation are not supported.
+- Interleaved generation is not supported.

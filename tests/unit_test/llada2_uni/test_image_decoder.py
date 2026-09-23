@@ -14,6 +14,7 @@ import torch
 from diffusers.models.transformers.transformer_z_image import ZImageTransformer2DModel
 from PIL import Image
 from safetensors.torch import save_file
+from sglang.srt.dllm.config import DllmConfig
 
 from sglang_omni.models.llada2_uni.components import image_decoder as decoder_module
 from sglang_omni.models.llada2_uni.components.decoder_model import (
@@ -35,7 +36,9 @@ from sglang_omni.models.llada2_uni.config import IMAGE_STAGE
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.request_builders import (
+    make_dllm_thinker_scheduler_adapters,
     merge_image_tokens_for_thinker,
+    thinker_next,
 )
 from sglang_omni.models.llada2_uni.stages import create_image_decode_executor
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -211,6 +214,9 @@ class FakeTokenizer:
                 ids.extend(ord(char) + 1000 for char in part)
         return ids
 
+    def decode(self, ids, skip_special_tokens=True):
+        return "".join(chr(token - 1000) for token in ids if 1000 <= token < 10000)
+
 
 @pytest.fixture
 def preprocessor():
@@ -289,3 +295,86 @@ def test_edit_preprocess_merge_extract_and_decode(
     assert image.size == (grid_w * 16, grid_h * 16)
     assert image.getpixel((0, 0)) == (0, 127, 255)
     assert result.data["events"][0]["type"] == "image_final"
+
+
+@pytest.mark.parametrize("cfg_scale", [1.0, 4.0])
+def test_thinking_stops_at_boundary_then_generates_image(preprocessor, cfg_scale):
+    payload = StagePayload(
+        request_id="thinking-image",
+        request=OmniRequest(
+            inputs={"messages": [{"role": "user", "content": "A red sailboat."}]},
+            metadata={"image_generation": {"mode": "thinking", "cfg_scale": cfg_scale}},
+            params={},
+        ),
+        data={},
+    )
+    payload = asyncio.run(preprocessor(payload))
+    tokenizer = preprocessor._tokenizer
+    config = DllmConfig(
+        algorithm="LowConfidenceCFG",
+        algorithm_config={},
+        block_size=32,
+        mask_id=tokenizer.mask_token_id,
+        max_running_requests=4,
+    )
+    build, finish = make_dllm_thinker_scheduler_adapters(
+        tokenizer=tokenizer,
+        vocab_size=len(tokenizer),
+        dllm_config=config,
+    )
+    text_request = build(payload)
+    assert text_request.req.sampling_params.max_new_tokens == 2048
+    assert text_request.req._task_kind == "thinking"
+    assert preprocessor._boi_id in text_request.req.eos_token_ids
+    assert not hasattr(text_request.req, "_uncond_input_ids")
+
+    trace = "A red sailboat."
+    text_request.output_ids = (
+        tokenizer.encode(trace)
+        + preprocessor.build_t2i_header_ids(32, 32)
+        + [IMAGE_TOKEN_OFFSET + 7]
+    )
+    image_payload = finish(text_request)
+    assert thinker_next(payload.request_id, image_payload) == "thinker"
+    image_request = build(image_payload)
+    assert image_request.req.origin_input_ids[-1] == preprocessor._boi_id
+    assert image_request.req.sampling_params.max_new_tokens == 1024
+    assert image_request.req._task_kind == "t2i"
+    if cfg_scale > 1:
+        assert len(image_request.req._uncond_input_ids) == len(
+            image_request.req.origin_input_ids
+        )
+    else:
+        assert not hasattr(image_request.req, "_uncond_input_ids")
+    image_request.output_ids = [IMAGE_TOKEN_OFFSET + 7] * 1024
+    output = finish(image_request)
+    state = LLaDA2UniPipelineState.from_dict(output.data)
+    assert state.thinking_text == trace
+    assert thinker_next(payload.request_id, output) == ["decode", "image_decode"]
+    assert extract_image_vq_tokens(state)[:3] == ([7] * 1024, 32, 32)
+
+    text_request.output_ids = tokenizer.encode("No image boundary")
+    with pytest.raises(RuntimeError, match="did not produce <boi>"):
+        finish(text_request)
+    assert LLaDA2UniPipelineState.from_dict(payload.data).thinking_phase == "text"
+
+
+def test_thinking_edit_is_rejected(preprocessor):
+    payload = StagePayload(
+        request_id="thinking-edit",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "Make it red"}],
+                "images": ["source.png"],
+            },
+            metadata={
+                "image_generation": {
+                    "mode": "thinking",
+                }
+            },
+            params={},
+        ),
+        data={},
+    )
+    with pytest.raises(ValueError, match="only supports text-to-image"):
+        asyncio.run(preprocessor(payload))

@@ -101,7 +101,8 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
             engine=EngineArgs(mem_fraction_static=0.75),
             gpu=0,
-            next=[DECODE_STAGE, IMAGE_DECODE_STAGE],
+            next=[THINKER_STAGE, DECODE_STAGE, IMAGE_DECODE_STAGE],
+            route_fn=f"{_PKG}.request_builders.thinker_next",
         ),
         StageConfig(
             name=DECODE_STAGE,

@@ -163,10 +163,20 @@ def create_decode_executor(model_path: str):
                 "is_final": True,
             }
 
-        events = decode_events(
-            thinker_out=thinker_out,
-            tokenizer=tokenizer,
-        )
+        if state.thinking_phase == "image":
+            events = [
+                LLaDA2UniEvent(
+                    type="text_final",
+                    modality="text",
+                    payload={"text": state.thinking_text},
+                    is_final=True,
+                )
+            ]
+        else:
+            events = decode_events(
+                thinker_out=thinker_out,
+                tokenizer=tokenizer,
+            )
         event_dicts = [event_to_dict(event) for event in events]
 
         result: dict[str, Any] = {"events": event_dicts}

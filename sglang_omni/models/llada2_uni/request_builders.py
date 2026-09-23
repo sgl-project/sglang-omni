@@ -7,13 +7,25 @@ from array import array
 from typing import Any
 
 import torch
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.llada2_uni.components.preprocessor import (
+    BOI_TOKEN,
     DUMMY_IMAGE_TOKEN_ID,
     IMAGE_TOKEN_OFFSET,
+    ROLE_ASSISTANT,
+    ROLE_HUMAN,
+    ROLE_SYSTEM,
+    SOI_TOKEN,
+    SYSTEM_PROMPT_T2I_THINKING,
+    UNCOND_TEXT,
+    align_cfg_unconditional_input_ids,
+    validate_prompt_seq_len,
 )
 from sglang_omni.models.llada2_uni.config import (
+    DECODE_STAGE,
     DEFAULT_THINKER_MAX_NEW_TOKENS,
+    IMAGE_DECODE_STAGE,
     IMAGE_STAGE,
     THINKER_STAGE,
 )
@@ -119,7 +131,9 @@ def build_dllm_thinker_request(
     input_ids_array = array("q", input_ids.to(dtype=torch.long).flatten().tolist())
     ss = state.stream_state
     max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
-    if state.task_kind in ("t2i", "edit"):
+    if state.thinking_phase == "text":
+        max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS
+    elif state.task_kind in ("t2i", "edit"):
         image_info = ss.get("image_info", [])
         if not image_info:
             raise ValueError("Image generation is missing its output grid")
@@ -144,6 +158,10 @@ def build_dllm_thinker_request(
 
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
     eos_token_ids = {eos_token_id} if eos_token_id is not None else None
+    if state.thinking_phase == "text":
+        eos_token_ids = (eos_token_ids or set()) | {
+            tokenizer.convert_tokens_to_ids(BOI_TOKEN)
+        }
 
     rid = request_id or "req-0"
     req = Req(
@@ -159,7 +177,7 @@ def build_dllm_thinker_request(
 
     req.omni_model_inputs = None
     req._omni_consumed = None
-    req._task_kind = state.task_kind
+    req._task_kind = "thinking" if state.thinking_phase == "text" else state.task_kind
     if ss.get("dllm_steps") is not None:
         req._dllm_steps = int(ss["dllm_steps"])
 
@@ -213,6 +231,58 @@ def apply_dllm_thinker_result(
     return thinker_out
 
 
+def thinking_phase1_to_phase2(
+    state: LLaDA2UniPipelineState,
+    tokenizer: PreTrainedTokenizerBase,
+    output_ids: list[int],
+) -> None:
+    """Keep the generated image boundary and prepare CFG for the VQ pass."""
+    boi_id = tokenizer.convert_tokens_to_ids(BOI_TOKEN)
+    if boi_id not in output_ids:
+        raise RuntimeError("Thinking text generation did not produce <boi>")
+    boi_pos = output_ids.index(boi_id)
+    phase2_ids = (
+        state.prompt["input_ids"].flatten().tolist() + output_ids[: boi_pos + 1]
+    )
+    phase2_tensor = torch.tensor([phase2_ids], dtype=torch.long)
+    info = state.stream_state["image_info"][0]
+    validate_prompt_seq_len(
+        phase2_tensor,
+        max_seq_len=state.stream_state.get("max_seq_len"),
+        max_new_tokens=info["grid_h"] * info["grid_w"],
+    )
+    cfg_inputs = {}
+    if state.stream_state["cfg_scale"] > 1.0:
+        # The checkpoint's thinking CFG template omits spaces between role markers.
+        uncond_ids = tokenizer.encode(
+            f"{ROLE_SYSTEM}{SYSTEM_PROMPT_T2I_THINKING}{ROLE_HUMAN}"
+            f"{UNCOND_TEXT}{ROLE_ASSISTANT}"
+            f"{SOI_TOKEN}<|reserved_token_{info['grid_h']}|>"
+            f"<|reserved_token_{info['grid_w']}|>{BOI_TOKEN}",
+            add_special_tokens=False,
+        )
+        uncond_ids, pad_len = align_cfg_unconditional_input_ids(
+            tokenizer, phase2_ids, uncond_ids
+        )
+        cfg_inputs = {
+            "uncond_input_ids": uncond_ids,
+            "uncond_left_pad_len": pad_len,
+        }
+    trace = tokenizer.decode(output_ids[:boi_pos], skip_special_tokens=True)
+    state.stream_state = {**state.stream_state, **cfg_inputs}
+    state.thinking_text = trace
+    state.thinking_phase = "image"
+    state.prompt = {"input_ids": phase2_tensor}
+
+
+def thinker_next(request_id: str, output: StagePayload) -> str | list[str]:
+    """Re-enter the thinker once before delivering the text and image results."""
+    state = LLaDA2UniPipelineState.from_dict(output.data)
+    if state.thinking_phase == "image" and state.thinker_out is None:
+        return THINKER_STAGE
+    return [DECODE_STAGE, IMAGE_DECODE_STAGE]
+
+
 def make_dllm_thinker_scheduler_adapters(
     *,
     tokenizer: Any,
@@ -238,12 +308,15 @@ def make_dllm_thinker_scheduler_adapters(
     def result_adapter(data: SGLangDLLMRequestData) -> StagePayload:
         payload = data.stage_payload
         state = LLaDA2UniPipelineState.from_dict(payload.data)
-        apply_dllm_thinker_result(
-            state,
-            stage_name=stage_name,
-            output_ids=data.output_ids,
-            finish_reason=data.finish_reason,
-        )
+        if state.thinking_phase == "text":
+            thinking_phase1_to_phase2(state, tokenizer, data.output_ids)
+        else:
+            apply_dllm_thinker_result(
+                state,
+                stage_name=stage_name,
+                output_ids=data.output_ids,
+                finish_reason=data.finish_reason,
+            )
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

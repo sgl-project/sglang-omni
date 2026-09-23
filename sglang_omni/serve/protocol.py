@@ -46,7 +46,7 @@ class ImageGenerationParams(BaseModel):
 
     model_config = ConfigDict(allow_inf_nan=False)
 
-    mode: Literal["normal"] = "normal"
+    mode: Literal["normal", "thinking"] = "normal"
     decode_mode: Literal["normal", "decoder-turbo"] = "normal"
     decoder_steps: int | None = Field(default=None, ge=1)
     seed: int | None = None
