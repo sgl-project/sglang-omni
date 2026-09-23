@@ -1391,3 +1391,8 @@ rps 1 -1.5、rps 20 -1.2 ms。两个一起 -8.9 ms(50.5 → 41.6),可闻 -8.6 ms
 #2094 合并前 rebase 过一次:main 在同一批文件里新进了 cosyvoice3 臂,两臂都保留,契约测试从"轮换 == 已校准集合"改成
 "轮换只抽注册过的 preset 且不含 CustomVoice"。#2217(只留首块编译)等 review;#2293(延迟阶段)两臂在 Tilde 上各跑一遍全过,
 CustomVoice 臂 1 rps 中位 31.8 ms、20 rps 53.5 ms(CI 部署形态:经 router、vocoder 独立进程),Base 臂 79.6 / 160.1 ms。
+
+**#2217 合并(2026-09-22 22:52 PT)**:只留首块宽度编译的版本 → main `a0087317`,JiaxinD 记 Co-authored-by。合并前 GitHub 上的
+GPU CI 恢复了(hyper/eval-h100 改由 Radix 平台分配),`pick TTS model` 按 `run-qwen3-tts` 标签选中 qwen3-tts,stage 1 日志里
+`TTS_CI_MODEL: qwen3-tts`、加载 `Qwen3-TTS-12Hz-1.7B-Base`,TTS CI 五个 stage 全部 success,确认测的是改动路径。
+luojiaxuan 同时授权:之后凡已 approve 的我方 PR 直接合。
