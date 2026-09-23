@@ -73,7 +73,7 @@ def compute_image_cache_key(images: object) -> str | None:
 
 
 async def ensure_image_list_async(
-    images: Any,
+    images: object,
     *,
     image_mode: str = "RGB",
     media_connector: MultiModalResourceConnector | None = None,

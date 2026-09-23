@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase
@@ -34,7 +34,7 @@ class MingTTSState(DeclarativeStateBase):
     instructions: str | None = None
     language: str | None = None
     voice: str | None = None
-    ref_audio: Any | None = None
+    ref_audio: object = None
     ref_text: str | None = None
     input_ids: list[int] | None = wire(None, codec="list")
     max_decode_steps: int = wire(MING_TTS_DEFAULT_MAX_DECODE_STEPS, codec="int_or")

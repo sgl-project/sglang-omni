@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerFast
@@ -52,7 +52,7 @@ class MingTTSTokenizerBundle:
 def load_ming_tts_tokenizer(
     model_path: str | Path,
     *,
-    llm_config: Any | None = None,
+    llm_config: object = None,
 ) -> MingTTSTokenizerBundle:
     """Load the checkpoint fast tokenizer without importing remote tokenizer code."""
 

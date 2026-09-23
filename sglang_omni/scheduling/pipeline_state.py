@@ -80,7 +80,7 @@ def _tensor_to_list(value: object) -> object:
 
 
 def _tensor_from_list(
-    value: Any,
+    value: object,
     _default: object = None,
 ) -> torch.Tensor | None:
     if value is None:

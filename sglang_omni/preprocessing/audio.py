@@ -202,7 +202,7 @@ class AudioMediaIO(MediaIO[tuple[npt.NDArray[np.float32], float]]):
 
 
 async def ensure_audio_list_async(
-    audios: Any,
+    audios: object,
     *,
     target_sr: int = 16000,
     resource_connector: MultiModalResourceConnector | None = None,

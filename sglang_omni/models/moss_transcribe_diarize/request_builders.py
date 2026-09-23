@@ -165,7 +165,7 @@ def _sampling_param(
     explicit_fields: set[str],
     field: str,
     default: SamplingResultT,
-    cast: Callable[[Any], SamplingResultT],
+    cast: Callable[[SamplingValueT], SamplingResultT],
 ) -> SamplingResultT:
     if field not in explicit_fields:
         return default

@@ -23,7 +23,7 @@ class Message:
     """Chat-style message."""
 
     role: str
-    content: Any
+    content: object
 
     def to_dict(self) -> dict[str, object]:
         return {"role": self.role, "content": self.content}

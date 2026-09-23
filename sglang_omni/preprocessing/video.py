@@ -137,7 +137,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
 
 
 async def ensure_video_list_async(
-    videos: Any,
+    videos: object,
     *,
     fps: float | None = None,
     max_frames: int | None = None,
