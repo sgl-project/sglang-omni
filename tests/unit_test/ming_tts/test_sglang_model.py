@@ -304,6 +304,7 @@ def test_ming_sparse_moe_tp_collective_uses_forward_flags(monkeypatch) -> None:
         tp_size=2,
         shared_experts=None,
         gate=lambda hidden_states: hidden_states,
+        router_logits_dtype=torch.float32,
         topk=lambda _hidden_states, _router_logits: object(),
         experts=lambda hidden_states, _topk_output: hidden_states + 1,
     )

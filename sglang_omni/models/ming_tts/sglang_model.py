@@ -99,7 +99,7 @@ class MingTTSTailGraph:
     def __init__(self, model: Any, batch_size: int) -> None:
         self.model = model
         self.batch_size = int(batch_size)
-        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph: Any | None = None
         self.inputs: MingTTSTailInputs | None = None
         self.noise: torch.Tensor | None = None
         self.timesteps: torch.Tensor | None = None
@@ -138,29 +138,36 @@ class MingTTSTailGraph:
             )
         )
 
-        warmup_stream = torch.cuda.Stream(device=device)
-        warmup_stream.wait_stream(torch.cuda.current_stream(device))
-        with torch.cuda.stream(warmup_stream):
-            for _ in range(2):
-                self.model.compute_tail_step(
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            raise RuntimeError(
+                "Ming-Omni-TTS tail graph capture requires an accelerator, "
+                f"got {device}"
+            )
+        device_module = torch.get_device_module(device)
+        with current_platform.graph_capture_attention():
+            warmup_stream = device_module.Stream(device=device)
+            warmup_stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(warmup_stream):
+                for _ in range(2):
+                    self.model.compute_tail_step(
+                        self.inputs,
+                        noise=self.noise,
+                        timesteps=self.timesteps,
+                        sde_random=self.sde_random,
+                    )
+            device_module.current_stream(device).wait_stream(warmup_stream)
+            device_module.synchronize(device=device)
+
+            with graph_backend.capture() as graph:
+                self.outputs = self.model.compute_tail_step(
                     self.inputs,
                     noise=self.noise,
                     timesteps=self.timesteps,
                     sde_random=self.sde_random,
                 )
-        torch.cuda.current_stream(device).wait_stream(warmup_stream)
-        torch.cuda.synchronize(device=device)
-
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            self.outputs = self.model.compute_tail_step(
-                self.inputs,
-                noise=self.noise,
-                timesteps=self.timesteps,
-                sde_random=self.sde_random,
-            )
         graph.replay()
-        torch.cuda.synchronize(device)
+        device_module.synchronize(device)
         self.graph = graph
 
     def replay(
@@ -444,6 +451,9 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
 
         self.gate = MingBailingMoeGate(config)
+        self.router_logits_dtype = current_platform.moe_router_logits_dtype(
+            self.gate.weight.dtype
+        )
         if self.multi_gate:
             # Note (yzxiao): These modality gates are loaded for checkpoint
             # coverage even though TTS serving does not use modality masks.
@@ -491,7 +501,7 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             hidden_states.clone() if self.shared_experts is not None else hidden_states
         )
 
-        router_logits = self.gate(hidden_states).float()
+        router_logits = self.gate(hidden_states).to(self.router_logits_dtype)
         topk_output = self.topk(hidden_states, router_logits)
         hidden_states = self.experts(hidden_states, topk_output)
         if self.shared_experts is not None:

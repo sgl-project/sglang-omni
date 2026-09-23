@@ -130,6 +130,9 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform support torchaudio.functional.resample"""
         return True
 
+    def supports_graph_captured_fft(self) -> bool:
+        return True
+
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
         """Empty leaves dispatch alone."""
         return ()
@@ -142,6 +145,11 @@ class OmniPlatform(DeviceMixin):
         from torch.nn.attention import sdpa_kernel
 
         return sdpa_kernel(list(backends))
+
+    def moe_router_logits_dtype(self, gate_dtype: "torch.dtype") -> "torch.dtype":
+        import torch
+
+        return torch.float32
 
     def get_torch_profiler(self) -> TorchProfiler:
         from sglang_omni.profiler.torch_profiler import TorchProfiler

@@ -217,6 +217,36 @@ def create_reference_encode_executor(
     return SimpleScheduler(_encode, max_concurrency=max_concurrency)
 
 
+def device_total_memory_bytes(device: torch.device) -> int | None:
+    import torch
+
+    if device.type == "cuda":
+        return get_gpu_device_info(device.index).total_memory_bytes
+
+    try:
+        properties = torch.get_device_module(device).get_device_properties(device)
+        return int(properties.total_memory)
+    except (AttributeError, RuntimeError) as exc:
+        logger.debug(f"Ming-Omni-TTS {device} total memory is unavailable: {exc}")
+        return None
+
+
+def process_memory_bytes(device: torch.device) -> tuple[int | None, str]:
+    import torch
+
+    if device.type == "cuda":
+        nvml_bytes = get_process_gpu_memory_bytes(device.index)
+        if nvml_bytes is not None:
+            return nvml_bytes, "nvml"
+
+    try:
+        return int(torch.get_device_module(device).memory_reserved(device)), (
+            "torch_allocator"
+        )
+    except AttributeError:
+        return None, "unavailable"
+
+
 def create_audio_decode_executor(
     model_path: str,
     *,
@@ -247,7 +277,20 @@ def create_audio_decode_executor(
 
     import torch
 
-    from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
+    from sglang_omni.platforms import current_platform
+
+    if streaming_cuda_graph and not current_platform.supports_graph_captured_fft():
+        logger.warning(
+            "ming_tts_audio_decode_streaming_graph stage=audio_decode "
+            f"platform={current_platform.device_type} requested=cuda_graph "
+            "resolved=eager reason=device_graphs_cannot_record_the_inverse_fft"
+        )
+        streaming_cuda_graph = False
+
+    from sglang_omni.models.ming_tts.audio_decode import (
+        MingAudioDecoder,
+        missing_streaming_device_api,
+    )
     from sglang_omni.models.ming_tts.streaming_vocoder import (
         MingTTSStreamingVocoderScheduler,
     )
@@ -292,14 +335,23 @@ def create_audio_decode_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     resolved_device = resolve_concrete_device(device, gpu_id)
-    if resolved_device.type != "cuda" or not torch.cuda.is_available():
+    device_module = torch.get_device_module(resolved_device)
+    if resolved_device.type == "cpu" or not device_module.is_available():
         raise ValueError(
-            "Ming-Omni-TTS fixed AudioVAE serving requires an available CUDA device"
+            "Ming-Omni-TTS fixed AudioVAE serving requires an available "
+            f"accelerator, got {resolved_device}"
         )
     logical_gpu_id = resolved_device.index
-    if logical_gpu_id >= torch.cuda.device_count():
+    assert logical_gpu_id is not None, "an accelerator device resolves to an index"
+    if logical_gpu_id >= device_module.device_count():
         raise ValueError(
             f"Ming-Omni-TTS audio decode GPU {logical_gpu_id} is not visible"
+        )
+    unsupported_api = missing_streaming_device_api(resolved_device)
+    if unsupported_api is not None:
+        raise ValueError(
+            "Ming-Omni-TTS fixed AudioVAE serving streams through the device "
+            f"module, and {resolved_device} has no {unsupported_api}"
         )
 
     resolved_dtype = resolve_audio_vae_dtype(dtype)
@@ -309,8 +361,8 @@ def create_audio_decode_executor(
             f"got {resolved_dtype}"
         )
 
-    device_info = get_gpu_device_info(logical_gpu_id)
-    pre_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+    device_total_bytes = device_total_memory_bytes(resolved_device)
+    pre_process_bytes, memory_source = process_memory_bytes(resolved_device)
 
     checkpoint_dir = _resolve_checkpoint(model_path)
     config = load_ming_tts_config(checkpoint_dir)
@@ -372,7 +424,7 @@ def create_audio_decode_executor(
         raise
     try:
         scheduler.warmup_now()
-        post_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+        post_process_bytes, memory_source = process_memory_bytes(resolved_device)
         process_delta_bytes = (
             post_process_bytes - pre_process_bytes
             if pre_process_bytes is not None and post_process_bytes is not None
@@ -381,20 +433,18 @@ def create_audio_decode_executor(
         process_budget_bytes = None
         if process_fraction is None:
             memory_verification = "not_requested"
-        elif post_process_bytes is None or device_info.total_memory_bytes is None:
+        elif post_process_bytes is None or device_total_bytes is None:
             memory_verification = "unavailable"
             logger.warning(
                 "ming_tts_audio_decode_memory stage=audio_decode "
-                "memory_verification=unavailable process_post_bytes=%s "
-                "device_total_bytes=%s process_fraction=%s",
-                post_process_bytes,
-                device_info.total_memory_bytes,
-                process_fraction,
+                "memory_verification=unavailable "
+                f"memory_source={memory_source} "
+                f"process_post_bytes={post_process_bytes} "
+                f"device_total_bytes={device_total_bytes} "
+                f"process_fraction={process_fraction}"
             )
         else:
-            process_budget_bytes = int(
-                device_info.total_memory_bytes * process_fraction
-            )
+            process_budget_bytes = int(device_total_bytes * process_fraction)
             if post_process_bytes > process_budget_bytes:
                 raise RuntimeError(
                     "Ming-Omni-TTS audio decode process GPU memory exceeds its "
@@ -406,33 +456,27 @@ def create_audio_decode_executor(
             memory_verification = "verified"
 
         logger.info(
-            "ming_tts_audio_decode_ready stage=audio_decode device=%s dtype=%s "
-            "attention_backend=%s streaming_backend=%s "
-            "streaming_cuda_graph_required=%s stream_slots=%d "
-            "initial_chunk_patches=%d steady_chunk_patches=%d "
-            "audio_patch_size=%d max_step_latents=%d latent_dim=%d "
-            "component_fraction=%s process_fraction=%s "
-            "process_pre_bytes=%s process_post_bytes=%s "
-            "audio_factory_process_delta_bytes=%s process_budget_bytes=%s "
-            "memory_verification=%s",
-            resolved_device,
-            str(resolved_dtype).removeprefix("torch."),
-            MING_TTS_AUDIO_VAE_ATTN_IMPLEMENTATION,
-            "cuda_graph" if streaming_cuda_graph else "eager",
-            streaming_cuda_graph,
-            stream_slots,
-            initial_chunk_patches,
-            steady_chunk_patches,
-            patch_size,
-            max_step_latents,
-            latent_dim,
-            component_fraction,
-            process_fraction,
-            pre_process_bytes,
-            post_process_bytes,
-            process_delta_bytes,
-            process_budget_bytes,
-            memory_verification,
+            "ming_tts_audio_decode_ready stage=audio_decode "
+            f"device={resolved_device} "
+            f"dtype={str(resolved_dtype).removeprefix('torch.')} "
+            f"attention_backend={MING_TTS_AUDIO_VAE_ATTN_IMPLEMENTATION} "
+            f"streaming_backend={'cuda_graph' if streaming_cuda_graph else 'eager'} "
+            f"streaming_cuda_graph_required={streaming_cuda_graph} "
+            f"stream_slots={stream_slots} "
+            f"initial_chunk_patches={initial_chunk_patches} "
+            f"steady_chunk_patches={steady_chunk_patches} "
+            f"audio_patch_size={patch_size} "
+            f"max_step_latents={max_step_latents} "
+            f"latent_dim={latent_dim} "
+            f"component_fraction={component_fraction} "
+            f"process_fraction={process_fraction} "
+            f"process_pre_bytes={pre_process_bytes} "
+            f"process_post_bytes={post_process_bytes} "
+            f"audio_factory_process_delta_bytes={process_delta_bytes} "
+            f"device_total_bytes={device_total_bytes} "
+            f"process_budget_bytes={process_budget_bytes} "
+            f"memory_source={memory_source} "
+            f"memory_verification={memory_verification}"
         )
     except Exception:
         try:

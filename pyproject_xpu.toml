@@ -69,7 +69,10 @@ dependencies = [
 
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML
-    "x-transformers",         # AuK DiT rotary embeddings
+    "x-transformers",         # AuK DiT rotary embeddings; Ming-Omni-TTS DiTAR too
+
+    # --- Ming-Omni-TTS ------------------------------------------------------
+    "diffusers==0.37.0",
 ]
 
 [project.optional-dependencies]
