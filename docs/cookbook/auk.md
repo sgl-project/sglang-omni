@@ -114,6 +114,13 @@ and AuK-Flash use the native path. The first request may include Triton JIT
 compilation; the 32-step AuK checkpoint has been validated on H100 with FP32
 weights under BF16 autocast and with native BF16 weights.
 
+For serial workloads, `--auk_engine.factory.enable_dit_singleton_mask_elision true`
+trims stored conditioning and reference padding to their recorded valid lengths
+and skips all-valid DiT masks when the engine forms a singleton batch that runs
+eagerly, including when no captured CUDA graph covers its original shape. A
+graph-covered singleton retains its masks because graph padding may add rows.
+The option is disabled by default; multi-request batches are unchanged.
+
 ## SeedTTS Evaluation
 
 The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash` and starts the server from `--model-path`. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:

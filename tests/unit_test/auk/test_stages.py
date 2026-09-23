@@ -261,3 +261,103 @@ def test_the_warmup_covers_a_request_that_carries_no_reference():
         (1, True),
         (2, True),
     }
+
+
+def test_singleton_mask_elision_trims_to_valid_lengths():
+    flow = Mock()
+    flow.sample_batch.return_value = [torch.zeros(5, 64)]
+    state = AuKState(
+        gen_frames=5,
+        prompt_tokens=4,
+        conditioning=torch.zeros(6, 16),
+        text_mask=torch.tensor([True, True, True, True, False, False]),
+        ref_latent=torch.zeros(5, 64),
+        ref_length=3,
+    )
+    payload = StagePayload(
+        request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
+    )
+
+    sample_batch(
+        [payload],
+        flow,
+        torch.device("cpu"),
+        torch.float32,
+        1500,
+        {"elide_singleton_masks": True},
+    )
+
+    item = flow.sample_batch.call_args.args[0][0]
+    assert item.conditioning.shape == (4, 16)
+    assert item.text_mask is None
+    assert item.ref_latent.shape == (3, 64)
+    assert flow.sample_batch.call_args.kwargs["elide_singleton_masks"] is True
+
+
+def test_singleton_graph_path_keeps_original_lengths_and_masks():
+    flow = Mock()
+    flow.sample_batch.return_value = [torch.zeros(5, 64)]
+    step_graph = Mock()
+    step_graph.pad_lengths.return_value = (32, 16, 8)
+    state = AuKState(
+        gen_frames=5,
+        prompt_tokens=4,
+        conditioning=torch.zeros(6, 16),
+        text_mask=torch.tensor([True, True, True, True, False, False]),
+        ref_latent=torch.zeros(5, 64),
+        ref_length=3,
+    )
+    payload = StagePayload(
+        request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
+    )
+
+    sample_batch(
+        [payload],
+        flow,
+        torch.device("cpu"),
+        torch.float32,
+        1500,
+        {"elide_singleton_masks": True, "step_graph": step_graph},
+    )
+
+    step_graph.pad_lengths.assert_called_once_with(frames=5, ref=5, text=6, batch=1)
+    item = flow.sample_batch.call_args.args[0][0]
+    assert item.conditioning.shape == (6, 16)
+    assert item.text_mask.tolist() == [True] * 4 + [False] * 2
+    assert item.ref_latent.shape == (5, 64)
+    assert flow.sample_batch.call_args.kwargs["elide_singleton_masks"] is True
+    assert flow.sample_batch.call_args.kwargs["step_graph"] is step_graph
+
+
+def test_singleton_graph_miss_elides_masks_on_eager_fallback():
+    flow = Mock()
+    flow.sample_batch.return_value = [torch.zeros(5, 64)]
+    step_graph = Mock()
+    step_graph.pad_lengths.return_value = None
+    state = AuKState(
+        gen_frames=5,
+        prompt_tokens=4,
+        conditioning=torch.zeros(6, 16),
+        text_mask=torch.tensor([True, True, True, True, False, False]),
+        ref_latent=torch.zeros(5, 64),
+        ref_length=3,
+    )
+    payload = StagePayload(
+        request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
+    )
+
+    sample_batch(
+        [payload],
+        flow,
+        torch.device("cpu"),
+        torch.float32,
+        1500,
+        {"elide_singleton_masks": True, "step_graph": step_graph},
+    )
+
+    step_graph.pad_lengths.assert_called_once_with(frames=5, ref=5, text=6, batch=1)
+    item = flow.sample_batch.call_args.args[0][0]
+    assert item.conditioning.shape == (4, 16)
+    assert item.text_mask is None
+    assert item.ref_latent.shape == (3, 64)
+    assert flow.sample_batch.call_args.kwargs["step_graph"] is None
