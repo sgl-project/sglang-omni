@@ -33,9 +33,6 @@ def validate_cfg(server_args: Any) -> None:
     cfg = resolved_view(server_args)
     if cfg.dllm_algorithm != "LowConfidenceCFG":
         return
-    if not cfg.disable_cuda_graph:
-        raise ValueError("LowConfidenceCFG does not support CUDA graphs")
-
     register_llada2_uni_cfg()
     from sglang_omni.models.llada2_uni.cfg_attention_backend import (
         CFG_ATTENTION_BACKEND,

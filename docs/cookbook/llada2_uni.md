@@ -26,12 +26,54 @@ uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
 LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
 The `text` variant retains the four-stage text-output pipeline.
 
-The CFG thinker currently uses synchronous eager execution. An explicit
-CUDA graph request is rejected until CFG graph metadata is supported.
+The CFG thinker uses synchronous execution and defaults to eager mode.
+CUDA Graph replay is available for fixed-width DLLM blocks, including
+multi-way CFG and tensor parallel execution.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
 ```
+
+### Thinker TP and CUDA Graphs
+
+Enable graphs alongside TP to reduce the repeated model-launch overhead of
+DLLM unmasking. Small blocks can make TP slower in eager mode: each rank does
+less compute, while Python dispatch and the per-layer collectives remain.
+Graphs capture the model forward, including graph-compatible collectives;
+they do not capture the Python sampling loop or remove communication.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
+  --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
+```
+
+Graph batch sizes count CFG branches, not user requests. Two-way T2I CFG
+uses two rows and three-way edit CFG uses three. The graph runner is scoped
+to the LLaDA-Uni CFG thinker. Blocks with padding in the current query stay
+eager; once that padding is entirely in the cached prefix, replay excludes
+it from cached attention. Dynamic KV lengths and token values are refreshed
+before replay. This uses the existing SGLang operators without adding custom
+Triton kernels. Set `disable_cuda_graph: true` for the eager comparison, and
+exclude model loading, graph capture, and initial warmup requests from timing.
+
+Group-limited expert routing uses SGLang's `TopK` component in both eager and
+graph execution. It preserves FP32 router logits, sigmoid scoring, correction
+bias, and normalized routing weights. The fused implementation can change
+expert ordering and floating-point rounding, so validate model accuracy rather
+than expecting pixel-identical images across routing implementations.
+
+LLaDA-Uni thinker workers retain the same `CUDA_VISIBLE_DEVICES` list across
+TP ranks and select distinct local devices. The stage defaults
+`SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS=false` so custom all-reduce v2 can
+identify each GPU when initializing symmetric memory. Other models retain
+their existing placement defaults. Check startup logs to confirm custom
+all-reduce initialization when comparing TP performance. The existing
+`SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2=0` environment setting selects legacy
+custom all-reduce for a separate comparison; this pipeline does not change
+the global communication default.
 
 ## Image Generation and Editing
 

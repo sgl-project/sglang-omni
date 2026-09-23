@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.llada2_uni.components.preprocessor import (
     IMAGE_TOKEN_OFFSET,
     LLaDA2Preprocessor,
@@ -50,6 +52,25 @@ CONFIG = {
     "decode_mode": "decoder-turbo",
     "decoder_steps": 8,
 }
+
+
+def test_decoder_keeps_multiple_frames_after_config_overrides(tmp_path):
+    config_path = tmp_path / "interleaved.yaml"
+    config_path.write_text(
+        "config_cls: LLaDA2UniInterleavedPipelineConfig\n"
+        "model_path: /model\n"
+        "stages:\n"
+        "  image_decode:\n"
+        "    factory:\n"
+        "      backend: sglang\n"
+        "      num_steps: 8\n"
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    decoder = next(stage for stage in config.stages if stage.name == "image_decode")
+    kwargs = resolve_stage_factory_args(decoder, config, gpu_id=0)
+    assert kwargs["interleaved_nonterminal"] is True
+    assert kwargs["backend"] == "sglang"
+    assert kwargs["num_steps"] == 8
 
 
 def initial_payload():

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import Field
 
@@ -33,7 +33,6 @@ class LLaDA2ImageDecoderFactoryArgs(FactoryArgs):
     num_steps: int = Field(default=50, ge=1)
     resolution_multiplier: int = Field(default=2, ge=1)
     attention_backend: str = "torch_sdpa"
-    interleaved_nonterminal: bool = False
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
@@ -66,6 +65,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             gpu=0,
             next=DECODE_STAGE,
         ),
@@ -101,6 +101,7 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             engine=EngineArgs(mem_fraction_static=0.75),
             gpu=0,
             next=[THINKER_STAGE, DECODE_STAGE, IMAGE_DECODE_STAGE],
@@ -126,6 +127,12 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
 class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
     """Text-only interleaved generation with asynchronous frame decoding."""
 
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+        kwargs = super().stage_factory_kwargs(stage_name)
+        if stage_name == IMAGE_DECODE_STAGE:
+            kwargs["interleaved_nonterminal"] = True
+        return kwargs
+
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -139,6 +146,7 @@ class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             engine=EngineArgs(
                 mem_fraction_static=0.75,
                 max_running_requests=3,
@@ -161,7 +169,7 @@ class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
             name=IMAGE_DECODE_STAGE,
             process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.stages.create_image_decode_executor",
-            factory=LLaDA2ImageDecoderFactoryArgs(interleaved_nonterminal=True),
+            factory=LLaDA2ImageDecoderFactoryArgs(),
             gpu=0,
             gpu_memory_fraction=0.2,
             next=INTERLEAVED_COLLECT_STAGE,

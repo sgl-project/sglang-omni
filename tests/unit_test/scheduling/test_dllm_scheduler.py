@@ -4,10 +4,14 @@ from __future__ import annotations
 import queue
 import threading
 from array import array
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
@@ -20,6 +24,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class _ReqDouble:
@@ -56,6 +61,9 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
     scheduler._abort_lock = threading.Lock()
     scheduler._aborted_request_ids = set()
     scheduler.inbox = queue.Queue()
+    scheduler.tp_rank = 0
+    scheduler.tp_size = 1
+    scheduler._running = True
     scheduler._waiting_queue = []
     scheduler._cond_to_unconds = {}
     scheduler._uncond_to_cond = {}
@@ -64,6 +72,30 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
     scheduler._result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
+
+
+@pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 0), (2, 1)])
+def test_dllm_scheduler_owns_tp_work_broadcast(
+    monkeypatch: pytest.MonkeyPatch, tp_size: int, tp_rank: int
+) -> None:
+    monkeypatch.setattr(
+        dllm_scheduler_module, "get_parallel", lambda: SimpleNamespace(tp_size=tp_size)
+    )
+    scheduler = DllmScheduler(
+        tp_worker=SimpleNamespace(tp_rank=tp_rank),
+        tree_cache=None,
+        req_to_token_pool=None,
+        token_to_kv_pool_allocator=None,
+        server_args=None,
+        model_config=None,
+        dllm_config=SimpleNamespace(block_size=128),
+        request_builder=lambda payload: payload,
+        result_adapter=lambda result: result,
+    )
+
+    assert scheduler.tp_rank == tp_rank
+    assert scheduler.tp_size == tp_size
+    assert scheduler.requires_tp_work_fanout is False
 
 
 def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> None:
@@ -140,7 +172,7 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     forwarded = []
 
     scheduler._running = True
-    scheduler.drain_and_purge = lambda: None
+    scheduler.drain_and_purge = lambda: scheduler._running
     scheduler.schedule_next_batch = lambda: batch
     scheduler.apply_results = lambda *_: None
     scheduler.apply_cfg_padding_metadata = lambda *_: None
@@ -403,3 +435,87 @@ def test_abort_between_blocks_releases_cached_tokens(
     assert allocator.available_size() == 512
     assert pool.available_size() == 2
     assert req.kv.is_kv_released
+
+
+def run_tp_abort_rank(rank: int, rendezvous: str, stop_follower_early: bool) -> None:
+    dist.init_process_group(
+        "gloo",
+        rank=rank,
+        world_size=2,
+        init_method=rendezvous,
+        timeout=timedelta(seconds=15),
+    )
+    try:
+        scheduler = _scheduler(fdfo=False)
+        scheduler.tp_rank, scheduler.tp_size = rank, 2
+        scheduler._abort_lock = threading.Lock()
+        scheduler._aborted_request_ids = set()
+        scheduler.inbox = queue.Queue()
+        group_ids = ["cond", "cond-uncond", "cond-uncond-img"]
+        scheduler._staging_queue = [_ReqDouble(rid=rid) for rid in group_ids]
+        scheduler._cond_to_unconds = {"cond": group_ids[1:]}
+        scheduler._uncond_to_cond = dict.fromkeys(group_ids[1:], "cond")
+        scheduler._uncond_rids = set(group_ids[1:])
+        scheduler._request_builder = lambda rid: SimpleNamespace(
+            req=_ReqDouble(rid=rid)
+        )
+        released: list[str] = []
+        scheduler.tp_worker = SimpleNamespace(
+            model_runner=SimpleNamespace(
+                tp_group=SimpleNamespace(
+                    rank=rank, ranks=[0, 1], cpu_group=dist.group.WORLD
+                ),
+            ),
+        )
+        scheduler.tree_cache = None
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                dllm_scheduler_module,
+                "release_kv_once",
+                lambda req, cache: released.append(req.rid),
+            )
+            for step in range(3):
+                if step == 0 and rank == 1:
+                    scheduler.abort("cond")
+                    if stop_follower_early:
+                        scheduler.stop()
+                elif step == 1 and rank == 0:
+                    scheduler.abort("cond")
+                    scheduler.inbox.put(
+                        IncomingMessage("after", "new_request", "after")
+                    )
+                elif step == 2 and rank == 1:
+                    scheduler.abort("after")
+                assert scheduler.drain_and_purge()
+                requests = scheduler._staging_queue or scheduler._waiting_queue
+                assert [req.rid for req in requests] == (
+                    group_ids if step == 0 else ["after"]
+                )
+                # Match a forward collective after each agreed scheduling boundary.
+                value = torch.tensor([len(requests)])
+                dist.all_reduce(value)
+                assert value.item() == 2 * len(requests)
+
+            if rank == 0:
+                scheduler.stop()
+            assert not scheduler.drain_and_purge()
+
+        assert released == group_ids
+        assert not scheduler._cond_to_unconds
+        assert not scheduler._uncond_to_cond
+        assert not scheduler._uncond_rids
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_gloo_available(), reason="requires Gloo")
+@pytest.mark.parametrize("stop_follower_early", [False, True])
+def test_tp_abort_at_forward_boundary(
+    tmp_path: Path, stop_follower_early: bool
+) -> None:
+    mp.spawn(
+        run_tp_abort_rank,
+        args=((tmp_path / "tp-rendezvous").as_uri(), stop_follower_early),
+        nprocs=2,
+        join=True,
+    )

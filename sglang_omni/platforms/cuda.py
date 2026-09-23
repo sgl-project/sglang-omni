@@ -84,6 +84,16 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        if (
+            source_env.get(
+                "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS",
+                spec.env_defaults.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"),
+            )
+            == "false"
+        ):
+            # note (Anmuliar): symmetric memory needs consistent device ordinals across ranks.
+            env_updates.pop("CUDA_VISIBLE_DEVICES")
+            env_updates["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "false"
         # note (ratish): NVLS multicast binding is not available on every host,
         # and NCCL 2.29 fails communicator init instead of falling back. A
         # value from the shell or the stage configuration stands.

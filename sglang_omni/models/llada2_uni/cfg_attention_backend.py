@@ -12,12 +12,45 @@ from sglang.srt.layers.attention.flashinfer_backend import (
     merge_state,
 )
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+    DecodeCudaGraphRunner,
+)
 from sglang.srt.server_args import (
     ATTENTION_BACKEND_CHOICES,
     add_attention_backend_choices,
 )
 
 CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
+
+
+class CFGCudaGraphRunner(DecodeCudaGraphRunner):
+    """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
+
+    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
+        if any(
+            pad > prefix
+            for pad, prefix in zip(
+                forward_batch.dllm_left_pad_lens_cpu,
+                forward_batch.extend_prefix_lens_cpu,
+                strict=True,
+            )
+        ):
+            return False
+        return super().can_run_graph(forward_batch)
+
+    def load_batch(
+        self,
+        forward_batch: ForwardBatch,
+        pp_proxy_tensors: PPProxyTensors | None = None,
+    ) -> None:
+        backend = self.model_runner.attn_backend
+        # note (Anmuliar): The padded replay view omits model-specific CPU metadata.
+        backend.cfg_replay_batch = forward_batch
+        try:
+            super().load_batch(forward_batch, pp_proxy_tensors)
+        finally:
+            backend.cfg_replay_batch = None
 
 
 class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
@@ -34,6 +67,47 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         )
         self._cfg_local_left_pad_active = False
         self._cfg_has_cached_prefix = False
+        self.cfg_replay_batch: ForwardBatch | None = None
+
+    def init_forward_metadata_out_graph(
+        self, forward_batch: ForwardBatch, in_capture: bool = False
+    ) -> None:
+        self._cfg_local_left_pad_active = False
+        batch = self.cfg_replay_batch
+        if in_capture or batch is None or not any(batch.dllm_left_pad_lens_cpu):
+            return super().init_forward_metadata_out_graph(forward_batch, in_capture)
+
+        bs = forward_batch.batch_size
+        prefix_lens = forward_batch.seq_lens - self.dllm_config.block_size
+        pad_lens = batch.dllm_left_pad_lens_cpu + [0] * (bs - batch.batch_size)
+        cached_pad_lens = torch.tensor(
+            pad_lens, dtype=prefix_lens.dtype, device=prefix_lens.device
+        )
+        paged_lens = prefix_lens - cached_pad_lens
+        num_cached_tokens = sum(
+            prefix - pad
+            for prefix, pad in zip(
+                batch.extend_prefix_lens_cpu,
+                batch.dllm_left_pad_lens_cpu,
+                strict=True,
+            )
+        )
+        updater = self.indices_updater_prefill
+        updater.call_begin_forward(
+            updater.prefill_wrapper_ragged,
+            self.prefill_cuda_graph_metadata[bs][0],
+            forward_batch.req_pool_indices,
+            paged_lens,
+            num_cached_tokens,
+            forward_batch.seq_lens,
+            prefix_lens,
+            cached_pad_lens,
+            updater.kv_indptr[0],
+            updater.qo_indptr[0],
+            not self.use_paged,
+            None,
+            fixed_split_size=self.prefill_split_tile_size,
+        )
 
     def init_forward_metadata(self, forward_batch):
         self._cfg_local_left_pad_active = False

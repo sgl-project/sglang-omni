@@ -71,6 +71,25 @@ def make_cfg_group(size: int) -> list[RequestStub]:
     return requests
 
 
+@pytest.mark.parametrize(
+    "prefix,expected", [(0, False), (4, False), (6, True), (8, True)]
+)
+def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
+    monkeypatch: pytest.MonkeyPatch, prefix: int, expected: bool
+) -> None:
+    monkeypatch.setattr(
+        cfg_attention_backend.DecodeCudaGraphRunner,
+        "can_run_graph",
+        lambda self, batch: True,
+    )
+    runner = object.__new__(cfg_attention_backend.CFGCudaGraphRunner)
+    batch = NS(
+        dllm_left_pad_lens_cpu=[0, 6, 2],
+        extend_prefix_lens_cpu=[prefix] * 3,
+    )
+    assert runner.can_run_graph(batch) is expected
+
+
 @pytest.mark.parametrize("size", [1, 2, 3])
 @pytest.mark.parametrize("threshold,rescale", [(1.0, 0.0), (0.2, 0.7)])
 def test_guidance_updates_all_cfg_branches(

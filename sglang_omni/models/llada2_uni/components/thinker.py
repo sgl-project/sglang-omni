@@ -13,7 +13,10 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -23,7 +26,7 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RowParallelLinear,
     SiluAndMul,
-    StandardTopKOutput,
+    TopK,
     VocabParallelEmbedding,
     get_moe_impl_class,
     get_rope,
@@ -166,7 +169,8 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
-    ):
+        reduce_results: bool = True,
+    ) -> None:
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
             config.hidden_size,
@@ -179,6 +183,7 @@ class LLaDA2MoeMLP(nn.Module):
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            reduce_results=reduce_results,
         )
         self.act_fn = SiluAndMul()
 
@@ -244,6 +249,18 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             config=config,
             params_dtype=self.router_dtype,
         )
+        self.topk = TopK(
+            top_k=self.num_experts_per_tok,
+            layer_id=layer_id,
+            use_grouped_topk=True,
+            num_expert_group=self.n_group,
+            topk_group=self.topk_group,
+            renormalize=self.num_experts_per_tok > 1,
+            scoring_func="sigmoid",
+            correction_bias=self.gate.expert_bias,
+            routed_scaling_factor=self.routed_scaling_factor,
+            apply_routed_scaling_factor_on_output=True,
+        )
 
         # FusedMoE implementation
         FusedMoE = get_moe_impl_class(quant_config)
@@ -263,7 +280,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config, shared_intermediate, quant_config, reduce_results=False
             )
         else:
             self.shared_experts = None
@@ -275,76 +292,19 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             hidden_states.clone() if self.shared_experts is not None else hidden_states
         )
 
-        # Router scores via sigmoid (not softmax like standard MoE)
         router_logits = self.gate(hidden_states)
-        router_logits = router_logits.float()
-        scores = torch.sigmoid(router_logits)
-
-        # Add expert bias for load balancing
-        if self.gate.expert_bias is not None:
-            scores_for_routing = scores + self.gate.expert_bias
-        else:
-            scores_for_routing = scores
-
-        # Group-limited top-k selection
-        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
-
-        # Gather actual scores (without bias) for the selected experts
-        topk_weights = torch.gather(scores, dim=1, index=topk_ids)
-
-        # Normalize and scale
-        if self.num_experts_per_tok > 1:
-            topk_weights = topk_weights / (
-                topk_weights.sum(dim=-1, keepdim=True) + 1e-20
-            )
-        topk_weights = topk_weights * self.routed_scaling_factor
-
-        topk_output = StandardTopKOutput(
-            topk_weights=topk_weights,
-            topk_ids=topk_ids,
-            router_logits=router_logits,
-        )
+        topk_output = self.topk(hidden_states, router_logits)
         y = self.experts(hidden_states, topk_output)
         output_dtype = y.dtype
 
         if self.shared_experts is not None:
             y = y.float() + self.shared_experts(identity).float()
 
+        # note (Anmuliar): Reduce both expert partials together before the BF16 cast.
+        if get_tensor_model_parallel_world_size() > 1:
+            y = tensor_model_parallel_all_reduce(y)
+
         return y.to(output_dtype)
-
-    def group_limited_topk(
-        self, scores: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Group-limited top-k expert selection."""
-        num_tokens = scores.shape[0]
-        experts_per_group = self.num_experts // self.n_group
-
-        # Group scores: sum of top-2 experts per group
-        group_scores = (
-            scores.view(num_tokens, self.n_group, experts_per_group)
-            .topk(2, dim=-1)[0]
-            .sum(dim=-1)
-        )
-
-        # Select top groups
-        group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
-        group_mask = torch.zeros_like(group_scores)
-        group_mask.scatter_(1, group_idx, 1)
-
-        # Expand group mask to expert-level
-        score_mask = (
-            group_mask.unsqueeze(-1)
-            .expand(num_tokens, self.n_group, experts_per_group)
-            .reshape(num_tokens, -1)
-        )
-
-        # Mask and select top-k
-        masked_scores = scores.masked_fill(~score_mask.bool(), float("-inf"))
-        topk_weights, topk_ids = torch.topk(
-            masked_scores, k=self.num_experts_per_tok, dim=-1, sorted=False
-        )
-
-        return topk_weights, topk_ids
 
 
 class LLaDA2MoeBlock(nn.Module):

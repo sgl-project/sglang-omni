@@ -21,8 +21,9 @@ from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -87,6 +88,10 @@ class DllmScheduler:
         self._waiting_queue: list[Req] = []
         self._staging_queue: list[Req] = []
 
+        self.tp_rank = tp_worker.tp_rank
+        self.tp_size = get_parallel().tp_size
+        self.requires_tp_work_fanout = False
+
         # CFG tracking: cond_rid <-> uncond_rid(s)
         self._cond_to_unconds: dict[str, list[str]] = {}
         self._uncond_to_cond: dict[str, str] = {}
@@ -108,8 +113,7 @@ class DllmScheduler:
             self._aborted_request_ids.add(request_id)
 
     def _event_loop(self) -> None:
-        while self._running:
-            self.drain_and_purge()
+        while self.drain_and_purge():
             batch = self.schedule_next_batch()
 
             if batch is None:
@@ -132,7 +136,7 @@ class DllmScheduler:
             self.apply_results(batch, batch_result)
             self.post_step(batch)
 
-    def drain_and_purge(self) -> None:
+    def drain_and_purge(self) -> bool:
         with self._abort_lock:
             aborted = self._aborted_request_ids
             self._aborted_request_ids = set()
@@ -142,6 +146,18 @@ class DllmScheduler:
                 messages.append(self.inbox.get_nowait())
             except _queue_mod.Empty:
                 break
+        running = self._running
+        if self.tp_size > 1:
+            # note (Anmuliar): All ranks must cancel and stop at the same forward boundary.
+            group = self.tp_worker.model_runner.tp_group
+            running, aborted, messages = broadcast_pyobj(
+                [running, aborted, messages] if self.tp_rank == 0 else [],
+                group.rank,
+                group.cpu_group,
+                src=group.ranks[0],
+            )
+        if not running:
+            return False
         # Aborting any member of a CFG group must purge the whole group.
         aborted_groups: set[str] = set()
         for rid in aborted:
@@ -223,6 +239,8 @@ class DllmScheduler:
                     companions.remove(rid)
             self._uncond_rids.discard(rid)
             self._orphaned_uncond_rids.discard(rid)
+
+        return True
 
     def create_uncond_companion(
         self,

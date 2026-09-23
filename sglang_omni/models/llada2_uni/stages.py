@@ -89,6 +89,9 @@ def create_sglang_dllm_thinker_executor_from_config(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     max_seq_len: int = 8192,
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
@@ -120,6 +123,7 @@ def create_sglang_dllm_thinker_executor_from_config(
         overrides["attention_backend"] = CFG_ATTENTION_BACKEND
         overrides["dllm_fdfo"] = False
     overrides.update(server_args_overrides or {})
+    overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
@@ -129,6 +133,15 @@ def create_sglang_dllm_thinker_executor_from_config(
         dllm_algorithm_config=dllm_algorithm_config,
         **overrides,
     )
+    if dllm_algorithm == "LowConfidenceCFG":
+        from sglang_omni.vendor.sglang.server_args import override_server_args
+
+        # note (Anmuliar): DLLM graph defaults replace custom backends with FlashInfer.
+        override_server_args(
+            server_args,
+            "sglang_omni.llada2_uni.cfg_attention",
+            attention_backend=overrides["attention_backend"],
+        )
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
     cfg = resolved_view(server_args)
@@ -138,7 +151,9 @@ def create_sglang_dllm_thinker_executor_from_config(
         cfg.dllm_algorithm,
         cfg.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args, resolved_gpu_id, tp_rank=tp_rank, nccl_port=nccl_port
+    )
 
 
 def create_decode_executor(model_path: str):

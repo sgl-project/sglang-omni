@@ -67,6 +67,25 @@ def test_tp_process_env_turns_nccl_nvls_off() -> None:
     assert env["NCCL_NVLS_ENABLE"] == "0"
 
 
+@pytest.mark.parametrize("gpu_id", [0, 1])
+def test_tp_shared_visibility_preserves_rank_device(
+    monkeypatch: pytest.MonkeyPatch, gpu_id: int
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+    monkeypatch.delenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    spec = _tp_spec(gpu_id=gpu_id)
+    spec.env_defaults = {"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"}
+
+    with patched_spawn_env(_worker_spec(spec)):
+        stage_workers.prepare_accelerator_environment(spec, stage_workers.logger)
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "2,3"
+        assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "false"
+        assert spec.gpu_id == gpu_id
+
+    assert "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS" not in os.environ
+
+
 def test_tp_process_env_leaves_an_operator_nvls_value_alone() -> None:
     env = cuda_platform.get_stage_process_env(
         _tp_spec(gpu_id=0), {"NCCL_NVLS_ENABLE": "1"}
