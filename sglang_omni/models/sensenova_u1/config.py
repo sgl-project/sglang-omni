@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Single-stage native T2I pipeline for SenseNova-U1.5."""
+"""Single-stage native image generation pipeline for SenseNova-U1.5."""
 
 from __future__ import annotations
 

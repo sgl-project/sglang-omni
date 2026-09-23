@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import unittest
 
-from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1Sampling
+from sglang_omni.models.sensenova_u1.sampling import (
+    SenseNovaU1ImageEditSampling,
+    SenseNovaU1Sampling,
+)
 
 
 class TestSenseNovaSampling(unittest.TestCase):
@@ -30,6 +33,30 @@ class TestSenseNovaSampling(unittest.TestCase):
         ):
             with self.subTest(params=params), self.assertRaises(ValueError):
                 SenseNovaU1Sampling.from_params(params)
+
+    def test_image_edit_defaults_and_overrides(self):
+        defaults = SenseNovaU1ImageEditSampling.from_params({})
+        self.assertEqual((defaults.width, defaults.height), (256, 256))
+        self.assertEqual(defaults.num_inference_steps, 30)
+        self.assertEqual(defaults.guidance_scale, 1.0)
+        self.assertEqual(defaults.img_cfg_scale, 1.0)
+        self.assertEqual(defaults.seed, 0)
+
+        options = SenseNovaU1ImageEditSampling.from_params(
+            {"width": 512, "height": 768, "img_cfg_scale": 2.0}
+        )
+        self.assertEqual((options.width, options.height), (512, 768))
+        self.assertEqual(options.img_cfg_scale, 2.0)
+
+    def test_image_edit_rejects_invalid_options(self):
+        for params in (
+            {"img_cfg_scale": float("inf")},
+            {"img_cfg_scale": -1},
+            {"n": 2},
+            {"think_mode": True},
+        ):
+            with self.subTest(params=params), self.assertRaises(ValueError):
+                SenseNovaU1ImageEditSampling.from_params(params)
 
 
 if __name__ == "__main__":

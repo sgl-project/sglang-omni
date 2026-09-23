@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Validated first-pass T2I options, matching the source pipeline defaults."""
+"""Validated SenseNova-U1 image generation options."""
 
 from __future__ import annotations
 
@@ -18,34 +18,50 @@ class SenseNovaU1Sampling:
 
     @classmethod
     def from_params(cls, params: dict[str, Any]) -> SenseNovaU1Sampling:
-        if params.get("think_mode", False) is not False:
-            raise ValueError("SenseNova-U1 think_mode is not supported yet")
-        if params.get("n", 1) != 1:
-            raise ValueError("SenseNova-U1 currently supports exactly one image")
-        values = {
-            name: params.get(name, getattr(cls, name))
-            for name in (
-                "width",
-                "height",
-                "num_inference_steps",
-                "guidance_scale",
-                "seed",
-            )
-        }
-        for name in ("width", "height", "num_inference_steps", "seed"):
-            value = values[name]
-            if type(value) is not int or value < (0 if name == "seed" else 1):
-                raise ValueError(
-                    f"{name} must be a {'non-negative' if name == 'seed' else 'positive'} integer"
-                )
-        if values["width"] % 32 or values["height"] % 32:
-            raise ValueError("SenseNova-U1 width and height must be divisible by 32")
-        scale = values["guidance_scale"]
+        return cls(**_validated_values(cls, params, ("guidance_scale",)))
+
+
+@dataclass(frozen=True)
+class SenseNovaU1ImageEditSampling:
+    """I2I defaults from the source model's ``it2i_generate`` method."""
+
+    width: int = 256
+    height: int = 256
+    num_inference_steps: int = 30
+    guidance_scale: float = 1.0
+    img_cfg_scale: float = 1.0
+    seed: int = 0
+
+    @classmethod
+    def from_params(cls, params: dict[str, Any]) -> SenseNovaU1ImageEditSampling:
+        return cls(
+            **_validated_values(cls, params, ("guidance_scale", "img_cfg_scale"))
+        )
+
+
+def _validated_values(
+    defaults: type, params: dict[str, Any], scale_names: tuple[str, ...]
+) -> dict[str, Any]:
+    if params.get("think_mode", False) is not False:
+        raise ValueError("SenseNova-U1 think_mode is not supported yet")
+    if params.get("n", 1) != 1:
+        raise ValueError("SenseNova-U1 currently supports exactly one image")
+    names = ("width", "height", "num_inference_steps", *scale_names, "seed")
+    values = {name: params.get(name, getattr(defaults, name)) for name in names}
+    for name in ("width", "height", "num_inference_steps", "seed"):
+        value = values[name]
+        if type(value) is not int or value < (0 if name == "seed" else 1):
+            qualifier = "non-negative" if name == "seed" else "positive"
+            raise ValueError(f"{name} must be a {qualifier} integer")
+    if values["width"] % 32 or values["height"] % 32:
+        raise ValueError("SenseNova-U1 width and height must be divisible by 32")
+    for name in scale_names:
+        value = values[name]
         if (
-            isinstance(scale, bool)
-            or not isinstance(scale, (int, float))
-            or not math.isfinite(scale)
-            or scale < 0
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
         ):
-            raise ValueError("guidance_scale must be a finite non-negative number")
-        return cls(**values)
+            raise ValueError(f"{name} must be a finite non-negative number")
+    return values
