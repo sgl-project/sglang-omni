@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
-from contextlib import nullcontext
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
     create_thinker_scheduler,
@@ -98,7 +101,11 @@ ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
 def create_encoder_executor(
-    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
+    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder,
+    *,
+    stage_name: str,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     device_module = torch.get_device_module(encoder.device)
     if encoder.device.type == "npu":
@@ -113,6 +120,21 @@ def create_encoder_executor(
         cache_device="cpu",
     )
 
+    @contextmanager
+    def encoder_context() -> Iterator[None]:
+        stream_context = (
+            device_module.stream(encoder_stream)
+            if encoder_stream is not None
+            else nullcontext()
+        )
+        with stream_context, torch.no_grad():
+            yield
+            if encoder_stream is not None:
+                # note (guomangmang): downstream stages read on other streams.
+                encoder_stream.synchronize()
+            else:
+                pass
+
     def _encode_stage(payload: StagePayload) -> StagePayload:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         request = build_encoder_request(state, stage_name=stage_name)
@@ -124,24 +146,32 @@ def create_encoder_executor(
         elif cached is not None:
             encoder_out = cached
         else:
-            stream_context = (
-                device_module.stream(encoder_stream)
-                if encoder_stream is not None
-                else nullcontext()
-            )
-            with stream_context, torch.no_grad():
+            with encoder_context():
                 encoder_out = encoder(**request.model_inputs)
                 cache.put(request.cache_key, encoder_out)
-                if encoder_stream is not None:
-                    # note (guomangmang): downstream stages read on other streams.
-                    encoder_stream.synchronize()
-                else:
-                    pass
         state.encoder_outs[stage_name] = encoder_out
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(_encode_stage)
+    if isinstance(encoder, MiniCPMOAudioEncoder):
+
+        def encode_batch(
+            payloads: list[StagePayload],
+        ) -> list[StagePayload | ValueError]:
+            with encoder_context():
+                return batch_audio_encoder_payloads(
+                    payloads, encoder=encoder, cache=cache
+                )
+
+    else:
+        encode_batch = None
+
+    return SimpleScheduler(
+        _encode_stage,
+        batch_compute_fn=encode_batch,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
 
 def create_image_encoder_executor(
@@ -154,7 +184,9 @@ def create_image_encoder_executor(
     encoder = MiniCPMOImageEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="image_encoder")
+    return create_encoder_executor(
+        encoder, stage_name="image_encoder", max_batch_size=1, max_batch_wait_ms=0
+    )
 
 
 def create_audio_encoder_executor(
@@ -163,11 +195,18 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="audio_encoder")
+    return create_encoder_executor(
+        encoder,
+        stage_name="audio_encoder",
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
 
 # note (0xtoward): the talker prefills unchunked, so no chunk bounds the capture;
