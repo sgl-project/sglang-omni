@@ -64,6 +64,35 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         if spec.tp_size <= 1:
             return {}
 
+        return self.get_parallel_stage_process_env(spec, env)
+
+    def get_sp_stage_process_env(
+        self,
+        spec: StageLaunchConfig,
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
+        # CUDA-derived device implementations must explicitly opt in to SP.
+        if type(self) is not CUDAOmniPlatform:
+            return super().get_sp_stage_process_env(spec, env)
+        if spec.nccl_port is None:
+            raise ValueError("SP stage requires a rendezvous port")
+        updates = self.get_parallel_stage_process_env(spec, env)
+        updates.pop("SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK", None)
+        updates.update(
+            RANK=str(spec.sp_rank),
+            WORLD_SIZE=str(spec.sp_size),
+            LOCAL_RANK="0",
+            MASTER_ADDR="127.0.0.1",
+            MASTER_PORT=str(spec.nccl_port),
+        )
+        return updates
+
+    def get_parallel_stage_process_env(
+        self,
+        spec: StageLaunchConfig,
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
+
         source_env = env if env is not None else os.environ
         original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
         if spec.gpu_id is None:

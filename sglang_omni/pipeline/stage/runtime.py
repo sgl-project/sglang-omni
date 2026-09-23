@@ -29,7 +29,12 @@ from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.pipeline.tp_control import TPLeaderFanout, TPWorkMessage
+from sglang_omni.pipeline.tp_control import (
+    ParallelAbortMessage,
+    RequestDispatchTracker,
+    TPLeaderFanout,
+    TPWorkMessage,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.comm_trace import emit as _comm_trace
 from sglang_omni.profiler.event_recorder import emit as _emit_event
@@ -53,6 +58,7 @@ from sglang_omni.proto import (
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -97,6 +103,8 @@ class Stage:
         rank_endpoints: dict[str, tuple[str, ...]] | None = None,
         tp_rank: int = 0,
         tp_size: int = 1,
+        sp_rank: int = 0,
+        sp_size: int = 1,
         placement_gpu_id: int | None = None,
         input_handler: InputHandler | None = None,
         relay: Relay | None = None,
@@ -124,6 +132,50 @@ class Stage:
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
+        self.tp_rank, self.tp_size = tp_rank, tp_size
+        self.sp_rank, self.sp_size = sp_rank, sp_size
+        self._dispatches = RequestDispatchTracker()
+        capabilities = (
+            getattr(scheduler, "parallel_capabilities", None) if sp_size > 1 else None
+        )
+        if capabilities is not None and not isinstance(
+            capabilities, ParallelSchedulerCapabilities
+        ):
+            raise TypeError(
+                "parallel_capabilities must be ParallelSchedulerCapabilities"
+            )
+        self._fanout_work = (
+            capabilities.fanout_work
+            if capabilities is not None
+            else getattr(scheduler, "requires_tp_work_fanout", False)
+        )
+        self._drain_aborted_work = bool(
+            capabilities and capabilities.drain_aborted_work
+        )
+        if capabilities is not None:
+            hooks = []
+            if capabilities.drain_aborted_work:
+                hooks += [
+                    "mark_request_aborted_for_drain",
+                    "acknowledge_request_terminal",
+                ]
+            for hook in hooks:
+                if not callable(getattr(scheduler, hook, None)):
+                    raise TypeError(f"Parallel scheduler requires {hook}")
+        if sp_size > 1:
+            if tp_size != 1 or tp_rank != 0:
+                raise ValueError("SP must not use TP rank metadata")
+            if not 0 <= sp_rank < sp_size or role != (
+                "leader" if sp_rank == 0 else "follower"
+            ):
+                raise ValueError("Invalid SP rank/role")
+            if sp_rank == 0 and tp_fanout is None:
+                raise ValueError("SP leader requires stage fanout")
+            if capabilities is None or not capabilities.fanout_work:
+                raise ValueError("SP requires typed work-fanout and drain capabilities")
+            validate = getattr(scheduler, "validate_sequence_parallel", None)
+            if validate is not None:
+                validate()
         self._project_payload = project_payload or {}
         self._stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -151,7 +203,8 @@ class Stage:
             ),
             tp_rank=tp_rank,
             tp_size=tp_size,
-            rank_endpoints=rank_endpoints,
+            # SP followers receive stage payloads only; KV endpoints remain TP-owned.
+            rank_endpoints={} if sp_size > 1 and role == "follower" else rank_endpoints,
             task_done_callback=self.on_background_task_done,
         )
         for pool, receiver in getattr(scheduler, "kv_registrations", ()):
@@ -164,6 +217,7 @@ class Stage:
         self._active_requests: set[str] = set()
         self._stream_queue: StreamQueue | None = None
         self._stream_chunk_counters: dict[tuple[str, str], int] = {}
+        self._inflight_work_pending: dict[str, int] = {}
         self._first_stream_chunk_seen: set[str] = set()
         self._local_stream_targets: dict[str, set[str]] = {}
         self._nonlocal_stream_targets: dict[str, set[str]] = {}
@@ -286,14 +340,14 @@ class Stage:
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
             # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # process exit. SP must drain committed collectives before closing;
+            # other stages retain the bounded wait for terminal events.
             scheduler_thread = self._scheduler_thread
             if scheduler_thread is not None:
                 try:
                     await asyncio.to_thread(
                         scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        None if self.sp_size > 1 else _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
                     )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
@@ -355,7 +409,9 @@ class Stage:
                 if isinstance(msg, ShutdownMessage):
                     break
                 if isinstance(msg, TPWorkMessage):
-                    await self.execute(msg.data)
+                    if msg.request_id != msg.data.request_id:
+                        raise ValueError("Parallel work request id mismatch")
+                    await self.execute(msg.data, dispatch_id=msg.dispatch_id)
                     continue
                 await self.handle_message(msg)
         except asyncio.CancelledError:
@@ -508,7 +564,6 @@ class Stage:
             await self.send_data_ack(
                 msg, data_ref, success=False, error=error_text(exc)
             )
-            self._comm.cleanup(request_id)
             await self.wait_for_receive_predecessor(predecessor)
             await self.send_failure(request_id, f"relay read failed: {exc}")
             return
@@ -757,8 +812,6 @@ class Stage:
         if self.open_pre_payload_stream_if_allowed(request_id):
             self.route_stream_item(request_id, item)
             return
-        with suppress(Exception):
-            self.scheduler.abort(request_id)
         await self.send_failure(
             request_id,
             (
@@ -783,8 +836,6 @@ class Stage:
             request_id,
             error,
         )
-        with suppress(Exception):
-            self.scheduler.abort(request_id)
         await self.send_failure(request_id, str(error))
 
     def data_ref_from_message(self, msg: DataReadyMessage) -> DataRef:
@@ -917,8 +968,6 @@ class Stage:
 
         if is_done:
             if not self.open_pre_payload_stream_if_allowed(request_id):
-                with suppress(Exception):
-                    self.scheduler.abort(request_id)
                 await self.send_failure(
                     request_id,
                     (
@@ -954,21 +1003,48 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    async def execute(self, payload: Any) -> None:
+    def tracks_multiple_inflight_work(self) -> bool:
+        return bool(
+            getattr(
+                self.scheduler,
+                "allow_multiple_inflight_per_request",
+                False,
+            )
+        )
+
+    async def execute(
+        self, payload: StagePayload, *, dispatch_id: int | None = None
+    ) -> None:
         request_id = payload.request_id
-        if request_id in self._aborted:
+        committed = self.role == "follower" and dispatch_id is not None
+        if self.sp_size > 1 and self.role == "follower" and not committed:
+            raise ValueError("SP follower work requires a dispatch id")
+        if (
+            committed
+            and self._drain_aborted_work
+            and not self._dispatches.register_work(request_id, dispatch_id)
+        ):
             return
+        if request_id in self._aborted and not (committed and self._drain_aborted_work):
+            return
+        if self.role == "follower" and request_id not in self._aborted:
+            self._active_requests.add(request_id)
+        if request_id not in self._aborted and self.tracks_multiple_inflight_work():
+            self._inflight_work_pending[request_id] = (
+                self._inflight_work_pending.get(request_id, 0) + 1
+            )
         _emit_event(
             request_id=request_id,
             stage=self.name,
             event_name="stage_dispatch",
         )
-        if (
-            self.role == "leader"
-            and self._tp_fanout is not None
-            and getattr(self.scheduler, "requires_tp_work_fanout", False)
-        ):
-            self._tp_fanout.fanout_work(payload)
+        if self.role == "leader" and self._tp_fanout is not None and self._fanout_work:
+            if self._drain_aborted_work:
+                dispatch_id = self._tp_fanout.fanout_work(payload, track_dispatch=True)
+            else:
+                dispatch_id = self._tp_fanout.fanout_work(payload)
+            if dispatch_id is not None and self._drain_aborted_work:
+                self._dispatches.register_work(request_id, dispatch_id)
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
@@ -997,7 +1073,7 @@ class Stage:
             success = all(item.success for item in rank_results)
             errors = [item.error for item in rank_results if item.error]
             data = dict(local.data)
-            data["tp_size"] = len(rank_results)
+            data["sp_size" if self.sp_size > 1 else "tp_size"] = len(rank_results)
             data["rank_results"] = [item.to_dict() for item in rank_results]
             result = AdminResult(
                 op_id=operation.op_id,
@@ -1085,9 +1161,20 @@ class Stage:
             action=operation.action,
             success=success,
             message=message,
-            data=dict(data or {}),
+            data={
+                **dict(data or {}),
+                **(
+                    {"parallel_kind": "sp", "sp_size": self.sp_size}
+                    if self.sp_size > 1
+                    else {}
+                ),
+            },
             error=error,
-            rank=getattr(self.scheduler, "tp_rank", None),
+            rank=(
+                self.sp_rank
+                if self.sp_size > 1
+                else getattr(self.scheduler, "tp_rank", None)
+            ),
             role=self.role,
         )
 
@@ -1112,6 +1199,8 @@ class Stage:
                 continue
 
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
+                if out.type in {"result", "error"}:
+                    self.acknowledge_terminal(out.request_id)
                 if out.type == "admitted":
                     if out.request_id not in self._aborted:
                         self.record_replica_bindings(
@@ -1165,6 +1254,19 @@ class Stage:
                 except _queue_mod.Empty:
                     break
 
+    def finish_inflight_work(
+        self, request_id: str, *, keep_replica_bindings: bool = False
+    ) -> None:
+        if request_id not in self._active_requests:
+            return
+        pending = self._inflight_work_pending.get(request_id, 0)
+        if pending > 1:
+            self._inflight_work_pending[request_id] = pending - 1
+        else:
+            self.clear_request_state(
+                request_id, keep_replica_bindings=keep_replica_bindings
+            )
+
     async def drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
         loop = asyncio.get_running_loop()
@@ -1176,12 +1278,19 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.type in {"result", "error"}:
+                self.acknowledge_terminal(out.request_id)
+            if out.type == "admitted":
+                if out.request_id not in self._aborted:
+                    self._active_requests.add(out.request_id)
+                continue
+            if out.request_id not in self._active_requests:
+                continue
+
             if out.type == "result":
-                self.clear_request_state(out.request_id)
+                self.finish_inflight_work(out.request_id)
             elif out.type == "stream":
                 continue
-            elif out.type == "admitted":
-                self._active_requests.add(out.request_id)
             elif out.type == "kv_transfer":
                 raise RuntimeError(
                     f"TP follower stage {self.name} cannot publish a KV transfer"
@@ -1269,7 +1378,15 @@ class Stage:
     async def route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
         if not self._owns_external_io:
-            self.clear_request_state(request_id)
+            self.finish_inflight_work(request_id)
+            return
+        next_stages = self.get_next(request_id, result)
+        if next_stages is None and self.tracks_multiple_inflight_work():
+            await self.send_failure(
+                request_id,
+                f"Stage {self.name}: a terminal stage cannot use multiple "
+                "in-flight work per request",
+            )
             return
         session_operation = (
             find_session_operation(result.request.metadata)
@@ -1330,6 +1447,7 @@ class Stage:
         next_stages = (
             self.get_next(request_id, result) if session_operation is None else actual
         )
+        routes_to_self = False
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1349,6 +1467,14 @@ class Stage:
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
+            routes_to_self = any(
+                self.resolve_target_instance(request_id, target) == self.name
+                for target in next_stages
+            )
+            if routes_to_self:
+                # Local self-dispatch readmits this request synchronously, so
+                # retire the completed pass before the new pass is registered.
+                self.finish_inflight_work(request_id, keep_replica_bindings=True)
             is_single_target = len(next_stages) == 1
             _emit_event(
                 request_id=request_id,
@@ -1366,7 +1492,8 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self.clear_request_state(request_id)
+        if not routes_to_self:
+            self.finish_inflight_work(request_id)
 
     async def send_to_stage(
         self,
@@ -1846,22 +1973,40 @@ class Stage:
         await self.control_plane.send_stream(msg)
 
     async def send_failure(self, request_id: str, error: str) -> None:
-        self.record_aborted_request_id(request_id)
-        if not self._owns_external_io:
-            self.clear_request_state(request_id)
-            raise RuntimeError(f"Follower stage {self.name} failed: {error}")
-        await self.control_plane.send_complete(
-            CompleteMessage(
-                request_id=request_id,
-                from_stage=self.name,
-                success=False,
-                error=error,
+        if not self.record_aborted_request_id(request_id):
+            return
+        with suppress(Exception):
+            if self._drain_aborted_work:
+                dispatch_id = self._dispatches.current(request_id)
+                if dispatch_id is not None and self._dispatches.record_abort(
+                    request_id, dispatch_id
+                ):
+                    self.scheduler.mark_request_aborted_for_drain(
+                        request_id, dispatch_id
+                    )
+            else:
+                self.scheduler.abort(request_id)
+        with suppress(Exception):
+            self._comm.cleanup(request_id)
+        try:
+            if not self._owns_external_io:
+                raise RuntimeError(f"Follower stage {self.name} failed: {error}")
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=False,
+                    error=error,
+                )
             )
-        )
-        self.clear_request_state(request_id)
+        finally:
+            self.clear_request_state(request_id)
 
-    def clear_request_state(self, request_id: str) -> None:
+    def clear_request_state(
+        self, request_id: str, *, keep_replica_bindings: bool = False
+    ) -> None:
         self._active_requests.discard(request_id)
+        self._inflight_work_pending.pop(request_id, None)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
             self._stream_queue.close(request_id)
@@ -1873,7 +2018,8 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
-        self._replica_bindings.pop(request_id, None)
+        if not keep_replica_bindings:
+            self._replica_bindings.pop(request_id, None)
 
     async def handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:
@@ -1889,28 +2035,46 @@ class Stage:
             if request_id not in self._aborted
         ]
         for request_id in active_request_ids:
-            with suppress(Exception):
-                self.scheduler.abort(request_id)
             await self.send_failure(request_id, error)
-            with suppress(Exception):
-                self._comm.cleanup(request_id)
         self.control_plane.close()
+
+    def acknowledge_terminal(self, request_id: str) -> None:
+        dispatch_id = self._dispatches.finish_terminal(request_id)
+        if dispatch_id is not None and self._drain_aborted_work:
+            self.scheduler.acknowledge_request_terminal(request_id, dispatch_id)
 
     async def abort_listener(self) -> None:
         try:
             while self._running:
                 abort_msg = await self.control_plane.recv_abort()
+                if isinstance(abort_msg, ParallelAbortMessage):
+                    self.on_abort(
+                        abort_msg.request_id, dispatch_id=abort_msg.dispatch_id
+                    )
+                    continue
+                dispatch_id = self._dispatches.current(abort_msg.request_id)
                 if self.role == "leader" and self._tp_fanout is not None:
-                    await self._tp_fanout.fanout_abort(abort_msg)
-                self.on_abort(abort_msg.request_id)
+                    if self._drain_aborted_work:
+                        if dispatch_id is not None:
+                            await self._tp_fanout.fanout_abort(
+                                ParallelAbortMessage(abort_msg.request_id, dispatch_id)
+                            )
+                    else:
+                        await self._tp_fanout.fanout_abort(abort_msg)
+                self.on_abort(abort_msg.request_id, dispatch_id=dispatch_id)
         except asyncio.CancelledError:
             pass
         except Exception:
             if self._scheduler_crash_error is None and self._running:
                 logger.exception("Stage %s abort listener crashed", self.name)
+                if self.sp_size > 1:
+                    raise
 
-    def record_aborted_request_id(self, request_id: str) -> None:
+    def record_aborted_request_id(self, request_id: str) -> bool:
+        if request_id in self._aborted:
+            return False
         self.record_bounded_request_id(self._aborted, request_id)
+        return True
 
     @staticmethod
     def record_bounded_request_id(ids: set[str], request_id: str) -> None:
@@ -1921,11 +2085,21 @@ class Stage:
             to_remove = [next(it) for _ in range(excess)]
             ids -= set(to_remove)
 
-    def on_abort(self, request_id: str) -> None:
-        self.record_aborted_request_id(request_id)
+    def on_abort(self, request_id: str, *, dispatch_id: int | None = None) -> None:
+        if dispatch_id is None:
+            dispatch_id = self._dispatches.current(request_id)
+        if dispatch_id is not None and self._drain_aborted_work:
+            if not self._dispatches.record_abort(request_id, dispatch_id):
+                return
+            self.scheduler.mark_request_aborted_for_drain(request_id, dispatch_id)
+        if not self.record_aborted_request_id(request_id):
+            return
         self._comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        if dispatch_id is not None and self._drain_aborted_work:
+            return
+        if not (self._drain_aborted_work and self.role in {"leader", "follower"}):
+            self.scheduler.abort(request_id)
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
@@ -1967,7 +2141,7 @@ class Stage:
         if exc is None:
             return
         if isinstance(exc, KVTransferRejected):
-            # The ACK watcher also propagates this to _send_kv_transfer(), which
+            # The ACK watcher also propagates this to send_kv_transfer(), which
             # reports the request failure even if the local abort arrives later.
             return
         logger.exception(
