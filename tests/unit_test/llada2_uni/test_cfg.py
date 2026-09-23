@@ -152,6 +152,26 @@ def test_cfg_prefill_only_builds_kv_state() -> None:
     torch.testing.assert_close(input_ids, original)
 
 
+def test_interleaved_cfg_preserves_eoi_but_masks_other_text_tokens() -> None:
+    algorithm = LowConfidenceCFG(make_config())
+    requests = make_cfg_group(3)
+    requests[0]._task_kind = "interleaved_image"
+    requests[0]._allowed_stop_token_ids = (1,)
+    requests[0]._cfg_scale = 4.0
+    requests[0]._cfg_image_scale = 1.0
+    requests[0]._cfg_rescale = 0.0
+    logits = torch.tensor([100.0, 20.0, 1.0, 2.0, 1.0, 0.0]).repeat(12, 1)
+
+    def forward(batch, **kwargs):
+        return NS(logits_output=NS(full_logits=logits.clone()), can_run_graph=False)
+
+    result = algorithm.run(
+        NS(forward=forward),
+        NS(input_ids=torch.tensor([3, 9, 9, 9] * 3), batch_size=3, reqs=requests),
+    )
+    assert [row.tolist() for row in result[1]] == [[1, 1, 1]] * 3
+
+
 def test_invalid_cfg_batch_is_rejected() -> None:
     with pytest.raises(ValueError, match="FDFO"):
         LowConfidenceCFG(make_config(fdfo=True))

@@ -67,6 +67,7 @@ class LowConfidenceCFG(DllmAlgorithm):
         force_image_only = getattr(req, "_task_kind", "chat") in (
             "t2i",
             "edit",
+            "interleaved_image",
         )
         active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
@@ -99,7 +100,10 @@ class LowConfidenceCFG(DllmAlgorithm):
             num_to_transfer = base + (step < remainder)
             for row, row_logits, row_mask in zip(active_ids, logits, mask):
                 if force_image_only:
+                    allowed_stops = getattr(req, "_allowed_stop_token_ids", ())
+                    stop_logits = row_logits[:, allowed_stops].clone()
                     row_logits[:, : self.image_token_offset] = -torch.inf
+                    row_logits[:, allowed_stops] = stop_logits
                 predicted_ids = row_logits.argmax(dim=-1)
                 confidence = (
                     F.softmax(row_logits, dim=-1)

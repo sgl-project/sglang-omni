@@ -22,6 +22,7 @@ IMAGE_STAGE = "image_encoder"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 IMAGE_DECODE_STAGE = "image_decode"
+INTERLEAVED_COLLECT_STAGE = "interleaved_collect"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
@@ -32,6 +33,7 @@ class LLaDA2ImageDecoderFactoryArgs(FactoryArgs):
     num_steps: int = Field(default=50, ge=1)
     resolution_multiplier: int = Field(default=2, ge=1)
     attention_backend: str = "torch_sdpa"
+    interleaved_nonterminal: bool = False
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
@@ -121,9 +123,62 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
+class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
+    """Text-only interleaved generation with asynchronous frame decoding."""
+
+    stages: list[StageConfig] = [
+        StageConfig(
+            name=PREPROCESSING_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=FactoryArgs(max_seq_len=8192),
+            next=THINKER_STAGE,
+        ),
+        EngineStageConfig(
+            name=THINKER_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            engine=EngineArgs(
+                mem_fraction_static=0.75,
+                max_running_requests=3,
+                cuda_graph_bs=[1, 2, 3, 4],
+            ),
+            gpu=0,
+            gpu_memory_fraction=0.75,
+            next=[THINKER_STAGE, IMAGE_DECODE_STAGE, INTERLEAVED_COLLECT_STAGE],
+            route_fn=f"{_PKG}.request_builders.thinker_next",
+            project_payload={
+                stage: f"{_PKG}.interleaved.project_interleaved_payload"
+                for stage in (
+                    THINKER_STAGE,
+                    IMAGE_DECODE_STAGE,
+                    INTERLEAVED_COLLECT_STAGE,
+                )
+            },
+        ),
+        StageConfig(
+            name=IMAGE_DECODE_STAGE,
+            process=IMAGE_DECODE_STAGE,
+            factory_path=f"{_PKG}.stages.create_image_decode_executor",
+            factory=LLaDA2ImageDecoderFactoryArgs(interleaved_nonterminal=True),
+            gpu=0,
+            gpu_memory_fraction=0.2,
+            next=INTERLEAVED_COLLECT_STAGE,
+        ),
+        StageConfig(
+            name=INTERLEAVED_COLLECT_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.interleaved.create_interleaved_collector_executor",
+            terminal=True,
+        ),
+    ]
+
+
 EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
     "omni": LLaDA2UniOmniPipelineConfig,
+    "interleaved": LLaDA2UniInterleavedPipelineConfig,
 }

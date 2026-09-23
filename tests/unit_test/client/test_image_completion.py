@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PR3 terminal image results without interleaved or image-stream support."""
+"""Native and ordered interleaved image completion contracts."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from sglang_omni.client import Client, ClientError
-from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.client.types import GenerateChunk, GenerateRequest, Message
 
 
 class RecordingCoordinator:
@@ -23,6 +23,42 @@ class RecordingCoordinator:
     async def stream(self, request_id, request):
         raise AssertionError("Image requests must not reach coordinator.stream")
         yield
+
+
+@pytest.mark.parametrize("mode", ["normal", "decoder-turbo"])
+def test_interleaved_completion_preserves_order_and_decoder_controls(mode):
+    images = [
+        {"id": "image-0", "data": "cG5n", "format": "png", "width": 64, "height": 64}
+    ]
+    content = [
+        {"type": "text", "text": "Scene"},
+        {"type": "image_ref", "image_id": "image-0"},
+    ]
+    coordinator = RecordingCoordinator(
+        {"modality": "interleaved", "content": content, "images": images}
+    )
+    result = asyncio.run(
+        Client(coordinator).completion(
+            GenerateRequest(
+                messages=[Message("user", "Illustrate a story")],
+                stream=False,
+                metadata={
+                    "image_generation": {
+                        "mode": "interleaved",
+                        "decode_mode": mode,
+                        "decoder_steps": 8,
+                    }
+                },
+            ),
+            request_id="story",
+        )
+    )
+    assert result.content == content and result.images == images
+    assert result.text == "Scene" and result.image is None
+    metadata = coordinator.requests[0].metadata
+    assert metadata["output_modalities"] == ["text", "image"]
+    assert metadata["image_generation"]["decode_mode"] == mode
+    assert metadata["image_generation"]["decoder_steps"] == 8
 
 
 @pytest.mark.parametrize("merged", [False, True])

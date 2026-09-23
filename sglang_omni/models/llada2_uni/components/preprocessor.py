@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import torch
 from PIL import Image, ImageOps
@@ -19,6 +21,7 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import SYSTEM_PROMPT_INTERLEAVED
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import (
@@ -26,6 +29,10 @@ from sglang_omni.preprocessing.image import (
     ensure_image_list_async,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.serve.protocol import (
+    InterleavedGenerationParams,
+    validate_interleaved_inputs,
+)
 
 # LLaDA2-Uni chat template tokens
 ROLE_HUMAN = "<role>HUMAN</role>"
@@ -321,7 +328,26 @@ class LLaDA2Preprocessor:
             image_generation = {}
             metadata = {**metadata, "image_generation": image_generation}
         task_kind = "chat"
-        if isinstance(image_generation, dict):
+        if (
+            isinstance(image_generation, dict)
+            and image_generation.get("mode") == "interleaved"
+        ):
+            config = InterleavedGenerationParams.model_validate(image_generation)
+            if request.params.get("stream", False):
+                raise ValueError("Interleaved generation requires stream=false")
+            validate_interleaved_inputs(
+                messages,
+                metadata.get("output_modalities"),
+                has_media=bool(raw_images)
+                or (
+                    isinstance(raw_inputs, dict)
+                    and bool(raw_inputs.get("audios") or raw_inputs.get("videos"))
+                ),
+            )
+            task_kind = "interleaved"
+            metadata = {**metadata, "interleaved_generation_id": uuid4().hex}
+            request = replace(request, metadata=metadata)
+        elif isinstance(image_generation, dict):
             task_kind = "edit" if raw_images else "t2i"
         if task_kind == "edit":
             if image_generation.get("mode") == "thinking":
@@ -391,6 +417,23 @@ class LLaDA2Preprocessor:
         max_new_tokens = request.params.get(
             "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
         )
+        if task_kind == "interleaved":
+            max_seq_len = self._max_seq_len
+            if max_seq_len is None:
+                raise ValueError("Interleaved generation requires max_seq_len")
+            stream_state["image_token_offset"] = IMAGE_TOKEN_OFFSET
+            stream_state["interleaved"] = {
+                **config.model_dump(),
+                "phase": "text",
+                "frame_index": 0,
+                "segment_start": len(input_ids),
+                "prompt_length": len(input_ids),
+                "max_seq_len": max_seq_len,
+                "segments": [],
+            }
+            max_new_tokens = min(
+                config.text_max_new_tokens, max_seq_len - len(input_ids)
+            )
         if task_kind == "t2i":
             ig = image_generation
             image_h = int(ig.get("image_h", DEFAULT_T2I_IMAGE_H))
@@ -445,7 +488,7 @@ class LLaDA2Preprocessor:
         )
         return StagePayload(
             request_id=payload.request_id,
-            request=payload.request,
+            request=request,
             data=state.to_dict(),
         )
 
@@ -504,6 +547,7 @@ class LLaDA2Preprocessor:
             "t2i": SYSTEM_PROMPT_T2I,
             "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
             "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
         }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 
