@@ -13,6 +13,10 @@ import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+    encode_audio_payload,
+)
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
     create_thinker_scheduler,
@@ -130,11 +134,35 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
 ) -> SimpleScheduler:
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="audio_encoder")
+    cache = StageOutputCache(
+        max_size=ENCODER_CACHE_MAX_ENTRIES,
+        max_bytes=ENCODER_CACHE_MAX_BYTES,
+        cache_device="cpu",
+    )
+
+    def encode(payload: StagePayload) -> StagePayload:
+        return encode_audio_payload(payload, encoder=encoder, cache=cache)
+
+    return SimpleScheduler(
+        encode,
+        batch_compute_fn=(
+            (
+                lambda payloads: batch_audio_encoder_payloads(
+                    payloads, encoder=encoder, cache=cache
+                )
+            )
+            if max_batch_size > 1
+            else None
+        ),
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+    )
 
 
 def create_sglang_talker_executor_from_config(

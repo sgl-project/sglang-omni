@@ -16,6 +16,11 @@ from pathlib import Path
 import pytest
 import torch
 
+import sglang_omni.models.minicpm_o.audio_encoder_batching as audio_encoder_batching
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+    encode_audio_payload,
+)
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MiniCPMWhisperEncoder,
@@ -25,6 +30,10 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
     fuse_qkv,
     min_mel_frames,
 )
+from sglang_omni.models.minicpm_o.config import audio_encoder_stage
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -235,3 +244,154 @@ def test_minimum_length_audio_still_encodes() -> None:
         out = encoder(audio_features=mel, audio_feature_lens=lens)
 
     assert out["audio_embeds"].shape[0] == 1
+
+
+def _audio_payload(
+    request_id: str,
+    audio_features: torch.Tensor,
+    audio_feature_lens: torch.Tensor,
+    *,
+    cache_key: str,
+) -> StagePayload:
+    state = MiniCPMOPipelineState(
+        encoder_inputs={
+            "audio_encoder": {
+                "audio_features": audio_features,
+                "audio_feature_lens": audio_feature_lens,
+                "cache_key": cache_key,
+            }
+        }
+    )
+    return StagePayload(
+        request_id=request_id,
+        request=OmniRequest(inputs={}),
+        data=state.to_dict(),
+    )
+
+
+def test_cross_request_batch_matches_serial_outputs() -> None:
+    encoder = _tiny_audio_encoder()
+    short = torch.randn(1, 80, 137)
+    long = torch.randn(2, 80, 301)
+    long[1, :, 201:] = 0
+    payloads = [
+        _audio_payload("short", short, torch.tensor([137]), cache_key="short"),
+        _audio_payload("long", long, torch.tensor([301, 201]), cache_key="long"),
+    ]
+    serial_cache = StageOutputCache(cache_device="cpu")
+    expected = [
+        encode_audio_payload(
+            _audio_payload(
+                payload.request_id,
+                payload.data["encoder_inputs"]["audio_encoder"]["audio_features"],
+                payload.data["encoder_inputs"]["audio_encoder"]["audio_feature_lens"],
+                cache_key=f"serial-{payload.request_id}",
+            ),
+            encoder=encoder,
+            cache=serial_cache,
+        )
+        for payload in payloads
+    ]
+
+    actual = batch_audio_encoder_payloads(
+        payloads,
+        encoder=encoder,
+        cache=StageOutputCache(cache_device="cpu"),
+    )
+
+    for actual_payload, expected_payload in zip(actual, expected):
+        actual_embeds = actual_payload.data["encoder_outs"]["audio_encoder"][
+            "audio_embeds"
+        ]
+        expected_embeds = expected_payload.data["encoder_outs"]["audio_encoder"][
+            "audio_embeds"
+        ]
+        torch.testing.assert_close(actual_embeds, expected_embeds, rtol=1e-4, atol=1e-4)
+
+
+def test_single_audio_encoder_emits_cache_and_forward_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(
+        audio_encoder_batching,
+        "emit_audio_encoder_event",
+        lambda payload, event_name: events.append(event_name),
+    )
+    encode_audio_payload(
+        _audio_payload(
+            "single",
+            torch.randn(1, 80, 137),
+            torch.tensor([137]),
+            cache_key="single",
+        ),
+        encoder=_tiny_audio_encoder(),
+        cache=StageOutputCache(cache_device="cpu"),
+    )
+
+    assert events == [
+        "encoder_cache_miss",
+        "encoder_forward_start",
+        "encoder_forward_end",
+        "encoder_cache_put_end",
+    ]
+
+
+def test_cross_request_batching_is_enabled_by_default() -> None:
+    stage = audio_encoder_stage(gpu=0, process="pipeline")
+    assert stage.factory.max_batch_size == 8
+    assert stage.factory.max_batch_wait_ms == 0
+
+
+def test_cross_request_batch_reuses_cache_and_deduplicates_same_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoder = _tiny_audio_encoder()
+    cache = StageOutputCache(cache_device="cpu")
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        audio_encoder_batching,
+        "emit_audio_encoder_event",
+        lambda payload, event_name: events.append((payload.request_id, event_name)),
+    )
+    features = torch.randn(1, 80, 137)
+    payloads = [
+        _audio_payload("leader", features, torch.tensor([137]), cache_key="shared"),
+        _audio_payload(
+            "follower", torch.randn(1, 80, 201), torch.tensor([201]), cache_key="shared"
+        ),
+    ]
+
+    first = batch_audio_encoder_payloads(payloads, encoder=encoder, cache=cache)
+    expected = first[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"]
+    torch.testing.assert_close(
+        first[1].data["encoder_outs"]["audio_encoder"]["audio_embeds"], expected
+    )
+    assert events == [
+        ("leader", "encoder_cache_miss"),
+        ("leader", "encoder_forward_start"),
+        ("leader", "encoder_forward_end"),
+        ("leader", "encoder_cache_put_end"),
+    ]
+
+    def fail_forward(**_: object) -> dict[str, torch.Tensor]:
+        raise AssertionError("cache hit unexpectedly called the encoder")
+
+    encoder.forward = fail_forward
+    cached = batch_audio_encoder_payloads(
+        [
+            _audio_payload(
+                "cached",
+                torch.randn(1, 80, 301),
+                torch.tensor([301]),
+                cache_key="shared",
+            )
+        ],
+        encoder=encoder,
+        cache=cache,
+    )
+    torch.testing.assert_close(
+        cached[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"],
+        expected,
+    )
+    assert events[-1] == ("cached", "encoder_cache_hit")
