@@ -15,7 +15,7 @@ from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSStreamingVocoder,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class _FakeInference:

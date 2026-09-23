@@ -70,21 +70,28 @@ speculative generality.
   with `is_` / `has_` / `should_` / `can_`; do not add a second underscore
   in front. Public functions, variables, and constants must not have a
   leading underscore.
-- Names say what, not how: `load_checkpoint` not `do_thing`; `num_codebooks` not `n`.
-  Single letters only for loop indices (`i`,`j`) or math (`x`,`y`,`t`).
-- Interface names must identify the domain meaning, role, or unit of a value.
-  For example, `speaker_embedding` is clearer than `spks`. Choose names that fit
-  the actual operation; short mathematical names belong in local equations.
+- Precision beats brevity. Every parameter, local variable, function, method,
+  class, and type alias names the unit it is. A reader must know which
+  physical unit it is without reading the body or another file. Name that
+  unit, not the mechanism: `load_checkpoint`, `speaker_embedding`.
+- Write the full word. Do not clip a word, and do not use a generic role
+  when the unit is known.
+  Wrong: `op`, `SessionOp`, `rid`, `seq`, `cmd`, `ctx`, `req`, `fn`, `cb`,
+  `tmp`, `data`, `info`, `item`, `obj`, `handler`, `manager`.
+  Right: `operation`, `SessionOperation`, `request_id`, `sequence`,
+  `session_operation`, `session_context`, `request`, `request_compute`,
+  `session_hooks`.
+- Single letters only for loop indices (`i`, `j`) or math (`x`, `y`, `t`).
+  Do not append `T` to invent a type name.
 
 ## TYPING & SIGNATURES
 
-- Full type hints, modern syntax: `X | Y`, `list[...]`, `dict[str, int]`, `X | None`.
-  Annotate return types.
-- ONE typing style per repo. Don't mix `Optional[X]`/`Union[X,Y]` with `X | Y`. Modern
-  preferred; if the repo uses `Optional`, match it.
+- Full type hints on every function, method, and attribute. Annotate parameters
+  and return types. One syntax only: `X | Y`, `list[int]`, `dict[str, int]`,
+  `X | None`. Do not introduce `Optional` or `Union`.
 - Either `requires-python >= 3.10` (native `X | Y`) or `from __future__ import annotations`.
-  Don't use `Optional` to work around forward refs — use quoted annotations
-  (`"ModelConfig"`).
+  A quoted annotation is only a forward reference inside the same class
+  (`"ModelConfig"`). Do not quote a name to avoid importing it.
 - Do not use `if TYPE_CHECKING:`. It hides imports from runtime and from
   pre-commit. Import the name at module level, or write the concrete type in
   the annotation (`tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]`
@@ -92,9 +99,36 @@ speculative generality.
   into a third module.
 - Closed value sets → `Literal[...]` or `Enum`, not bare strings in comparisons.
 - No mutable function defaults: `def f(x=[])`/`= {}` are bugs. Use a `None` sentinel.
-- Use concrete types, including model and decoder types, rather than `any`/`Any`
-  or bare `dict`/`list`/`tuple`. Annotate structured values and resource handles
-  according to their actual contracts, including element types and optionality.
+- Every annotation names a concrete type: a dataclass, TypedDict, NamedTuple,
+  Enum, `Literal`, or a union of those. A reader must be able to see the
+  fields, the element types, and the return type. Parameterize every
+  container (`dict[str, int]`, `list[TokenId]`, `tuple[torch.Tensor, torch.Tensor]`).
+  This includes model and decoder types, structured values, and resource handles.
+- Vague types are banned in annotations, aliases, and casts. They disable
+  checking and hide the real contract. Do not write any of these, including
+  under `typing` or `collections.abc`:
+  `Any`, `AnyStr`, `object`, `Callable`, `TypeVar`, `Generic`, `ParamSpec`,
+  `Concatenate`, `TypeVarTuple`, `cast`, `Optional`, `Union`,
+  `dict[str, Any]`, `list[Any]`, `tuple[Any, ...]`, `Sequence[Any]`,
+  `Mapping[str, Any]`, `Iterable[Any]`, `Coroutine[Any, Any, T]`, `type[Any]`.
+  Bare `dict`, `list`, `tuple`, `set`, `Mapping`, `Sequence`, `Iterable`,
+  `Iterator`, and `Collection` are the same failure. A coroutine that does
+  not yield is `Coroutine[None, None, Concrete]`, with `Concrete` named.
+  Wrong: `def append(self, state: object, emit: Callable[[TimedChunk], None]) -> Any`.
+  Right: `emit` is a `ChunkEmitter` Protocol whose `__call__` takes `TimedChunk`
+  and returns `None`, and `append` returns `StagePayload`.
+- A callback is a `Protocol` whose `__call__` names each parameter and the
+  return type. Do not recover an erased signature with `*args` or `**kwargs`.
+  If two wrapped functions do not share one parameter list, write each one
+  separately and name its parameters. Do not use `TypeVar` to connect a
+  stored value to a later parameter. If callers do not share one type, the
+  code that creates the value keeps it and names that type. The shared
+  signature does not accept it.
+- The only `object` exception is an untrusted boundary: decoded JSON, a wire
+  dict, or a raw request body. That parameter may be `object` or
+  `Mapping[str, object]`. The next use narrows it with `isinstance` before
+  reading a field, and does not pass the `object` onward. Do not use `cast`
+  or `# type: ignore` in place of that narrowing.
 - Do not accept a parameter only to immediately delete it to silence type or lint
   checks, such as starting a function with `del request_id`. Remove unnecessary
   parameters and update callers. If an established interface requires an unused
@@ -108,6 +142,9 @@ speculative generality.
 - Cross-boundary schemas (API req/resp, untrusted input, needs validation): `pydantic.BaseModel`.
   Don't hand-roll validators pydantic gives free.
 - Don't mix the two for one concept. Pick per role, not per mood.
+- Remove a mapping entry with `mapping.pop(key)`. Do not write `del mapping[key]`.
+  `del` also deletes names and attributes, so the statement does not say that
+  an entry is leaving a mapping. `pop` names the mapping and the key.
 
 ## FILE STRUCTURE
 

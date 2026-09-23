@@ -17,7 +17,7 @@ from sglang_omni.models.ming_tts.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 _WAIT_TIMEOUT_S = 5.0
 

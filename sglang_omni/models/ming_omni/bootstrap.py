@@ -295,7 +295,7 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
     from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
         text_output_requested,
     )
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)
@@ -352,7 +352,7 @@ def make_thinker_stream_output_builder(
     """
     import torch
 
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
 
     def _build_stream_output(request_id, req_data, req_output):
         req = getattr(req_data, "req", None)

@@ -12,7 +12,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 
 if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData

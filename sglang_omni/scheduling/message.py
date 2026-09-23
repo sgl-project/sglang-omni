@@ -6,11 +6,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done"]
+
 
 @dataclass
 class IncomingMessage:
     request_id: str
-    type: Literal["new_request", "stream_chunk", "stream_done"]
+    type: IncomingMessageType
     data: Any = None
 
 
