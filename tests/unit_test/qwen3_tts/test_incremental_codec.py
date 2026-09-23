@@ -17,6 +17,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     incremental_causal_transconv1d,
     incremental_transformer,
 )
+from sglang_omni.platforms import current_platform
 
 
 def _random_partitions(total: int, seed: int) -> list[int]:
@@ -470,6 +471,18 @@ def _make_arena(
         dtype=torch.float32,
     )
     return incremental, arena
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
+def test_codec_state_arena_stages_indices_on_npu() -> None:
+    arena = Qwen3TTSCodecStateArena.__new__(Qwen3TTSCodecStateArena)
+    arena._device = torch.device("npu:0")
+
+    index = arena.stage_index([1, 3])
+
+    assert index.device.type == "npu"
+    assert index.tolist() == [1, 3]
 
 
 def test_state_spec_covers_every_key_the_decode_creates() -> None:

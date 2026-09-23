@@ -44,6 +44,7 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
+    seeded_gumbel_noise_float32,
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -1588,12 +1589,28 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 if self._sub_has_sampled_rows
                 else None
             )
+            sampling_gumbels = None
+            if self._sub_has_sampled_rows and layer0_codes.device.type == "npu":
+                # Decode normally has one position. Keep the fallback bounded
+                # if a future caller supplies a longer sequence.
+                sampling_gumbels = self.precompute_npu_subtalker_gumbels(
+                    semantic_positions[:, pos : pos + 1],
+                    sampling_width=(
+                        int(self._sub_sampled_max_top_k)
+                        or int(self.config.code_predictor_config.vocab_size)
+                    ),
+                )
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
                 next_code = self.sample_subtalker_token(
                     logits[:, -1, :],
                     sub_positions=(
                         None if sub_positions is None else sub_positions[layer_idx]
+                    ),
+                    precomputed_gumbel=(
+                        None
+                        if sampling_gumbels is None
+                        else sampling_gumbels[0, layer_idx]
                     ),
                 )
                 pos_codes[:, layer_idx + 1].copy_(next_code)
@@ -1656,11 +1673,36 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             alpha=group_stride,
         )
 
+    def precompute_npu_subtalker_gumbels(
+        self,
+        semantic_positions: torch.Tensor,
+        *,
+        sampling_width: int,
+    ) -> torch.Tensor:
+        """Build all Predictor sampling noise in one NPU hash transfer."""
+        if semantic_positions.ndim != 2 or semantic_positions.shape[1] != 1:
+            raise ValueError(
+                "semantic positions must contain exactly one decode position"
+            )
+        batch_size, seq_len = semantic_positions.shape
+        num_substeps = int(self.config.num_code_groups) - 1
+        positions = torch.add(
+            self._sub_seed_offsets.view(1, num_substeps, 1),
+            semantic_positions.transpose(0, 1).unsqueeze(1),
+            alpha=num_substeps,
+        )
+        seeds = self._sub_sampling_seed_tensor[:batch_size].view(1, 1, batch_size)
+        seeds = seeds.expand(seq_len, num_substeps, batch_size)
+        return seeded_gumbel_noise_float32(
+            seeds.reshape(-1), positions.reshape(-1), sampling_width
+        ).view(seq_len, num_substeps, batch_size, sampling_width)
+
     def sample_subtalker_token(
         self,
         logits: torch.Tensor,
         *,
         sub_positions: torch.Tensor | None,
+        precomputed_gumbel: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if logits.shape[0] == 0:
             return torch.empty((0,), device=logits.device, dtype=torch.long)
@@ -1674,6 +1716,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         sampled_tokens = self.sample_subtalker_token_seeded(
             logits,
             sub_positions=sub_positions,
+            precomputed_gumbel=precomputed_gumbel,
         )
         if not self._sub_has_argmax_rows:
             return sampled_tokens
@@ -1689,6 +1732,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         logits: torch.Tensor,
         *,
         sub_positions: torch.Tensor,
+        precomputed_gumbel: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size = int(logits.shape[0])
         vocab_size = int(logits.shape[-1])
@@ -1741,6 +1785,17 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             torch.log(sorted_probs),
             torch.full_like(sorted_probs, -float("inf")),
         )
+
+        if precomputed_gumbel is not None:
+            if precomputed_gumbel.shape != sorted_logprobs.shape:
+                raise ValueError(
+                    "precomputed Predictor Gumbel noise does not match sampling width"
+                )
+            sampled_rank = torch.argmax(
+                sorted_logprobs.to(dtype=torch.float32) + precomputed_gumbel,
+                dim=1,
+            )
+            return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1)
 
         sampled = sample_from_sorted_logprobs_with_seed_small_k(
             sorted_logprobs,

@@ -147,7 +147,7 @@ class Qwen3TTSCodecStateArena:
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
         if self._device.type != "cuda":
-            return torch.as_tensor(list(values), dtype=torch.long)
+            return torch.as_tensor(list(values), dtype=torch.long, device=self._device)
         count = len(values)
         if count == 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")

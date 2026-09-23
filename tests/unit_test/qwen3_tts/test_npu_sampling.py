@@ -92,6 +92,54 @@ def test_float32_seeded_sampling_is_repeatable() -> None:
     assert first.shape == (2,)
 
 
+def test_precomputed_gumbel_noise_matches_seeded_sampler() -> None:
+    logprobs = torch.log_softmax(
+        torch.tensor([[1.0, 0.5, -0.5], [-1.0, 2.0, 0.0]], dtype=torch.float32),
+        dim=-1,
+    )
+    seeds = torch.tensor([11, 22], dtype=torch.int64)
+    positions = torch.tensor([4, 8], dtype=torch.int64)
+
+    expected = sampling_kernels.seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    gumbel = sampling_kernels.seeded_gumbel_noise_float32(seeds, positions, 3)
+    actual = torch.argmax(logprobs + gumbel, dim=1)
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "seeds,positions,num_cols,match",
+    [
+        (
+            torch.ones((1, 1), dtype=torch.long),
+            torch.ones(1, dtype=torch.long),
+            2,
+            "one-dimensional",
+        ),
+        (
+            torch.ones(2, dtype=torch.long),
+            torch.ones(1, dtype=torch.long),
+            2,
+            "aligned",
+        ),
+        (
+            torch.ones(1, dtype=torch.long),
+            torch.ones(1, dtype=torch.long),
+            0,
+            "positive",
+        ),
+    ],
+)
+def test_seeded_gumbel_noise_rejects_invalid_shape(
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    num_cols: int,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        sampling_kernels.seeded_gumbel_noise_float32(seeds, positions, num_cols)
+
+
 def test_seeded_sampling_gumbel_math_stays_float32(monkeypatch) -> None:
     observed_dtypes = []
     original_log = torch.log
@@ -124,7 +172,7 @@ def test_float32_seeded_sampling_caps_maximum_hash_uniform() -> None:
 
 
 @pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
-def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
+def test_npu_murmur_hash_and_float32_gumbel_return_on_device() -> None:
     device = torch.device("npu:0")
     seeds = torch.tensor([0, 17, -1], device=device, dtype=torch.int64)
     positions = torch.tensor([1_707_985_137, 3, 9], device=device, dtype=torch.int64)
@@ -151,6 +199,31 @@ def test_npu_murmur_hash_and_float32_gumbel_execute_on_device() -> None:
     torch.testing.assert_close(hashes.cpu(), expected_hashes, rtol=0, atol=0)
     assert sampled.device.type == "npu"
     assert sampled.shape == (3,)
+
+
+@pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
+def test_npu_batched_gumbel_matches_per_group_calls() -> None:
+    device = torch.device("npu:0")
+    group_seeds = torch.tensor(
+        [[17, 23], [17, 23], [17, 23]], device=device, dtype=torch.int64
+    )
+    group_positions = torch.tensor(
+        [[10, 16], [11, 17], [12, 18]], device=device, dtype=torch.int64
+    )
+
+    batched = sampling_kernels.seeded_gumbel_noise_float32(
+        group_seeds.reshape(-1), group_positions.reshape(-1), 8
+    ).view(3, 2, 8)
+    per_group = torch.stack(
+        [
+            sampling_kernels.seeded_gumbel_noise_float32(
+                group_seeds[group], group_positions[group], 8
+            )
+            for group in range(3)
+        ]
+    )
+
+    torch.testing.assert_close(batched, per_group, rtol=0, atol=0)
 
 
 @pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")

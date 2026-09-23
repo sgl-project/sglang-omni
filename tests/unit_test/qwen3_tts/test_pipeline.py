@@ -484,17 +484,21 @@ def test_qwen3_tts_npu_configs_use_eager_sdpa_baseline(
     assert stages["vocoder"].factory.attn_implementation == "sdpa"
 
 
-def test_qwen3_tts_0_6b_base_npu_config_uses_eager_concurrency() -> None:
+def test_qwen3_tts_0_6b_base_npu_config_enables_decode_graph() -> None:
     config_path = Path(__file__).parents[3] / "examples/configs/qwen3_tts_0_6b_npu.yaml"
     config = ConfigManager.from_file(str(config_path)).config
     stages = {stage.name: stage for stage in config.stages}
     engine = stages["tts_engine"].engine
     vocoder = stages["vocoder"].factory
 
-    assert engine.disable_cuda_graph is True
+    assert engine.disable_cuda_graph is False
     assert engine.max_running_requests == 16
     assert engine.max_queued_requests == 16
     assert vocoder.max_batch_size == 8
+    assert vocoder.initial_max_batch_size == 8
+    assert vocoder.followup_max_batch_size == 8
+    assert vocoder.followup_worker_count == 1
+    assert vocoder.async_decode is True
 
 
 @pytest.mark.parametrize(
@@ -5356,6 +5360,68 @@ def test_qwen3_tts_async_followup_batches_ready_requests() -> None:
     assert batch_sizes == [1, 1, 2]
 
 
+def test_qwen3_tts_async_worker_binds_accelerator_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    device = SimpleNamespace(type="npu", index=3)
+    scheduler._device = device
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_tts.streaming_vocoder.current_platform.set_device",
+        lambda device: calls.append(("device", device)),
+    )
+
+    scheduler.activate_decode_worker(None)
+
+    assert calls == [("device", device)]
+
+
+def test_qwen3_tts_async_worker_keeps_cuda_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    scheduler._device = SimpleNamespace(type="cuda", index=0)
+    stream = object()
+    calls: list[object] = []
+    monkeypatch.setattr(torch.cuda, "set_stream", calls.append)
+
+    scheduler.activate_decode_worker(stream)
+
+    assert calls == [stream]
+
+
+@pytest.mark.parametrize("worker", ["initial", "followup"])
+def test_qwen3_tts_async_worker_entry_activates_device(
+    monkeypatch: pytest.MonkeyPatch,
+    worker: str,
+) -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+        async_decode=True,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(scheduler, "activate_decode_worker", calls.append)
+
+    if worker == "initial":
+        scheduler._initial_queue.put(None)
+        scheduler.run_initial_worker()
+    else:
+        scheduler._followup_queue.put((float("inf"), 0, "", None))
+        scheduler.run_followup_worker()
+
+    assert calls == [None]
+
+
 def test_qwen3_tts_followup_queue_prioritizes_playback_deadline() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         _FakeQwen3TTSTokenizer(),
@@ -6772,6 +6838,86 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     )
 
     assert sampler_calls[1]["positions"].tolist() == [11, 11]
+
+
+def test_qwen3_tts_precomputes_all_subtalker_gumbels_in_one_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker.config = SimpleNamespace(num_code_groups=4)
+    talker._sub_seed_offsets = torch.arange(1, 4, dtype=torch.long)
+    talker._sub_sampling_seed_tensor = torch.tensor([17, 23], dtype=torch.long)
+    calls = []
+
+    def record_gumbel(seeds, positions, num_cols):
+        calls.append((seeds.clone(), positions.clone(), num_cols))
+        return torch.zeros((seeds.shape[0], num_cols), dtype=torch.float32)
+
+    monkeypatch.setattr(sglang_model, "seeded_gumbel_noise_float32", record_gumbel)
+    gumbels = Qwen3TTSTalker.precompute_npu_subtalker_gumbels(
+        talker,
+        torch.tensor([[3], [5]], dtype=torch.long),
+        sampling_width=8,
+    )
+
+    assert gumbels.shape == (1, 3, 2, 8)
+    assert len(calls) == 1
+    seeds, positions, num_cols = calls[0]
+    assert seeds.tolist() == [17, 23, 17, 23, 17, 23]
+    assert positions.tolist() == [10, 16, 11, 17, 12, 18]
+    assert num_cols == 8
+
+
+def test_qwen3_tts_gumbel_precompute_rejects_multiple_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    with pytest.raises(ValueError, match="exactly one decode position"):
+        Qwen3TTSTalker.precompute_npu_subtalker_gumbels(
+            talker,
+            torch.tensor([[3, 4], [5, 6]], dtype=torch.long),
+            sampling_width=8,
+        )
+
+
+def test_qwen3_tts_subtalker_sampling_uses_precomputed_gumbel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sglang(monkeypatch)
+    from sglang_omni.models.qwen3_tts import sglang_model
+    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+
+    talker = Qwen3TTSTalker.__new__(Qwen3TTSTalker)
+    talker._sub_temperature_tensor = torch.tensor([1.0])
+    talker._sub_top_p_tensor = torch.tensor([1.0])
+    talker._sub_top_k_tensor = torch.tensor([-1])
+    talker._sub_sampling_seed_tensor = torch.tensor([17])
+    talker._sub_sampled_has_top_p = False
+    talker._sub_sampled_max_top_k = 0
+    talker._sub_sampled_has_unbounded_top_k = True
+
+    def fail_sampler(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("precomputed Gumbel noise must bypass the seeded sampler")
+
+    monkeypatch.setattr(
+        sglang_model, "sample_from_sorted_logprobs_with_seed_small_k", fail_sampler
+    )
+    token = Qwen3TTSTalker.sample_subtalker_token_seeded(
+        talker,
+        torch.tensor([[2.0, 1.0, 0.0]]),
+        sub_positions=torch.tensor([10]),
+        precomputed_gumbel=torch.tensor([[0.0, 10.0, 0.0]]),
+    )
+
+    assert token.tolist() == [1]
 
 
 def test_qwen3_tts_subtalker_top_p_keeps_threshold_crossing_token(
