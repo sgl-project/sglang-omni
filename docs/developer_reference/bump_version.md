@@ -36,7 +36,7 @@ The other places a version lives:
 | `docker/Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's cu13 manifest), the FlashInfer reinstall version, the JIT cache path `/root/.cache/flashinfer/<version>`, `FLASHINFER_CACHE_IMAGE` |
 | `.github/workflows/*.yaml` | Every `image:` line, pinned by digest |
 | `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
-| `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag) and `SGL_KERNEL_XPU_REF` (the last `sgl-kernel-xpu` commit before the tag) |
+| `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag); SGLang's XPU manifest pins the `sglang-kernel-xpu` wheel |
 | `pyproject_cpu.toml`, `pyproject_xpu.toml`, `scripts/cpu/install_cpu.sh`, `scripts/xpu/install_xpu.sh` | The verified SGLang tag; the provider pyprojects cannot pin `sglang` because every wheel pulls CUDA torch |
 | `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
@@ -48,10 +48,13 @@ The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
 their CI workflows build `docker/cpu.Dockerfile` and `docker/xpu.Dockerfile`
 on every PR that touches `sglang_omni/`. `sglang_omni/platforms/` imports the
 pinned release's modules at import time, so those workflows fail on a bump
-until the two stacks move with it: the `-xeon` image digest, the XPU tag and
-its `sgl-kernel-xpu` revision, and the verified tag in the provider
-pyprojects, install scripts and install docs. Upstream's `docker/xpu.Dockerfile`
-at the tag names any new build prerequisite.
+until the two stacks move with it: the `-xeon` image digest, the XPU tag, and
+the verified tag in the provider pyprojects, install scripts and install docs.
+The XPU image builds SGLang from source, so diff upstream's
+`python/pyproject_xpu.toml` and `docker/xpu.Dockerfile` between the tags for
+new build requirements: one release moved the SYCL kernel from a git
+requirement to a pinned wheel and added `setuptools-rust` to the build
+requirements, which the image avoids by building without isolation.
 
 The ROCm, NPU and MUSA stacks (`docker/rocm.Dockerfile`, `pyproject_rocm.toml`)
 pin their own SGLang tag and base images. No project CI builds them, so a bump
@@ -84,7 +87,12 @@ processor, `ParallelState`, `NewTokenRatioTracker`) with upstream's own
 kwargs; `SGLModelRunner` subclasses `ModelRunner`. Diff the body of every
 method Omni overrides and every borrowed method it calls, and look for
 `self.<attr>` reads the new upstream bodies make that `OmniScheduler.__init__`
-never assigns. When a constructor gains or loses fields, pass the new shape;
+never assigns. A decorator on a borrowed method reads `self` too: one release
+wrapped `get_next_batch_to_run` in a stage timer whose first statement read an
+attribute only upstream's `__init__` set. Upstream also moves work between
+methods: request timeout aborts left `get_next_batch_to_run` for an intake
+method Omni's event loops never call, which disables them without an error.
+When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
 
@@ -101,7 +109,7 @@ what resolution decided rather than the raw input. Omni changes engine
 configuration after the builder through one seam,
 `sglang_omni/vendor/sglang/server_args.py::override_server_args`. Upstream
 decides what a mutation means at each lifecycle phase; today a resolved record
-that is not yet published takes the change as a late declaration, and a
+that is not yet published takes the change as a declaration, and a
 published record is read-only with its values living on the runtime-context
 bags. Every call site has a
 phase, and every later reader has to read from where the current release
@@ -216,7 +224,8 @@ FlashInfer sources; changed sources remain newer and invalidate their objects.
 After rebuilding, run Ninja with `-n -d explain` in the copied `cached_ops`
 directories before GPU validation to catch unintended object recompilation.
 
-A bump therefore ships a new image: build `docker/Dockerfile` on the
+Whether a bump ships a new image follows from the pin diff. When torch, CUDA,
+Python or FlashInfer move, it does: build `docker/Dockerfile` on the
 `lmsysorg/sglang` digest for the new tag, populate the FlashInfer JIT cache
 on a GPU for the architectures CI runs on (Docker builds have none, so the
 Dockerfile copies the cache from a previous image), push it, and put the new
@@ -224,6 +233,15 @@ digest in the Dockerfile and the workflows. CI on the branch means nothing
 until the workflows point at the new image: on the old one the setup step
 installs the new torch into the virtualenv and nothing after that reflects
 the shipped stack.
+
+When only SGLang and the wheels it pins move (`sglang-kernel`,
+`sgl-deep-gemm`), the image stays. The setup step installs those pins into the
+virtualenv, whose site-packages precede the image's, and they are the same
+PyPI wheels upstream's CUDA image installs. The FlashInfer cache in the image
+is keyed by a version that did not change. `SGLANG_IMAGE` in
+`docker/Dockerfile` still moves to the new tag's digest so the next rebuild
+starts from the right base; the workflow digests and
+`FLASHINFER_CACHE_IMAGE` do not.
 
 ## Validation
 
@@ -276,7 +294,7 @@ any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
 GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`; `run-fun-asr`, `run-qwen3-asr`,
+`run-moss`, `run-qwen3-tts`, `run-cosyvoice3`; `run-fun-asr`, `run-qwen3-asr`,
 `run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.

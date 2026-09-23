@@ -621,7 +621,7 @@ def test_real_scheduler_with_tiny_ming_forward(
                 )
                 req._omni_data = data
                 req._omni_terminal_claimed = False
-                scheduler._add_request_to_queue(req)
+                scheduler.add_request_to_queue(req)
                 return req
 
             def step() -> Any:

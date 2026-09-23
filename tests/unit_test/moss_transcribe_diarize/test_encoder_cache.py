@@ -29,7 +29,7 @@ def _stub_encode(model: MossModel):
         calls["count"] += 1
         return torch.ones(4)
 
-    model._get_audio_feature_uncached = _fake  # type: ignore[assignment]
+    model.get_audio_feature_uncached = _fake  # type: ignore[assignment]
     return calls
 
 

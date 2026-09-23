@@ -10,7 +10,7 @@ from sglang_omni.config import PipelineConfig
 logger = logging.getLogger(__name__)
 
 
-def _iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
+def iter_config_architectures(config_cls: Type[PipelineConfig]) -> list[str]:
     architectures: list[str] = []
     seen: set[str] = set()
     aliases = getattr(config_cls, "architecture_aliases", ())
@@ -69,7 +69,7 @@ def import_pipeline_configs(
                 f"Config module {name}.{config_path} must have an EntryClass"
             )
         config_cls = config_module.EntryClass
-        for arch in _iter_config_architectures(config_cls):
+        for arch in iter_config_architectures(config_cls):
             existing_config_cls = model_arch_to_config_cls.get(arch)
             if (
                 existing_config_cls is not None
@@ -85,7 +85,7 @@ def import_pipeline_configs(
 
 
 @dataclass
-class _PipelineConfigRegistry:
+class PipelineConfigRegistry:
     configs: Dict[str, Type[PipelineConfig]] = field(default_factory=dict)
 
     def register_config(
@@ -132,5 +132,5 @@ class _PipelineConfigRegistry:
         )
 
 
-PIPELINE_CONFIG_REGISTRY = _PipelineConfigRegistry()
+PIPELINE_CONFIG_REGISTRY = PipelineConfigRegistry()
 PIPELINE_CONFIG_REGISTRY.register_config("sglang_omni.models", "config")

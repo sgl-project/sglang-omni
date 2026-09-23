@@ -64,7 +64,7 @@ class MingTTSMlxModelRunner(MlxSchedulerModelRunner):
         self._generated: dict[str, list[torch.Tensor]] = {}
 
     def reset_request(self, request_id: str) -> None:
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             self.backend.release(request_id)
             self._generated.pop(request_id, None)
 
@@ -79,7 +79,7 @@ class MingTTSMlxModelRunner(MlxSchedulerModelRunner):
         request = requests[0]
         data = request.data
         state = data.state
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             self.backend.start(
                 request.request_id,
                 mx.array(data.input_ids.tolist(), dtype=mx.int32),
@@ -105,7 +105,7 @@ class MingTTSMlxModelRunner(MlxSchedulerModelRunner):
     ) -> Any:
         if len(requests) != 1:
             raise ValueError("Ming MLX supports one active request")
-        with self._mlx_stream_context():
+        with self.mlx_stream_context():
             return self._step(requests[0])
 
     def _step(self, request: Any) -> Any:

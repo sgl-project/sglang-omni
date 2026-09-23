@@ -15,15 +15,15 @@ from sglang_omni.utils.gpu_compat import (
 logger = logging.getLogger(__name__)
 
 
-class _SGLangServerArgsForDiagnostics(Protocol):
+class SGLangServerArgsForDiagnostics(Protocol):
     attention_backend: str | None
     prefill_attention_backend: str | None
     decode_attention_backend: str | None
     sampling_backend: str | None
 
 
-def _describe_sglang_runtime_configuration(
-    server_args: _SGLangServerArgsForDiagnostics,
+def describe_sglang_runtime_configuration(
+    server_args: SGLangServerArgsForDiagnostics,
     gpu_id: int,
 ) -> str:
     from sglang.srt.arg_groups.model_override_base import (
@@ -70,7 +70,7 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         model_config.is_multimodal = original_is_multimodal
 
 
-def _hidden_capture_max_tokens() -> int:
+def hidden_capture_max_tokens() -> int:
     """Largest token-row count a single thinker forward can produce.
 
     Covers chunked prefill, non-chunked prefill, decode batches, and every
@@ -142,7 +142,7 @@ def create_sglang_infrastructure(
             "stages in separate processes."
         )
 
-    logger.info(_describe_sglang_runtime_configuration(server_args, gpu_id))
+    logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
 
     kv_cache_bytes = consume_stage_kv_cache_bytes()
     worker_config = ModelWorkerConfig(
@@ -190,7 +190,7 @@ def create_sglang_infrastructure(
         install_hidden_capture_hooks(
             model,
             capture_hidden_layers,
-            max_tokens=_hidden_capture_max_tokens(),
+            max_tokens=hidden_capture_max_tokens(),
         )
 
     if before_memory_pool is not None:

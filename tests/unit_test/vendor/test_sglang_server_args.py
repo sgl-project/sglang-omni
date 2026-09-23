@@ -16,7 +16,7 @@ def test_override_server_args_declares_on_an_unpublished_record() -> None:
 
     assert server_args.disable_cuda_graph is False
     assert resolution_result(server_args, "disable_cuda_graph") is True
-    assert server_args._runtime_mutations == [
+    assert server_args._resolved_overrides == [
         ("test-source", {"disable_cuda_graph": True})
     ]
 

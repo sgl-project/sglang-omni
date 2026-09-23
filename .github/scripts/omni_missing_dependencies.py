@@ -28,10 +28,12 @@ def unsatisfied_requirements(dependencies: list[str]) -> list[str]:
     return missing
 
 
-def missing_requirements(pyproject: Path) -> list[str]:
-    return unsatisfied_requirements(
-        project_config(pyproject)["project"]["dependencies"]
-    )
+def missing_requirements(pyproject: Path, extras: tuple[str, ...] = ()) -> list[str]:
+    project = project_config(pyproject)["project"]
+    dependencies = list(project["dependencies"])
+    for extra in extras:
+        dependencies.extend(project["optional-dependencies"][extra])
+    return unsatisfied_requirements(dependencies)
 
 
 def override_requirements(pyproject: Path) -> list[str]:
@@ -44,11 +46,12 @@ def main() -> int:
     parser.add_argument("pyproject", type=Path)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--overrides", action="store_true")
+    parser.add_argument("--extra", action="append", default=[])
     args = parser.parse_args()
     if args.overrides:
         print("\n".join(override_requirements(args.pyproject)))
         return 0
-    missing = missing_requirements(args.pyproject)
+    missing = missing_requirements(args.pyproject, tuple(args.extra))
     if args.check:
         missing += unsatisfied_requirements(override_requirements(args.pyproject))
     if args.check and missing:

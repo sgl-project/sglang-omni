@@ -100,8 +100,8 @@ def load_movies800_samples(
     expected_sample_count: int | None = EXPECTED_SAMPLE_COUNT,
 ) -> list[Movies800Sample]:
     datasets_module = importlib.import_module("datasets")
-    audio_type = getattr(datasets_module, "Audio")
-    load_dataset = getattr(datasets_module, "load_dataset")
+    audio_type = datasets_module.Audio
+    load_dataset = datasets_module.load_dataset
     dataset = load_dataset(repo_id, split=split)
     if expected_column not in dataset.column_names:
         raise ValueError(

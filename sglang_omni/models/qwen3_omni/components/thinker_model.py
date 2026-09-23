@@ -4,7 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sglang.srt.runtime_context import get_parallel, get_stream
+from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
@@ -41,7 +41,6 @@ from sglang_omni.vendor.sglang.models import (
     create_fused_set_kv_buffer_arg,
     enable_fused_set_kv_buffer,
 )
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
 
 fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
@@ -49,7 +48,7 @@ fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 logger = logging.getLogger(__name__)
 
 
-def _bind_default_weight_loaders(module: nn.Module) -> None:
+def bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
@@ -229,7 +228,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             not isinstance(self.rotary_emb, MRotaryEmbedding)
         ) and self.head_dim in (64, 128, 256)
         self.use_fused_qk_norm_rope = (
-            get_global_server_args().enable_fused_qk_norm_rope
+            get_exec().kernel.enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope
             and fused_qk_norm_rope is not None
         )
@@ -412,8 +411,7 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         )
 
         self.experts = get_moe_impl_class(quant_config)(
-            num_experts=config.num_experts
-            + get_global_server_args().ep_num_redundant_experts,
+            num_experts=config.num_experts + get_exec().moe.ep_num_redundant_experts,
             top_k=config.num_experts_per_tok,
             layer_id=layer_id,
             hidden_size=config.hidden_size,
@@ -645,7 +643,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         # For EAGLE3 support
         self.layers_to_capture = []
-        _bind_default_weight_loaders(self)
+        bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
 
     def forward(
@@ -683,7 +681,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             if deepstack_visual_embeds is not None and layer_idx in range(
                 len(deepstack_visual_embeds)
             ):
-                hidden_states = self._deepstack_process(
+                hidden_states = self.deepstack_process(
                     hidden_states,
                     visual_pos_masks,
                     deepstack_visual_embeds[layer_idx],
@@ -699,7 +697,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         return hidden_states, aux_hidden_states
 
-    def _deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
+    def deepstack_process(self, hidden_states, visual_pos_masks, visual_embeds):
         # visual_pos_masks may be 1D boolean (SGLang path) or multi-dim (HF path)
         if visual_pos_masks.dim() > 1:
             visual_pos_masks = visual_pos_masks[..., 0]

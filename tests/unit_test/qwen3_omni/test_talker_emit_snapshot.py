@@ -55,7 +55,7 @@ def test_emitted_rows_survive_next_step_inplace_write() -> None:
     embeds_before = model._output_embeds.clone()
 
     requests = _requests(n)
-    runner._emit_code_chunks_and_feedback(
+    runner.emit_code_chunks_and_feedback(
         schedule_batch=_sched_batch(n), requests=requests
     )
 
@@ -84,7 +84,7 @@ def test_two_batched_clones_rows_share_storage() -> None:
     requests = _requests(n)
     torch.Tensor.clone = _counting_clone
     try:
-        runner._emit_code_chunks_and_feedback(
+        runner.emit_code_chunks_and_feedback(
             schedule_batch=_sched_batch(n), requests=requests
         )
     finally:

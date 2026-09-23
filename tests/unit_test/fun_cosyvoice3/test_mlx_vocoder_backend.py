@@ -21,7 +21,7 @@ from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.config import (  # noqa: E402
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.dit import (  # noqa: E402
     Attention,
-    _layer_norm,
+    layer_norm,
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.flow import (  # noqa: E402
     CausalMaskedDiffWithDiT,
@@ -33,8 +33,8 @@ from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.hift import (  # noqa: E402
     CausalHiFTGenerator,
 )
 from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.loader import (  # noqa: E402
-    _map_flow_weight,
-    _map_hift_weight,
+    map_flow_weight,
+    map_hift_weight,
 )
 
 
@@ -130,19 +130,19 @@ def _write_tiny_artifact(tmp_path, *, hift_prefix="hifigan"):
 
 def test_plus_artifact_weight_key_mapping():
     assert (
-        _map_flow_weight("flow.decoder.estimator.transformer_blocks.0.ff.ff_0_0.weight")
+        map_flow_weight("flow.decoder.estimator.transformer_blocks.0.ff.ff_0_0.weight")
         == "decoder.estimator.transformer_blocks.0.ff.ff.0.weight"
     )
     assert (
-        _map_hift_weight("hifigan.f0_predictor.condnet_4.conv.weight")
+        map_hift_weight("hifigan.f0_predictor.condnet_4.conv.weight")
         == "f0_predictor.condnet.2.weight"
     )
     assert (
-        _map_hift_weight("hifigan.resblocks.0.convs1.0.conv.weight")
+        map_hift_weight("hifigan.resblocks.0.convs1.0.conv.weight")
         == "resblocks.0.convs1.0.weight"
     )
     assert (
-        _map_hift_weight("hift.resblocks.0.convs1.0.weight")
+        map_hift_weight("hift.resblocks.0.convs1.0.weight")
         == "resblocks.0.convs1.0.weight"
     )
 
@@ -172,7 +172,7 @@ def test_fast_layer_norm_matches_reference_formula():
     mx.random.seed(11)
     inputs = mx.random.normal((2, 5, 16)).astype(mx.float16)
 
-    actual = _layer_norm(inputs)
+    actual = layer_norm(inputs)
     inputs_float = inputs.astype(mx.float32)
     mean = mx.mean(inputs_float, axis=-1, keepdims=True)
     variance = mx.var(inputs_float, axis=-1, keepdims=True)

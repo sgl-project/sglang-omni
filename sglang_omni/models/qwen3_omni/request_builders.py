@@ -39,7 +39,7 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
 
-def _resolve_seed(params: dict[str, Any]) -> int | None:
+def resolve_seed(params: dict[str, Any]) -> int | None:
     """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
     for key in ("seed", "sampling_seed"):
         value = params.get(key)
@@ -115,7 +115,7 @@ def resolve_preprocessing_next_stages(
     del request_id
     state = Qwen3OmniPipelineState.from_dict(output.data)
     return [
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
         MM_AGGREGATE_STAGE,
     ]
 
@@ -126,7 +126,7 @@ def resolve_preprocessing_next_stages_speech(
     del request_id
     state = Qwen3OmniPipelineState.from_dict(output.data)
     targets = [
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
         THINKER_STAGE,
     ]
     if should_generate_audio_output(output):
@@ -143,14 +143,14 @@ def resolve_mm_aggregate_wait_sources(
     if from_stage != "preprocessing":
         return None
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
+    return ["preprocessing", *active_encoder_stages(state.encoder_inputs)]
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     """Keep decode payload focused on text detokenization state."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
     state.thinker_inputs = {}
-    state.stream_state = _copy_mutable_containers(state.stream_state)
+    state.stream_state = copy_mutable_containers(state.stream_state)
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)
@@ -235,12 +235,12 @@ def build_lightweight_mm_inputs(mm_inputs: dict[str, Any]) -> dict[str, Any]:
     mm_audio = mm_inputs.get("audio", {})
     mm_video = mm_inputs.get("video", {})
     return {
-        "image": _select_present_fields(mm_image, ("image_grid_thw",)),
-        "audio": _select_present_fields(
+        "image": select_present_fields(mm_image, ("image_grid_thw",)),
+        "audio": select_present_fields(
             mm_audio,
             ("feature_attention_mask", "audio_feature_lengths"),
         ),
-        "video": _select_present_fields(
+        "video": select_present_fields(
             mm_video,
             ("video_grid_thw", "video_second_per_grid", "use_audio_in_video"),
         ),
@@ -248,11 +248,11 @@ def build_lightweight_mm_inputs(mm_inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
@@ -260,18 +260,18 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=build_lightweight_mm_inputs(state.mm_inputs),
-        encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
+        encoder_inputs=project_encoder_input_metadata(state.encoder_inputs),
         stream_state=dict(state.stream_state),
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    stage_name = _single_encoder_stage_name(state)
+    stage_name = single_encoder_stage_name(state)
     encoder_out = state.encoder_outs.get(stage_name, {})
     projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 # note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
@@ -289,7 +289,7 @@ _TALKER_UNUSED_ENCODER_OUT_KEYS = (
 
 def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    stage_name = _single_encoder_stage_name(state)
+    stage_name = single_encoder_stage_name(state)
     encoder_out = state.encoder_outs.get(stage_name, {})
     if isinstance(encoder_out, dict):
         encoder_out = {
@@ -298,7 +298,7 @@ def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
             if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
         }
     projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
@@ -324,24 +324,24 @@ def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_inputs=thinker_inputs,
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
-def _project_preprocessing_to_encoder(
+def project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
     stage_name: str,
 ) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
     projected = Qwen3OmniPipelineState(
-        encoder_inputs=_select_encoder_inputs(
+        encoder_inputs=select_encoder_inputs(
             state.encoder_inputs, stage_name=stage_name
         )
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
-def _payload_with_state(
+def payload_with_state(
     payload: StagePayload, state: Qwen3OmniPipelineState
 ) -> StagePayload:
     return StagePayload(
@@ -351,23 +351,23 @@ def _payload_with_state(
     )
 
 
-def _copy_mutable_containers(value: Any) -> Any:
+def copy_mutable_containers(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
         return value
     if isinstance(value, dict):
-        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+        return {key: copy_mutable_containers(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_copy_mutable_containers(item) for item in value]
+        return [copy_mutable_containers(item) for item in value]
     if isinstance(value, tuple):
-        return tuple(_copy_mutable_containers(item) for item in value)
+        return tuple(copy_mutable_containers(item) for item in value)
     if isinstance(value, set):
-        return {_copy_mutable_containers(item) for item in value}
+        return {copy_mutable_containers(item) for item in value}
     if isinstance(value, bytearray):
         return bytearray(value)
     return value
 
 
-def _select_encoder_inputs(
+def select_encoder_inputs(
     encoder_inputs: dict[str, dict[str, Any]],
     *,
     stage_name: str,
@@ -378,7 +378,7 @@ def _select_encoder_inputs(
     return {stage_name: dict(stage_inputs)}
 
 
-def _project_encoder_input_metadata(
+def project_encoder_input_metadata(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     projected: dict[str, dict[str, Any]] = {}
@@ -391,43 +391,43 @@ def _project_encoder_input_metadata(
             stage_metadata["cache_key"] = cache_key
         if stage_inputs.get("_skip"):
             stage_metadata["_skip"] = True
-        elif _is_active_encoder_branch(stage_name, stage_inputs):
+        elif is_active_encoder_branch(stage_name, stage_inputs):
             stage_metadata["_active"] = True
         if stage_metadata:
             projected[stage_name] = stage_metadata
     return projected
 
 
-def _encoder_stages_with_model_inputs(
+def encoder_stages_with_model_inputs(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
+        if has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _active_encoder_stages(
+def active_encoder_stages(
     encoder_inputs: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
+        if is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _is_active_encoder_branch(stage_name: str, stage_inputs: Any) -> bool:
+def is_active_encoder_branch(stage_name: str, stage_inputs: Any) -> bool:
     if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
         return False
     active_marker = stage_inputs.get("_active")
     if active_marker is not None:
         return active_marker is True
-    return _has_encoder_model_input(stage_name, stage_inputs)
+    return has_encoder_model_input(stage_name, stage_inputs)
 
 
-def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
+def has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
     if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
         return False
     if stage_inputs.get("_active") is False:
@@ -442,7 +442,7 @@ def _has_encoder_model_input(stage_name: str, stage_inputs: Any) -> bool:
     return False
 
 
-def _select_present_fields(
+def select_present_fields(
     source: dict[str, Any],
     keys: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -454,7 +454,7 @@ def _select_present_fields(
     return selected
 
 
-def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
+def single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
@@ -462,7 +462,7 @@ def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     return next(iter(state.encoder_outs))
 
 
-def _extract_thinker_model_inputs(thinker_inputs: dict[str, Any]) -> dict[str, Any]:
+def extract_thinker_model_inputs(thinker_inputs: dict[str, Any]) -> dict[str, Any]:
     """Return the model input payload without confusing an empty payload for absence.
 
     ``merge_for_thinker`` always emits ``model_inputs``.  In particular, a
@@ -494,7 +494,7 @@ def build_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
+    model_inputs = extract_thinker_model_inputs(thinker_inputs)
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     if "attention_mask" in model_inputs:
@@ -512,7 +512,7 @@ def build_thinker_request(
     )
 
 
-def _compute_mrope_positions(
+def compute_mrope_positions(
     input_ids: torch.Tensor,
     model_inputs: dict[str, Any],
     thinker_config: Any,
@@ -599,7 +599,7 @@ def build_sglang_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
+    model_inputs = extract_thinker_model_inputs(thinker_inputs)
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
@@ -635,7 +635,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = _resolve_seed(params)
+    seed = resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -665,7 +665,7 @@ def build_sglang_thinker_request(
 
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
-        mrope_result = _compute_mrope_positions(
+        mrope_result = compute_mrope_positions(
             original_input_ids.to(dtype=torch.long), model_inputs, thinker_config
         )
         if mrope_result is not None:
@@ -820,7 +820,7 @@ def build_sglang_talker_request(
                 int(ids.numel())
             )
         else:
-            mrope_positions, mrope_position_delta = _compute_mrope_positions(
+            mrope_positions, mrope_position_delta = compute_mrope_positions(
                 ids, mm_model_inputs, thinker_config
             )
         mm_inputs = MultimodalInputs(mm_items=[])
@@ -1090,11 +1090,11 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": _resolve_seed(params),
+            "seed": resolve_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
-        return _build_talker_request_data(
+        return build_talker_request_data(
             payload,
             prefill_builder=prefill_builder,
             tokenizer=tokenizer,
@@ -1123,7 +1123,7 @@ def make_talker_scheduler_adapters(
     )
 
 
-def _build_talker_request_data(
+def build_talker_request_data(
     payload: StagePayload,
     *,
     prefill_builder: TalkerPrefillBuilder,

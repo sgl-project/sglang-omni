@@ -38,13 +38,13 @@ def clear_auk_preprocessing_context() -> None:
     _CONTEXT = None
 
 
-def _get_context() -> AuKPreprocessingContext:
+def get_context() -> AuKPreprocessingContext:
     if _CONTEXT is None:
         raise RuntimeError("AuK preprocessing context is not initialized")
     return _CONTEXT
 
 
-def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | None]:
+def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | None]:
     """Accept flat text, a dict payload, or a structured references list."""
     if isinstance(inputs, str):
         return inputs, [], None
@@ -67,7 +67,7 @@ def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | Non
     return text, references, ref_audio
 
 
-def _resolve_reference(
+def resolve_reference(
     references: list[dict[str, Any]], fallback: Any | None
 ) -> Any | None:
     if fallback is not None:
@@ -83,7 +83,7 @@ def _resolve_reference(
     )
 
 
-def _resolve_float(raw: Any, default: float | None) -> float | None:
+def resolve_float(raw: Any, default: float | None) -> float | None:
     if raw is None:
         return default
     try:
@@ -95,7 +95,7 @@ def _resolve_float(raw: Any, default: float | None) -> float | None:
     return value
 
 
-def _resolve_seed(raw: Any) -> int | None:
+def resolve_seed(raw: Any) -> int | None:
     if raw is None:
         return None
     if isinstance(raw, bool):
@@ -106,7 +106,7 @@ def _resolve_seed(raw: Any) -> int | None:
         raise ValueError(f"AuK seed must be an integer, got {raw!r}") from exc
 
 
-def _load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+def load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
     import librosa
 
     if isinstance(source, str):
@@ -145,8 +145,8 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
             if source.get(name) is not None:
                 raise ValueError(f"AuK {name} is a server-level setting")
 
-    text, references, inline_ref = _normalize_inputs(inputs)
-    ref_source = _resolve_reference(references, inline_ref) or tts_params.get(
+    text, references, inline_ref = normalize_inputs(inputs)
+    ref_source = resolve_reference(references, inline_ref) or tts_params.get(
         "ref_audio"
     )
     is_speech = metadata.get("task") == "tts"
@@ -167,7 +167,7 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
         if not instruction:
             raise ValueError("AuK requires a natural-language instruction")
 
-    gen_seconds = _resolve_float(
+    gen_seconds = resolve_float(
         engine_params.get(
             "gen_seconds", tts_params.get("gen_seconds", params.get("gen_seconds"))
         ),
@@ -176,13 +176,13 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     if gen_seconds is not None and gen_seconds <= 0:
         raise ValueError(f"AuK gen_seconds must be positive, got {gen_seconds}")
 
-    clip_seconds = _get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
+    clip_seconds = get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
 
     ref_audio: np.ndarray | None = None
     qwen_audio: np.ndarray | None = None
     ref_seconds = 0.0
     if ref_source is not None:
-        ref_audio, qwen_audio = _load_reference(ref_source, config.sample_rate)
+        ref_audio, qwen_audio = load_reference(ref_source, config.sample_rate)
         ref_seconds = ref_audio.shape[-1] / float(config.sample_rate)
 
     if gen_seconds is None and is_speech:
@@ -203,7 +203,7 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
             max(1, ref_audio.shape[-1] // config.downsample_rate)
             if ref_seconds > 0
             else config.seconds_to_frames(
-                _get_context().default_seconds if _CONTEXT else C.DEFAULT_SECONDS
+                get_context().default_seconds if _CONTEXT else C.DEFAULT_SECONDS
             )
         )
     else:
@@ -217,13 +217,13 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
         qwen_audio=qwen_audio,
         ref_seconds=float(ref_seconds),
         gen_frames=gen_frames,
-        seed=_resolve_seed(tts_params.get("seed", params.get("seed"))),
+        seed=resolve_seed(tts_params.get("seed", params.get("seed"))),
     )
 
 
 def preprocess_auk_payload(payload: StagePayload) -> StagePayload:
     """Preprocessing-stage entry point: validate, load audio, size the output."""
-    context = _get_context()
+    context = get_context()
     state = build_auk_state(payload, context.config)
     return StagePayload(
         request_id=payload.request_id,

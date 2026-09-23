@@ -28,6 +28,7 @@ from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
+from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
 
 from sglang_omni.models.moss_tts.sampling_kernels import (
@@ -44,7 +45,7 @@ from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeState
 logger = logging.getLogger(__name__)
 
 
-def _as_qwen3_config(config: Any) -> Any:
+def as_qwen3_config(config: Any) -> Any:
     from transformers import Qwen3Config
 
     if isinstance(config, Qwen3Config):
@@ -72,7 +73,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     ) -> None:
         super().__init__()
         self.pp_group = get_pp_group()
-        self.config = self._normalize_config(config)
+        self.config = self.normalize_config(config)
         self.quant_config = quant_config
         self.hidden_size = int(self.config.hidden_size)
         self.n_vq = int(self.config.n_vq)
@@ -104,27 +105,20 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         gpt2_cfg = self.config.gpt2_config
         self.local_transformer = MossTTSLocalTransformer(
             hidden_size=self.hidden_size,
-            num_heads=int(self._cfg_get(gpt2_cfg, "n_head", 32)),
-            inner_size=int(self._cfg_get(gpt2_cfg, "n_inner", 4 * self.hidden_size)),
+            num_heads=int(self.cfg_get(gpt2_cfg, "n_head", 32)),
+            inner_size=int(self.cfg_get(gpt2_cfg, "n_inner", 4 * self.hidden_size)),
             num_layers=int(getattr(self.config, "local_transformer_layers", 1)),
             max_positions=self.n_vq + 1,
-            rope_base=float(self._cfg_get(gpt2_cfg, "rope_base", 1_000_000.0)),
-            layer_norm_eps=float(self._cfg_get(gpt2_cfg, "layer_norm_epsilon", 1e-6)),
+            rope_base=float(self.cfg_get(gpt2_cfg, "rope_base", 1_000_000.0)),
+            layer_norm_eps=float(self.cfg_get(gpt2_cfg, "layer_norm_epsilon", 1e-6)),
         )
         # Binary continue/stop head over the local position-0 hidden state:
         # index 0 -> audio_assistant_slot (emit a frame), 1 -> audio_end (stop).
         self.local_text_lm_head = torch.nn.Linear(self.hidden_size, 2, bias=False)
 
-        max_batch_size = None
-        try:
-            from sglang.srt.server_args import get_global_server_args
-
-            max_batch_size = get_global_server_args().max_running_requests
-        except Exception:
-            max_batch_size = None
-        weight = self._first_embedding_weight()
+        weight = self.first_embedding_weight()
         self._decode_input_embedding = torch.nn.Embedding(
-            int(max_batch_size or 1),
+            get_schedule().max_running_requests,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,
@@ -158,7 +152,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return self._state_pool.row_for(rid)
 
     @staticmethod
-    def _cfg_get(config: Any, name: str, default: Any) -> Any:
+    def cfg_get(config: Any, name: str, default: Any) -> Any:
         if isinstance(config, dict):
             value = config.get(name, default)
         else:
@@ -166,11 +160,11 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return default if value is None else value
 
     @staticmethod
-    def _normalize_config(config: Any) -> Any:
+    def normalize_config(config: Any) -> Any:
         qwen3_config = getattr(config, "qwen3_config", None)
         if qwen3_config is None:
             qwen3_config = getattr(config, "language_config", None)
-        language_config = _as_qwen3_config(qwen3_config)
+        language_config = as_qwen3_config(qwen3_config)
         try:
             config.language_config = language_config
         except AttributeError:
@@ -203,7 +197,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         config.language_config.pad_token = list(config.pad_token)
         return config
 
-    def _first_embedding_weight(self) -> torch.Tensor:
+    def first_embedding_weight(self) -> torch.Tensor:
         for layer in self.embedding_list:
             weight = getattr(layer, "weight", None)
             if isinstance(weight, torch.Tensor):
@@ -220,21 +214,21 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
 
     @property
     def device(self) -> torch.device:
-        return self._first_embedding_weight().device
+        return self.first_embedding_weight().device
 
     @property
     def dtype(self) -> torch.dtype:
-        return self._first_embedding_weight().dtype
+        return self.first_embedding_weight().dtype
 
-    def _audio_embedding_weight(self, channel: int) -> torch.Tensor:
+    def audio_embedding_weight(self, channel: int) -> torch.Tensor:
         """Rows 0..audio_vocab_size-1 of codebook ``channel``'s table."""
         weight = self.embedding_list[channel + 1].weight
         return weight[: int(self.config.audio_vocab_size)]
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
-        return self._prepare_multi_modal_inputs(input_ids)
+        return self.prepare_multi_modal_inputs(input_ids)
 
-    def _prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
+    def prepare_multi_modal_inputs(self, input_ids: torch.LongTensor) -> torch.Tensor:
         """Sum text + per-codebook embeddings for ``[T, channels]`` rows.
 
         Pad codes (``audio_pad_code``) hit the zeroed extra row of each audio
@@ -271,7 +265,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 f"got {input_ids_2d.shape[-1]}"
             )
 
-        weight = self._first_embedding_weight()
+        weight = self.first_embedding_weight()
         embeds = torch.zeros(
             input_ids_2d.shape[0],
             self.hidden_size,
@@ -303,7 +297,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             if is_decode:
                 input_embeds = self._decode_input_embedding(input_ids)
             elif self.pp_group.is_first_rank:
-                input_embeds = self._prepare_multi_modal_inputs(input_ids)
+                input_embeds = self.prepare_multi_modal_inputs(input_ids)
             else:
                 input_embeds = None
 
@@ -317,7 +311,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         if not self.pp_group.is_last_rank:
             return hidden_states
 
-        sample_hidden_states = self._select_sample_hidden_states(
+        sample_hidden_states = self.select_sample_hidden_states(
             hidden_states,
             forward_batch,
         )
@@ -334,7 +328,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         )
 
     @staticmethod
-    def _select_sample_hidden_states(
+    def select_sample_hidden_states(
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
@@ -363,7 +357,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
 
     _sample_seeded_branchless = staticmethod(sample_seeded_branchless)
 
-    def _ensure_frame_compile_config(self) -> None:
+    def ensure_frame_compile_config(self) -> None:
         if self._frame_compile_configured:
             return
         from sglang.srt.compilation.torch_compile_decoration import (
@@ -373,39 +367,39 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         set_torch_compile_config()
         self._frame_compile_configured = True
 
-    def _compile_branchless_sampler(self):
+    def compile_branchless_sampler(self):
         compile_mode = os.environ.get(
             "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
         )
-        self._ensure_frame_compile_config()
+        self.ensure_frame_compile_config()
         compiled = torch.compile(sample_seeded_branchless, mode=compile_mode)
         logger.info(f"Compiled MOSS-TTS Local frame sampler (mode={compile_mode})")
         return compiled
 
-    def _ensure_frame_sampler_compile(self) -> None:
+    def ensure_frame_sampler_compile(self) -> None:
         if self._compiled_frame_sampler is None:
             if os.environ.get("MOSS_LOCAL_FUSED_FRAME_SAMPLER", "1") != "0":
                 # Note (Jiaxin Deng): the Triton specializations JIT during the
                 # eager warmup passes init_frame_decode_graphs runs per bucket,
                 # so both vocab shapes compile before graph capture.
-                self._compiled_frame_sampler = self._fused_or_branchless_sampler
-                self._sample_seeded_branchless = self._fused_or_branchless_sampler
+                self._compiled_frame_sampler = self.fused_or_branchless_sampler
+                self._sample_seeded_branchless = self.fused_or_branchless_sampler
                 logger.info("Using fused MOSS-TTS Local frame sampler")
                 return
-            self._compiled_frame_sampler = self._compile_branchless_sampler()
+            self._compiled_frame_sampler = self.compile_branchless_sampler()
             self._sample_seeded_branchless = self._compiled_frame_sampler
 
-    def _fused_or_branchless_sampler(
+    def fused_or_branchless_sampler(
         self, logits: torch.Tensor, **kwargs
     ) -> torch.Tensor:
         if logits.shape[-1] <= MAX_FUSED_SAMPLE_VOCAB:
             return sample_seeded_fused(logits, **kwargs)
         if self._large_vocab_frame_sampler is None:
-            self._large_vocab_frame_sampler = self._compile_branchless_sampler()
+            self._large_vocab_frame_sampler = self.compile_branchless_sampler()
         return self._large_vocab_frame_sampler(logits, **kwargs)
 
     @torch.no_grad()
-    def _decode_frame_graphable(
+    def decode_frame_graphable(
         self,
         hidden_states: torch.Tensor,
         text_temperature: torch.Tensor,
@@ -451,7 +445,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         codes = []
         current = local_hidden
         for channel in range(self.n_vq):
-            head_weight = self._audio_embedding_weight(channel)
+            head_weight = self.audio_embedding_weight(channel)
             logits = F.linear(current, head_weight).float()
             code = self._sample_seeded_branchless(
                 logits,
@@ -487,12 +481,12 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         # size them for the largest batch any path (graphed or eager fallback)
         # can see and freeze them against reallocation.
         max_eager_bs = int(self._decode_input_embedding.weight.shape[0])
-        self.local_transformer._ensure_kv_cache(
+        self.local_transformer.ensure_kv_cache(
             max(max(buckets), max_eager_bs), device, self.dtype
         )
         self.local_transformer.freeze_kv_cache()
-        self._ensure_frame_sampler_compile()
-        frame_decode = self._decode_frame_graphable
+        self.ensure_frame_sampler_compile()
+        frame_decode = self.decode_frame_graphable
         self._frame_graphs: dict[
             int,
             tuple[
@@ -628,7 +622,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         codes = []
         current = local_hidden
         for channel in range(self.n_vq):
-            head_weight = self._audio_embedding_weight(channel)
+            head_weight = self.audio_embedding_weight(channel)
             logits = F.linear(current, head_weight)
             code = sample_audio(logits.float(), channel)
             codes.append(code)
@@ -674,7 +668,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 continue
 
             if name.startswith("audio_embeddings.") and name.endswith(".weight"):
-                mapped = self._map_audio_embedding_name(name)
+                mapped = self.map_audio_embedding_name(name)
                 if mapped is not None and mapped in params_dict:
                     # The checkpoint table has audio_vocab_size rows while the
                     # module reserves an extra (zeroed) pad row, so copy the
@@ -692,7 +686,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             ):
                 param = params_dict.get(name)
                 if param is not None:
-                    self._load_param(param, loaded_weight)
+                    self.load_param(param, loaded_weight)
                 else:
                     logger.warning(
                         f"MOSS-TTS Local parameter {original_name} not found"
@@ -702,7 +696,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             if name == "model.embed_tokens.weight":
                 mapped = "embedding_list.0.weight"
                 if mapped in params_dict:
-                    self._load_param(params_dict[mapped], loaded_weight)
+                    self.load_param(params_dict[mapped], loaded_weight)
                 # Fall through: the backbone's own embed_tokens also loads.
 
             mapped_stacked = False
@@ -727,13 +721,13 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 continue
             param = params_dict.get(name)
             if param is not None:
-                self._load_param(param, loaded_weight)
+                self.load_param(param, loaded_weight)
             else:
                 logger.warning(f"MOSS-TTS Local parameter {original_name} not found")
 
-        self._zero_audio_pad_rows()
+        self.zero_audio_pad_rows()
 
-    def _zero_audio_pad_rows(self) -> None:
+    def zero_audio_pad_rows(self) -> None:
         """Zero rows >= audio_vocab_size so pad codes embed to exactly zero."""
         audio_vocab_size = int(self.config.audio_vocab_size)
         with torch.no_grad():
@@ -746,7 +740,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                     weight[audio_vocab_size:].zero_()
 
     @staticmethod
-    def _map_audio_embedding_name(name: str) -> str | None:
+    def map_audio_embedding_name(name: str) -> str | None:
         try:
             idx = int(name.split(".")[1]) + 1
         except (IndexError, ValueError):
@@ -754,7 +748,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return f"embedding_list.{idx}.weight"
 
     @staticmethod
-    def _load_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
+    def load_param(param: torch.nn.Parameter, loaded_weight: torch.Tensor) -> None:
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
 

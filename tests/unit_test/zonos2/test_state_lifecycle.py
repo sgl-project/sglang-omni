@@ -250,7 +250,7 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
     launch_buf = ([request], packed, N_CODEBOOKS, next_ids, object())
 
     with mock.patch("torch.cuda.stream", lambda _stream: contextlib.nullcontext()):
-        runner._collect_resolve(launch_buf, result)
+        runner.collect_resolve(launch_buf, result)
 
     assert data.output_codes[0].tolist() == codes
     assert data.eos_frame == 5

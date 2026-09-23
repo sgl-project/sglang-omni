@@ -12,7 +12,7 @@ import torch
 from sglang_omni.models.ming_tts.reference_encode import (
     MingSpeakerEmbeddingExtractor,
     MingTTSReferenceEncoder,
-    _MingTTSReferenceEncodeHook,
+    MingTTSReferenceEncodeHook,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
@@ -39,14 +39,14 @@ class MingTTSMlxReferenceEncoder(MingTTSReferenceEncoder):
         self._service = None
         if cache_model_identity is not None:
             self._service = ReferenceEncodeService(
-                _MingTTSReferenceEncodeHook(self, model_identity=cache_model_identity + ":mlx"),
+                MingTTSReferenceEncodeHook(self, model_identity=cache_model_identity + ":mlx"),
                 max_items=cache_max_items, max_bytes=cache_max_bytes,
                 log_prefix="Ming MLX ref cache",
             )
 
-    def _encode_reference(self, ref_audio: str) -> dict[str, object]:
-        waveform, speaker_waveform = self._load_reference_waveform(ref_audio)
-        waveform = self._pad_waveform(waveform)
+    def encode_reference(self, ref_audio: str) -> dict[str, object]:
+        waveform, speaker_waveform = self.load_reference_waveform(ref_audio)
+        waveform = self.pad_waveform(waveform)
         with mx.stream(mx.new_thread_local_stream(mx.gpu)):
             latent = self._audio_vae.encode_latent(mx.array(waveform.float().numpy()))
             prompt_latent = torch.from_numpy(np.array(latent.astype(mx.float32)))

@@ -112,7 +112,7 @@ async def test_worker_builtin_voice_list_does_not_populate_uploaded_registry(
         state = _voice_routing(config, workers, client)
         assert state.ensure_owner() is workers[0]
         assert state.requires_owner({"Ryan"})
-        await state._reconcile_once()
+        await state.reconcile_once()
         assert state.to_dict()["registry_state"] == "ready"
         assert state.to_dict()["uploaded_voice_count"] == 0
         assert not state.requires_owner({"Ryan"})
@@ -1383,7 +1383,7 @@ async def test_tts_websocket_rejects_oversized_followup_before_upstream_send() -
             await asyncio.Event().wait()
 
     upstream = WaitingUpstream([])
-    outcome = await websocket_proxy_module._relay(
+    outcome = await websocket_proxy_module.relay(
         OversizedClient(),
         upstream,
         max_client_message_bytes=4,
@@ -1416,7 +1416,7 @@ async def test_tts_websocket_relay_propagates_simultaneous_secondary_failure() -
     assert upstream_task.done()
 
     with pytest.raises(AssertionError, match="simultaneous relay defect"):
-        await websocket_proxy_module._coordinate_relay(
+        await websocket_proxy_module.coordinate_relay(
             ConnectedWebSocket(),
             Upstream(),
             client_task=client_task,

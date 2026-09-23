@@ -26,7 +26,7 @@ class DiscreteWeightMapper:
     head_dest: str = "modality_head."
     tie_modality: bool = True
 
-    def _instance_prefix_map(self) -> dict[str, str]:
+    def instance_prefix_map(self) -> dict[str, str]:
         mapping = {
             "tied.embedding.modality_embeddings.0.embedding.": self.embedding_dest,
         }
@@ -36,7 +36,7 @@ class DiscreteWeightMapper:
 
     def map(self, name: str) -> str | None:
         """Map ckpt name to downstream name; ``None`` to skip the weight."""
-        for higgs_prefix, dest_prefix in self._instance_prefix_map().items():
+        for higgs_prefix, dest_prefix in self.instance_prefix_map().items():
             if name.startswith(higgs_prefix):
                 return dest_prefix + name[len(higgs_prefix) :]
 

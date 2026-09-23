@@ -117,6 +117,9 @@ class OmniPlatform(DeviceMixin):
     def enable_talker_graph(self) -> bool:
         return True
 
+    def enable_tts_predictor_graph(self) -> bool:
+        return True
+
     def enable_thinker_decode_graph(self) -> bool:
         return True
 

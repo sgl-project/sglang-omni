@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
+from types import MethodType
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -14,7 +16,20 @@ from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 
-def _attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+class Rope(NamedTuple):
+    """Rotary tables for one axis of the sequence.
+
+    freqs and scale are what x_transformers returns; cos and sin are set only
+    where the fused Q/K kernel runs.
+    """
+
+    freqs: torch.Tensor
+    scale: torch.Tensor | float
+    cos: torch.Tensor | None = None
+    sin: torch.Tensor | None = None
+
+
+def attention_bias(key_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
     """Additive SDPA bias ``[B, 1, 1, K]`` from a boolean key-padding mask ``[B, K]``."""
     # -inf is safe: every request has at least one valid text token and audio
     # frame, so no softmax row is fully masked.
@@ -163,6 +178,7 @@ class Attention(nn.Module):
         self.inner_dim = dim_head * heads
         self.dropout = dropout
         self.context_dim = context_dim
+        self.qk_fusion = None
 
         self.to_qkv = nn.Linear(dim, 3 * self.inner_dim)
         self.q_norm = nn.RMSNorm(dim_head, elementwise_affine=True)
@@ -179,31 +195,36 @@ class Attention(nn.Module):
         )
 
     @staticmethod
-    def _split_heads(t: torch.Tensor, heads: int, head_dim: int) -> torch.Tensor:
+    def split_heads(t: torch.Tensor, heads: int, head_dim: int) -> torch.Tensor:
         batch = t.shape[0]
         return t.view(batch, -1, heads, head_dim).transpose(1, 2)
 
     @staticmethod
-    def _apply_rope(
-        q: torch.Tensor, k: torch.Tensor, rope
+    def apply_rope(
+        q: torch.Tensor, k: torch.Tensor, rope: Rope
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        freqs, xpos_scale = rope
         q_scale, k_scale = (
-            (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
+            (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
         )
         return (
-            apply_rotary_pos_emb(q, freqs, q_scale),
-            apply_rotary_pos_emb(k, freqs, k_scale),
+            apply_rotary_pos_emb(q, rope.freqs, q_scale),
+            apply_rotary_pos_emb(k, rope.freqs, k_scale),
         )
 
     @staticmethod
-    def _attend(q, k, v, bias: torch.Tensor | None):
+    def attend(q, k, v, bias: torch.Tensor | None):
         """SDPA with an optional additive key bias ``[B, 1, 1, K]``, then merge heads."""
         batch = q.shape[0]
         out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=bias, dropout_p=0.0, is_causal=False
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
+
+    def norm_rope(self, q, k, q_norm, k_norm, rope: Rope | None):
+        if self.qk_fusion is not None and rope is not None:
+            return self.qk_fusion(q, k, q_norm, k_norm, rope)
+        q, k = q_norm(q), k_norm(k)
+        return self.apply_rope(q, k, rope) if rope is not None else (q, k)
 
     def forward(
         self,
@@ -216,28 +237,26 @@ class Attention(nn.Module):
         bias: torch.Tensor | None = None,
     ):
         if c is None:
-            return self._forward_self(x, mask=mask, rope=rope, bias=bias)
+            return self.forward_self(x, mask=mask, rope=rope, bias=bias)
 
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         c_query, c_key, c_value = self.to_qkv_c(c).chunk(3, dim=-1)
 
         head_dim = key.shape[-1] // self.heads
-        query = self._split_heads(query, self.heads, head_dim)
-        key = self._split_heads(key, self.heads, head_dim)
-        value = self._split_heads(value, self.heads, head_dim)
-        c_query = self._split_heads(c_query, self.heads, head_dim)
-        c_key = self._split_heads(c_key, self.heads, head_dim)
-        c_value = self._split_heads(c_value, self.heads, head_dim)
+        query = self.split_heads(query, self.heads, head_dim)
+        key = self.split_heads(key, self.heads, head_dim)
+        value = self.split_heads(value, self.heads, head_dim)
+        c_query = self.split_heads(c_query, self.heads, head_dim)
+        c_key = self.split_heads(c_key, self.heads, head_dim)
+        c_value = self.split_heads(c_value, self.heads, head_dim)
 
-        query, key = self.q_norm(query), self.k_norm(key)
-        c_query, c_key = self.c_q_norm(c_query), self.c_k_norm(c_key)
-        if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
-        if c_rope is not None:
-            c_query, c_key = self._apply_rope(c_query, c_key, c_rope)
+        query, key = self.norm_rope(query, key, self.q_norm, self.k_norm, rope)
+        c_query, c_key = self.norm_rope(
+            c_query, c_key, self.c_q_norm, self.c_k_norm, c_rope
+        )
 
-        out = self._attend(
+        out = self.attend(
             torch.cat([query, c_query], dim=2),
             torch.cat([key, c_key], dim=2),
             torch.cat([value, c_value], dim=2),
@@ -254,7 +273,7 @@ class Attention(nn.Module):
             c_out = c_out.masked_fill(~c_mask.unsqueeze(-1), 0.0)
         return x_out, c_out
 
-    def _forward_self(
+    def forward_self(
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None,
@@ -263,15 +282,13 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         head_dim = key.shape[-1] // self.heads
-        query = self._split_heads(query, self.heads, head_dim)
-        key = self._split_heads(key, self.heads, head_dim)
-        value = self._split_heads(value, self.heads, head_dim)
+        query = self.split_heads(query, self.heads, head_dim)
+        key = self.split_heads(key, self.heads, head_dim)
+        value = self.split_heads(value, self.heads, head_dim)
 
-        query, key = self.q_norm(query), self.k_norm(key)
-        if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
+        query, key = self.norm_rope(query, key, self.q_norm, self.k_norm, rope)
 
-        out = self._attend(query, key, value, bias).to(query.dtype)
+        out = self.attend(query, key, value, bias).to(query.dtype)
         out = self.to_out[1](self.to_out[0](out))
         if mask is not None:
             out = out.masked_fill(~mask.unsqueeze(-1), 0.0)
@@ -387,7 +404,7 @@ class AudioPromptEmbedding(nn.Module):
         self.linear = nn.Linear(in_dim, out_dim)
         self.conv_pos_embed = ConvPositionEmbedding(out_dim)
 
-    def _embed(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+    def embed(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         x = self.linear(x)
         return self.conv_pos_embed(x, mask=mask) + x
 
@@ -399,12 +416,12 @@ class AudioPromptEmbedding(nn.Module):
         mask: torch.Tensor | None = None,
         ref_mask: torch.Tensor | None = None,
     ):
-        x_emb = self._embed(x, mask=mask)
+        x_emb = self.embed(x, mask=mask)
         if ref is None:
             return x_emb
         if drop_audio_cond:
             ref = torch.zeros_like(ref)
-        return x_emb, self._embed(ref, mask=ref_mask)
+        return x_emb, self.embed(ref, mask=ref_mask)
 
 
 @dataclass
@@ -485,6 +502,7 @@ class AuKDit(nn.Module):
 
         self.text_cond: torch.Tensor | None = None
         self.text_uncond: torch.Tensor | None = None
+        self.qk_fusion = None
 
         self.initialize_weights()
 
@@ -505,6 +523,26 @@ class AuKDit(nn.Module):
     def clear_cache(self) -> None:
         self.text_cond, self.text_uncond = None, None
 
+    def enable_fused_qk_norm_rope(self, fusion) -> None:
+        """Route every block's Q/K norm and rope through the fused kernel.
+
+        The backbone keeps its own reference because it is what builds the
+        kernel's trig tables, in forward, for the blocks to read.
+        """
+        self.qk_fusion = fusion
+        for block in (*self.transformer_blocks, *self.single_transformer_blocks):
+            block.attn.qk_fusion = fusion
+
+    def enable_compiled_blocks(self) -> None:
+        """Fold each block's elementwise chain into its matmul stream."""
+        # note(Dayuxiaoshui): compiling the unbound class forward gives all
+        # blocks of a kind one graph, because inline_inbuilt_nn_modules feeds
+        # the parameters in as inputs, so 30 blocks cost two compiles.
+        for blocks in (self.transformer_blocks, self.single_transformer_blocks):
+            compiled = torch.compile(type(blocks[0]).forward, dynamic=True)
+            for block in blocks:
+                block.forward = MethodType(compiled, block)
+
     @property
     def dtype(self) -> torch.dtype:
         return self.proj_out.weight.dtype
@@ -513,7 +551,22 @@ class AuKDit(nn.Module):
         c = self.txt_norm(self.txt_proj(text))
         return torch.zeros_like(c) if drop_text else c
 
-    def _embed_audio(
+    def build_rope(self, seq_len: int, positions: torch.Tensor | None = None) -> Rope:
+        """Rotary tables for one axis, over a length or at explicit positions.
+
+        The fused kernel's cos and sin are built here, once per step for all of
+        the blocks, so that a compiled block reads them as plain tensors.
+        """
+        freqs, scale = (
+            self.rotary_embed.forward_from_seq_len(seq_len)
+            if positions is None
+            else self.rotary_embed(positions)
+        )
+        if self.qk_fusion is None:
+            return Rope(freqs, scale)
+        return Rope(freqs, scale, freqs.cos(), freqs.sin())
+
+    def embed_audio(
         self,
         x: torch.Tensor,
         ref: torch.Tensor | None,
@@ -582,7 +635,7 @@ class AuKDit(nn.Module):
                 c_cond = self.project_text(text, drop_text=False)
                 if cache:
                     self.text_cond = c_cond
-            x_cond, a_mask_cond, prompt_len = self._embed_audio(
+            x_cond, a_mask_cond, prompt_len = self.embed_audio(
                 x, ref, drop_audio_cond=False, mask=mask, ref_mask=ref_mask
             )
 
@@ -592,7 +645,7 @@ class AuKDit(nn.Module):
                 c_uncond = self.project_text(text, drop_text=True)
                 if cache:
                     self.text_uncond = c_uncond
-            x_uncond, a_mask_uncond, _ = self._embed_audio(
+            x_uncond, a_mask_uncond, _ = self.embed_audio(
                 x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
             )
 
@@ -610,27 +663,23 @@ class AuKDit(nn.Module):
                 joint_positions = joint_positions.repeat(2, 1)
         else:
             c = self.project_text(text, drop_text=drop_text)
-            x, audio_mask, prompt_len = self._embed_audio(
+            x, audio_mask, prompt_len = self.embed_audio(
                 x, ref, drop_audio_cond=drop_audio_cond, mask=mask, ref_mask=ref_mask
             )
 
         seq_len = x.shape[1]
         text_len = c.shape[1]
-        rope_audio = (
-            self.rotary_embed.forward_from_seq_len(seq_len)
-            if audio_positions is None
-            else self.rotary_embed(audio_positions)
-        )
-        rope_text = self.rotary_embed.forward_from_seq_len(text_len)
+        rope_audio = self.build_rope(seq_len, audio_positions)
+        rope_text = self.build_rope(text_len)
 
         joint_bias = single_bias = single_mask = None
         if audio_mask is not None:
             single_mask = torch.cat([c_mask, audio_mask], dim=1)
             if self.attn_mask_enabled:
-                joint_bias = _attention_bias(
+                joint_bias = attention_bias(
                     torch.cat([audio_mask, c_mask], dim=1), x.dtype
                 )
-                single_bias = _attention_bias(single_mask, x.dtype)
+                single_bias = attention_bias(single_mask, x.dtype)
 
         for block in self.transformer_blocks:
             c, x = block(
@@ -645,11 +694,7 @@ class AuKDit(nn.Module):
             )
 
         x = torch.cat([c, x], dim=1)
-        rope = (
-            self.rotary_embed.forward_from_seq_len(text_len + seq_len)
-            if joint_positions is None
-            else self.rotary_embed(joint_positions)
-        )
+        rope = self.build_rope(text_len + seq_len, joint_positions)
         for block in self.single_transformer_blocks:
             x = block(x, t, mask=single_mask, rope=rope, bias=single_bias)
 

@@ -220,8 +220,8 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
 
 def test_estimate_acoustic_pool_bytes_matches_allocated_tensors() -> None:
     acoustic_tail = _build_tail(_TailModel().eval(), slots=2, patch_capacity=8)
-    estimate = acoustic_tail._pool_memory_estimate(acoustic_tail._mods_width)
-    assert estimate.total_bytes == acoustic_tail._allocated_pool_bytes()
+    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail._mods_width)
+    assert estimate.total_bytes == acoustic_tail.allocated_pool_bytes()
     assert estimate.num_slots == 2
     assert estimate.patch_capacity == 8
     assert estimate.bytes_per_slot == estimate.total_bytes // 2

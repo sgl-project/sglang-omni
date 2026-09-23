@@ -53,7 +53,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             1, min(int(onnx_intra_op_threads), os.cpu_count() or 1)
         )
 
-    def _blanken_dir(self) -> str:
+    def blanken_dir(self) -> str:
         assert self._checkpoint_root is not None, "checkpoint_root not set"
         return os.path.join(self._checkpoint_root, "CosyVoice-BlankEN")
 
@@ -61,9 +61,9 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         resolved = _resolve_checkpoint(model_path)
         self._checkpoint_root = resolved
         # SGLang needs CosyVoice-BlankEN/ which has config.json (model_type: qwen2)
-        return self._blanken_dir()
+        return self.blanken_dir()
 
-    def _uses_torch_mps(self) -> bool:
+    def uses_torch_mps(self) -> bool:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         return (
@@ -97,7 +97,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
                 "sampling_backend": "pytorch",
                 "mlx_enable_sampling": True,
             }
-        if self._uses_torch_mps():
+        if self.uses_torch_mps():
             return {
                 "max_running_requests": 1,
                 "disable_cuda_graph": True,
@@ -125,7 +125,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             "trust_remote_code": True,
         }
 
-    def setup_model(
+    def before_memory_pool(
         self,
         *,
         model_worker: Any,
@@ -136,7 +136,10 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     ) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
-        del checkpoint_dir, gpu_id
+        # note(ratish): the fine-tuned weights and the ONNX sessions live for
+        # the whole process, so they are built before sglang reads free memory
+        # for the KV pool.
+        del checkpoint_dir, gpu_id, server_args
         root = self._checkpoint_root
         assert root is not None, "checkpoint_root not set"
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
@@ -178,6 +181,17 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             model_revision=root,
         )
 
+    def setup_model(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
+
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
@@ -204,7 +218,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():
-            if self._uses_torch_mps() and server_args.max_running_requests != 1:
+            if self.uses_torch_mps() and server_args.max_running_requests != 1:
                 raise ValueError(
                     "Fun-CosyVoice3 Torch MPS currently requires "
                     "max_running_requests=1"

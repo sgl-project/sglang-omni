@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
+def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
     """Interleaved-pair rotation: [x0, x1, x2, x3, ...] -> [-x1, x0, -x3, x2, ...]."""
     even = x[..., ::2]
     odd = x[..., 1::2]
@@ -108,7 +108,7 @@ class MossTTSLocalTransformer(nn.Module):
         reading freed memory."""
         self._kv_frozen = True
 
-    def _ensure_kv_cache(
+    def ensure_kv_cache(
         self, batch_size: int, device: torch.device, dtype: torch.dtype
     ) -> None:
         if (
@@ -141,7 +141,7 @@ class MossTTSLocalTransformer(nn.Module):
                 f"local position {position} out of range [0, {self.max_positions})"
             )
         batch_size = hidden_states.shape[0]
-        self._ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
+        self.ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
         cos = self.rope_cos[position].to(dtype=hidden_states.dtype)
         sin = self.rope_sin[position].to(dtype=hidden_states.dtype)
 
@@ -153,8 +153,8 @@ class MossTTSLocalTransformer(nn.Module):
             query = query.view(batch_size, self.num_heads, self.head_dim)
             key = key.view(batch_size, self.num_heads, self.head_dim)
             value = value.view(batch_size, self.num_heads, self.head_dim)
-            query = query * cos + _rotate_half_interleaved(query) * sin
-            key = key * cos + _rotate_half_interleaved(key) * sin
+            query = query * cos + rotate_half_interleaved(query) * sin
+            key = key * cos + rotate_half_interleaved(key) * sin
 
             key_cache, value_cache = self._kv_cache[layer_idx]
             key_cache[:batch_size, :, position] = key

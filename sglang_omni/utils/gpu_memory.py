@@ -16,7 +16,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-class _InvalidGpuDeviceError(RuntimeError):
+class InvalidGpuDeviceError(RuntimeError):
     pass
 
 
@@ -55,11 +55,11 @@ def resolve_visible_device_id(
     """Map a CUDA logical GPU id to the corresponding NVML device id."""
 
     if logical_gpu_id < 0:
-        raise _InvalidGpuDeviceError(f"Invalid GPU device {logical_gpu_id}")
+        raise InvalidGpuDeviceError(f"Invalid GPU device {logical_gpu_id}")
     if not visible_devices:
         return logical_gpu_id
     if logical_gpu_id >= len(visible_devices):
-        raise _InvalidGpuDeviceError(
+        raise InvalidGpuDeviceError(
             f"Invalid GPU device {logical_gpu_id}. CUDA_VISIBLE_DEVICES exposes "
             f"{len(visible_devices)} device(s): {visible_devices}"
         )
@@ -69,7 +69,7 @@ def resolve_visible_device_id(
 def is_process_scoped_memory_available() -> bool:
     """Return whether NVML process-scoped memory queries are available."""
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return False
     try:
@@ -78,7 +78,7 @@ def is_process_scoped_memory_available() -> bool:
     except Exception:
         return False
     finally:
-        _shutdown_nvml(pynvml)
+        shutdown_nvml(pynvml)
 
 
 def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
@@ -92,7 +92,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     visible_devices = parse_cuda_visible_devices()
     device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
         return None
 
@@ -105,9 +105,9 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
     try:
         if visible_devices:
             try:
-                handle = _get_device_handle(pynvml, device_id)
+                handle = get_device_handle(pynvml, device_id)
             except Exception as exc:
-                raise _InvalidGpuDeviceError(
+                raise InvalidGpuDeviceError(
                     f"Failed to get NVML handle for visible device {device_id!r} "
                     f"(logical_gpu_id={logical_gpu_id}). Check CUDA_VISIBLE_DEVICES "
                     "and stage GPU placement."
@@ -115,7 +115,7 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
         else:
             device_count = pynvml.nvmlDeviceGetCount()
             if logical_gpu_id >= device_count:
-                raise _InvalidGpuDeviceError(
+                raise InvalidGpuDeviceError(
                     f"Invalid GPU device {logical_gpu_id}. Only {device_count} "
                     "GPU(s) are visible to NVML."
                 )
@@ -126,13 +126,13 @@ def get_process_gpu_memory_bytes(logical_gpu_id: int) -> int | None:
             if proc.pid == pid:
                 return int(proc.usedGpuMemory)
         return 0
-    except _InvalidGpuDeviceError:
+    except InvalidGpuDeviceError:
         raise
     except Exception as exc:
         logger.debug("NVML query failed; process GPU memory is unavailable: %s", exc)
         return None
     finally:
-        _shutdown_nvml(pynvml)
+        shutdown_nvml(pynvml)
 
 
 def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
@@ -152,13 +152,13 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
     visible_devices = parse_cuda_visible_devices()
     try:
         device_id = resolve_visible_device_id(logical_gpu_id, visible_devices)
-    except _InvalidGpuDeviceError as exc:
+    except InvalidGpuDeviceError as exc:
         logger.debug(f"GPU device metadata is unavailable: {exc}")
         return info
 
-    pynvml = _try_import_pynvml()
+    pynvml = try_import_pynvml()
     if pynvml is None:
-        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
+        return get_torch_gpu_device_info(logical_gpu_id, device_id)
 
     try:
         pynvml.nvmlInit()
@@ -166,11 +166,11 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
         logger.debug(
             f"NVML init failed; using PyTorch GPU metadata if available: {exc}"
         )
-        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
+        return get_torch_gpu_device_info(logical_gpu_id, device_id)
 
     try:
-        handle = _get_device_handle(pynvml, device_id)
-        name = _decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
+        handle = get_device_handle(pynvml, device_id)
+        name = decode_nvml_string(pynvml.nvmlDeviceGetName(handle))
         memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         return GpuDeviceInfo(
             logical_gpu_id=logical_gpu_id,
@@ -183,12 +183,12 @@ def get_gpu_device_info(logical_gpu_id: int) -> GpuDeviceInfo:
             f"NVML metadata query failed; using PyTorch GPU metadata if available: "
             f"{exc}"
         )
-        return _get_torch_gpu_device_info(logical_gpu_id, device_id)
+        return get_torch_gpu_device_info(logical_gpu_id, device_id)
     finally:
-        _shutdown_nvml(pynvml)
+        shutdown_nvml(pynvml)
 
 
-def _get_torch_gpu_device_info(
+def get_torch_gpu_device_info(
     logical_gpu_id: int,
     device_id: int | str | None,
 ) -> GpuDeviceInfo:
@@ -303,14 +303,14 @@ def gpu_startup_lock(logical_gpu_id: int):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def _try_import_pynvml() -> Any | None:
+def try_import_pynvml() -> Any | None:
     try:
         return importlib.import_module("pynvml")
     except ModuleNotFoundError:
         return None
 
 
-def _get_device_handle(pynvml: Any, device_id: int | str) -> Any:
+def get_device_handle(pynvml: Any, device_id: int | str) -> Any:
     if isinstance(device_id, int):
         return pynvml.nvmlDeviceGetHandleByIndex(device_id)
 
@@ -321,13 +321,13 @@ def _get_device_handle(pynvml: Any, device_id: int | str) -> Any:
         return get_by_uuid(device_id.encode("utf-8"))
 
 
-def _decode_nvml_string(value: str | bytes) -> str:
+def decode_nvml_string(value: str | bytes) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
 
 
-def _shutdown_nvml(pynvml: Any) -> None:
+def shutdown_nvml(pynvml: Any) -> None:
     try:
         pynvml.nvmlShutdown()
     except Exception:

@@ -58,6 +58,15 @@ def test_dotted_override_sets_the_concurrency_cap():
     assert merged.audio_chunking.max_concurrent_chunks == 64
 
 
+def test_dotted_override_sets_the_long_audio_admission_cap():
+    manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
+    merged = manager.merge_config(
+        {"audio_chunking.max_concurrent_long_audio_requests": "2"}
+    )
+    assert merged.audio_chunking.max_concurrent_long_audio_requests == 2
+    assert merged.resolved_audio_chunking.max_concurrent_long_audio_requests == 2
+
+
 def test_dotted_override_sets_the_total_audio_limit():
     manager = ConfigManager(Qwen3ASRPipelineConfig(model_path="dummy"))
     merged = manager.merge_config({"audio_chunking.max_total_audio_s": "7200"})
