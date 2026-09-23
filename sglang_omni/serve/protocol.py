@@ -8,7 +8,14 @@ import binascii
 import math
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class UsageResponse(BaseModel):
@@ -38,6 +45,117 @@ class ChatCompletionAudio(BaseModel):
     transcript: str | None = None
 
 
+class ImageGenerationParams(BaseModel):
+    """Per-request image generation and editing controls (sglang-omni extension).
+
+    Text-to-image defaults to 1024x1024; edits follow the input image grid.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    mode: Literal["normal", "thinking"] = "normal"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+    cfg_scale: float = Field(default=1.0, ge=1.0)
+    cfg_text_scale: float | None = Field(default=None, ge=0.0)
+    cfg_image_scale: float = Field(default=0.0, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    image_h: int | None = Field(default=None, ge=32, multiple_of=32)
+    image_w: int | None = Field(default=None, ge=32, multiple_of=32)
+    dllm_steps: int | None = Field(default=None, ge=1)
+
+
+class InterleavedGenerationParams(BaseModel):
+    """Controls for text-only interleaved image generation."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, strict=True)
+
+    mode: Literal["interleaved"]
+    max_frames: int = Field(default=10, ge=1)
+    text_max_new_tokens: int = Field(default=8192, ge=1)
+    image_max_new_tokens: int = Field(default=1500, ge=1)
+    dllm_steps: int = Field(default=32, ge=1)
+    cfg_scale: float = Field(default=0.0, ge=0.0)
+    cfg_text_scale: float = Field(default=7.5, ge=0.0)
+    cfg_image_scale: float = Field(default=1.5, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = Field(default=None, ge=0)
+    max_image_tokens: int = Field(default=4096, ge=1)
+    format: Literal["png"] = "png"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+
+
+class CompletionImage(BaseModel):
+    """Decoded image referenced by ordered assistant content."""
+
+    id: str = Field(min_length=1)
+    data: str
+    format: Literal["png"] = "png"
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class TextSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["text"]
+    text: str
+
+
+class ImageRefSegment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["image_ref"]
+    image_id: str = Field(min_length=1)
+
+
+def normalize_interleaved_content(
+    content: list[dict[str, object]], images: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Require unique image references in the same order as the image table."""
+    image_ids = [CompletionImage.model_validate(image).id for image in images]
+    segments = [
+        (TextSegment if part.get("type") == "text" else ImageRefSegment)
+        .model_validate(part)
+        .model_dump()
+        for part in content
+    ]
+    references = [part["image_id"] for part in segments if part["type"] == "image_ref"]
+    if len(set(image_ids)) != len(image_ids) or references != image_ids:
+        raise ValueError("interleaved content must reference each image once in order")
+    return segments
+
+
+def validate_interleaved_inputs(
+    messages: list[dict[str, object]],
+    modalities: list[str] | None,
+    *,
+    has_media: bool,
+) -> None:
+    if modalities is not None and (
+        len(modalities) != 2 or set(modalities) != {"text", "image"}
+    ):
+        raise ValueError("interleaved generation requires text and image modalities")
+    if has_media:
+        raise ValueError("interleaved generation requires text-only input")
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("interleaved generation requires chat messages")
+        content = message.get("content", "")
+        if isinstance(content, str):
+            continue
+        if not isinstance(content, list) or any(
+            not isinstance(part, str)
+            and not (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            )
+            for part in content
+        ):
+            raise ValueError("interleaved generation requires text-only input")
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -61,7 +179,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
     # Multi-modal output control
-    modalities: list[str] | None = None  # e.g. ["text", "audio"]
+    modalities: list[str] | None = None  # e.g. ["text", "audio"] or ["image"]
 
     # Audio output configuration
     audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
@@ -73,6 +191,22 @@ class ChatCompletionRequest(BaseModel):
     # Image input (sglang-omni extension)
     # Can be a list of image file paths (local paths or URLs)
     images: list[str] | None = None
+
+    # Image generation config (sglang-omni extension)
+    image_generation: ImageGenerationParams | InterleavedGenerationParams | None = None
+
+    @field_validator("image_generation", mode="before")
+    @classmethod
+    def parse_image_generation(
+        cls, value: object
+    ) -> ImageGenerationParams | InterleavedGenerationParams | None:
+        if value is None:
+            return None
+        if isinstance(value, dict) and value.get("mode") == "interleaved":
+            return InterleavedGenerationParams.model_validate(value)
+        if isinstance(value, InterleavedGenerationParams):
+            return value
+        return ImageGenerationParams.model_validate(value)
 
     # Video input (sglang-omni extension)
     # Can be a list of video file paths (local paths or URLs)

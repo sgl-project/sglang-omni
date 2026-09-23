@@ -13,6 +13,9 @@ from sglang.srt.distributed.parallel_state_wrapper import ParallelState
 from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+    DecodeCudaGraphRunner,
+)
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import PortArgs, ServerArgs
 
@@ -440,6 +443,17 @@ class SGLModelRunner(ModelRunner):
         # Note (Jiaxin Deng): return the dropped dummy-weight blocks to the
         # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()
+
+    def _decode_cuda_graph_runner_cls(  # noqa: leading-underscore - SGLang hook
+        self,
+    ) -> type[DecodeCudaGraphRunner]:
+        if self.server_args.dllm_algorithm == "LowConfidenceCFG":
+            from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+                CFGCudaGraphRunner,
+            )
+
+            return CFGCudaGraphRunner
+        return super()._decode_cuda_graph_runner_cls()
 
     def init_cuda_graphs(self, capture_decode_cuda_graph: bool = True):
         """Re-verify shared weights and finish post-capture KV sizing.

@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) accepts text and image input and supports text output, text-to-image generation, and image editing.
 
 ## Highlights
 
@@ -20,13 +20,111 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+The default `omni` pipeline runs preprocessing, image encoding, and the
+DLLM thinker, then routes to text and image decoders. The image decoder
+uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
+LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
+The `text` variant retains the four-stage text-output pipeline.
+
+The CFG thinker uses synchronous execution and defaults to eager mode.
+CUDA Graph replay is available for fixed-width DLLM blocks, including
+multi-way CFG and tensor parallel execution.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
 ```
+
+### Thinker TP and CUDA Graphs
+
+Enable graphs alongside TP to reduce the repeated model-launch overhead of
+DLLM unmasking. Small blocks can make TP slower in eager mode: each rank does
+less compute, while Python dispatch and the per-layer collectives remain.
+Graphs capture the model forward, including graph-compatible collectives;
+they do not capture the Python sampling loop or remove communication.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
+  --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
+```
+
+Graph batch sizes count CFG branches, not user requests. Two-way T2I CFG
+uses two rows and three-way edit CFG uses three. The graph runner is scoped
+to the LLaDA-Uni CFG thinker. Blocks with padding in the current query stay
+eager; once that padding is entirely in the cached prefix, replay excludes
+it from cached attention. Dynamic KV lengths and token values are refreshed
+before replay. This uses the existing SGLang operators without adding custom
+Triton kernels. Set `disable_cuda_graph: true` for the eager comparison, and
+exclude model loading, graph capture, and initial warmup requests from timing.
+
+Group-limited expert routing uses SGLang's `TopK` component in both eager and
+graph execution. It preserves FP32 router logits, sigmoid scoring, correction
+bias, and normalized routing weights. The fused implementation can change
+expert ordering and floating-point rounding, so validate model accuracy rather
+than expecting pixel-identical images across routing implementations.
+
+LLaDA-Uni thinker workers retain the same `CUDA_VISIBLE_DEVICES` list across
+TP ranks and select distinct local devices. The stage defaults
+`SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS=false` so custom all-reduce v2 can
+identify each GPU when initializing symmetric memory. Other models retain
+their existing placement defaults. Check startup logs to confirm custom
+all-reduce initialization when comparing TP performance. The existing
+`SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2=0` environment setting selects legacy
+custom all-reduce for a separate comparison; this pipeline does not change
+the global communication default.
+
+## Image Generation and Editing
+
+Send non-streaming requests with `modalities: ["image"]`. `dllm_steps` controls
+VQ token generation; `decoder_steps` controls diffusion sampling.
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+request = {
+    "model": "inclusionAI/LLaDA2.0-Uni",
+    "messages": [{"role": "user", "content": "A sailboat on a calm lake."}],
+    "modalities": ["image"],
+    "stream": False,
+    "image_generation": {
+        "mode": "normal",
+        "decode_mode": "decoder-turbo",
+        "decoder_steps": 8,
+        "dllm_steps": 8,
+        "cfg_scale": 4.0,
+        "seed": 42,
+    },
+}
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions", json=request, timeout=600
+)
+response.raise_for_status()
+image = response.json()["choices"][0]["message"]["image"]
+Path("generated.png").write_bytes(base64.b64decode(image["data"]))
+```
+
+For editing, use an instruction such as `"Change the background to a beach."`
+and include one source `image_url` content item alongside the text in the user
+message. Set `cfg_text_scale` and `cfg_image_scale` in `image_generation` to
+control editing guidance. Omitting those values retains task-specific defaults.
+For text-to-image requests, set `mode: "thinking"` to generate a description
+before the image tokens. Use `modalities: ["text", "image"]` to return both
+the thinking text and the image; `["image"]` returns only the image.
+The text pass has a 2048-token budget and stops at `<boi>`. The image pass
+retains the generated context and applies CFG to the VQ tokens. Both passes
+must fit the thinker's configured context length. Thinking mode does not
+support editing.
+
+The server selects a patch-aligned source grid near a 512x512 pixel budget,
+then resizes proportionally and center-crops the image to that grid. Small
+images are enlarged without black padding; images already matching the grid
+are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
+Image understanding retains its separate preprocessing and pixel budgets.
 
 ## Text Input
 
@@ -135,18 +233,16 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Use `["text"]` for understanding or `["image"]` for generation/editing |
+| `image_generation` | object | `null` | Image generation options shown above |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
 ### Incoming Features
 
-- Text-to-image generation
-- Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- Image generation and editing return one image per non-streaming request.
+- Interleaved generation is not supported.

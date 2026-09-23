@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config_cls: LLaDA2UniInterleavedPipelineConfig
+name: llada2-uni-interleaved
+model_path: inclusionAI/LLaDA2.0-Uni
