@@ -78,12 +78,9 @@ cp pyproject_xpu.toml pyproject.toml
 apt-get update && apt-get install -y \
   ffmpeg libva2 vainfo intel-media-va-driver-non-free
 ffmpeg -hide_banner -hwaccels 2>&1 | grep -x vaapi
-# Install CUDA Triton metadata first, then make triton-xpu the shared module
-# implementation. The project install installs openai-whisper last.
-pip install triton==3.7.1
-pip install --force-reinstall --no-deps triton-xpu==3.7.2 \
-  --extra-index-url https://download.pytorch.org/whl/xpu
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+# torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.
+pip install --no-deps openai-whisper==20250625
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
 ```
 

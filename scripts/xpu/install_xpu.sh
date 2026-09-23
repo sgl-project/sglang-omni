@@ -36,8 +36,7 @@ PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
 SGLANG_VERIFIED_VERSION="v0.5.20"
-TRITON_VERSION="3.7.1"
-TRITON_XPU_VERSION="3.7.2"
+WHISPER_VERSION="20250625"
 
 [[ -f "${PYPROJECT_XPU}" ]] || { echo "ERROR: ${PYPROJECT_XPU} not found" >&2; exit 1; }
 
@@ -95,9 +94,8 @@ if not hasattr(setuptools.build_meta, "build_editable"):
     )
 PY
 NOISO="--no-build-isolation"
-TRITON_CMD="${PYBIN} -m pip install triton==${TRITON_VERSION}"
-TRITON_XPU_CMD="${PYBIN} -m pip install --force-reinstall --no-deps triton-xpu==${TRITON_XPU_VERSION} --extra-index-url ${XPU_INDEX}"
 INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
+WHISPER_CMD="${PYBIN} -m pip install --no-deps openai-whisper==${WHISPER_VERSION}"
 
 # Serialize the whole backup/swap/restore section. Without this the leftover-backup
 # check below is a TOCTOU guard: two runs both pass it, then the second overwrites the
@@ -140,9 +138,8 @@ if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "  ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi"
   echo "  cp pyproject.toml .pyproject.cuda.bak"
   echo "  cp pyproject_xpu.toml pyproject.toml"
-  echo "  ${TRITON_CMD}"
-  echo "  ${TRITON_XPU_CMD}"
   echo "  ${INSTALL_CMD}"
+  echo "  ${WHISPER_CMD}"
   echo "  # then restore pyproject.toml from backup"
   exit 0
 fi
@@ -173,17 +170,11 @@ cp -f "${PYPROJECT}" "${BACKUP}"
 cp -f "${PYPROJECT_XPU}" "${PYPROJECT}"
 echo "swapped in pyproject_xpu.toml"
 
-# openai-whisper declares a dependency on the CUDA triton distribution while
-# Intel PyTorch needs triton-xpu. Keep the CUDA distribution metadata installed
-# for dependency resolution, then let triton-xpu provide the shared module files.
-# The project install runs last and installs openai-whisper without replacing
-# either already-satisfied distribution.
-echo ">>> ${TRITON_CMD}"
-${TRITON_CMD}
-echo ">>> ${TRITON_XPU_CMD}"
-${TRITON_XPU_CMD}
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
+# note (Matrix Yao): --no-deps keeps openai-whisper from replacing triton-xpu.
+echo ">>> ${WHISPER_CMD}"
+${WHISPER_CMD}
 
 # Restore immediately (don't wait for EXIT) so verification below runs against a
 # clean tree and a setuptools editable .pth (not the swapped file).

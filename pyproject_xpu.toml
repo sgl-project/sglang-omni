@@ -70,8 +70,11 @@ dependencies = [
 
     # --- MiniCPM-o ---------------------------------------------------------
     "einops>=0.8.1",
+    "more-itertools",
+    "numba==0.65.1",
     "onnx>=1.18.0",
-    "openai-whisper==20250625",
+    "tiktoken",
+    "tqdm",
 
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML

@@ -9,8 +9,6 @@ FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
 ARG SGLANG_XPU_BRANCH=v0.5.20
-ARG TRITON_VERSION=3.7.1
-ARG TRITON_XPU_VERSION=3.7.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
@@ -97,20 +95,15 @@ RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} s
 # --no-deps avoids installing NVIDIA Triton over the XPU Triton stack.
 RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
 
-# openai-whisper requires the CUDA triton distribution by package metadata.
-# Install it first, then overwrite the shared Python module with triton-xpu.
-# The sglang-omni install below installs openai-whisper last.
-RUN pip install --no-cache-dir triton==${TRITON_VERSION} \
-    && pip install --no-cache-dir --force-reinstall --no-deps \
-        --extra-index-url ${TORCH_XPU_INDEX} triton-xpu==${TRITON_XPU_VERSION}
-
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
+# note (Matrix Yao): --no-deps keeps openai-whisper from replacing triton-xpu.
 COPY . /workspace/sglang-omni
 RUN cd /workspace/sglang-omni \
     && pip install --no-cache-dir -U 'setuptools>=77.0.0' \
     && cp pyproject_xpu.toml pyproject.toml \
-    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir -e . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX} \
+    && pip install --no-cache-dir --no-deps openai-whisper==20250625
 
 # --no-deps: qwen-tts pins Transformers 4.57.3, which would replace the stack above,
 # and resolving sox lifts numpy past the numba==0.65.1 ceiling.
