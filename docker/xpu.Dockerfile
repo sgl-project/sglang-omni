@@ -97,7 +97,7 @@ RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
 
 # --no-build-isolation installs no build requirement, so setuptools is pinned here:
 # below 77 it rejects the PEP 639 license metadata in pyproject_xpu.toml.
-# note (Matrix Yao): --no-deps keeps openai-whisper from replacing triton-xpu.
+# --no-deps keeps openai-whisper from replacing triton-xpu.
 COPY . /workspace/sglang-omni
 RUN cd /workspace/sglang-omni \
     && pip install --no-cache-dir -U 'setuptools>=77.0.0' \
