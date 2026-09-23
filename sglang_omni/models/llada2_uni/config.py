@@ -116,7 +116,8 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
             engine=EngineArgs(mem_fraction_static=0.75),
             gpu=0,
             gpu_memory_fraction=0.75,
-            next=[DECODE_STAGE, IMAGE_DECODE_STAGE],
+            next=[THINKER_STAGE, DECODE_STAGE, IMAGE_DECODE_STAGE],
+            route_fn=f"{_PKG}.request_builders.thinker_next",
         ),
         StageConfig(
             name=DECODE_STAGE,
