@@ -2,14 +2,13 @@
 """Adapters over upstream diffusers and SGLang ZImage backbones.
 
 This is the semantic-only LLaDA2-Uni checkpoint, not LLaDA-Image's
-QueryFormer/text-conditioned transformer. Native spatial partitioning and
-attention collectives are owned by SGLang, not reimplemented here.
+QueryFormer/text-conditioned transformer. Token sharding and attention
+collectives use the SGLang runtime.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -59,6 +58,59 @@ def semantic_checkpoint(weights):
             raise ValueError(f"Duplicate decoder checkpoint parameter: {name}")
         seen.add(name)
         yield name, value
+
+
+class SequenceParallelBlocks(nn.Module):
+    """Shard a contiguous global sequence across native transformer blocks."""
+
+    def __init__(self, layers: nn.ModuleList) -> None:
+        super().__init__()
+        self.layers = layers
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        freqs_cis: tuple[torch.Tensor, torch.Tensor],
+        adaln_input: torch.Tensor | None = None,
+        rope_cos_sin_cache: torch.Tensor | None = None,
+        rope_positions: torch.Tensor | None = None,
+        attn_mask: torch.Tensor | None = None,
+        attn_mask_meta: dict[str, torch.Tensor | int] | None = None,
+        **kwargs: int,
+    ) -> torch.Tensor:
+        from sglang.multimodal_gen.runtime.distributed.sp_shard_utils import (
+            build_shard_plan,
+            gather_seq,
+            shard_like,
+        )
+
+        shard = build_shard_plan(x.shape[1])
+        if shard.num_pad:
+            raise ValueError("SP degree must divide the padded decoder sequence length")
+        assert attn_mask is None and attn_mask_meta is None
+        freqs_cis = tuple(shard_like(freq, shard, dim=-2) for freq in freqs_cis)
+        if rope_positions is not None:
+            rope_positions = shard_like(
+                rope_positions.view(x.shape[0], x.shape[1]), shard
+            ).reshape(-1)
+        elif rope_cos_sin_cache is not None:
+            rope_cos_sin_cache = shard_like(rope_cos_sin_cache, shard, dim=0)
+        x = shard_like(x, shard).contiguous()
+        # A singleton batch can retain its pre-shard stride despite contiguous().
+        # Canonical strides keep the native fused normalization path enabled.
+        x = x.view(-1, x.shape[-1]).view(x.shape)
+        # The global image/caption sequence is already sharded together.
+        kwargs["num_replicated_suffix"] = 0
+        for layer in self.layers:
+            x = layer(
+                x,
+                freqs_cis,
+                adaln_input,
+                rope_cos_sin_cache=rope_cos_sin_cache,
+                rope_positions=rope_positions,
+                **kwargs,
+            )
+        return gather_seq(x, shard.orig_len)
 
 
 class ZImageTransformer2DModelWrapper(nn.Module):
@@ -124,9 +176,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             ZImageArchConfig,
             ZImageDitConfig,
         )
-        from sglang.multimodal_gen.configs.pipeline_configs.zimage import (
-            ZImagePipelineConfig,
-        )
         from sglang.multimodal_gen.runtime.layers.attention.selector import (
             component_attn_backend_context_manager,
         )
@@ -166,8 +215,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         arch["num_layers"] = arch.pop("n_layers")
         arch["num_attention_heads"] = arch.pop("n_heads")
         config = ZImageDitConfig(arch_config=ZImageArchConfig(**arch))
-        self.spatial_config = ZImagePipelineConfig(dit_config=config)
-        self.spatial_config.vae_config.post_init()
         with (
             component_attn_backend_context_manager(
                 attention,
@@ -191,6 +238,11 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             cpu_offload=False,
             param_names_mapping=get_param_names_mapping(model.param_names_mapping),
         )
+        if self.runtime.sp_size > 1:
+            model.noise_refiner = nn.ModuleList(
+                [SequenceParallelBlocks(model.noise_refiner)]
+            )
+            model.layers = nn.ModuleList([SequenceParallelBlocks(model.layers)])
         return model.eval().requires_grad_(False)
 
     def native_forward(self, x, t, cap_feats, patch_size, f_patch_size):
@@ -206,7 +258,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             patch_size,
             f_patch_size,
         )
-        spatial = self.spatial_config
         if self._native_cache is None or self._native_cache[0] != key:
             with self.runtime.preparation("native input preparation"):
                 self.runtime.validate()
@@ -216,58 +267,31 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                     raise ValueError(
                         "Native decoder requires a uniform latent/semantic batch"
                     )
-                full = torch.stack(x)
-                if full.shape[2] != 1:
-                    raise ValueError("Native spatial decoder supports one image frame")
-                ratio = spatial.vae_config.arch_config.spatial_compression_ratio
-                batch = SimpleNamespace(
-                    raw_latent_shape=tuple(full.shape),
-                    height=full.shape[-2] * ratio,
-                    width=full.shape[-1] * ratio,
-                    prompt_embeds=[cap_feats],
-                    prompt_seq_lens=[[cap.shape[0] for cap in cap_feats]],
+                if x[0].shape[1] != 1:
+                    raise ValueError("Native decoder supports one image frame")
+                freqs_cis = self.model._build_single_sample_freqs_cis(
+                    x[0], cap_feats[0], patch_size, f_patch_size
                 )
-                local, _ = spatial.shard_latents_for_sp(batch, full)
-                if local.numel() == 0:
-                    raise ValueError(
-                        "Native decoder spatial plan produced an empty rank"
-                    )
-                cond = spatial.prepare_pos_cond_kwargs(
-                    batch, full.device, self.model.rotary_emb, full.dtype
-                )
-                batch.prompt_embeds = None
-                target = cond["image_seq_len_target"]
-                full_tokens = (full.shape[-2] // patch_size) * (
-                    full.shape[-1] // patch_size
-                )
-                if (
-                    target is not None
-                    and target * self.runtime.sp_size != ((full_tokens + 31) // 32) * 32
-                ):
-                    raise ValueError(
-                        "Native SP layout changed the learned-padding token count"
-                    )
-            self._native_cache = (key, batch, cond)
-        _, batch, cond = self._native_cache
+            self._native_cache = (key, freqs_cis)
+        _, freqs_cis = self._native_cache
         full = torch.stack(x)
-        local, _ = spatial.shard_latents_for_sp(batch, full)
         with set_forward_context(
             current_timestep=0, attn_metadata=None, forward_batch=None
         ):
             prediction = self.model(
-                hidden_states=local,
+                hidden_states=full,
                 encoder_hidden_states=cap_feats,
                 timestep=1000.0 - t * self.cfg["t_scale"],
                 patch_size=patch_size,
                 f_patch_size=f_patch_size,
-                **cond,
+                freqs_cis=freqs_cis,
             )
-        if not isinstance(prediction, torch.Tensor) or prediction.shape != local.shape:
+        if not isinstance(prediction, torch.Tensor) or prediction.shape != full.shape:
             raise RuntimeError(
-                "Native decoder must return the local [B, C, F, H, W] shape"
+                "Native decoder must return the full [B, C, F, H, W] shape"
             )
-        # Native forward returns -velocity before spatial gathering.
-        return list((-spatial.gather_noise_pred_for_sp(batch, prediction)).unbind(0))
+        # Native forward returns negative velocity.
+        return list((-prediction).unbind(0))
 
     def forward(
         self,

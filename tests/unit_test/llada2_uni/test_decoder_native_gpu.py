@@ -84,7 +84,12 @@ def _native_worker(rank, directory, cfg, dtype, ulysses, ring, backend, port):
     reason="opt-in real native GPU test",
 )
 @pytest.mark.parametrize("ulysses,ring", [(1, 1), (2, 1), (1, 2)])
-def test_sglang_backend_matches_diffusers(tmp_path, ulysses, ring):
+@pytest.mark.parametrize(
+    "batch_size,width,caption_length", [(1, 16, 32), (2, 32, 40), (1, 20, 40)]
+)
+def test_sglang_backend_matches_diffusers(
+    tmp_path, ulysses, ring, batch_size, width, caption_length
+):
     import socket
 
     from diffusers.models.transformers.transformer_z_image import (
@@ -119,9 +124,9 @@ def test_sglang_backend_matches_diffusers(tmp_path, ulysses, ring):
         torch.nn.init.normal_(reference.x_pad_token, std=0.01)
         torch.nn.init.normal_(reference.cap_pad_token, std=0.01)
         inputs = {
-            "x": torch.randn(2, 16, 1, 16, 16),
-            "cap": torch.randn(2, 32, 16),
-            "t": torch.tensor([0.125, 0.875]),
+            "x": torch.randn(batch_size, 16, 1, 16, width),
+            "cap": torch.randn(batch_size, caption_length, 16),
+            "t": torch.tensor([0.125, 0.875])[:batch_size],
         }
     save_file(
         {
@@ -154,3 +159,16 @@ def test_sglang_backend_matches_diffusers(tmp_path, ulysses, ring):
     for rank in range(sp_size):
         actual = torch.load(tmp_path / f"native-{rank}.pt", weights_only=True)
         torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)
+    if ulysses > 1:
+        distributed = actual
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        mp.spawn(
+            _native_worker,
+            args=(str(tmp_path), cfg, dtype, 1, 1, backend, port),
+            nprocs=1,
+            join=True,
+        )
+        single = torch.load(tmp_path / "native-0.pt", weights_only=True)
+        torch.testing.assert_close(distributed, single, rtol=0, atol=0)

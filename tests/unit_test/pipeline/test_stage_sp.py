@@ -22,7 +22,7 @@ from sglang_omni.pipeline.tp_control import (
     RequestDispatchTracker,
     TPLeaderFanout,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
 from tests.unit_test.fixtures.pipeline_fakes import (
