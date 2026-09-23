@@ -317,7 +317,10 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
 
 Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
 in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. When the client does not set `initial_codec_chunk_frames`,
+terminal sentinel; instead the response carries `X-Request-Id`, and once the
+stream ends `GET /v1/audio/speech/{request_id}` returns its terminal state
+(`finish_reason` and `usage`). Only the most recent streams are kept in memory.
+When the client does not set `initial_codec_chunk_frames`,
 the model selects a continuity-safe first vocoder chunk. Set the field explicitly
 to override that default, or set it to `0` to use the model's steady chunk size
 from the start. Ming-Omni-TTS is the only model that rejects the field: its

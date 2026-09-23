@@ -475,11 +475,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
         payload: StagePayload,
         state: CosyVoice3StreamState,
     ) -> dict[str, Any]:
+        pipeline_state = FunCosyVoice3State.from_dict(payload.data)
         final_data: dict[str, Any] = {
             "modality": "audio",
             "sample_rate": self.sample_rate,
+            "finish_reason": pipeline_state.finish_reason,
         }
-        pipeline_state = FunCosyVoice3State.from_dict(payload.data)
         usage = build_usage(pipeline_state)
         if usage is None:
             return final_data

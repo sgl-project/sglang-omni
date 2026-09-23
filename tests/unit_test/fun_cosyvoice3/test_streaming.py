@@ -28,6 +28,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     tokens_needed_for_causal_chunk,
 )
 from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
+    CosyVoice3StreamState,
     FunCosyVoice3StreamingVocoderScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -208,6 +209,22 @@ def item(tokens: list[int]) -> StreamItem:
         from_stage="tts_engine",
         metadata={"modality": "audio_codes", "stream": True},
     )
+
+
+def test_streaming_terminal_result_carries_finish_reason() -> None:
+    _, scheduler = _scheduler()
+    state = FunCosyVoice3State(
+        text="hello", stream=True, completion_tokens=3, finish_reason="length"
+    )
+    payload = StagePayload(
+        request_id="req-final",
+        request=OmniRequest(inputs="hello", params={"stream": True}),
+        data=state.to_dict(),
+    )
+
+    final = scheduler.final_result_data("req-final", payload, CosyVoice3StreamState())
+
+    assert final["finish_reason"] == "length"
 
 
 def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder() -> None:
