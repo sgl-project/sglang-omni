@@ -483,14 +483,6 @@ class Coordinator:
         if info is not None:
             info.state = RequestState.RUNNING
 
-        logger.info(
-            "Coordinator submitted req=%s to %s at %s bindings=%s",
-            request_id,
-            entry_instance,
-            entry_info.control_endpoint,
-            replica_bindings,
-        )
-
     def request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
         return (
