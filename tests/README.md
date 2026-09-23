@@ -422,9 +422,9 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flags `--tts-stage {tts-stage-1-nonstream,tts-stage-2-stream,tts-stage-3-consistency,all}`
   and `--concurrency {1,2,4,8,16,all}`: scope a TTS CI sweep without
   editing source.
-- CLI flag `--tts-ci-model {higgs,moss}`: select the TTS CI model preset for
-  `test_tts_ci.py` without editing source. Defaults to the `TTS_CI_MODEL`
-  environment variable, then `higgs`.
+- CLI flag `--tts-ci-model {higgs,moss,qwen3-tts,cosyvoice3,qwen3-tts-custom-voice}`:
+  select the TTS CI model preset for `test_tts_ci.py` without editing source.
+  Defaults to the `TTS_CI_MODEL` environment variable, then `higgs`.
 - CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
@@ -928,3 +928,22 @@ that happened to contain an older version of the test.
   `config.json` for tests that need a record the SGLang resolution pipeline can
   resolve end to end. Single-test helpers should stay local until a second
   test needs them.
+
+- `unit_test/pipeline/test_session_flow.py`: Ordered units, concurrent input/output,
+  EOS receipts, configured routes, replica ownership, and input-clear accounting.
+- `unit_test/pipeline/test_session_lifecycle.py`: Input/output limits, sequence
+  rejection, partial open, slow close, worker failure,
+  and scoped shutdown.
+  These use `unit_test/fixtures/session_pipeline.py` for real spawned Stage workers,
+  ZMQ control messages and shared-memory tensor relay. Tests on one linear
+  topology share those workers for the pytest session; a test that stops a
+  worker starts its own. Only model hooks are synthetic;
+  they do not establish native-model or accelerator correctness.
+- `unit_test/scheduling/test_session.py`: Session value validation, stage usage
+  accounting, exact binary chunk wire sizes and state cleanup without worker processes. Run the session suite with
+  `python -m pytest tests/unit_test/pipeline/test_session_*.py tests/unit_test/scheduling/test_session.py -q`.
+
+- `unit_test/pipeline/test_session_shutdown.py`: Deterministic thread and trace
+  fences cover shutdown during abort/append hooks and the open/append window
+  between the final hook check and owner unlock, requiring exactly-once cleanup
+  after native work returns without blocking shutdown.

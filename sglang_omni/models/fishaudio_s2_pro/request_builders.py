@@ -12,7 +12,7 @@ import torch
 
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _S2PRO_GRAPH_TOP_K = 30

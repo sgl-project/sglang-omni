@@ -5,7 +5,7 @@ from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.nemotron_h import NemotronHForCausalLM
-from sglang.srt.server_args import get_global_server_args
+from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -33,7 +33,7 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         )
         self.fusion = AddFusion(config.duplex)
         embedding = self.llm.get_input_embeddings().weight
-        max_batch = get_global_server_args().max_running_requests
+        max_batch = get_schedule().max_running_requests
         self._fusion_buffer = torch.zeros(
             max_batch,
             config.hidden_size,

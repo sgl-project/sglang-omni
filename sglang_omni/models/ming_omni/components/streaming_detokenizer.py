@@ -32,7 +32,7 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import THINKER_STAGE
 from sglang_omni.models.ming_omni.pipeline.state_io import load_state
 from sglang_omni.models.ming_omni.pipeline.usage import build_text_usage
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 

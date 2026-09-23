@@ -56,7 +56,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.speaker_cache import (
     SpeakerCacheKey,
@@ -2063,11 +2063,12 @@ def test_qwen3_tts_predictor_graph_is_cuda_only(
     install_fake_sglang(monkeypatch)
     from sglang_omni.models.qwen3_tts import sglang_model
 
-    monkeypatch.setattr(
-        sglang_model,
-        "get_global_server_args",
-        lambda: (_ for _ in ()).throw(AssertionError("must not inspect server args")),
-    )
+    for bag in ("get_parallel", "get_exec"):
+        monkeypatch.setattr(
+            sglang_model,
+            bag,
+            lambda: (_ for _ in ()).throw(AssertionError("must not read config")),
+        )
     talker = sglang_model.Qwen3TTSTalker.__new__(sglang_model.Qwen3TTSTalker)
     talker._predictor_device = torch.empty(1).device
 

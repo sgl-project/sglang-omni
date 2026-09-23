@@ -11,7 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 

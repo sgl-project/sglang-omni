@@ -19,7 +19,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 
 from .request_builders import accept_cosyvoice3_stream_token
 from .sglang_model import VOCAB_SIZE

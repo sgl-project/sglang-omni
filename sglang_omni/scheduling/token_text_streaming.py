@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 
 DecodeFn = Callable[[list[int]], str]
 BuildMessageDataFn = Callable[[str], Any]

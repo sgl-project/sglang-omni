@@ -510,7 +510,7 @@ def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
                 lease.release()
 
         stage._comm.send_kv_pages = send_kv_pages
-        from sglang_omni.scheduling.messages import OutgoingMessage
+        from sglang_omni.scheduling.message import OutgoingMessage
 
         transfers = [_transfer("slow"), _transfer("fast")]
         for transfer in transfers:
@@ -588,7 +588,7 @@ def test_non_pd_scheduler_does_not_need_kv_registration():
 def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
     import sglang_omni.platforms as platforms
     from sglang_omni.comm.data_ref import TransportKind
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
     from tests.unit_test.pipeline.test_kv_transfer import _pool, _start_pair
 
     monkeypatch.setattr(

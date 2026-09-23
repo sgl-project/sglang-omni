@@ -12,7 +12,7 @@ from typing import Callable, Iterator
 
 import pytest
 
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.threaded_simple_scheduler import (
     _ABORTED_REQUEST_ID_LIMIT,
     CountingInbox,

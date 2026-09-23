@@ -23,7 +23,7 @@ import torch
 from sglang_omni.models.zonos2.streaming_contract import (
     zonos2_producer_first_flush_rows,
 )
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_PARAM
 
 

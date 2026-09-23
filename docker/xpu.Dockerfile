@@ -8,11 +8,7 @@
 FROM intel/deep-learning-essentials:2026.0.0-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.19
-# SGLang's XPU manifest requires sgl-kernel-xpu with no revision, so pinning SGLang
-# alone leaves the SYCL kernels floating. Pinned to the last sgl-kernel-xpu revision
-# at the v0.5.19 tag boundary; override only to move deliberately.
-ARG SGL_KERNEL_XPU_REF=3f3c73216dc978eeda689c5960c61a549fc309c2
+ARG SGLANG_XPU_BRANCH=v0.5.20
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple
@@ -82,14 +78,14 @@ RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
         torchaudio==2.11.0+xpu \
         torchcodec==0.13.0
 
-# The grep guard fails the build if upstream reshapes that requirement line, since
-# the sed would otherwise no-op and silently restore a floating kernel.
+# SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
+# download torch again and compile Rust extensions this image never loads, so it
+# builds against the torch installed above, without setuptools-rust.
 RUN git clone --branch ${SGLANG_XPU_BRANCH} --single-branch ${SGLANG_XPU_REPO} sglang \
     && cd sglang/python \
     && cp pyproject_xpu.toml pyproject.toml \
-    && sed -i "s|\(sgl-kernel @ git+https://github.com/sgl-project/sgl-kernel-xpu.git\)\"|\1@${SGL_KERNEL_XPU_REF}\"|" pyproject.toml \
-    && grep -q "sgl-kernel-xpu.git@${SGL_KERNEL_XPU_REF}\"" pyproject.toml \
-    && pip install --no-cache-dir . --extra-index-url ${TORCH_XPU_INDEX}
+    && pip install --no-cache-dir 'setuptools>=77.0.0' setuptools-scm wheel \
+    && pip install --no-cache-dir . --no-build-isolation --extra-index-url ${TORCH_XPU_INDEX}
 
 # --no-deps avoids installing NVIDIA Triton over the XPU Triton stack.
 RUN pip install --no-cache-dir --no-deps xgrammar==0.1.33
