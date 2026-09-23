@@ -163,29 +163,42 @@ class LocalLauncher:
     def shutdown(self) -> None:
         if not self.workers:
             return
-        terminate_worker_process_groups(self.workers)
+        stop_managed_workers(self.workers)
         self.workers.clear()
 
 
-def terminate_worker_process_groups(workers: list[ManagedWorkerProcess]) -> None:
+def stop_managed_workers(workers: list[ManagedWorkerProcess]) -> None:
     for worker in workers:
-        signal_process_group(worker.process_group_id, signal.SIGINT)
+        worker.process.send_signal(signal.SIGINT)
 
     deadline = time.monotonic() + 30
+    remaining: list[ManagedWorkerProcess] = []
     for worker in workers:
         timeout = max(0.0, deadline - time.monotonic())
         try:
             worker.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            signal_process_group(worker.process_group_id, signal.SIGKILL)
-            worker.process.wait(timeout=10)
+            remaining.append(worker)
+        else:
+            try:
+                os.killpg(worker.process_group_id, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                remaining.append(worker)
 
+    for worker in remaining:
+        logger.warning(
+            f"Managed Omni worker group {worker.process_group_id} "
+            "remained after shutdown; killing"
+        )
+        try:
+            os.killpg(worker.process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
-def signal_process_group(process_group_id: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(process_group_id, sig)
-    except ProcessLookupError:
-        pass
+    for worker in remaining:
+        worker.process.wait(timeout=10)
 
 
 def record_cleanup_process_group(process_group_id: int | None) -> None:

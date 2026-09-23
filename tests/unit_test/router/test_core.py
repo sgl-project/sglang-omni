@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import signal
+import subprocess
 import threading
 from pathlib import Path
 
@@ -432,7 +434,7 @@ def test_launcher_cleans_up_managed_workers_on_health_timeout(monkeypatch) -> No
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", fail_health)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_worker_process_groups",
+        "stop_managed_workers",
         record_terminated_workers,
     )
 
@@ -489,7 +491,7 @@ def test_launcher_cleans_up_managed_workers_on_startup_interrupt(monkeypatch) ->
     monkeypatch.setattr(local_launcher, "wait", interrupt_wait)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_worker_process_groups",
+        "stop_managed_workers",
         record_terminated_workers,
     )
 
@@ -549,7 +551,7 @@ def test_launcher_waits_for_managed_workers_in_parallel(monkeypatch) -> None:
     monkeypatch.setattr(local_launcher, "wait_for_worker_health", wait_health)
     monkeypatch.setattr(
         local_launcher,
-        "terminate_worker_process_groups",
+        "stop_managed_workers",
         record_terminated_workers,
     )
 
@@ -566,6 +568,94 @@ def test_launcher_waits_for_managed_workers_in_parallel(monkeypatch) -> None:
         created_processes[1][0],
     ]
     assert launcher.worker_urls == []
+
+
+def test_managed_shutdown_signals_only_worker_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, int, int]] = []
+
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def send_signal(self, sig: int) -> None:
+            events.append(("parent", self.pid, sig))
+
+        def wait(self, timeout: float) -> int:
+            assert timeout >= 0
+            events.append(("wait", self.pid, 0))
+            return 0
+
+    def check_group(process_group_id: int, sig: int) -> None:
+        events.append(("group", process_group_id, sig))
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(local_launcher.os, "killpg", check_group)
+    workers = [
+        local_launcher.ManagedWorkerProcess(
+            url=f"http://127.0.0.1:{port}",
+            port=port,
+            cuda_visible_devices=None,
+            process=FakeProcess(port),
+            process_group_id=port,
+        )
+        for port in (8011, 8012)
+    ]
+
+    local_launcher.stop_managed_workers(workers)
+
+    assert events == [
+        ("parent", 8011, signal.SIGINT),
+        ("parent", 8012, signal.SIGINT),
+        ("wait", 8011, 0),
+        ("group", 8011, 0),
+        ("wait", 8012, 0),
+        ("group", 8012, 0),
+    ]
+
+
+@pytest.mark.parametrize("parent_timed_out", [False, True])
+def test_managed_shutdown_kills_remaining_group(
+    monkeypatch: pytest.MonkeyPatch, parent_timed_out: bool
+) -> None:
+    group_signals: list[int] = []
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.wait_count = 0
+            self.signals: list[int] = []
+
+        def send_signal(self, sig: int) -> None:
+            self.signals.append(sig)
+
+        def wait(self, timeout: float) -> int:
+            self.wait_count += 1
+            if parent_timed_out and self.wait_count == 1:
+                raise subprocess.TimeoutExpired("worker", timeout)
+            return 0
+
+    def signal_group(process_group_id: int, sig: int) -> None:
+        assert process_group_id == 8011
+        group_signals.append(sig)
+
+    monkeypatch.setattr(local_launcher.os, "killpg", signal_group)
+    process = FakeProcess()
+    worker = local_launcher.ManagedWorkerProcess(
+        url="http://127.0.0.1:8011",
+        port=8011,
+        cuda_visible_devices=None,
+        process=process,
+        process_group_id=8011,
+    )
+
+    local_launcher.stop_managed_workers([worker])
+
+    assert process.signals == [signal.SIGINT]
+    assert process.wait_count == 2
+    assert group_signals == (
+        [signal.SIGKILL] if parent_timed_out else [0, signal.SIGKILL]
+    )
 
 
 @pytest.mark.parametrize(
