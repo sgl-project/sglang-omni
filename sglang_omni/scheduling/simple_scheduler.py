@@ -19,6 +19,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,10 @@ class SimpleScheduler:
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
+
+    parallel_capabilities = ParallelSchedulerCapabilities(
+        fanout_work=True, drain_aborted_work=True
+    )
 
     def __init__(
         self,
@@ -73,9 +78,28 @@ class SimpleScheduler:
         self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
         self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
+        self._draining_aborts: set[tuple[str, int]] = set()
         self._abort_lock = threading.Lock()
         self._running = False
+        self._drain_on_stop = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    def validate_sequence_parallel(self) -> None:
+        if self._max_concurrency != 1 or self._max_batch_size != 1:
+            raise ValueError("SP SimpleScheduler requires serial, unbatched execution")
+        self._drain_on_stop = True
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            self._draining_aborts.add((request_id, dispatch_id))
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            key = (request_id, dispatch_id)
+            if key not in self._draining_aborts:
+                return
+            self._draining_aborts.remove(key)
+        self.cleanup_aborted_request(request_id)
 
     def cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:
@@ -220,15 +244,23 @@ class SimpleScheduler:
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
         self._running = True
-        if self._max_concurrency > 1:
-            self.start_concurrent()
-        else:
-            self.start_serial()
+        try:
+            if self._max_concurrency > 1:
+                self.start_concurrent()
+            else:
+                self.start_serial()
+        finally:
+            if self._drain_on_stop:
+                self.run_shutdown_callback()
 
     def start_serial(self) -> None:
         loop = asyncio.new_event_loop()
         try:
-            while self._running:
+            # note (Anmuliar): SP peers must finish every committed collective.
+            while self._running or (
+                self._drain_on_stop
+                and (self._pending_messages or not self.inbox.empty())
+            ):
                 msg = self.next_message()
                 if msg is None:
                     continue
@@ -312,6 +344,10 @@ class SimpleScheduler:
 
     def stop(self) -> None:
         self._running = False
+        if not self._drain_on_stop:
+            self.run_shutdown_callback()
+
+    def run_shutdown_callback(self) -> None:
         with self._shutdown_lock:
             callback = self._shutdown_callback
             self._shutdown_callback = None

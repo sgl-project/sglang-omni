@@ -35,6 +35,55 @@ sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
 
 ## Image Generation and Editing
 
+### Native Decoder Sequence Parallelism
+
+The native SGLang adapter supports single-rank decoding and opt-in sequence
+parallelism. The thinker TP setting is independent of decoder SP. Set the
+following stage overrides in the pipeline YAML for two decoder GPUs:
+
+```yaml
+stages:
+  image_decode:
+    gpu: [1, 2]
+    sp_size: 2
+    factory:
+      backend: sglang
+      attention_backend: torch_sdpa
+      ulysses_degree: 2
+      ring_degree: 1
+```
+
+GPU IDs are relative to the parent's visible devices. Each decoder rank owns
+one process; SP followers do not participate in the thinker's TP/KV groups.
+SigVQ conditioning and VAE/image encoding run on rank zero. All ranks use the
+same noise seed and SGLang's spatial sharding, RoPE, attention, and gather.
+
+| Configuration | `gpu` | `sp_size` | Ulysses | Ring | Attention backend |
+| --- | --- | --- | --- | --- | --- |
+| Native SP1 | `1` | 1 | 1 | 1 | `torch_sdpa` |
+| Native SP2 Ulysses | `[1, 2]` | 2 | 2 | 1 | `torch_sdpa` |
+| Native SP2 ring | `[1, 2]` | 2 | 1 | 2 | `torch_sdpa` is unsupported |
+
+SGLang's ring path requires `fa` or `sage_attn`; configuration rejects SDPA
+with ring instead of changing the backend. A ring comparison must also run
+SP1 and Ulysses with the same explicitly selected backend. Ulysses degree
+must divide the checkpoint's attention head count. Spatial layouts that add
+learned padding tokens relative to SP1 are rejected to preserve semantics.
+
+The opt-in GPU test checks a small checkpoint against diffusers and verifies
+the instantiated attention backend. It does not replace full server validation:
+
+```bash
+LLADA_DECODER_GPU_TEST=1 python -m pytest -q \
+  tests/unit_test/llada2_uni/test_decoder_native_gpu.py
+```
+
+For generation/performance comparisons, use the same checkpoint, request,
+seed, resolution, CFG, dtype, decode mode and step count. Warm each server
+before timing; report request latency separately from decoder GPU time.
+
+### Requests
+
 Send non-streaming requests with `modalities: ["image"]`. `dllm_steps` controls
 VQ token generation; `decoder_steps` controls diffusion sampling.
 

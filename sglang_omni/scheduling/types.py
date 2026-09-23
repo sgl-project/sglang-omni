@@ -19,6 +19,24 @@ class SchedulerStatus(Enum):
     ABORTED = auto()
 
 
+@dataclass(frozen=True)
+class ParallelSchedulerCapabilities:
+    """Ownership of parallel work delivery and cancellation.
+
+    Fanout schedulers must execute committed work through a result/error even
+    after mark_request_aborted_for_drain(rid, dispatch_id). Stage calls
+    acknowledge_request_terminal(rid, dispatch_id) after draining that terminal.
+    SP stop must drain committed work before running shutdown callbacks.
+    """
+
+    fanout_work: bool = False
+    drain_aborted_work: bool = False
+
+    def __post_init__(self) -> None:
+        if self.fanout_work and not self.drain_aborted_work:
+            raise ValueError("Work fanout requires aborted-work drain support")
+
+
 @dataclass
 class SchedulerRequest:
     request_id: str

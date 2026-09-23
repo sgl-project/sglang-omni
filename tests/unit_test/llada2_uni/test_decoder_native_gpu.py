@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in single-rank SGLang decoder equivalence test."""
+"""Opt-in SP1/SP2 SGLang decoder equivalence test."""
 
 import os
 from pathlib import Path
@@ -9,11 +9,15 @@ import torch
 import torch.multiprocessing as mp
 
 
-def _native_worker(rank, directory, cfg, dtype):
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+def _native_worker(rank, directory, cfg, dtype, ulysses, ring, backend, port):
+    sp_size = ulysses * ring
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = (
+        visible.split(",")[rank] if visible else str(rank)
+    )
     os.environ["LOCAL_RANK"] = "0"
-    os.environ["RANK"] = "0"
-    os.environ["WORLD_SIZE"] = "1"
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(sp_size)
 
     from sglang_omni.models.llada2_uni.components.decoder_model import (
         ZImageTransformer2DModelWrapper,
@@ -27,8 +31,16 @@ def _native_worker(rank, directory, cfg, dtype):
         directory,
         gpu_id=0,
         dtype=dtype,
-        attention_backend="torch_sdpa",
+        attention_backend=backend,
         dist_timeout=120,
+        sp_rank=rank,
+        sp_size=sp_size,
+        stage_role=(
+            "single" if sp_size == 1 else ("leader" if rank == 0 else "follower")
+        ),
+        ulysses_degree=ulysses,
+        ring_degree=ring,
+        nccl_port=port,
     ) as runtime:
         with runtime.compute_context(), torch.inference_mode():
             inputs = torch.load(
@@ -42,6 +54,19 @@ def _native_worker(rank, directory, cfg, dtype):
                 backend="sglang",
                 runtime=runtime,
             )
+            from sglang.multimodal_gen.runtime.layers.attention.layer import (
+                USPAttention,
+            )
+            from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+
+            attention_layers = [
+                layer for layer in model.modules() if isinstance(layer, USPAttention)
+            ]
+            assert attention_layers
+            assert all(
+                layer.backend == AttentionBackendEnum[backend.upper()]
+                for layer in attention_layers
+            )
             output = torch.stack(
                 model(
                     list(inputs["x"].to(dtype).unbind(0)),
@@ -50,7 +75,7 @@ def _native_worker(rank, directory, cfg, dtype):
                     return_dict=False,
                 )[0]
             )
-            torch.save(output.cpu(), path / "native.pt")
+            torch.save(output.cpu(), path / f"native-{rank}.pt")
     assert not torch.distributed.is_initialized()
 
 
@@ -58,7 +83,10 @@ def _native_worker(rank, directory, cfg, dtype):
     os.environ.get("LLADA_DECODER_GPU_TEST") != "1",
     reason="opt-in real native GPU test",
 )
-def test_sglang_backend_matches_diffusers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ulysses,ring", [(1, 1), (2, 1), (1, 2)])
+def test_sglang_backend_matches_diffusers(tmp_path, ulysses, ring):
+    import socket
+
     from diffusers.models.transformers.transformer_z_image import (
         ZImageTransformer2DModel,
     )
@@ -66,7 +94,12 @@ def test_sglang_backend_matches_diffusers(tmp_path, monkeypatch):
 
     from sglang_omni.models.llada2_uni.components.decoder_model import decoder_config
 
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    backend = os.environ.get("LLADA_DECODER_ATTENTION_BACKEND", "torch_sdpa")
+    if ring > 1 and backend not in {"fa", "sage_attn"}:
+        pytest.skip(f"SGLang ring attention does not support {backend}")
+    sp_size = ulysses * ring
+    if torch.cuda.device_count() < sp_size:
+        pytest.skip(f"requires {sp_size} visible GPUs")
     dtype = torch.bfloat16
     cfg = decoder_config(
         {
@@ -109,11 +142,15 @@ def test_sglang_backend_matches_diffusers(tmp_path, monkeypatch):
         )
     del reference
 
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
     mp.spawn(
         _native_worker,
-        args=(str(tmp_path), cfg, dtype),
-        nprocs=1,
+        args=(str(tmp_path), cfg, dtype, ulysses, ring, backend, port),
+        nprocs=sp_size,
         join=True,
     )
-    actual = torch.load(tmp_path / "native.pt", weights_only=True)
-    torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)
+    for rank in range(sp_size):
+        actual = torch.load(tmp_path / f"native-{rank}.pt", weights_only=True)
+        torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)

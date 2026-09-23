@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -145,6 +146,10 @@ class LLaDA2ImageDecoder:
     # Lazy model loading
     # ------------------------------------------------------------------
 
+    @property
+    def is_leader(self) -> bool:
+        return self.runtime is None or self.runtime.is_leader
+
     def ensure_sigvq(self):
         if self._sigvq is not None:
             return
@@ -243,10 +248,10 @@ class LLaDA2ImageDecoder:
             num_steps: Override default ODE step count.
             resolution_multiplier: Override default upscale factor.
             seed: If set, draws initial noise with a deterministic generator.
-                If ``None``, each call draws from the global RNG.
+                If ``None``, SP1 uses the global RNG and SP shares a fresh seed.
 
         Returns:
-            PIL.Image.Image
+            PIL.Image.Image on the leader; None on followers.
         """
         mode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
@@ -255,27 +260,55 @@ class LLaDA2ImageDecoder:
             if resolution_multiplier is not None
             else self.resolution_multiplier
         )
-        self.validate_settings(mode, steps, rmul)
-        if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
-            raise ValueError("Image decoder grid dimensions must be positive integers")
-        if len(token_ids) != h * w:
-            raise ValueError("Image decoder requires exactly h * w VQ tokens")
-        if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
-            raise ValueError(
-                "Image decoder VQ token IDs must be integers in [0, 16383]"
-            )
+        with (
+            self.runtime.preparation("request validation")
+            if self.runtime
+            else nullcontext()
+        ):
+            self.validate_settings(mode, steps, rmul)
+            if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
+                raise ValueError(
+                    "Image decoder grid dimensions must be positive integers"
+                )
+            if len(token_ids) != h * w:
+                raise ValueError("Image decoder requires exactly h * w VQ tokens")
+            if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
+                raise ValueError(
+                    "Image decoder VQ token IDs must be integers in [0, 16383]"
+                )
+        if self.runtime:
+            seed = self.runtime.request_seed((h, w, mode, steps, rmul), seed)
 
         # Stage 1: SigVQ -> semantic features
         th = h * 16 * rmul
         tw = w * 16 * rmul
-        self.ensure_sigvq()
-        tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
-        cap_pos = [self._sigvq(up).squeeze(0).contiguous()]
+        with (
+            self.runtime.preparation("weight loading and conditioning")
+            if self.runtime
+            else nullcontext()
+        ):
+            self.ensure_diff_model(mode)
+            if self.is_leader:
+                self.ensure_sigvq()
+                tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                up = (
+                    F.interpolate(tok, scale_factor=2, mode="nearest")
+                    .long()
+                    .view(1, -1)
+                )
+                features = self._sigvq(up).squeeze(0).contiguous()
+            else:
+                features = torch.empty(
+                    (4 * h * w, self._diff_config["cap_feat_dim"]),
+                    device=self.device,
+                    dtype=self.dtype,
+                )
+        if self.runtime:
+            features = self.runtime.broadcast_features(features)
+        cap_pos = [features]
         cap_neg = [torch.zeros_like(cap_pos[0])]
 
         # Stage 2: Diffusion ODE sampling
-        self.ensure_diff_model(mode)
         cfg = self._diff_config
         noise_shape = [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)]
         if seed is not None:
@@ -308,11 +341,19 @@ class LLaDA2ImageDecoder:
         samples = sample_fn(z, model_fn)[-1].squeeze(2)
 
         # Stage 3: VAE decode
-        self.ensure_vae()
-        s = samples.to(self.dtype)
-        s = (s / self._vae.config.scaling_factor) + self._vae.config.shift_factor
-        px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
-        return to_pil_image(px[0].float())
+        image = None
+        with (
+            self.runtime.preparation("VAE decoding") if self.runtime else nullcontext()
+        ):
+            if self.is_leader:
+                self.ensure_vae()
+                s = samples.to(self.dtype)
+                s = (
+                    s / self._vae.config.scaling_factor
+                ) + self._vae.config.shift_factor
+                px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
+                image = to_pil_image(px[0].float())
+        return image
 
     @torch.inference_mode()
     def decode_to_bytes(
@@ -322,7 +363,7 @@ class LLaDA2ImageDecoder:
         w: int,
         format: str = "PNG",
         **decode_kwargs: Any,
-    ) -> bytes:
+    ) -> bytes | None:
         """Decode VQ token IDs into image bytes.
 
         Args:
@@ -334,11 +375,13 @@ class LLaDA2ImageDecoder:
                 resolution_multiplier, seed).
 
         Returns:
-            Image bytes.
+            Image bytes on the leader; None on followers.
         """
         import io
 
         image = self.decode(token_ids, h, w, **decode_kwargs)
+        if not self.is_leader:
+            return None
         buf = io.BytesIO()
         image.save(buf, format=format)
         return buf.getvalue()

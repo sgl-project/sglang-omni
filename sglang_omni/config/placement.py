@@ -20,6 +20,7 @@ class StagePlacement:
     total_gpu_memory_fraction: float | None
     kv_cache_bytes: int | None = None
     total_reserve_bytes: int | None = None
+    sp_size: int = 1
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class StagePlacementPlanner:
                 stage_name=stage.name,
                 gpu_ids=gpu_ids,
                 tp_size=stage.tp_size,
+                sp_size=stage.sp_size,
                 total_gpu_memory_fraction=stage.gpu_memory_fraction,
                 kv_cache_bytes=kv_cache_bytes,
                 total_reserve_bytes=stage.total_reserve_bytes,
@@ -182,7 +184,7 @@ def resolve_stage_gpu_ids(
 ) -> list[int | None]:
     placement = plan.stages.get(stage_cfg.name)
     if placement is None:
-        return [None] * stage_cfg.tp_size
+        return [None] * stage_cfg.parallel_size
     return list(placement.gpu_ids)
 
 
@@ -202,20 +204,25 @@ def _resolve_stage_gpu_ids(stage: StageConfig) -> tuple[int, ...]:
     # tp_size and gpu after construction, so re-check the TP shape here
     # rather than expanding a scalar into duplicate ranks.
     gpu = stage.gpu
+    if stage.sp_size > 1:
+        if stage.tp_size > 1 or not type(stage).supports_sequence_parallel:
+            raise ValueError(f"Stage {stage.name!r}: unsupported SP configuration")
+        if gpu is None:
+            raise ValueError(f"Stage {stage.name!r}: SP requires GPU placement")
     if gpu is None:
         return ()
     if isinstance(gpu, int):
-        if stage.tp_size > 1:
+        if stage.parallel_size > 1:
             raise ValueError(
-                f"Stage {stage.name!r}: TP placement requires a list of "
-                f"{stage.tp_size} unique GPU ids, got scalar gpu={gpu}"
+                f"Stage {stage.name!r}: {stage.parallel_kind.upper()} placement requires a list of "
+                f"{stage.parallel_size} unique GPU ids, got scalar gpu={gpu}"
             )
         return (gpu,)
     gpu_ids = tuple(int(gpu_id) for gpu_id in gpu)
-    if len(gpu_ids) != stage.tp_size or len(set(gpu_ids)) != len(gpu_ids):
+    if len(gpu_ids) != stage.parallel_size or len(set(gpu_ids)) != len(gpu_ids):
         raise ValueError(
-            f"Stage {stage.name!r}: TP placement requires a list of "
-            f"{stage.tp_size} unique GPU ids, got gpu={list(gpu)}"
+            f"Stage {stage.name!r}: {stage.parallel_kind.upper()} placement requires a list of "
+            f"{stage.parallel_size} unique GPU ids, got gpu={list(gpu)}"
         )
     return gpu_ids
 

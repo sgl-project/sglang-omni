@@ -49,6 +49,13 @@ class OmniPlatform(DeviceMixin):
         """Whether device kernels support native float64 tensors."""
         return True
 
+    def get_sp_stage_process_env(
+        self,
+        spec: StageLaunchConfig,
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, str]:
+        raise ValueError(f"{type(self).__name__} does not support SP stage processes")
+
     def get_stage_process_env(
         self,
         spec: StageLaunchConfig,

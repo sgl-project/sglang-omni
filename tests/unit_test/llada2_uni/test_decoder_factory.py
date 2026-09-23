@@ -5,30 +5,88 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+import torch
 from PIL import Image
 
-from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
+from sglang_omni.models.llada2_uni.config import LLaDA2ImageDecoderStageConfig, Variants
 
 
-def test_decoder_config_roundtrip():
-    original = LLaDA2UniOmniPipelineConfig(model_path="unused")
+@pytest.mark.parametrize("variant", [name for name in Variants if name != "text"])
+def test_decoder_config_roundtrip(variant):
+    config_cls = Variants[variant]
+    original = config_cls(model_path="unused")
+    assert (
+        config_cls.stage_config_types["image_decode"] is LLaDA2ImageDecoderStageConfig
+    )
+    assert isinstance(
+        original.stage_named("image_decode"), LLaDA2ImageDecoderStageConfig
+    )
     data = original.model_dump()
     decoder = next(stage for stage in data["stages"] if stage["name"] == "image_decode")
     assert decoder["process"] == "image_decode"
     decoder["factory"].update(backend="sglang", attention_backend="torch_sdpa")
 
-    rebuilt = LLaDA2UniOmniPipelineConfig.model_validate(data)
+    rebuilt = config_cls.model_validate(data)
     stage = next(stage for stage in rebuilt.stages if stage.name == "image_decode")
-    assert stage.factory.model_extra == {
-        "attention_backend": "torch_sdpa",
-        "backend": "sglang",
-    }
+    assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+    assert stage.factory.attention_backend == "torch_sdpa"
+    assert stage.factory.backend == "sglang"
 
 
-def test_sglang_decoder_factory_owns_runtime(monkeypatch):
+@pytest.mark.parametrize("backend,degrees", [("sglang", (1, 1)), ("diffusers", (2, 1))])
+def test_sp_decoder_rejects_incompatible_configuration(backend, degrees):
+    with pytest.raises(ValueError):
+        LLaDA2ImageDecoderStageConfig(
+            name="image_decode",
+            factory_path="pkg.create",
+            gpu=[0, 1],
+            sp_size=2,
+            factory={
+                "backend": backend,
+                "ulysses_degree": degrees[0],
+                "ring_degree": degrees[1],
+            },
+        )
+
+
+@pytest.mark.parametrize("variant", [name for name in Variants if name != "text"])
+def test_sp_decoder_configuration_roundtrip(variant):
+    config_cls = Variants[variant]
+    config = config_cls(model_path="unused").model_dump()
+    decoder = next(
+        stage for stage in config["stages"] if stage["name"] == "image_decode"
+    )
+    decoder.update(sp_size=2, gpu=[0, 1])
+    decoder["factory"].update(backend="sglang", ulysses_degree=2)
+    rebuilt = config_cls.model_validate(config)
+    stage = next(stage for stage in rebuilt.stages if stage.name == "image_decode")
+    assert stage.sp_size == 2 and stage.tp_size == 1
+    assert stage.factory.ulysses_degree == 2 and stage.gpu == [0, 1]
+    if variant == "interleaved":
+        assert stage.factory.interleaved_nonterminal
+        assert not stage.terminal and stage.next == "interleaved_collect"
+
+
+def test_ring_rejects_sdpa_without_changing_backend():
+    with pytest.raises(ValueError, match="ring parallelism requires"):
+        LLaDA2ImageDecoderStageConfig(
+            name="image_decode",
+            factory_path="pkg.create",
+            gpu=[0, 1],
+            sp_size=2,
+            factory={"backend": "sglang", "ring_degree": 2},
+        )
+
+
+@pytest.mark.parametrize("sp_rank,sp_size", [(0, 1), (0, 2), (1, 2)])
+@pytest.mark.parametrize("interleaved", [False, True])
+def test_sglang_decoder_factory_owns_runtime(
+    monkeypatch, sp_rank, sp_size, interleaved
+):
     from sglang_omni.models.llada2_uni import merge, stages
     from sglang_omni.models.llada2_uni.components import decoder_runtime, image_decoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils import device
 
     events: list[str] = []
     settings: dict[str, object] = {}
@@ -62,10 +120,13 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
             assert events[-1] == "enter"
             assert kwargs == {"decode_mode": "decoder-turbo", "num_steps": 8}
             assert tokens == [3, 4] and (h, w) == (1, 2)
-            return Image.new("RGB", (8, 8))
+            return Image.new("RGB", (8, 8)) if sp_rank == 0 else None
 
     monkeypatch.setattr(decoder_runtime, "initialize_decoder_runtime", initialize)
     monkeypatch.setattr(image_decoder, "LLaDA2ImageDecoder", Decoder)
+    monkeypatch.setattr(
+        device, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
     monkeypatch.setattr(
         merge,
         "extract_image_vq_tokens",
@@ -77,14 +138,51 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
         device="cpu",
         backend="sglang",
         attention_backend="torch_sdpa",
+        sp_rank=sp_rank,
+        sp_size=sp_size,
+        stage_role=(
+            "single" if sp_size == 1 else ("leader" if sp_rank == 0 else "follower")
+        ),
+        nccl_port=23456 if sp_size > 1 else None,
+        ulysses_degree=sp_size,
+        interleaved_nonterminal=interleaved,
     )
-    payload = SimpleNamespace(data={})
-    assert scheduler._fn(payload) is payload
-    assert payload.data["format"] == "png" and payload.data["image"]
+    assert scheduler.allow_multiple_inflight_per_request == interleaved
+    payload = SimpleNamespace(
+        request_id="r",
+        data=(
+            {
+                "task_kind": "interleaved",
+                "stream_state": {"interleaved": {"frame_index": 2}},
+            }
+            if interleaved
+            else {}
+        ),
+    )
+    original = payload.data.copy()
+    result = scheduler._fn(payload)
+    if sp_rank == 0:
+        assert result is payload
+        if interleaved:
+            assert payload.data["kind"] == "interleaved_frame"
+            assert payload.data["frame"]["index"] == 2
+            assert payload.data["frame"]["image"]["data"]
+        else:
+            assert payload.data["format"] == "png" and payload.data["image"]
+    else:
+        assert result is None and payload.data == original
     assert settings == {
         "gpu_id": None,
         "dtype": settings["dtype"],
         "attention_backend": "torch_sdpa",
+        "sp_rank": sp_rank,
+        "sp_size": sp_size,
+        "stage_role": (
+            "single" if sp_size == 1 else ("leader" if sp_rank == 0 else "follower")
+        ),
+        "nccl_port": 23456 if sp_size > 1 else None,
+        "ulysses_degree": sp_size,
+        "ring_degree": 1,
     }
     assert events == ["enter", "exit", "enter", "exit"]
 
