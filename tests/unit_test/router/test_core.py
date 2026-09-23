@@ -664,7 +664,6 @@ def test_managed_shutdown_kills_remaining_group(
     )
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux process groups")
 def test_managed_shutdown_waits_for_orphaned_worker_child() -> None:
     parent = subprocess.Popen(
         [

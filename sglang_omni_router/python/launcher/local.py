@@ -24,6 +24,7 @@ from sglang_omni_router.python.launcher.utils import (
 
 logger = logging.getLogger("sglang_omni_router.python.launcher")
 _CLEANUP_MANIFEST_ENV = "SGLANG_OMNI_ROUTER_CLEANUP_MANIFEST"
+GROUP_EXIT_POLL_INTERVAL_S = 0.05
 
 
 @dataclass
@@ -205,21 +206,20 @@ def stop_managed_workers(workers: list[ManagedWorkerProcess]) -> None:
                 raise TimeoutError(
                     f"Managed Omni worker group {worker.process_group_id} did not exit"
                 )
-            time.sleep(0.05)
+            time.sleep(GROUP_EXIT_POLL_INTERVAL_S)
 
 
 def process_group_has_live_members(process_group_id: int) -> bool:
-    with os.scandir("/proc") as processes:
-        for process in processes:
-            if not process.name.isdecimal():
-                continue
-            try:
-                with open(f"/proc/{process.name}/stat") as stat_file:
-                    fields = stat_file.read().rsplit(")", 1)[1].split()
-            except FileNotFoundError:
-                continue
-            if fields[2] == str(process_group_id) and fields[0] not in {"Z", "X"}:
-                return True
+    result = subprocess.run(
+        ["ps", "-A", "-o", "pgid=,stat="],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in result.stdout.splitlines():
+        group_id, status = line.split()
+        if group_id == str(process_group_id) and not status.startswith(("Z", "X")):
+            return True
     return False
 
 
