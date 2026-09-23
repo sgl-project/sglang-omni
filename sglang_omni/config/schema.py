@@ -66,10 +66,10 @@ def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
 def stage_process_name(stage: "StageConfig") -> str:
     """Process Name that owns *stage*.
 
-    Non-TP stages declare it explicitly. A TP stage owns its process outright,
+    Single-rank stages declare it explicitly. A TP/SP stage owns its process outright,
     so it falls back to the stage name when no process is declared.
     """
-    if stage.tp_size > 1:
+    if stage.parallel_size > 1:
         return stage.process or stage.name
     else:
         pass
@@ -82,7 +82,17 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 logger = logging.getLogger(__name__)
 PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
-    {"gpu_id", "total_gpu_memory_fraction", "process_total_gpu_memory_fraction"}
+    {
+        "gpu_id",
+        "total_gpu_memory_fraction",
+        "process_total_gpu_memory_fraction",
+        "sp_rank",
+        "sp_size",
+        "stage_role",
+        "tp_rank",
+        "tp_size",
+        "nccl_port",
+    }
 )
 MAX_SPEECH_INPUT_CHARS: int = 4096
 
@@ -391,6 +401,8 @@ class StageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     engine_stage: ClassVar[bool] = False
     "Whether this stage type drives an SGLang engine.\n\n    Declared per stage *type* so path compilation can refuse ``engine.*``\n    writes on stages that would silently ignore them.\n    "
+    supports_sequence_parallel: ClassVar[bool] = False
+    """Model-owned opt-in; SP uses stage fanout, not SGLang TP/KV rank wiring."""
     name: str
     factory_path: str
     "Dotted import path of the stage factory."
@@ -399,6 +411,7 @@ class StageConfig(BaseModel):
     route_fn: str | None = None
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
+    sp_size: int = Field(default=1, ge=1)
     process: str | None = None
     allow_child_processes: bool = False
     """Allow a native engine to own subprocesses inside this stage process."""
@@ -438,6 +451,14 @@ class StageConfig(BaseModel):
         description="Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, whose scheduler provides the app through http_app(), so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage must run as one instance.",
     )
 
+    @property
+    def parallel_size(self) -> int:
+        return max(self.tp_size, self.sp_size)
+
+    @property
+    def parallel_kind(self) -> str:
+        return "sp" if self.sp_size > 1 else "tp"
+
     def model_post_init(self, __context: object = None) -> None:
         if self.http_routes:
             self.http_routes = list(
@@ -446,7 +467,7 @@ class StageConfig(BaseModel):
         else:
             pass
         if self.runtime_gpu_ids is not None:
-            if not self.allow_child_processes or self.tp_size != 1:
+            if not self.allow_child_processes or self.parallel_size != 1:
                 raise ValueError(
                     "runtime_gpu_ids requires one stage process that owns children"
                 )
@@ -472,22 +493,37 @@ class StageConfig(BaseModel):
             )
         else:
             pass
-        if isinstance(self.gpu, int) and self.tp_size > 1:
+        if self.tp_size > 1 and self.sp_size > 1:
+            raise ValueError(f"Stage {self.name!r}: TP and SP are mutually exclusive")
+        else:
+            pass
+        if self.sp_size > 1 and not type(self).supports_sequence_parallel:
             raise ValueError(
-                f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
+                f"Stage {self.name!r} does not support sequence parallelism"
+            )
+        else:
+            pass
+        size = self.parallel_size
+        kind = self.parallel_kind
+        if isinstance(self.gpu, int) and size > 1:
+            raise ValueError(
+                f"Stage {self.name!r}: {kind.upper()} placement requires a list of "
+                f"{size} unique GPU ids, got scalar gpu={self.gpu}"
             )
         else:
             pass
         if isinstance(self.gpu, list):
-            if len(self.gpu) != self.tp_size:
+            if len(self.gpu) != size:
                 raise ValueError(
-                    f"Stage {self.name!r}: gpu has {len(self.gpu)} entries but tp_size={self.tp_size}"
+                    f"Stage {self.name!r}: gpu has {len(self.gpu)} entries "
+                    f"but {kind}_size={size}"
                 )
             else:
                 pass
             if len(set(self.gpu)) != len(self.gpu):
                 raise ValueError(
-                    f"Stage {self.name!r}: TP placement requires unique GPU ids, got {list(self.gpu)}"
+                    f"Stage {self.name!r}: {kind.upper()} placement requires unique GPU "
+                    f"ids, got {list(self.gpu)}"
                 )
             else:
                 pass
@@ -529,9 +565,9 @@ class StageConfig(BaseModel):
             pass
         gpu = self.gpu
         if gpu is None:
-            if self.tp_size > 1:
+            if size > 1:
                 raise ValueError(
-                    f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
+                    f"Stage {self.name!r}: gpu is required when {kind}_size={size}"
                 )
             else:
                 pass
@@ -539,9 +575,10 @@ class StageConfig(BaseModel):
         else:
             pass
         gpu_ids = [gpu] if isinstance(gpu, int) else gpu
-        if len(gpu_ids) != self.tp_size:
+        if len(gpu_ids) != size:
             raise ValueError(
-                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries but tp_size={self.tp_size}"
+                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries "
+                f"but {kind}_size={size}"
             )
         else:
             pass
@@ -1228,7 +1265,7 @@ class PipelineConfig(BaseModel):
             else:
                 pass
         missing_process = [
-            s.name for s in self.stages if s.tp_size == 1 and (not s.process)
+            s.name for s in self.stages if s.parallel_size == 1 and not s.process
         ]
         if missing_process:
             raise ValueError(
@@ -1254,17 +1291,20 @@ class PipelineConfig(BaseModel):
                 )
             else:
                 pass
-            tp_stages = [stage.name for stage in stages if stage.tp_size > 1]
+            tp_stages = [stage.name for stage in stages if stage.parallel_size > 1]
+            kind = "TP/SP" if any(stage.sp_size > 1 for stage in stages) else "TP"
             if len(tp_stages) > 1:
                 raise ValueError(
-                    f"Process name {process_name!r} is claimed by multiple TP stages: {tp_stages}"
+                    f"Process name {process_name!r} is claimed by multiple {kind} "
+                    f"stages: {tp_stages}"
                 )
             else:
                 pass
             if tp_stages and len(stages) > 1:
                 others = [s.name for s in stages if s.name not in tp_stages]
                 raise ValueError(
-                    f"Process {process_name!r} holds TP stage {tp_stages[0]!r} and cannot be shared with {others}"
+                    f"Process {process_name!r} holds {kind} stage {tp_stages[0]!r} "
+                    f"and cannot be shared with {others}"
                 )
             else:
                 pass
