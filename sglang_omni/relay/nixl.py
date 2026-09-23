@@ -22,13 +22,27 @@ try:
     from nixl._api import nixl_agent_config
 
     NIXL_AVAILABLE = True
-except ImportError as e:
-    logger.error(f"Failed to import nixl: {e}. NixlRelay will not work.")
+except ImportError as exc:
+    from ._optional_dependency import UnavailableDependency
+
     NIXL_AVAILABLE = False
+    _nixl_unavailable = UnavailableDependency(
+        package="nixl",
+        backend="NIXL",
+        error=exc,
+        logger=logger,
+        install_hint=(
+            "Check the chained import error and the backend installation "
+            "requirements for your platform."
+        ),
+    )
 
 
 class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
+        if not NIXL_AVAILABLE:
+            _nixl_unavailable.raise_unavailable()
+
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
         self._nixl = NixlAgent(str(uuid.uuid4()), config)
