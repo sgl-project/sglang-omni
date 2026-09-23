@@ -240,7 +240,6 @@ def preprocessor():
 def test_edit_preprocess_merge_extract_and_decode(
     preprocessor, decode_probe, monkeypatch, tmp_path, source_size, grid
 ):
-    generation = {"cfg_scale": 4.0, "seed": 42}
     source = tmp_path / "source.png"
     Image.new("RGB", source_size, "white").save(source)
     payload = StagePayload(
@@ -250,7 +249,7 @@ def test_edit_preprocess_merge_extract_and_decode(
                 "messages": [{"role": "user", "content": "make it green"}],
                 "images": [str(source)],
             },
-            metadata={"image_generation": generation},
+            metadata={"output_modalities": ["image"]},
             params={},
         ),
         data={},
@@ -279,7 +278,7 @@ def test_edit_preprocess_merge_extract_and_decode(
     tokens, h, w, params = extract_image_vq_tokens(state)
     assert tokens == source_tokens
     assert (h, w) == grid
-    assert params == generation
+    assert params == {}
 
     decoder, _ = decode_probe
     monkeypatch.setattr(decoder_module, "LLaDA2ImageDecoder", lambda **kwargs: decoder)

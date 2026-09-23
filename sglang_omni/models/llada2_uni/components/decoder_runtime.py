@@ -149,12 +149,12 @@ def initialize_decoder_runtime(
         port = sock.getsockname()[1]
     address = f"127.0.0.1:{port}"
 
-    from sglang.multimodal_gen import utils as precision
     from sglang.multimodal_gen.configs.pipeline_configs.zimage import (
         ZImagePipelineConfig,
     )
     from sglang.multimodal_gen.runtime.distributed import parallel_state as ps
     from sglang.multimodal_gen.runtime.server_args import server_args as args_module
+    from sglang.multimodal_gen.runtime.utils import precision
     from sglang.srt import runtime_context
     from sglang.srt.server_args import ServerArgs as SrtServerArgs
 
