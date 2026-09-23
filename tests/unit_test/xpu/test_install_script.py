@@ -10,10 +10,8 @@ that backup, losing the original for good.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -44,39 +42,6 @@ def _run(repo: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _run_prerequisite_check(
-    repo: Path, *, ffmpeg_hwaccels: str | None
-) -> subprocess.CompletedProcess[str]:
-    """Run the real prerequisite path with a controlled command search path."""
-    tools = repo.parent / (
-        "tools-with-ffmpeg" if ffmpeg_hwaccels is not None else "tools-no-ffmpeg"
-    )
-    tools.mkdir()
-    for command in ("dirname", "flock", "grep"):
-        target = shutil.which(command)
-        assert target is not None
-        (tools / command).symlink_to(target)
-    if ffmpeg_hwaccels is not None:
-        ffmpeg = tools / "ffmpeg"
-        ffmpeg.write_text(
-            "#!/bin/sh\n"
-            "printf '%s\\n' 'Hardware acceleration methods:' "
-            f"'{ffmpeg_hwaccels}'\n"
-        )
-        ffmpeg.chmod(0o755)
-    env = os.environ.copy()
-    env.update({"PATH": str(tools), "PYTHON": sys.executable})
-    return subprocess.run(
-        ["/bin/bash", "scripts/xpu/install_xpu.sh"],
-        cwd=repo,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-
 def test_rerun_after_an_interrupted_swap_preserves_the_original(repo: Path) -> None:
     """Reproduce the kill: swapped manifest in place, original only in the backup."""
     backup = repo / ".pyproject.cuda.bak"
@@ -103,24 +68,6 @@ def test_a_clean_tree_still_runs(repo: Path) -> None:
 
     assert "leftover backup" not in result.stderr
     assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
-
-
-def test_install_rejects_missing_ffmpeg(repo: Path) -> None:
-    result = _run_prerequisite_check(repo, ffmpeg_hwaccels=None)
-
-    assert result.returncode != 0
-    assert "FFmpeg is required" in result.stderr
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
-    assert not (repo / ".pyproject.cuda.bak").exists()
-
-
-def test_install_rejects_ffmpeg_without_vaapi(repo: Path) -> None:
-    result = _run_prerequisite_check(repo, ffmpeg_hwaccels="vulkan")
-
-    assert result.returncode != 0
-    assert "FFmpeg build with VAAPI support" in result.stderr
-    assert (repo / "pyproject.toml").read_text().startswith(_ORIGINAL_MARKER)
-    assert not (repo / ".pyproject.cuda.bak").exists()
 
 
 def test_a_second_run_refuses_while_the_lock_is_held(repo: Path) -> None:

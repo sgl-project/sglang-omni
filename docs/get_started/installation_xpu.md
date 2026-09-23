@@ -28,10 +28,6 @@ Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API serve
 
 - Python ≥ 3.10, and an Intel GPU driver (`/dev/dri/renderD*` present).
 - `setuptools` ≥ 77.0.0 in the target environment (see the note above).
-- FFmpeg built with VAAPI support and the Intel VA-API media driver
-  (`intel-media-va-driver-non-free` on Ubuntu, or the distro-equivalent package).
-  TorchCodec-XPU assumes VAAPI is available; verify the build with
-  `ffmpeg -hide_banner -hwaccels 2>&1 | grep -x vaapi`.
 - The **PyTorch XPU stack** and an **XPU SGLang build** — reuse an existing working
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
   for the oneAPI caveat.
@@ -73,11 +69,6 @@ Or do it manually (the same steps the script automates):
 ```bash
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
-# Ubuntu example; the selected FFmpeg build must include VAAPI. Some Ubuntu
-# releases provide the media driver as intel-media-va-driver instead.
-apt-get update && apt-get install -y \
-  ffmpeg libva2 vainfo intel-media-va-driver-non-free
-ffmpeg -hide_banner -hwaccels 2>&1 | grep -x vaapi
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 # torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.
 pip install --no-deps openai-whisper==20250625
@@ -106,13 +97,6 @@ selects `+xpu`.
 ## Verify
 
 ```bash
-# FFmpeg is compiled with VAAPI, and the Intel media driver can initialize
-# against the container's mapped /dev/dri devices.
-ffmpeg -hide_banner -hwaccels 2>&1 | grep -x vaapi
-render_node="$(find /dev/dri -maxdepth 1 -type c -name 'renderD*' -print -quit)"
-test -n "${render_node}" || { echo "No render node found under /dev/dri" >&2; exit 1; }
-vainfo --display drm --device "${render_node}"
-
 # import works from anywhere now (package installed, not just cwd-on-path)
 python -c "import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"
 which sgl-omni

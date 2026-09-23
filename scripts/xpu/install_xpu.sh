@@ -134,23 +134,12 @@ fi
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo
   echo "[--check] would run:"
-  echo "  # require FFmpeg with VAAPI support"
-  echo "  ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi"
   echo "  cp pyproject.toml .pyproject.cuda.bak"
   echo "  cp pyproject_xpu.toml pyproject.toml"
   echo "  ${INSTALL_CMD}"
   echo "  ${WHISPER_CMD}"
   echo "  # then restore pyproject.toml from backup"
   exit 0
-fi
-
-if ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "ERROR: FFmpeg is required by torchcodec-xpu but was not found" >&2
-  exit 1
-fi
-if ! ffmpeg -hide_banner -hwaccels 2>&1 | grep -qx vaapi; then
-  echo "ERROR: torchcodec-xpu requires an FFmpeg build with VAAPI support" >&2
-  exit 1
 fi
 
 # Restore the CUDA pyproject.toml no matter how we exit. Use cp (not mv) so a
