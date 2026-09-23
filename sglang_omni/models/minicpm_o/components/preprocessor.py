@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -140,6 +141,7 @@ class MiniCPMOPreprocessor:
         # note (MayDomine): text-only requests do not need Whisper feature extraction.
         self.model_dir = local_dir
         self._processor = None  # noqa: leading-underscore
+        self._processor_lock = threading.Lock()  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
         self.device = device
 
@@ -160,20 +162,24 @@ class MiniCPMOPreprocessor:
 
     @property
     def processor(self) -> ProcessorMixin:
-        if self._processor is None:  # noqa: leading-underscore
-            self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
-                self.model_dir, trust_remote_code=True
-            )
-            if self.device.type == "cuda":
-                processor = self._processor  # noqa: leading-underscore
-                processor.process_image = CUDAImageProcessor(
-                    processor.image_processor, self.device
-                )
-            else:
-                pass
+        if self._processor is not None:  # noqa: leading-underscore
+            return self._processor  # noqa: leading-underscore
         else:
-            pass
-        return self._processor  # noqa: leading-underscore
+            with self._processor_lock:  # noqa: leading-underscore
+                if self._processor is not None:  # noqa: leading-underscore
+                    return self._processor  # noqa: leading-underscore
+                else:
+                    processor = AutoProcessor.from_pretrained(
+                        self.model_dir, trust_remote_code=True
+                    )
+                    if self.device.type == "cuda":
+                        processor.process_image = CUDAImageProcessor(
+                            processor.image_processor, self.device
+                        )
+                    else:
+                        pass
+                    self._processor = processor  # noqa: leading-underscore
+                    return processor
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs

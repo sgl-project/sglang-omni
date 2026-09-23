@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -307,6 +308,9 @@ def test_real_processor_visual_packing(
     )
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor._processor_lock = (  # noqa: leading-underscore  # production contract
+        threading.Lock()
+    )
     preprocessor.model_dir = "checkpoint-fixture"
     preprocessor.device = torch.device("cuda", torch.cuda.device_count() - 1)
     monkeypatch.setattr(
@@ -377,6 +381,9 @@ def test_cpu_processor_preserves_reference(
 ) -> None:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor._processor_lock = (  # noqa: leading-underscore  # production contract
+        threading.Lock()
+    )
     preprocessor.model_dir = "checkpoint-fixture"
     preprocessor.device = torch.device("cpu")
     monkeypatch.setattr(
