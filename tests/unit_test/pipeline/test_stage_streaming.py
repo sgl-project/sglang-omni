@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import queue
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import torch
@@ -16,12 +16,28 @@ from sglang_omni.comm.data_ref import DataKind, DataRef, TransportKind
 from sglang_omni.comm.engine import CommEngine
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.pipeline.local_dispatch import LocalStageDispatcher
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
-from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
+from sglang_omni.pipeline.tp_control import TPWorkMessage
+from sglang_omni.proto import (
+    DataReadyMessage,
+    OmniRequest,
+    ShutdownMessage,
+    StagePayload,
+    SubmitMessage,
+)
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from tests.unit_test.fixtures.pipeline_fakes import (
+    FakeRelay,
+    FakeScheduler,
+    RecordingStageControlPlane,
+    make_stage_payload,
+)
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
+from tests.unit_test.pipeline.helpers import make_stage
 
 
 class _FakeControlPlane:
@@ -1139,3 +1155,230 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
         assert scheduler.inbox.empty()
 
     asyncio.run(_run())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("submitted", [False, True])
+async def test_multi_inflight_admission_during_routing(submitted: bool) -> None:
+    dispatcher = LocalStageDispatcher()
+    collector = make_stage(name="collector")
+    entered, release = asyncio.Event(), asyncio.Event()
+    receive = collector.receive_local_payload
+
+    async def blocked_receive(
+        request_id: str,
+        from_stage: str,
+        payload: StagePayload,
+        replica_bindings: dict[str, int] | None = None,
+    ) -> None:
+        entered.set()
+        await release.wait()
+        await receive(request_id, from_stage, payload, replica_bindings)
+
+    collector.receive_local_payload = blocked_receive
+    dispatcher.register(collector)
+    scheduler = SimpleScheduler(
+        lambda payload: payload, allow_multiple_inflight_per_request=True
+    )
+    stage = make_stage(
+        scheduler=scheduler,
+        get_next=lambda request_id, output: "collector",
+        endpoints={"collector": "inproc://collector"},
+        same_process_targets={"collector"},
+        local_dispatcher=dispatcher,
+    )
+    stage.input_handler.cancel = Mock(wraps=stage.input_handler.cancel)
+    first, second = [
+        make_stage_payload(request_id="req", data={"sequence": sequence})
+        for sequence in (1, 2)
+    ]
+    if submitted:
+        await stage.on_submit(SubmitMessage(request_id="req", data=first))
+    else:
+        await stage.receive_local_payload("req", "producer", first)
+    route = asyncio.create_task(
+        stage.route_result("req", scheduler.inbox.get_nowait().data)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        await stage.receive_local_payload("req", "producer", second)
+    finally:
+        release.set()
+        await asyncio.wait_for(route, timeout=1)
+    stage.input_handler.cancel.assert_not_called()
+    await stage.route_result("req", scheduler.inbox.get_nowait().data)
+    assert [collector.scheduler.inbox.get_nowait().data.data for _ in range(2)] == [
+        {"sequence": 1},
+        {"sequence": 2},
+    ]
+    assert collector.scheduler.inbox.empty()
+    stage.input_handler.cancel.assert_called_once_with("req")
+    assert "req" not in stage._active_requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "failure"),
+    [
+        ("single", "error"),
+        ("single", "terminal"),
+        ("single", "abort"),
+        ("follower", "abort"),
+    ],
+)
+async def test_multi_inflight_failure_discards_remaining_work(
+    role: str, failure: str
+) -> None:
+    cleanups: list[str] = []
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        allow_multiple_inflight_per_request=True,
+        abort_callback=cleanups.append,
+    )
+    relay = FakeRelay()
+    control = RecordingStageControlPlane()
+    stage = make_stage(
+        role=role,
+        scheduler=scheduler,
+        relay=relay,
+        control_plane=control,
+    )
+    stage.input_handler.cancel = Mock(wraps=stage.input_handler.cancel)
+    payload = make_stage_payload(request_id="req", data={"sequence": 1})
+    for _ in range(2):
+        await stage.receive_local_payload("req", "producer", payload)
+        scheduler.inbox.get_nowait()
+    if failure == "abort":
+        stage.on_abort("req")
+    else:
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type="error" if failure == "error" else "result",
+                data="compute failed" if failure == "error" else payload,
+            )
+        )
+        await stage.drain_outbox()
+    stage.on_abort("req")
+    await stage.send_failure("req", "duplicate failure")
+    await stage.receive_local_payload("req", "producer", payload)
+    for kind in ("admitted", "result", "error"):
+        scheduler.outbox.put(OutgoingMessage(request_id="req", type=kind, data=payload))
+    await stage.drain_outbox()
+    assert scheduler.inbox.empty()
+    assert cleanups == relay.cleaned == ["req"]
+    stage.input_handler.cancel.assert_called_once_with("req")
+    assert "req" not in stage._active_requests
+    assert "req" not in stage._inflight_work_pending
+    if failure == "abort":
+        assert control.completions == []
+    else:
+        assert len(control.completions) == 1
+        assert not control.completions[0].success
+        assert ("terminal stage" if failure == "terminal" else "compute failed") in (
+            control.completions[0].error
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scheduler_admitted", [False, True])
+async def test_follower_retires_work_after_last_result(
+    scheduler_admitted: bool,
+) -> None:
+    scheduler = SimpleScheduler(
+        lambda payload: payload, allow_multiple_inflight_per_request=True
+    )
+    stage = make_stage(role="follower", scheduler=scheduler)
+    stage.input_handler.cancel = Mock(wraps=stage.input_handler.cancel)
+    payload = make_stage_payload(request_id="req")
+    if scheduler_admitted:
+        scheduler.outbox.put(OutgoingMessage(request_id="req", type="admitted"))
+    else:
+        for _ in range(2):
+            await stage.receive_local_payload("req", "producer", payload)
+        scheduler.outbox.put(
+            OutgoingMessage(request_id="req", type="result", data=payload)
+        )
+    await stage.drain_outbox()
+    stage.input_handler.cancel.assert_not_called()
+    scheduler.outbox.put(OutgoingMessage(request_id="req", type="result", data=payload))
+    await stage.drain_outbox()
+    stage.input_handler.cancel.assert_called_once_with("req")
+    assert "req" not in stage._active_requests
+
+
+@pytest.mark.asyncio
+async def test_tp_follower_admits_multiple_work_messages() -> None:
+    control = RecordingStageControlPlane()
+    scheduler = FakeScheduler()
+    scheduler.allow_multiple_inflight_per_request = True
+    stage = make_stage(role="follower", scheduler=scheduler, control_plane=control)
+    task = asyncio.create_task(stage.run())
+    try:
+        for sequence in (1, 2):
+            control.inbox.put_nowait(
+                TPWorkMessage(
+                    request_id="req",
+                    data=make_stage_payload(
+                        request_id="req", data={"sequence": sequence}
+                    ),
+                )
+            )
+        received = [
+            await asyncio.wait_for(
+                asyncio.to_thread(scheduler.inbox.get, True, 1), timeout=2
+            )
+            for _ in range(2)
+        ]
+        assert [message.data.data for message in received] == [
+            {"sequence": 1},
+            {"sequence": 2},
+        ]
+        assert stage._inflight_work_pending == {"req": 2}
+        assert stage._active_requests == {"req"}
+    finally:
+        control.inbox.put_nowait(ShutdownMessage())
+        await asyncio.wait_for(task, timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replicated", [False, True])
+@pytest.mark.parametrize("pending", [1, 2])
+async def test_multi_inflight_self_route_preserves_reentry(
+    replicated: bool, pending: int
+) -> None:
+    dispatcher = LocalStageDispatcher()
+    scheduler = SimpleScheduler(
+        lambda payload: payload, allow_multiple_inflight_per_request=True
+    )
+    name = "thinker@r1" if replicated else "thinker"
+    bindings = {"thinker": 1} if replicated else None
+    stage = make_stage(
+        name=name,
+        scheduler=scheduler,
+        get_next=lambda request_id, output: "thinker",
+        endpoints={name: "inproc://thinker"},
+        same_process_targets={name},
+        local_dispatcher=dispatcher,
+        replica_topology=(
+            {"thinker": ["thinker@r0", "thinker@r1"]} if replicated else None
+        ),
+    )
+    dispatcher.register(stage)
+    for sequence in range(pending):
+        await stage.receive_local_payload(
+            "req",
+            "producer",
+            make_stage_payload(request_id="req", data={"sequence": sequence}),
+            bindings,
+        )
+    for _ in range(pending):
+        await stage.route_result("req", scheduler.inbox.get_nowait().data)
+    assert [scheduler.inbox.get_nowait().data.data for _ in range(pending)] == [
+        {"sequence": sequence} for sequence in range(pending)
+    ]
+    assert scheduler.inbox.empty()
+    assert stage._inflight_work_pending["req"] == pending
+    assert "req" in stage._active_requests
+    if replicated:
+        assert stage._replica_bindings["req"] == bindings

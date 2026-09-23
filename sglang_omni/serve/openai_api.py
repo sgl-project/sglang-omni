@@ -2,7 +2,7 @@
 """OpenAI-compatible API server for sglang-omni.
 
 Provides the following endpoints:
-- POST /v1/chat/completions  — Text (+ audio) chat completions
+- POST /v1/chat/completions  — Text, audio, and image chat completions
 - POST /v1/audio/speech      — Text-to-speech synthesis
 - POST /v1/audio/translations — Translate audio speech to English
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
@@ -92,6 +92,7 @@ from sglang_omni.serve.protocol import (
     GenerateMetaInfo,
     GenerateResponse,
     InitWeightsUpdateGroupRequest,
+    InterleavedGenerationParams,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
@@ -103,6 +104,8 @@ from sglang_omni.serve.protocol import (
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+    normalize_interleaved_content,
+    validate_interleaved_inputs,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -676,11 +679,67 @@ def common_model_info_value(
     return None
 
 
+def validate_image_generation_request(req: ChatCompletionRequest) -> None:
+    """Reject unsupported image requests before dispatch or SSE headers."""
+    if req.stream and (
+        req.image_generation is not None or "image" in (req.modalities or [])
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Image generation does not support streaming; set stream=false",
+        )
+    if req.image_generation is None:
+        return
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        try:
+            validate_interleaved_inputs(
+                [message.model_dump() for message in req.messages],
+                req.modalities,
+                has_media=bool(req.images or req.audios or req.videos),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return
+
+    has_image = bool(req.images)
+    instruction = ""
+    for message in req.messages:
+        content = message.content
+        text_parts: list[str] = []
+        if isinstance(content, str):
+            text_parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, str):
+                    text_parts.append(item)
+                elif isinstance(item, dict):
+                    kind = item.get("type", "text")
+                    if kind == "text" and isinstance(item.get("text"), str):
+                        text_parts.append(item["text"])
+                    elif kind == "image_url":
+                        url = item.get("image_url")
+                        if isinstance(url, dict):
+                            url = url.get("url")
+                        has_image = has_image or bool(url)
+                    elif kind == "image":
+                        has_image = has_image or bool(item.get("image"))
+        if message.role == "user":
+            instruction = "".join(text_parts)
+
+    if has_image and not instruction.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Image editing requires a non-empty instruction",
+        )
+
+
 def register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatCompletionRequest) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
+
+        validate_image_generation_request(req)
 
         request_id = req.request_id or str(uuid.uuid4())
         response_id = f"chatcmpl-{request_id}"
@@ -748,13 +807,19 @@ async def chat_non_stream(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    requested_modalities = req.modalities or ["text"]
+    requested_modalities = req.modalities if req.modalities is not None else ["text"]
 
     # Build message content
     message: dict[str, Any] = {"role": "assistant"}
 
     if "text" in requested_modalities and result.text:
         message["content"] = result.text
+
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        message["content"] = normalize_interleaved_content(
+            result.content, result.images
+        )
+        message["images"] = result.images
 
     if "audio" in requested_modalities and result.audio is not None:
         message["audio"] = {
@@ -763,7 +828,10 @@ async def chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "content" not in message and "audio" not in message:
+    if "image" in requested_modalities and result.image is not None:
+        message["image"] = {"data": result.image, "format": "png"}
+
+    if not {"content", "audio", "image"}.intersection(message):
         message["content"] = result.text
 
     # Build usage
@@ -953,7 +1021,9 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
+    output_modalities = req.modalities if req.modalities is not None else ["text"]
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        output_modalities = ["text", "image"]
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -995,6 +1065,12 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["video_max_pixels"] = req.video_max_pixels
     if req.video_total_pixels is not None:
         metadata["video_total_pixels"] = req.video_total_pixels
+    if req.image_generation is not None:
+        # Omitted CFG values must remain omitted: edit and T2I defaults differ.
+        metadata["image_generation"] = req.image_generation.model_dump(
+            exclude_none=True,
+            exclude_unset=True,
+        )
     _record_explicit_generation_params(
         metadata,
         explicit_generation_params(req),

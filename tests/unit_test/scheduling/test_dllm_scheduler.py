@@ -1,11 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import queue
+import threading
 from array import array
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.managers.schedule_batch import ReqKvInfo
+import torch
+from sglang.srt.dllm.config import DllmConfig
+from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
+from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
@@ -43,6 +53,14 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
         block_size=block_size,
     )
     scheduler._rid_to_req_data = {}
+    scheduler._abort_lock = threading.Lock()
+    scheduler._aborted_request_ids = set()
+    scheduler.inbox = queue.Queue()
+    scheduler._waiting_queue = []
+    scheduler._cond_to_unconds = {}
+    scheduler._uncond_to_cond = {}
+    scheduler._uncond_rids = set()
+    scheduler._orphaned_uncond_rids = set()
     scheduler._result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
@@ -117,13 +135,15 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler = object.__new__(DllmScheduler)
-    batch = SimpleNamespace(output_ids=None)
+    batch = SimpleNamespace(output_ids=None, reqs=[])
+    forward_batch = SimpleNamespace()
     forwarded = []
 
     scheduler._running = True
     scheduler.drain_and_purge = lambda: None
     scheduler.schedule_next_batch = lambda: batch
     scheduler.apply_results = lambda *_: None
+    scheduler.apply_cfg_padding_metadata = lambda *_: None
 
     def stop_after_step(_batch) -> None:
         scheduler._running = False
@@ -143,13 +163,14 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     )
     monkeypatch.setattr(
         dllm_scheduler_module,
-        "ForwardBatch",
-        SimpleNamespace(init_new=lambda *args, **kwargs: "forward-batch"),
+        "DllmForwardBatch",
+        SimpleNamespace(init_new=lambda *args, **kwargs: forward_batch),
     )
 
     scheduler._event_loop()
 
-    assert forwarded == [("forward-batch", batch)]
+    assert forwarded == [(forward_batch, batch)]
+    assert forward_batch.reqs == []
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -166,6 +187,7 @@ def test_dllm_staging_admission_uses_dllm_config(
     scheduler._waiting_queue = []
     req = SimpleNamespace(
         rid="req",
+        kv=SimpleNamespace(),
         inflight_middle_chunks=0,
         init_next_round_input=lambda: None,
     )
@@ -285,3 +307,99 @@ def test_sync_dllm_result_commits_generated_suffix() -> None:
     assert req.full_untruncated_fill_ids == array("q", [1, 2, -1, -1, 10, 11])
     assert req.output_ids == [10, 11]
     assert req.accepted_lengths == [2]
+
+
+@pytest.fixture
+def chunked_scheduler() -> DllmScheduler:
+    scheduler = _scheduler(fdfo=False, block_size=32)
+    scheduler.dllm_config = DllmConfig(
+        algorithm="LowConfidence",
+        algorithm_config={},
+        block_size=32,
+        mask_id=9,
+        max_running_requests=2,
+    )
+    scheduler.req_to_token_pool = ReqToTokenPool(2, 256, "cpu", False)
+    scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+        512, torch.float32, "cpu", None, False
+    )
+    scheduler.tree_cache = ChunkCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=scheduler.req_to_token_pool,
+            token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+            page_size=1,
+        )
+    )
+    scheduler._chunked_prefill_size = 32
+    scheduler.model_config = None
+    scheduler._staging_queue = []
+    for rid in ("cond", "uncond"):
+        params = SamplingParams(max_new_tokens=32, temperature=0.0)
+        params.normalize(None)
+        scheduler._waiting_queue.append(
+            Req(
+                rid,
+                "",
+                array("q", [1] * 128),
+                params,
+                dllm_config=scheduler.dllm_config,
+            )
+        )
+    return scheduler
+
+
+def test_cfg_chunked_admission_rolls_back_and_retries(
+    chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = chunked_scheduler
+    requests = scheduler._waiting_queue.copy()
+    scheduler._cond_to_unconds = {"cond": ["uncond"]}
+    scheduler._uncond_to_cond = {"uncond": "cond"}
+    requests[1]._is_uncond = True
+    allocator = scheduler.token_to_kv_pool_allocator
+    occupied = allocator.alloc(300)
+    original_ranges = [req.extend_range for req in requests]
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"], prepare_for_extend=lambda: None
+            )
+        ),
+    )
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        assert scheduler.schedule_next_batch() is None
+        assert scheduler._waiting_queue == requests
+        assert [req.extend_range for req in requests] == original_ranges
+        allocator.free(occupied)
+        batch = scheduler.schedule_next_batch()
+
+    assert batch.reqs == requests
+    assert all(req.extend_range.length == 32 for req in batch.reqs)
+
+
+def test_abort_between_blocks_releases_cached_tokens(
+    chunked_scheduler: DllmScheduler,
+) -> None:
+    scheduler = chunked_scheduler
+    req = scheduler._waiting_queue.pop(0)
+    scheduler._waiting_queue.clear()
+    scheduler._staging_queue = [req]
+    pool = scheduler.req_to_token_pool
+    allocator = scheduler.token_to_kv_pool_allocator
+    pool.alloc([req])
+    req.kv.kv_allocated_len = req.kv.kv_committed_len = 32
+    pool.req_to_token[req.kv.req_pool_idx, :32] = allocator.alloc(32).int()
+    req.set_extend_range(0, 32)
+    scheduler.post_step(SimpleNamespace(reqs=[req], filter_batch=lambda **kwargs: None))
+    scheduler._aborted_request_ids = {req.rid}
+
+    with get_context().override_server_args(page_size=1):
+        scheduler.drain_and_purge()
+
+    assert scheduler._staging_queue == []
+    assert allocator.available_size() == 512
+    assert pool.available_size() == 2
+    assert req.kv.is_kv_released
