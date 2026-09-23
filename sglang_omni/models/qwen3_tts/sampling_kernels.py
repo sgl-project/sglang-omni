@@ -7,6 +7,9 @@ import torch
 
 from sglang_omni.platforms import current_platform
 
+if current_platform.is_npu():
+    from sglang_omni.models.qwen3_tts.npu_sampling import murmur_hash32_npu
+
 if not current_platform.is_npu():
     try:
         import triton
@@ -488,14 +491,9 @@ def murmur_hash32_pytorch(
     positions: torch.Tensor,
     num_cols: int,
 ) -> torch.Tensor:
-    """Vectorized MurmurHash32 with an Ascend-safe CPU integer fallback."""
+    """Vectorized MurmurHash32 with graph-safe Ascend integer arithmetic."""
     if seeds.device.type == "npu":
-        # Ascend can fault in the int64 rotate expression under sustained
-        # concurrent sampling. The hash inputs are tiny; compute only this
-        # integer-only portion on CPU and return the exact uint32 values.
-        return murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
-            seeds.device
-        )
+        return murmur_hash32_npu(seeds, positions, num_cols)
 
     seeds = seeds.to(dtype=torch.int64).view(-1, 1)
     positions = positions.to(dtype=torch.int64).view(-1, 1)

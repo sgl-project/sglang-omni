@@ -169,6 +169,62 @@ def test_sorted_seeded_sampler_executes_float32_path_on_npu() -> None:
     assert sampled.cpu().tolist() == [9]
 
 
+@pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
+@pytest.mark.parametrize("batch_size,num_cols", [(1, 64), (4, 257), (16, 2048)])
+def test_npu_hash_graph_replay_preserves_seed_bits(
+    batch_size: int, num_cols: int
+) -> None:
+    seeds_cpu = torch.tensor([0, -1, 2**40 + 123, -(2**63)] * 4, dtype=torch.int64)[
+        :batch_size
+    ]
+    positions_cpu = torch.arange(batch_size, dtype=torch.int64) + 1707985137
+    seeds, positions = seeds_cpu.npu(), positions_cpu.npu()
+    for _ in range(2):
+        sampling_kernels.murmur_hash32_pytorch(seeds, positions, num_cols)
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = sampling_kernels.murmur_hash32_pytorch(seeds, positions, num_cols)
+    for _ in range(32):
+        seeds_cpu = seeds_cpu.roll(1)
+        seeds.copy_(seeds_cpu)
+        positions_cpu += 1
+        positions.copy_(positions_cpu)
+        graph.replay()
+        expected = sampling_kernels.murmur_hash32_pytorch(
+            seeds_cpu, positions_cpu, num_cols
+        )
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not _npu_available(), reason="requires Ascend NPU")
+def test_npu_seeded_sampling_graph_replay_uses_updated_inputs() -> None:
+    generator = torch.Generator().manual_seed(5678)
+    logprobs_cpu = torch.randn(16, 50, generator=generator)
+    seeds_cpu = torch.tensor([0, -1, 2**40 + 123, -(2**63)] * 4)
+    positions_cpu = torch.arange(16, dtype=torch.int64)
+    logprobs = logprobs_cpu.npu()
+    seeds, positions = seeds_cpu.npu(), positions_cpu.npu()
+    for _ in range(2):
+        sampling_kernels.seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = sampling_kernels.seeded_gumbel_argmax_float32(
+            logprobs, seeds, positions
+        )
+    for _ in range(32):
+        logprobs_cpu = torch.randn(16, 50, generator=generator)
+        seeds_cpu = seeds_cpu.roll(1)
+        positions_cpu += 1
+        logprobs.copy_(logprobs_cpu)
+        seeds.copy_(seeds_cpu)
+        positions.copy_(positions_cpu)
+        graph.replay()
+        expected = sampling_kernels.seeded_gumbel_argmax_float32(
+            logprobs_cpu, seeds_cpu, positions_cpu
+        )
+        torch.testing.assert_close(actual.cpu(), expected, rtol=0, atol=0)
+
+
 def test_npu_sampling_dispatch_does_not_capture_cpu() -> None:
     sampled = sampling_kernels.sample_from_logprobs_with_seed_npu(
         torch.zeros((1, 2), dtype=torch.float32),

@@ -98,6 +98,7 @@ def _async_incremental_scheduler(
         Qwen3TTSStreamingVocoderScheduler
     )
     scheduler._device = device
+    scheduler.device_module = torch.get_device_module(device)
     scheduler._cuda_decode_failed = False
     scheduler._deterministic_inference = False
     scheduler._samples_per_frame = 1
@@ -261,6 +262,7 @@ def test_incremental_codec_graph_replay_failure_disables_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _runner(batch_sizes=(1,))
+    runner.device_module = torch.cuda
     key = IncrementalCodecGraphKey(8, 1)
     graph = _FailingGraph()
     runner._graphs[key] = _entry(1, graph=graph)
@@ -297,6 +299,7 @@ def test_incremental_codec_capture_rollback_retains_unsynchronized_resources(
     temporary = {key: SimpleNamespace()}
     pool = object()
     capture_stream = object()
+    runner.device_module = torch.cuda
     monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
 
     def fail_synchronize(_device) -> None:
@@ -335,6 +338,7 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
     graph = _FakeGraph()
     key = IncrementalCodecGraphKey(8, 1)
     temporary = {key: SimpleNamespace(graph=graph)}
+    runner.device_module = torch.cuda
 
     monkeypatch.setattr(torch.cuda, "device", lambda _device: _DeviceContext())
     monkeypatch.setattr(torch.cuda, "synchronize", lambda _device: None)

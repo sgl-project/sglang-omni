@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reusable pinned host staging buffers and CUDA completion events.
+"""Reusable pinned host staging buffers and device completion events.
 
 Streaming decoders copy device results into pinned host memory asynchronously
-and wait on a CUDA event before reading them back. The two classes here hold
+and wait on a device event before reading them back. The two classes here hold
 just the buffer and the event and carry no ownership policy: the owner
 serializes access, grows a buffer only while no asynchronous copy can still be
 using it, and must not touch a slot between ``record()`` and observed
@@ -28,8 +28,10 @@ def allocate_pinned(numel: int, dtype: torch.dtype) -> torch.Tensor:
 
 def normalize_device(device: torch.device | str | int) -> torch.device:
     resolved = torch.device(device)
-    if resolved.type == "cuda" and resolved.index is None:
-        return torch.device("cuda", torch.cuda.current_device())
+    if resolved.type in {"cuda", "npu"} and resolved.index is None:
+        return torch.device(
+            resolved.type, torch.get_device_module(resolved).current_device()
+        )
     return resolved
 
 
@@ -75,7 +77,7 @@ class GrowablePinnedBuffer:
 
 
 class PinnedTransferSlot:
-    """One growable pinned host buffer plus one reusable CUDA event.
+    """One growable pinned host buffer plus one reusable device event.
 
     The event fences work queued before ``record()``. Do not resize or reuse
     the buffer until ``synchronize()`` returns or ``query()`` reports True.
@@ -113,8 +115,8 @@ class PinnedTransferSlot:
         return self._buffer.view(numel)
 
     def device_guard(self) -> contextlib.AbstractContextManager[Any]:
-        if self.device.type == "cuda":
-            return torch.cuda.device(self.device)
+        if self.device.type in {"cuda", "npu"}:
+            return torch.get_device_module(self.device).device(self.device)
         return contextlib.nullcontext()
 
     def record(self, stream: Any) -> None:
@@ -137,7 +139,7 @@ class PinnedTransferSlot:
             )
         with self.device_guard():
             if self._event is None:
-                self._event = torch.cuda.Event()
+                self._event = torch.get_device_module(self.device).Event()
             self._event.record(stream)
         self._recorded = True
 

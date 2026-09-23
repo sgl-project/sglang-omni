@@ -218,8 +218,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         codes_snap = self.model._output_codes[:batch_size].detach().clone()
         embeds_snap = self.model._output_embeds[:batch_size].detach().clone()
         codes_ready = None
-        if codes_snap.is_cuda:
-            codes_ready = torch.cuda.Event()
+        if codes_snap.device.type in {"cuda", "npu"}:
+            codes_ready = torch.get_device_module(codes_snap.device).Event()
             codes_ready.record()
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]

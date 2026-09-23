@@ -65,6 +65,16 @@ def _install_fake_events(
         return event
 
     monkeypatch.setattr(torch.cuda, "Event", factory)
+    get_device_module = torch.get_device_module
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: (
+            torch.cuda
+            if torch.device(device).type in {"cpu", "cuda"}
+            else get_device_module(device)
+        ),
+    )
     return created
 
 

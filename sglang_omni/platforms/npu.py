@@ -31,7 +31,7 @@ class NPUOmniPlatform(OmniPlatform):
         return False
 
     def enable_tts_predictor_graph(self) -> bool:
-        return False
+        return True
 
     def supports_torchaudio_resample(self) -> bool:
         """Disabled as it run on CPU and faced errors during inference for now"""

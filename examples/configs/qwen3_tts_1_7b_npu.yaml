@@ -13,7 +13,7 @@ stages:
       attn_implementation: sdpa
     engine:
       attention_backend: ascend
-      disable_cuda_graph: true
+      disable_cuda_graph: false
       disable_overlap_schedule: true
       enable_torch_compile: false
       torch_compile_max_bs: 1
@@ -30,3 +30,4 @@ stages:
       max_batch_size: 1
       initial_max_batch_size: 1
       followup_max_batch_size: 1
+      stream_chunk_ramp: [1, 2, 2, 2, 4, 4]
