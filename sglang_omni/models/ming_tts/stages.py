@@ -131,6 +131,10 @@ def create_sglang_tts_engine_executor(
     tp_size: int = 1,
     nccl_port: int | None = None,
 ) -> Any:
+    from sglang_omni.models.ming_tts.apple_runtime import (
+        MingTtsMlxEngineBuilder,
+        ming_tts_uses_mlx,
+    )
     from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 
     user_overrides = dict(server_args_overrides or {})
@@ -141,7 +145,8 @@ def create_sglang_tts_engine_executor(
         )
     context_length = int(user_overrides.pop("context_length", context_length or 0) or 0)
 
-    return MingTtsEngineBuilder(
+    builder_class = MingTtsMlxEngineBuilder if ming_tts_uses_mlx() else MingTtsEngineBuilder
+    return builder_class(
         context_length=context_length or None,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         tp_rank=tp_rank,
@@ -176,8 +181,10 @@ def create_reference_encode_executor(
         MingSpeakerEmbeddingExtractor,
         MingTTSReferenceEncoder,
     )
+    from sglang_omni.models.ming_tts.apple_runtime import ming_tts_uses_mlx
     from sglang_omni.utils.device import resolve_concrete_device
 
+    use_mlx = ming_tts_uses_mlx()
     device = str(resolve_concrete_device(device, gpu_id))
     checkpoint_dir = _resolve_checkpoint(model_path)
     config = _load_ming_tts_config(checkpoint_dir)
@@ -191,14 +198,21 @@ def create_reference_encode_executor(
         config.audio_tokenizer_config,
         attn_implementation=MING_TTS_AUDIO_VAE_ATTN_IMPLEMENTATION,
     )
-    audio_vae = _load_ming_tts_audio_vae(
-        checkpoint_dir,
-        audio_config,
-        device=device,
-        dtype=dtype,
-    )
+    encoder_class = MingTTSReferenceEncoder
+    if use_mlx:
+        from .mlx.audio_io import MingTTSMlxReferenceEncoder
+        from .mlx.loading import load_ming_audio_vae
 
-    encoder = MingTTSReferenceEncoder(
+        if max_concurrency != 1:
+            raise ValueError("Ming MLX reference encoding requires max_concurrency=1")
+        audio_vae = load_ming_audio_vae(checkpoint_dir, component="encoder")
+        encoder_class = MingTTSMlxReferenceEncoder
+    else:
+        audio_vae = _load_ming_tts_audio_vae(
+            checkpoint_dir, audio_config, device=device, dtype=dtype
+        )
+
+    encoder = encoder_class(
         audio_vae,
         MingSpeakerEmbeddingExtractor(str(Path(checkpoint_dir) / "campplus.onnx")),
         patch_size=int(config.ditar_config["patch_size"]),
@@ -244,6 +258,23 @@ def create_audio_decode_executor(
     validate_ming_tts_audio_decode_stream_slots(stream_slots)
     if not isinstance(streaming_cuda_graph, bool):
         raise ValueError("Ming-Omni-TTS streaming_cuda_graph must be a boolean")
+
+    from sglang_omni.models.ming_tts.apple_runtime import ming_tts_uses_mlx
+
+    if ming_tts_uses_mlx():
+        from .mlx.stages import create_mlx_audio_decode_executor
+
+        if streaming_cuda_graph or stream_slots != 1:
+            raise ValueError(
+                "Ming MLX audio decode requires streaming_cuda_graph=false "
+                "and stream_slots=1"
+            )
+        return create_mlx_audio_decode_executor(
+            model_path,
+            keep_latents=keep_latents,
+            initial_chunk_patches=initial_chunk_patches,
+            steady_chunk_patches=steady_chunk_patches,
+        )
 
     import torch
 

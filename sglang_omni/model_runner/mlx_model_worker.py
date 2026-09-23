@@ -203,6 +203,10 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    elif model_arch == "MingTTSSGLangModel":
+        from sglang_omni.models.ming_tts.mlx.worker import MingTTSMlxBackend
+
+        make_runner_class = lambda: MingTTSMlxBackend
     else:
         raise NotImplementedError(
             "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
@@ -224,6 +228,19 @@ def create_mlx_model_worker(
     from sglang.srt.server_args import PortArgs
 
     class OmniMlxWorker(MlxTpModelWorker):
+        def _init_model_config(self) -> None:
+            super()._init_model_config()
+            if model_arch == "MingTTSSGLangModel":
+                from sglang_omni.model_runner.model_worker import ModelWorker
+
+                ModelWorker._apply_arch_override(self.model_config, model_arch)
+
+        def prepare_for_kv_cache_release(self, req: Any) -> None:
+            if model_arch == "MingTTSSGLangModel":
+                # Ming's continuous feedback has no radix/auxiliary snapshots.
+                return
+            super().prepare_for_kv_cache_release(req)
+
         @property
         def tp_rank(self) -> int:
             return self.ps.tp_rank
