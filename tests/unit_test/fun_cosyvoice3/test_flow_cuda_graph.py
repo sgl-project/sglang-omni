@@ -150,13 +150,7 @@ def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) ->
     assert eager_calls == []
 
 
-def _cuda_flow(*, channels: int = 4, max_frames: int = 512) -> object:
-    """Flow stand-in whose parameters live on CUDA so FlowCudaGraphRunner
-    builds static inputs on the capture device.
-
-    ``forward_estimator`` is a pure functional map so the Euler solve stays
-    capturable: vector_field = token_condition + prompt_mel.
-    """
+def cuda_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
     parameter = torch.nn.Parameter(torch.zeros(1, device="cuda"))
 
     def forward_estimator(
@@ -194,7 +188,7 @@ def _cuda_flow(*, channels: int = 4, max_frames: int = 512) -> object:
 def test_capture_populates_graphs_and_replays_eager_equivalent() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA required for flow CUDA graph capture")
-    flow = _cuda_flow()
+    flow = cuda_flow()
     runner = stages.FlowCudaGraphRunner(
         flow, device=torch.device("cuda"), autocast_dtype=None
     )
@@ -206,7 +200,6 @@ def test_capture_populates_graphs_and_replays_eager_equivalent() -> None:
     for static in captured.static_inputs:
         assert static.is_cuda
 
-    # Replay must match an eager solve for the same inputs.
     noisy_mel, time_span, token_condition, mel_mask, speaker, prompt_mel = (
         runner.capture_inputs(*shape)
     )
