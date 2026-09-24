@@ -35,7 +35,7 @@ class _ModelHarness:
     reset_request = Zonos2SGLangModel.reset_request
 
     def __init__(self, pool: Zonos2DecodeStatePool) -> None:
-        self._decode_state_pool = pool
+        self.decode_state_pool = pool
 
 
 class _FakeCopyStream:
@@ -48,7 +48,7 @@ class _FakeCopyStream:
 
 def _model_and_pool() -> tuple[_ModelHarness, Zonos2DecodeStatePool]:
     pool_owner = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.zeros((2, 3), dtype=torch.float32)
         ),
         n_codebooks=N_CODEBOOKS,
@@ -130,7 +130,7 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path(
     scheduler.prefill_start_done = {request_id}
     scheduler.prefill_end_done = set()
     scheduler.result_adapter = result_adapter
-    scheduler._model_runner = None
+    scheduler.model_runner = None
     scheduler.stream_output_builder = None
     monkeypatch.setattr(
         omni_scheduler_module,

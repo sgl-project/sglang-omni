@@ -181,7 +181,7 @@ def emit_kind(f: dataclasses.Field, spec: WireSpec) -> str:
 
 def has_complete_typed_tensor_payload(data: dict[str, Any], name: str) -> bool:
     required = {f"{name}_bytes", f"{name}_shape"}
-    keys = (*required, f"{name}dtype")
+    keys = (*required, f"{name}_dtype")
     specified = {key for key in keys if key in data}
     if not specified:
         return False

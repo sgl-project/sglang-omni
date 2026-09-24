@@ -83,7 +83,7 @@ def _init_sync_request_build_state(scheduler: OmniScheduler) -> None:
 def _init_terminal_output_state(scheduler: OmniScheduler) -> None:
     scheduler.request_admission_lock = threading.RLock()
     scheduler.is_entry_rank = True
-    scheduler._model_runner = None
+    scheduler.model_runner = None
     scheduler.stream_output_builder = None
     scheduler.request_finished_callback = None
     scheduler.completed_request_ids = {}
@@ -363,7 +363,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             raise RuntimeError("cuda out of memory")
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._model_runner = BoomModelRunner()
+    scheduler.model_runner = BoomModelRunner()
     scheduler.stream_output_builder = None
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
@@ -893,7 +893,7 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
             return SimpleNamespace()
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._model_runner = FakeModelRunner()
+    scheduler.model_runner = FakeModelRunner()
     scheduler.stream_output_builder = None
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
@@ -1428,7 +1428,7 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
     scheduler.result_adapter = lambda data: {"ok": True}
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
-    scheduler._model_runner = SimpleNamespace(
+    scheduler.model_runner = SimpleNamespace(
         on_request_finished=lambda rid, req_data: calls.append(
             (rid, req_data, req_data.finish_reason, scheduler.outbox.qsize())
         )
@@ -1468,7 +1468,7 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
     def fail_finish_hook(_rid, _data):
         raise RuntimeError("finish hook failed")
 
-    scheduler._model_runner = SimpleNamespace(on_request_finished=fail_finish_hook)
+    scheduler.model_runner = SimpleNamespace(on_request_finished=fail_finish_hook)
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
     req = SimpleNamespace(
         rid="req-hook-error",
@@ -1535,7 +1535,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
 
     class InstrumentedRLock:
         def __init__(self):
-            self._lock = threading.RLock()
+            self.lock = threading.RLock()
             self._owner: int | None = None
             self.contender_waiting = threading.Event()
 
@@ -1543,13 +1543,13 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
             thread_id = threading.get_ident()
             if self._owner is not None and self._owner != thread_id:
                 self.contender_waiting.set()
-            self._lock.acquire()
+            self.lock.acquire()
             self._owner = thread_id
             return self
 
         def __exit__(self, exc_type, exc_value, traceback):
             self._owner = None
-            self._lock.release()
+            self.lock.release()
 
         def is_owned_by_current_thread(self) -> bool:
             return self._owner == threading.get_ident()
@@ -1606,7 +1606,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     scheduler.abort_callback = abort_cleanup.append
     scheduler.request_finished_callback = finished_cleanup.append
     scheduler.result_adapter = lambda _data: {"ok": True}
-    scheduler._model_runner = None
+    scheduler.model_runner = None
     scheduler.stream_output_builder = None
     scheduler.tree_cache = None
     scheduler.waiting_queue = []
@@ -1689,7 +1689,7 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
 def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
     class ObservedRLock:
         def __init__(self):
-            self._lock = threading.RLock()
+            self.lock = threading.RLock()
             self._owner: int | None = None
             self.contender_waiting = threading.Event()
 
@@ -1697,13 +1697,13 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
             thread_id = threading.get_ident()
             if self._owner is not None and self._owner != thread_id:
                 self.contender_waiting.set()
-            self._lock.acquire()
+            self.lock.acquire()
             self._owner = thread_id
             return self
 
         def __exit__(self, exc_type, exc_value, traceback):
             self._owner = None
-            self._lock.release()
+            self.lock.release()
 
     scheduler = object.__new__(OmniScheduler)
     _init_sync_request_build_state(scheduler)
@@ -1842,7 +1842,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
-    scheduler._model_runner = SimpleNamespace(
+    scheduler.model_runner = SimpleNamespace(
         on_request_finished=lambda rid, _data: calls.append(rid)
     )
     data = SimpleNamespace()

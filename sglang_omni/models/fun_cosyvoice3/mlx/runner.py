@@ -75,7 +75,8 @@ class FunCosyVoice3MlxModelRunner:
                 generated_count = 0
             else:
                 generated_count = max(
-                    self.first_attention_cache(caches[index]).offset - prompt_length,
+                    self._first_attention_cache(caches[index]).offset
+                    - prompt_length,  # noqa: leading-underscore
                     0,
                 )
             if generated_count < self.cosyvoice3_min_lengths.get(req_id, 0):
@@ -150,7 +151,7 @@ class FunCosyVoice3MlxModelRunner:
         self.cosyvoice3_recent_tokens[req_id] = []
         text_ids, prompt_ids = self.request_prompt(req)
         embeddings = self.model.build_prompt_embeddings(text_ids, prompt_ids)
-        cache = self.acquire_cache()
+        cache = self._acquire_cache()  # noqa: leading-underscore
         logits = self.model.forward_embeddings(embeddings, cache=cache)
         logits = self.constrain_logits(
             logits[:, -1, :],
@@ -217,10 +218,14 @@ class FunCosyVoice3MlxModelRunner:
         req_id = req_ids[0]
         cache = self.req_caches[req_id]
         input_ids = mx.array([[self.req_token_ids[req_id][-1]]], dtype=mx.int32)
-        logits = self.decode_with_native_cache([cache], [input_ids])
+        logits = self._decode_with_native_cache(
+            [cache], [input_ids]
+        )  # noqa: leading-underscore
         logits = self.constrain_logits(logits, req_ids, [cache])
         if logits_hook is not None:
-            logits = self.run_logits_hook(logits, logits_hook)
+            logits = self._run_logits_hook(
+                logits, logits_hook
+            )  # noqa: leading-underscore
         lazy_tokens, lazy_logprobs = self._select_tokens_with_logprobs(
             logits,
             req_ids,
@@ -286,9 +291,11 @@ class FunCosyVoice3MlxModelRunner:
         )
 
         params = [self.req_sampling[req_id] for req_id in req_ids]
-        edited = self.edited_logits(last_logits, edit_rows)
+        edited = self._edited_logits(last_logits, edit_rows)  # noqa: leading-underscore
         scaled = scale_by_temperature(edited, params)
-        positions = [self.first_attention_cache(cache).offset - 1 for cache in caches]
+        positions = [
+            self._first_attention_cache(cache).offset - 1 for cache in caches
+        ]  # noqa: leading-underscore
         self.rng_key, first_key = mx.random.split(self.rng_key)
         first = sample_tokens(
             edited,
@@ -359,7 +366,7 @@ class FunCosyVoice3MlxModelRunner:
 
         self.cosyvoice3_sampling_pending_tokens = prev.lazy_tokens
         try:
-            logits = self.decode_with_native_cache(
+            logits = self._decode_with_native_cache(  # noqa: leading-underscore
                 prev.caches,
                 [prev.lazy_tokens[:, None]],
             )

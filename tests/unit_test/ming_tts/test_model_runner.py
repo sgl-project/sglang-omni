@@ -22,7 +22,7 @@ def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
     runner = object.__new__(MingTTSModelRunner)
     runner.tp_rank = 0
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4))
+        decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4))
     )
     published = []
 
@@ -71,7 +71,7 @@ def _run_ming_tts_tail_step(
 ) -> tuple[SimpleNamespace, MingTTSRequestState, MingTTSTPStepUpdate]:
     runner = object.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
+        decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
         run_tail_step=lambda _inputs: SimpleNamespace(
             sampled=torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
             feedback_embeddings=torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
@@ -230,7 +230,7 @@ def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:
 
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.empty((1, 2), dtype=torch.float32)
         ),
         get_input_embeddings=lambda: fail_token_embedding,

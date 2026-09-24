@@ -175,19 +175,19 @@ def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
     runner.semantic_begin_id = SEMANTIC_TOKEN_ID
     runner.semantic_end_id = SEMANTIC_TOKEN_ID + 10
     runner.model = SimpleNamespace(
-        _rep_history_len=4,
-        _vq_mask=torch.zeros(1, dtype=torch.bool),
-        _sampling_temperature=torch.zeros(1),
-        _sampling_top_p=torch.zeros(1),
-        _sampling_top_k=torch.zeros(1, dtype=torch.long),
-        _sampling_rep_penalty=torch.zeros(1),
-        _sampling_seeds=torch.full((1,), -1, dtype=torch.long),
-        _step_count=torch.zeros(1, dtype=torch.long),
-        _ras_temperature=torch.zeros(1),
-        _ras_top_p=torch.zeros(1),
-        _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
-        _prev_token_count=torch.zeros(1, dtype=torch.long),
-        _vq_codes=torch.zeros(1, 2, dtype=torch.long),
+        rep_history_len=4,
+        vq_mask=torch.zeros(1, dtype=torch.bool),
+        sampling_temperature=torch.zeros(1),
+        sampling_top_p=torch.zeros(1),
+        sampling_top_k=torch.zeros(1, dtype=torch.long),
+        sampling_rep_penalty=torch.zeros(1),
+        sampling_seeds=torch.full((1,), -1, dtype=torch.long),
+        step_count=torch.zeros(1, dtype=torch.long),
+        ras_temperature=torch.zeros(1),
+        ras_top_p=torch.zeros(1),
+        prev_tokens=torch.zeros(1, 4, dtype=torch.long),
+        prev_token_count=torch.zeros(1, dtype=torch.long),
+        vq_codes=torch.zeros(1, 2, dtype=torch.long),
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([SEMANTIC_TOKEN_ID]))
 
@@ -243,20 +243,20 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
 
     runner.model = SimpleNamespace(
         get_embed_tokens=lambda: _embed,
-        _audio_decoder=SimpleNamespace(
+        audio_decoder=SimpleNamespace(
             embed_text_dim=lambda embeds, parts, mask: embeds
         ),
-        _rep_history_len=4,
-        _sampling_temperature=torch.zeros(2),
-        _sampling_top_p=torch.zeros(2),
-        _sampling_top_k=torch.zeros(2, dtype=torch.long),
-        _sampling_rep_penalty=torch.zeros(2),
-        _sampling_seeds=torch.full((2,), -1, dtype=torch.long),
-        _step_count=torch.zeros(2, dtype=torch.long),
-        _ras_temperature=torch.zeros(2),
-        _ras_top_p=torch.zeros(2),
-        _prev_tokens=torch.full((2, 4), 999, dtype=torch.long),
-        _prev_token_count=torch.full((2,), 99, dtype=torch.long),
+        rep_history_len=4,
+        sampling_temperature=torch.zeros(2),
+        sampling_top_p=torch.zeros(2),
+        sampling_top_k=torch.zeros(2, dtype=torch.long),
+        sampling_rep_penalty=torch.zeros(2),
+        sampling_seeds=torch.full((2,), -1, dtype=torch.long),
+        step_count=torch.zeros(2, dtype=torch.long),
+        ras_temperature=torch.zeros(2),
+        ras_top_p=torch.zeros(2),
+        prev_tokens=torch.full((2, 4), 999, dtype=torch.long),
+        prev_token_count=torch.full((2,), 99, dtype=torch.long),
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([10, 11]))
 
@@ -375,28 +375,28 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
 
     audio_decoder = _AudioDecoder()
     model = SimpleNamespace(
-        _semantic_bias=torch.full((40,), -float("inf")),
-        _prev_token_count=torch.zeros(1, dtype=torch.long),
-        _ras_range=torch.arange(4, 0, -1),
-        _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
-        _ras_temperature=torch.ones(1),
-        _sampling_temperature=torch.ones(1),
-        _ras_top_p=torch.ones(1),
-        _sampling_top_p=torch.ones(1),
-        _sampling_rep_penalty=torch.ones(1),
-        _sampling_seeds=torch.full((1,), -1, dtype=torch.long),
-        _step_count=torch.zeros(1, dtype=torch.long),
-        _rep_positions=torch.arange(4),
-        _graph_top_k=30,
-        _sampling_top_k=torch.full((1,), 30, dtype=torch.long),
-        _top_k_positions=torch.arange(30),
-        _audio_decoder=audio_decoder,
-        _semantic_begin_id=10,
-        _im_end_token_id=30,
-        _codebook_size=8,
-        _num_codebooks=2,
-        _output_codes=torch.zeros(1, 3, dtype=torch.long),
-        _output_semantic_ids=torch.zeros(1, dtype=torch.long),
+        semantic_bias=torch.full((40,), -float("inf")),
+        prev_token_count=torch.zeros(1, dtype=torch.long),
+        ras_range=torch.arange(4, 0, -1),
+        prev_tokens=torch.zeros(1, 4, dtype=torch.long),
+        ras_temperature=torch.ones(1),
+        sampling_temperature=torch.ones(1),
+        ras_top_p=torch.ones(1),
+        sampling_top_p=torch.ones(1),
+        sampling_rep_penalty=torch.ones(1),
+        sampling_seeds=torch.full((1,), -1, dtype=torch.long),
+        step_count=torch.zeros(1, dtype=torch.long),
+        rep_positions=torch.arange(4),
+        graph_top_k=30,
+        sampling_top_k=torch.full((1,), 30, dtype=torch.long),
+        top_k_positions=torch.arange(30),
+        audio_decoder=audio_decoder,
+        semantic_begin_id=10,
+        im_end_token_id=30,
+        codebook_size=8,
+        num_codebooks=2,
+        output_codes=torch.zeros(1, 3, dtype=torch.long),
+        output_semantic_ids=torch.zeros(1, dtype=torch.long),
     )
     model.semantic_bias[10:18] = 0.0
     model.semantic_bias[30] = 0.0
@@ -454,28 +454,28 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
     logits[:, semantic_begin_id + 1] = torch.log(torch.tensor(0.1, device=device))
 
     model = SimpleNamespace(
-        _semantic_bias=semantic_bias,
-        _prev_token_count=torch.zeros(batch, dtype=torch.long, device=device),
-        _ras_range=torch.arange(4, 0, -1, device=device),
-        _prev_tokens=torch.zeros(batch, 4, dtype=torch.long, device=device),
-        _ras_temperature=torch.ones(batch, device=device),
-        _sampling_temperature=torch.ones(batch, device=device),
-        _ras_top_p=torch.ones(batch, device=device),
-        _sampling_top_p=torch.ones(batch, device=device),
-        _sampling_rep_penalty=torch.ones(batch, device=device),
-        _sampling_seeds=torch.arange(1, batch + 1, dtype=torch.long, device=device),
-        _step_count=torch.zeros(batch, dtype=torch.long, device=device),
-        _rep_positions=torch.arange(4, device=device),
-        _graph_top_k=30,
-        _sampling_top_k=torch.full((batch,), 2, dtype=torch.long, device=device),
-        _top_k_positions=torch.arange(30, device=device),
-        _audio_decoder=_AudioDecoder(),
-        _semantic_begin_id=semantic_begin_id,
-        _im_end_token_id=im_end_token_id,
-        _codebook_size=8,
-        _num_codebooks=1,
-        _output_codes=torch.zeros(batch, 2, dtype=torch.long, device=device),
-        _output_semantic_ids=torch.zeros(batch, dtype=torch.long, device=device),
+        semantic_bias=semantic_bias,
+        prev_token_count=torch.zeros(batch, dtype=torch.long, device=device),
+        ras_range=torch.arange(4, 0, -1, device=device),
+        prev_tokens=torch.zeros(batch, 4, dtype=torch.long, device=device),
+        ras_temperature=torch.ones(batch, device=device),
+        sampling_temperature=torch.ones(batch, device=device),
+        ras_top_p=torch.ones(batch, device=device),
+        sampling_top_p=torch.ones(batch, device=device),
+        sampling_rep_penalty=torch.ones(batch, device=device),
+        sampling_seeds=torch.arange(1, batch + 1, dtype=torch.long, device=device),
+        step_count=torch.zeros(batch, dtype=torch.long, device=device),
+        rep_positions=torch.arange(4, device=device),
+        graph_top_k=30,
+        sampling_top_k=torch.full((batch,), 2, dtype=torch.long, device=device),
+        top_k_positions=torch.arange(30, device=device),
+        audio_decoder=_AudioDecoder(),
+        semantic_begin_id=semantic_begin_id,
+        im_end_token_id=im_end_token_id,
+        codebook_size=8,
+        num_codebooks=1,
+        output_codes=torch.zeros(batch, 2, dtype=torch.long, device=device),
+        output_semantic_ids=torch.zeros(batch, dtype=torch.long, device=device),
     )
 
     S2ProSGLangTextModel.decode_codebooks(
@@ -664,7 +664,7 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length(
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.result_adapter = result_adapter
-    scheduler._model_runner = None
+    scheduler.model_runner = None
     scheduler.stream_output_builder = None
     monkeypatch.setattr(
         omni_scheduler_module,

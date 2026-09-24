@@ -58,7 +58,7 @@ class MossVocoderCudaGraphRunner:
         self.num_quantizers = int(num_quantizers)
         self.warmup_iters = max(int(warmup_iters), 1)
         self.min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._batch_sizes = sorted(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._batch_sizes = sorted(  # noqa: leading-underscore
             {
                 int(size)
                 for size in batch_sizes
@@ -75,12 +75,12 @@ class MossVocoderCudaGraphRunner:
         if self.real_state_capacity <= 0:
             raise ValueError("real_state_capacity must be positive")
         if self._scratch_capacity < max(
-            self._batch_sizes, default=0
+            self.batch_sizes, default=0
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise ValueError(
                 "scratch_capacity must cover the largest compact graph bucket; "
                 f"got scratch_capacity={self._scratch_capacity}, "  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                f"largest_bucket={max(self._batch_sizes, default=0)}"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                f"largest_bucket={max(self.batch_sizes, default=0)}"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             )
         if self.num_quantizers <= 0:
             raise ValueError("num_quantizers must be positive")
@@ -95,9 +95,7 @@ class MossVocoderCudaGraphRunner:
 
     @property
     def batch_sizes(self) -> list[int]:
-        return list(
-            self._batch_sizes
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return list(self._batch_sizes)  # noqa: leading-underscore
 
     @property
     def frame_sizes(self) -> list[int]:
@@ -214,7 +212,7 @@ class MossVocoderCudaGraphRunner:
             else sorted({int(frame) for frame in frames if int(frame) > 0})
         )
         if (
-            not self._batch_sizes or not frame_sizes
+            not self.batch_sizes or not frame_sizes
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return []
 
@@ -223,7 +221,7 @@ class MossVocoderCudaGraphRunner:
         keys = sorted(
             (
                 (batch_size, frame_size)
-                for batch_size in self._batch_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                for batch_size in self.batch_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 for frame_size in frame_sizes
             ),
             reverse=True,
@@ -309,7 +307,7 @@ class MossVocoderCudaGraphRunner:
             return None
         batch_size = next(
             (
-                size for size in self._batch_sizes if size >= actual_batch_size
+                size for size in self.batch_sizes if size >= actual_batch_size
             ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             None,
         )

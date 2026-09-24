@@ -324,7 +324,7 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
     )
 
     def abort(self, request_id, **kwargs):
-        self._aborted_request_ids.add(request_id)
+        self.aborted_request_ids.add(request_id)
         self.waiting_queue = [
             req for req in self.waiting_queue if req.rid != request_id
         ]
@@ -385,7 +385,7 @@ def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
     def upstream_flush(self):
         self.release_request_kv_cache.assert_called_once_with(req)
         with pytest.raises(RuntimeError, match="not accepting reservations"):
-            self._pd_receiver.reserve(message)
+            self.pd_receiver.reserve(message)
         return True
 
     monkeypatch.setattr(_Upstream, "flush_cache", upstream_flush)

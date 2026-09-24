@@ -13,8 +13,8 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 
 def _fake_model(n: int, hidden: int) -> SimpleNamespace:
     return SimpleNamespace(
-        _feedback_buffer=torch.zeros(n, hidden, dtype=torch.float32),
-        _feedback_mask=torch.zeros(n, dtype=torch.bool),
+        feedback_buffer=torch.zeros(n, hidden, dtype=torch.float32),
+        feedback_mask=torch.zeros(n, dtype=torch.bool),
     )
 
 

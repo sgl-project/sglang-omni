@@ -334,8 +334,8 @@ def test_ming_audio_encoder_moves_inputs_to_component_device() -> None:
         encoding="utf-8"
     )
 
-    assert "audio_feats = audio_feats.to(device=self._device)" in source
-    assert "audio_feats_lengths = audio_feats_lengths.to(device=self._device)" in source
+    assert "audio_feats = audio_feats.to(device=self.device)" in source
+    assert "audio_feats_lengths = audio_feats_lengths.to(device=self.device)" in source
 
 
 def test_ming_preprocessor_computes_mel_feature_tuple(monkeypatch) -> None:

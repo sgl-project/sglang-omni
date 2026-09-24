@@ -334,8 +334,8 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
 def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
     flow = SimpleNamespace(
         is_batched=True,
-        _batched_nfe=4,
-        _tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
+        batched_nfe=4,
+        tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
     )
     validate = DotsTTSFlowHead.validate_request
 

@@ -422,7 +422,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
         "total_gpu_memory_fraction": 0.02,
         "graph_keys": expected_graph_keys,
     }
-    assert scheduler._device == torch.device("cuda:3")
+    assert scheduler.device == torch.device("cuda:3")
     assert scheduler.stream_chunk_size == 20
     assert scheduler.left_context_size == 25
     assert scheduler.cuda_graph_runner is runner
@@ -494,7 +494,7 @@ def test_qwen_code2wav_threshold_context_windows_hit_cuda_graph(monkeypatch) -> 
         stream_chunk_size=10,
         left_context_size=25,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
@@ -541,7 +541,7 @@ def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
         stream_chunk_size=6,
         left_context_size=5,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
@@ -652,7 +652,7 @@ def test_qwen_code2wav_eligible_key_miss_has_json_safe_fallback_metadata(
         stream_chunk_size=6,
         left_context_size=0,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     _seed_stream_state(scheduler)
     events = _activate_event_capture(monkeypatch)
@@ -694,7 +694,7 @@ def _run_code2wav_stream(*, cuda_graph: bool) -> tuple[list[tuple], object]:
         stream_chunk_size=10,
         left_context_size=1,
         enable_cuda_graph=cuda_graph,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     _seed_stream_state(scheduler)
     for chunk_id in range(11):
@@ -768,7 +768,7 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
         stream_chunk_size=1,
         left_context_size=0,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     runner.scheduler = scheduler
     _seed_stream_state(scheduler)
@@ -803,7 +803,7 @@ def test_qwen_code2wav_replay_error_reaches_base_abort_without_eager_retry() -> 
         stream_chunk_size=1,
         left_context_size=0,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     _seed_stream_state(scheduler)
     scheduler.inbox.put(

@@ -158,7 +158,7 @@ def _make_gpu_scheduler(
         left_context_size=1,
         enable_output_overlap=overlap,
         enable_cuda_graph=cuda_graph,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     assert scheduler.pipeline_active is overlap
     if overlap:
@@ -214,7 +214,7 @@ def _make_scheduler(
         left_context_size=left_context_size,
         enable_output_overlap=overlap,
         enable_cuda_graph=cuda_graph_runner is not None,
-        _cuda_graph_runner=cuda_graph_runner,
+        cuda_graph_runner=cuda_graph_runner,
     )
 
 
@@ -357,11 +357,11 @@ def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     assert scheduler.outbox.qsize() == 1  # second window launched, deferred
     # Note (jiannan-17): the fence is recorded on the scheduler device's
     # stream, not the thread-current device's.
-    assert stream_devices == [scheduler._device]
+    assert stream_devices == [scheduler.device]
 
     _feed(scheduler, "req-1", range(20, 30))
     assert scheduler.outbox.qsize() == 2  # third launch flushed window 2
-    assert stream_devices == [scheduler._device] * 2
+    assert stream_devices == [scheduler.device] * 2
 
     scheduler.handle_stream_done("req-1")
     snapshot = _drain_snapshot(scheduler)

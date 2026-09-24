@@ -30,14 +30,14 @@ class _Graph:
         static_features: torch.Tensor,
         static_output: torch.Tensor,
     ) -> None:
-        self._encoder = encoder
+        self.encoder = encoder
         self._static_features = static_features
         self._static_output = static_output
         self.replays = 0
 
     def replay(self) -> None:
         self.replays += 1
-        self._static_output.copy_(self._encoder(self._static_features))
+        self._static_output.copy_(self.encoder(self._static_features))
 
 
 def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:

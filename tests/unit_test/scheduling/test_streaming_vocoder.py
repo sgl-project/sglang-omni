@@ -52,7 +52,7 @@ class _FakeStreamingVocoder(StreamingVocoderBase[_FakeStreamState, Any]):
     ) -> None:
         self.calls: list[str] = []
         self._threshold = threshold
-        self._fallback = fallback
+        self.fallback = fallback
         super().__init__(None, sample_rate=SAMPLE_RATE, **kwargs)
 
     def create_stream_state(self, request_id: str) -> _FakeStreamState:
@@ -123,7 +123,7 @@ class _FakeStreamingVocoder(StreamingVocoderBase[_FakeStreamState, Any]):
         self, request_id: str, payload: StagePayload, state: _FakeStreamState
     ) -> torch.Tensor | None:
         self.calls.append(f"fallback:{request_id}")
-        return self._fallback
+        return self.fallback
 
     def release_stream_resources(
         self, request_id: str, state: _FakeStreamState

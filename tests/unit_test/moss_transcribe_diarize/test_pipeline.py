@@ -235,8 +235,8 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
     encoder = torch.nn.Linear(4, 4)
     model = SimpleNamespace(
         whisper_encoder=encoder,
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
@@ -272,9 +272,9 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
 
     model = SimpleNamespace(
         whisper_encoder=torch.nn.Linear(4, 4),
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
-        _compiled_input_feature_len=0,
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
+        compiled_input_feature_len=0,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 

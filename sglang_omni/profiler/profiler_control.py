@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import logging
@@ -15,11 +14,8 @@ logger = logging.getLogger(__name__)
 class ProfilerControlClient:
     """Broadcast profiler control messages to stages (no coordinator object needed)."""
 
-    stage_endpoints: dict[
-        str, str
-    ]  # stage_name -> stage control_endpoint (PULL bound at stage)
-
-    _socks: dict[str, PushSocket] | None = None
+    stage_endpoints: dict[str, str]
+    socks: dict[str, PushSocket] | None = None
 
     async def start(self) -> None:
         if self.socks is not None:
@@ -70,9 +66,7 @@ class ProfilerControlClient:
         )
 
     async def broadcast_stop(
-        self,
-        run_id: str | None = None,
-        stages: list[str] | None = None,
+        self, run_id: str | None = None, stages: list[str] | None = None
     ) -> None:
         """Broadcast stop. ``run_id=None`` is a wildcard."""
         await self.start()

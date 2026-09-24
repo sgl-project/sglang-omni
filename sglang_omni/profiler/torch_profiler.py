@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import logging
@@ -16,14 +15,8 @@ if current_platform.is_npu():
 
 from .base_profiler import ProfilerBase
 
-# Adapted from vLLM-Omni diffusion profiler (Apache 2.0 licensed)
-# Original files:
-# - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/torch_profiler.py
-
-
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -44,11 +37,10 @@ class TorchProfiler(ProfilerBase):
     Compression is offloaded to a background subprocess to avoid blocking the worker loop.
     """
 
-    _profiler: profile | None = None
-    _trace_template: str = ""
-
-    _active_run_id: str | None = None
-    _lock = threading.Lock()
+    profiler: profile | None = None
+    trace_template: str = ""
+    active_run_id: str | None = None
+    lock = threading.Lock()
 
     @classmethod
     def get_active_run_id(cls) -> str | None:
@@ -60,12 +52,9 @@ class TorchProfiler(ProfilerBase):
         Start the profiler with the given trace path template.
         """
         with cls.lock:
-
-            # 1. Cleanup any existing profiler
             if cls.profiler is not None:
                 if run_id is not None and cls.active_run_id == run_id:
                     return f"{cls.trace_template}_rank{rank}.trace.json.gz"
-
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
                     rank,
@@ -81,50 +70,34 @@ class TorchProfiler(ProfilerBase):
                 cls.profiler = None
                 cls.active_run_id = None
                 cls.trace_template = ""
-
             rank = cls.get_rank()
-
-            # 2. Make path absolute
             trace_path_template = os.path.abspath(trace_path_template)
             cls.trace_template = trace_path_template
             cls.active_run_id = run_id
-
-            # Expected paths
             json_file = f"{trace_path_template}_rank{rank}.trace.json"
-
             os.makedirs(os.path.dirname(json_file), exist_ok=True)
-
             logger.info(
                 "[Rank %s] Starting End-to-End Torch profiler (run_id=%s)", rank, run_id
             )
 
-            # 3. Define the on_trace_ready handler
             def trace_handler(p):
                 nonlocal json_file
-
-                # A. Export JSON Trace
                 try:
                     p.export_chrome_trace(json_file)
                     logger.info(f"[Rank {rank}] Trace exported to {json_file}")
-
                     try:
                         subprocess.Popen(["gzip", "-f", json_file])
                         logger.info(
                             f"[Rank {rank}] Triggered background compression for {json_file}"
                         )
-                        # Update variable to point to the eventual file
                         json_file = f"{json_file}.gz"
                     except Exception as compress_err:
                         logger.warning(
                             f"[Rank {rank}] Background gzip failed to start: {compress_err}"
                         )
-
                 except Exception as e:
                     logger.warning(f"[Rank {rank}] Failed to export trace: {e}")
 
-            # No ``schedule``: record continuously between start/stop.
-            # Expensive flags are env-var opt-in (default off keeps the
-            # trace tens of MB; all on can hit multi-GB).
             cls.profiler = profile(
                 activities=profiler_activities(),
                 on_trace_ready=trace_handler,
@@ -135,11 +108,7 @@ class TorchProfiler(ProfilerBase):
                 with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
                 with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
-
-            # 5. Start profiling
             cls.profiler.start()
-
-            # Return the expected final path
             return f"{trace_path_template}_rank{rank}.trace.json.gz"
 
     @classmethod
@@ -153,11 +122,9 @@ class TorchProfiler(ProfilerBase):
         with cls.lock:
             if cls.profiler is None:
                 return None
-
             rank = cls.get_rank()
             active = cls.active_run_id
-
-            if run_id is not None and active is not None and active != run_id:
+            if run_id is not None and active is not None and (active != run_id):
                 logger.warning(
                     "[Rank %s] Ignoring profiler stop for run_id=%s because active_run_id=%s",
                     rank,
@@ -165,19 +132,14 @@ class TorchProfiler(ProfilerBase):
                     active,
                 )
                 return None
-
             base_path = f"{cls.trace_template}_rank{rank}"
             json_path = f"{base_path}.trace.json"
             gz_path = f"{json_path}.gz"
-
             profiler = cls.profiler
             try:
                 profiler.stop()
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
-
-            # No schedule → on_trace_ready isn't fired on stop, so
-            # export here.
             try:
                 os.makedirs(os.path.dirname(json_path), exist_ok=True)
                 profiler.export_chrome_trace(json_path)
@@ -191,17 +153,13 @@ class TorchProfiler(ProfilerBase):
                     )
                 except Exception as compress_err:
                     logger.warning(
-                        "[Rank %s] Background gzip failed: %s",
-                        rank,
-                        compress_err,
+                        "[Rank %s] Background gzip failed: %s", rank, compress_err
                     )
             except Exception as e:
                 logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
-
             cls.profiler = None
             cls.active_run_id = None
             cls.trace_template = ""
-
             return {"trace": gz_path, "table": None}
 
     @classmethod
@@ -228,7 +186,6 @@ class TorchNPUProfiler(TorchProfiler):
             if cls.profiler is not None:
                 if run_id is not None and cls.active_run_id == run_id:
                     return trace_path_template
-
                 rank = cls.get_rank()
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
@@ -245,16 +202,12 @@ class TorchNPUProfiler(TorchProfiler):
                 cls.profiler = None
                 cls.active_run_id = None
                 cls.trace_template = ""
-
             cls.active_run_id = run_id
             cls.trace_template = trace_path_template
-
             os.makedirs(trace_path_template, exist_ok=True)
-
             logger.info(
                 "[Rank %s] Starting End-to-End Torch profiler (run_id=%s)", rank, run_id
             )
-
             cls.profiler = torch_npu.profiler.profile(
                 activities=[
                     torch_npu.profiler.ProfilerActivity.CPU,
@@ -271,7 +224,6 @@ class TorchNPUProfiler(TorchProfiler):
                 with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
             cls.profiler.start()
-
             return trace_path_template
 
     @classmethod
@@ -279,12 +231,10 @@ class TorchNPUProfiler(TorchProfiler):
         with cls.lock:
             if cls.profiler is None:
                 return None
-
             rank = cls.get_rank()
             active = cls.active_run_id
             trace_path = cls.trace_template
-
-            if run_id is not None and active is not None and active != run_id:
+            if run_id is not None and active is not None and (active != run_id):
                 logger.warning(
                     "[Rank %s] Ignoring profiler stop for run_id=%s because active_run_id=%s",
                     rank,
@@ -292,15 +242,12 @@ class TorchNPUProfiler(TorchProfiler):
                     active,
                 )
                 return None
-
             profiler = cls.profiler
             try:
                 profiler.stop()
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
-
             cls.profiler = None
             cls.active_run_id = None
             cls.trace_template = ""
-
             return {"trace": trace_path, "table": None}

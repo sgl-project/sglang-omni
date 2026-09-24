@@ -268,7 +268,9 @@ class Attention(nn.Module):
         self.attention_qk_norm = config.attention_qk_norm
         self.kv_cache: KVCache | None = None
 
-        self.register_load_state_dict_pre_hook(self.load_hook)
+        self._register_load_state_dict_pre_hook(
+            self.load_hook
+        )  # noqa: leading-underscore
 
     def load_hook(self, state_dict, prefix, *args):
         """Normalize legacy split-QKV checkpoints before strict loading."""

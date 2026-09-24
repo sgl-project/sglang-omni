@@ -375,7 +375,7 @@ def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
     runner.model = SimpleNamespace(
         hidden_size=3,
-        _decode_input_embed_buffer=torch.zeros(2, 3, dtype=torch.float16),
+        decode_input_embed_buffer=torch.zeros(2, 3, dtype=torch.float16),
     )
     first = SimpleNamespace(
         data=SimpleNamespace(
@@ -405,7 +405,7 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
     runner.model = SimpleNamespace(
         hidden_size=3,
-        _decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
+        decode_input_embed_buffer=torch.ones(1, 3, dtype=torch.float16),
     )
 
     result = runner.before_decode(object(), object(), [])
@@ -442,7 +442,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
         hidden_size = 3
 
         def __init__(self) -> None:
-            self._decode_input_embed_buffer = torch.zeros(1, 3)
+            self.decode_input_embed_buffer = torch.zeros(1, 3)
 
         def acoustic_transformer(self, hidden):
             assert hidden.shape == (1, 3)
@@ -465,7 +465,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
             )
 
     class FakeOutputProcessor:
-        _capture_hidden = False
+        capture_hidden = False
 
         def process(self, model_output, scheduler_output):
             del model_output

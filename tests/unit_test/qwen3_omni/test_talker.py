@@ -1076,7 +1076,7 @@ def test_process_input_requests_builds_at_one_chunk_under_topology() -> None:
 
 def _chunk_gate_scheduler(*, decode_ready: bool) -> QwenTalkerScheduler:
     scheduler = object.__new__(QwenTalkerScheduler)
-    scheduler._model_runner = SimpleNamespace(
+    scheduler.model_runner = SimpleNamespace(
         is_decode_batch_ready=lambda batch: decode_ready
     )
     scheduler.chunk_wait_steps = 0
@@ -2186,8 +2186,8 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
 
     runner = _prefill_runner()
     runner.model = SimpleNamespace(
-        _feedback_buffer=feedback_buffer,
-        _feedback_mask=feedback_mask,
+        feedback_buffer=feedback_buffer,
+        feedback_mask=feedback_mask,
     )
 
     runner.write_feedback_buffers([sched_req])
@@ -2283,27 +2283,27 @@ def _talker_seed_self(
     """Minimal stand-in carrying only the buffers prepare_decode_buffers writes."""
     device = device or torch.device("cpu")
     fake = SimpleNamespace(
-        _repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
-        _suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
-        _repetition_penalties=torch.ones(max_bs, 1, device=device),
-        _sampling_temperatures=torch.ones(max_bs, 1, device=device),
-        _sampling_top_ps=torch.ones(max_bs, device=device),
-        _sampling_top_ks=torch.ones(max_bs, dtype=torch.long, device=device),
-        _sampling_min_ps=torch.zeros(max_bs, device=device),
-        _sampling_seeds=torch.zeros(max_bs, dtype=torch.long, device=device),
-        _sampling_staging_cpu=torch.zeros(
+        repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        repetition_penalties=torch.ones(max_bs, 1, device=device),
+        sampling_temperatures=torch.ones(max_bs, 1, device=device),
+        sampling_top_ps=torch.ones(max_bs, device=device),
+        sampling_top_ks=torch.ones(max_bs, dtype=torch.long, device=device),
+        sampling_min_ps=torch.zeros(max_bs, device=device),
+        sampling_seeds=torch.zeros(max_bs, dtype=torch.long, device=device),
+        sampling_staging_cpu=torch.zeros(
             6,
             max_bs,
             dtype=torch.int64,
             device="cpu",
             pin_memory=device.type == "cuda",
         ),
-        _sampling_staging_gpu=torch.zeros(6, max_bs, dtype=torch.int64, device=device),
-        _sampling_staging_event=(torch.cuda.Event() if device.type == "cuda" else None),
-        _sampled_token_ids=torch.zeros(max_bs, dtype=torch.long, device=device),
-        _decode_prep_rids=None,
-        _decode_prep_out_lens=[],
-        _decode_prep_rep_rows=None,
+        sampling_staging_gpu=torch.zeros(6, max_bs, dtype=torch.int64, device=device),
+        sampling_staging_event=(torch.cuda.Event() if device.type == "cuda" else None),
+        sampled_token_ids=torch.zeros(max_bs, dtype=torch.long, device=device),
+        decode_prep_rids=None,
+        decode_prep_out_lens=[],
+        decode_prep_rep_rows=None,
     )
     fake.reuse_decode_buffers = Qwen3OmniTalker.reuse_decode_buffers.__get__(fake)
     fake.invalidate_decode_buffers = Qwen3OmniTalker.invalidate_decode_buffers.__get__(

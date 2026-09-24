@@ -297,13 +297,13 @@ class ReplicaProcessProbeScheduler:
         self.requires_tp_work_fanout = True
         self._marker = marker
         self._emit_stream = emit_stream
-        self._running = False
+        self.running = False
         self._stream_chunks: dict[str, list[Any]] = {}
         self._stream_done: set[str] = set()
 
     def start(self) -> None:
-        self._running = True
-        while self._running:
+        self.running = True
+        while self.running:
             try:
                 msg = self.inbox.get(timeout=0.1)
             except queue.Empty:
@@ -333,7 +333,7 @@ class ReplicaProcessProbeScheduler:
         process_id = os.getpid()
         if self._emit_stream:
             payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}pid"] = process_id
+            payload.data[f"{self._marker}_pid"] = process_id
             payload.data["producer_payload_id"] = id(payload)
             payload.data["_local_marker"] = threading.Lock()
             self.outbox.put(
@@ -354,7 +354,7 @@ class ReplicaProcessProbeScheduler:
             if local_marker is None:
                 raise AssertionError("same-process payload lost its local marker")
             payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}pid"] = process_id
+            payload.data[f"{self._marker}_pid"] = process_id
             payload.data["same_payload_object"] = payload.data[
                 "producer_payload_id"
             ] == id(payload)
@@ -369,7 +369,7 @@ class ReplicaProcessProbeScheduler:
         )
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
 
     def abort(self, request_id: str) -> None:
         self._stream_chunks.pop(request_id, None)

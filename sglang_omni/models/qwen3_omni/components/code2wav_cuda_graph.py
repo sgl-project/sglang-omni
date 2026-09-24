@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Exact-shape device graphs for the Qwen3-Omni Code2Wav component."""
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ import torch
 from sglang_omni.platforms import current_platform
 
 logger = logging.getLogger(__name__)
-
 _MASK_SWAP_LOCK = threading.Lock()
 
 
@@ -67,8 +65,7 @@ def unpacked_sequence_mask() -> Any:
 
     if not _MASK_SWAP_LOCK.acquire(blocking=False):
         raise RuntimeError(
-            "Code2Wav mask pin is already held; capture must stay single-threaded "
-            "because it swaps a transformers global"
+            "Code2Wav mask pin is already held; capture must stay single-threaded because it swaps a transformers global"
         )
     try:
         original = masking_utils.find_packed_sequence_indices
@@ -145,12 +142,7 @@ class TorchDeviceApi:
         return self.module(device).graph_pool_handle()
 
     def capture(
-        self,
-        model: Any,
-        static_input: torch.Tensor,
-        *,
-        pool: Any,
-        stream: Any,
+        self, model: Any, static_input: torch.Tensor, *, pool: Any, stream: Any
     ) -> tuple[Any, torch.Tensor]:
         device = static_input.device
         module = self.module(device)
@@ -164,11 +156,9 @@ class TorchDeviceApi:
                 ) as graph:
                     static_output = model(static_input)
         finally:
-            # graph.__exit__ restores its stream context only after capture_end,
-            # which may raise, so restore explicitly.
             module.set_stream(current_stream)
         current_stream.wait_stream(stream)
-        return graph, static_output
+        return (graph, static_output)
 
     def synchronize(self, device: torch.device) -> None:
         self.module(device).synchronize(device)
@@ -197,7 +187,7 @@ class Code2WavCudaGraphRunner:
     serving already relies on.
     """
 
-    _WARMUP_ITERATIONS = 3
+    WARMUP_ITERATIONS = 3
 
     def __init__(
         self,
@@ -217,20 +207,16 @@ class Code2WavCudaGraphRunner:
             )
         if self.device_api.graph_backend(self.device) is None:
             raise ValueError(
-                f"{current_platform.device_type} names no device graph backend, "
-                f"so Code2Wav cannot capture on {self.device}"
+                f"{current_platform.device_type} names no device graph backend, so Code2Wav cannot capture on {self.device}"
             )
         self.num_quantizers = int(num_quantizers)
         if self.num_quantizers <= 0:
             raise ValueError("Code2Wav graphs require a positive quantizer count")
         self.graph_keys = graph_keys
-        self.tier0_keys = tuple(k for k in graph_keys if k.batch_size == 1)
-        self.tier1_keys = tuple(k for k in graph_keys if k.batch_size > 1)
+        self.tier0_keys = tuple((k for k in graph_keys if k.batch_size == 1))
+        self.tier1_keys = tuple((k for k in graph_keys if k.batch_size > 1))
         self.owner_pid = os.getpid()
         self.graphs: dict[GraphKey, CapturedGraph] = {}
-        # Note (ruoyu): the scheduler reads the published sizes several times
-        # per step, so they are cached and refreshed where the key set changes
-        # (publish, rollback, runtime disable) instead of rescanned per call.
         self.sizes_by_frames: dict[int, tuple[int, ...]] = {}
         self.pool: Any | None = None
         self.capture_stream: Any | None = None
@@ -257,7 +243,6 @@ class Code2WavCudaGraphRunner:
         device_api: Any | None = None,
     ) -> Code2WavCudaGraphRunner:
         """Build the configured serving-reachable serial graphs."""
-
         runner = cls(
             model,
             device=device,
@@ -274,7 +259,6 @@ class Code2WavCudaGraphRunner:
             self.disable_reason = "invalid_total_gpu_memory_fraction"
             return
         self.memory_stats["total_gpu_memory_fraction"] = fraction
-
         tier1_info: dict[str, Any] = {
             "attempted_key_count": len(self.tier1_keys),
             "published_key_count": 0,
@@ -285,14 +269,12 @@ class Code2WavCudaGraphRunner:
         }
         if self.tier1_keys:
             self.memory_stats["tier1"] = tier1_info
-
         try:
             with self.device_api.device_context(self.device):
                 before = self.device_api.memory_stats(self.device)
         except Exception as exc:
             self.rollback_build(
-                temporary={},
-                reason=f"capture_failed: {type(exc).__name__}: {exc}",
+                temporary={}, reason=f"capture_failed: {type(exc).__name__}: {exc}"
             )
             return
         self.memory_stats["before"] = before
@@ -306,7 +288,6 @@ class Code2WavCudaGraphRunner:
                 "graph_budget_bytes": graph_budget,
             }
         )
-
         remaining = list(self.priority_order(self.tier1_keys))
         while True:
             if remaining:
@@ -329,7 +310,6 @@ class Code2WavCudaGraphRunner:
                 return
             temporary, pool, capture_stream = payload
             break
-
         self.pool = pool
         self.capture_stream = capture_stream
         self.graphs = {
@@ -345,7 +325,7 @@ class Code2WavCudaGraphRunner:
         self.build_stats["published_graph_count"] = len(self.graphs)
         if self.tier1_keys:
             tier1_info["published_key_count"] = sum(
-                1 for key in self.graphs if key.batch_size > 1
+                (1 for key in self.graphs if key.batch_size > 1)
             )
             tier1_info["skipped_keys"] = [
                 {"batch_size": key.batch_size, "frames": key.frames}
@@ -366,9 +346,7 @@ class Code2WavCudaGraphRunner:
             self.device,
         )
 
-    # Retries re-capture a strictly smaller key set, so this bound is only a
-    # backstop against footprint measurements that never stabilize.
-    _TIER1_MAX_ATTEMPTS = 6
+    TIER1_MAX_ATTEMPTS = 6
 
     def capture_attempt(
         self,
@@ -409,15 +387,10 @@ class Code2WavCudaGraphRunner:
                     self.build_stats["attempted_graph_count"] += 1
                     capturing = (key, "capturing")
                     temporary[key] = self.capture_graph(
-                        key,
-                        pool=pool,
-                        stream=capture_stream,
+                        key, pool=pool, stream=capture_stream
                     )
                     capturing = (key, "measuring after")
                     self.device_api.synchronize(self.device)
-                    # Warmup's eager activations linger in the allocator cache
-                    # and would count as reserved footprint, dwarfing the pool
-                    # itself; release them so the check measures what is kept.
                     self.device_api.empty_cache(self.device)
                     footprint = self.footprint_since(before)
                     tier1_info["per_key_footprint_bytes"][self.key_name(key)] = (
@@ -433,14 +406,9 @@ class Code2WavCudaGraphRunner:
                         self.build_stats["attempted_graph_count"] += 1
                         capturing = (key, "capturing")
                         temporary[key] = self.capture_graph(
-                            key,
-                            pool=pool,
-                            stream=capture_stream,
+                            key, pool=pool, stream=capture_stream
                         )
                         capturing = (key, "measuring after")
-                    # Capture, replay and equivalence checks enqueue device
-                    # work. Do not make the graph matrix visible until every
-                    # key has completed on the bound device.
                     self.device_api.synchronize(self.device)
                     gc.collect()
                     self.device_api.empty_cache(self.device)
@@ -457,9 +425,7 @@ class Code2WavCudaGraphRunner:
                             combined_violation = True
                         else:
                             raise BuildFailure(
-                                f"memory_budget_exceeded: graph footprint "
-                                f"{graph_footprint} exceeds budget "
-                                f"{graph_budget}",
+                                f"memory_budget_exceeded: graph footprint {graph_footprint} exceeds budget {graph_budget}"
                             )
         except torch.OutOfMemoryError as exc:
             if not tier1_keys:
@@ -485,19 +451,19 @@ class Code2WavCudaGraphRunner:
                     ),
                     exc_info=True,
                 )
-            if tier1_keys and not tier0_started:
+            if tier1_keys and (not tier0_started):
                 tier1_info["disable_reason"] = reason
                 tier1_abandoned = True
             else:
                 error_reason = reason
-
         if error_reason is not None:
-            return "disable", (temporary, error_reason)
-        if violation_index is None and not combined_violation and not tier1_abandoned:
-            return "published", (temporary, pool, capture_stream)
-
-        # Tear the whole attempt down: pool memory frees only once every
-        # graph captured into it is gone.
+            return ("disable", (temporary, error_reason))
+        if (
+            violation_index is None
+            and (not combined_violation)
+            and (not tier1_abandoned)
+        ):
+            return ("published", (temporary, pool, capture_stream))
         temporary.clear()
         pool = None
         capture_stream = None
@@ -507,18 +473,17 @@ class Code2WavCudaGraphRunner:
                 self.device_api.empty_cache(self.device)
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav graph attempt rollback cleanup failed: %s",
-                cleanup_exc,
+                "Code2Wav graph attempt rollback cleanup failed: %s", cleanup_exc
             )
         if tier1_abandoned:
-            return "shrink", []
+            return ("shrink", [])
         remaining = list(tier1_keys)
         if combined_violation or violation_index == 0:
             oversized_batch = remaining[0].batch_size
             remaining = [key for key in remaining if key.batch_size < oversized_batch]
         else:
             remaining = remaining[:violation_index]
-        return "shrink", remaining
+        return ("shrink", remaining)
 
     def footprint_since(self, before: dict[str, int]) -> int:
         snapshot = self.device_api.memory_stats(self.device)
@@ -530,8 +495,6 @@ class Code2WavCudaGraphRunner:
 
     @staticmethod
     def priority_order(keys: tuple[GraphKey, ...]) -> tuple[GraphKey, ...]:
-        # Largest first: the biggest graph lays down the pool's peak blocks so
-        # later captures reuse them instead of growing the pool.
         return tuple(sorted(keys, key=lambda k: (k.batch_size, k.frames), reverse=True))
 
     @staticmethod
@@ -543,19 +506,10 @@ class Code2WavCudaGraphRunner:
         first; the scheduler decomposes coalesced batches against this."""
         return self.sizes_by_frames.get(int(frames), ())
 
-    def capture_graph(
-        self,
-        key: GraphKey,
-        *,
-        pool: Any,
-        stream: Any,
-    ) -> CapturedGraph:
+    def capture_graph(self, key: GraphKey, *, pool: Any, stream: Any) -> CapturedGraph:
         static_input = self.device_api.new_static_input(
-            (key.batch_size, self.num_quantizers, key.frames),
-            device=self.device,
+            (key.batch_size, self.num_quantizers, key.frames), device=self.device
         )
-        # _verify_equivalence compares with torch.equal, so the eager reference
-        # below has to see the kernels the graph recorded, not a fresh choice.
         with xpu_capture_pins():
             self.device_api.warmup(
                 self.model,
@@ -565,18 +519,13 @@ class Code2WavCudaGraphRunner:
                 stream=stream,
             )
             graph, static_output = self.device_api.capture(
-                self.model,
-                static_input,
-                pool=pool,
-                stream=stream,
+                self.model, static_input, pool=pool, stream=stream
             )
             with torch.inference_mode():
                 eager_output = self.model(static_input).detach().clone()
                 graph.replay()
         self.verify_equivalence(
-            key=key,
-            eager_output=eager_output,
-            graph_output=static_output,
+            key=key, eager_output=eager_output, graph_output=static_output
         )
         return CapturedGraph(graph, static_input, static_output)
 
@@ -594,10 +543,7 @@ class Code2WavCudaGraphRunner:
 
     @staticmethod
     def verify_equivalence(
-        *,
-        key: GraphKey,
-        eager_output: torch.Tensor,
-        graph_output: torch.Tensor,
+        *, key: GraphKey, eager_output: torch.Tensor, graph_output: torch.Tensor
     ) -> None:
         if not (
             eager_output.shape == graph_output.shape
@@ -610,10 +556,7 @@ class Code2WavCudaGraphRunner:
             )
 
     def rollback_build(
-        self,
-        *,
-        temporary: dict[GraphKey, CapturedGraph],
-        reason: str,
+        self, *, temporary: dict[GraphKey, CapturedGraph], reason: str
     ) -> None:
         if "after" not in self.memory_stats:
             try:
@@ -627,8 +570,7 @@ class Code2WavCudaGraphRunner:
                 self.memory_stats["after"] = self.device_api.memory_stats(self.device)
             except Exception as snapshot_exc:
                 logger.warning(
-                    "Code2Wav device graph rollback snapshot failed: %s",
-                    snapshot_exc,
+                    "Code2Wav device graph rollback snapshot failed: %s", snapshot_exc
                 )
         self.graphs.clear()
         self.sizes_by_frames = {}
@@ -646,51 +588,36 @@ class Code2WavCudaGraphRunner:
                 )
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav device graph rollback cleanup failed: %s",
-                cleanup_exc,
+                "Code2Wav device graph rollback cleanup failed: %s", cleanup_exc
             )
         logger.warning("Code2Wav device graph runner disabled: %s", reason)
 
-    def run(
-        self,
-        codes: torch.Tensor,
-        *,
-        eligible: bool = True,
-    ) -> Code2WavRunResult:
+    def run(self, codes: torch.Tensor, *, eligible: bool = True) -> Code2WavRunResult:
         """Replay an exact graph or eagerly execute with a stable reason.
 
         Graph outputs are borrowed and valid only until the next graph replay;
         callers must serialize replay through trim and D2H consumption.
         """
-
         current_pid = os.getpid()
         if current_pid != self.owner_pid:
             raise RuntimeError(
-                "Code2Wav device graph runner/model belongs to PID "
-                f"{self.owner_pid}, but was used in PID {current_pid}; it must "
-                "be rebuilt in a spawned process before inference"
+                f"Code2Wav device graph runner/model belongs to PID {self.owner_pid}, but was used in PID {current_pid}; it must be rebuilt in a spawned process before inference"
             )
         if not self.enabled:
             return self.eager(codes, key=None, reason="disabled")
         if not eligible:
             return self.eager(codes, key=None, reason="ineligible")
         self.validate_codes(codes)
-
-        key = GraphKey(
-            batch_size=int(codes.shape[0]),
-            frames=int(codes.shape[2]),
-        )
+        key = GraphKey(batch_size=int(codes.shape[0]), frames=int(codes.shape[2]))
         captured = self.graphs.get(key)
         if captured is None:
             return self.eager(codes, key=key, reason="key_miss")
-
         try:
             captured.static_input.copy_(codes)
             captured.graph.replay()
         except Exception as exc:
             self.replay_failures += 1
             reason = f"runtime_replay_failed: {type(exc).__name__}: {exc}"
-            # Drop the last local graph reference before cleanup releases its pool.
             captured = None
             self.disable_runtime(reason)
             raise
@@ -705,8 +632,7 @@ class Code2WavCudaGraphRunner:
     def validate_codes(self, codes: torch.Tensor) -> None:
         if not self.device_api.is_accelerator_tensor(codes, self.device):
             raise TypeError(
-                f"Code2Wav graph input must be on device type "
-                f"{self.device.type!r}, got {codes.device.type!r}"
+                f"Code2Wav graph input must be on device type {self.device.type!r}, got {codes.device.type!r}"
             )
         if codes.dtype != torch.long:
             raise TypeError("Code2Wav graph input must use torch.long")
@@ -720,20 +646,13 @@ class Code2WavCudaGraphRunner:
             )
 
     def eager(
-        self,
-        codes: torch.Tensor,
-        *,
-        key: GraphKey | None,
-        reason: str,
+        self, codes: torch.Tensor, *, key: GraphKey | None, reason: str
     ) -> Code2WavRunResult:
         self.fallback_counts[reason] += 1
         with torch.inference_mode():
             output = self.model(codes)
         return Code2WavRunResult(
-            output=output,
-            execution_mode="eager",
-            key=key,
-            fallback_reason=reason,
+            output=output, execution_mode="eager", key=key, fallback_reason=reason
         )
 
     def disable_runtime(self, reason: str) -> None:
@@ -749,14 +668,12 @@ class Code2WavCudaGraphRunner:
                 self.device_api.empty_cache(self.device)
         except Exception as cleanup_exc:
             logger.warning(
-                "Code2Wav device graph runtime cleanup failed: %s",
-                cleanup_exc,
+                "Code2Wav device graph runtime cleanup failed: %s", cleanup_exc
             )
         logger.exception("Code2Wav device graph replay disabled the runner")
 
     def stats(self) -> dict[str, Any]:
         """Return a strict JSON-safe snapshot of build and runtime state."""
-
         return {
             "enabled": self.enabled,
             "disable_reason": self.disable_reason,
@@ -768,12 +685,9 @@ class Code2WavCudaGraphRunner:
             },
             "graph_contract": {
                 "keys": [
-                    {
-                        "batch_size": key.batch_size,
-                        "frames": key.frames,
-                    }
+                    {"batch_size": key.batch_size, "frames": key.frames}
                     for key in self.graph_keys
-                ],
+                ]
             },
             "build": deepcopy(self.build_stats),
             "memory": deepcopy(self.memory_stats),
@@ -785,8 +699,4 @@ class Code2WavCudaGraphRunner:
         }
 
 
-__all__ = [
-    "Code2WavCudaGraphRunner",
-    "Code2WavRunResult",
-    "GraphKey",
-]
+__all__ = ["Code2WavCudaGraphRunner", "Code2WavRunResult", "GraphKey"]

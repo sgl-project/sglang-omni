@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Configuration schema for pipeline wiring."""
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 if TYPE_CHECKING:
     from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
-
 REPLICA_SEPARATOR = "@r"
 
 
@@ -22,18 +20,12 @@ class RealtimeTranscriptionConfig:
 
     strategy_cls: type[StreamingASRStrategy]
     decode_interval_ms: int = 2000
-    # Whether the model accepts server-VAD segmentation. When False the
-    # session never runs a VAD, and a client asking for turn_detection
-    # server_vad gets an error.
     server_vad: bool = False
-    # Longest audio one segment may span before a forced split. None
-    # means the session never splits on length.
     max_segment_s: float | None = None
 
     def __post_init__(self) -> None:
         if self.decode_interval_ms <= 0:
             raise ValueError("realtime transcription decode interval must be positive")
-
         if self.max_segment_s is not None and self.max_segment_s <= 0:
             raise ValueError("realtime transcription max_segment_s must be positive")
 
@@ -46,8 +38,8 @@ def parse_replica_instance_name(name: str) -> tuple[str, int | None]:
     """Split ``stage@rN`` into ``(stage, N)``; plain names get ``None``."""
     logical, sep, suffix = name.rpartition(REPLICA_SEPARATOR)
     if not sep or not suffix.isdigit():
-        return name, None
-    return logical, int(suffix)
+        return (name, None)
+    return (logical, int(suffix))
 
 
 def stage_process_name(stage: "StageConfig") -> str:
@@ -64,28 +56,15 @@ def stage_process_name(stage: "StageConfig") -> str:
 
 
 logger = logging.getLogger(__name__)
-
-# Factory kwargs owned by placement and process construction: injected from
-# stage.gpu / stage.gpu_memory_fraction, so a config may not set them directly.
 PLACEMENT_OWNED_FACTORY_KWARGS = frozenset(
-    {
-        "gpu_id",
-        "total_gpu_memory_fraction",
-        "process_total_gpu_memory_fraction",
-    }
+    {"gpu_id", "total_gpu_memory_fraction", "process_total_gpu_memory_fraction"}
 )
-
-
 MAX_SPEECH_INPUT_CHARS: int = 4096
 
 
 def parse_memory_bytes(field_name: str, value: int | str | None) -> int | None:
     """Parse a byte count given as an int or an exact binary-size string."""
-
-    format_error = (
-        f"{field_name} must be a positive integer byte count or an "
-        "exact binary-size string ending in KiB, MiB, GiB, or TiB"
-    )
+    format_error = f"{field_name} must be a positive integer byte count or an exact binary-size string ending in KiB, MiB, GiB, or TiB"
     if value is None:
         return None
     if isinstance(value, bool):
@@ -96,19 +75,13 @@ def parse_memory_bytes(field_name: str, value: int | str | None) -> int | None:
         return value
     if not isinstance(value, str):
         raise ValueError(format_error)
-
-    match = re.fullmatch(r"([0-9]+)(KiB|MiB|GiB|TiB)", value)
+    match = re.fullmatch("([0-9]+)(KiB|MiB|GiB|TiB)", value)
     if match is None:
         raise ValueError(format_error)
     quantity = int(match.group(1))
     if quantity <= 0:
         raise ValueError(f"{field_name} must be positive")
-    unit_multipliers = {
-        "KiB": 1024,
-        "MiB": 1024**2,
-        "GiB": 1024**3,
-        "TiB": 1024**4,
-    }
+    unit_multipliers = {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3, "TiB": 1024**4}
     return quantity * unit_multipliers[match.group(2)]
 
 
@@ -121,7 +94,6 @@ class CommConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-
     slot_size_mb: int = 512
     credits: int = 2
     cuda_ipc_slot_size_kb: int = 64
@@ -135,7 +107,6 @@ class EndpointsConfig(BaseModel):
     """Endpoint allocation settings."""
 
     model_config = ConfigDict(extra="forbid")
-
     base_path: str = "/tmp/sglang_omni"
 
 
@@ -150,7 +121,6 @@ class EngineArgs(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
-
     mem_fraction_static: float | None = Field(default=None, gt=0, lt=1)
     max_running_requests: int | None = Field(default=None, ge=1)
     max_total_tokens: int | None = Field(default=None, ge=1)
@@ -163,14 +133,9 @@ class EngineArgs(BaseModel):
     disable_custom_all_reduce: bool | None = None
     kv_cache_bytes: int | None = Field(
         default=None,
-        description=(
-            "Authoritative KV pool size in bytes, per rank; accepts an int or "
-            "an exact binary-size string such as 2GiB. Consumed by the omni "
-            "KV configurator, never forwarded to SGLang ServerArgs."
-        ),
+        description="Authoritative KV pool size in bytes, per rank; accepts an int or an exact binary-size string such as 2GiB. Consumed by the omni KV configurator, never forwarded to SGLang ServerArgs.",
     )
-
-    _NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
@@ -178,21 +143,15 @@ class EngineArgs(BaseModel):
         return parse_memory_bytes("engine.kv_cache_bytes", value)
 
     def model_post_init(self, __context: Any = None) -> None:
-        if self.quantization is not None and not self.quantization.strip():
+        if self.quantization is not None and (not self.quantization.strip()):
             raise ValueError("engine.quantization must not be empty")
         if self.kv_cache_bytes is not None and self.mem_fraction_static is not None:
             raise ValueError(
-                "engine.kv_cache_bytes cannot be set together with "
-                "engine.mem_fraction_static; if the fraction comes from the "
-                "pipeline's built-in defaults, set mem_fraction_static: null "
-                "on the same stage"
+                "engine.kv_cache_bytes cannot be set together with engine.mem_fraction_static; if the fraction comes from the pipeline's built-in defaults, set mem_fraction_static: null on the same stage"
             )
         if self.kv_cache_bytes is not None and self.max_total_tokens is not None:
             raise ValueError(
-                "engine.kv_cache_bytes cannot be set together with "
-                "engine.max_total_tokens; both pin the generation stage's KV "
-                "capacity, and the lower token cap silently shrinks the "
-                "byte-derived pool"
+                "engine.kv_cache_bytes cannot be set together with engine.max_total_tokens; both pin the generation stage's KV capacity, and the lower token cap silently shrinks the byte-derived pool"
             )
 
     def overrides(self) -> dict[str, Any]:
@@ -221,16 +180,12 @@ class FactoryArgs(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
-
-    # --- model construction ---
     device: str | None = None
     dtype: str | None = None
     max_seq_len: int | None = Field(default=None, gt=0)
     video_fps: float | None = Field(default=None, gt=0)
     max_new_tokens: int | None = Field(default=None, gt=0)
     context_length: int | None = Field(default=None, gt=0)
-
-    # --- executor / batching ---
     max_concurrency: int | None = Field(default=None, ge=1)
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
@@ -250,10 +205,7 @@ class FactoryArgs(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         if self.prefill_coalesce_requests == 1:
             logger.warning(
-                "prefill_coalesce_requests=1 disables coalescing: the "
-                "admission gate only engages at >= 2 (a batch of one has "
-                "nothing to coalesce with). Use 0 to disable explicitly, "
-                "or >= 2 to enable."
+                "prefill_coalesce_requests=1 disables coalescing: the admission gate only engages at >= 2 (a batch of one has nothing to coalesce with). Use 0 to disable explicitly, or >= 2 to enable."
             )
 
 
@@ -261,15 +213,10 @@ class PlacementConfig(BaseModel):
     """Pipeline-level placement planning limits."""
 
     model_config = ConfigDict(extra="forbid")
-
     max_total_gpu_memory_fraction_per_gpu: float = Field(default=1.0, gt=0, le=1)
     require_memory_fraction_for_colocation: bool = True
 
 
-# Note (kaige): validation follows the context each layer owns. StageConfig and
-# ProcessConfig check object-local fields, PipelineConfig checks declarations
-# and references, and logical-process compilation checks derived topology once
-# before workers start. Runtime only consumes the compiled plans.
 class ProcessConfig(BaseModel):
     """Replica policy for one logical process.
 
@@ -278,7 +225,6 @@ class ProcessConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-
     num_replicas: int = 1
     replica_devices: list[int] | None = None
 
@@ -291,7 +237,7 @@ class ProcessConfig(BaseModel):
             return [value]
         if isinstance(value, str):
             parts = [part.strip() for part in value.split(",")]
-            if any(not part for part in parts):
+            if any((not part for part in parts)):
                 raise ValueError("processes.replica_devices must contain GPU ids")
             try:
                 return [int(part) for part in parts]
@@ -308,7 +254,7 @@ class ProcessConfig(BaseModel):
             return None
         if not value:
             raise ValueError("processes.replica_devices must not be empty")
-        if any(device_id < 0 for device_id in value):
+        if any((device_id < 0 for device_id in value)):
             raise ValueError("processes.replica_devices GPU ids must be >= 0")
         return value
 
@@ -340,27 +286,14 @@ class StageConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-
     engine_stage: ClassVar[bool] = False
-    """Whether this stage type drives an SGLang engine.
-
-    Declared per stage *type* so path compilation can refuse ``engine.*``
-    writes on stages that would silently ignore them.
-    """
-
-    # --- Identity ---
+    "Whether this stage type drives an SGLang engine.\n\n    Declared per stage *type* so path compilation can refuse ``engine.*``\n    writes on stages that would silently ignore them.\n    "
     name: str
-
-    # --- Factory ---
     factory_path: str
-    """Dotted import path of the stage factory."""
-
-    # --- Routing (set `next` for static routing or `terminal`) ---
+    "Dotted import path of the stage factory."
     next: str | list[str] | None = None
     terminal: bool = False
     route_fn: str | None = None
-
-    # --- GPU / parallelism / process placement (parent-process consumers) ---
     gpu: int | list[int] | None = None
     tp_size: int = Field(default=1, ge=1)
     process: str | None = None
@@ -368,25 +301,11 @@ class StageConfig(BaseModel):
         default=None,
         gt=0,
         le=1,
-        description=(
-            "Per-stage-rank budget as a fraction of total physical GPU memory. "
-            "After TP expansion, each rank contributes this budget to its "
-            "assigned GPU; stages sharing an OS process contribute jointly to "
-            "that process's budget."
-        ),
+        description="Per-stage-rank budget as a fraction of total physical GPU memory. After TP expansion, each rank contributes this budget to its assigned GPU; stages sharing an OS process contribute jointly to that process's budget.",
     )
     total_reserve_bytes: int | None = Field(
         default=None,
-        description=(
-            "Per-replica total physical VRAM budget in bytes (weights, KV, "
-            "activations); accepts an int or an exact binary-size string. "
-            "Drives placement capacity checks and MPS preflight arithmetic, "
-            "and unless enforce_total_reserve is false it is enforced at "
-            "stage startup through a per-process torch allocator cap, so a "
-            "stage that outgrows its budget fails itself instead of a "
-            "co-tenant. The cap bounds torch allocations only; declared "
-            "budgets need headroom above the measured model footprint."
-        ),
+        description="Per-replica total physical VRAM budget in bytes (weights, KV, activations); accepts an int or an exact binary-size string. Drives placement capacity checks and MPS preflight arithmetic, and unless enforce_total_reserve is false it is enforced at stage startup through a per-process torch allocator cap, so a stage that outgrows its budget fails itself instead of a co-tenant. The cap bounds torch allocations only; declared budgets need headroom above the measured model footprint.",
     )
     enforce_total_reserve: bool = True
 
@@ -395,80 +314,57 @@ class StageConfig(BaseModel):
     def parse_total_reserve_bytes(cls, value: int | str | None) -> int | None:
         return parse_memory_bytes("total_reserve_bytes", value)
 
-    # --- Consumer groups ---
     engine: EngineArgs | None = None
     factory: FactoryArgs = Field(default_factory=FactoryArgs)
-
-    # Note (Yueying Li): per-stage env defaults applied in this stage's worker process at spawn
-    # (merged over the pipeline-level env_defaults; never overrides os.environ).
     env: dict[str, str] = Field(default_factory=dict)
-
-    # --- Fan-in ---
     wait_for: list[str] | None = None
     wait_for_fn: str | None = None
     merge_fn: str | None = None
-
-    # --- Streaming ---
     stream_to: list[str] = Field(default_factory=list)
     stream_done_to_fn: str | None = None
     can_accept_stream_before_payload: bool = False
-
-    # --- Payload transport ---
     disable_direct_cuda_ipc_payload: bool = False
-
-    # --- Route-specific payload projection ---
     project_payload: dict[str, str] = Field(default_factory=dict)
-
-    # --- Communication pool tuning ---
     comm: CommConfig | None = None
 
     def model_post_init(self, __context: Any = None) -> None:
         if isinstance(self.gpu, int) and self.tp_size > 1:
             raise ValueError(
-                f"Stage {self.name!r}: TP placement requires a list of "
-                f"{self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
+                f"Stage {self.name!r}: TP placement requires a list of {self.tp_size} unique GPU ids, got scalar gpu={self.gpu}"
             )
         if isinstance(self.gpu, list):
             if len(self.gpu) != self.tp_size:
                 raise ValueError(
-                    f"Stage {self.name!r}: gpu has {len(self.gpu)} entries "
-                    f"but tp_size={self.tp_size}"
+                    f"Stage {self.name!r}: gpu has {len(self.gpu)} entries but tp_size={self.tp_size}"
                 )
             if len(set(self.gpu)) != len(self.gpu):
                 raise ValueError(
-                    f"Stage {self.name!r}: TP placement requires unique GPU "
-                    f"ids, got {list(self.gpu)}"
+                    f"Stage {self.name!r}: TP placement requires unique GPU ids, got {list(self.gpu)}"
                 )
         if self.process is not None:
             self.process = self.process.strip()
             if not self.process:
                 raise ValueError(f"Stage {self.name!r} process must not be empty")
-        if self.engine is not None and not type(self).engine_stage:
+        if self.engine is not None and (not type(self).engine_stage):
             raise ValueError(
-                f"Stage {self.name!r} is not an engine stage; the engine block "
-                "only exists on stages whose factory drives an SGLang engine"
+                f"Stage {self.name!r} is not an engine stage; the engine block only exists on stages whose factory drives an SGLang engine"
             )
         if (
             self.total_reserve_bytes is not None
             and self.gpu_memory_fraction is not None
         ):
             raise ValueError(
-                f"Stage {self.name!r}: total_reserve_bytes and "
-                "gpu_memory_fraction declare the same budget in two units; "
-                "keep exactly one (set the other to null if it comes from the "
-                "pipeline's built-in defaults)"
+                f"Stage {self.name!r}: total_reserve_bytes and gpu_memory_fraction declare the same budget in two units; keep exactly one (set the other to null if it comes from the pipeline's built-in defaults)"
             )
         kv = self.engine.kv_cache_bytes if self.engine is not None else None
         if (
             kv is not None
             and self.total_reserve_bytes is not None
-            and kv > self.total_reserve_bytes
+            and (kv > self.total_reserve_bytes)
         ):
             raise ValueError(
-                f"Stage {self.name!r}: engine.kv_cache_bytes must not exceed "
-                "total_reserve_bytes"
+                f"Stage {self.name!r}: engine.kv_cache_bytes must not exceed total_reserve_bytes"
             )
-
         gpu = self.gpu
         if gpu is None:
             if self.tp_size > 1:
@@ -476,14 +372,12 @@ class StageConfig(BaseModel):
                     f"Stage {self.name!r}: gpu is required when tp_size={self.tp_size}"
                 )
             return
-
         gpu_ids = [gpu] if isinstance(gpu, int) else gpu
         if len(gpu_ids) != self.tp_size:
             raise ValueError(
-                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries "
-                f"but tp_size={self.tp_size}"
+                f"Stage {self.name!r}: gpu has {len(gpu_ids)} entries but tp_size={self.tp_size}"
             )
-        if any(gpu_id < 0 for gpu_id in gpu_ids):
+        if any((gpu_id < 0 for gpu_id in gpu_ids)):
             raise ValueError(f"Stage {self.name!r}: GPU ids must be >= 0")
         if len(set(gpu_ids)) != len(gpu_ids):
             raise ValueError(f"Stage {self.name!r}: GPU ids must be unique")
@@ -493,7 +387,6 @@ class EngineStageConfig(StageConfig):
     """Stage whose factory drives an SGLang engine, so ``engine.*`` exists."""
 
     engine_stage: ClassVar[bool] = True
-
     engine: EngineArgs | None = Field(default_factory=EngineArgs)
 
 
@@ -518,25 +411,9 @@ class AudioChunkingConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-    # Note (Jeffro): Longest clip (chunk length) sent to the engine in one request.
-    # Must stay within what the model's context can hold (Qwen3-ASR sizes its
-    # context for the official 1,200s native limit); below that ceiling it
-    # is a scheduling trade-off: shorter chunks batch better and keep a
-    # long upload from monopolizing the engine, at the cost of more seams.
     max_audio_clip_s: float = Field(default=30.0, gt=0)
-
-    # Memory guard for the whole upload: the decoded waveform stays resident
-    # while its chunks run.
     max_total_audio_s: float | None = Field(default=3600.0, gt=0)
-
-    # Note (Jeffro): How many chunks of one HTTP request may run in the engine at once.
-    # This is a fairness cap: to avoid a single long
-    # upload grabs every batch slot and queues out everyone else's requests.
-    # This is a pre-request cap.
     max_concurrent_chunks: int = Field(default=8, ge=1)
-
-    # Note (Jeffro): How many long uploads the HTTP process admits at once.
     max_concurrent_long_audio_requests: int | None = Field(default=None, ge=1)
 
     def model_post_init(self, __context: Any = None) -> None:
@@ -545,8 +422,7 @@ class AudioChunkingConfig(BaseModel):
             and self.max_total_audio_s < self.max_audio_clip_s
         ):
             raise ValueError(
-                f"max_total_audio_s={self.max_total_audio_s} must be at least "
-                f"max_audio_clip_s={self.max_audio_clip_s}"
+                f"max_total_audio_s={self.max_total_audio_s} must be at least max_audio_clip_s={self.max_audio_clip_s}"
             )
 
 
@@ -586,8 +462,6 @@ class ResolvedAudioChunking:
 
 @dataclass(frozen=True)
 class CustomVoiceConfig:
-    # Note(yzxiao): CustomVoice selects a checkpoint speaker without reference
-    # audio. Only an absent config disables this contract; speakers is required.
     speakers: tuple[str, ...]
     task_type: str
 
@@ -600,7 +474,6 @@ class PipelineConfig(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
-
     architecture: ClassVar[str | None] = None
     architecture_aliases: ClassVar[tuple[str, ...]] = ()
     requires_model_capabilities: ClassVar[bool] = False
@@ -610,32 +483,13 @@ class PipelineConfig(BaseModel):
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
-
-    # Note (Jeffro): the model-owned parameters of the long-audio transcription
-    # contract. Chunking stays off by default: some models can't correctly
-    # transcribe an isolated chunk (e.g. diarization tracks speakers across the
-    # whole recording).
-    allow_audio_chunking: ClassVar[bool] = (
-        False  # Whether the model can correctly transcribe an isolated chunk.
-    )
+    allow_audio_chunking: ClassVar[bool] = False
     max_native_clip_s: ClassVar[float | None] = None
-    min_tail_s: ClassVar[float] = 0.5  # Shortest final chunk worth transcribing.
-    condition_on_previous_text: ClassVar[bool] = (
-        False  # Whether the model can condition on the previous text.
-    )
+    min_tail_s: ClassVar[float] = 0.5
+    condition_on_previous_text: ClassVar[bool] = False
     max_speech_input_chars: ClassVar[int | None] = MAX_SPEECH_INPUT_CHARS
-
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {}
-    """Stage name -> ``StageConfig`` subclass for this pipeline's stage types.
-
-    The mapping is what makes a stage's type survive a dump/rebuild round
-    trip: the resolver mutates ``model_dump()`` output and reconstructs the
-    config, and this is how each stage document gets validated against its
-    own subclass (engine marker, model-specific ``model.*`` fields) instead
-    of the base ``StageConfig``. Stage names absent from the mapping --
-    including stages a user file adds -- validate as plain ``StageConfig``.
-    """
-
+    "Stage name -> ``StageConfig`` subclass for this pipeline's stage types.\n\n    The mapping is what makes a stage's type survive a dump/rebuild round\n    trip: the resolver mutates ``model_dump()`` output and reconstructs the\n    config, and this is how each stage document gets validated against its\n    own subclass (engine marker, model-specific ``model.*`` fields) instead\n    of the base ``StageConfig``. Stage names absent from the mapping --\n    including stages a user file adds -- validate as plain ``StageConfig``.\n    "
     model_path: str
     audio_chunking: AudioChunkingConfig = Field(default_factory=AudioChunkingConfig)
     stages: list[StageConfig]
@@ -686,21 +540,14 @@ class PipelineConfig(BaseModel):
     def model_post_init(self, __context: Any = None) -> None:
         self.validate_general()
         self.validate_processes()
-
         native = type(self).max_native_clip_s
         if native is not None and self.audio_chunking.max_audio_clip_s > native:
             raise ValueError(
-                f"audio_chunking.max_audio_clip_s="
-                f"{self.audio_chunking.max_audio_clip_s:g} must not exceed "
-                f"the model's native clip limit ({native:g}s)"
+                f"audio_chunking.max_audio_clip_s={self.audio_chunking.max_audio_clip_s:g} must not exceed the model's native clip limit ({native:g}s)"
             )
-
         if self.audio_chunking.max_audio_clip_s < type(self).min_tail_s:
             raise ValueError(
-                f"audio_chunking.max_audio_clip_s="
-                f"{self.audio_chunking.max_audio_clip_s:g} must be at least "
-                f"the model's minimum useful clip length "
-                f"({type(self).min_tail_s:g}s)"
+                f"audio_chunking.max_audio_clip_s={self.audio_chunking.max_audio_clip_s:g} must be at least the model's minimum useful clip length ({type(self).min_tail_s:g}s)"
             )
         self.config_cls = self.__class__.__name__
         if self.name is None:
@@ -719,12 +566,7 @@ class PipelineConfig(BaseModel):
         chunks = self.audio_chunking.max_concurrent_chunks
         if explicit * chunks >= max_running:
             logger.warning(
-                "audio_chunking.max_concurrent_long_audio_requests=%d x "
-                "max_concurrent_chunks=%d = %d engine requests, which is not "
-                "below engine.max_running_requests=%d (per replica): when "
-                "long audio is saturated, short transcriptions queue behind "
-                "its chunks. Lower one of the two or raise "
-                "max_running_requests (which also resizes CUDA graph capture).",
+                "audio_chunking.max_concurrent_long_audio_requests=%d x max_concurrent_chunks=%d = %d engine requests, which is not below engine.max_running_requests=%d (per replica): when long audio is saturated, short transcriptions queue behind its chunks. Lower one of the two or raise max_running_requests (which also resizes CUDA graph capture).",
                 explicit,
                 chunks,
                 explicit * chunks,
@@ -830,10 +672,7 @@ class PipelineConfig(BaseModel):
 
     @classmethod
     def tensor_parallel_server_args_overrides(
-        cls,
-        *,
-        stage_name: str,
-        tp_size: int,
+        cls, *, stage_name: str, tp_size: int
     ) -> dict[str, object]:
         """Return SGLang ServerArgs overrides implied by stage TP settings."""
         if (
@@ -874,18 +713,14 @@ class PipelineConfig(BaseModel):
     def validate_general(self) -> None:
         if not self.model_path:
             raise ValueError("Model path is required")
-
         for stage in self.stages:
             factory = stage.factory
             set_keys = set(factory.model_fields_set) | set(factory.model_extra or {})
             reserved = PLACEMENT_OWNED_FACTORY_KWARGS & set_keys
             if reserved:
                 raise ValueError(
-                    f"stage {stage.name!r} sets {sorted(reserved)} under factory.*; "
-                    "these kwargs are owned by placement and are injected from "
-                    "stage.gpu and stage.gpu_memory_fraction"
+                    f"stage {stage.name!r} sets {sorted(reserved)} under factory.*; these kwargs are owned by placement and are injected from stage.gpu and stage.gpu_memory_fraction"
                 )
-
         names = [s.name for s in self.stages]
         if not names:
             raise ValueError("Pipeline must define at least one stage")
@@ -894,7 +729,6 @@ class PipelineConfig(BaseModel):
         entry = self.resolved_entry_stage
         if entry not in names:
             raise ValueError(f"entry_stage {entry!r} is not defined")
-
         for s in self.stages:
             if not s.factory_path:
                 raise ValueError(f"Stage {s.name!r} missing factory")
@@ -907,7 +741,7 @@ class PipelineConfig(BaseModel):
                 raise ValueError(
                     f"Stage {s.name!r} cannot set route_fn on a terminal stage"
                 )
-            if s.stream_done_to_fn is not None and not s.stream_to:
+            if s.stream_done_to_fn is not None and (not s.stream_to):
                 raise ValueError(
                     f"Stage {s.name!r} cannot set stream_done_to_fn without stream_to"
                 )
@@ -938,21 +772,17 @@ class PipelineConfig(BaseModel):
                     raise ValueError(
                         f"Stage {s.name!r} project_payload references unknown stage {t!r}"
                     )
-
         for s in self.stages:
             if parse_replica_instance_name(s.name)[1] is not None:
                 raise ValueError(
-                    f"Stage name {s.name!r} uses the '@r<N>' suffix reserved "
-                    "for replica instances"
+                    f"Stage name {s.name!r} uses the '@r<N>' suffix reserved for replica instances"
                 )
-
         missing_process = [
-            s.name for s in self.stages if s.tp_size == 1 and not s.process
+            s.name for s in self.stages if s.tp_size == 1 and (not s.process)
         ]
         if missing_process:
             raise ValueError(
-                "Non-TP stages must declare process; "
-                f"missing process for {missing_process}"
+                f"Non-TP stages must declare process; missing process for {missing_process}"
             )
 
     def validate_processes(self) -> None:
@@ -965,31 +795,25 @@ class PipelineConfig(BaseModel):
         members: dict[str, list[StageConfig]] = {}
         for stage in self.stages:
             members.setdefault(stage_process_name(stage), []).append(stage)
-
         for process_name, stages in members.items():
             if parse_replica_instance_name(process_name)[1] is not None:
                 raise ValueError(
-                    f"Process name {process_name!r} uses the '@r<N>' suffix "
-                    "reserved for replica instances"
+                    f"Process name {process_name!r} uses the '@r<N>' suffix reserved for replica instances"
                 )
             tp_stages = [stage.name for stage in stages if stage.tp_size > 1]
             if len(tp_stages) > 1:
                 raise ValueError(
-                    f"Process name {process_name!r} is claimed by multiple TP "
-                    f"stages: {tp_stages}"
+                    f"Process name {process_name!r} is claimed by multiple TP stages: {tp_stages}"
                 )
             if tp_stages and len(stages) > 1:
                 others = [s.name for s in stages if s.name not in tp_stages]
                 raise ValueError(
-                    f"Process {process_name!r} holds TP stage {tp_stages[0]!r} "
-                    f"and cannot be shared with {others}"
+                    f"Process {process_name!r} holds TP stage {tp_stages[0]!r} and cannot be shared with {others}"
                 )
-
         unknown = sorted(set(self.processes) - set(members))
         if unknown:
             raise ValueError(
-                f"processes references unknown process name(s): {unknown}. "
-                f"Declared process names: {sorted(members)}"
+                f"processes references unknown process name(s): {unknown}. Declared process names: {sorted(members)}"
             )
 
     @staticmethod

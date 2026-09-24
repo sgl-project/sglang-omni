@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Qwen3-Omni talker scheduler policy on top of the generic OmniScheduler."""
 
 from __future__ import annotations
@@ -17,29 +16,22 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
-
 _CHUNK_WAIT_LOG_INTERVAL_S = 10.0
 
 
 def configure_talker_server_args(
-    server_args: Any,
-    *,
-    feedback_enabled: bool = True,
+    server_args: Any, *, feedback_enabled: bool = True
 ) -> bool:
     """Apply talker-specific scheduler/runtime defaults.
 
     Returns whether CUDA graphs were requested so the caller can capture them
     after the model worker is constructed.
     """
-
     from sglang.srt.arg_groups.model_override_base import resolved_view
 
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
-    overrides = {
-        "disable_radix_cache": True,
-        "chunked_prefill_size": 0,
-    }
+    overrides = {"disable_radix_cache": True, "chunked_prefill_size": 0}
     if feedback_enabled:
         overrides["disable_overlap_schedule"] = True
     override_server_args(server_args, "qwen3_omni.talker", **overrides)
@@ -49,11 +41,9 @@ def configure_talker_server_args(
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
-    # Note (wenyao): Callers that construct schedulers without __init__ still
-    # need consistent defaults for topology and profiling state.
-    _talker_start_topology: bool = ENABLE_TALKER_START_TOPOLOGY
-    _chunk_wait_steps: int = 0
-    _chunk_wait_last_log_s: float = 0.0
+    talker_start_topology: bool = ENABLE_TALKER_START_TOPOLOGY
+    chunk_wait_steps: int = 0
+    chunk_wait_last_log_s: float = 0.0
 
     def __init__(
         self,
@@ -67,8 +57,7 @@ class QwenTalkerScheduler(OmniScheduler):
         super().__init__(*args, **kwargs)
         if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:
             raise ValueError(
-                f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, "
-                f"got {partial_start_min_chunks}"
+                f"partial_start_min_chunks must be >= {MIN_PARTIAL_START_CHUNKS}, got {partial_start_min_chunks}"
             )
         self.enable_partial_start = bool(enable_partial_start)
         self.partial_start_min_chunks = int(partial_start_min_chunks)
@@ -82,9 +71,7 @@ class QwenTalkerScheduler(OmniScheduler):
         self.chunk_wait_last_log_s = 0.0
         if self.talker_start_topology:
             logger.info(
-                "talker-start topology on: building at %d thinker chunk(s); "
-                "later chunks gate decode per step "
-                "(partial_start_min_chunks=%d applies to the legacy path only)",
+                "talker-start topology on: building at %d thinker chunk(s); later chunks gate decode per step (partial_start_min_chunks=%d applies to the legacy path only)",
                 TALKER_START_MIN_CHUNKS,
                 self.partial_start_min_chunks,
             )
@@ -100,10 +87,7 @@ class QwenTalkerScheduler(OmniScheduler):
         return len(prefetched)
 
     def is_request_build_ready(
-        self,
-        payload: Any,
-        *,
-        pending_stream_done: bool,
+        self, payload: Any, *, pending_stream_done: bool
     ) -> bool:
         if pending_stream_done:
             return True
@@ -112,8 +96,6 @@ class QwenTalkerScheduler(OmniScheduler):
         prefetched = getattr(payload, "prefetched_chunks", None) or []
         usable = self.count_usable_prefetched_chunks(prefetched)
         if self.talker_start_topology:
-            # Note (wenyao): Later thinker chunks feed decode one row at a time;
-            # waiting for them while building the prompt only delays talker prefill.
             return usable >= TALKER_START_MIN_CHUNKS
         return usable >= self.partial_start_min_chunks
 
@@ -131,17 +113,15 @@ class QwenTalkerScheduler(OmniScheduler):
         if (
             batch is not None
             and batch.forward_mode.is_decode()
-            and self.model_runner is not None
+            and (self.model_runner is not None)
             and hasattr(self.model_runner, "is_decode_batch_ready")
-            and not self.model_runner.is_decode_batch_ready(batch)
+            and (not self.model_runner.is_decode_batch_ready(batch))
         ):
             self.note_chunk_wait(batch)
             return False
         return True
 
     def note_chunk_wait(self, batch: Any) -> None:
-        # Note (wenyao): Topology startup initially has no future text queued;
-        # wait counters distinguish normal one-step delay from a wedged batch.
         self.chunk_wait_steps += 1
         logger.debug("Deferring decode batch until talker feedback/text input is ready")
         now = time.monotonic()
@@ -149,27 +129,19 @@ class QwenTalkerScheduler(OmniScheduler):
             return
         self.chunk_wait_last_log_s = now
         logger.info(
-            "talker chunk gate: %d decode steps deferred so far "
-            "(current batch rows=%d)",
+            "talker chunk gate: %d decode steps deferred so far (current batch rows=%d)",
             self.chunk_wait_steps,
             len(getattr(batch, "reqs", ()) or ()),
         )
 
     def get_next_batch_to_run(self) -> Any | None:
         batch = super().get_next_batch_to_run()
-        if batch is not None and not self.is_batch_ready_to_run(batch):
+        if batch is not None and (not self.is_batch_ready_to_run(batch)):
             self.rollback_decode_prep_after_skip(batch)
             return None
         return batch
 
     def rollback_decode_prep_after_skip(self, batch: Any) -> None:
-        # Note(Chenchen Hong, Xuesong): This is talker-only. It does not fully
-        # invert prepare_for_decode; talker disables overlap/spec/Mamba/hisparse,
-        # and the penalizer's cumulate scatter_ is idempotent under the talker's
-        # own SamplingBatchInfo. Zero the req_to_token_pool cell that
-        # alloc_for_decode wrote at (req_pool_indices, pre-increment seq_lens);
-        # seq_lens_sum stays untouched (always None after prepare_for_decode,
-        # recomputed at the next forward).
         if not batch.forward_mode.is_decode():
             return
         if batch.out_cache_loc is not None:
@@ -185,7 +157,7 @@ class QwenTalkerScheduler(OmniScheduler):
         batch.req_to_token_pool.req_to_token[batch.req_pool_indices, batch.seq_lens] = 0
 
     def self_check_during_idle(self) -> None:
-        if self.running_batch is not None and not self.running_batch.is_empty():
+        if self.running_batch is not None and (not self.running_batch.is_empty()):
             return
         if self.waiting_queue:
             return

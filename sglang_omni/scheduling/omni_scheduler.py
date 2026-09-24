@@ -835,7 +835,9 @@ class OmniScheduler:
             # note (ratish): only this rank reads the clock. The failed request
             # makes the coordinator broadcast an abort, which reaches followers
             # the way every other abort does.
-            for timeout_abort in self.poll_timeout_aborts():
+            for (
+                timeout_abort
+            ) in self._poll_timeout_aborts():  # noqa: leading-underscore
                 if timeout_abort.rid in self.aborted_request_ids:
                     continue
                 self.emit_request_error(
@@ -1254,9 +1256,9 @@ class OmniScheduler:
             if req_id in self.aborted_request_ids:
                 return
             # note (guozhihao): Priority defaulting must run before the queued-limit abort.
-            if not self.set_or_validate_priority(req):
+            if not self._set_or_validate_priority(req):  # noqa: leading-underscore
                 return
-            if self.abort_on_queued_limit(req):
+            if self._abort_on_queued_limit(req):  # noqa: leading-underscore
                 logger.warning(
                     "Rejecting request %s: waiting queue is full "
                     "(max_queued_requests=%s, waiting=%s)",

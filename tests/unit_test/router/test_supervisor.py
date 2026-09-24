@@ -125,7 +125,7 @@ def test_supervisor_binds_an_ipv6_host(tmp_path: Path) -> None:
     harness = Harness(config, n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     try:
-        assert harness.supervisor.socket.family == socket.AF_INET6
+        assert harness.supervisor._socket.family == socket.AF_INET6
     finally:
         harness.supervisor.shutdown()
 
@@ -143,7 +143,7 @@ def test_supervisor_binds_hostnames_as_ipv4_like_uvicorn(tmp_path: Path) -> None
     harness = Harness(config, n=1, tmp_path=tmp_path)
     harness.supervisor.start()
     try:
-        assert harness.supervisor.socket.family == socket.AF_INET
+        assert harness.supervisor._socket.family == socket.AF_INET
     finally:
         harness.supervisor.shutdown()
 
@@ -160,7 +160,7 @@ def test_shutdown_closes_the_listener_before_draining_children(
         original = process.terminate
 
         def _terminate(orig=original):
-            listener_closed_at_signal.append(harness.supervisor.socket is None)
+            listener_closed_at_signal.append(harness.supervisor._socket is None)
             orig()
 
         process.terminate = _terminate  # type: ignore[method-assign]
@@ -329,7 +329,7 @@ def test_start_rolls_back_when_a_dp_spawn_fails(tmp_path: Path) -> None:
         def _terminate(orig=original):
             # Note (Jiaxin Deng): supervisor is defined below; the closure resolves it
             # at call time
-            listener_closed_at_signal.append(supervisor.socket is None)
+            listener_closed_at_signal.append(supervisor._socket is None)
             orig()
 
         process.terminate = _terminate  # type: ignore[method-assign]

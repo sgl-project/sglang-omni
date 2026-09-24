@@ -24,13 +24,13 @@ def _fake_model(
     n: int, hidden: int, code_groups: int, step: int = 0
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        _output_codes=torch.stack(
+        output_codes=torch.stack(
             [
                 torch.tensor([i * 1000 + step, i + 100 + step], dtype=torch.long)
                 for i in range(n)
             ]
         )[:, :code_groups],
-        _output_embeds=torch.stack(
+        output_embeds=torch.stack(
             [torch.full((hidden,), float(i * 7 + 1 + step)) for i in range(n)]
         ),
     )

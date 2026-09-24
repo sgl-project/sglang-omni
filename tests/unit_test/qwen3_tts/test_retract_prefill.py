@@ -58,7 +58,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     embedding = torch.nn.Embedding(4, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
     sched_req = SimpleNamespace(
@@ -91,7 +91,7 @@ def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> Non
         embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
 
@@ -293,7 +293,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     class _Model(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self._decode_feedback_embedding = torch.nn.Embedding(8, hidden)
+            self.decode_feedback_embedding = torch.nn.Embedding(8, hidden)
             self.embed = torch.nn.Embedding(8, hidden)
 
         def get_input_embeddings(self):

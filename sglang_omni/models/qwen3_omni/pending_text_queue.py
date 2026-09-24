@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Device-backed FIFO for Qwen3-Omni talker future text rows."""
 
 from __future__ import annotations
@@ -39,18 +38,17 @@ class PendingTextTensorQueue:
 
     rows: torch.Tensor | None = None
     cursor: int = 0
-    _chunks: deque[torch.Tensor] = field(default_factory=deque, repr=False)
-    _pending_rows: int = field(init=False, repr=False)
+    chunks: deque[torch.Tensor] = field(default_factory=deque, repr=False)
+    pending_rows: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        # Note (cuzmi): Initialize the remaining-row count after construction or copy.
         head_rows = (
             max(0, int(self.rows.shape[0]) - self.cursor)
             if self.rows is not None
             else 0
         )
         self.pending_rows = head_rows + sum(
-            int(chunk.shape[0]) for chunk in self.chunks
+            (int(chunk.shape[0]) for chunk in self.chunks)
         )
 
     @classmethod
@@ -63,11 +61,7 @@ class PendingTextTensorQueue:
         return len(self) > 0
 
     def copy(self) -> "PendingTextTensorQueue":
-        return type(self)(
-            rows=self.rows,
-            cursor=self.cursor,
-            _chunks=deque(self.chunks),
-        )
+        return type(self)(rows=self.rows, cursor=self.cursor, chunks=deque(self.chunks))
 
     def __len__(self) -> int:
         return self.pending_rows
@@ -85,13 +79,8 @@ class PendingTextTensorQueue:
             raise TypeError("PendingTextTensorQueue indices must be integers")
         if self.rows is None:
             raise IndexError(idx)
-        # Note (cuzmi): Talker only peeks at the first row during decode, so
-        # keep this hot path O(1) and avoid consolidating the queued tensor chunks.
         if idx == 0:
             return self.rows[self.cursor]
-
-        # Note (cuzmi): Preserve the original queue's arbitrary-index behavior
-        # for callers outside the decode hot path.
         remaining = self.rows[self.cursor :]
         if not self.chunks:
             return remaining[idx]
@@ -102,8 +91,6 @@ class PendingTextTensorQueue:
         self.cursor += 1
         self.pending_rows -= 1
         if self.rows is not None and self.cursor >= int(self.rows.shape[0]):
-            # Note (cuzmi): Drop the consumed head and promote the next chunk
-            # without copying.
             self.rows = self.chunks.popleft() if self.chunks else None
             self.cursor = 0
         return row
@@ -122,12 +109,10 @@ class PendingTextTensorQueue:
             self.chunks.clear()
             self.pending_rows = appended_rows
             return
-
         if int(rows.shape[1]) != int(self.rows.shape[1]):
             raise ValueError(
                 "pending text row hidden dimension must match the existing queue"
             )
-
         rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
         self.chunks.append(rows)
         self.pending_rows += appended_rows
@@ -146,6 +131,5 @@ def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:
             queue.append(row)
         return queue
     raise TypeError(
-        "pending text queue must be None, a tensor, a PendingTextTensorQueue, "
-        "or an iterable of tensors"
+        "pending text queue must be None, a tensor, a PendingTextTensorQueue, or an iterable of tensors"
     )

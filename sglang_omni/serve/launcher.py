@@ -82,7 +82,7 @@ class PipelineUvicornServer(uvicorn.Server):
         finally:
             for sig, handler in original_handlers.items():
                 signal.signal(sig, handler)
-            self.captured_signals.clear()
+            self._captured_signals.clear()  # noqa: leading-underscore
 
 
 # ---------------------------------------------------------------------------

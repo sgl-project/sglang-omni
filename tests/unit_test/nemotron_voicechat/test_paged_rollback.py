@@ -67,7 +67,7 @@ def test_skipped_decode_preserves_live_pages(page_size, prompt_lengths):
     )
     scheduler = object.__new__(NemotronTalkerScheduler)
     scheduler.token_to_kv_pool_allocator = allocator
-    scheduler._model_runner = object.__new__(NemotronVoiceChatTalkerModelRunner)
+    scheduler.model_runner = object.__new__(NemotronVoiceChatTalkerModelRunner)
     initial_free = allocator.available_size()
     committed = pool.clone()
 

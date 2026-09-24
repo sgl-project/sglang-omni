@@ -27,7 +27,7 @@ from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 class _FakeGraphRunner:
     def __init__(self, model, keys) -> None:
-        self._model = model
+        self.model = model
         self._keys = set(keys)
         self.calls: list[tuple[tuple[int, ...], bool, str]] = []
 
@@ -48,7 +48,7 @@ class _FakeGraphRunner:
         else:
             mode, reason = "eager", "ineligible"
         self.calls.append((tuple(codes.shape), eligible, mode))
-        return Code2WavRunResult(self._model(codes), mode, key, reason)
+        return Code2WavRunResult(self.model(codes), mode, key, reason)
 
     def stats(self) -> dict:
         return {
@@ -81,7 +81,7 @@ def _make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
         **kwargs,
     )
 
@@ -260,7 +260,7 @@ def test_step_plan_follows_runner_availability_for_the_window() -> None:
     runner = _AvailabilityRunner((4, 2, 1))
     scheduler = _make_batching_scheduler(
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     participants = _states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [4, 2, 1]
@@ -273,7 +273,7 @@ def test_step_plan_without_published_graphs_stays_one_eager_forward() -> None:
     runner = _AvailabilityRunner(())
     scheduler = _make_batching_scheduler(
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     participants = _states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [7]
@@ -804,7 +804,7 @@ def test_bucket_batch_ceiling_is_per_window() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=16,
-        _cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
+        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 16
     assert scheduler.bucket_batch_ceiling(12) == 16
@@ -824,7 +824,7 @@ def test_bucket_batch_ceiling_honours_a_lower_configured_ceiling() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=4,
-        _cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
+        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 4
     assert scheduler.bucket_batch_ceiling(35) == 4
@@ -888,7 +888,7 @@ def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     # Note (ruoyu): a serial-only runner may have dropped batched graphs after
     # their eager warmup OOMed, so retrying the group as one eager forward is
@@ -975,7 +975,7 @@ class _StubGraphRunner:
     misses (eager fallback) for batch sizes it does not publish."""
 
     def __init__(self, model, sizes: tuple[int, ...]) -> None:
-        self._model = model
+        self.model = model
         self.sizes = sizes
         self.run_calls: list[tuple[tuple[int, ...], bool]] = []
 
@@ -988,7 +988,7 @@ class _StubGraphRunner:
         key = GraphKey(batch_size=int(codes.shape[0]), frames=int(codes.shape[2]))
         hit = eligible and key.batch_size in self.sizes
         return Code2WavRunResult(
-            output=self._model(codes),
+            output=self.model(codes),
             execution_mode="cuda_graph" if hit else "eager",
             key=key,
             fallback_reason=None if hit else "key_miss",
@@ -1008,7 +1008,7 @@ def _make_graph_batching_scheduler(
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
         **kwargs,
     )
     return scheduler, runner

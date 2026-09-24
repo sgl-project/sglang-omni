@@ -37,12 +37,12 @@ class _StubRunner(ModelRunner):
 
     def __init__(self):
         self.device = _STUB_DEVICE
-        self._async_enabled = True
-        self._execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
-        self._staging_slot = 0
-        self._host_staging_buffers = []
-        self._async_query_hit = 0
-        self._async_query_miss = 0
+        self.async_enabled = True
+        self.execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
+        self.staging_slot = 0
+        self.host_staging_buffers = []
+        self.async_query_hit = 0
+        self.async_query_miss = 0
         self.launch_calls = 0
         self.resolve_calls = 0
         self.finalize_calls = 0
@@ -721,7 +721,7 @@ def _new_scheduler_for_async_loop():
     s.request_admission_lock = threading.RLock()
     s.pending_request_builds = {}
     s.pending_request_admissions = {}
-    s._model_runner = None
+    s.model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False
     s.page_size = 1
@@ -815,7 +815,7 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
 def test_custom_logit_processor_transitions_async_sync_async():
     events = []
     s = _scaffold_async_loop()
-    s._model_runner = _StubRunner()
+    s.model_runner = _StubRunner()
     launch_events = iter(("launch async N", "launch async N+2"))
 
     def launch_async(batch):
@@ -948,11 +948,11 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
 class _DFReq:
     def __init__(self, name):
         self.name = name
-        self._done = False
+        self.done = False
         self.is_retracted = False
 
     def finished(self):
-        return self._done
+        return self.done
 
 
 class _DFBatch:

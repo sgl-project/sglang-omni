@@ -298,11 +298,11 @@ class FakeMossModel(nn.Module):
     def __init__(self, fill: float):
         super().__init__()
         self.linear = nn.Linear(3, 2)
-        self._decode_input_embedding = nn.Embedding(4, 2)
+        self.decode_input_embedding = nn.Embedding(4, 2)
         with torch.no_grad():
             self.linear.weight.fill_(fill)
             self.linear.bias.fill_(fill)
-            self._decode_input_embedding.weight.fill_(fill)
+            self.decode_input_embedding.weight.fill_(fill)
 
 
 def test_moss_leader_export_marks_scratch_private(tmp_path, monkeypatch):

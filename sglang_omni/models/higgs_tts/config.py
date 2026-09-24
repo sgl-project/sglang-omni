@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Pipeline configuration for Higgs TTS (V1)."""
 
 from __future__ import annotations
@@ -29,11 +28,9 @@ class HiggsTtsPipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "HiggsMultimodalQwen3ForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
-
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": EngineStageConfig,
+        "tts_engine": EngineStageConfig
     }
-
     model_path: str
     stages: list[StageConfig] = [
         StageConfig(
@@ -63,22 +60,15 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
-            # Keep the LM and vocoder in one device context by default.  Splitting
-            # them into same-GPU processes time-slices the accelerator at ordinary
-            # serving concurrency and prevents decode/vocoder overlap.
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
-            gpu_memory_fraction=0.10,
+            gpu_memory_fraction=0.1,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
     ]
-
-    # Stream cadence is owned by the vocoder stage; the tts_engine emits on
-    # the same cadence, so a tts_engine value either mirrors the vocoder's or
-    # is refused.
-    _STREAM_CADENCE_KEYS: ClassVar[tuple[str, ...]] = (
+    STREAM_CADENCE_KEYS: ClassVar[tuple[str, ...]] = (
         "stream_stride",
         "stream_followup_stride",
         "initial_chunk_frames",
@@ -95,12 +85,6 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         if stage_name == "vocoder":
             return {
                 "compile_decode": False,
-                # Before the steady cursor is established, a decode window is
-                # bounded by the default 75-row stride plus its 75-row
-                # follow-up. Capture that complete finite domain so terminal
-                # flushes cannot silently fall back to eager execution.
-                # Only CUDA captures decode CUDA graphs; other platforms (e.g.
-                # Ascend NPU) keep the domain empty and always decode eagerly.
                 "decode_cuda_graph_frame_counts": (
                     tuple(range(1, 151))
                     if current_platform.enable_code2wav_graph()
@@ -118,8 +102,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 "OMP_NUM_THREADS",
                 str(
                     bounded_intraop_threads(
-                        worker_count=_PREPROCESS_MAX_WORKERS,
-                        max_threads=8,
+                        worker_count=_PREPROCESS_MAX_WORKERS, max_threads=8
                     )
                 ),
             )
@@ -134,9 +117,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
                 continue
             if key in tts_engine_extra and tts_engine_extra[key] != vocoder_extra[key]:
                 raise ValueError(
-                    f"Higgs TTS {key!r} must match between the tts_engine and "
-                    "vocoder stages; omit the tts_engine value to derive it "
-                    "from the vocoder"
+                    f"Higgs TTS {key!r} must match between the tts_engine and vocoder stages; omit the tts_engine value to derive it from the vocoder"
                 )
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:

@@ -470,7 +470,7 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
         simple_scheduler, "SimpleScheduler", lambda *a, **k: SimpleNamespace()
     )
 
-    getattr(stages, f"create_{factory_name}executor")("unused", device=None)
+    getattr(stages, f"create_{factory_name}_executor")("unused", device=None)
 
     import torch
 
@@ -499,11 +499,11 @@ def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler("unused", device=None)
 
-    assert scheduler._device.type == platforms.current_platform.device_type
+    assert scheduler.device.type == platforms.current_platform.device_type
     if platforms.current_platform.device_type != "cpu":
         # Placement was not requested, so the backend's current card is bound.
         # A cpu device correctly carries no index.
-        assert scheduler._device.index is not None
+        assert scheduler.device.index is not None
 
 
 def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(

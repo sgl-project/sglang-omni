@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Audio decoding for Ming-Omni-TTS."""
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class MingAudioDecoder:
+
     def __init__(
         self,
         audio_vae: AudioVAE,
@@ -41,16 +41,13 @@ class MingAudioDecoder:
         streaming_cuda_graph_required: bool,
     ) -> None:
         self.audio_vae = audio_vae
-        # Note (yzxiao): Keep the fixed transition Ming-TTS-private while reusing
-        # the shared Decoder, so Ming-Omni and full decode keep their existing paths.
         self.streaming_transition = AudioVAEFixedStreamingTransition(
             audio_vae.decoder,
             capacity=stream_capacity,
             max_step_latents=max_stream_step_latents,
         )
         self.streaming_runner = MingAudioStreamingRunner(
-            self.streaming_transition,
-            cuda_graph_required=streaming_cuda_graph_required,
+            self.streaming_transition, cuda_graph_required=streaming_cuda_graph_required
         )
 
     @property
@@ -73,9 +70,7 @@ class MingAudioDecoder:
         terminal_flags: tuple[bool, ...],
     ) -> tuple[torch.Tensor, ...]:
         return self.streaming_runner.run(
-            slot_ids=slot_ids,
-            patch_groups=patch_groups,
-            terminal_flags=terminal_flags,
+            slot_ids=slot_ids, patch_groups=patch_groups, terminal_flags=terminal_flags
         )
 
     def reset_stream_rows(self, slot_ids: Sequence[int]) -> None:
@@ -91,13 +86,9 @@ class MingAudioDecoder:
         self.streaming_runner.close()
 
     @torch.inference_mode()
-    def decode_full(
-        self,
-        latents: torch.Tensor,
-    ) -> torch.Tensor:
+    def decode_full(self, latents: torch.Tensor) -> torch.Tensor:
         if int(latents.shape[0]) == 0:
             return torch.empty((0,), dtype=torch.float32)
-
         first_parameter = next(self.audio_vae.parameters())
         device = first_parameter.device
         dtype = first_parameter.dtype
@@ -116,7 +107,6 @@ class MingAudioDecoder:
                 stream_state=(None, None, None),
                 last_chunk=True,
             )
-
         return waveform[0, 0].detach().to(device="cpu", dtype=torch.float32)
 
 
@@ -154,11 +144,7 @@ class FixedQwenCacheLayer(CacheLayerMixin):
     is_sliding = True
 
     def __init__(
-        self,
-        keys: torch.Tensor,
-        values: torch.Tensor,
-        *,
-        sliding_window: int,
+        self, keys: torch.Tensor, values: torch.Tensor, *, sliding_window: int
     ) -> None:
         super().__init__()
         self.keys = keys
@@ -172,19 +158,13 @@ class FixedQwenCacheLayer(CacheLayerMixin):
         self.new_values: torch.Tensor | None = None
 
     def lazy_initialization(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
+        self, key_states: torch.Tensor, value_states: torch.Tensor
     ) -> None:
         del key_states, value_states
         raise RuntimeError("Fixed AudioVAE cache layers are initialized eagerly")
 
     def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        *args,
-        **kwargs,
+        self, key_states: torch.Tensor, value_states: torch.Tensor, *args, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor]:
         del args, kwargs
         self.new_keys = key_states
@@ -195,7 +175,7 @@ class FixedQwenCacheLayer(CacheLayerMixin):
         )
 
     def get_mask_sizes(self, query_length: int) -> tuple[int, int]:
-        return self.sliding_window - 1 + query_length, 0
+        return (self.sliding_window - 1 + query_length, 0)
 
     def get_seq_length(self) -> int:
         return self.cumulative_length
@@ -205,29 +185,21 @@ class FixedQwenCacheLayer(CacheLayerMixin):
 
 
 class AudioVAEFixedStreamingTransition:
+
     def __init__(
-        self,
-        decoder: Decoder,
-        *,
-        capacity: int,
-        max_step_latents: int,
+        self, decoder: Decoder, *, capacity: int, max_step_latents: int
     ) -> None:
         if (
             isinstance(capacity, bool)
             or not isinstance(capacity, Integral)
             or isinstance(max_step_latents, bool)
-            or not isinstance(max_step_latents, Integral)
+            or (not isinstance(max_step_latents, Integral))
         ):
             raise TypeError("capacity and max_step_latents must be integers")
         if capacity <= 0 or max_step_latents <= 0:
             raise ValueError("capacity and max_step_latents must be positive")
-        self._capacity = int(
-            capacity
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self._max_step_latents = int(
-            max_step_latents
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
+        self._capacity = int(capacity)  # noqa: leading-underscore
+        self._max_step_latents = int(max_step_latents)  # noqa: leading-underscore
         patch_size = int(decoder.patch_size)
         if patch_size <= 0:
             raise ValueError(
@@ -235,7 +207,6 @@ class AudioVAEFixedStreamingTransition:
             )
         latent_dim = int(decoder.latent_dim)
         hop_length = int(decoder.hop_length)
-
         qwen = decoder.decoder
         config = qwen.config
         hidden_size = int(config.hidden_size)
@@ -246,21 +217,18 @@ class AudioVAEFixedStreamingTransition:
         layer_types = tuple(getattr(config, "layer_types", ()))
         attention_backend = getattr(
             config, "_attn_implementation", None
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )  # noqa: leading-underscore
         if (
             sliding_window is None
             or sliding_window <= 1
             or len(layer_types) != layer_count
-            or set(layer_types) != {"sliding_attention"}
-            or attention_backend != "sdpa"
+            or (set(layer_types) != {"sliding_attention"})
+            or (attention_backend != "sdpa")
         ):
             raise ValueError(
-                "AudioVAE fixed streaming requires sliding-only Qwen2 with "
-                f"sliding_window > 1 and SDPA, got layer_types={layer_types!r}, "
-                f"sliding_window={sliding_window!r}, backend={attention_backend!r}"
+                f"AudioVAE fixed streaming requires sliding-only Qwen2 with sliding_window > 1 and SDPA, got layer_types={layer_types!r}, sliding_window={sliding_window!r}, backend={attention_backend!r}"
             )
         sliding_window = int(sliding_window)
-
         configured_head_dim = getattr(config, "head_dim", None)
         head_dim = int(
             hidden_size // attention_heads
@@ -273,65 +241,44 @@ class AudioVAEFixedStreamingTransition:
             type(upsampling) is not StreamingLinearUpsample
             or upsampling.scale_factor != patch_size
             or type(upsampler) is not nn.Upsample
-            or upsampler.mode != "linear"
-            or upsampler.align_corners is not False
-            or upsampler.size is not None
-            or upsampler.scale_factor != patch_size
-            or upsampler.recompute_scale_factor is not None
+            or (upsampler.mode != "linear")
+            or (upsampler.align_corners is not False)
+            or (upsampler.size is not None)
+            or (upsampler.scale_factor != patch_size)
+            or (upsampler.recompute_scale_factor is not None)
         ):
             raise ValueError(
-                "AudioVAE fixed streaming requires exact "
-                "StreamingLinearUpsample(nn.Upsample) semantics matching "
-                f"decoder patch_size={patch_size}; got "
-                f"wrapper={type(upsampling).__name__}, "
-                f"wrapper_scale={getattr(upsampling, 'scale_factor', None)!r}, "
-                f"inner={type(upsampler).__name__}, "
-                f"mode={getattr(upsampler, 'mode', None)!r}, "
-                f"align_corners={getattr(upsampler, 'align_corners', None)!r}, "
-                f"size={getattr(upsampler, 'size', None)!r}, "
-                f"inner_scale={getattr(upsampler, 'scale_factor', None)!r}, "
-                "recompute_scale_factor="
-                f"{getattr(upsampler, 'recompute_scale_factor', None)!r}"
+                f"AudioVAE fixed streaming requires exact StreamingLinearUpsample(nn.Upsample) semantics matching decoder patch_size={patch_size}; got wrapper={type(upsampling).__name__}, wrapper_scale={getattr(upsampling, 'scale_factor', None)!r}, inner={type(upsampler).__name__}, mode={getattr(upsampler, 'mode', None)!r}, align_corners={getattr(upsampler, 'align_corners', None)!r}, size={getattr(upsampler, 'size', None)!r}, inner_scale={getattr(upsampler, 'scale_factor', None)!r}, recompute_scale_factor={getattr(upsampler, 'recompute_scale_factor', None)!r}"
             )
-
         istft = decoder.head.istft
         win_length = int(istft.win_length)
         overlap = win_length - hop_length
         if overlap <= 0 or overlap % 2 != 0 or istft.padding != "same":
             raise ValueError(
-                "AudioVAE fixed streaming requires same-padding ISTFT with an "
-                "even positive overlap"
+                "AudioVAE fixed streaming requires same-padding ISTFT with an even positive overlap"
             )
         frames_per_patch = patch_size * patch_size
         if frames_per_patch * hop_length < overlap:
             raise ValueError(
-                "AudioVAE fixed streaming requires each non-empty patch to cover "
-                "the ISTFT overlap"
+                "AudioVAE fixed streaming requires each non-empty patch to cover the ISTFT overlap"
             )
-
         first_parameter = next(decoder.parameters())
         device = first_parameter.device
         input_dtype = first_parameter.dtype
         if decoder.training or not (
-            (device.type == "cuda" and input_dtype == torch.bfloat16)
+            device.type == "cuda"
+            and input_dtype == torch.bfloat16
             or (device.type == "cpu" and input_dtype == torch.float32)
         ):
             raise ValueError(
-                "AudioVAE fixed streaming requires an eval-mode CUDA BF16 decoder "
-                "for serving or an eval-mode CPU FP32 decoder for internal "
-                f"verification, got device={device}, dtype={input_dtype}, "
-                f"training={decoder.training}"
+                f"AudioVAE fixed streaming requires an eval-mode CUDA BF16 decoder for serving or an eval-mode CPU FP32 decoder for internal verification, got device={device}, dtype={input_dtype}, training={decoder.training}"
             )
-
-        self._latent_dim = latent_dim  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self._device = device  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self._input_dtype = input_dtype  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
+        self._latent_dim = latent_dim  # noqa: leading-underscore
+        self._device = device  # noqa: leading-underscore
+        self._input_dtype = input_dtype  # noqa: leading-underscore
         self.decoder = decoder
         self.upsampler = upsampler
         self.scale_factor = patch_size
-        # Note (yzxiao): A terminal transition flushes the saved and final groups
-        # together. The 2P envelope keeps that flush in one device transaction.
         self.max_frames = 2 * self.max_step_latents * patch_size
         self.hidden_size = hidden_size
         self.sliding_window = sliding_window
@@ -342,8 +289,7 @@ class AudioVAEFixedStreamingTransition:
         self.max_raw_samples = self.max_frames * hop_length + overlap
         self._max_output_samples = (
             self.max_raw_samples - self.pad
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
+        )  # noqa: leading-underscore
         reference_context = (
             torch.autocast(device_type="cuda", dtype=input_dtype)
             if device.type == "cuda"
@@ -368,21 +314,10 @@ class AudioVAEFixedStreamingTransition:
                 "AudioVAE fixed streaming requires an FP32 ISTFT envelope tail"
             )
         self.window_envelope_tail = window_envelope_tail
-
-        kv_shape = (
-            layer_count,
-            self.capacity,
-            kv_heads,
-            self.cache_size,
-            head_dim,
-        )
+        kv_shape = (layer_count, self.capacity, kv_heads, self.cache_size, head_dim)
         self.state = AudioVAEFixedStreamingStateBank(
             upsample_pending=torch.zeros(
-                (
-                    self.capacity,
-                    self.max_step_latents,
-                    hidden_size,
-                ),
+                (self.capacity, self.max_step_latents, hidden_size),
                 device=device,
                 dtype=input_dtype,
             ),
@@ -390,9 +325,7 @@ class AudioVAEFixedStreamingTransition:
                 self.capacity, device=device, dtype=torch.long
             ),
             upsample_left_anchor=torch.zeros(
-                (self.capacity, 1, hidden_size),
-                device=device,
-                dtype=input_dtype,
+                (self.capacity, 1, hidden_size), device=device, dtype=input_dtype
             ),
             qwen_keys=torch.zeros(kv_shape, device=device, dtype=torch.float32),
             qwen_values=torch.zeros(kv_shape, device=device, dtype=torch.float32),
@@ -407,14 +340,12 @@ class AudioVAEFixedStreamingTransition:
         }
         state_nbytes = sum(state_field_bytes.values())
         logger.info(
-            "ming_tts_audio_vae_state stage=audio_decode capacity=%d "
-            "max_step_latents=%d state_device_bytes=%d state_field_bytes=%s",
+            "ming_tts_audio_vae_state stage=audio_decode capacity=%d max_step_latents=%d state_device_bytes=%d state_field_bytes=%s",
             self.capacity,
             self.max_step_latents,
             state_nbytes,
             state_field_bytes,
         )
-
         self.cache_layers = [
             FixedQwenCacheLayer(
                 self.state.qwen_keys[index],
@@ -427,39 +358,27 @@ class AudioVAEFixedStreamingTransition:
 
     @property
     def capacity(self) -> int:
-        return (
-            self._capacity
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._capacity  # noqa: leading-underscore
 
     @property
     def max_step_latents(self) -> int:
-        return (
-            self._max_step_latents
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._max_step_latents  # noqa: leading-underscore
 
     @property
     def latent_dim(self) -> int:
-        return (
-            self._latent_dim
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._latent_dim  # noqa: leading-underscore
 
     @property
     def max_output_samples(self) -> int:
-        return (
-            self._max_output_samples
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._max_output_samples  # noqa: leading-underscore
 
     @property
     def device(self) -> torch.device:
-        return (
-            self._device
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._device  # noqa: leading-underscore
 
     @property
     def input_dtype(self) -> torch.dtype:
-        return (
-            self._input_dtype
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._input_dtype  # noqa: leading-underscore
 
     def decode(
         self,
@@ -473,10 +392,7 @@ class AudioVAEFixedStreamingTransition:
             if self.device.type == "cuda"
             else nullcontext()
         )
-        with (
-            torch.inference_mode(),
-            execution_context,
-        ):
+        with torch.inference_mode(), execution_context:
             projected = self.decoder.fc1(latents)
             (
                 frames,
@@ -486,27 +402,13 @@ class AudioVAEFixedStreamingTransition:
                     next_upsample_pending_lengths,
                     next_upsample_left_anchor,
                 ),
-            ) = self.upsample(
-                projected,
-                latent_lengths,
-                exec_mask,
-                terminal_mask,
-            )
+            ) = self.upsample(projected, latent_lengths, exec_mask, terminal_mask)
             qwen_exec = exec_mask & (frame_lengths > 0)
-            hidden, (
-                next_qwen_keys,
-                next_qwen_values,
-                next_qwen_positions,
-            ) = self.qwen(frames, frame_lengths)
-            (
-                waveform,
-                sample_lengths,
-                next_istft_audio_overlap,
-            ) = self.istft(
-                hidden,
-                frame_lengths,
-                qwen_exec,
-                terminal_mask,
+            hidden, (next_qwen_keys, next_qwen_values, next_qwen_positions) = self.qwen(
+                frames, frame_lengths
+            )
+            waveform, sample_lengths, next_istft_audio_overlap = self.istft(
+                hidden, frame_lengths, qwen_exec, terminal_mask
             )
             next_state = AudioVAEFixedStreamingStateBank(
                 upsample_pending=next_upsample_pending,
@@ -519,15 +421,13 @@ class AudioVAEFixedStreamingTransition:
             )
             self.commit(exec_mask, qwen_exec, terminal_mask, next_state)
         return AudioVAEFixedStreamingOutput(
-            waveform=waveform,
-            sample_lengths=sample_lengths,
+            waveform=waveform, sample_lengths=sample_lengths
         )
 
     def reset_rows(self, slot_ids: Sequence[int]) -> None:
         slots = self.validate_slot_ids(slot_ids)
         if not slots:
             return
-
         device_context = (
             torch.cuda.device(self.device)
             if self.device.type == "cuda"
@@ -555,7 +455,6 @@ class AudioVAEFixedStreamingTransition:
     def validate_slot_ids(self, slot_ids: Sequence[int]) -> tuple[int, ...]:
         if not isinstance(slot_ids, Sequence):
             raise TypeError("slot_ids must be a host sequence of integers")
-
         slots: list[int] = []
         for slot_id in slot_ids:
             if isinstance(slot_id, bool) or not isinstance(slot_id, Integral):
@@ -586,17 +485,12 @@ class AudioVAEFixedStreamingTransition:
             state.upsample_left_anchor,
             current[:, :1],
         )
-
         timeline = torch.cat(
             (
                 left_anchor,
                 state.upsample_pending,
                 torch.zeros(
-                    (
-                        self.capacity,
-                        self.max_step_latents + 1,
-                        self.hidden_size,
-                    ),
+                    (self.capacity, self.max_step_latents + 1, self.hidden_size),
                     device=self.device,
                     dtype=self.input_dtype,
                 ),
@@ -610,7 +504,6 @@ class AudioVAEFixedStreamingTransition:
             current_destination.unsqueeze(2).expand(-1, -1, self.hidden_size),
             current,
         )
-
         current_last_index = torch.clamp(current_lengths - 1, min=0)
         current_last = torch.gather(
             current,
@@ -629,11 +522,9 @@ class AudioVAEFixedStreamingTransition:
             ),
             current_last,
         )
-
         upsampled = self.upsampler(timeline.transpose(1, 2)).transpose(1, 2)
         frames = upsampled[
-            :,
-            self.scale_factor : self.scale_factor + self.max_frames,
+            :, self.scale_factor : self.scale_factor + self.max_frames
         ].to(torch.float32)
         frame_lengths = (
             state.upsample_pending_lengths + terminal_mask * current_lengths
@@ -642,33 +533,18 @@ class AudioVAEFixedStreamingTransition:
         valid_frames = torch.arange(self.max_frames, device=self.device).unsqueeze(
             0
         ) < frame_lengths.unsqueeze(1)
-        frames = torch.where(
-            valid_frames.unsqueeze(2),
-            frames,
-            0,
-        )
-
+        frames = torch.where(valid_frames.unsqueeze(2), frames, 0)
         valid_current = latent_index < current_lengths.unsqueeze(1)
-        next_pending = torch.where(
-            valid_current.unsqueeze(2),
-            current,
-            0,
-        )
+        next_pending = torch.where(valid_current.unsqueeze(2), current, 0)
         next_left_anchor = timeline[row, state.upsample_pending_lengths].unsqueeze(1)
         return (
             frames,
             frame_lengths,
-            (
-                next_pending,
-                current_lengths,
-                next_left_anchor,
-            ),
+            (next_pending, current_lengths, next_left_anchor),
         )
 
     def qwen(
-        self,
-        inputs: torch.Tensor,
-        input_lengths: torch.Tensor,
+        self, inputs: torch.Tensor, input_lengths: torch.Tensor
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
         state = self.state
         position_ids = state.qwen_positions.unsqueeze(1) + torch.arange(
@@ -690,56 +566,36 @@ class AudioVAEFixedStreamingTransition:
             [cast(torch.Tensor, layer.new_values) for layer in self.cache_layers]
         )
         next_keys = self.advance_kv(
-            state.qwen_keys,
-            new_keys,
-            input_lengths,
-            cache_lengths,
+            state.qwen_keys, new_keys, input_lengths, cache_lengths
         )
         next_values = self.advance_kv(
-            state.qwen_values,
-            new_values,
-            input_lengths,
-            cache_lengths,
+            state.qwen_values, new_values, input_lengths, cache_lengths
         )
         next_positions = state.qwen_positions + input_lengths
-        return outputs.last_hidden_state, (
-            next_keys,
-            next_values,
-            next_positions,
-        )
+        return (outputs.last_hidden_state, (next_keys, next_values, next_positions))
 
     def attention_mask(
-        self,
-        input_lengths: torch.Tensor,
-        cache_lengths: torch.Tensor,
+        self, input_lengths: torch.Tensor, cache_lengths: torch.Tensor
     ) -> torch.Tensor:
         query = torch.arange(self.max_frames, device=self.device).reshape(
             1, self.max_frames, 1
         )
         key = torch.arange(
-            -self.cache_size,
-            self.max_frames,
-            device=self.device,
+            -self.cache_size, self.max_frames, device=self.device
         ).reshape(1, 1, self.cache_size + self.max_frames)
         causal = (key <= query) & (key > query - self.sliding_window)
-
         past_slot = torch.arange(self.cache_size, device=self.device).unsqueeze(0)
         valid_past = past_slot >= (self.cache_size - cache_lengths).unsqueeze(1)
         current_slot = torch.arange(self.max_frames, device=self.device).unsqueeze(0)
         valid_current = current_slot < input_lengths.unsqueeze(1)
         valid_keys = torch.cat((valid_past, valid_current), dim=1)
         allowed = causal & valid_keys.unsqueeze(1)
-
         valid_queries = current_slot < input_lengths.unsqueeze(1)
         safe_invalid = F.pad(
-            torch.eye(
-                self.max_frames,
-                device=self.device,
-                dtype=torch.bool,
-            ),
+            torch.eye(self.max_frames, device=self.device, dtype=torch.bool),
             (self.cache_size, 0),
         ).unsqueeze(0)
-        allowed = allowed | (safe_invalid & ~valid_queries.unsqueeze(2))
+        allowed = allowed | safe_invalid & ~valid_queries.unsqueeze(2)
         return allowed.unsqueeze(1)
 
     def advance_kv(
@@ -759,22 +615,14 @@ class AudioVAEFixedStreamingTransition:
         previous_source = self.cache_size - previous_lengths.unsqueeze(1) + logical
         current_source = self.cache_size + logical - previous_lengths.unsqueeze(1)
         source = torch.where(from_previous, previous_source, current_source)
-        source = torch.clamp(
-            source,
-            min=0,
-            max=self.cache_size + self.max_frames - 1,
-        )
+        source = torch.clamp(source, min=0, max=self.cache_size + self.max_frames - 1)
         gather_index = source.reshape(1, batch_size, 1, self.cache_size, 1).expand(
             layer_count, -1, heads, -1, head_dim
         )
         gathered = torch.gather(full, 3, gather_index)
         valid_destination = destination >= (self.cache_size - next_lengths).unsqueeze(1)
         return gathered * valid_destination.reshape(
-            1,
-            batch_size,
-            1,
-            self.cache_size,
-            1,
+            1, batch_size, 1, self.cache_size, 1
         )
 
     def istft(
@@ -792,7 +640,6 @@ class AudioVAEFixedStreamingTransition:
         numerator, denominator = head.istft.overlap_add_components(
             spectrum, valid_frame_mask=frame_mask
         )
-
         started = (self.state.qwen_positions > 0) & exec_mask
         numerator[:, : self.overlap].add_(
             self.state.istft_audio_overlap * started.unsqueeze(1)
@@ -800,14 +647,12 @@ class AudioVAEFixedStreamingTransition:
         denominator[:, : self.overlap].add_(
             self.window_envelope_tail * started.unsqueeze(1)
         )
-
         raw_lengths = frame_lengths * self.hop_length + self.overlap
         buffer_start = torch.clamp(raw_lengths - self.overlap, min=0)
         buffer_index = buffer_start.unsqueeze(1) + torch.arange(
             self.overlap, device=self.device
         ).unsqueeze(0)
         next_audio_overlap = torch.gather(numerator, 1, buffer_index)
-
         safe_denominator = torch.where(denominator > 1e-11, denominator, 1)
         normalized = numerator / safe_denominator
         output_start = torch.where(started, 0, self.pad)
@@ -824,7 +669,7 @@ class AudioVAEFixedStreamingTransition:
             self.max_output_samples, device=self.device
         ).unsqueeze(0) < sample_lengths.unsqueeze(1)
         waveform = waveform * output_mask
-        return waveform, sample_lengths, next_audio_overlap
+        return (waveform, sample_lengths, next_audio_overlap)
 
     def commit(
         self,
@@ -844,12 +689,7 @@ class AudioVAEFixedStreamingTransition:
             alive_selector: torch.Tensor,
             terminal_selector: torch.Tensor,
         ) -> None:
-            torch.where(
-                alive_selector,
-                proposal,
-                destination,
-                out=destination,
-            )
+            torch.where(alive_selector, proposal, destination, out=destination)
             destination.masked_fill_(terminal_selector, 0)
 
         upsample_selector = upsample_alive.reshape(-1, 1, 1)
@@ -872,28 +712,17 @@ class AudioVAEFixedStreamingTransition:
             upsample_selector,
             upsample_terminal,
         )
-
         qwen_selector = decoded_alive.reshape(1, self.capacity, 1, 1, 1)
         qwen_terminal = terminal.reshape(1, self.capacity, 1, 1, 1)
         commit_field(
-            state.qwen_keys,
-            next_state.qwen_keys,
-            qwen_selector,
-            qwen_terminal,
+            state.qwen_keys, next_state.qwen_keys, qwen_selector, qwen_terminal
         )
         commit_field(
-            state.qwen_values,
-            next_state.qwen_values,
-            qwen_selector,
-            qwen_terminal,
+            state.qwen_values, next_state.qwen_values, qwen_selector, qwen_terminal
         )
         commit_field(
-            state.qwen_positions,
-            next_state.qwen_positions,
-            decoded_alive,
-            terminal,
+            state.qwen_positions, next_state.qwen_positions, decoded_alive, terminal
         )
-
         decoded_selector = decoded_alive.unsqueeze(1)
         decoded_terminal = terminal.unsqueeze(1)
         commit_field(
@@ -911,13 +740,10 @@ class CapturedAudioVAEGraph:
 
 
 class MingAudioStreamingRunner:
-    _CUDA_GRAPH_WARMUP_ITERATIONS = 3
+    CUDA_GRAPH_WARMUP_ITERATIONS = 3
 
     def __init__(
-        self,
-        transition: AudioVAEFixedStreamingTransition,
-        *,
-        cuda_graph_required: bool,
+        self, transition: AudioVAEFixedStreamingTransition, *, cuda_graph_required: bool
     ) -> None:
         self.transition = transition
         self.cuda_graph_required_at_startup = cuda_graph_required
@@ -926,7 +752,6 @@ class MingAudioStreamingRunner:
         capacity = transition.capacity
         max_step_latents = transition.max_step_latents
         latent_dim = transition.latent_dim
-
         self.host_latents = torch.empty(
             (capacity, max_step_latents, latent_dim),
             device="cpu",
@@ -934,24 +759,14 @@ class MingAudioStreamingRunner:
             pin_memory=True,
         )
         self.host_latent_lengths = torch.empty(
-            capacity,
-            device="cpu",
-            dtype=torch.long,
-            pin_memory=True,
+            capacity, device="cpu", dtype=torch.long, pin_memory=True
         )
         self.host_exec_mask = torch.empty(
-            capacity,
-            device="cpu",
-            dtype=torch.bool,
-            pin_memory=True,
+            capacity, device="cpu", dtype=torch.bool, pin_memory=True
         )
         self.host_terminal_mask = torch.empty(
-            capacity,
-            device="cpu",
-            dtype=torch.bool,
-            pin_memory=True,
+            capacity, device="cpu", dtype=torch.bool, pin_memory=True
         )
-
         with torch.cuda.device(transition.device):
             self.latents = torch.empty(
                 (capacity, max_step_latents, latent_dim),
@@ -959,21 +774,14 @@ class MingAudioStreamingRunner:
                 dtype=transition.input_dtype,
             )
             self.latent_lengths = torch.empty(
-                capacity,
-                device=transition.device,
-                dtype=torch.long,
+                capacity, device=transition.device, dtype=torch.long
             )
             self.exec_mask = torch.empty(
-                capacity,
-                device=transition.device,
-                dtype=torch.bool,
+                capacity, device=transition.device, dtype=torch.bool
             )
             self.terminal_mask = torch.empty(
-                capacity,
-                device=transition.device,
-                dtype=torch.bool,
+                capacity, device=transition.device, dtype=torch.bool
             )
-
         self.host_waveform = torch.empty(
             (capacity, transition.max_output_samples),
             device="cpu",
@@ -981,36 +789,34 @@ class MingAudioStreamingRunner:
             pin_memory=True,
         )
         self.host_sample_lengths = torch.empty(
-            capacity,
-            device="cpu",
-            dtype=torch.long,
-            pin_memory=True,
+            capacity, device="cpu", dtype=torch.long, pin_memory=True
         )
         static_device_input_bytes = sum(
-            tensor.numel() * tensor.element_size()
-            for tensor in (
-                self.latents,
-                self.latent_lengths,
-                self.exec_mask,
-                self.terminal_mask,
+            (
+                tensor.numel() * tensor.element_size()
+                for tensor in (
+                    self.latents,
+                    self.latent_lengths,
+                    self.exec_mask,
+                    self.terminal_mask,
+                )
             )
         )
         pinned_host_io_bytes = sum(
-            tensor.numel() * tensor.element_size()
-            for tensor in (
-                self.host_latents,
-                self.host_latent_lengths,
-                self.host_exec_mask,
-                self.host_terminal_mask,
-                self.host_waveform,
-                self.host_sample_lengths,
+            (
+                tensor.numel() * tensor.element_size()
+                for tensor in (
+                    self.host_latents,
+                    self.host_latent_lengths,
+                    self.host_exec_mask,
+                    self.host_terminal_mask,
+                    self.host_waveform,
+                    self.host_sample_lengths,
+                )
             )
         )
         logger.info(
-            "ming_tts_audio_vae_runner stage=audio_decode "
-            "streaming_backend=%s streaming_cuda_graph_required=%s "
-            "streaming_graph_ready=%s static_device_input_bytes=%d "
-            "pinned_host_io_bytes=%d",
+            "ming_tts_audio_vae_runner stage=audio_decode streaming_backend=%s streaming_cuda_graph_required=%s streaming_graph_ready=%s static_device_input_bytes=%d pinned_host_io_bytes=%d",
             "cuda_graph" if self.cuda_graph_required_at_startup else "eager",
             self.cuda_graph_required_at_startup,
             self.is_ready,
@@ -1034,17 +840,12 @@ class MingAudioStreamingRunner:
                 "Ming-Omni-TTS streaming AudioVAE backend is not prepared"
             )
         captured = self.captured_graph
-
         self.host_latents.zero_()
         self.host_latent_lengths.zero_()
         self.host_exec_mask.zero_()
         self.host_terminal_mask.zero_()
-
         for slot, patches, terminal in zip(
-            slot_ids,
-            patch_groups,
-            terminal_flags,
-            strict=True,
+            slot_ids, patch_groups, terminal_flags, strict=True
         ):
             offset = 0
             for patch in patches:
@@ -1054,24 +855,13 @@ class MingAudioStreamingRunner:
             self.host_latent_lengths[slot] = offset
             self.host_exec_mask[slot] = True
             self.host_terminal_mask[slot] = terminal
-
-        # Note (yzxiao): Replay through length validation is one graph transaction.
-        # Retire on any post-replay failure and never retry a possibly-mutated wave;
-        # CPU cloning stays outside because it cannot invalidate the graph.
         graph_attempted = False
         try:
             with torch.cuda.device(self.transition.device):
                 self.latents.copy_(self.host_latents, non_blocking=True)
-                self.latent_lengths.copy_(
-                    self.host_latent_lengths,
-                    non_blocking=True,
-                )
+                self.latent_lengths.copy_(self.host_latent_lengths, non_blocking=True)
                 self.exec_mask.copy_(self.host_exec_mask, non_blocking=True)
-                self.terminal_mask.copy_(
-                    self.host_terminal_mask,
-                    non_blocking=True,
-                )
-
+                self.terminal_mask.copy_(self.host_terminal_mask, non_blocking=True)
                 if captured is None:
                     output = self.execute_device()
                 else:
@@ -1079,12 +869,8 @@ class MingAudioStreamingRunner:
                     captured.graph.replay()
                     output = captured.output
                 self.host_waveform.copy_(output.waveform, non_blocking=True)
-                self.host_sample_lengths.copy_(
-                    output.sample_lengths,
-                    non_blocking=True,
-                )
+                self.host_sample_lengths.copy_(output.sample_lengths, non_blocking=True)
                 torch.cuda.current_stream(self.transition.device).synchronize()
-
             sample_counts: list[int] = []
             for slot in slot_ids:
                 sample_count = int(self.host_sample_lengths[slot])
@@ -1093,19 +879,16 @@ class MingAudioStreamingRunner:
                     or sample_count > self.transition.max_output_samples
                 ):
                     raise RuntimeError(
-                        "AudioVAE fixed streaming returned invalid sample length "
-                        f"{sample_count} for slot {slot}"
+                        f"AudioVAE fixed streaming returned invalid sample length {sample_count} for slot {slot}"
                     )
                 sample_counts.append(sample_count)
         except Exception:
             if graph_attempted:
                 self.captured_graph = None
                 logger.exception(
-                    "Ming-Omni-TTS streaming AudioVAE CUDA graph failed; "
-                    "future streaming waves will use eager execution"
+                    "Ming-Omni-TTS streaming AudioVAE CUDA graph failed; future streaming waves will use eager execution"
                 )
             raise
-
         waveforms = []
         for slot, sample_count in zip(slot_ids, sample_counts, strict=True):
             waveforms.append(self.host_waveform[slot, :sample_count].clone())
@@ -1126,7 +909,6 @@ class MingAudioStreamingRunner:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE CUDA graph is already prepared"
             )
-
         candidate_graph: torch.cuda.CUDAGraph | None = None
         try:
             with torch.cuda.device(self.transition.device):
@@ -1138,12 +920,10 @@ class MingAudioStreamingRunner:
                     torch.cuda.memory_reserved(self.transition.device)
                 )
                 self.transition.reset_all()
-
                 self.latents.zero_()
                 self.latent_lengths.fill_(self.transition.max_step_latents)
                 self.exec_mask.fill_(True)
                 self.terminal_mask.fill_(True)
-
                 current_stream = torch.cuda.current_stream(self.transition.device)
                 build_stream = torch.cuda.Stream(device=self.transition.device)
                 build_stream.wait_stream(current_stream)
@@ -1154,7 +934,6 @@ class MingAudioStreamingRunner:
                 current_stream.synchronize()
                 del warm_output
                 self.transition.reset_all()
-
                 candidate_graph = torch.cuda.CUDAGraph()
                 build_stream.wait_stream(current_stream)
                 try:
@@ -1170,7 +949,6 @@ class MingAudioStreamingRunner:
                 current_stream.synchronize()
                 self.require_output_contract(candidate_output)
                 self.transition.reset_all()
-
                 candidate_graph.replay()
                 current_stream.synchronize()
                 self.transition.reset_all()
@@ -1178,10 +956,8 @@ class MingAudioStreamingRunner:
                     torch.cuda.memory_allocated(self.transition.device)
                 )
                 reserved_after = int(torch.cuda.memory_reserved(self.transition.device))
-
                 self.captured_graph = CapturedAudioVAEGraph(
-                    graph=candidate_graph,
-                    output=candidate_output,
+                    graph=candidate_graph, output=candidate_output
                 )
                 self.startup_prepared = True
         except Exception:
@@ -1190,19 +966,11 @@ class MingAudioStreamingRunner:
                     candidate_graph.reset()
                 except Exception:
                     logger.exception(
-                        "Failed to reset an unpublished Ming-Omni-TTS "
-                        "streaming AudioVAE CUDA graph"
+                        "Failed to reset an unpublished Ming-Omni-TTS streaming AudioVAE CUDA graph"
                     )
             raise
         logger.info(
-            "ming_tts_audio_vae_streaming_graph stage=audio_decode "
-            "streaming_graph_ready=true "
-            "allocator_allocated_before_bytes=%d "
-            "allocator_allocated_after_bytes=%d "
-            "allocator_allocated_delta_bytes=%d "
-            "allocator_reserved_before_bytes=%d "
-            "allocator_reserved_after_bytes=%d "
-            "allocator_reserved_delta_bytes=%d",
+            "ming_tts_audio_vae_streaming_graph stage=audio_decode streaming_graph_ready=true allocator_allocated_before_bytes=%d allocator_allocated_after_bytes=%d allocator_allocated_delta_bytes=%d allocator_reserved_before_bytes=%d allocator_reserved_after_bytes=%d allocator_reserved_delta_bytes=%d",
             allocated_before,
             allocated_after,
             allocated_after - allocated_before,
@@ -1211,16 +979,11 @@ class MingAudioStreamingRunner:
             reserved_after - reserved_before,
         )
 
-    def require_output_contract(
-        self,
-        output: AudioVAEFixedStreamingOutput,
-    ) -> None:
+    def require_output_contract(self, output: AudioVAEFixedStreamingOutput) -> None:
         if type(output) is not AudioVAEFixedStreamingOutput:
             raise RuntimeError(
-                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an "
-                "invalid output type"
+                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid output type"
             )
-
         expected_waveform_shape = (
             self.transition.capacity,
             self.transition.max_output_samples,
@@ -1230,25 +993,22 @@ class MingAudioStreamingRunner:
             tuple(waveform.shape) != expected_waveform_shape
             or waveform.dtype != torch.float32
             or waveform.device != self.transition.device
-            or not waveform.is_contiguous()
+            or (not waveform.is_contiguous())
             or waveform.requires_grad
         ):
             raise RuntimeError(
-                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid "
-                "waveform contract"
+                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid waveform contract"
             )
-
         sample_lengths = output.sample_lengths
         if (
             tuple(sample_lengths.shape) != (self.transition.capacity,)
             or sample_lengths.dtype != torch.long
             or sample_lengths.device != self.transition.device
-            or not sample_lengths.is_contiguous()
+            or (not sample_lengths.is_contiguous())
             or sample_lengths.requires_grad
         ):
             raise RuntimeError(
-                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid "
-                "sample-length contract"
+                "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid sample-length contract"
             )
 
     def close(self) -> None:
@@ -1263,20 +1023,15 @@ class MingAudioStreamingRunner:
 
 
 def decode_ming_tts_audio_payload(
-    payload: StagePayload,
-    decoder: MingAudioDecoder,
-    *,
-    keep_latents: bool = False,
+    payload: StagePayload, decoder: MingAudioDecoder, *, keep_latents: bool = False
 ) -> StagePayload:
     """Decode generated acoustic latents into the terminal waveform payload."""
-
     state = load_ming_tts_state(payload)
     waveform = decoder.decode_full(state.generated_latents)
     state.sample_rate = int(decoder.sample_rate)
     state.duration_s = float(waveform.numel() / int(decoder.sample_rate))
     if not keep_latents:
         state.generated_latents = None
-
     payload = store_ming_tts_state(payload, state)
     payload.data.update(
         audio_waveform_payload(

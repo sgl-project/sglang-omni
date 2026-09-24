@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Slot-indexed storage for Qwen3-TTS incremental Codec decoder state."""
 
 from __future__ import annotations
@@ -41,79 +40,51 @@ class Qwen3TTSCodecStateArena:
         self.decoder = decoder
         self.device = torch.device(device)
         self.dtype = dtype
-        self._num_slots = int(
-            num_slots
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        # note (luojiaxuan): one extra row past the last slot is the scratch
-        # row. A captured graph gathers a fixed batch bucket, so the rows a
-        # smaller cohort leaves unused point here and their scatter lands
-        # here, never in a live slot.
-        self.scratch_slot = (
-            self._num_slots
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._num_slots = int(num_slots)  # noqa: leading-underscore
+        self.scratch_slot = self._num_slots  # noqa: leading-underscore
         self.storage = decoder.init_state(
             self._num_slots + 1,
             device=self.device,
-            dtype=dtype,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            dtype=dtype,  # noqa: leading-underscore
         )
         self.lock = threading.Lock()
-        # note (luojiaxuan): cohort indices reach the device through per-thread
-        # pinned staging with non_blocking copies. Building them with
-        # ``torch.as_tensor(list, device=cuda)`` issues a pageable H2D copy,
-        # which blocks the host until every kernel already queued on the
-        # stream (the decode just launched) has finished: an implicit
-        # resolve() on every gather and scatter.
         self.staging = threading.local()
-        # note (luojiaxuan): a slot's last owner may still have its zeroing or
-        # scatter queued on another stream when the slot is released, so the
-        # release records where that stream is and the next owner waits on it
-        # before touching the rows.
         self.release_events: dict[int, torch.cuda.Event] = {}
         self.free: list[int] = list(
             reversed(range(self._num_slots))
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )  # noqa: leading-underscore
         self.retired: set[int] = set()
-        self._exhausted_count = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._exhausted_count = 0  # noqa: leading-underscore
         spec = decoder.state_spec()
-        self._bytes_per_slot = spec.bytes_per_stream(
-            dtype
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._bytes_per_slot = spec.bytes_per_stream(dtype)  # noqa: leading-underscore
 
     @property
     def num_slots(self) -> int:
-        return (
-            self._num_slots
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._num_slots  # noqa: leading-underscore
 
     @property
     def bytes_per_slot(self) -> int:
-        return (
-            self._bytes_per_slot
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._bytes_per_slot  # noqa: leading-underscore
 
     @property
     def total_bytes(self) -> int:
-        return (
-            self._bytes_per_slot * self._num_slots
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._bytes_per_slot * self._num_slots  # noqa: leading-underscore
 
     @property
     def exhausted_count(self) -> int:
-        return (
-            self._exhausted_count
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._exhausted_count  # noqa: leading-underscore
 
     def active_slots(self) -> int:
         with self.lock:
             return (
                 self._num_slots - len(self.free) - len(self.retired)
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            )  # noqa: leading-underscore
 
     def acquire(self) -> int | None:
         """Take a zeroed slot, or ``None`` when the arena is full."""
         with self.lock:
             if not self.free:
-                self._exhausted_count += 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                self._exhausted_count += 1  # noqa: leading-underscore
                 return None
             slot = self.free.pop()
             released = self.release_events.pop(slot, None)
@@ -163,7 +134,7 @@ class Qwen3TTSCodecStateArena:
             buffer[slot].zero_()
         self.storage.frame_positions[slot] = 0
 
-    _STAGING_RING = 4
+    STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
         if self.device.type != "cuda":
@@ -171,22 +142,17 @@ class Qwen3TTSCodecStateArena:
         count = len(values)
         if count == 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
-        # note (luojiaxuan): a follow-up worker keeps one cohort in flight while
-        # staging the next, so a single pinned buffer would be overwritten
-        # before its pending copy ran and the earlier cohort would decode the
-        # later cohort's slots. Each call takes the next pair of a small ring;
-        # a thread never has more than two cohorts between launch and resolve.
         ring = getattr(self.staging, f"{name}_ring", None)
         if ring is None:
             ring = [
                 (
                     torch.empty(
                         self._num_slots + 1, dtype=torch.long
-                    ).pin_memory(),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                    ).pin_memory(),  # noqa: leading-underscore
                     torch.empty(
                         self._num_slots + 1,
                         dtype=torch.long,
-                        device=self.device,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                        device=self.device,  # noqa: leading-underscore
                     ),
                 )
                 for _ in range(self.STAGING_RING)
@@ -271,23 +237,21 @@ class Qwen3TTSCodecStateArena:
         expected = (int(index.shape[0]), *buffer.shape[1:])
         if tuple(rows.shape) != expected:
             raise RuntimeError(
-                f"Qwen3-TTS codec state arena expected {expected} for {key}, "
-                f"got {tuple(rows.shape)}"
+                f"Qwen3-TTS codec state arena expected {expected} for {key}, got {tuple(rows.shape)}"
             )
         if rows.dtype != buffer.dtype:
             raise RuntimeError(
-                f"Qwen3-TTS codec state arena expected {buffer.dtype} for {key}, "
-                f"got {rows.dtype}"
+                f"Qwen3-TTS codec state arena expected {buffer.dtype} for {key}, got {rows.dtype}"
             )
         buffer.index_copy_(0, index, rows.contiguous())
 
     def describe(self) -> dict[str, Any]:
         return {
-            "slots": self._num_slots,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            "slots": self._num_slots,  # noqa: leading-underscore
             "active_slots": self.active_slots(),
-            "bytes_per_slot": self._bytes_per_slot,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            "bytes_per_slot": self._bytes_per_slot,  # noqa: leading-underscore
             "total_bytes": self.total_bytes,
-            "exhausted": self._exhausted_count,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            "exhausted": self._exhausted_count,  # noqa: leading-underscore
         }
 
 

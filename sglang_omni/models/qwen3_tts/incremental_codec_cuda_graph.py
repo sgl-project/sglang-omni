@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """CUDA graphs for fixed-shape Qwen3-TTS incremental Codec decodes."""
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
     so a failed capture there leaves the COLD shapes in place.
     """
 
-    _WARMUP_ITERATIONS = 3
+    WARMUP_ITERATIONS = 3
 
     def __init__(
         self,
@@ -98,14 +97,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         stream_priority: int = 0,
     ) -> None:
         self.decoder = decoder
-        self.compile_fresh_frames = frozenset(int(f) for f in compile_fresh_frames)
-        # note (luojiaxuan): bound to an arena, a graph gathers its cohort's
-        # rows from the arena, decodes, and scatters the advanced rows back,
-        # all inside the replay. The host then only writes slot ids and codes.
+        self.compile_fresh_frames = frozenset((int(f) for f in compile_fresh_frames))
         self.arena = arena
-        # note (luojiaxuan): CUDA instantiates a captured graph with node
-        # priorities taken from the capture stream, not from the stream that
-        # replays it, so capture at the priority the decode streams run at.
         self.stream_priority = int(stream_priority)
         self.device = torch.device(device)
         self.dtype = dtype
@@ -123,12 +116,12 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         )
         if not math.isfinite(float(min_free_gb)) or float(min_free_gb) < 0:
             raise ValueError("incremental Codec graph min_free_gb must be >= 0")
-        self.min_free_bytes = int(float(min_free_gb) * (1024**3))
+        self.min_free_bytes = int(float(min_free_gb) * 1024**3)
         self.configured = bool(
             enabled
             and self.device.type in {"cuda", "musa"}
-            and self.device.index is not None
-            and self.num_quantizers > 0
+            and (self.device.index is not None)
+            and (self.num_quantizers > 0)
             and self.fresh_frames
             and self.batch_sizes
         )
@@ -139,21 +132,15 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self.capture_complete = False
         self.pool: Any | None = None
         self.capture_stream: torch.cuda.Stream | None = None
-        self.memory_stats: dict[str, Any] = {
-            "min_free_bytes": self.min_free_bytes,
-        }
+        self.memory_stats: dict[str, Any] = {"min_free_bytes": self.min_free_bytes}
         self.retained_capture_resources: list[CaptureResourceSet] = []
         self.replays = 0
         self.replay_failures = 0
         self.misses: Counter[str] = Counter()
-        # note (luojiaxuan): stats() runs on whichever worker hits the log
-        # interval while another worker may be disabling its runner or
-        # recording a first miss; the lock keeps those dict walks consistent.
         self.graphs_lock = threading.Lock()
 
     def capture(self) -> None:
         """Capture every configured hot shape before serving readiness."""
-
         if not self.configured or self.capture_complete:
             return
         self.capture_complete = True
@@ -167,7 +154,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream: torch.cuda.Stream | None = None
         try:
             with torch.cuda.device(self.device):
-                # note (ratish): once per pass; a collect per key walks the whole heap
                 gc.collect()
                 before = self.memory_snapshot()
                 self.memory_stats["before"] = before
@@ -182,14 +168,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                     reverse=True,
                 ):
                     temporary[key] = self.capture_graph(
-                        key,
-                        pool=pool,
-                        capture_stream=capture_stream,
+                        key, pool=pool, capture_stream=capture_stream
                     )
                     torch.cuda.empty_cache()
                     self.require_headroom(
-                        torch.cuda.mem_get_info(self.device)[0],
-                        key=key,
+                        torch.cuda.mem_get_info(self.device)[0], key=key
                     )
                 after = self.memory_snapshot()
                 self.memory_stats["after"] = after
@@ -201,10 +184,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         except Exception as exc:
             reason = f"capture_failed: {type(exc).__name__}: {exc}"
             self.rollback_capture(
-                temporary,
-                pool=pool,
-                capture_stream=capture_stream,
-                reason=reason,
+                temporary, pool=pool, capture_stream=capture_stream, reason=reason
             )
             logger.warning(
                 "Qwen3-TTS incremental Codec graph capture disabled the %s runner: %s",
@@ -213,7 +193,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 exc_info=True,
             )
             return
-
         with self.graphs_lock:
             self.graphs = temporary
         self.pool = pool
@@ -225,8 +204,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             [
                 (key.fresh_frames, key.batch_bucket)
                 for key in sorted(
-                    self.graphs,
-                    key=lambda item: (item.fresh_frames, item.batch_bucket),
+                    self.graphs, key=lambda item: (item.fresh_frames, item.batch_bucket)
                 )
             ],
         )
@@ -241,10 +219,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         }
 
     def require_headroom(
-        self,
-        free_bytes: int,
-        *,
-        key: IncrementalCodecGraphKey | None = None,
+        self, free_bytes: int, *, key: IncrementalCodecGraphKey | None = None
     ) -> None:
         if int(free_bytes) >= self.min_free_bytes:
             return
@@ -254,9 +229,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             else f" after fresh_frames={key.fresh_frames} batch={key.batch_bucket}"
         )
         raise CaptureFailure(
-            "free VRAM "
-            f"{format_bytes_gib(int(free_bytes))} is below "
-            f"{format_bytes_gib(self.min_free_bytes)} headroom{key_text}"
+            f"free VRAM {format_bytes_gib(int(free_bytes))} is below {format_bytes_gib(self.min_free_bytes)} headroom{key_text}"
         )
 
     def capture_graph(
@@ -272,9 +245,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             device=self.device,
         )
         resources = CaptureResourceSet(
-            pool=pool,
-            stream=capture_stream,
-            keepalives=[static_codes],
+            pool=pool, stream=capture_stream, keepalives=[static_codes]
         )
         graph: torch.cuda.CUDAGraph | None = None
         try:
@@ -325,14 +296,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         resources: CaptureResourceSet,
     ) -> None:
         """Run eager decodes that settle one shape before graph capture."""
-
         capture_stream = resources.stream
         compiled = key.fresh_frames in self.compile_fresh_frames
         capture_stream.wait_stream(torch.cuda.current_stream(self.device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             if compiled:
-                # note(ratish): trace on the tensors the warmups and the capture
-                # use; Dynamo guards on inference tensors and would trace again.
                 trace_state = self.arena.gather_by_index(
                     self.scratch_index(key.batch_bucket)
                 )
@@ -348,16 +316,14 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         del resources.keepalives[1:]
 
     def retain_capture_resources_if_unsynchronized(
-        self,
-        resources: CaptureResourceSet,
+        self, resources: CaptureResourceSet
     ) -> bool:
         try:
             resources.stream.synchronize()
         except Exception:
             self.retained_capture_resources.append(resources)
             logger.exception(
-                "Qwen3-TTS incremental Codec capture stream could not be "
-                "synchronized; retaining partial capture resources"
+                "Qwen3-TTS incremental Codec capture stream could not be synchronized; retaining partial capture resources"
             )
             return False
         return True
@@ -390,9 +356,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         if not self.synchronize_device("capture rollback"):
             self.retained_capture_resources.append(
                 CaptureResourceSet(
-                    pool=pool,
-                    stream=capture_stream,
-                    keepalives=[temporary],
+                    pool=pool, stream=capture_stream, keepalives=[temporary]
                 )
             )
             return
@@ -406,8 +370,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 torch.cuda.synchronize(self.device)
         except RuntimeError as synchronize_exc:
             logger.warning(
-                "Qwen3-TTS incremental Codec graph %s synchronize failed; "
-                "retaining graph buffers for the process lifetime: %s",
+                "Qwen3-TTS incremental Codec graph %s synchronize failed; retaining graph buffers for the process lifetime: %s",
                 context,
                 synchronize_exc,
             )
@@ -436,7 +399,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 
     def available_batch_sizes(self, fresh_frames: int) -> tuple[int, ...]:
         """Return published batch buckets for one fresh-frame count."""
-
         if not self.enabled:
             return ()
         return tuple(
@@ -483,8 +445,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """
         if os.getpid() != self.owner_pid:
             raise RuntimeError(
-                "Qwen3-TTS incremental Codec graph runner belongs to PID "
-                f"{self.owner_pid}, but was used in PID {os.getpid()}"
+                f"Qwen3-TTS incremental Codec graph runner belongs to PID {self.owner_pid}, but was used in PID {os.getpid()}"
             )
         if not self.enabled or not self.graphs:
             with self.graphs_lock:
@@ -538,15 +499,13 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             raise ValueError("incremental Codec graph input requires at least one row")
         if int(codes.shape[1]) != self.num_quantizers:
             raise ValueError(
-                "incremental Codec graph input must contain "
-                f"{self.num_quantizers} quantizers"
+                f"incremental Codec graph input must contain {self.num_quantizers} quantizers"
             )
         if codes.dtype != torch.long:
             raise TypeError("incremental Codec graph input must use torch.long")
         if codes.device != self.device:
             raise ValueError(
-                f"incremental Codec graph input must be on {self.device}, "
-                f"got {codes.device}"
+                f"incremental Codec graph input must be on {self.device}, got {codes.device}"
             )
 
     def disable_runtime(self, reason: str) -> None:
@@ -585,10 +544,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             "build": {
                 "capture_complete": self.capture_complete,
                 "captured_keys": [
-                    {
-                        "fresh_frames": key.fresh_frames,
-                        "batch_bucket": key.batch_bucket,
-                    }
+                    {"fresh_frames": key.fresh_frames, "batch_bucket": key.batch_bucket}
                     for key in captured_keys
                 ],
             },

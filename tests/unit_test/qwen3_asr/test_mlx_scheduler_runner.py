@@ -58,8 +58,8 @@ class _Worker:
 class _Runner(MlxSchedulerModelRunner):
     def __init__(self, worker):
         self.tp_worker = worker
-        self._last_mlx_pending = None
-        self._execution_bridge = None
+        self.last_mlx_pending = None
+        self.execution_bridge = None
         self.finalized = []
 
     @staticmethod

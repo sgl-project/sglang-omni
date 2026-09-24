@@ -44,8 +44,8 @@ def _make(cache_cls, eviction_policy="lru"):
 def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
     """Drive an identical insert/lock/unlock/evict trace; return eviction order."""
     order = []
-    orig_delete = cache.delete_leaf
-    cache.delete_leaf = lambda node: (
+    orig_delete = cache._delete_leaf
+    cache._delete_leaf = lambda node: (
         order.append((node.key.extra_key, tuple(node.key.token_ids))),
         orig_delete(node),
     )[1]

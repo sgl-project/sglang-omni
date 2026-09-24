@@ -18,16 +18,16 @@ def _make_stub(rows: int = 8, hidden: int = 4, n_audio: int = 3) -> SimpleNamesp
         heads.append(SimpleNamespace(weight=stacked[index * rows : (index + 1) * rows]))
     stub = SimpleNamespace(
         lm_heads=heads,
-        _stacked_audio_head_weight=stacked,
-        _audio_head_padded_vocab=rows,
-        _audio_head_expected_ptrs=[
+        stacked_audio_head_weight=stacked,
+        audio_head_padded_vocab=rows,
+        audio_head_expected_ptrs=[
             stacked[index * rows : (index + 1) * rows].data_ptr()
             for index in range(n_audio)
         ],
-        _fused_audio_heads_enabled=True,
+        fused_audio_heads_enabled=True,
     )
     stub.ensure_stacked_audio_heads = MethodType(
-        lambda self: self._stacked_audio_head_weight is not None, stub
+        lambda self: self.stacked_audio_head_weight is not None, stub
     )
     stub.fused_audio_heads_ready = MethodType(
         MossTTSDelaySGLangModel.fused_audio_heads_ready, stub
@@ -55,8 +55,8 @@ def test_ready_never_stacks_lazily() -> None:
     # Stacking happens at load time; the request path may only observe it.
     stub = SimpleNamespace(
         lm_heads=[SimpleNamespace(weight=torch.randn(2, 4))],
-        _stacked_audio_head_weight=None,
-        _fused_audio_heads_enabled=None,
+        stacked_audio_head_weight=None,
+        fused_audio_heads_enabled=None,
     )
     stub.fused_audio_heads_ready = MethodType(
         MossTTSDelaySGLangModel.fused_audio_heads_ready, stub
@@ -142,10 +142,10 @@ def _share_stub(
             SimpleNamespace(use_fp32_lm_head=False, rl_on_policy_target=None)
             for _ in range(n_audio + 1)
         ],
-        _stacked_audio_head_weight=None,
-        _audio_head_padded_vocab=0,
-        _audio_head_expected_ptrs=[],
-        _fused_audio_heads_enabled=None,
+        stacked_audio_head_weight=None,
+        audio_head_padded_vocab=0,
+        audio_head_expected_ptrs=[],
+        fused_audio_heads_enabled=None,
     )
     for name in (
         "audio_heads_use_plain_lm_head",
@@ -208,8 +208,8 @@ def test_fused_audio_logits_match_the_per_head_gemm(dtype: torch.dtype) -> None:
         config=SimpleNamespace(
             channels=n_audio + 1, vocab_size_list=[2, *([audio_vocab] * n_audio)]
         ),
-        _stacked_audio_head_weight=stacked,
-        _audio_head_padded_vocab=rows,
+        stacked_audio_head_weight=stacked,
+        audio_head_padded_vocab=rows,
     )
     stub.compute_fused_audio_logits = MethodType(
         MossTTSDelaySGLangModel.compute_fused_audio_logits, stub

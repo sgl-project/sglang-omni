@@ -20,13 +20,13 @@ from sglang_omni.scheduling.reference_encoder import (
 class _FirstWaveGate:
     def __init__(self, count: int) -> None:
         self._barrier = threading.Barrier(count)
-        self._done = threading.Event()
+        self.done = threading.Event()
 
     def wait(self) -> None:
-        if self._done.is_set():
+        if self.done.is_set():
             return
         self._barrier.wait(timeout=5)
-        self._done.set()
+        self.done.set()
 
 
 def _wait_for_merged(

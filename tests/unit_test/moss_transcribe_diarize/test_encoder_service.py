@@ -97,7 +97,7 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     service.worker_error = None
     service.batch_count = 0
     service.item_count = 0
-    service._device = "cuda:7"
+    service.device = "cuda:7"
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
     calls: list[list[object]] = []
@@ -180,7 +180,7 @@ def test_batched_oom_falls_back_to_per_item_encoding(
     service.item_count = 0
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
-    service._device = "cuda:5"
+    service.device = "cuda:5"
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
     service.stream = SimpleNamespace(
@@ -268,7 +268,7 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
 
 def test_encode_item_rechecks_cache_after_preprocessing() -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._device = torch.device("cpu")
+    service.device = torch.device("cpu")
     service.dtype = torch.float32
     service.hidden_size = 3
     service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
@@ -330,7 +330,7 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     service.item_count = 0
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
-    service._device = torch.device("cpu")
+    service.device = torch.device("cpu")
     service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     synchronized: list[None] = []
     service.stream = SimpleNamespace(synchronize=lambda: synchronized.append(None))

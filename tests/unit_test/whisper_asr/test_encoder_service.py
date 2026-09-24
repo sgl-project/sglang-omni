@@ -69,15 +69,15 @@ class _StubModel(torch.nn.Module):
         encoder = _StubEncoder(dtype=dtype)
         self.model = SimpleNamespace(encoder=encoder)
         self.config = SimpleNamespace(d_model=_HIDDEN_SIZE)
-        self._encoder = encoder
+        self.encoder = encoder
 
     @property
     def encode_calls(self) -> int:
-        return self._encoder.encode_calls
+        return self.encoder.encode_calls
 
     def encode_audio_features(self, items: list[object]) -> torch.Tensor:
         features: list[torch.Tensor] = []
-        reference = next(self._encoder.parameters())
+        reference = next(self.encoder.parameters())
         for item in items:
             feature = getattr(item, "feature", None)
             if feature is None:
@@ -85,7 +85,7 @@ class _StubModel(torch.nn.Module):
             if not isinstance(feature, torch.Tensor):
                 feature = torch.as_tensor(feature)
             features.append(feature.to(device=reference.device, dtype=reference.dtype))
-        return self._encoder(torch.cat(features, dim=0))
+        return self.encoder(torch.cat(features, dim=0))
 
 
 def _make_item(*, fingerprint: str = "fp", fill: float = 1.0) -> MultimodalDataItem:

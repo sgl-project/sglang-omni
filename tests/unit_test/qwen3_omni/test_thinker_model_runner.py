@@ -18,7 +18,7 @@ def _probe_runner(monkeypatch, method: str):
     monkeypatch.setattr(
         ModelRunner,
         method,
-        lambda self, _sched: seen.append(list(self._text_model.layers_to_capture)),
+        lambda self, _sched: seen.append(list(self.text_model.layers_to_capture)),
     )
     return runner, seen
 

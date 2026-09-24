@@ -97,7 +97,7 @@ def _async_incremental_scheduler(
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._device = device
+    scheduler.device = device
     scheduler.cuda_decode_failed = False
     scheduler.deterministic_inference = False
     scheduler.samples_per_frame = 1

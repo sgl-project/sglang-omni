@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """SGLang-native MOSS-TTS Local (v1.5) model wrapper.
 
 Architecture: a 36-layer Qwen3 global backbone consumes one summed embedding
@@ -77,10 +76,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self.quant_config = quant_config
         self.hidden_size = int(self.config.hidden_size)
         self.n_vq = int(self.config.n_vq)
-
-        # Channel 0: text vocab; channels 1..n_vq: per-codebook tables with one
-        # extra row for audio_pad_code so prompt-row embedding sums need no
-        # masking — the pad row is zeroed after weight loading.
         self.embedding_list = torch.nn.ModuleList()
         if self.pp_group.is_first_rank:
             for idx in range(self.config.channels):
@@ -95,13 +90,11 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         else:
             for _ in range(self.config.channels):
                 self.embedding_list.append(PPMissingLayer())
-
         self.model = Qwen3Model(
             config=self.config.language_config,
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
-
         gpt2_cfg = self.config.gpt2_config
         self.local_transformer = MossTTSLocalTransformer(
             hidden_size=self.hidden_size,
@@ -109,13 +102,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             inner_size=int(self.cfg_get(gpt2_cfg, "n_inner", 4 * self.hidden_size)),
             num_layers=int(getattr(self.config, "local_transformer_layers", 1)),
             max_positions=self.n_vq + 1,
-            rope_base=float(self.cfg_get(gpt2_cfg, "rope_base", 1_000_000.0)),
-            layer_norm_eps=float(self.cfg_get(gpt2_cfg, "layer_norm_epsilon", 1e-6)),
+            rope_base=float(self.cfg_get(gpt2_cfg, "rope_base", 1000000.0)),
+            layer_norm_eps=float(self.cfg_get(gpt2_cfg, "layer_norm_epsilon", 1e-06)),
         )
-        # Binary continue/stop head over the local position-0 hidden state:
-        # index 0 -> audio_assistant_slot (emit a frame), 1 -> audio_end (stop).
         self.local_text_lm_head = torch.nn.Linear(self.hidden_size, 2, bias=False)
-
         weight = self.first_embedding_weight()
         self.decode_input_embedding = torch.nn.Embedding(
             get_schedule().max_running_requests,
@@ -124,12 +114,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             dtype=weight.dtype,
         )
         self.decode_input_embedding.weight.requires_grad_(False)
-
-        # Row-indexed decode-state pool: next-step-critical per-request state
-        # (next-frame feedback embedding, sampling params/seed, generation step)
-        # lives in process-lifetime GPU buffers sized off the staging table
-        # above. Allocated here, before any frame/backbone graph capture, so
-        # its addresses are fixed for the process lifetime.
         self.state_pool = MossTTSLocalDecodeStatePool(self)
         self.compiled_frame_sampler: Callable[..., torch.Tensor] | None = None
         self.large_vocab_frame_sampler: Callable[..., torch.Tensor] | None = None
@@ -168,8 +152,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         try:
             config.language_config = language_config
         except AttributeError:
-            # MossTTSLocalConfig.language_config is a read-only property
-            # mirroring qwen3_config; normalize through the backing field.
             config.qwen3_config = language_config
         config.hidden_size = int(
             getattr(config, "hidden_size", None) or language_config.hidden_size
@@ -240,8 +222,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             if total_tokens % channels == 0:
                 input_ids_2d = input_ids.view(total_tokens // channels, channels)
             else:
-                # Profiling/warmup passes flat dummy ids of arbitrary length:
-                # treat each id as a text token over pad audio rows.
                 input_ids_2d = torch.empty(
                     (total_tokens, channels),
                     dtype=input_ids.dtype,
@@ -255,16 +235,12 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             input_ids_2d = input_ids
         else:
             raise ValueError(
-                "MOSS-TTS Local input_ids must be rank-1 flattened rows or "
-                f"rank-2 multi-channel rows, got shape {tuple(input_ids.shape)}"
+                f"MOSS-TTS Local input_ids must be rank-1 flattened rows or rank-2 multi-channel rows, got shape {tuple(input_ids.shape)}"
             )
-
         if int(input_ids_2d.shape[-1]) != int(self.config.channels):
             raise ValueError(
-                f"MOSS-TTS Local expected {self.config.channels} channels, "
-                f"got {input_ids_2d.shape[-1]}"
+                f"MOSS-TTS Local expected {self.config.channels} channels, got {input_ids_2d.shape[-1]}"
             )
-
         weight = self.first_embedding_weight()
         embeds = torch.zeros(
             input_ids_2d.shape[0],
@@ -300,7 +276,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 input_embeds = self.prepare_multi_modal_inputs(input_ids)
             else:
                 input_embeds = None
-
         hidden_states = self.model(
             input_ids=None,
             positions=positions,
@@ -310,27 +285,19 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         )
         if not self.pp_group.is_last_rank:
             return hidden_states
-
         sample_hidden_states = self.select_sample_hidden_states(
-            hidden_states,
-            forward_batch,
+            hidden_states, forward_batch
         )
-        # The local-transformer frame decode (binary stop head + 12 sequential
-        # codebook samples) runs in the model runner after the graph-captured
-        # backbone returns; emitting hidden states with dummy logits keeps the
-        # backbone CUDA-graph replay free of model-specific outputs.
         dummy_logits = sample_hidden_states.new_empty(
             (sample_hidden_states.shape[0], 1)
         )
         return LogitsProcessorOutput(
-            next_token_logits=dummy_logits,
-            hidden_states=sample_hidden_states,
+            next_token_logits=dummy_logits, hidden_states=sample_hidden_states
         )
 
     @staticmethod
     def select_sample_hidden_states(
-        hidden_states: torch.Tensor,
-        forward_batch: ForwardBatch,
+        hidden_states: torch.Tensor, forward_batch: ForwardBatch
     ) -> torch.Tensor:
         forward_mode = getattr(forward_batch, "forward_mode", None)
         is_extend = (
@@ -351,11 +318,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         )
         return hidden_states[last_index]
 
-    # ------------------------------------------------------------------
-    # Frame decode: eager path (callback-driven) and CUDA-graphed path
-    # ------------------------------------------------------------------
-
-    _sample_seeded_branchless = staticmethod(sample_seeded_branchless)
+    sample_seeded_branchless = staticmethod(sample_seeded_branchless)
 
     def ensure_frame_compile_config(self) -> None:
         if self.frame_compile_configured:
@@ -379,9 +342,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def ensure_frame_sampler_compile(self) -> None:
         if self.compiled_frame_sampler is None:
             if os.environ.get("MOSS_LOCAL_FUSED_FRAME_SAMPLER", "1") != "0":
-                # Note (Jiaxin Deng): the Triton specializations JIT during the
-                # eager warmup passes init_frame_decode_graphs runs per bucket,
-                # so both vocab shapes compile before graph capture.
                 self.compiled_frame_sampler = self.fused_or_branchless_sampler
                 self.sample_seeded_branchless = self.fused_or_branchless_sampler
                 logger.info("Using fused MOSS-TTS Local frame sampler")
@@ -437,7 +397,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             seeds=seeds,
             positions=base_positions,
         )
-
         slot_ids = torch.full_like(
             seeds, int(self.config.audio_assistant_slot_token_id)
         )
@@ -462,7 +421,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 current = self.local_transformer.step(
                     code_embed.to(dtype=self.dtype), channel + 1
                 )
-        return stop_choice, torch.stack(codes, dim=-1), feedback
+        return (stop_choice, torch.stack(codes, dim=-1), feedback)
 
     @torch.no_grad()
     def init_frame_decode_graphs(self, batch_sizes: list[int]) -> None:
@@ -477,9 +436,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         if not buckets:
             return
         device = self.device
-        # The captured graphs hold raw pointers into the local KV buffers, so
-        # size them for the largest batch any path (graphed or eager fallback)
-        # can see and freeze them against reallocation.
         max_eager_bs = int(self.decode_input_embedding.weight.shape[0])
         self.local_transformer.ensure_kv_cache(
             max(max(buckets), max_eager_bs), device, self.dtype
@@ -493,7 +449,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 Any, dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor
             ],
         ] = {}
-
         for bucket in buckets:
             static_inputs = {
                 "hidden_states": torch.zeros(
@@ -523,7 +478,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                     frame_decode(**static_inputs)
             torch.cuda.current_stream().wait_stream(warmup_stream)
             torch.cuda.synchronize()
-
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
                 stop_choice, codes, feedback = frame_decode(**static_inputs)
@@ -565,9 +519,8 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         later prefill or decode step replays these graphs).
         """
         batch_size = hidden_states.shape[0]
-        bucket = min(b for b in self.frame_graphs if b >= batch_size)
+        bucket = min((b for b in self.frame_graphs if b >= batch_size))
         graph, static_inputs, stop_choice, codes, feedback = self.frame_graphs[bucket]
-
         static_inputs["hidden_states"][:batch_size].copy_(
             hidden_states.to(dtype=self.dtype)
         )
@@ -588,7 +541,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             if batch_size < bucket:
                 buf[batch_size:].fill_(1 if buf.dtype.is_floating_point else 1)
         graph.replay()
-        return stop_choice[:batch_size], codes[:batch_size], feedback[:batch_size]
+        return (stop_choice[:batch_size], codes[:batch_size], feedback[:batch_size])
 
     @torch.no_grad()
     def decode_frame(
@@ -618,7 +571,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         )
         text_logits = F.linear(local_hidden, self.local_text_lm_head.weight)
         stop_choice = sample_text(text_logits.float())
-
         codes = []
         current = local_hidden
         for channel in range(self.n_vq):
@@ -631,7 +583,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 current = self.local_transformer.step(
                     next_embed.to(dtype=self.dtype), channel + 1
                 )
-        return stop_choice, torch.stack(codes, dim=-1)
+        return (stop_choice, torch.stack(codes, dim=-1))
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         stacked_params_mapping = [
@@ -642,12 +594,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             ("gate_up_proj", "up_proj", 1),
         ]
         params_dict = dict(self.named_parameters())
-
         for original_name, loaded_weight in weights:
             name = original_name
             if name.startswith("transformer."):
                 name = "model." + name[len("transformer.") :]
-
             layer_id = get_layer_id(name)
             if (
                 layer_id is not None
@@ -660,19 +610,11 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 continue
             if "rotary_emb.inv_freq" in name:
                 continue
-
-            # Tied heads: the checkpoint may carry text_lm_head /
-            # audio_lm_heads tensors that alias embed_tokens /
-            # audio_embeddings; the embedding tables are authoritative here.
             if name.startswith("text_lm_head.") or name.startswith("audio_lm_heads."):
                 continue
-
             if name.startswith("audio_embeddings.") and name.endswith(".weight"):
                 mapped = self.map_audio_embedding_name(name)
                 if mapped is not None and mapped in params_dict:
-                    # The checkpoint table has audio_vocab_size rows while the
-                    # module reserves an extra (zeroed) pad row, so copy the
-                    # real rows directly instead of using the vocab loader.
                     param = params_dict[mapped]
                     rows = int(loaded_weight.shape[0])
                     with torch.no_grad():
@@ -680,7 +622,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                             loaded_weight.to(device=param.device, dtype=param.dtype)
                         )
                 continue
-
             if name.startswith("local_transformer.") or name.startswith(
                 "local_text_lm_head."
             ):
@@ -692,13 +633,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                         f"MOSS-TTS Local parameter {original_name} not found"
                     )
                 continue
-
             if name == "model.embed_tokens.weight":
                 mapped = "embedding_list.0.weight"
                 if mapped in params_dict:
                     self.load_param(params_dict[mapped], loaded_weight)
-                # Fall through: the backbone's own embed_tokens also loads.
-
             mapped_stacked = False
             for param_name, weight_name, shard_id in stacked_params_mapping:
                 if weight_name not in name:
@@ -716,7 +654,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 break
             if mapped_stacked:
                 continue
-
             if name.endswith(".bias") and name not in params_dict:
                 continue
             param = params_dict.get(name)
@@ -724,7 +661,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 self.load_param(param, loaded_weight)
             else:
                 logger.warning(f"MOSS-TTS Local parameter {original_name} not found")
-
         self.zero_audio_pad_rows()
 
     def zero_audio_pad_rows(self) -> None:
@@ -756,7 +692,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         embed_weights = [
             getattr(layer, "weight", None) for layer in self.embedding_list
         ]
-        return embed_weights, [self.local_text_lm_head.weight]
+        return (embed_weights, [self.local_text_lm_head.weight])
 
     def load_kv_cache_scales(self, quantization_param_path: str) -> None:
         self.model.load_kv_cache_scales(quantization_param_path)

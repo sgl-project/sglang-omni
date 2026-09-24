@@ -15,9 +15,9 @@ class _StubScheduler:
     drain_request_admission_results = OmniScheduler.drain_request_admission_results
 
     def __init__(self) -> None:
-        self._request_admission_lock = threading.RLock()
-        self._pending_request_admissions: dict = {}
-        self._aborted_request_ids: set[str] = set()
+        self.request_admission_lock = threading.RLock()
+        self.pending_request_admissions: dict = {}
+        self.aborted_request_ids: set[str] = set()
         self.admitted: list[str] = []
         self.errors: list[tuple[str, Exception]] = []
 
@@ -36,8 +36,8 @@ class _StubScheduler:
         self.errors.append((request_id, exc))
 
     def abort(self, request_id: str) -> None:
-        self._aborted_request_ids.add(request_id)
-        self._pending_request_admissions.pop(request_id, None)
+        self.aborted_request_ids.add(request_id)
+        self.pending_request_admissions.pop(request_id, None)
 
 
 def _deferred(request_id: str):  # noqa: ANN202
@@ -100,11 +100,11 @@ class _WaitPolicyScheduler:
         backlog: int = 0,
         has_executor: bool = True,
     ) -> None:
-        self._request_admission_lock = threading.RLock()
+        self.request_admission_lock = threading.RLock()
         self.request_build_max_workers = workers
-        self._request_build_executor = object() if has_executor else None
-        self._pending_request_builds = {f"p{i}": None for i in range(pending)}
-        self._backlogged_request_build_payloads = [object() for _ in range(backlog)]
+        self.request_build_executor = object() if has_executor else None
+        self.pending_request_builds = {f"p{i}": None for i in range(pending)}
+        self.backlogged_request_build_payloads = [object() for _ in range(backlog)]
 
 
 def test_request_build_queue_fits_workers_when_builds_fit_in_pool() -> None:

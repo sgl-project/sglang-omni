@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import concurrent.futures
@@ -15,7 +14,6 @@ import torch
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 logger = logging.getLogger(__name__)
-
 InputT = TypeVar("InputT")
 ArtifactT = TypeVar("ArtifactT")
 StoredT = TypeVar("StoredT")
@@ -36,6 +34,7 @@ class ReferenceEncodeKey:
 
 
 class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT]):
+
     def normalize_input(self, raw_input: Any) -> InputT:
         raise NotImplementedError
 
@@ -128,7 +127,7 @@ def fresh_exception(exc: BaseException) -> BaseException:
 
 
 class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
-    _LOG_INTERVAL_S = 60.0
+    LOG_INTERVAL_S = 60.0
 
     def __init__(
         self,
@@ -150,7 +149,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             raise ValueError(f"max_batch_size must be >= 1, got {max_batch_size}")
         if max_batch_wait_ms < 0:
             raise ValueError(f"max_batch_wait_ms must be >= 0, got {max_batch_wait_ms}")
-        self._hook = hook  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._hook = hook  # noqa: leading-underscore
         self.cache = StageOutputCache(max_size=max_items, max_bytes=max_bytes)
         self.timeout_s = float(timeout_s)
         self.log_prefix = log_prefix
@@ -164,9 +163,6 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         self.batches = 0
         self.batched_items = 0
         self.last_log_time = 0.0
-
-        # Only distinct cache-miss leaders reach the queue; hits and same-key
-        # followers resolve first, so batching preserves lookup order/single-flight.
         self.max_batch_size = int(max_batch_size)
         self.max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
         self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
@@ -178,17 +174,13 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         if self.batching:
             self.batch_queue = _queue_mod.Queue()
             self.batch_thread = threading.Thread(
-                target=self.batch_worker,
-                name=batch_worker_name,
-                daemon=True,
+                target=self.batch_worker, name=batch_worker_name, daemon=True
             )
             self.batch_thread.start()
 
     @property
     def hook(self) -> ReferenceEncodeHook[InputT, ArtifactT, StoredT]:
-        return (
-            self._hook
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._hook  # noqa: leading-underscore
 
     @property
     def batching_enabled(self) -> bool:
@@ -200,17 +192,13 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         thread = self.batch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
-        close = getattr(
-            self._hook, "close", None
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        close = getattr(self._hook, "close", None)  # noqa: leading-underscore
         if callable(close):
             close()
 
     def encode_leader(self, item: InputT) -> ArtifactT:
         if self.batch_queue is None:
-            return self._hook.encode_one(
-                item
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            return self._hook.encode_one(item)  # noqa: leading-underscore
         future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
         self.batch_queue.put((item, future))
         return future.result(timeout=self.timeout_s)
@@ -221,7 +209,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         assert self.batch_queue is not None
         first = self.batch_queue.get()
         if first is None:
-            return [], True
+            return ([], True)
         batch = [first]
         deadline = time.monotonic() + self.max_batch_wait_s
         while len(batch) < self.max_batch_size:
@@ -236,9 +224,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 except _queue_mod.Empty:
                     break
             if entry is None:
-                return batch, True
+                return (batch, True)
             batch.append(entry)
-        return batch, False
+        return (batch, False)
 
     def batch_worker(self) -> None:
         while True:
@@ -250,7 +238,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             if batch:
                 try:
                     results: list[Any] = self.encode_batch([item for item, _ in batch])
-                except BaseException as exc:  # never let the worker die silently
+                except BaseException as exc:
                     logger.exception("reference encode batch worker: encode failed")
                     results = [exc] * len(batch)
                 for (_, future), outcome in zip(batch, results):
@@ -284,13 +272,10 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
     def encode_batch(self, items: list[InputT]) -> list[Any]:
         """Encode a drained batch, falling back to per-item encodes on failure."""
         try:
-            artifacts = self._hook.encode_batch(
-                items
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            artifacts = self._hook.encode_batch(items)  # noqa: leading-underscore
             if len(artifacts) != len(items):
                 raise RuntimeError(
-                    f"encode_batch returned {len(artifacts)} artifacts for "
-                    f"{len(items)} items"
+                    f"encode_batch returned {len(artifacts)} artifacts for {len(items)} items"
                 )
             with self.lock:
                 self.batches += 1
@@ -304,20 +289,14 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         results: list[Any] = []
         for item in items:
             try:
-                results.append(
-                    self._hook.encode_one(item)
-                )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                results.append(self._hook.encode_one(item))  # noqa: leading-underscore
             except Exception as exc:
                 results.append(exc)
         return results
 
     def get_or_encode(self, raw_input: Any, *, desc: str | None = None) -> ArtifactT:
-        item = self._hook.normalize_input(
-            raw_input
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        key = self._hook.cache_key(
-            item
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        item = self._hook.normalize_input(raw_input)  # noqa: leading-underscore
+        key = self._hook.cache_key(item)  # noqa: leading-underscore
         if key is None:
             with self.lock:
                 self.uncacheable += 1
@@ -328,7 +307,6 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 with self.lock:
                     self.failed += 1
                 raise
-
         cache_key = key.to_string()
         leader_fut: concurrent.futures.Future[StoredT] | None = None
         follower_fut: concurrent.futures.Future[StoredT] | None = None
@@ -344,13 +322,9 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
                 self.misses += 1
                 leader_fut = concurrent.futures.Future()
                 self.inflight[cache_key] = leader_fut
-
         if stored is not None:
             self.maybe_log()
-            return self._hook.load_artifact(
-                stored
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
+            return self._hook.load_artifact(stored)  # noqa: leading-underscore
         if follower_fut is not None:
             try:
                 stored = follower_fut.result(timeout=self.timeout_s)
@@ -360,25 +334,12 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             except BaseException as exc:
                 self.add_exception_note(exc, desc)
                 raise fresh_exception(exc) from exc
-            return self._hook.load_artifact(
-                stored
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-
+            return self._hook.load_artifact(stored)  # noqa: leading-underscore
         assert leader_fut is not None
-        # revalidate() and cache.put() run inside the same guard as encode: any
-        # exception here must still drop the in-flight entry and fail the future,
-        # otherwise same-key followers block on a future that never resolves and
-        # every later request for this key re-follows a dead leader (permanent
-        # poison + timeout-length hangs). A hook's revalidate() may legitimately
-        # raise (e.g. a reference file mutated during the encode window).
         try:
             artifact = self.encode_leader(item)
-            stored = self._hook.store_artifact(
-                artifact
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            should_cache = self._hook.revalidate(
-                item, key
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            stored = self._hook.store_artifact(artifact)  # noqa: leading-underscore
+            should_cache = self._hook.revalidate(item, key)  # noqa: leading-underscore
             with self.lock:
                 if should_cache:
                     self.cache.put(cache_key, stored)
@@ -392,9 +353,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             raise
         leader_fut.set_result(stored)
         self.maybe_log()
-        return self._hook.load_artifact(
-            stored
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self._hook.load_artifact(stored)  # noqa: leading-underscore
 
     def stats(self) -> dict[str, int]:
         with self.lock:

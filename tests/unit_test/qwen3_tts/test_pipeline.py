@@ -965,7 +965,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = _fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
@@ -1036,7 +1036,7 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -1149,7 +1149,7 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -1313,7 +1313,7 @@ def test_qwen3_tts_preprocess_payload_batches_reference_codes_across_requests(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = _fake_speech_tokenizer()
         speaker_encoder_sample_rate = 24000
 
@@ -1486,7 +1486,7 @@ def test_qwen3_tts_reference_code_batcher_synchronizes_cuda_fallback_results(
             current_stream=lambda current: FakeCurrentStream()
         ),
     )
-    owner = SimpleNamespace(_encode_stream=None)
+    owner = SimpleNamespace(encode_stream=None)
     qwen3_request_builders.Qwen3TTSRefCodeBatcher.synchronize_outcomes(owner, {0: code})
 
     assert events == ["synchronize"]
@@ -1507,7 +1507,7 @@ def test_qwen3_tts_reference_code_batcher_synchronizes_npu_results(
         "get_device_module",
         lambda selected: SimpleNamespace(current_stream=lambda current: stream),
     )
-    owner = SimpleNamespace(_encode_stream=None)
+    owner = SimpleNamespace(encode_stream=None)
 
     qwen3_request_builders.Qwen3TTSRefCodeBatcher.synchronize_outcomes(owner, {0: code})
 
@@ -1525,7 +1525,7 @@ def test_qwen3_tts_reference_code_batcher_skips_cpu_results(
             AssertionError("CPU results must not request an accelerator module")
         ),
     )
-    owner = SimpleNamespace(_encode_stream=None)
+    owner = SimpleNamespace(encode_stream=None)
 
     qwen3_request_builders.Qwen3TTSRefCodeBatcher.synchronize_outcomes(owner, {0: code})
 
@@ -1633,7 +1633,7 @@ def test_qwen3_tts_uploaded_voice_x_vector_cache_omits_ref_code(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = _fake_speech_tokenizer(encode)
         speaker_encoder_sample_rate = 24000
 
@@ -2273,7 +2273,7 @@ class _FakeQwen3TTSTokenizer:
 
 class _FakeIncrementalQwen3TTSDecoder:
     def __init__(self, decoder, *, fail_on_call: int | None = None) -> None:
-        self._decoder = decoder
+        self.decoder = decoder
         self._fail_on_call = fail_on_call
         self.decode_inputs: list[torch.Tensor] = []
         self.decode_positions: list[list[int]] = []
@@ -2319,7 +2319,7 @@ class _FakeIncrementalQwen3TTSDecoder:
         return (
             codes[:, :1]
             .to(torch.float32)
-            .repeat_interleave(self._decoder.total_upsample, dim=-1)
+            .repeat_interleave(self.decoder.total_upsample, dim=-1)
         )
 
 
@@ -2380,8 +2380,8 @@ def test_qwen3_tts_stateful_codec_graph_shapes_follow_chunk_ramp(
         64,
     )
     assert (
-        scheduler.initial_window_decode_graphs._batch_sizes
-        == scheduler.initial_incremental_decode_graphs._batch_sizes
+        scheduler.initial_window_decode_graphs.batch_sizes
+        == scheduler.initial_incremental_decode_graphs.batch_sizes
     )
 
 
@@ -2403,8 +2403,8 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
 
     assert scheduler.initial_window_decode_graphs.fresh_frames == (3, 12)
     assert (
-        scheduler.initial_window_decode_graphs._batch_sizes
-        == scheduler.initial_incremental_decode_graphs._batch_sizes
+        scheduler.initial_window_decode_graphs.batch_sizes
+        == scheduler.initial_incremental_decode_graphs.batch_sizes
     )
     assert scheduler.initial_window_decode_graphs.compile_fresh_frames == frozenset()
     assert scheduler.initial_incremental_decode_graphs.fresh_frames == (1, 2)
@@ -2475,8 +2475,8 @@ class _FakeWindowRunner:
         bucket: int,
         miss_on_call: int | None = None,
     ) -> None:
-        self._arena = scheduler.codec_arena
-        self._decoder = decoder
+        self.arena = scheduler.codec_arena
+        self.decoder = decoder
         self._widths = widths
         self.bucket = bucket
         self._miss_on_call = miss_on_call
@@ -2501,9 +2501,9 @@ class _FakeWindowRunner:
         self.calls.append((tuple(codes.shape), list(slots)))
         if len(self.calls) == self._miss_on_call:
             return None
-        state = self._arena.gather(list(slots))
-        waveform = self._decoder.decode(codes, state)
-        self._arena.scatter(list(slots), state)
+        state = self.arena.gather(list(slots))
+        waveform = self.decoder.decode(codes, state)
+        self.arena.scatter(list(slots), state)
         return waveform
 
 
@@ -2944,7 +2944,7 @@ def test_qwen3_tts_decode_graphs_key_by_frames_and_batch_bucket() -> None:
     )
 
     assert graphs.input_frames == (24, 32)
-    assert graphs._batch_sizes == (1, 4)
+    assert graphs.batch_sizes == (1, 4)
     graphs.capture()
     assert graphs.decode(torch.zeros((1, 2, 24), dtype=torch.long)) is None
 
@@ -3124,7 +3124,7 @@ def test_qwen3_tts_deterministic_streaming_vocoder_decodes_each_plan_at_b1() -> 
     assert [item.tolist() for item in deltas] == [
         [float(value)] * 12 for value in (1, 2, 3)
     ]
-    assert scheduler.initial_decode_graphs._batch_sizes == (1,)
+    assert scheduler.initial_decode_graphs.batch_sizes == (1,)
 
 
 def test_qwen3_tts_deterministic_vocoder_decodes_each_payload_at_b1() -> None:
@@ -5908,7 +5908,7 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
 
     class FakeModel:
         tts_model_type = "custom_voice"
-        model = SimpleNamespace(_feedback_buffer=torch.zeros(4, 4))
+        model = SimpleNamespace(feedback_buffer=torch.zeros(4, 4))
 
         def build_custom_voice_inputs(self, **kwargs):
             calls.append(("custom", kwargs))
@@ -5966,7 +5966,7 @@ def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
 
     class FakeModel:
         tts_model_type = "voice_design"
-        model = SimpleNamespace(_feedback_buffer=torch.zeros(4, 4))
+        model = SimpleNamespace(feedback_buffer=torch.zeros(4, 4))
 
         def build_voice_design_inputs(self, **kwargs):
             calls.append(kwargs)
@@ -6261,7 +6261,7 @@ def test_qwen3_tts_sampling_installs_semantic_seed_tensor(
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long),
+        semantic_sampling_seed_tensor=torch.tensor([101, 202], dtype=torch.long),
         config=SimpleNamespace(vocab_size=1200, codec_eos_token_id=1100),
     )
     runner.tp_worker = SimpleNamespace(model_runner=SimpleNamespace(sample=sample))
@@ -6324,8 +6324,8 @@ def test_qwen3_tts_collect_codes_excludes_semantic_eos(
     runner.model = SimpleNamespace(
         config=SimpleNamespace(codec_eos_token_id=42),
         code_predictor_forward=code_predictor_forward,
-        _output_codes=torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
-        _output_embeds=torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
+        output_codes=torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
+        output_embeds=torch.tensor([[0.1, 0.2], [0.3, 0.4]]),
     )
     result = SimpleNamespace(
         next_token_ids=torch.tensor([7, 42], dtype=torch.long),
@@ -6391,11 +6391,11 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
         config = SimpleNamespace(codec_eos_token_id=-1)
 
         def __init__(self) -> None:
-            self._feedback_buffer = torch.zeros(1, 4)
-            self._feedback_mask = torch.zeros(1, dtype=torch.bool)
-            self._decode_feedback_embedding = torch.nn.Embedding(1, 4)
-            self._output_codes = torch.ones(1, 2)
-            self._output_embeds = torch.ones(1, 4)
+            self.feedback_buffer = torch.zeros(1, 4)
+            self.feedback_mask = torch.zeros(1, dtype=torch.bool)
+            self.decode_feedback_embedding = torch.nn.Embedding(1, 4)
+            self.output_codes = torch.ones(1, 2)
+            self.output_embeds = torch.ones(1, 4)
             self.prepare_calls = 0
 
         def prepare_decode_buffers(self, requests) -> None:
@@ -6423,7 +6423,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
             )
 
     class FakeOutputProcessor:
-        _capture_hidden = False
+        capture_hidden = False
 
         def process(self, model_output, scheduler_output, host_token_ids=None):
             del model_output, host_token_ids
@@ -6469,7 +6469,7 @@ def test_qwen3_tts_decode_feedback_empty_batch_noops() -> None:
 
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=torch.nn.Embedding(1, 4),
+        decode_feedback_embedding=torch.nn.Embedding(1, 4),
     )
     forward_batch = SimpleNamespace(input_ids=torch.empty(0, dtype=torch.long))
 
@@ -7647,7 +7647,7 @@ def test_qwen3_tts_prepared_payload_round_trips_tensors_and_clears_fields() -> N
     assert stored.data["prepared_input_ids"] == [11, 12, 13, 14, 15]
 
     engine_model = SimpleNamespace(
-        model=SimpleNamespace(_feedback_buffer=torch.zeros(1, 4, dtype=torch.bfloat16))
+        model=SimpleNamespace(feedback_buffer=torch.zeros(1, 4, dtype=torch.bfloat16))
     )
     loaded = qwen3_request_builders.load_prepared_qwen3_tts_request(
         stored, model=engine_model
@@ -7687,7 +7687,7 @@ def test_qwen3_tts_request_builder_consumes_prepared_payload(
         payload,
         model=SimpleNamespace(
             config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200),
-            model=SimpleNamespace(_feedback_buffer=torch.zeros(1, 4)),
+            model=SimpleNamespace(feedback_buffer=torch.zeros(1, 4)),
         ),
         wrapper=object(),
     )
@@ -7723,7 +7723,7 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
     class FakeModel:
         device = torch.device("cpu")
         root_config = SimpleNamespace(tts_pad_token_id=0)
-        model = SimpleNamespace(_feedback_buffer=torch.empty((1, 4)))
+        model = SimpleNamespace(feedback_buffer=torch.empty((1, 4)))
         speech_tokenizer = object()
         speaker_encoder_sample_rate = 24000
 

@@ -365,7 +365,7 @@ def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
     from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 
     released = []
-    flow = SimpleNamespace(_tail=SimpleNamespace(release_slot=released.append))
+    flow = SimpleNamespace(tail=SimpleNamespace(release_slot=released.append))
     state = SimpleNamespace(slot=3)
 
     DotsTTSFlowHead.release_request(flow, state)

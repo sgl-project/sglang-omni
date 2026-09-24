@@ -1949,7 +1949,7 @@ def test_moss_decode_feedback_uses_row_id_embedding() -> None:
     embedding = torch.nn.Embedding(4, 3)
     runner.model = SimpleNamespace(
         hidden_size=3,
-        _decode_input_embedding=embedding,
+        decode_input_embedding=embedding,
     )
     forward_batch = SimpleNamespace(
         input_ids=torch.full((2,), 99, dtype=torch.long),

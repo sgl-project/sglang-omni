@@ -120,9 +120,9 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
         _stream_emit_idx=0,
     )
     runner = SimpleNamespace(
-        _outbox=queue.Queue(),
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+        outbox=queue.Queue(),
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
     )
     scheduler_output = SimpleNamespace(
         requests=[SimpleNamespace(request_id="req", data=data)]
@@ -182,9 +182,9 @@ def _run_producer_callback(
     )
     outbox = queue.Queue()
     runner = SimpleNamespace(
-        _outbox=outbox,
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=configured_first_rows,
+        outbox=outbox,
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=configured_first_rows,
     )
     callbacks.extract_zonos2_output(
         runner,

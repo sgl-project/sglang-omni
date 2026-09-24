@@ -440,7 +440,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             return
         os.makedirs(self.dump_dir, exist_ok=True)
         path = os.path.join(
-            self.dump_dir, f"seed{int(seed)}_chunk{window.index:03d}hidden.pt"
+            self.dump_dir, f"seed{int(seed)}_chunk{window.index:03d}_hidden.pt"
         )
         torch.save(chunk.cpu(), path)
 

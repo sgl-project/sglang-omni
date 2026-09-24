@@ -117,7 +117,7 @@ class AudioMlxModelRunner:
             )
 
         _input_ids, input_embeddings = self.audio_prefill_inputs(req, new_token_ids)
-        cache = self.acquire_cache()
+        cache = self._acquire_cache()  # noqa: leading-underscore
         logits = self.model.forward_last_logits(input_embeddings, cache=cache)
         # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
         # needs_logits is always true; retain the argument for the SGLang API.
@@ -163,7 +163,9 @@ class AudioMlxModelRunner:
             [[self.req_token_ids[req_id][-1]]],
             dtype=mx.int32,
         )
-        lazy_logits = self.decode_with_native_cache([cache], [input_ids])
+        lazy_logits = self._decode_with_native_cache(
+            [cache], [input_ids]
+        )  # noqa: leading-underscore
         lazy_tokens = mx.argmax(lazy_logits, axis=-1)
         return MlxPendingDecode(
             lazy_tokens=lazy_tokens,
@@ -184,7 +186,7 @@ class AudioMlxModelRunner:
 
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
-        lazy_logits = self.decode_with_native_cache(
+        lazy_logits = self._decode_with_native_cache(  # noqa: leading-underscore
             prev.caches,
             [prev.lazy_tokens[:, None]],
         )

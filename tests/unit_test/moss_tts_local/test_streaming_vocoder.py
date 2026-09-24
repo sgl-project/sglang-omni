@@ -1493,8 +1493,8 @@ def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> Non
     def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list:
         self.warmup_attempted = True
         calls.append(id(self))
-        self._cg_runner = _FakeCudaGraphRunner(frames) if seal else None
-        return self._cg_runner.captured_frames() if seal else []
+        self.cg_runner = _FakeCudaGraphRunner(frames) if seal else None
+        return self.cg_runner.captured_frames() if seal else []
 
     monkeypatch.setattr(CodecStreamSession, "warmup_cuda_graph", fake_warmup)
 
@@ -1560,8 +1560,8 @@ def test_default_cuda_graph_frames_cover_stream_chunk_exactly(
     def fake_warmup(self, frames, *, min_free_gb: float = 3.0) -> list[int]:
         self.warmup_attempted = True
         captured.append(list(frames))
-        self._cg_runner = _FakeCudaGraphRunner(frames)
-        return self._cg_runner.captured_frames()
+        self.cg_runner = _FakeCudaGraphRunner(frames)
+        return self.cg_runner.captured_frames()
 
     monkeypatch.setattr(CodecStreamSession, "warmup_cuda_graph", fake_warmup)
 

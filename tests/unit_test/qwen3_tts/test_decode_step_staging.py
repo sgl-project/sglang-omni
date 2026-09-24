@@ -37,8 +37,8 @@ def _runner(code_predictor_forward, device: torch.device) -> Qwen3TTSModelRunner
     runner.model = SimpleNamespace(
         config=SimpleNamespace(codec_eos_token_id=EOS),
         code_predictor_forward=code_predictor_forward,
-        _output_codes=torch.zeros((4, 3), dtype=torch.long, device=device),
-        _output_embeds=torch.zeros((4, 2), device=device),
+        output_codes=torch.zeros((4, 3), dtype=torch.long, device=device),
+        output_embeds=torch.zeros((4, 2), device=device),
     )
     return runner
 

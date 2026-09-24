@@ -1254,7 +1254,7 @@ def test_audio_history_presence_mask_excludes_prompt_rows():
     from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
     model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.zeros(2, 4, dtype=torch.bfloat16)
         ),
         config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
@@ -2337,8 +2337,8 @@ def test_async_launch_resolve_matches_sync_collect():
     def _make_runner():
         weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
         model = types.SimpleNamespace(
-            _decode_input_embedding=types.SimpleNamespace(weight=weight),
-            _state_pool=None,
+            decode_input_embedding=types.SimpleNamespace(weight=weight),
+            state_pool=None,
             config=types.SimpleNamespace(
                 n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
             ),
@@ -2439,8 +2439,8 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
 
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     model = types.SimpleNamespace(
-        _decode_input_embedding=types.SimpleNamespace(weight=weight),
-        _state_pool=None,
+        decode_input_embedding=types.SimpleNamespace(weight=weight),
+        state_pool=None,
         config=types.SimpleNamespace(
             n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=end_id
         ),
@@ -2507,8 +2507,8 @@ def test_chunked_rows_do_not_advance_sampling_steps():
     def _make_runner():
         weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
         model = types.SimpleNamespace(
-            _decode_input_embedding=types.SimpleNamespace(weight=weight),
-            _state_pool=None,
+            decode_input_embedding=types.SimpleNamespace(weight=weight),
+            state_pool=None,
             config=types.SimpleNamespace(
                 n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
             ),

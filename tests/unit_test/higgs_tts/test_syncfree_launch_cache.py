@@ -57,34 +57,34 @@ class _FakeModel:
     """Mimics the HiggsTTSModel surface _populate_cg_buffers touches."""
 
     def __init__(self) -> None:
-        self._sampler_pool = _make_pool()
-        self._padding_row = PAD_ROW
-        self._rid_to_row: dict[str, int] = {}
-        self._free_rows = list(range(PAD_ROW))
-        self._cg_row_indices = torch.zeros(POOL, dtype=torch.long)
-        self._cg_temperature = torch.ones(POOL, dtype=torch.float32)
-        self._cg_top_p = torch.ones(POOL, dtype=torch.float32)
-        self._cg_top_k_buf = torch.full((POOL,), K_MAX, dtype=torch.long)
-        self._cg_active_delay_count = torch.zeros(POOL, dtype=torch.int32)
-        self._cg_active_eoc_countdown = torch.full((POOL,), -1, dtype=torch.int32)
-        self._cg_active_generation_done = torch.zeros(POOL, dtype=torch.bool)
-        self._cg_active_last_codes = torch.zeros(POOL, N_CB, dtype=torch.long)
-        self._cg_active_seeds = torch.zeros(POOL, dtype=torch.long)
-        self._cg_active_step_count = torch.zeros(POOL, dtype=torch.long)
+        self.sampler_pool = _make_pool()
+        self.padding_row = PAD_ROW
+        self.rid_to_row: dict[str, int] = {}
+        self.free_rows = list(range(PAD_ROW))
+        self.cg_row_indices = torch.zeros(POOL, dtype=torch.long)
+        self.cg_temperature = torch.ones(POOL, dtype=torch.float32)
+        self.cg_top_p = torch.ones(POOL, dtype=torch.float32)
+        self.cg_top_k_buf = torch.full((POOL,), K_MAX, dtype=torch.long)
+        self.cg_active_delay_count = torch.zeros(POOL, dtype=torch.int32)
+        self.cg_active_eoc_countdown = torch.full((POOL,), -1, dtype=torch.int32)
+        self.cg_active_generation_done = torch.zeros(POOL, dtype=torch.bool)
+        self.cg_active_last_codes = torch.zeros(POOL, N_CB, dtype=torch.long)
+        self.cg_active_seeds = torch.zeros(POOL, dtype=torch.long)
+        self.cg_active_step_count = torch.zeros(POOL, dtype=torch.long)
 
     def acquire_row(self, rid: str) -> int:
-        row = self._rid_to_row.get(rid)
+        row = self.rid_to_row.get(rid)
         if row is not None:
             return row
-        row = self._free_rows.pop()
-        self._rid_to_row[rid] = row
-        self._sampler_pool.reset_row(row)
+        row = self.free_rows.pop()
+        self.rid_to_row[rid] = row
+        self.sampler_pool.reset_row(row)
         return row
 
     def release_row(self, rid: str) -> None:
-        row = self._rid_to_row.pop(rid, None)
+        row = self.rid_to_row.pop(rid, None)
         if row is not None:
-            self._free_rows.append(row)
+            self.free_rows.append(row)
 
 
 def _make_runner(model, *, enabled=True, async_enabled=False):

@@ -301,7 +301,7 @@ def _install_higgs_engine_build_fakes(monkeypatch) -> dict[str, object]:
             captured["model_runner_args"] = (model_worker, output_proc)
 
         def set_stream_outbox(self, outbox) -> None:
-            self._outbox = outbox
+            self.outbox = outbox
             captured["stream_outbox"] = outbox
 
     class FakeScheduler:
@@ -983,9 +983,9 @@ def test_higgs_model_runner_marks_sampler_finish() -> None:
     runner.outbox = None
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _rid_to_row={"req": 0},
-        _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
-        _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
+        rid_to_row={"req": 0},
+        output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
+        sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
     )
     req = SimpleNamespace(
         inflight_middle_chunks=0,
@@ -1019,9 +1019,9 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
     runner.outbox = queue.Queue()
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _rid_to_row={"req": 0},
-        _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
-        _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
+        rid_to_row={"req": 0},
+        output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
+        sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
     )
     req = SimpleNamespace(
         inflight_middle_chunks=0,
@@ -1159,9 +1159,9 @@ def test_higgs_model_runner_collect_streaming_uses_preallocated_buffer() -> None
     runner.outbox = queue.Queue()
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _rid_to_row={"req": 0},
-        _output_codes={"req": []},
-        _sampler_pool=SimpleNamespace(generation_done=torch.tensor([False])),
+        rid_to_row={"req": 0},
+        output_codes={"req": []},
+        sampler_pool=SimpleNamespace(generation_done=torch.tensor([False])),
     )
     req = SimpleNamespace(
         inflight_middle_chunks=0,
@@ -1307,16 +1307,16 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
     runner.outbox = None
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _cg_row_indices=torch.tensor([0]),
-        _cg_active_delay_count=torch.tensor([8], dtype=torch.int32),
-        _cg_active_eoc_countdown=torch.tensor([0], dtype=torch.int32),
-        _cg_active_generation_done=torch.tensor([True]),
-        _cg_active_last_codes=torch.tensor([[1, 2, 3]]),
-        _cg_active_step_count=torch.zeros(1, dtype=torch.long),
-        _cg_was_done=torch.tensor([False]),
-        _cg_codes_BN=torch.tensor([[EOC_ID, 1, 2]]),
-        _cg_collect_staging=torch.zeros((1, 3 + 2), dtype=torch.long),
-        _sampler_pool=SimpleNamespace(
+        cg_row_indices=torch.tensor([0]),
+        cg_active_delay_count=torch.tensor([8], dtype=torch.int32),
+        cg_active_eoc_countdown=torch.tensor([0], dtype=torch.int32),
+        cg_active_generation_done=torch.tensor([True]),
+        cg_active_last_codes=torch.tensor([[1, 2, 3]]),
+        cg_active_step_count=torch.zeros(1, dtype=torch.long),
+        cg_was_done=torch.tensor([False]),
+        cg_codes_BN=torch.tensor([[EOC_ID, 1, 2]]),
+        cg_collect_staging=torch.zeros((1, 3 + 2), dtype=torch.long),
+        sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(1, dtype=torch.int32),
             eoc_countdown=torch.zeros(1, dtype=torch.int32),
             generation_done=torch.zeros(1, dtype=torch.bool),
@@ -1361,17 +1361,17 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     runner.outbox = None
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _cg_row_indices=torch.arange(n),
-        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
-        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        cg_row_indices=torch.arange(n),
+        cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
         # row1's True must NOT leak into the was-done (skipped) request.
-        _cg_active_generation_done=torch.tensor([False, True, False, True]),
-        _cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
-        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
-        _cg_was_done=torch.tensor([False, True, False, False]),
-        _cg_codes_BN=torch.tensor([[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]]),
-        _cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
-        _sampler_pool=SimpleNamespace(
+        cg_active_generation_done=torch.tensor([False, True, False, True]),
+        cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
+        cg_active_step_count=torch.zeros(n, dtype=torch.long),
+        cg_was_done=torch.tensor([False, True, False, False]),
+        cg_codes_BN=torch.tensor([[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]]),
+        cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
+        sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
@@ -1439,18 +1439,18 @@ def test_higgs_model_runner_collects_rollout_logprobs_only_when_requested() -> N
             generate=lambda hidden: logits[: hidden.shape[0]]
         ),
         _num_codebooks=k,
-        _cg_row_indices=torch.arange(n),
-        _cg_temperature=torch.ones(n),
-        _cg_top_k_buf=torch.full((n,), K_MAX, dtype=torch.long),
-        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
-        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
-        _cg_active_generation_done=torch.tensor([False]),
-        _cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
-        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
-        _cg_was_done=torch.tensor([False]),
-        _cg_codes_BN=torch.tensor([[2, 3, 4]]),
-        _cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
-        _sampler_pool=SimpleNamespace(
+        cg_row_indices=torch.arange(n),
+        cg_temperature=torch.ones(n),
+        cg_top_k_buf=torch.full((n,), K_MAX, dtype=torch.long),
+        cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        cg_active_generation_done=torch.tensor([False]),
+        cg_active_last_codes=torch.zeros((n, k), dtype=torch.long),
+        cg_active_step_count=torch.zeros(n, dtype=torch.long),
+        cg_was_done=torch.tensor([False]),
+        cg_codes_BN=torch.tensor([[2, 3, 4]]),
+        cg_collect_staging=torch.zeros((n, k + 2), dtype=torch.long),
+        sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
@@ -1494,9 +1494,9 @@ def test_higgs_model_runner_skips_already_finished_eager_request() -> None:
     runner.outbox = None
     runner.vocoder_target = "vocoder"
     runner.model = SimpleNamespace(
-        _rid_to_row={"req": 0},
-        _output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
-        _sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
+        rid_to_row={"req": 0},
+        output_codes={"req": [torch.tensor([EOC_ID, 1, 2])]},
+        sampler_pool=SimpleNamespace(generation_done=torch.tensor([True])),
     )
     req = SimpleNamespace(
         inflight_middle_chunks=0,

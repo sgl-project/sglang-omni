@@ -61,16 +61,16 @@ def _build_runner(
     runner.async_query_hit = 0
     runner.async_query_miss = 0
     runner.model = SimpleNamespace(
-        _cg_row_indices=torch.arange(n),
-        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
-        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
-        _cg_active_generation_done=torch.tensor(active_generation_done),
-        _cg_active_last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
-        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
-        _cg_was_done=torch.tensor(was_done),
-        _cg_codes_BN=torch.tensor(codes_BN),
-        _cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
-        _sampler_pool=SimpleNamespace(
+        cg_row_indices=torch.arange(n),
+        cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        cg_active_generation_done=torch.tensor(active_generation_done),
+        cg_active_last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
+        cg_active_step_count=torch.zeros(n, dtype=torch.long),
+        cg_was_done=torch.tensor(was_done),
+        cg_codes_BN=torch.tensor(codes_BN),
+        cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
+        sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
@@ -320,20 +320,20 @@ def test_async_real_pinned_path_matches_sync():
         runner.async_query_hit = 0
         runner.async_query_miss = 0
         runner.model = SimpleNamespace(
-            _cg_row_indices=torch.arange(n, device=dev),
-            _cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
-            _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
-            _cg_active_generation_done=torch.tensor(
+            cg_row_indices=torch.arange(n, device=dev),
+            cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
+            cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
+            cg_active_generation_done=torch.tensor(
                 [False, True, False, True], device=dev
             ),
-            _cg_active_last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
-            _cg_active_step_count=torch.zeros(n, dtype=torch.long, device=dev),
-            _cg_was_done=torch.tensor([False, True, False, False], device=dev),
-            _cg_codes_BN=torch.tensor(
+            cg_active_last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
+            cg_active_step_count=torch.zeros(n, dtype=torch.long, device=dev),
+            cg_was_done=torch.tensor([False, True, False, False], device=dev),
+            cg_codes_BN=torch.tensor(
                 [[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]], device=dev
             ),
-            _cg_collect_staging=torch.zeros((n, 3 + 2), dtype=torch.long, device=dev),
-            _sampler_pool=SimpleNamespace(
+            cg_collect_staging=torch.zeros((n, 3 + 2), dtype=torch.long, device=dev),
+            sampler_pool=SimpleNamespace(
                 delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
                 eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
                 generation_done=torch.zeros(n, dtype=torch.bool, device=dev),

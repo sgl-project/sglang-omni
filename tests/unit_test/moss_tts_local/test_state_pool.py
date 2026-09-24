@@ -34,7 +34,7 @@ def _model(max_running_requests: int = 4) -> SimpleNamespace:
     weight = torch.zeros(max_running_requests, _HIDDEN, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     return SimpleNamespace(
-        _decode_input_embedding=embedding,
+        decode_input_embedding=embedding,
         config=SimpleNamespace(n_vq=12, audio_vocab_size=1024),
     )
 
@@ -390,8 +390,8 @@ def test_double_collect_overwrites_feedback():
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_assistant_slot_token_id=1000,
@@ -459,8 +459,8 @@ def test_collect_frame_reads_generation_steps_from_pool():
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_assistant_slot_token_id=1000,
@@ -603,8 +603,8 @@ def test_pool_sampling_position_leads_unresolved_lookahead_launches():
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_assistant_slot_token_id=1000,
@@ -722,8 +722,8 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_vocab_size=1024,
@@ -814,8 +814,8 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     weight = torch.zeros(4, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_vocab_size=1024,
@@ -1018,8 +1018,8 @@ def test_collect_frame_skips_chunked_feedback_and_journal():
     weight = torch.zeros(3, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
     model = SimpleNamespace(
-        _decode_input_embedding=embedding,
-        _state_pool=None,
+        decode_input_embedding=embedding,
+        state_pool=None,
         config=SimpleNamespace(
             n_vq=12,
             audio_assistant_slot_token_id=1000,

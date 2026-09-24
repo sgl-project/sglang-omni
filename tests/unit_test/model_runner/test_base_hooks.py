@@ -123,7 +123,7 @@ def _runner(calls: list[str], *, custom_result):
     runner.device = torch.device("cpu")
     runner.execution_bridge = FakeExecutionBridge()
     runner.output_processor = SimpleNamespace(
-        _capture_hidden=False,
+        capture_hidden=False,
         process=lambda result, scheduler_output: {
             "req-1": SimpleNamespace(extra={}),
         },

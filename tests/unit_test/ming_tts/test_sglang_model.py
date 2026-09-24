@@ -201,7 +201,7 @@ def test_ming_tts_tail_compute_owns_model_precision(
             return sampled
 
     owner = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.empty(1, dtype=weight_dtype)
         ),
         flowloss=FlowLoss(),

@@ -361,7 +361,7 @@ def test_execute_batch_commits_item_state_only_after_stream_success(
     service.stream = _FailingStream()
     service.hidden_size = _HIDDEN_SIZE
     service.dtype = torch.float32
-    service._device = torch.device("cpu")
+    service.device = torch.device("cpu")
     monkeypatch.setattr(
         encoder_service.torch.cuda,
         "stream",
@@ -408,7 +408,7 @@ def test_oom_recovery_synchronizes_and_clears_selected_encoder_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
-    service._device = torch.device("cuda:7")
+    service.device = torch.device("cuda:7")
     cleanup_steps: list[str] = []
     selected_devices: list[torch.device] = []
     service.stream = SimpleNamespace(

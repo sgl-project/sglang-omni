@@ -11,10 +11,10 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 
 def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
     return SimpleNamespace(
-        _output_codes=torch.stack(
+        output_codes=torch.stack(
             [torch.tensor([i, i + 100], dtype=torch.long) for i in range(n)]
         )[:, :code_groups],
-        _output_embeds=torch.stack(
+        output_embeds=torch.stack(
             [torch.full((hidden,), float(i * 7 + 1)) for i in range(n)]
         ),
     )

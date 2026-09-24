@@ -69,7 +69,7 @@ class EvictHeapRadixCache(RadixCache):
             self.token_to_kv_pool_allocator.free_segment(x.value, start_pos=0)
             num_evicted += len(x.value)
             # note (Junnan Li): _delete_leaf relands the parent via _update_leaf_status.
-            self.delete_leaf(x)
+            self._delete_leaf(x)  # noqa: leading-underscore
             self.kv_events.record_remove(x)
 
         self.update_eviction_metrics(num_evicted, start_time)
