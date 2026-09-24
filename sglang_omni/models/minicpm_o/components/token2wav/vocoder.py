@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from contextlib import nullcontext
 from functools import lru_cache
 from pathlib import Path
 
@@ -104,7 +105,7 @@ def prompt_mel_spectrogram(audio: torch.Tensor) -> torch.Tensor:
 
 
 def resolve_token2wav_assets(model_path: str) -> tuple[Path, Path | None]:
-    """Locate the Token2wav asset directory and the default speaker reference."""
+    """Locate required Token2Wav assets and the optional default speaker reference."""
     model_dir = Path(resolve_model_path(model_path))
     asset_dir = model_dir / "assets" / "token2wav"
     if not asset_dir.is_dir():
@@ -115,13 +116,16 @@ def resolve_token2wav_assets(model_path: str) -> tuple[Path, Path | None]:
     else:
         pass
     default_reference = model_dir / "assets" / "HT_ref_audio.wav"
-    return asset_dir, default_reference if default_reference.is_file() else None
+    if default_reference.is_file():
+        return asset_dir, default_reference
+    else:
+        return asset_dir, None
 
 
 class MiniCPMOReferenceEncodeHook(
     KeyedReferenceEncodeHook[bytes | None, SpeakerPromptInputs, SpeakerPromptInputs]
 ):
-    """Extract Token2wav speaker conditioning from a reference clip."""
+    """Extract cacheable CPU speaker conditioning from inline or default audio."""
 
     model_id = "minicpm_o"
     encoder_id = "s3tokenizer_v2_25hz+campplus+prompt_mel_24k"
@@ -154,14 +158,20 @@ class MiniCPMOReferenceEncodeHook(
                 sort_keys=True,
             ).encode("utf-8")
         )
-        # note (liuqihao): a private stream keeps the token copy from waiting on
-        # the thinker's work queued on the default stream of the same process.
-        self.stream = torch.cuda.Stream(device) if device.type == "cuda" else None
-        self.audio_tokenizer = (
-            S3TokenizerV2(model_path / "speech_tokenizer_v2_25hz.onnx")
-            .to(device)
-            .eval()
+        # note(liuqihao): a private stream avoids waiting for the thinker's default stream.
+        if device.type == "cpu":
+            self.device_module = None
+        else:
+            self.device_module = torch.get_device_module(device)
+        if self.device_module is None:
+            self.stream = None
+        else:
+            self.stream = self.device_module.Stream(device=device)
+        self.audio_tokenizer = S3TokenizerV2(
+            model_path / "speech_tokenizer_v2_25hz.onnx"
         )
+        self.audio_tokenizer.to(device)
+        self.audio_tokenizer.eval()
         options = onnxruntime.SessionOptions()
         options.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -185,7 +195,7 @@ class MiniCPMOReferenceEncodeHook(
         return key
 
     def encode_one(self, item: bytes | None) -> SpeakerPromptInputs:
-        # In-memory sources avoid spilling HTTP-supplied references to disk.
+        # note(liuqihao): decode inline references in memory to avoid temporary audio files.
         if item is not None:
             source: str | io.BytesIO = io.BytesIO(item)
         elif self.default_reference is None:
@@ -209,15 +219,22 @@ class MiniCPMOReferenceEncodeHook(
             )(audio)
         else:
             speech = audio
-        # note (MayDomine): tokenizer/voice embedding use channel zero; mel uses mono.
+        # note(liuqihao): preserve channel-zero tokenizer input and mono mel conditioning.
         speech = speech[0]
-        mel = whisper.log_mel_spectrogram(speech, n_mels=128).unsqueeze(0)
-        with torch.cuda.stream(self.stream):
+        mel = whisper.log_mel_spectrogram(speech, n_mels=128)
+        mel = mel.unsqueeze(0)
+        if self.device_module is None:
+            stream_context = nullcontext()
+        else:
+            stream_context = self.device_module.stream(self.stream)
+        with stream_context:
             lengths = torch.tensor(
                 [mel.shape[2]], dtype=torch.int32, device=self.device
             )
-            tokens, token_lengths = self.audio_tokenizer(mel.to(self.device), lengths)
-            tokens, token_lengths = tokens.cpu(), token_lengths.cpu()
+            device_mel = mel.to(self.device)
+            tokens, token_lengths = self.audio_tokenizer(device_mel, lengths)
+            tokens = tokens.cpu()
+            token_lengths = token_lengths.cpu()
         features = kaldi.fbank(
             speech.unsqueeze(0),
             num_mel_bins=80,
@@ -225,12 +242,14 @@ class MiniCPMOReferenceEncodeHook(
             sample_frequency=PROMPT_AUDIO_SAMPLE_RATE,
         )
         features = features - features.mean(dim=0, keepdim=True)
-        embedding = torch.from_numpy(
-            self.spk_model.run(
-                None,
-                {self.spk_model.get_inputs()[0].name: features.unsqueeze(0).numpy()},
-            )[0]
+        speaker_inputs = self.spk_model.get_inputs()
+        speaker_input_name = speaker_inputs[0].name
+        speaker_features = features.unsqueeze(0)
+        speaker_features = speaker_features.numpy()
+        speaker_outputs = self.spk_model.run(
+            None, {speaker_input_name: speaker_features}
         )
+        embedding = torch.from_numpy(speaker_outputs[0])
         audio = audio.mean(dim=0, keepdim=True)
         if sample_rate != FLOW_AUDIO_SAMPLE_RATE:
             audio = torchaudio.transforms.Resample(sample_rate, FLOW_AUDIO_SAMPLE_RATE)(
@@ -238,21 +257,31 @@ class MiniCPMOReferenceEncodeHook(
             )
         else:
             pass
-        # note (liuqihao): CPU tensors so the conditioning crosses stage processes.
+        # note(liuqihao): keep conditioning on CPU for caching and cross-process transport.
+        prompt_mel = prompt_mel_spectrogram(audio)
+        prompt_mel = prompt_mel.transpose(1, 2)
         return {
             "speech_tokens": tokens,
             "speech_token_len": token_lengths,
             "speaker_embedding": embedding,
-            "prompt_mel": prompt_mel_spectrogram(audio).transpose(1, 2),
+            "prompt_mel": prompt_mel,
         }
 
 
 def clone_speaker_prompt(prompt: SpeakerPromptInputs) -> SpeakerPromptInputs:
+    speech_tokens = prompt["speech_tokens"].detach()
+    speech_tokens = speech_tokens.cpu()
+    speech_token_len = prompt["speech_token_len"].detach()
+    speech_token_len = speech_token_len.cpu()
+    speaker_embedding = prompt["speaker_embedding"].detach()
+    speaker_embedding = speaker_embedding.cpu()
+    prompt_mel = prompt["prompt_mel"].detach()
+    prompt_mel = prompt_mel.cpu()
     return {
-        "speech_tokens": prompt["speech_tokens"].detach().cpu().clone(),
-        "speech_token_len": prompt["speech_token_len"].detach().cpu().clone(),
-        "speaker_embedding": prompt["speaker_embedding"].detach().cpu().clone(),
-        "prompt_mel": prompt["prompt_mel"].detach().cpu().clone(),
+        "speech_tokens": speech_tokens.clone(),
+        "speech_token_len": speech_token_len.clone(),
+        "speaker_embedding": speaker_embedding.clone(),
+        "prompt_mel": prompt_mel.clone(),
     }
 
 

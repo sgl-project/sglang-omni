@@ -153,7 +153,7 @@ def text_stages() -> list[StageConfig]:
 
 def speech_stages() -> list[StageConfig]:
     return [
-        # note (liuqihao): speaker conditioning overlaps across concurrent requests.
+        # note(liuqihao): overlap speaker conditioning across requests.
         preprocessing_stage(process="pipeline", gpu=0, max_concurrency=8),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline", speech_enabled=True),

@@ -39,13 +39,14 @@ ISTFT_ENVELOPE_FLOOR = 1e-11
 def length_mask(
     frame_lengths: torch.Tensor | None, scale: int, extra: int, like: torch.Tensor
 ) -> torch.Tensor | None:
-    """Valid positions of like, whose rows hold frame_lengths * scale + extra."""
+    """Return a broadcast mask for scaled row lengths, or None for unpadded input."""
     if frame_lengths is None:
         mask = None
     else:
         positions = torch.arange(like.shape[-1], device=like.device)
         valid = positions < frame_lengths[:, None] * scale + extra
-        mask = valid.unsqueeze(1).to(like.dtype)
+        mask = valid.unsqueeze(1)
+        mask = mask.to(like.dtype)
     return mask
 
 
@@ -89,9 +90,14 @@ class ConvRNNF0Predictor(nn.Module):
         for layer in self.condnet:
             x = masked(layer(x), mask)
         x = x.transpose(1, 2)
-        f0 = torch.abs(self.classifier(x).squeeze(-1))
-        # note (liuqihao): zero f0 past a row keeps its last-frame phase interpolation unchanged.
-        return f0 if mask is None else f0 * mask[:, 0]
+        predicted_f0 = self.classifier(x)
+        predicted_f0 = predicted_f0.squeeze(-1)
+        f0 = torch.abs(predicted_f0)
+        # note(liuqihao): zero padded f0 to preserve phase interpolation at each row's tail.
+        if mask is None:
+            return f0
+        else:
+            return f0 * mask[:, 0]
 
 
 class HiFTGenerator(nn.Module):
@@ -218,13 +224,18 @@ class HiFTGenerator(nn.Module):
                 x, n_fft, hop_len, n_fft, window=window, return_complex=True
             )
         else:
-            # note (liuqihao): each row reflects its own tail, as centered framing does alone.
+            # note(liuqihao): reflect each row's actual tail to match an independent centered STFT.
             half = n_fft // 2
             positions = torch.arange(x.shape[-1] + half, device=x.device)
             last = sample_lengths[:, None] - 1
             source = torch.where(positions <= last, positions, 2 * last - positions)
-            x = torch.gather(x, 1, source.clamp(min=0))
-            x = F.pad(x[:, None], (half, 0), mode="reflect")[:, 0]
+            source = source.clamp(min=0)
+            x = torch.gather(x, 1, source)
+            waveform_with_channel = x.unsqueeze(1)
+            left_padded_waveform = F.pad(
+                waveform_with_channel, (half, 0), mode="reflect"
+            )
+            x = left_padded_waveform.squeeze(1)
             spec = torch.stft(
                 x,
                 n_fft,
@@ -255,21 +266,22 @@ class HiFTGenerator(nn.Module):
                 spectrum, n_fft, hop_len, n_fft, window=window
             )
         else:
-            # note (liuqihao): per-row window envelopes keep padded frames out of the
-            # normalization of each row's last samples.
+            # note(liuqihao): exclude padded frames from each row's ISTFT normalization.
             frames = torch.fft.irfft(spectrum, n=n_fft, dim=1)
             frames = frames * window[:, None] * frame_mask
             width = (frames.shape[-1] - 1) * hop_len + n_fft
-            signal = F.fold(
-                frames, (1, width), (1, n_fft), stride=(1, hop_len)
-            ).flatten(1)
-            envelope = F.fold(
-                window.square()[:, None] * frame_mask,
+            folded_signal = F.fold(frames, (1, width), (1, n_fft), stride=(1, hop_len))
+            signal = folded_signal.flatten(1)
+            masked_window_energy = window.square()[:, None] * frame_mask
+            folded_envelope = F.fold(
+                masked_window_energy,
                 (1, width),
                 (1, n_fft),
                 stride=(1, hop_len),
-            ).flatten(1)
-            normalized = signal / envelope.clamp(min=ISTFT_ENVELOPE_FLOOR)
+            )
+            envelope = folded_envelope.flatten(1)
+            safe_envelope = envelope.clamp(min=ISTFT_ENVELOPE_FLOOR)
+            normalized = signal / safe_envelope
             inverse_transform = normalized[:, n_fft // 2 : width - n_fft // 2]
         return inverse_transform
 
@@ -280,16 +292,19 @@ class HiFTGenerator(nn.Module):
         frame_lengths: torch.Tensor | None = None,
     ) -> torch.Tensor:
         stft_scale = int(np.prod(self.upsample_rates))
-        sample_lengths = (
-            None
-            if frame_lengths is None
-            else frame_lengths * stft_scale * self.istft_params["hop_len"]
-        )
-        s_stft_real, s_stft_imag = self.stft(s.squeeze(1), sample_lengths)
+        if frame_lengths is None:
+            sample_lengths = None
+        else:
+            sample_lengths = frame_lengths * stft_scale * self.istft_params["hop_len"]
+        source_waveform = s.squeeze(1)
+        s_stft_real, s_stft_imag = self.stft(source_waveform, sample_lengths)
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
-        s_stft = masked(s_stft, length_mask(frame_lengths, stft_scale, 1, s_stft))
+        stft_mask = length_mask(frame_lengths, stft_scale, 1, s_stft)
+        s_stft = masked(s_stft, stft_mask)
         mask = length_mask(frame_lengths, 1, 0, x)
-        x = masked(self.conv_pre(masked(x, mask)), mask)
+        x = masked(x, mask)
+        x = self.conv_pre(x)
+        x = masked(x, mask)
         scale = 1
         for i in range(self.num_upsamples):
             is_last = i == self.num_upsamples - 1
@@ -300,10 +315,11 @@ class HiFTGenerator(nn.Module):
                 x = self.reflection_pad(x)
             else:
                 pass
-            # note (liuqihao): the reflection pad widens the last stage by one frame.
+            # note(liuqihao): include the extra frame introduced by the final reflection pad.
             mask = length_mask(frame_lengths, scale, int(is_last), x)
             x = masked(x, mask)
-            si = masked(self.source_downs[i](s_stft), mask)
+            si = self.source_downs[i](s_stft)
+            si = masked(si, mask)
             si = self.source_resblocks[i](si, mask)
             x = x + si
             xs = None
@@ -325,7 +341,7 @@ class HiFTGenerator(nn.Module):
     def forward(
         self, speech_feat: torch.Tensor, mel_lengths: Sequence[int] | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Vocode mel rows; mel_lengths marks each row's valid frames when padded."""
+        """Decode mel rows, using mel_lengths to preserve each padded row's boundaries."""
         width = speech_feat.shape[-1]
         if mel_lengths is None or all(length == width for length in mel_lengths):
             frame_lengths = None

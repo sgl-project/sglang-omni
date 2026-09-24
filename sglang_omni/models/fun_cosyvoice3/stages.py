@@ -52,7 +52,7 @@ from sglang_omni.scheduling.pipeline_state import load_state as load_pipeline_st
 from sglang_omni.scheduling.pipeline_state import store_state as store_pipeline_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
-from sglang_omni.scheduling.vocoder_base import BatchVocoderBase, group_by_padding_waste
+from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
@@ -1529,13 +1529,39 @@ class CosyVoice3Vocoder(BatchVocoderBase):
                     mel_list = self.flow.inference(
                         [request.flow_input for request in flow_group]
                     )
-                for indices in group_by_padding_waste(
-                    [int(mel.shape[-1]) for mel in mel_list],
-                    self.hift_max_padding_waste,
-                ):
-                    wavs = self.mel2wav_batch([mel_list[index] for index in indices])
-                    for index, wav in zip(indices, wavs, strict=True):
-                        request = flow_group[index]
+                ordered = sorted(
+                    zip(flow_group, mel_list, strict=True),
+                    key=lambda pair: int(pair[1].shape[-1]),
+                )
+                group: list[tuple[Any, torch.Tensor]] = []
+                total = 0
+                longest = 0
+                max_waste = self.hift_max_padding_waste
+                hift_groups: list[list[tuple[Any, torch.Tensor]]] = []
+                for pair in ordered:
+                    length = int(pair[1].shape[-1])
+                    candidate_longest = max(longest, length)
+                    candidate_total = total + length
+                    if (
+                        group
+                        and candidate_longest * (len(group) + 1)
+                        > max_waste * candidate_total
+                    ):
+                        hift_groups.append(group)
+                        group, total, longest = [], 0, 0
+                        candidate_longest = length
+                        candidate_total = length
+                    else:
+                        pass
+                    group.append(pair)
+                    total, longest = candidate_total, candidate_longest
+                if group:
+                    hift_groups.append(group)
+                else:
+                    pass
+                for group in hift_groups:
+                    wavs = self.mel2wav_batch([mel for _, mel in group])
+                    for (request, _), wav in zip(group, wavs, strict=True):
                         results[request.index] = (wav, request.sample_rate)
 
         if any(result is None for result in results):

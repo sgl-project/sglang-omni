@@ -17,8 +17,10 @@ __all__ = ["BatchVocoderBase", "group_by_padding_waste"]
 def group_by_padding_waste(
     lengths: Sequence[int], max_padding_waste: float
 ) -> list[list[int]]:
-    """Group indices by ascending length while each group's padded size stays
-    within max_padding_waste times its summed real length."""
+    """Group row indices by length, limiting padded size relative to valid size.
+
+    Each group satisfies padded size <= max_padding_waste * total valid length.
+    """
     groups: list[list[int]] = []
     group: list[int] = []
     total = 0

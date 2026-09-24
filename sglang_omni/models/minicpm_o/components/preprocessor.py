@@ -122,7 +122,7 @@ class MiniCPMOPreprocessor:
         self._processor = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
         self.reference_service = reference_service
-        # note (liuqihao): only speaker conditioning runs concurrently across requests.
+        # note(liuqihao): serialize access to the shared tokenizer and processor.
         self.prompt_lock = threading.Lock()
 
     def speech_to_text_inputs(
@@ -149,15 +149,15 @@ class MiniCPMOPreprocessor:
         return self._processor  # noqa: leading-underscore
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
-        """Preprocess the prompt while extracting the Code2Wav speaker conditioning."""
+        """Render the prompt and attach speaker conditioning for audio-output requests."""
         if self.reference_service is not None and self.should_use_tts_template(payload):
-            speaker_prompt = asyncio.create_task(
-                asyncio.to_thread(
-                    self.reference_service.get_or_encode,
-                    speaker_reference_audio(payload),
-                    desc="MiniCPM-o speaker conditioning",
-                )
+            reference_audio = speaker_reference_audio(payload)
+            encode_reference = asyncio.to_thread(
+                self.reference_service.get_or_encode,
+                reference_audio,
+                desc="MiniCPM-o speaker conditioning",
             )
+            speaker_prompt = asyncio.create_task(encode_reference)
         else:
             speaker_prompt = None
         with self.prompt_lock:

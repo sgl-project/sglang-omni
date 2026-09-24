@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Vocode MiniCPM-o codec tokens with per-request speaker conditioning."""
+"""Convert MiniCPM-o codec tokens to audio using per-request speaker references."""
 
 from __future__ import annotations
 
@@ -77,13 +77,14 @@ class MiniCPMOCode2Wav(nn.Module):
         codec_tokens: torch.Tensor,
         speaker_prompt: SpeakerPromptInputs,
     ) -> dict[str, object]:
-        """Vocode EOS-stripped codec tokens with one request's speaker conditioning."""
+        """Decode one codec sequence, with EOS removed, using its speaker conditioning."""
         tokens = codec_tokens.reshape(-1).tolist()
         if not tokens:
             waveform = np.zeros(0, dtype=np.float32)
         else:
             with self.device_context:
-                waveform = self.vocode([tokens], [speaker_prompt])[0]
+                decoded_waveforms = self.vocode([tokens], [speaker_prompt])
+                waveform = decoded_waveforms[0]
         return {"waveform": waveform, "sample_rate": OUTPUT_SAMPLE_RATE}
 
     def vocode(
@@ -91,7 +92,7 @@ class MiniCPMOCode2Wav(nn.Module):
         token_sequences: Sequence[Sequence[int]],
         speaker_prompts: Sequence[SpeakerPromptInputs],
     ) -> list[np.ndarray]:
-        """Batch flow across references and preserve each HiFT sequence boundary."""
+        """Decode mixed references and lengths, returning one waveform per input row."""
         if not token_sequences:
             return []
         else:
@@ -119,37 +120,31 @@ class MiniCPMOCode2Wav(nn.Module):
             ],
             batch_first=True,
         )
-        speech_tokens_lens = torch.tensor(token_lens, dtype=torch.int32, device=device)
-        # Rows pad to a common prompt width; the flow re-derives each row's real
-        # width from prompt_speech_tokens_lens.
+        # note(liuqihao): retain true prompt lengths so padding never becomes conditioning.
         prompt_speech_tokens = pad_sequence(
             [prompt["speech_tokens"].reshape(-1) for prompt in speaker_prompts],
             batch_first=True,
-        ).to(device)
-        prompt_speech_tokens_lens = torch.cat(
-            [prompt["speech_token_len"].reshape(1) for prompt in speaker_prompts]
-        ).to(device)
+        )
+        prompt_speech_tokens = prompt_speech_tokens.to(device)
+        prompt_speech_tokens_lens = [
+            int(prompt["speech_token_len"].item()) for prompt in speaker_prompts
+        ]
         speaker_embedding = torch.cat(
             [prompt["speaker_embedding"] for prompt in speaker_prompts]
-        ).to(device)
-        # note (liuqihao): prompt mel repeats its last frame to cover every prompt token.
-        prompt_mels = pad_sequence(
-            [
-                torch.nn.functional.pad(
-                    prompt["prompt_mel"],
-                    (
-                        0,
-                        0,
-                        0,
-                        prompt["speech_tokens"].numel() * up_rate
-                        - prompt["prompt_mel"].shape[1],
-                    ),
-                    mode="replicate",
-                )[0]
-                for prompt in speaker_prompts
-            ],
-            batch_first=True,
-        ).to(device)
+        )
+        speaker_embedding = speaker_embedding.to(device)
+        # note(liuqihao): repeat the last mel frame when token rounding extends the prompt.
+        padded_prompt_mels = []
+        for prompt in speaker_prompts:
+            prompt_mel = prompt["prompt_mel"]
+            required_frames = prompt["speech_tokens"].numel() * up_rate
+            padding_frames = required_frames - prompt_mel.shape[1]
+            padded_mel = torch.nn.functional.pad(
+                prompt_mel, (0, 0, 0, padding_frames), mode="replicate"
+            )
+            padded_prompt_mels.append(padded_mel[0])
+        prompt_mels = pad_sequence(padded_prompt_mels, batch_first=True)
+        prompt_mels = prompt_mels.to(device)
 
         with torch.amp.autocast(
             "cuda",
@@ -158,7 +153,7 @@ class MiniCPMOCode2Wav(nn.Module):
         ):
             mel = self.token2wav.flow.inference(
                 speech_tokens,
-                speech_tokens_lens,
+                token_lens,
                 prompt_speech_tokens,
                 prompt_speech_tokens_lens,
                 prompt_mels,
@@ -170,22 +165,19 @@ class MiniCPMOCode2Wav(nn.Module):
         waveform_rows: dict[int, torch.Tensor] = {}
         for indices in group_by_padding_waste(mel_lens, self.hift_max_padding_waste):
             group_mel_lens = [mel_lens[idx] for idx in indices]
-            speech_feat = mel[indices, :, : max(group_mel_lens)].float().contiguous()
+            speech_feat = mel[indices, :, : max(group_mel_lens)]
+            speech_feat = speech_feat.float()
+            speech_feat = speech_feat.contiguous()
             wav, _ = self.token2wav.hift(
                 speech_feat=speech_feat, mel_lengths=group_mel_lens
             )
             for row, idx in enumerate(indices):
-                waveform_rows[idx] = wav[row].reshape(-1)[
-                    : token_lens[idx] * SAMPLES_PER_CODEC_TOKEN
-                ]
-        wav = (
-            pad_sequence(
-                [waveform_rows[idx] for idx in range(batch_size)], batch_first=True
-            )
-            .float()
-            .cpu()
-        )
-        return [
-            wav[idx, : token_len * SAMPLES_PER_CODEC_TOKEN].numpy()
-            for idx, token_len in enumerate(token_lens)
-        ]
+                row_waveform = wav[row].reshape(-1)
+                sample_count = token_lens[idx] * SAMPLES_PER_CODEC_TOKEN
+                waveform_rows[idx] = row_waveform[:sample_count]
+        wav = torch.cat([waveform_rows[idx] for idx in range(batch_size)])
+        wav = wav.float()
+        wav = wav.cpu()
+        sample_lengths = [length * SAMPLES_PER_CODEC_TOKEN for length in token_lens]
+        waveform_slices = wav.split(sample_lengths)
+        return [row.numpy() for row in waveform_slices]

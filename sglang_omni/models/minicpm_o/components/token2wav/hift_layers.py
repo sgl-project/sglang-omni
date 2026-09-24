@@ -18,8 +18,11 @@ def get_padding(kernel_size: int, dilation: int = 1) -> int:
 
 
 def masked(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
-    """Zero padded positions so each row sees the zero padding of a lone decode."""
-    return x if mask is None else x * mask
+    """Zero masked positions, or return the input unchanged when no mask is needed."""
+    if mask is None:
+        return x
+    else:
+        return x * mask
 
 
 def init_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:

@@ -21,7 +21,7 @@ class PromptInputs(TypedDict):
 
 
 class SpeakerPromptInputs(TypedDict):
-    """Token2wav speaker conditioning extracted from the reference clip."""
+    """CPU reference tokens, lengths, speaker embedding, and mel conditioning."""
 
     speech_tokens: torch.Tensor
     speech_token_len: torch.Tensor
@@ -65,6 +65,10 @@ class MiniCPMOPipelineState:
 
         thinker_out = data.get("thinker_out")
         speaker_prompt = data.get("speaker_prompt")
+        if isinstance(speaker_prompt, dict):
+            speaker_prompt_inputs = speaker_prompt
+        else:
+            speaker_prompt_inputs = None
         return cls(
             prompt=data.get("prompt"),
             mm_inputs=_dict("mm_inputs"),
@@ -74,9 +78,7 @@ class MiniCPMOPipelineState:
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=_dict("engine_outputs"),
             stream_state=_dict("stream_state"),
-            speaker_prompt=(
-                speaker_prompt if isinstance(speaker_prompt, dict) else None
-            ),
+            speaker_prompt=speaker_prompt_inputs,
         )
 
     def to_dict(self) -> dict[str, Any]:

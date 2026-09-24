@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Modifications: retain MiniCPM-o inference only; local imports and typing.
-"""Flow for MiniCPM-o."""
+"""Generate mel features from codec tokens and speaker conditioning with flow matching."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal
 
 import torch
@@ -140,9 +141,9 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
     def inference(
         self,
         token: torch.Tensor,
-        token_len: torch.Tensor,
+        token_lens: Sequence[int],
         prompt_token: torch.Tensor,
-        prompt_token_len: torch.Tensor,
+        prompt_token_lens: Sequence[int],
         prompt_feat: torch.Tensor,
         embedding: torch.Tensor,
         n_timesteps: int = 10,
@@ -154,28 +155,29 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
         batch_size = token.shape[0]
-        prompt_token_lens = [int(prompt_token_len[i]) for i in range(batch_size)]
-        token_lens = [int(token_len[i]) for i in range(batch_size)]
-        # Rows may carry references of different lengths, so build each row as
-        # prompt-then-generated and pad the tail. The mask drops that tail, and
-        # each row's prompt mel is written at its own offset below.
-        combined = pad_sequence(
+        # note(liuqihao): place padding after both sequences to preserve each prompt boundary.
+        combined_rows = []
+        for i in range(batch_size):
+            prompt_row = prompt_token[i, : prompt_token_lens[i]]
+            generated_row = token[i, : token_lens[i]]
+            combined_rows.append(torch.cat([prompt_row, generated_row]))
+        combined = pad_sequence(combined_rows, batch_first=True)
+        combined_lengths = torch.tensor(
             [
-                torch.cat(
-                    [
-                        prompt_token[i, : prompt_token_lens[i]],
-                        token[i, : token_lens[i]],
-                    ]
-                )
-                for i in range(batch_size)
+                prompt + generated
+                for prompt, generated in zip(prompt_token_lens, token_lens, strict=True)
             ],
-            batch_first=True,
+            dtype=torch.int32,
+            device=token.device,
         )
-        token_len = prompt_token_len + token_len
-        token_mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
-        token = self.input_embedding(torch.clamp(combined, min=0)) * token_mask
-        h, _ = self.encoder.forward(token, token_len)
-        frame_mask = (~make_pad_mask(token_len * self.up_rate, h.shape[1])).to(h)
+        valid_tokens = ~make_pad_mask(combined_lengths, combined.shape[1])
+        token_mask = valid_tokens.unsqueeze(-1)
+        token_mask = token_mask.to(embedding)
+        nonnegative_tokens = torch.clamp(combined, min=0)
+        token = self.input_embedding(nonnegative_tokens) * token_mask
+        h, _ = self.encoder.forward(token, combined_lengths)
+        valid_frames = ~make_pad_mask(combined_lengths * self.up_rate, h.shape[1])
+        frame_mask = valid_frames.to(h)
         h = self.encoder_proj(h) * frame_mask.unsqueeze(-1)
         conds = torch.zeros_like(h)
         for i, prompt_len in enumerate(prompt_token_lens):
@@ -189,12 +191,18 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cond=conds,
             n_timesteps=n_timesteps,
         )
-        generated = [
-            feat[i, :, prompt_token_lens[i] * self.up_rate :][
-                :, : token_lens[i] * self.up_rate
-            ]
-            for i in range(batch_size)
-        ]
-        return pad_sequence(
-            [row.transpose(0, 1) for row in generated], batch_first=True
-        ).transpose(1, 2)
+        generated = []
+        for i in range(batch_size):
+            first_generated_frame = prompt_token_lens[i] * self.up_rate
+            generated_frame_count = token_lens[i] * self.up_rate
+            generated.append(
+                feat[
+                    i,
+                    :,
+                    first_generated_frame : first_generated_frame
+                    + generated_frame_count,
+                ]
+            )
+        time_major_rows = [row.transpose(0, 1) for row in generated]
+        padded_rows = pad_sequence(time_major_rows, batch_first=True)
+        return padded_rows.transpose(1, 2)

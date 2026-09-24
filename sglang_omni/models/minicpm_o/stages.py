@@ -202,7 +202,7 @@ def create_sglang_talker_executor_from_config(
 def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
-    """Vocode talker payloads with the speaker conditioning from preprocessing."""
+    """Decode a batch of talker outputs using their preprocessed speaker conditioning."""
     codec_tokens: list[list[int]] = []
     speaker_prompts: list[SpeakerPromptInputs] = []
     for payload in payloads:

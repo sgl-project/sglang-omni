@@ -50,11 +50,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def test_timestep_embedding_matches_reference(
     dtype: torch.dtype, frequency_size: int
 ) -> None:
-    model = TimestepEmbedder(16, frequency_size).to(dtype).eval()
+    model = TimestepEmbedder(16, frequency_size)
+    model = model.to(dtype)
+    model.eval()
     t = torch.linspace(0, 1, 11, dtype=dtype)
     half = frequency_size // 2
-    frequencies = torch.exp(-math.log(10000) * torch.arange(half) / half).to(t)
-    angles = (t * 1000)[:, None] * frequencies[None]
+    frequencies = torch.exp(-math.log(10000) * torch.arange(half) / half)
+    frequencies = frequencies.to(t)
+    scaled_timesteps = t * 1000
+    angles = scaled_timesteps[:, None] * frequencies[None, :]
     embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
     if frequency_size % 2:
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
@@ -64,10 +68,14 @@ def test_timestep_embedding_matches_reference(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_timestep_embedding_autocast_preserves_frequencies(dtype: torch.dtype) -> None:
-    model = TimestepEmbedder(16).to(device="cuda", dtype=dtype).eval()
+    model = TimestepEmbedder(16)
+    model = model.to(device="cuda", dtype=dtype)
+    model.eval()
     t = torch.linspace(0, 1, 11, device="cuda", dtype=torch.float32)
-    frequencies = torch.exp(-math.log(10000) * torch.arange(128) / 128).to(t)
-    angles = (t * 1000)[:, None] * frequencies[None]
+    frequencies = torch.exp(-math.log(10000) * torch.arange(128) / 128)
+    frequencies = frequencies.to(t)
+    scaled_timesteps = t * 1000
+    angles = scaled_timesteps[:, None] * frequencies[None, :]
     embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
     with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
         torch.testing.assert_close(model(t), model.mlp(embedding), rtol=0, atol=0)
@@ -75,7 +83,9 @@ def test_timestep_embedding_autocast_preserves_frequencies(dtype: torch.dtype) -
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_timestep_embedding_cuda_graph_replays_new_inputs() -> None:
-    model = TimestepEmbedder(16).cuda().eval()
+    model = TimestepEmbedder(16)
+    model = model.cuda()
+    model.eval()
     t = torch.zeros(2, device="cuda")
     with torch.inference_mode():
         stream = torch.cuda.Stream()
@@ -193,8 +203,10 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
     batched = model.vocode([tokens_a, tokens_b], [prompt, prompt])
-    single_a = model.vocode([tokens_a], [prompt])[0]
-    single_b = model.vocode([tokens_b], [prompt])[0]
+    decoded_a = model.vocode([tokens_a], [prompt])
+    decoded_b = model.vocode([tokens_b], [prompt])
+    single_a = decoded_a[0]
+    single_b = decoded_b[0]
     assert (
         batched[0].shape == single_a.shape == (len(tokens_a) * SAMPLES_PER_CODEC_TOKEN,)
     )
@@ -286,8 +298,10 @@ def test_reference_service_reuses_references_across_calls() -> None:
     service = ReferenceEncodeService(hook, max_items=2)
     first = service.get_or_encode(b"a")
     first["speech_tokens"].add_(7)
-    assert service.get_or_encode(b"a")["speech_tokens"].eq(0).all()
-    # "c" evicts the least recently used "a" from the two-entry budget.
+    cached_prompt = service.get_or_encode(b"a")
+    cached_tokens_are_zero = cached_prompt["speech_tokens"].eq(0)
+    assert cached_tokens_are_zero.all()
+    # note(liuqihao): inserting c evicts a, so the final lookup must encode it again.
     for reference in (b"b", b"c", b"a"):
         service.get_or_encode(reference)
     assert hook.extract.call_count == 4
@@ -304,43 +318,6 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.hift_max_padding_waste == 1.5
 
 
-def test_vocode_slices_waveforms_to_token_lengths() -> None:
-    class FakeFlow:
-        up_rate = 2
-
-        def inference(
-            self,
-            speech_tokens: torch.Tensor,
-            speech_tokens_lens: torch.Tensor,
-            *args: object,
-        ) -> torch.Tensor:
-            frames = speech_tokens.shape[1] * self.up_rate
-            return torch.zeros(speech_tokens.shape[0], 80, frames)
-
-    class FakeHiFT:
-        def __call__(
-            self, speech_feat: torch.Tensor, mel_lengths: list[int]
-        ) -> tuple[torch.Tensor, None]:
-            samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
-            wav = speech_feat.new_ones(speech_feat.shape[0], 1, samples)
-            return wav, None
-
-    model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
-    model.hift_max_padding_waste = 1.5
-    model.token2wav = SimpleNamespace(
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        n_timesteps=10,
-        flow=FakeFlow(),
-        hift=FakeHiFT(),
-    )
-    waveforms = model.vocode([[1, 2], [3, 4, 5]], [_speaker_prompt(1)] * 2)
-    assert [wave.shape for wave in waveforms] == [
-        (2 * SAMPLES_PER_CODEC_TOKEN,),
-        (3 * SAMPLES_PER_CODEC_TOKEN,),
-    ]
-
-
 def test_vocode_rejects_mismatched_speaker_prompt_count() -> None:
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
     with pytest.raises(ValueError, match="does not match"):
@@ -354,22 +331,25 @@ def _batch_model() -> MiniCPMOCode2Wav:
         def inference(
             self,
             speech_tokens: torch.Tensor,
-            speech_tokens_lens: torch.Tensor,
+            speech_tokens_lens: list[int],
             prompt_tokens: torch.Tensor,
-            prompt_tokens_lens: torch.Tensor,
+            prompt_tokens_lens: list[int],
             prompt_mels: torch.Tensor,
             speaker_embedding: torch.Tensor,
             n_timesteps: int,
         ) -> torch.Tensor:
-            frames = (speech_tokens_lens + prompt_tokens_lens).max() * self.up_rate
-            return torch.zeros(speech_tokens.shape[0], 80, frames)
+            frames = max(speech_tokens_lens) * self.up_rate
+            first_token = speech_tokens[:, :1, None].float()
+            return first_token.expand(-1, 80, frames)
 
     class FakeHiFT:
         def __call__(
             self, speech_feat: torch.Tensor, mel_lengths: list[int]
         ) -> tuple[torch.Tensor, None]:
-            samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
-            return speech_feat.new_ones(speech_feat.shape[0], 1, samples), None
+            waveform = speech_feat[:, :1].repeat_interleave(
+                SAMPLES_PER_CODEC_TOKEN // 2, dim=-1
+            )
+            return waveform, None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
     model.hift_max_padding_waste = 1.5
@@ -385,15 +365,40 @@ def _batch_model() -> MiniCPMOCode2Wav:
 
 def test_vocode_mixed_references_and_lengths_share_one_batch() -> None:
     model = _batch_model()
-    waveforms = model.vocode(
-        [[1, 2], [3, 4, 5], [6]],
-        [_speaker_prompt(1), _speaker_prompt(3, mel_frames=5), _speaker_prompt(1)],
+    prompts = [_speaker_prompt(1), _speaker_prompt(3, mel_frames=5), _speaker_prompt(2)]
+    for index, prompt in enumerate(prompts):
+        prompt["speech_tokens"].fill_(index + 1)
+        prompt["speaker_embedding"].fill_(index + 2)
+        prompt["prompt_mel"].fill_(index + 3)
+    flow = model.token2wav.flow
+    flow.inference = MagicMock(wraps=flow.inference)
+    waveforms = model.vocode([[1, 2], [3, 4, 5], [6]], prompts)
+    flow.inference.assert_called_once()
+    tokens, lengths, references, reference_lengths, mels, embeddings, _ = (
+        flow.inference.call_args.args
     )
+    torch.testing.assert_close(
+        tokens, torch.tensor([[1, 2, 0], [3, 4, 5], [6, 0, 0]], dtype=torch.int32)
+    )
+    assert lengths == [2, 3, 1]
+    assert reference_lengths == [1, 3, 2]
+    for row, length in enumerate(reference_lengths):
+        torch.testing.assert_close(
+            references[row, :length], prompts[row]["speech_tokens"][0]
+        )
+        torch.testing.assert_close(
+            embeddings[row], prompts[row]["speaker_embedding"][0]
+        )
+        mel_matches_prompt = mels[row, : length * 2].eq(row + 3)
+        assert mel_matches_prompt.all()
     assert [wave.shape for wave in waveforms] == [
         (2 * SAMPLES_PER_CODEC_TOKEN,),
         (3 * SAMPLES_PER_CODEC_TOKEN,),
         (SAMPLES_PER_CODEC_TOKEN,),
     ]
+
+    for waveform, value in zip(waveforms, [1, 3, 6], strict=True):
+        np.testing.assert_array_equal(waveform, np.full_like(waveform, value))
 
 
 def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
@@ -406,7 +411,8 @@ def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
         ) -> tuple[torch.Tensor, None]:
             self.batch_sizes.append(speech_feat.shape[0])
             positions = torch.arange(speech_feat.shape[-1])
-            mask = (positions < torch.tensor(mel_lengths)[:, None]).unsqueeze(1)
+            valid_positions = positions < torch.tensor(mel_lengths)[:, None]
+            mask = valid_positions.unsqueeze(1)
             kernel = speech_feat.new_ones(1, 1, 3)
             hidden = (
                 torch.nn.functional.conv1d(speech_feat[:, :1], kernel, padding=1) + 1
@@ -423,7 +429,8 @@ def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
     batched = model.vocode(sequences, [prompt] * len(sequences))
     assert hift.batch_sizes == [3]
     for tokens, waveform in zip(sequences, batched, strict=True):
-        reference = model.vocode([tokens], [prompt])[0]
+        decoded = model.vocode([tokens], [prompt])
+        reference = decoded[0]
         np.testing.assert_array_equal(waveform, reference)
 
 
@@ -445,7 +452,7 @@ def test_vocode_splits_hift_batch_past_padding_budget() -> None:
 
 
 def test_hift_padded_batch_matches_single_rows(monkeypatch) -> None:
-    # Remove the random excitation phase and noise so rows are comparable.
+    # note(liuqihao): disable random excitation to isolate padding boundary errors.
     monkeypatch.setattr(torch, "rand", torch.zeros)
     monkeypatch.setattr(torch, "randn_like", torch.zeros_like)
     torch.manual_seed(0)
