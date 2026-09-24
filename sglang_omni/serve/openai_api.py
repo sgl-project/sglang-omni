@@ -452,10 +452,23 @@ def register_health(app: FastAPI) -> None:
         client: Client = app.state.client
         info = client.health()
         is_running = info.get("running", False)
-        status_code = 200 if is_running else 503
+        # A mounted native media app may still be running its server warmup.
+        # Readiness means steady latency, so report 503 until it finishes.
+        native_app = getattr(app.state, "native_media_app", None)
+        warmup_done = getattr(
+            getattr(native_app, "state", None), "server_warmup_done", None
+        )
+        warming = warmup_done is not None and not warmup_done.is_set()
+        if is_running and warming:
+            status = "warming"
+        elif is_running:
+            status = "healthy"
+        else:
+            status = "unhealthy"
+        status_code = 200 if is_running and not warming else 503
         return JSONResponse(
             content={
-                "status": "healthy" if is_running else "unhealthy",
+                "status": status,
                 **info,
             },
             status_code=status_code,
@@ -1327,7 +1340,9 @@ def build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text, audio=audio, media=result.media, meta_info=meta_info
+    )
 
 
 def register_realtime(app: FastAPI) -> None:

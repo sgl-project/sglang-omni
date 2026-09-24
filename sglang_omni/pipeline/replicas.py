@@ -248,7 +248,7 @@ def validate_device_assignment(
             continue
         else:
             pass
-        ids = [gpu] if isinstance(gpu, int) else gpu
+        ids = stage_cfg.runtime_gpu_ids or ([gpu] if isinstance(gpu, int) else gpu)
         for gpu_id in ids:
             if gpu_id >= device_count:
                 raise ValueError(

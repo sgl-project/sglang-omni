@@ -241,6 +241,8 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.join_count += 1
 
     class FakeGroup:
+        is_ready = False
+
         def __init__(self, stage_name: str, *, fail_spawn: bool = False) -> None:
             self.stage_name = stage_name
             self.fail_spawn = fail_spawn
