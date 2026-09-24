@@ -11,7 +11,8 @@ rather than speaking, and the talker renders the speaking ones into audio.
         --audio /path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav \\
         --out reply.wav
 
-The four GPU stages share one card, so pick a free one with CUDA_VISIBLE_DEVICES.
+The four GPU stages share one card, so pick a free one with CUDA_VISIBLE_DEVICES
+(ZE_AFFINITY_MASK on Intel XPU). Stage fields take sgl-omni serve's dotted flags.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from pathlib import Path
 OUTPUT_SAMPLE_RATE = 22_050
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True, help="checkpoint directory")
     parser.add_argument(
@@ -39,17 +40,19 @@ def parse_args() -> argparse.Namespace:
         default=900.0,
         help="seconds to wait for the stages to load",
     )
-    return parser.parse_args()
+    return parser.parse_known_args()
 
 
-async def run(args: argparse.Namespace) -> int:
+async def run(args: argparse.Namespace, overrides: list[str]) -> int:
     from sglang_omni.client import Client, GenerateRequest, SamplingParams
+    from sglang_omni.config.manager import ConfigManager
     from sglang_omni.models.nemotron_voicechat.config import (
         NemotronVoiceChatPipelineConfig,
     )
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
-    config = NemotronVoiceChatPipelineConfig(model_path=args.model_path)
+    manager = ConfigManager(NemotronVoiceChatPipelineConfig(model_path=args.model_path))
+    config = manager.merge_config(manager.parse_extra_args(overrides))
     runner = MultiProcessPipelineRunner(config)
 
     started = time.perf_counter()
@@ -95,7 +98,8 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(run(parse_args())))
+    args, overrides = parse_args()
+    raise SystemExit(asyncio.run(run(args, overrides)))
 
 
 if __name__ == "__main__":
