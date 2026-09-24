@@ -90,6 +90,8 @@ def encoder_join_edges(*, speech_enabled: bool) -> dict[str, object]:
                 "talker_ar": (f"{_PKG}.request_builders.project_encoder_to_talker_ar"),
             },
         }
+    else:
+        pass
     return {
         "next": "mm_aggregate",
         "project_payload": {
@@ -146,6 +148,8 @@ def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfi
         factory_group = FactoryArgs(
             max_seq_len=8192, enable_async_decode=True, speech_enabled=True
         )
+    else:
+        pass
     join_kwargs: dict = {}
     if speech_enabled:
         join_kwargs = {
@@ -155,6 +159,8 @@ def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfi
             ),
             "merge_fn": f"{_PKG}.merge.merge_for_thinker",
         }
+    else:
+        pass
     return EngineStageConfig(
         name="thinker",
         process=process,
@@ -199,6 +205,8 @@ def talker_stage_env() -> dict[str, str]:
         # 16384 (gfx950, aiter c16d44b9) and the Talker codec head has 3072, so a
         # greedy Talker request would corrupt its first codec token.
         env["SGLANG_DISABLE_AITER_GREEDY_SAMPLE"] = "1"
+    else:
+        pass
     return env
 
 
@@ -336,8 +344,12 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
             # Device selection is deferred to the worker; the encoders read
             # the platform default at construction.
             return {}
+        else:
+            pass
         if stage_name == "thinker" and speech_enabled:
             return {"speech_enabled": True}
+        else:
+            pass
         return {}
 
 
@@ -389,10 +401,14 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
                 "speech_enabled": True,
                 "feedback_enabled": True,
             }
+        else:
+            pass
         if stage_name == "code2wav":
             return {
                 "enable_cuda_graph": current_platform.enable_code2wav_graph(),
             }
+        else:
+            pass
         return super().stage_factory_kwargs(stage_name)
 
 

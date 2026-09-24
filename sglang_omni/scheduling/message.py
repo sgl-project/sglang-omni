@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done"]
+IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done", "abort"]
 
 
 @dataclass

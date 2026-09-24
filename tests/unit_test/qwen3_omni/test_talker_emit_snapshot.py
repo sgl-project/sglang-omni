@@ -11,10 +11,10 @@ from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRun
 
 def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
     return SimpleNamespace(
-        _output_codes=torch.stack(
+        output_codes=torch.stack(
             [torch.tensor([i, i + 100], dtype=torch.long) for i in range(n)]
         )[:, :code_groups],
-        _output_embeds=torch.stack(
+        output_embeds=torch.stack(
             [torch.full((hidden,), float(i * 7 + 1)) for i in range(n)]
         ),
     )
@@ -23,11 +23,11 @@ def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
 def _runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner = object.__new__(QwenTalkerModelRunner)
     runner.model = model
-    runner._feedback_enabled = True
-    runner._code2wav_target = "code2wav"
-    runner._codec_coalesce_frames = 0
-    runner._outbox = SimpleNamespace(sent=[])
-    runner._outbox.put = runner._outbox.sent.append
+    runner.feedback_enabled = True
+    runner.code2wav_target = "code2wav"
+    runner.codec_coalesce_frames = 0
+    runner.outbox = SimpleNamespace(sent=[])
+    runner.outbox.put = runner.outbox.sent.append
     return runner
 
 
@@ -51,18 +51,18 @@ def test_emitted_rows_survive_next_step_inplace_write() -> None:
     model = _fake_model(n, hidden, code_groups)
     runner = _runner(model)
 
-    codes_before = model._output_codes.clone()
-    embeds_before = model._output_embeds.clone()
+    codes_before = model.output_codes.clone()
+    embeds_before = model.output_embeds.clone()
 
     requests = _requests(n)
     runner.emit_code_chunks_and_feedback(
         schedule_batch=_sched_batch(n), requests=requests
     )
 
-    model._output_codes.copy_(model._output_codes + 999)
-    model._output_embeds.copy_(model._output_embeds + 999.0)
+    model.output_codes.copy_(model.output_codes + 999)
+    model.output_embeds.copy_(model.output_embeds + 999.0)
 
-    for i, msg in enumerate(runner._outbox.sent):
+    for i, msg in enumerate(runner.outbox.sent):
         assert torch.equal(msg.data, codes_before[i])
         fb_queue = requests[i].data.pending_feedback_queue
         assert torch.equal(fb_queue[0], embeds_before[i])
@@ -92,7 +92,7 @@ def test_two_batched_clones_rows_share_storage() -> None:
 
     assert len(clones) == 2
 
-    code_ptrs = {msg.data.untyped_storage().data_ptr() for msg in runner._outbox.sent}
+    code_ptrs = {msg.data.untyped_storage().data_ptr() for msg in runner.outbox.sent}
     embed_ptrs = {
         req.data.pending_feedback_queue[0].untyped_storage().data_ptr()
         for req in requests

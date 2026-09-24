@@ -33,6 +33,8 @@ def missing_additional_chat_templates_compat() -> Iterator[None]:
         original = getattr(module, "list_repo_templates", None)
         if original is None:
             return
+        else:
+            pass
 
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             try:
@@ -40,6 +42,8 @@ def missing_additional_chat_templates_compat() -> Iterator[None]:
             except RepositoryNotFoundError as exc:
                 if "additional_chat_templates" in str(exc):
                     return []
+                else:
+                    pass
                 raise
 
         module.list_repo_templates = wrapped

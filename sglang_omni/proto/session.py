@@ -30,8 +30,8 @@ MSGPACK_BIN32_HEADER_GROWTH = 3
 
 
 class SessionIdentityDict(TypedDict):
-    session_id: str
-    incarnation: int
+    id: str
+    open_index: int
 
 
 class TimedChunkDict(TypedDict):
@@ -66,18 +66,18 @@ class SessionOperationDict(TypedDict):
 
 @dataclass(frozen=True)
 class SessionIdentity:
-    """One generation of a session: session_id plus incarnation."""
+    """One open of an id. open_index is the number issued for that open."""
 
-    session_id: str
-    incarnation: int = 1
+    id: str
+    open_index: int = 1
 
     def to_dict(self) -> SessionIdentityDict:
-        return {"session_id": self.session_id, "incarnation": self.incarnation}
+        return {"id": self.id, "open_index": self.open_index}
 
 
 @dataclass(frozen=True)
 class TimedChunk:
-    """Input seq is global across modalities within a session incarnation."""
+    """Input seq is global across modalities within one open_index."""
 
     modality: str
     t_start_ms: float

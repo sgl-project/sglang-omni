@@ -38,7 +38,7 @@ class Zonos2ModelRunner(ModelRunner):
         ),
     ):
         super().__init__(tp_worker, output_processor)
-        self._outbox: Any | None = None
+        self.outbox: Any | None = None
         # Streaming emission granularity: coalesce this many newly sampled frame
         # rows into a single [k, 9] outbox message instead of one put() per row.
         # The per-frame puts (~16/step at c=16) run on the resolve host loop and
@@ -46,35 +46,35 @@ class Zonos2ModelRunner(ModelRunner):
         # overlap; batching cuts that put count by ~k. 1 == legacy per-frame path
         # (byte-identical default). The OLA vocoder is unaffected (same rows, same
         # order) -- this only regroups them into fewer cross-stage messages.
-        self._stream_emit_chunk_frames = max(1, int(stream_emit_chunk_frames))
+        self.stream_emit_chunk_frames = max(1, int(stream_emit_chunk_frames))
         # Adaptive emit: emit a SMALLER first chunk so the vocoder can produce its
         # first audio sooner (recovers the TTFC that a large steady chunk costs),
         # then fall back to the steady stream_emit_chunk_frames for throughput.
         # 0 disables (first chunk == steady chunk = fixed behavior). Only applies on
         # the coalesced path (stream_emit_chunk_frames > 1).
-        self._stream_emit_first_chunk_frames = max(
+        self.stream_emit_first_chunk_frames = max(
             0, int(stream_emit_first_chunk_frames)
         )
         # Side stream for the lagged resolve D2H: gated by a launch event so the
         # copy waits only for codes(N), not the next forward queued on the main
         # stream -> the host resolve overlaps forward(N+1).
-        self._copy_stream: Any | None = None
+        self.copy_stream: Any | None = None
         # Per-request sampler (preserves the ZH-CER fix): per-request
         # temperature/top_k/top_p/min_p/repetition_penalty, no requests[0]
         # broadcast. Opt-in torch.compile fuses its elementwise launches.
-        self._sampler = (
+        self.sampler = (
             torch.compile(sample_tts, dynamic=True) if compile_sampler else sample_tts
         )
         # Opt-in: replay the captured per-frame tail graph (head+sample+embed+hash)
         # for the GPU tail, fed rep_ids/break_mask from the on-device ring. Inert
         # unless the model captured tail graphs.
-        self._frame_graph = frame_graph
+        self.frame_graph = frame_graph
         # Opt-in async-decode lookahead (overlap the resolve D2H with the next
         # forward); also gates disable_overlap_schedule in sglang_stages.
-        self._async_decode = async_decode
+        self.async_decode = async_decode
 
     def set_stream_outbox(self, outbox: Any) -> None:
-        self._outbox = outbox
+        self.outbox = outbox
 
     # ---- FeedbackAR hooks: model-specific bodies live in callbacks.py ----
 
@@ -115,6 +115,10 @@ class Zonos2ModelRunner(ModelRunner):
                         s.to(model.speaker_projection.weight.dtype)
                     )
                     emb[pos] = s.to(emb.dtype)
+                else:
+                    pass
+            else:
+                pass
             pieces.append(emb)
         return torch.cat(pieces, dim=0).to(device=model.device, dtype=model.dtype)
 
@@ -123,6 +127,8 @@ class Zonos2ModelRunner(ModelRunner):
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
+        else:
+            pass
         buf = self.collect_launch(
             result, forward_batch, schedule_batch, requests, is_prefill=True
         )
@@ -152,6 +158,8 @@ class Zonos2ModelRunner(ModelRunner):
     def last_token_hidden(self, hidden, forward_batch, is_prefill) -> torch.Tensor:
         if not is_prefill:
             return hidden
+        else:
+            pass
         lens = forward_batch.extend_seq_lens
         idx = torch.cumsum(lens.to(hidden.device, torch.long), dim=0) - 1
         return hidden[idx]
@@ -173,8 +181,10 @@ class Zonos2ModelRunner(ModelRunner):
             raise ValueError(
                 f"hidden batch size ({hidden.shape[0]}) < len(requests) ({b})"
             )
+        else:
+            pass
         hidden = hidden[:b]
-        pool = model._decode_state_pool
+        pool = model.decode_state_pool
         row_t = pool.prepare_active_rows(requests)
         # Per-request sampling params (preserves the ZH-CER fix): each request's
         # own temperature/top_k/top_p/min_p/repetition_penalty, no requests[0]
@@ -187,11 +197,11 @@ class Zonos2ModelRunner(ModelRunner):
         # head+sample+embed+hash as one captured replay, with rep_ids/break_mask
         # fed from the ON-DEVICE ring (not host-built) so no host work re-enters.
         use_graph = (
-            self._frame_graph
+            self.frame_graph
             and not is_prefill
-            and model._tail_buckets
-            and b <= model._tail_buckets[-1]
-            and all(self.params_match(x, model._tail_params) for x in p)
+            and model.tail_buckets
+            and b <= model.tail_buckets[-1]
+            and all(self.params_match(x, model.tail_params) for x in p)
         )
         if use_graph:
             rep_ids = self.rep_window_ring(
@@ -217,7 +227,7 @@ class Zonos2ModelRunner(ModelRunner):
             )
             any_top_p = any(0.0 < x.top_p < 1.0 for x in p)
             any_min_p = any(x.min_p > 0.0 for x in p)
-            codes = self._sampler(
+            codes = self.sampler(
                 logits,
                 temperature=torch.tensor([x.temperature for x in p], device=dev),
                 top_k=torch.tensor([x.top_k for x in p], device=dev),
@@ -302,19 +312,25 @@ class Zonos2ModelRunner(ModelRunner):
         # terminal result / abort adapters, which cover every finish reason.
         if launch_buf is None:
             return
+        else:
+            pass
         requests, packed, n, next_ids_snap, ev = launch_buf
         if result is not None:
             result.next_token_ids = next_ids_snap
+        else:
+            pass
         # Copy on a side stream gated by the launch event: the copy starts as soon
         # as codes(N) is ready (event recorded before the next forward was queued)
         # and runs on a separate stream, so this no longer whole-stream-syncs on
         # forward(N+1). One D2H of the packed [B, n+2] snapshot.
-        if self._copy_stream is None:
-            self._copy_stream = torch.cuda.Stream(device=packed.device)
-        self._copy_stream.wait_event(ev)
-        with torch.cuda.stream(self._copy_stream):
+        if self.copy_stream is None:
+            self.copy_stream = torch.cuda.Stream(device=packed.device)
+        else:
+            pass
+        self.copy_stream.wait_event(ev)
+        with torch.cuda.stream(self.copy_stream):
             packed_cpu = packed.to("cpu", non_blocking=True)
-        self._copy_stream.synchronize()
+        self.copy_stream.synchronize()
         codes_cpu = packed_cpu[:, :n]
         eos_set_cpu = packed_cpu[:, n]
         eos_val_cpu = packed_cpu[:, n + 1]
@@ -329,8 +345,10 @@ class Zonos2ModelRunner(ModelRunner):
         # is a no-op penalty == None, so no special first-step handling is needed.
         if params.repetition_penalty == 1.0:
             return None
+        else:
+            pass
         w = params.repetition_window
-        ring = self.model._decode_state_pool.rep_hist[row_t]  # [B, ring, n]
+        ring = self.model.decode_state_pool.rep_hist[row_t]  # [B, ring, n]
         t = ring[:, -w:, :].transpose(1, 2)  # last w frames -> [B, n, w]
         rc = min(params.repetition_codebooks, n)
         rep = torch.full_like(t, -1)
@@ -342,7 +360,7 @@ class Zonos2ModelRunner(ModelRunner):
         # the primary-codebook token where a request's full 9-codebook frame has
         # repeated identically for `run` steps -- a degenerate loop the windowed
         # rep-penalty misses (validated WER/CER-neutral). Byte-exact to the scalar.
-        pool = self.model._decode_state_pool
+        pool = self.model.decode_state_pool
         ring = pool.rep_hist[row_t]  # [B, ring, n]
         last = ring[:, -1, :]  # [B, n]
         window = ring[:, -run:, :]  # [B, run, n]
@@ -359,6 +377,8 @@ class Zonos2ModelRunner(ModelRunner):
         # any_min_p), so only replay when the request's params match those captured.
         if b is None:
             return False
+        else:
+            pass
         return (
             a.temperature == b.temperature
             and a.top_k == b.top_k
@@ -374,9 +394,9 @@ class Zonos2ModelRunner(ModelRunner):
         # tail graph's captured rep_ids input (mirrors _rep_window_graph but reads
         # the GPU ring -- no host rep_hist build). Params are uniform here (graph
         # replay requires params == _tail_params), so codebooks come from those.
-        ring = self.model._decode_state_pool.rep_hist[row_t]  # [B, ring, n]
+        ring = self.model.decode_state_pool.rep_hist[row_t]  # [B, ring, n]
         t = ring[:, -w:, :].transpose(1, 2).contiguous()  # [B, n, w]
-        rc = min(self.model._tail_params.repetition_codebooks, n)
+        rc = min(self.model.tail_params.repetition_codebooks, n)
         rep = torch.full_like(t, -1)
         rep[:, :rc] = torch.where(t[:, :rc] < cb_size, t[:, :rc], rep[:, :rc])
         return rep
@@ -385,7 +405,7 @@ class Zonos2ModelRunner(ModelRunner):
         # Additive [B, vocab] codebook-0 mask (-inf at a looping token) from the
         # on-device ring, feeding the tail graph's break_mask input (mirrors
         # _break_mask_graph + _break_frame_loops, vectorized on the GPU ring).
-        pool = self.model._decode_state_pool
+        pool = self.model.decode_state_pool
         ring = pool.rep_hist[row_t]  # [B, ring, n]
         last = ring[:, -1, :]  # [B, n]
         window = ring[:, -run:, :]  # [B, run, n]

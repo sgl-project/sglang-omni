@@ -23,9 +23,9 @@ class RotaryEmbedding:
     def __init__(self, dim: int, theta: float = 10000.0):
         self.dim = dim
         self.theta = theta
-        self._cos: Optional[mx.array] = None
-        self._sin: Optional[mx.array] = None
-        self._cached_len = 0
+        self.cos: Optional[mx.array] = None
+        self.sin: Optional[mx.array] = None
+        self.cached_len = 0
 
     def build(self, seq_len: int):
         inv_freq = 1.0 / (
@@ -34,15 +34,17 @@ class RotaryEmbedding:
         t = mx.arange(seq_len).astype(mx.float32)
         freqs = mx.outer(t, inv_freq)
         freqs = mx.repeat(freqs, 2, axis=-1)
-        self._cos = mx.cos(freqs)
-        self._sin = mx.sin(freqs)
-        mx.eval(self._cos, self._sin)
-        self._cached_len = seq_len
+        self.cos = mx.cos(freqs)
+        self.sin = mx.sin(freqs)
+        mx.eval(self.cos, self.sin)
+        self.cached_len = seq_len
 
     def forward_from_seq_len(self, seq_len: int):
-        if self._cos is None or seq_len > self._cached_len:
+        if self.cos is None or seq_len > self.cached_len:
             self.build(seq_len)
-        return self._cos[:seq_len], self._sin[:seq_len]
+        else:
+            pass
+        return self.cos[:seq_len], self.sin[:seq_len]
 
 
 def rotate_half(x: mx.array) -> mx.array:
@@ -104,12 +106,16 @@ class CausalConvPositionEmbedding(nn.Module):
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
         if mask is not None:
             x = mx.where(mask[..., None], x, 0.0)
+        else:
+            pass
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         x = nn.mish(self.conv1(x))
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         x = nn.mish(self.conv2(x))
         if mask is not None:
             x = mx.where(mask[..., None], x, 0.0)
+        else:
+            pass
         return x
 
 
@@ -207,6 +213,8 @@ class Attention(nn.Module):
             cos, sin = rope
             q = apply_rotary_pos_emb(q, cos, sin)
             k = apply_rotary_pos_emb(k, cos, sin)
+        else:
+            pass
 
         q = q.reshape(B, N, self.heads, head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(B, N, self.heads, head_dim).transpose(0, 2, 1, 3)
@@ -217,11 +225,15 @@ class Attention(nn.Module):
         if mask is not None:
             if mask.ndim == 3:
                 mask = mask[:, None]
+            else:
+                pass
             additive_mask = mx.where(
                 mask,
                 mx.zeros(mask.shape, dtype=q.dtype),
                 mx.full(mask.shape, -float("inf"), dtype=q.dtype),
             )
+        else:
+            pass
         out = mx.fast.scaled_dot_product_attention(
             q,
             k,
@@ -279,6 +291,8 @@ class InputEmbedding(nn.Module):
                 spks[:, None, :], (x.shape[0], x.shape[1], spks.shape[-1])
             )
             to_cat.append(spks)
+        else:
+            pass
         x = self.proj(mx.concatenate(to_cat, axis=-1))
         x = self.conv_pos_embed(x) + x
         return x
@@ -303,6 +317,8 @@ class DiT(nn.Module):
         super().__init__()
         if mu_dim is None:
             mu_dim = mel_dim
+        else:
+            pass
         self.out_channels = out_channels
         self.dim = dim
         self.depth = depth
@@ -339,6 +355,8 @@ class DiT(nn.Module):
         B, N = x.shape[0], x.shape[1]
         if t.ndim == 0:
             t = mx.broadcast_to(t, (B,))
+        else:
+            pass
 
         t = self.time_embed(t)
         x = self.input_embed(x, cond, mu, spks)
@@ -356,6 +374,8 @@ class DiT(nn.Module):
 
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(mx.concatenate([x, residual], axis=-1))
+        else:
+            pass
 
         x = self.norm_out(x, t)
         out = self.proj_out(x)

@@ -107,34 +107,50 @@ def project_encoder_input_metadata(
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
+        else:
+            pass
         metadata: dict[str, Any] = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             metadata["cache_key"] = cache_key
+        else:
+            pass
         if stage_inputs.get("_skip"):
             metadata["_skip"] = True
+        else:
+            pass
         if metadata:
             projected[stage_name] = metadata
+        else:
+            pass
     return projected
 
 
 def project_prompt_for_usage(prompt: Any) -> dict[str, Any] | None:
     if not isinstance(prompt, dict):
         return None
+    else:
+        pass
     input_ids = prompt.get("input_ids")
     if input_ids is None:
         return None
+    else:
+        pass
     return {"input_ids": copy_mutable_containers(input_ids)}
 
 
 def slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
     if not isinstance(thinker_out, dict):
         return None
+    else:
+        pass
 
     projected = {}
     for key in ("output_ids", "step", "is_final", "finish_reason"):
         if key in thinker_out:
             projected[key] = copy_mutable_containers(thinker_out[key])
+        else:
+            pass
 
     projected["extra_model_outputs"] = {}
     return projected
@@ -143,14 +159,24 @@ def slim_thinker_out(thinker_out: Any) -> dict[str, Any] | None:
 def copy_mutable_containers(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: copy_mutable_containers(item) for key, item in value.items()}
+    else:
+        pass
     if isinstance(value, list):
         return [copy_mutable_containers(item) for item in value]
+    else:
+        pass
     if isinstance(value, tuple):
         return tuple(copy_mutable_containers(item) for item in value)
+    else:
+        pass
     if isinstance(value, set):
         return {copy_mutable_containers(item) for item in value}
+    else:
+        pass
     if isinstance(value, bytearray):
         return bytearray(value)
+    else:
+        pass
     return value
 
 
@@ -159,6 +185,8 @@ def single_encoder_stage_name(state: MingOmniPipelineState) -> str:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
         )
+    else:
+        pass
     return next(iter(state.encoder_outs))
 
 
@@ -364,9 +392,13 @@ def create_talker_executor(
         nonlocal started
         if not executor.should_generate_audio(payload):
             return executor.build_empty_audio_result(payload)
+        else:
+            pass
         if not started:
             await executor.start()
             started = True
+        else:
+            pass
         await executor.add_request(payload)
         return await executor.get_result()
 

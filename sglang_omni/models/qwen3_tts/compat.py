@@ -32,6 +32,8 @@ def compute_default_rope_parameters(
     head_dim = getattr(config, "head_dim", None)
     if head_dim is None:
         head_dim = config.hidden_size // config.num_attention_heads
+    else:
+        pass
     dim = int(head_dim * partial_rotary_factor)
     inv_freq = 1.0 / (
         base
@@ -51,6 +53,8 @@ def make_mask_factory_compat(
     def mask_factory_compat(*args: Any, **kwargs: Any) -> Any:
         if "input_embeds" in kwargs:
             kwargs.setdefault("inputs_embeds", kwargs.pop("input_embeds"))
+        else:
+            pass
         kwargs.pop("cache_position", None)
         return original(*args, **kwargs)
 
@@ -68,6 +72,8 @@ def patch_mask_factories() -> None:
         original = getattr(masking_utils, name, None)
         if original is None or getattr(original, _PATCHED_FLAG, False):
             continue
+        else:
+            pass
 
         try:
             parameters = inspect.signature(original).parameters
@@ -76,6 +82,8 @@ def patch_mask_factories() -> None:
 
         if "inputs_embeds" not in parameters or "input_embeds" in parameters:
             continue
+        else:
+            pass
 
         setattr(masking_utils, name, make_mask_factory_compat(original, name))
 
@@ -92,6 +100,8 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
         current = generic.check_model_inputs
         if getattr(current, _PATCHED_FLAG, False):
             return
+        else:
+            pass
 
         try:
             signature = inspect.signature(current)
@@ -110,6 +120,8 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
         )
         if not needs_func_arg:
             return
+        else:
+            pass
 
         original = current
 
@@ -122,6 +134,8 @@ def apply_qwen_tts_transformers_compatibility_patches() -> None:
                     return original(inner)
 
                 return decorator
+            else:
+                pass
             return original(func)
 
         check_model_inputs_compat.__name__ = getattr(

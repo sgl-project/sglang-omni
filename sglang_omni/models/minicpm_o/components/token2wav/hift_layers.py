@@ -21,6 +21,8 @@ def init_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
         m.weight.data.normal_(mean, std)
+    else:
+        pass
 
 
 class Snake(nn.Module):
@@ -46,6 +48,8 @@ class Snake(nn.Module):
         alpha = self.alpha.unsqueeze(0).unsqueeze(-1)
         if self.alpha_logscale:
             alpha = torch.exp(alpha)
+        else:
+            pass
         x = x + 1.0 / (alpha + self.no_div_by_zero) * torch.pow(torch.sin(x * alpha), 2)
         return x
 

@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
     from sglang_omni.scheduling.types import SchedulerRequest
+else:
+    pass
 
 # note (MayDomine): the checkpoint penalizes only the most recent 16 codec tokens.
 REP_PENALTY_WINDOW = 16
@@ -42,12 +44,16 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 raise RuntimeError(
                     "MiniCPM-o talker prefill requires condition embeddings"
                 )
+            else:
+                pass
             req = data.req
             prefix_len = len(req.prefix_indices)
             end = prefix_len + int(req.extend_range.length)
             prompt_len = int(tensor.shape[0])
             if prefix_len < prompt_len:
                 parts.append(tensor[prefix_len : min(end, prompt_len)])
+            else:
+                pass
             if end > prompt_len:
                 # note (MayDomine): retracted requests replay already-generated tokens.
                 fill_ids = req.get_fill_ids()
@@ -57,6 +63,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                     device=self.model.emb_code.weight.device,
                 )
                 parts.append(self.model.emb_code(generated))
+            else:
+                pass
         input_embeds = torch.cat(parts, dim=0).to(
             device=forward_batch.input_ids.device,
             dtype=self.model.emb_code.weight.dtype,
@@ -67,6 +75,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
                 "Talker prefill embeds must align with forward input_ids: "
                 f"got {input_embeds.shape[0]} rows for {expected_rows} input ids"
             )
+        else:
+            pass
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
@@ -81,6 +91,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        else:
+            pass
         vocab = logits.shape[1]
         device = logits.device
         penalized_rows: list[int] = []
@@ -91,6 +103,8 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             penalty = float(data.talker_model_inputs.get("rep_penalty", 1.0))
             if penalty == 1.0:
                 continue
+            else:
+                pass
             window = [
                 tok
                 for tok in map(int, data.req.output_ids[-REP_PENALTY_WINDOW:])
@@ -98,11 +112,15 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             ]
             if not window:
                 continue
+            else:
+                pass
             penalized_rows.append(row_idx)
             penalties.append(penalty)
             windows.append(window)
         if not penalized_rows:
             return
+        else:
+            pass
         # note (MayDomine): a dummy vocabulary bin excludes ragged-window padding.
         num = len(windows)
         window_ids = torch.full((num, REP_PENALTY_WINDOW), vocab, dtype=torch.long)

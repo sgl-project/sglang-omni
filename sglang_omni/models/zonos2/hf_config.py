@@ -149,8 +149,12 @@ def resolve_params_json(model_path: str) -> str:
     local = os.path.join(model_path, "params.json")
     if os.path.isfile(local):
         return local
+    else:
+        pass
     if os.path.isfile(model_path) and model_path.endswith(".json"):
         return model_path
+    else:
+        pass
     from huggingface_hub import hf_hub_download
 
     return hf_hub_download(repo_id=model_path, filename="params.json")

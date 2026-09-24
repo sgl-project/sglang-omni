@@ -92,14 +92,14 @@ def test_native_mlx_rejects_unknown_quantization() -> None:
 
 def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._cosyvoice3_prompt_lengths = {"req": 2}
-    runner._cosyvoice3_min_lengths = {"req": 4}
-    runner._cosyvoice3_repetition_penalties = {"req": 2.0}
-    runner._cosyvoice3_recent_tokens = {"req": []}
+    runner.cosyvoice3_prompt_lengths = {"req": 2}
+    runner.cosyvoice3_min_lengths = {"req": 4}
+    runner.cosyvoice3_repetition_penalties = {"req": 2.0}
+    runner.cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
-    runner._cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
+    runner.cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=5)
-    runner._req_token_ids = {"req": [0, 0, 5, 5, 6]}
+    runner._req_token_ids = {"req": [0, 0, 5, 5, 6]}  # noqa: leading-underscore
 
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)
     raw_logits[0, 5] = 4.0
@@ -119,12 +119,12 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
 
 def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._cosyvoice3_prompt_lengths = {"req": 2}
-    runner._cosyvoice3_min_lengths = {"req": 0}
-    runner._cosyvoice3_repetition_penalties = {"req": 2.0}
-    runner._cosyvoice3_recent_tokens = {"req": []}
+    runner.cosyvoice3_prompt_lengths = {"req": 2}
+    runner.cosyvoice3_min_lengths = {"req": 0}
+    runner.cosyvoice3_repetition_penalties = {"req": 2.0}
+    runner.cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
-    runner._cosyvoice3_seen_masks = {"req": speech_ids == 5}
+    runner.cosyvoice3_seen_masks = {"req": speech_ids == 5}
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=4)
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)
     raw_logits[0, 5] = 4.0
@@ -144,7 +144,7 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
 
 def test_runner_tracks_recent_history_for_ras() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._cosyvoice3_recent_tokens = {"req": [29, 28, 29]}
+    runner.cosyvoice3_recent_tokens = {"req": [29, 28, 29]}
     mask = runner.recent_token_masks(["req"], None)
     mx.eval(mask)
     assert mask.shape == (1, SPEECH_TOKEN_SIZE)
@@ -155,15 +155,15 @@ def test_runner_tracks_recent_history_for_ras() -> None:
 
 def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._enable_sampling = True
-    runner._req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=1.0, top_k=20, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner._rng_key = mx.random.key(0)
-    runner._cosyvoice3_recent_tokens = {"req": [5]}
-    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
+    runner.cosyvoice3_recent_tokens = {"req": [5]}
+    runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
     runner._edited_logits = lambda logits, edit_rows: logits
 
@@ -178,15 +178,15 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
 
 def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._enable_sampling = True
-    runner._req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=0.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner._rng_key = mx.random.key(0)
-    runner._cosyvoice3_recent_tokens = {"req": [5]}
-    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
+    runner.cosyvoice3_recent_tokens = {"req": [5]}
+    runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
     runner._edited_logits = lambda logits, edit_rows: logits
 
@@ -201,15 +201,15 @@ def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
 
 def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._enable_sampling = True
-    runner._req_sampling = {
+    runner._enable_sampling = True  # noqa: leading-underscore
+    runner._req_sampling = {  # noqa: leading-underscore
         "req": MlxSamplingParams(
             temperature=1.0, top_k=1, top_p=1.0, min_p=0.0, seed=None
         )
     }
-    runner._rng_key = mx.random.key(0)
-    runner._cosyvoice3_recent_tokens = {"req": [5]}
-    runner._cosyvoice3_sampling_pending_tokens = None
+    runner._rng_key = mx.random.key(0)  # noqa: leading-underscore
+    runner.cosyvoice3_recent_tokens = {"req": [5]}
+    runner.cosyvoice3_sampling_pending_tokens = None
     runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
     runner._edited_logits = lambda logits, edit_rows: logits
 
@@ -236,7 +236,7 @@ def test_runner_resolves_omni_sampling_seed(
     expected: int | None,
 ) -> None:
     runner = object.__new__(FunCosyVoice3MlxModelRunner)
-    runner._deterministic_seeding = deterministic
+    runner._deterministic_seeding = deterministic  # noqa: leading-underscore
     req = SimpleNamespace(
         sampling_params=SimpleNamespace(
             temperature=0.7,
@@ -269,12 +269,12 @@ def test_runner_remove_and_clear_drop_cosyvoice_metadata() -> None:
 
     runner = _Runner()
     for metadata in (
-        runner._cosyvoice3_prompt_lengths,
-        runner._cosyvoice3_min_lengths,
-        runner._cosyvoice3_repetition_penalties,
+        runner.cosyvoice3_prompt_lengths,
+        runner.cosyvoice3_min_lengths,
+        runner.cosyvoice3_repetition_penalties,
     ):
         metadata.update(remove=1, keep=2)
-    runner._cosyvoice3_seen_masks.update(
+    runner.cosyvoice3_seen_masks.update(
         remove=mx.zeros((SPEECH_TOKEN_SIZE,), dtype=mx.bool_),
         keep=mx.zeros((SPEECH_TOKEN_SIZE,), dtype=mx.bool_),
     )
@@ -283,17 +283,17 @@ def test_runner_remove_and_clear_drop_cosyvoice_metadata() -> None:
 
     assert runner.removed == ["remove"]
     for metadata in (
-        runner._cosyvoice3_prompt_lengths,
-        runner._cosyvoice3_min_lengths,
-        runner._cosyvoice3_repetition_penalties,
+        runner.cosyvoice3_prompt_lengths,
+        runner.cosyvoice3_min_lengths,
+        runner.cosyvoice3_repetition_penalties,
     ):
         assert metadata == {"keep": 2}
-    assert set(runner._cosyvoice3_seen_masks) == {"keep"}
+    assert set(runner.cosyvoice3_seen_masks) == {"keep"}
 
     runner.clear()
 
     assert runner.base_cleared is True
-    assert runner._cosyvoice3_prompt_lengths == {}
-    assert runner._cosyvoice3_min_lengths == {}
-    assert runner._cosyvoice3_repetition_penalties == {}
-    assert runner._cosyvoice3_seen_masks == {}
+    assert runner.cosyvoice3_prompt_lengths == {}
+    assert runner.cosyvoice3_min_lengths == {}
+    assert runner.cosyvoice3_repetition_penalties == {}
+    assert runner.cosyvoice3_seen_masks == {}

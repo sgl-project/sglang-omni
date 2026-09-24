@@ -50,7 +50,7 @@ async def test_interleaved_cadences_input_during_output_eos_and_disconnect(linea
     await output_a.aclose()
     await output_b.aclose()
     assert not coordinator.sessions
-    assert not coordinator._requests
+    assert not coordinator.requests
 
 
 @pytest.mark.asyncio

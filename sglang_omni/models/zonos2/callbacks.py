@@ -34,15 +34,19 @@ def write_zonos2_buffers(
     n_real = len(requests)
     if n_real == 0:
         return
+    else:
+        pass
     bs = int(forward_batch.batch_size)
     if bs < n_real:
         raise ValueError(f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})")
-    buf = runner.model._decode_input_embedding.weight
+    else:
+        pass
+    buf = runner.model.decode_input_embedding.weight
     # note (Yue Yin): gather each request's last feedback from its on-device
     # pool row into the positional decode buffer (buf[i] = request i), instead
     # of a per-request Python deque. Byte-identical: the deque held exactly the
     # latest feedback the pool row now holds. Reconcile-release finished rows.
-    pool = runner.model._decode_state_pool
+    pool = runner.model.decode_state_pool
     pool.release_inactive({sr.request_id for sr in requests})
     row_t = pool.prepare_active_rows(requests)
     with torch.no_grad():
@@ -63,14 +67,18 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
     # the async_decode D2H overlap. Same rows in the same order reach the OLA
     # decoder, so the audio is unchanged — only the message grouping differs.
     del result, outputs
-    if runner._outbox is None:
+    if runner.outbox is None:
         return
-    chunk = runner._stream_emit_chunk_frames
+    else:
+        pass
+    chunk = runner.stream_emit_chunk_frames
     for sched_req in scheduler_output.requests:
         data = sched_req.data
         stream_metadata = getattr(data, "stream_metadata", None)
         if stream_metadata is None:
             continue
+        else:
+            pass
         done = False
         req = getattr(data, "req", None)
         if req is not None:
@@ -78,18 +86,26 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
             done = (callable(finished) and finished()) or bool(
                 getattr(req, "is_retracted", False)
             )
+        else:
+            pass
         codes = data.output_codes
-        start = int(data._stream_emit_idx)
+        start = int(
+            data._stream_emit_idx
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         n_new = len(codes) - start
         if n_new <= 0:
             continue
+        else:
+            pass
         if chunk == 1:
             # Legacy per-frame path (byte-identical default): one put per row;
             # a finishing step's tail is left to the on_stream_done flush.
             if done:
                 continue
+            else:
+                pass
             for row in codes[start:]:
-                runner._outbox.put(
+                runner.outbox.put(
                     OutgoingMessage(
                         request_id=sched_req.request_id,
                         type="stream",
@@ -98,14 +114,18 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
                         metadata=stream_metadata,
                     )
                 )
-            data._stream_emit_idx = len(codes)
+            data._stream_emit_idx = len(
+                codes
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             continue
+        else:
+            pass
         # Coalesced path: hold rows until >= threshold have accumulated, but
         # always flush the remainder on finish so the OLA decoder receives every
         # row (on_stream_done's eos_frame cap trims the tail to the aligned
         # length). Adaptive: the FIRST chunk uses a smaller threshold so the
         # first audio is produced sooner (lower TTFC); steady chunks use `chunk`.
-        first = runner._stream_emit_first_chunk_frames
+        first = runner.stream_emit_first_chunk_frames
         if start == 0 and INITIAL_CODEC_CHUNK_FRAMES_PARAM in stream_metadata:
             threshold = zonos2_producer_first_flush_rows(
                 stream_metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM]
@@ -114,8 +134,10 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
             threshold = first if (first > 0 and start == 0) else chunk
         if not done and n_new < threshold:
             continue
+        else:
+            pass
         rows = torch.stack(list(codes[start:]), dim=0)
-        runner._outbox.put(
+        runner.outbox.put(
             OutgoingMessage(
                 request_id=sched_req.request_id,
                 type="stream",
@@ -124,7 +146,9 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
                 metadata=stream_metadata,
             )
         )
-        data._stream_emit_idx = len(codes)
+        data._stream_emit_idx = len(
+            codes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 def zonos2_prefill_forward(runner, forward_batch, schedule_batch, requests):

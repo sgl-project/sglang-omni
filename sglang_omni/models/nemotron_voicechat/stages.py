@@ -61,6 +61,8 @@ def create_preprocessing_executor(model_path: str, **_):
         remainder = waveform.shape[-1] % SAMPLES_PER_FRAME
         if remainder:
             waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
+        else:
+            pass
 
         state = NemotronVoiceChatState.from_dict(payload.data)
         state.waveform = waveform

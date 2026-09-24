@@ -114,7 +114,7 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
         conditioning=torch.zeros(6, 16),
         text_mask=torch.ones(6, dtype=torch.bool),
     )
-    scheduler._fn(
+    scheduler.fn(
         StagePayload(
             request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
         )
@@ -170,7 +170,7 @@ def test_backbone_dtype_is_chosen_when_the_flow_is_loaded(stages, monkeypatch):
         scheduler = create_auk_engine_executor(
             "stub", device="cpu", dtype="bfloat16", weight_dtype=weight_dtype
         )
-        scheduler._fn(
+        scheduler.fn(
             StagePayload(
                 request_id="test",
                 request=OmniRequest(inputs="hello"),
@@ -229,7 +229,7 @@ def test_the_step_graph_is_skipped_where_the_platform_records_none(stages, monke
     scheduler = create_auk_engine_executor(
         "stub", device="cpu", enable_dit_cuda_graph=True
     )
-    scheduler._fn(engine_payload())
+    scheduler.fn(engine_payload())
     assert "step_graph" not in flow.sample_batch.call_args.kwargs
 
 

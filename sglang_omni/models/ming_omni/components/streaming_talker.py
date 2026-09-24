@@ -69,26 +69,30 @@ class MingStreamingTalkerScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
-        self._model_path = model_path
-        self._device = device
-        self._voice = voice
-        self._talker = talker
-        self._audio_detokenizer = audio_detokenizer
-        self._sample_rate = sample_rate
+        self.model_path = model_path
+        self.device = device
+        self.voice = voice
+        self.talker = talker
+        self.audio_detokenizer = audio_detokenizer
+        self.sample_rate = sample_rate
 
-        self._running = False
-        self._states: dict[str, RequestState] = {}
-        self._states_lock = threading.Lock()
+        self.running = False
+        self.states: dict[str, RequestState] = {}
+        self.states_lock = threading.Lock()
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        self._running = True
-        if self._talker is None:
+        self.running = True
+        if self.talker is None:
             self.load_models()
-        if self._sample_rate is None:
-            self._sample_rate = self.resolve_sample_rate()
+        else:
+            pass
+        if self.sample_rate is None:
+            self.sample_rate = self.resolve_sample_rate()
+        else:
+            pass
 
-        while self._running:
+        while self.running:
             try:
                 msg = self.inbox.get(timeout=0.1)
             except _queue_mod.Empty:
@@ -107,18 +111,20 @@ class MingStreamingTalkerScheduler:
                 self.discard_state(msg.request_id)
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
         # Signal abort on every still-active request so any in-flight talker
         # generation unwinds in time.
-        with self._states_lock:
-            for state in self._states.values():
+        with self.states_lock:
+            for state in self.states.values():
                 state.abort_event.set()
 
     def abort(self, request_id: str) -> None:
-        with self._states_lock:
-            state = self._states.get(request_id)
+        with self.states_lock:
+            state = self.states.get(request_id)
             if state is None:
                 return
+            else:
+                pass
             state.aborted = True
             state.abort_event.set()
 
@@ -136,29 +142,39 @@ class MingStreamingTalkerScheduler:
     # ------------------------------------------------------------------ handlers
     def on_new_request(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
-        with self._states_lock:
-            state = self._states.get(request_id)
+        with self.states_lock:
+            state = self.states.get(request_id)
             if state is None:
                 state = RequestState()
-                self._states[request_id] = state
+                self.states[request_id] = state
+            else:
+                pass
             state.payload = msg.data
             state.payload_arrived = True
             should_finalize = state.stream_done and not state.finalized
         if should_finalize:
             self.finalize(request_id)
+        else:
+            pass
 
     def on_stream_chunk(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
         item = msg.data
         if not isinstance(item, StreamItem):
             return
-        with self._states_lock:
-            state = self._states.get(request_id)
+        else:
+            pass
+        with self.states_lock:
+            state = self.states.get(request_id)
             if state is None:
                 state = RequestState()
-                self._states[request_id] = state
+                self.states[request_id] = state
+            else:
+                pass
             if state.aborted or state.finalized:
                 return
+            else:
+                pass
 
         metadata = dict(item.metadata or {})
         is_final_segment = bool(metadata.get("is_final_segment", False))
@@ -171,6 +187,8 @@ class MingStreamingTalkerScheduler:
                 segment_id=int(metadata.get("segment_id", state.segment_count)),
             )
             state.segment_count += 1
+        else:
+            pass
         # is_final_segment is informational; we still wait for stream_done
         # to finalize the result payload.
         if is_final_segment:
@@ -179,17 +197,23 @@ class MingStreamingTalkerScheduler:
                 request_id,
                 state.segment_count,
             )
+        else:
+            pass
 
     def on_stream_done(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
-        with self._states_lock:
-            state = self._states.get(request_id)
+        with self.states_lock:
+            state = self.states.get(request_id)
             if state is None:
                 return
+            else:
+                pass
             state.stream_done = True
             should_finalize = state.payload_arrived and not state.finalized
         if should_finalize:
             self.finalize(request_id)
+        else:
+            pass
 
     # ------------------------------------------------------------------ generation
     def generate_audio_for_segment(
@@ -200,21 +224,29 @@ class MingStreamingTalkerScheduler:
         text: str,
         segment_id: int,
     ) -> None:
-        if self._talker is None:
+        if self.talker is None:
             raise RuntimeError("Talker model not loaded")
+        else:
+            pass
         t_start = time.perf_counter()
         generator = self.build_generation_iterator(text, state.abort_event)
         try:
             for item in generator:
                 if state.abort_event.is_set():
                     break
+                else:
+                    pass
                 waveform = self.extract_waveform(item)
                 if waveform is None or self.waveform_numel(waveform) == 0:
                     continue
+                else:
+                    pass
                 if state.first_audio_emit_ms is None:
                     state.first_audio_emit_ms = (
                         time.perf_counter() - state.request_t_start_s
                     ) * 1000.0
+                else:
+                    pass
                 self.emit_audio_chunk(
                     request_id, state, waveform, segment_id=segment_id
                 )
@@ -226,6 +258,8 @@ class MingStreamingTalkerScheduler:
                     "[TALKER_STREAM] segment %d aborted for %s", segment_id, request_id
                 )
                 return
+            else:
+                pass
             raise
         finally:
             logger.debug(
@@ -236,22 +270,26 @@ class MingStreamingTalkerScheduler:
             )
 
     def build_generation_iterator(self, text: str, abort_event: threading.Event) -> Any:
-        if hasattr(self._talker, "omni_audio_generation"):
-            return self._talker.omni_audio_generation(
+        if hasattr(self.talker, "omni_audio_generation"):
+            return self.talker.omni_audio_generation(
                 tts_text=text,
-                voice_name=self._voice,
-                audio_detokenizer=self._audio_detokenizer,
+                voice_name=self.voice,
+                audio_detokenizer=self.audio_detokenizer,
                 stream=True,
                 abort_event=abort_event,
             )
-        if hasattr(self._talker, "instruct_audio_generation"):
-            return self._talker.instruct_audio_generation(
+        else:
+            pass
+        if hasattr(self.talker, "instruct_audio_generation"):
+            return self.talker.instruct_audio_generation(
                 prompt="Please generate speech based on the following description.\n",
                 text=text,
-                audio_detokenizer=self._audio_detokenizer,
+                audio_detokenizer=self.audio_detokenizer,
                 stream=True,
                 abort_event=abort_event,
             )
+        else:
+            pass
         raise RuntimeError("Talker has no streaming generation method")
 
     # ------------------------------------------------------------------ outbox
@@ -275,6 +313,8 @@ class MingStreamingTalkerScheduler:
         }
         if state.first_audio_emit_ms is not None:
             payload["talker_first_audio_ms"] = state.first_audio_emit_ms
+        else:
+            pass
         state.audio_chunk_count += 1
         self.outbox.put(
             OutgoingMessage(
@@ -287,10 +327,12 @@ class MingStreamingTalkerScheduler:
         )
 
     def finalize(self, request_id: str) -> None:
-        with self._states_lock:
-            state = self._states.get(request_id)
+        with self.states_lock:
+            state = self.states.get(request_id)
             if state is None or state.finalized:
                 return
+            else:
+                pass
             state.finalized = True
 
         # Build the final result payload as a fresh small dict — do not
@@ -301,6 +343,8 @@ class MingStreamingTalkerScheduler:
         payload = state.payload
         if payload is None:
             payload = StagePayload(request_id=request_id, request=None, data={})
+        else:
+            pass
         payload.data = {
             "modality": "audio",
             "audio_chunk_count": state.audio_chunk_count,
@@ -314,24 +358,32 @@ class MingStreamingTalkerScheduler:
         self.discard_state(request_id)
 
     def discard_state(self, request_id: str) -> None:
-        with self._states_lock:
-            self._states.pop(request_id, None)
+        with self.states_lock:
+            self.states.pop(request_id, None)
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
     def extract_waveform(item: Any) -> Any | None:
         if isinstance(item, tuple):
             return item[0] if item else None
+        else:
+            pass
         return item
 
     @staticmethod
     def waveform_numel(waveform: Any) -> int:
         if isinstance(waveform, torch.Tensor):
             return int(waveform.numel())
+        else:
+            pass
         if isinstance(waveform, np.ndarray):
             return int(waveform.size)
+        else:
+            pass
         if isinstance(waveform, (bytes, bytearray, memoryview)):
             return len(waveform)
+        else:
+            pass
         return int(np.asarray(waveform).size)
 
     @staticmethod
@@ -349,24 +401,32 @@ class MingStreamingTalkerScheduler:
         return array.tobytes(), list(array.shape), str(array.dtype)
 
     def resolve_sample_rate(self) -> int:
-        if self._sample_rate is not None:
-            return int(self._sample_rate)
-        for owner in (self._audio_detokenizer, self._talker):
+        if self.sample_rate is not None:
+            return int(self.sample_rate)
+        else:
+            pass
+        for owner in (self.audio_detokenizer, self.talker):
             sr = self.sample_rate_from(owner)
             if sr is not None:
-                self._sample_rate = sr
+                self.sample_rate = sr
                 return sr
-        self._sample_rate = DEFAULT_SAMPLE_RATE
-        return self._sample_rate
+            else:
+                pass
+        self.sample_rate = DEFAULT_SAMPLE_RATE
+        return self.sample_rate
 
     @staticmethod
     def sample_rate_from(owner: Any) -> int | None:
         if owner is None:
             return None
+        else:
+            pass
         config = getattr(owner, "config", None)
         sr = getattr(config, "sample_rate", None)
         if sr is None:
             sr = getattr(owner, "sample_rate", None)
+        else:
+            pass
         return int(sr) if sr is not None else None
 
     def validate_voice_presets(
@@ -377,12 +437,14 @@ class MingStreamingTalkerScheduler:
         Mutates ``voice_dict`` in place so each entry's ``prompt_wav_path``
         becomes an absolute path on disk.
         """
-        if self._voice is not None and self._voice not in voice_dict:
+        if self.voice is not None and self.voice not in voice_dict:
             raise ValueError(
-                f"[TALKER_STREAM] default voice {self._voice!r} not found in "
+                f"[TALKER_STREAM] default voice {self.voice!r} not found in "
                 f"{manifest_path}; available presets: "
                 f"{sorted(voice_dict.keys())}"
             )
+        else:
+            pass
         for name, entry in voice_dict.items():
             rel_path = entry.get("prompt_wav_path")
             if rel_path is None:
@@ -390,20 +452,26 @@ class MingStreamingTalkerScheduler:
                     f"[TALKER_STREAM] voice preset {name!r} in "
                     f"{manifest_path} is missing prompt_wav_path"
                 )
+            else:
+                pass
             resolved = os.path.join(talker_dir, rel_path)
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(
                     f"[TALKER_STREAM] voice preset {name!r} references "
                     f"missing prompt wav {resolved}"
                 )
+            else:
+                pass
             entry["prompt_wav_path"] = resolved
 
     # ------------------------------------------------------------------ model load
     def load_models(self) -> None:
-        if self._model_path is None:
+        if self.model_path is None:
             raise RuntimeError(
                 "MingStreamingTalkerScheduler needs model_path to load talker"
             )
+        else:
+            pass
         from transformers import AutoTokenizer
 
         from sglang_omni.models.ming_omni.talker import (
@@ -417,20 +485,22 @@ class MingStreamingTalkerScheduler:
         from sglang_omni.models.weight_loader import load_weights_by_prefix
 
         t_start = time.perf_counter()
-        talker_dir = str(Path(self._model_path) / "talker")
+        talker_dir = str(Path(self.model_path) / "talker")
         logger.info(
             "[TALKER_STREAM] loading talker from %s device=%s",
             talker_dir,
-            self._device,
+            self.device,
         )
         config = MingOmniTalkerConfig.from_pretrained_dir(talker_dir)
-        if torch.device(self._device).type == "npu":
+        if torch.device(self.device).type == "npu":
             config.use_torch_attention()
+        else:
+            pass
         talker = MingOmniTalker(config)
         talker.eval()
         weights = load_weights_by_prefix(talker_dir, prefix="")
         talker.load_weights(weights.items())
-        talker.to(device=self._device, dtype=torch.bfloat16)
+        talker.to(device=self.device, dtype=torch.bfloat16)
         talker.set_tokenizer(
             AutoTokenizer.from_pretrained(str(Path(talker_dir) / "llm"))
         )
@@ -441,10 +511,10 @@ class MingStreamingTalkerScheduler:
                 voice_dict = json.load(f)
             self.validate_voice_presets(voice_dict, voice_json, talker_dir)
             talker.set_voice_presets(voice_dict)
-        elif self._voice is not None:
+        elif self.voice is not None:
             raise FileNotFoundError(
                 f"[TALKER_STREAM] voice_name.json not found at {voice_json}; "
-                f"default voice {self._voice!r} cannot be resolved"
+                f"default voice {self.voice!r} cannot be resolved"
             )
         else:
             logger.info(
@@ -468,15 +538,15 @@ class MingStreamingTalkerScheduler:
         vae = None
         if Path(vae_dir).exists():
             vae = AudioVAE.from_pretrained(vae_dir, dtype=torch.bfloat16)
-            vae.to(self._device)
+            vae.to(self.device)
             vae.eval()
         else:
             logger.warning("[TALKER_STREAM] AudioVAE missing at %s", vae_dir)
 
         logger.info("[TALKER_STREAM] initializing device graphs")
         talker.initial_graph()
-        self._talker = talker
-        self._audio_detokenizer = vae
+        self.talker = talker
+        self.audio_detokenizer = vae
         logger.info(
             "[TALKER_STREAM] talker loaded in %.2fs",
             time.perf_counter() - t_start,

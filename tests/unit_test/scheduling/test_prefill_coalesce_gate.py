@@ -56,10 +56,10 @@ class _StubScheduler:
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
-        self._request_admission_lock = threading.RLock()
-        self._pending_request_builds: dict = {}
-        self._pending_request_admissions: dict = {}
-        self._backlogged_request_build_payloads: list = []
+        self.request_admission_lock = threading.RLock()
+        self.pending_request_builds: dict = {}
+        self.pending_request_admissions: dict = {}
+        self.backlogged_request_build_payloads: list = []
 
     def get_new_batch_prefill(self):
         # Upstream takes running_batch in and hands back a NextBatchPlan;
@@ -187,9 +187,9 @@ def test_pending_build_work_holds_small_prefill(upstream, clock, source):
     sched.running_batch = None
     sched.waiting_queue = [_req(100.0)]
     if source == "pending":
-        sched._pending_request_builds["building"] = object()
+        sched.pending_request_builds["building"] = object()
     else:
-        sched._backlogged_request_build_payloads.append(object())
+        sched.backlogged_request_build_payloads.append(object())
 
     clock.return_value = 100.005
     assert sched.get_new_batch_prefill() is None
@@ -204,12 +204,12 @@ def test_pending_build_gate_releases_when_build_work_drains(upstream, clock):
     )
     sched.running_batch = None
     sched.waiting_queue = [_req(100.0)]
-    sched._pending_request_builds["building"] = object()
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.001
     assert sched.get_new_batch_prefill() is None
 
-    sched._pending_request_builds.clear()
+    sched.pending_request_builds.clear()
     assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
 
 
@@ -222,7 +222,7 @@ def test_pending_build_gate_releases_at_target(upstream, clock):
     )
     sched.running_batch = None
     sched.waiting_queue = [_req(100.0)] * 8
-    sched._pending_request_builds["building"] = object()
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.001
     assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH
@@ -237,7 +237,7 @@ def test_pending_build_gate_releases_at_deadline(upstream, clock):
     )
     sched.running_batch = None
     sched.waiting_queue = [_req(100.0)]
-    sched._pending_request_builds["building"] = object()
+    sched.pending_request_builds["building"] = object()
 
     clock.return_value = 100.006
     assert sched.get_new_batch_prefill() is _UPSTREAM_BATCH

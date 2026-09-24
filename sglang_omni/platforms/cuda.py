@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
     from sglang_omni.platforms.interface import JointRopeInplaceKernel
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,8 @@ def is_h20_device() -> bool:
 
         if not torch.cuda.is_available():
             return False
+        else:
+            pass
         return bool(re.search(r"\bH20\b", torch.cuda.get_device_name(0)))
     except Exception:
         return False
@@ -63,11 +67,15 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
     ) -> dict[str, str]:
         if spec.tp_size <= 1:
             return {}
+        else:
+            pass
 
         source_env = env if env is not None else os.environ
         original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
         if spec.gpu_id is None:
             raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
+        else:
+            pass
         if original_visible:
             visible_devices = [item.strip() for item in original_visible.split(",")]
             if spec.gpu_id >= len(visible_devices):
@@ -75,6 +83,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                     f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
                     f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
                 )
+            else:
+                pass
             mapped_gpu = visible_devices[spec.gpu_id]
         else:
             mapped_gpu = str(spec.gpu_id)
@@ -91,6 +101,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
             "NCCL_NVLS_ENABLE" not in spec.env_defaults
         ):
             env_updates["NCCL_NVLS_ENABLE"] = "0"
+        else:
+            pass
         return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
@@ -146,6 +158,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                 "sglang-omni-qwen3-backend-policy",
                 moe_runner_backend=moe_runner_backend,
             )
+        else:
+            pass
 
         if (
             is_qwen3_omni_arch
@@ -161,6 +175,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                 "sglang-omni-qwen3-backend-policy",
                 moe_runner_backend=moe_runner_backend,
             )
+        else:
+            pass
 
         if (
             is_qwen3_omni_arch
@@ -173,6 +189,10 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                     "Qwen3-Omni FP8 CUTLASS MoE requires a native serialized "
                     "block-FP8 checkpoint with weight_block_size."
                 )
+            else:
+                pass
+        else:
+            pass
 
         if (
             is_qwen3_omni_arch
@@ -184,6 +204,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                 "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "
                 "'auto' so Omni selects a native-FP8-compatible MoE runner."
             )
+        else:
+            pass
 
         fp8_gemm_backend = normalize_quantization(cfg.fp8_gemm_runner_backend)
         if (
@@ -203,6 +225,8 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
                 "sglang-omni-qwen3-backend-policy",
                 fp8_gemm_runner_backend=fp8_gemm_backend,
             )
+        else:
+            pass
 
         server_quantization = cfg.quantization
         logger.info(

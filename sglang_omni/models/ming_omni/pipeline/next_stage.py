@@ -24,10 +24,14 @@ def preprocessing_next(request_id: str, output: Any) -> list[str]:
     del request_id
     if not isinstance(output, StagePayload):
         return [AGGREGATE_STAGE]
+    else:
+        pass
     state = MingOmniPipelineState.from_dict(output.data)
     encoder_inputs = state.encoder_inputs
     if not isinstance(encoder_inputs, dict):
         return [AGGREGATE_STAGE]
+    else:
+        pass
     stages = [stage for stage in encoder_inputs.keys() if stage != AGGREGATE_STAGE]
     stages = sorted(stages)
     stages.append(AGGREGATE_STAGE)

@@ -28,6 +28,8 @@ class VoxtralSGLangRequestData(SGLangARRequestData):
 def voice_cache_key(voice: str, voice_embedding: torch.Tensor | None) -> str | None:
     if voice_embedding is None:
         return None
+    else:
+        pass
     digest = hashlib.blake2b(voice.encode("utf-8"), digest_size=16).hexdigest()
     return f"voxtral_voice:{digest}"
 
@@ -66,7 +68,7 @@ def build_sglang_voxtral_request(
         extra_key=voice_cache_key(voice, voice_embedding),
     )
     req.tokenizer = None
-    req._codec_suppress_tokens = None
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = VoxtralSGLangRequestData(
         input_ids=input_ids,

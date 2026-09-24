@@ -32,6 +32,8 @@ def parse_pid_list(output: str, command: str) -> list[int]:
         raise MpsControlError(
             f"unexpected output from {_CONTROL_BINARY} {command!r}: {output!r}"
         )
+    else:
+        pass
     return [int(token) for token in tokens]
 
 
@@ -60,6 +62,8 @@ class SubprocessMpsControlClient:
                 f"{_CONTROL_BINARY} {command!r} failed "
                 f"(rc={result.returncode}): {result.stderr.strip()}"
             )
+        else:
+            pass
         return result.stdout
 
     def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None:
@@ -97,9 +101,13 @@ class SubprocessMpsControlClient:
             raise MpsControlError(
                 f"native PID file {pid_file} is malformed: {raw_pid!r}"
             )
+        else:
+            pass
         pid = int(raw_pid)
         if not self.daemon_process_alive(pid):
             raise MpsControlError(f"native PID file {pid_file} names dead pid {pid}")
+        else:
+            pass
 
         proc = Path(f"/proc/{pid}")
         try:
@@ -112,11 +120,15 @@ class SubprocessMpsControlClient:
                 f"native PID file {pid_file} names {os.fsdecode(cmdline)!r}, not "
                 f"{_CONTROL_BINARY}"
             )
+        else:
+            pass
         expected_pipe = f"CUDA_MPS_PIPE_DIRECTORY={pipe_dir}".encode()
         if expected_pipe not in environ:
             raise MpsControlError(
                 f"daemon pid {pid} does not own exact pipe directory {pipe_dir}"
             )
+        else:
+            pass
         return pid
 
     def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
@@ -140,6 +152,8 @@ class SubprocessMpsControlClient:
             raise MpsControlError(
                 f"{_CONTROL_BINARY} {command!r} returned {output!r}, expected '0'"
             )
+        else:
+            pass
 
     def quit_daemon(self, pipe_dir: Path) -> None:
         self.query(pipe_dir, "quit")
@@ -169,10 +183,14 @@ class SubprocessMpsControlClient:
         values = [entry[len(prefix) :] for entry in entries if entry.startswith(prefix)]
         if not values:
             return None
+        else:
+            pass
         if len(values) != 1 or not values[0]:
             raise MpsControlError(
                 f"client pid {pid} has malformed {MPS_CLIENT_TOKEN_ENV}"
             )
+        else:
+            pass
         try:
             return values[0].decode("ascii")
         except UnicodeDecodeError as exc:

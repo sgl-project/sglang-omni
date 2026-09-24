@@ -387,6 +387,8 @@ class StreamingPerception:
             hidden_1CTM = nn.Conv2d.forward(conv, padded_1CTM)
             if pointwise is not None:
                 hidden_1CTM = pointwise(hidden_1CTM)
+            else:
+                pass
             hidden_1CTM = torch.relu(hidden_1CTM)
         return self.perception.encoder.pre_encode.out(
             rearrange(hidden_1CTM, "b c t m -> b t (c m)")

@@ -44,8 +44,8 @@ def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
     weight = torch.full((4, 2), -1.0)
     runner = SimpleNamespace(
         model=SimpleNamespace(
-            _decode_input_embedding=SimpleNamespace(weight=weight),
-            _decode_state_pool=_Pool(),
+            decode_input_embedding=SimpleNamespace(weight=weight),
+            decode_state_pool=_Pool(),
         )
     )
     forward_batch = SimpleNamespace(batch_size=4, input_ids=None, input_embeds=object())

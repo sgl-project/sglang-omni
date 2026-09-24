@@ -227,7 +227,7 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
     by_event = {e["event_name"]: e["stage"] for e in events}
     assert (
         by_event["from_main"] == "preprocessing"
-    ), "main thread had no active stage; should fall back to recorder._stage"
+    ), "main thread had no active stage; should fall back to recorder.stage"
     assert (
         by_event["from_thinker"] == "thinker"
     ), "worker thread's set_active_stage('thinker') was ignored"

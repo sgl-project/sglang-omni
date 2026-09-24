@@ -76,7 +76,7 @@ def test_equal_length_inputs_use_one_audiovae_forward() -> None:
         [_latents(16, 1), _latents(16, 2), _latents(16, 3)],
     )
 
-    assert vocoder._logged_batch
+    assert vocoder.logged_batch
     assert len(codec.inference.inputs) == 1
     assert codec.inference.inputs[0].shape == (3, 16, 3)
     assert [waveform.shape for waveform, _ in outputs] == [(1, 1, 32)] * 3
@@ -114,7 +114,7 @@ def test_single_input_preserves_batch_and_waveform_shapes() -> None:
     latents = _latents(12, 5)
     [output] = _decode(vocoder, [latents])
 
-    assert not vocoder._logged_batch
+    assert not vocoder.logged_batch
     assert codec.inference.input_data_ptrs == [latents.data_ptr()]
     assert codec.inference.inputs[0].shape == (1, 12, 3)
     assert output[0].shape == (1, 1, 24)

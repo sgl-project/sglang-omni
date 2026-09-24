@@ -16,6 +16,6 @@ def test_audio_encoder_initializes_with_installed_transformers(monkeypatch):
     encoder = audio_encoder.Qwen3OmniAudioEncoder("unused", device="cpu")
 
     assert encoder.audio_tower is tower
-    lengths = encoder._downsample_lengths(torch.tensor([100, 200]))
+    lengths = encoder.downsample_lengths(torch.tensor([100, 200]))
     assert lengths.shape == (2,)
     assert 0 < lengths[0] < lengths[1]

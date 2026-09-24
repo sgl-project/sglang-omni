@@ -90,31 +90,47 @@ def seeded_gumbel_argmax(
 
     if scores.ndim != 2:
         raise ValueError(f"seeded Gumbel scores must be rank 2, got {scores.shape}")
+    else:
+        pass
     rows, vocab_size = scores.shape
     if seeds.shape != (rows,) or positions.shape != (rows,):
         raise ValueError("seeded Gumbel metadata shape mismatch")
+    else:
+        pass
     if scores.device.type != "cuda" or not (
         seeds.device == scores.device
         and positions.device == scores.device
         and output.device == scores.device
     ):
         raise ValueError("seeded_gumbel_argmax requires one CUDA device")
+    else:
+        pass
     if scores.dtype != torch.float32:
         raise TypeError(f"seeded Gumbel scores must be float32, got {scores.dtype}")
+    else:
+        pass
     if seeds.dtype != torch.int64 or positions.dtype != torch.int64:
         raise TypeError("seeded Gumbel seeds and positions must be int64")
+    else:
+        pass
     if output.dtype != torch.int64 or output.ndim != 1 or output.numel() < rows:
         raise ValueError(
             "seeded Gumbel output must be a sufficiently large int64 vector"
         )
+    else:
+        pass
     if output.stride(0) != 1:
         raise ValueError("seeded Gumbel output must have stride 1")
+    else:
+        pass
 
     block_size = triton.next_power_of_2(vocab_size)
     if block_size > 2048:
         raise ValueError(
             f"seeded Gumbel one-pass vocabulary exceeds 2048: {vocab_size}"
         )
+    else:
+        pass
     result = output[:rows]
     seeded_gumbel_argmax_kernel[(rows,)](
         scores,
@@ -298,14 +314,20 @@ def sample_seeded_fused(
         raise ValueError(
             f"fused seeded sampler supports vocab <= {MAX_FUSED_SAMPLE_VOCAB}, got {vocab}"
         )
+    else:
+        pass
     if rows == 0:
         return torch.empty(0, device=logits.device, dtype=torch.int64)
+    else:
+        pass
     if (
         top_k.dtype.is_floating_point
         or top_k.dtype.is_complex
         or top_k.dtype == torch.bool
     ):
         raise TypeError(f"top_k must be an integer tensor, got {top_k.dtype}")
+    else:
+        pass
     top_k = top_k.to(torch.int64)
     logits = logits.float().contiguous()
     out = torch.empty(rows, device=logits.device, dtype=torch.int64)

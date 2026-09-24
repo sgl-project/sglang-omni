@@ -75,9 +75,13 @@ def verify_capture_shapes(
                 "AuK DiT graph capture shapes need a positive batch, frame and "
                 f"text count and a non-negative reference count; got {shape!r}"
             )
+        else:
+            pass
         verified.add(shape)
     if not verified:
         raise ValueError("AuK DiT graph capture shapes must not be empty")
+    else:
+        pass
     return tuple(
         sorted(verified, key=lambda s: (s.batch, s.frames + s.ref + s.text, s))
     )
@@ -91,6 +95,8 @@ def build_step_graph_runner(
     backend = current_platform.get_device_graph_backend(device)
     if backend is None:
         return None
+    else:
+        pass
     return AuKStepCudaGraphRunner(
         backend=backend,
         device=device,
@@ -118,6 +124,8 @@ class AuKStepCudaGraphRunner:
         )
         if warmup_iters < 1:
             raise ValueError("AuK DiT graph capture needs a warmup iteration")
+        else:
+            pass
         self.min_free_bytes = int(min_free_gb * 1024**3)
         self.warmup_iters = warmup_iters
         self.graphs: dict[tuple, CapturedStep] = {}
@@ -167,6 +175,8 @@ class AuKStepCudaGraphRunner:
         )
         if shape is None:
             return None
+        else:
+            pass
         return (shape.frames, shape.ref, shape.text)
 
     def fit(
@@ -182,6 +192,8 @@ class AuKStepCudaGraphRunner:
                 and shape.text >= text
             ):
                 return shape
+            else:
+                pass
         return None
 
     def bind(
@@ -206,13 +218,21 @@ class AuKStepCudaGraphRunner:
             # its allocator cache.
             if self.capturing is None:
                 return None
+            else:
+                pass
             entry = self.prepare(key, step, inputs, x, time)
             if entry is None:
                 return None
+            else:
+                pass
             self.ready.add(self.capturing)
+        else:
+            pass
         for name, value in inputs.items():
             if isinstance(value, torch.Tensor):
                 entry.static_inputs[name].copy_(value)
+            else:
+                pass
 
         def replay(t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
             entry.static_time.copy_(t)
@@ -251,6 +271,8 @@ class AuKStepCudaGraphRunner:
                 f"x={tuple(x.shape)} will run eager"
             )
             return None
+        else:
+            pass
         try:
             with self.module.device(self.device):
                 entry = self.capture(step, inputs, x, time)
@@ -296,6 +318,8 @@ class AuKStepCudaGraphRunner:
 
         if self.pool is None:
             self.pool = self.module.graph_pool_handle()
+        else:
+            pass
         # note(Dayuxiaoshui): thread_local because the conditioning and decode
         # stages launch on their own streams in this process and must not
         # poison this thread's capture.

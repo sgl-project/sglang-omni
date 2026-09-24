@@ -14,3 +14,5 @@ def record_explicit_generation_params(
 ) -> None:
     if explicit_fields:
         metadata[EXPLICIT_GENERATION_PARAMS_KEY] = explicit_fields
+    else:
+        pass

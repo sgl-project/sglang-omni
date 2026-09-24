@@ -403,6 +403,8 @@ if has_triton_runtime():
             sorted_scores, sorted_token_ids = bitonic_sort_selected_32_desc(
                 sorted_scores, sorted_token_ids, max_top_k
             )
+        else:
+            pass
 
         keep_top_k = ranks < tl.load(top_ks + row)
         masked_scores = tl.where(keep_top_k, sorted_scores, -float("inf"))
@@ -417,6 +419,8 @@ if has_triton_runtime():
             remove = (cdf - probs >= top_p) & active_top_p
             remove = remove & (ranks != 0)
             keep_top_k = keep_top_k & ~remove
+        else:
+            pass
 
         logprobs = tl.where(keep_top_k, tl.log(probs), -float("inf"))
 
@@ -496,6 +500,8 @@ def murmur_hash32_pytorch(
         return murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
             seeds.device
         )
+    else:
+        pass
 
     seeds = seeds.to(dtype=torch.int64).view(-1, 1)
     positions = positions.to(dtype=torch.int64).view(-1, 1)
@@ -519,11 +525,17 @@ def seeded_gumbel_argmax_float32(
     """Seeded categorical sampling without float64 or CUDA-only kernels."""
     if logprobs.ndim != 2:
         raise ValueError("logprobs must be a 2D tensor")
+    else:
+        pass
     batch_size, num_cols = logprobs.shape
     if seeds.shape != (batch_size,) or positions.shape != (batch_size,):
         raise ValueError("seeds and positions must contain one value per row")
+    else:
+        pass
     if num_cols == 0:
         raise ValueError("logprobs must contain at least one column")
+    else:
+        pass
 
     hashes = murmur_hash32_pytorch(seeds, positions, num_cols)
     uniform = hashes.to(dtype=torch.float32) / float(_UINT32_MASK)
@@ -545,10 +557,16 @@ def sample_from_logprobs_with_seed_npu(
     """Use the float32 seeded sampler on NPU and leave other backends unchanged."""
     if logprobs.device.type != "npu":
         return None
+    else:
+        pass
     if seeds.device != logprobs.device or positions.device != logprobs.device:
         raise ValueError("logprobs, seeds, and positions must be on the same device")
+    else:
+        pass
     if logprobs.shape[0] == 0:
         return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    else:
+        pass
     return seeded_gumbel_argmax_float32(logprobs, seeds, positions)
 
 
@@ -565,18 +583,30 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     if all_tensors_on_npu(logprobs, sorted_idx, seeds, positions):
         if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
             return None
+        else:
+            pass
         if seeds.ndim != 1 or positions.ndim != 1:
             return None
+        else:
+            pass
         batch_size, num_cols = logprobs.shape
         if batch_size == 0:
             return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+        else:
+            pass
         if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
             return None
+        else:
+            pass
         if num_cols <= 0:
             return None
+        else:
+            pass
 
         sampled_rank = seeded_gumbel_argmax_float32(logprobs, seeds, positions)
         return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1)
+    else:
+        pass
 
     if (
         seeded_gumbel_sample_sorted_kernel is None
@@ -586,17 +616,29 @@ def sample_from_sorted_logprobs_with_seed_small_k(
         or not positions.is_cuda
     ):
         return None
+    else:
+        pass
     if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
         return None
+    else:
+        pass
     if seeds.ndim != 1 or positions.ndim != 1:
         return None
+    else:
+        pass
     batch_size, num_cols = logprobs.shape
     if batch_size == 0:
         return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    else:
+        pass
     if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
         return None
+    else:
+        pass
     if num_cols <= 0 or num_cols > 1024:
         return None
+    else:
+        pass
 
     block_size = next_power_of_2(num_cols)
     out = torch.empty((batch_size,), device=logprobs.device, dtype=torch.long)
@@ -623,10 +665,14 @@ def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
     if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
         return None
+    else:
+        pass
     if max_top_k <= 32:
         # Note (Jun Liu): PyTorch uses a fixed 32-entry bitonic network for all
         # these widths.
         return 32
+    else:
+        pass
     return next_power_of_2(max_top_k)
 
 
@@ -660,10 +706,14 @@ def sample_from_logits_with_seed_top_k_top_p(
         or not logits.is_contiguous()
     ):
         return None
+    else:
+        pass
 
     batch_size = int(logits.shape[0])
     if batch_size == 0:
         return torch.empty((0,), device=logits.device, dtype=torch.long)
+    else:
+        pass
 
     row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
     if any(
@@ -674,6 +724,8 @@ def sample_from_logits_with_seed_top_k_top_p(
         for tensor in row_tensors
     ):
         return None
+    else:
+        pass
     if (
         temperatures.dtype is not torch.float32
         or top_ks.dtype is not torch.long
@@ -682,6 +734,8 @@ def sample_from_logits_with_seed_top_k_top_p(
         or positions.dtype is not torch.long
     ):
         return None
+    else:
+        pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
     seeded_top_k_top_p_sample_kernel[(batch_size,)](

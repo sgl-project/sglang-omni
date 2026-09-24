@@ -201,35 +201,35 @@ def test_read_buffer_higgs_sampler_pool():
     model = _as_named(
         None,
         "HiggsTTSModel",
-        _sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
+        sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 65
-    assert "_sampler_pool.seeds.shape[0]" in source
+    assert "sampler_pool.seeds.shape[0]" in source
 
 
 def test_read_buffer_returns_minimum_across_registered_buffers():
     model = _as_named(
         None,
         "HiggsTTSModel",
-        _sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
-        _cg_codes_BN=_FakeTensor(40),
-        _cg_active_last_codes=_FakeTensor(65),
+        sampler_pool=SimpleNamespace(seeds=_FakeTensor(65)),
+        cg_codes_BN=_FakeTensor(40),
+        cg_active_last_codes=_FakeTensor(65),
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 40
-    assert "_cg_codes_BN.shape[0]" in source
+    assert "cg_codes_BN.shape[0]" in source
 
 
 def test_read_buffer_qwen3_tts_feedback():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    model = _as_named(None, "Qwen3TTSTalker", feedback_buffer=_FakeTensor(64))
     cap, source = read_model_buffer_capacity(model)
     assert cap == 64
-    assert "_feedback_buffer.shape[0]" in source
+    assert "feedback_buffer.shape[0]" in source
 
 
 def test_read_buffer_inner_submodule_fallback():
-    inner = _as_named(None, "Inner", _feedback_buffer=_FakeTensor(32))
+    inner = _as_named(None, "Inner", feedback_buffer=_FakeTensor(32))
     model = _as_named(None, "Qwen3OmniTalker", model=inner)
     cap, source = read_model_buffer_capacity(model)
     assert cap == 32
@@ -237,13 +237,13 @@ def test_read_buffer_inner_submodule_fallback():
 
 
 def test_read_buffer_qwen3_omni_prefers_top_level_alias():
-    inner = _as_named(None, "TextModel", _feedback_buffer=_FakeTensor(48))
+    inner = _as_named(None, "TextModel", feedback_buffer=_FakeTensor(48))
     model = _as_named(
-        None, "Qwen3OmniTalker", model=inner, _feedback_buffer=inner._feedback_buffer
+        None, "Qwen3OmniTalker", model=inner, feedback_buffer=inner.feedback_buffer
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 48
-    assert source == "model._feedback_buffer.shape[0]"
+    assert source == "model.feedback_buffer.shape[0]"
 
 
 def test_read_buffer_unregistered_model():
@@ -270,7 +270,7 @@ def test_read_buffer_none_model():
 
 
 def test_validate_stage_auto_reads_buffer_and_passes():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    model = _as_named(None, "Qwen3TTSTalker", feedback_buffer=_FakeTensor(64))
     runner = _fake_runner(model=model, capture_bs=[1, 2, 4, 8, 16, 32, 64])
     report = validate_stage("tts_engine", runner)
     assert report.buffer_capacity == 64
@@ -280,7 +280,7 @@ def test_validate_stage_auto_reads_buffer_and_passes():
 
 def test_validate_stage_detects_undersized_buffer_end_to_end():
     model = _as_named(
-        None, "VoxtralSGLangTTSModel", _decode_input_embed_buffer=_FakeTensor(64)
+        None, "VoxtralSGLangTTSModel", decode_input_embed_buffer=_FakeTensor(64)
     )
     runner = _fake_runner(
         model=model,
@@ -304,7 +304,7 @@ def test_validate_stage_caller_override_buffer():
 
 
 def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    model = _as_named(None, "Qwen3TTSTalker", feedback_buffer=_FakeTensor(64))
     runner = _fake_runner(
         model=model,
         disable_cuda_graph=True,
@@ -328,7 +328,7 @@ def test_validate_stage_unregistered_model_partial_report():
 
 
 def test_validate_stage_names_the_stage():
-    model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
+    model = _as_named(None, "Qwen3TTSTalker", feedback_buffer=_FakeTensor(64))
     runner = _fake_runner(model=model, capture_bs=[1, 16, 64])
     out = validate_stage("talker_ar", runner).format()
     assert "Stage: talker_ar (Qwen3TTSTalker)" in out

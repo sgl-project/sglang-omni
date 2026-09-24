@@ -199,8 +199,12 @@ class SerializedMultimodalTensor(BaseModel):
         itemsize = _SERIALIZED_DTYPE_ITEMSIZE.get(self.dtype)
         if itemsize is None:
             raise ValueError(f"unsupported tensor dtype {self.dtype!r}")
+        else:
+            pass
         if any(dim < 0 for dim in self.shape):
             raise ValueError(f"invalid tensor shape {self.shape}")
+        else:
+            pass
         try:
             raw_len = len(base64.b64decode(self.data, validate=True))
         except binascii.Error as exc:
@@ -211,6 +215,8 @@ class SerializedMultimodalTensor(BaseModel):
                 f"tensor data has {raw_len} bytes, expected {expected} "
                 f"for shape={self.shape} dtype={self.dtype}"
             )
+        else:
+            pass
         return self
 
 

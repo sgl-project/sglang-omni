@@ -15,22 +15,24 @@ class LocalStageDispatcher:
     """
 
     def __init__(self) -> None:
-        self._stages: dict[str, Any] = {}
+        self.stages: dict[str, Any] = {}
 
     def register(self, stage: Any) -> None:
-        self._stages[stage.name] = stage
+        self.stages[stage.name] = stage
 
     def register_many(self, stages: Iterable[Any]) -> None:
         for stage in stages:
             self.register(stage)
 
     def get_stage(self, from_stage: str, to_stage: str) -> Any:
-        target = self._stages.get(to_stage)
+        target = self.stages.get(to_stage)
         if target is None:
             raise RuntimeError(
                 f"Local stage target {to_stage!r} is not registered "
                 f"for traffic from {from_stage!r}"
             )
+        else:
+            pass
         return target
 
     async def send_payload(

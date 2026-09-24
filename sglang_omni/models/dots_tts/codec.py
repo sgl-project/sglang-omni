@@ -38,6 +38,8 @@ def load_module(module: torch.nn.Module, path: Path) -> None:
     mismatch = module.load_state_dict(load_file(path, device="cpu"), strict=False)
     if mismatch.missing_keys or mismatch.unexpected_keys:
         raise RuntimeError(f"Failed to load {path}: {mismatch}")
+    else:
+        pass
 
 
 class DotsAudioCodec:
@@ -101,12 +103,16 @@ class DotsAudioCodec:
     ) -> list[dict[str, torch.Tensor]]:
         if not waveforms:
             return []
+        else:
+            pass
         lengths = {int(w.shape[-1]) for w in waveforms}
         if len(lengths) != 1:
             raise ValueError(
                 "dots.tts batched reference encode requires equal-length "
                 f"waveforms, got {sorted(lengths)}; padding is not parity-safe"
             )
+        else:
+            pass
         length = lengths.pop()
         batch = torch.stack([w.reshape(-1) for w in waveforms]).unsqueeze(1)
         batch = batch.to(self.device)
@@ -127,6 +133,8 @@ class DotsAudioCodec:
                 f"{frames} latent frames for {length} samples, expected "
                 f"{expected_frames}; latent frame rate is not hop-aligned"
             )
+        else:
+            pass
         return [
             {
                 "speaker_embedding": speaker[index : index + 1].detach().cpu().float(),
@@ -149,6 +157,8 @@ class DotsAudioCodec:
         limit = self.speaker_sample_limit()
         if limit is None or batch.shape[-1] <= limit:
             return batch, audio_lengths
+        else:
+            pass
         cropped = batch[..., :limit].contiguous()
         return cropped, audio_lengths.clamp(max=limit)
 
@@ -157,6 +167,8 @@ class DotsAudioCodec:
         max_seconds = float(getattr(self.speaker, "max_audio_seconds", 0.0) or 0.0)
         if max_seconds <= 0:
             return None
+        else:
+            pass
         rate = int(getattr(self.speaker, "sample_rate", self.sample_rate))
         return round(rate * max_seconds)
 
@@ -166,8 +178,12 @@ class DotsAudioCodec:
     def encode_reference_batch(self, paths: list[str]) -> list[dict[str, torch.Tensor]]:
         if not paths:
             return []
+        else:
+            pass
         if len(paths) == 1:
             return [self.encode_reference(paths[0])]
+        else:
+            pass
 
         with ThreadPoolExecutor(
             max_workers=self.reference_load_workers(len(paths)),
@@ -182,6 +198,8 @@ class DotsAudioCodec:
                 results[index] = artifact
         if any(item is None for item in results):
             raise RuntimeError("dots.tts batched reference encode dropped an item")
+        else:
+            pass
         return [item for item in results if item is not None]
 
     @staticmethod
@@ -198,6 +216,8 @@ class DotsAudioCodec:
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        else:
+            pass
         noise = torch.randn(mean.shape, dtype=mean.dtype, generator=generator)
         sampled = (mean + noise * torch.exp(log_std)).transpose(1, 2)
         return sampled[:, : -self.patch_size].contiguous()
@@ -215,6 +235,8 @@ def load_dots_audio_codec(model_path: str, *, device: str) -> DotsAudioCodec:
         if codec is None:
             codec = DotsAudioCodec(checkpoint, device=device)
             _CODEC_CACHE[key] = codec
+        else:
+            pass
         return codec
 
 
@@ -239,6 +261,8 @@ class DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict]):
     def can_encode_batch(self) -> bool:
         if self.codec.device.type != "cuda":
             return True
+        else:
+            pass
         return not (
             torch.backends.cuda.matmul.allow_tf32 or torch.backends.cudnn.allow_tf32
         )
@@ -292,6 +316,8 @@ class DotsReferenceEncoder:
         state = load_dots_tts_state(payload)
         if state.prompt_audio_path is None:
             return payload
+        else:
+            pass
         artifact = self.service.get_or_encode(
             state.prompt_audio_path,
             desc=repr(state.prompt_audio_path),
@@ -302,6 +328,8 @@ class DotsReferenceEncoder:
                 artifact["latent_distribution"],
                 seed=state.seed,
             )
+        else:
+            pass
         return store_dots_tts_state(payload, state)
 
 

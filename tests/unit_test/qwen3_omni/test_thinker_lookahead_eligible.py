@@ -44,7 +44,7 @@ def _sp(**kw):
 def _req(return_logprob=False, stage_payload="text", **sp_kw):
     return types.SimpleNamespace(
         sampling_params=_sp(**sp_kw),
-        _omni_data=types.SimpleNamespace(
+        omni_data=types.SimpleNamespace(
             return_logprob=return_logprob, stage_payload=stage_payload
         ),
     )
@@ -71,12 +71,12 @@ def test_return_logprob_disables_lookahead():
     assert _runner().lookahead_eligible(_batch(_req(return_logprob=True))) is False
 
 
-def test_missing_or_none_omni_data_falls_to_sync():
+def test_missing_or_noneomni_data_falls_to_sync():
     # request data missing or None cannot be inspected -> fail closed to sync
     # (never raise, never let a possible hidden-capture batch onto async).
     no_data = types.SimpleNamespace(sampling_params=_sp())
     assert _runner().lookahead_eligible(_batch(no_data)) is False
-    none_data = types.SimpleNamespace(sampling_params=_sp(), _omni_data=None)
+    none_data = types.SimpleNamespace(sampling_params=_sp(), omni_data=None)
     assert _runner().lookahead_eligible(_batch(none_data)) is False
 
 

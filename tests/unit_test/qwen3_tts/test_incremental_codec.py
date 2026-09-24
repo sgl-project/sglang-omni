@@ -681,7 +681,7 @@ def test_incremental_codec_cuda_graph_alternates_shared_pool_keys() -> None:
         arena=arena,
     )
     runner.capture()
-    assert len(runner._graphs) == 2
+    assert len(runner.graphs) == 2
     slots = {1: [arena.acquire()], 4: [arena.acquire() for _ in range(4)]}
     eager_states = {
         batch_size: arena.gather(rows) for batch_size, rows in slots.items()
@@ -940,7 +940,7 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._samples_per_frame = decoder.total_upsample
+    scheduler.samples_per_frame = decoder.total_upsample
     plans = [
         IncrementalDecodePlan(
             decoder_input=codes[0:1],

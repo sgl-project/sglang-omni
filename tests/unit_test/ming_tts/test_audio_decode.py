@@ -283,20 +283,20 @@ def _make_scripted_runner(
     graph = _ScriptedGraph()
     stream = _ScriptedCudaStream()
     runner = MingAudioStreamingRunner.__new__(MingAudioStreamingRunner)
-    runner._transition = transition
-    runner._cuda_graph_required_at_startup = True
-    runner._startup_prepared = True
-    runner._captured_graph = CapturedAudioVAEGraph(graph=graph, output=_runner_output())
-    runner._host_latents = torch.empty((2, 2, 3), dtype=torch.float32)
-    runner._host_latent_lengths = torch.empty(2, dtype=torch.long)
-    runner._host_exec_mask = torch.empty(2, dtype=torch.bool)
-    runner._host_terminal_mask = torch.empty(2, dtype=torch.bool)
-    runner._latents = torch.empty((2, 2, 3), dtype=torch.float32)
-    runner._latent_lengths = torch.empty(2, dtype=torch.long)
-    runner._exec_mask = torch.empty(2, dtype=torch.bool)
-    runner._terminal_mask = torch.empty(2, dtype=torch.bool)
-    runner._host_waveform = torch.empty((2, 4), dtype=torch.float32)
-    runner._host_sample_lengths = torch.empty(2, dtype=torch.long)
+    runner.transition = transition
+    runner.cuda_graph_required_at_startup = True
+    runner.startup_prepared = True
+    runner.captured_graph = CapturedAudioVAEGraph(graph=graph, output=_runner_output())
+    runner.host_latents = torch.empty((2, 2, 3), dtype=torch.float32)
+    runner.host_latent_lengths = torch.empty(2, dtype=torch.long)
+    runner.host_exec_mask = torch.empty(2, dtype=torch.bool)
+    runner.host_terminal_mask = torch.empty(2, dtype=torch.bool)
+    runner.latents = torch.empty((2, 2, 3), dtype=torch.float32)
+    runner.latent_lengths = torch.empty(2, dtype=torch.long)
+    runner.exec_mask = torch.empty(2, dtype=torch.bool)
+    runner.terminal_mask = torch.empty(2, dtype=torch.bool)
+    runner.host_waveform = torch.empty((2, 4), dtype=torch.float32)
+    runner.host_sample_lengths = torch.empty(2, dtype=torch.long)
     monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: stream)
     return runner, transition, graph, stream
@@ -327,7 +327,7 @@ def test_runtime_graph_failure_drops_graph_and_next_call_runs_eager(
         _run_scripted_runner(runner)
 
     assert runner.is_ready
-    assert runner._captured_graph is None
+    assert runner.captured_graph is None
     assert graph.replay_calls == 1
     assert transition.decode_calls == 0
 
@@ -343,7 +343,7 @@ def test_host_staging_error_does_not_disable_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner, transition, graph, _stream = _make_scripted_runner(monkeypatch)
-    captured = runner._captured_graph
+    captured = runner.captured_graph
 
     with pytest.raises(RuntimeError):
         runner.run(
@@ -352,7 +352,7 @@ def test_host_staging_error_does_not_disable_graph(
             terminal_flags=(False,),
         )
 
-    assert runner._captured_graph is captured
+    assert runner.captured_graph is captured
     assert graph.replay_calls == 0
     assert transition.decode_calls == 0
 
@@ -365,13 +365,13 @@ def test_graph_output_validation_failure_drops_graph_and_next_call_runs_eager(
         graph=graph,
         output=_runner_output(sample_lengths=(5, 0)),
     )
-    runner._captured_graph = captured
+    runner.captured_graph = captured
 
     with pytest.raises(RuntimeError, match="invalid sample length"):
         _run_scripted_runner(runner)
 
     assert runner.is_ready
-    assert runner._captured_graph is None
+    assert runner.captured_graph is None
     assert graph.replay_calls == 1
 
     transition.decode_actions.append(_runner_output())
@@ -384,7 +384,7 @@ def test_graph_output_validation_failure_drops_graph_and_next_call_runs_eager(
 
 @pytest.mark.parametrize(
     "host_buffer_name",
-    ["_host_waveform", "_host_sample_lengths"],
+    ["host_waveform", "host_sample_lengths"],
 )
 def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
@@ -413,7 +413,7 @@ def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
         _run_scripted_runner(runner)
 
     assert runner.is_ready
-    assert runner._captured_graph is None
+    assert runner.captured_graph is None
     assert graph.replay_calls == 1
     assert transition.decode_calls == 0
 
@@ -429,7 +429,7 @@ def test_owned_waveform_clone_failure_does_not_disable_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner, _transition, graph, _stream = _make_scripted_runner(monkeypatch)
-    captured = runner._captured_graph
+    captured = runner.captured_graph
 
     def fail_clone(_tensor: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("owned waveform clone failed")
@@ -440,7 +440,7 @@ def test_owned_waveform_clone_failure_does_not_disable_graph(
         _run_scripted_runner(runner)
 
     assert runner.is_ready
-    assert runner._captured_graph is captured
+    assert runner.captured_graph is captured
     assert graph.replay_calls == 1
 
 
@@ -452,7 +452,7 @@ def test_runner_close_invalidates_startup_readiness(
     runner.close()
 
     assert not runner.is_ready
-    assert runner._captured_graph is None
+    assert runner.captured_graph is None
     assert graph.reset_calls == 1
     assert stream.synchronize_calls == 1
     with pytest.raises(RuntimeError, match="not prepared"):
@@ -531,7 +531,7 @@ def _snapshot_fixed_slot_state(
 ) -> dict[str, torch.Tensor]:
     return {
         name: tensor.select(row_dim, slot).clone()
-        for name, tensor, row_dim in transition._state.slot_tensors()
+        for name, tensor, row_dim in transition.state.slot_tensors()
     }
 
 
@@ -603,7 +603,7 @@ def test_fixed_streaming_transition_matches_dynamic_audio_vae_on_cpu(
             strict=True,
         ):
             if chunk_patches == (2, 4, 4, 4) and terminal:
-                assert transition._state.qwen_positions.item() > transition._cache_size
+                assert transition.state.qwen_positions.item() > transition.cache_size
             envelope[0, : current.shape[0]].copy_(current)
             output = transition.decode(
                 envelope,
@@ -793,7 +793,7 @@ def test_fixed_transition_reset_clears_only_selected_row_and_allows_reuse() -> N
         capacity=1,
         max_step_latents=4,
     )
-    for index, (name, tensor, row_dim) in enumerate(transition._state.slot_tensors()):
+    for index, (name, tensor, row_dim) in enumerate(transition.state.slot_tensors()):
         selected_value, neighbor_value = (
             (1, 2) if name == "upsample_pending_lengths" else (index + 1, index + 11)
         )

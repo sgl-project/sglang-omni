@@ -30,7 +30,7 @@ async def test_timeout_cancel_noop_waits_before_close(linear_pair):
         OmniRequest(None, {"ignore_cancel": True, "delay": 0.3}),
         stages=["source", "sink"],
     )
-    coordinator.sessions[session_identity.session_id].limits = SessionLimits(
+    coordinator.sessions[session_identity.id].limits = SessionLimits(
         operation_timeout_s=0.1
     )
     output = coordinator.session_outputs(session_identity)
@@ -38,7 +38,7 @@ async def test_timeout_cancel_noop_waits_before_close(linear_pair):
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(anext(output), 5)
     await asyncio.wait_for(coordinator.close_session(session_identity), 5)
-    assert session_identity.session_id not in coordinator.sessions
+    assert session_identity.id not in coordinator.sessions
     log = event_log(events)
     finished = next(i for i, e in enumerate(log) if e[:2] == ("finished", "sink"))
     # Note (Junnan Li): Close waits for the hook that outlived the command timeout, then closes upstream.
@@ -109,7 +109,7 @@ async def test_worker_failure_wakes_output_and_fails_session(tmp_path, monkeypat
         processes[-1].kill()
         processes[-1].expected_exitcode = -9
         await asyncio.to_thread(processes[-1].join, 5)
-        futures = list(coordinator._completion_futures.values())
+        futures = list(coordinator.completion_futures.values())
         assert futures and not any(future.done() for future in futures)
         # Note (Junnan Li): Cleanup waits for the pump, which waits on this future; fail the waiters first.
         entered, release = block_session_cleanup(monkeypatch, coordinator)
@@ -172,9 +172,9 @@ async def test_output_overflow_closes_session(linear_pair):
         stages=["source", "sink"],
         limits=SessionLimits(max_output_chunks=1),
     )
-    state = coordinator.sessions[session_identity.session_id]
+    state = coordinator.sessions[session_identity.id]
     await coordinator.append_session(session_identity, chunk(0))
-    await wait_until(lambda: session_identity.session_id not in coordinator.sessions)
+    await wait_until(lambda: session_identity.id not in coordinator.sessions)
     assert isinstance(state.error, QueueFullError)
 
 
@@ -308,7 +308,7 @@ async def test_public_submit_rejects_session_metadata(linear_pair):
         await coordinator.submit("rogue", request)
     with pytest.raises(ValueError, match="reserved"):
         await anext(coordinator.stream("rogue", request))
-    assert "rogue" not in coordinator._requests
+    assert "rogue" not in coordinator.requests
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -321,7 +321,7 @@ async def test_close_fences_queued_outputs(linear_pair):
     await coordinator.append_session(session_identity, chunk(0))
     first = await asyncio.wait_for(anext(output), 5)
     assert first.kind == "data"
-    session = coordinator.sessions[session_identity.session_id]
+    session = coordinator.sessions[session_identity.id]
     await coordinator.append_session(session_identity, chunk(1, eos=True))
     for _ in range(500):
         if session.outputs:
@@ -335,7 +335,7 @@ async def test_close_fences_queued_outputs(linear_pair):
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_stale_incarnation_cannot_address_the_reopened_session(
+async def test_stale_open_index_cannot_address_the_reopened_session(
     linear_pair,
 ) -> None:
     coordinator, _, _ = linear_pair
@@ -346,7 +346,7 @@ async def test_stale_incarnation_cannot_address_the_reopened_session(
     reopened = await coordinator.open_session(
         OmniRequest(None), stages=["source", "sink"], session_id="again"
     )
-    assert reopened.incarnation != session_identity.incarnation
+    assert reopened.open_index != session_identity.open_index
     with pytest.raises(ValueError, match="stale"):
         await coordinator.append_session(session_identity, chunk(0))
     with pytest.raises(ValueError, match="stale"):

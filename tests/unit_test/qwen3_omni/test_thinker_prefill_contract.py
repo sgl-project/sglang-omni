@@ -29,10 +29,10 @@ def _runner() -> Qwen3OmniThinkerModelRunner:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
     runner.tp_worker = SimpleNamespace(record_custom_prefill_eager=lambda: None)
     torch.manual_seed(0)
-    runner._embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
-    runner._image_token_id = IMAGE_ID
-    runner._video_token_id = VIDEO_ID
-    runner._audio_token_id = AUDIO_ID
+    runner.embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
+    runner.image_token_id = IMAGE_ID
+    runner.video_token_id = VIDEO_ID
+    runner.audio_token_id = AUDIO_ID
     return runner
 
 
@@ -138,7 +138,7 @@ def test_text_only_prefill_attaches_live_embeddings_without_official_batch_mutat
             assert input_ids is forward_batch.input_ids
             return live_embeds
 
-    runner._embed_tokens = LiveEmbedding()
+    runner.embed_tokens = LiveEmbedding()
     official_mm_inputs = forward_batch.mm_inputs
     official_mrope_positions = forward_batch.mrope_positions
 
@@ -259,7 +259,7 @@ def test_audio_prefill_composes_embeddings_into_the_private_sidecar():
 
     sidecar = get_omni_prefill_inputs(forward_batch)
     assert sidecar is not None
-    expected = runner._embed_tokens(forward_batch.input_ids).detach().clone()
+    expected = runner.embed_tokens(forward_batch.input_ids).detach().clone()
     expected[1] = audio_embeds[0]
     torch.testing.assert_close(sidecar.input_embeds, expected)
     assert forward_batch.input_embeds is None
@@ -332,7 +332,7 @@ def test_mixed_text_and_audio_batch_uses_one_live_sidecar():
 
     sidecar = get_omni_prefill_inputs(forward_batch)
     assert sidecar is not None
-    expected = runner._embed_tokens(forward_batch.input_ids).detach().clone()
+    expected = runner.embed_tokens(forward_batch.input_ids).detach().clone()
     expected[3] = audio_embeds[0]
     torch.testing.assert_close(sidecar.input_embeds, expected)
     assert forward_batch.input_embeds is None
@@ -358,7 +358,7 @@ def test_chunked_audio_prefill_attaches_live_text_and_audio_chunks():
     runner.before_prefill(first_batch, first_schedule, [request])
     first_sidecar = get_omni_prefill_inputs(first_batch)
     assert first_sidecar is not None
-    first_expected = runner._embed_tokens(first_batch.input_ids).detach().clone()
+    first_expected = runner.embed_tokens(first_batch.input_ids).detach().clone()
     first_expected[0] = audio_embeds[0]
     torch.testing.assert_close(
         first_sidecar.input_embeds,
@@ -377,7 +377,7 @@ def test_chunked_audio_prefill_attaches_live_text_and_audio_chunks():
     runner.before_prefill(second_batch, second_schedule, [request])
     second_sidecar = get_omni_prefill_inputs(second_batch)
     assert second_sidecar is not None
-    second_expected = runner._embed_tokens(second_batch.input_ids).detach().clone()
+    second_expected = runner.embed_tokens(second_batch.input_ids).detach().clone()
     second_expected[0] = audio_embeds[1]
     torch.testing.assert_close(second_sidecar.input_embeds, second_expected)
     assert request.omni_model_inputs is None
@@ -404,7 +404,7 @@ def test_fresh_cached_prefix_with_only_live_audio_is_sidecar_eligible():
 
     sidecar = get_omni_prefill_inputs(forward_batch)
     assert sidecar is not None
-    expected = runner._embed_tokens(forward_batch.input_ids).detach().clone()
+    expected = runner.embed_tokens(forward_batch.input_ids).detach().clone()
     expected[0] = audio_embeds[0]
     torch.testing.assert_close(sidecar.input_embeds, expected)
 
@@ -480,7 +480,7 @@ def test_fresh_cached_audio_prefix_uses_correct_inherited_eager_embedding(
     result = runner.custom_prefill_forward(forward_batch, schedule_batch, requests)
 
     assert result is None
-    expected = runner._embed_tokens(forward_batch.input_ids).detach().clone()
+    expected = runner.embed_tokens(forward_batch.input_ids).detach().clone()
     expected[0] = audio_inputs["audio_embeds"][expected_audio_row]
     torch.testing.assert_close(
         forward_batch.input_embeds[0],
@@ -488,7 +488,7 @@ def test_fresh_cached_audio_prefix_uses_correct_inherited_eager_embedding(
     )
     torch.testing.assert_close(
         forward_batch.input_embeds[1],
-        runner._embed_tokens(torch.tensor([live_chunk[1]], dtype=torch.long))[0],
+        runner.embed_tokens(torch.tensor([live_chunk[1]], dtype=torch.long))[0],
     )
     torch.testing.assert_close(forward_batch.input_embeds, expected)
     assert forward_batch.mm_inputs is official_mm_inputs
@@ -516,7 +516,7 @@ def test_cached_audio_eager_cursor_survives_text_only_middle_chunk():
 
     assert get_omni_prefill_inputs(first_batch) is None
     assert runner.custom_prefill_forward(first_batch, first_schedule, [request]) is None
-    first_expected = runner._embed_tokens(first_batch.input_ids).detach().clone()
+    first_expected = runner.embed_tokens(first_batch.input_ids).detach().clone()
     torch.testing.assert_close(first_batch.input_embeds, first_expected)
     assert request._omni_consumed == {"audio": 1}
     assert request.omni_model_inputs is audio_inputs
@@ -532,7 +532,7 @@ def test_cached_audio_eager_cursor_survives_text_only_middle_chunk():
     assert (
         runner.custom_prefill_forward(second_batch, second_schedule, [request]) is None
     )
-    second_expected = runner._embed_tokens(second_batch.input_ids).detach().clone()
+    second_expected = runner.embed_tokens(second_batch.input_ids).detach().clone()
     second_expected[0] = audio_embeds[1]
     torch.testing.assert_close(second_sidecar.input_embeds, second_expected)
     assert request.omni_model_inputs is None
@@ -579,7 +579,7 @@ def test_cached_audio_eager_cursor_survives_unsupported_image_sibling():
     torch.testing.assert_close(forward_batch.input_embeds[0], audio_embeds[1])
     torch.testing.assert_close(
         forward_batch.input_embeds[1],
-        runner._embed_tokens(torch.tensor([8], dtype=torch.long))[0],
+        runner.embed_tokens(torch.tensor([8], dtype=torch.long))[0],
     )
     torch.testing.assert_close(forward_batch.input_embeds[2], image_embeds[0])
     assert audio_request.omni_model_inputs is None
@@ -632,7 +632,7 @@ def test_cached_audio_eager_cursor_preserves_existing_cursor():
     torch.testing.assert_close(forward_batch.input_embeds[0], audio_embeds[1])
     torch.testing.assert_close(
         forward_batch.input_embeds[1],
-        runner._embed_tokens(torch.tensor([8], dtype=torch.long))[0],
+        runner.embed_tokens(torch.tensor([8], dtype=torch.long))[0],
     )
     torch.testing.assert_close(forward_batch.input_embeds[2], image_embeds[0])
     # The inherited merge must not replace shared cursor ownership.

@@ -49,12 +49,20 @@ def stage_gpu_set(
         devices = process.replica_devices
         if devices is not None:
             return set(devices)
+        else:
+            pass
+    else:
+        pass
 
     gpu = stage.gpu
     if isinstance(gpu, list):
         return set(gpu)
+    else:
+        pass
     if gpu is None:
         return set()
+    else:
+        pass
     return {gpu}
 
 
@@ -68,12 +76,16 @@ def reject_thinker_talker_collision(
     talker = stage_by_name(stages, talker_stage_name)
     if thinker is None or talker is None:
         return
+    else:
+        pass
 
     thinker_gpus = stage_gpu_set(thinker, processes)
     talker_gpus = stage_gpu_set(talker, processes)
     collisions = thinker_gpus & talker_gpus
     if not collisions:
         return
+    else:
+        pass
 
     raise ValueError(
         f"Ming-Omni speech talker {talker_stage_name!r} GPU collides with "
@@ -170,6 +182,8 @@ def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfi
     }
     if speech_enabled:
         project_payload[TALKER_STAGE] = f"{_PKG}.stages.project_thinker_to_talker"
+    else:
+        pass
 
     return MingThinkerStageConfig(
         name=THINKER_STAGE,

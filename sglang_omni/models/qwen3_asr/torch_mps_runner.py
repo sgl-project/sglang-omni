@@ -24,6 +24,8 @@ def resolve_model_path(model_path: str) -> Path:
     path = Path(model_path).expanduser()
     if path.is_dir():
         return path.resolve()
+    else:
+        pass
 
     from huggingface_hub import snapshot_download
 
@@ -41,6 +43,8 @@ def text_config(model_path: Path) -> Qwen3Config:
                 for key, value in rope_config.items()
                 if key not in _MROPE_ONLY_KEYS
             }
+        else:
+            pass
     return Qwen3Config(**text_config)
 
 
@@ -53,6 +57,8 @@ def load_language_weights(
     weight_files = sorted(model_path.glob("*.safetensors"))
     if not weight_files:
         raise ValueError(f"Qwen3-ASR checkpoint has no safetensors in {model_path}")
+    else:
+        pass
     for weight_file in weight_files:
         with safe_open(weight_file, framework="pt", device="cpu") as f:
             for checkpoint_name in f.keys():
@@ -62,6 +68,10 @@ def load_language_weights(
                     model_name = checkpoint_name.removeprefix("thinker.")
                     if model_name in expected:
                         state_dict[model_name] = f.get_tensor(checkpoint_name)
+                    else:
+                        pass
+                else:
+                    pass
 
     missing = expected - set(state_dict)
     if missing:
@@ -69,12 +79,16 @@ def load_language_weights(
             "Qwen3-ASR Torch MPS language checkpoint is incomplete: "
             f"{sorted(missing)[:10]}"
         )
+    else:
+        pass
     language_model.load_state_dict(state_dict, strict=True, assign=True)
 
     rotary = language_model.model.rotary_emb
     rope_config = language_model.config.rope_parameters
     if not isinstance(rope_config, dict):
         rope_config = language_model.config.rope_scaling
+    else:
+        pass
     rope_theta = float(rope_config["rope_theta"])
     head_dim = int(language_model.config.head_dim)
     inv_freq = 1.0 / (
