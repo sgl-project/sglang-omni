@@ -81,7 +81,7 @@ def test_window_segments_bound_each_segment() -> None:
 
 def test_bucket_selection_picks_the_smallest_that_fits() -> None:
     runner = _runner()
-    runner._graphs = {
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, [25, 25, 25, 25]) == 128
@@ -91,7 +91,7 @@ def test_bucket_selection_picks_the_smallest_that_fits() -> None:
 
 def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
     runner = _runner()
-    runner._graphs = {
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     tokens = max(DEFAULT_TOKEN_BUCKETS) + 1
@@ -100,7 +100,7 @@ def test_bucket_selection_declines_beyond_the_largest_bucket() -> None:
 
 def test_bucket_selection_declines_when_segments_exceed_slots() -> None:
     runner = _runner()
-    runner._graphs = {
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 4})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, [1] * 100) is None
@@ -108,7 +108,7 @@ def test_bucket_selection_declines_when_segments_exceed_slots() -> None:
 
 def test_bucket_selection_counts_split_padding_segments() -> None:
     runner = _runner(token_buckets=(256,))
-    runner._graphs = {256: type("C", (), {"segment_slots": 3})()}
+    runner.graphs = {256: type("C", (), {"segment_slots": 3})()}
     # 129 live tokens occupy two segments. The 127 padding rows need two more
     # window-bounded segments, so a three-slot capture cannot serve the replay.
     assert runner.select(129, [104, 25]) is None
@@ -117,7 +117,7 @@ def test_bucket_selection_counts_split_padding_segments() -> None:
 @pytest.mark.parametrize("segments", ([104, -4], [104, 1], [WINDOW + 1]))
 def test_bucket_selection_declines_invalid_live_segments(segments: list[int]) -> None:
     runner = _runner()
-    runner._graphs = {
+    runner.graphs = {
         b: type("C", (), {"segment_slots": 64})() for b in DEFAULT_TOKEN_BUCKETS
     }
     assert runner.select(100, segments) is None
@@ -125,8 +125,8 @@ def test_bucket_selection_declines_invalid_live_segments(segments: list[int]) ->
 
 def test_disabled_runner_declines_even_with_graphs() -> None:
     runner = _runner()
-    runner._graphs = {128: type("C", (), {"segment_slots": 64})()}
-    runner._disabled_reason = "capture failed"
+    runner.graphs = {128: type("C", (), {"segment_slots": 64})()}
+    runner.disabled_reason = "capture failed"
     assert runner.has_graphs is False
     assert runner.maybe_replay(torch.zeros(4, 8), torch.zeros(3), [2, 2]) is None
 
@@ -162,8 +162,8 @@ def test_an_unresolvable_kernel_stack_stays_eager_with_a_reason(
     runner = _runner()
     runner.capture_all()
     assert runner.has_graphs is False
-    assert runner._graphs == {}
-    assert "no flash attention build" in runner._disabled_reason
+    assert runner.graphs == {}
+    assert "no flash attention build" in runner.disabled_reason
 
 
 def test_capture_segments_fit_the_declared_window() -> None:
@@ -271,7 +271,7 @@ def test_packed_layer_stack_matches_segmented_sdpa() -> None:
     tower = _RealTower().to(device, torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
     runner.resolve_attention()
-    assert runner._disabled_reason is None, runner._disabled_reason
+    assert runner.disabled_reason is None, runner.disabled_reason
     segments = [104, 104, 49, 37, 90]
     hidden = torch.randn(sum(segments), tower.config.d_model, device=device).to(
         torch.bfloat16
@@ -279,7 +279,7 @@ def test_packed_layer_stack_matches_segmented_sdpa() -> None:
     cu_seqlens = _cu_seqlens(segments, device)
     with torch.no_grad():
         packed = runner.run_layers(hidden, cu_seqlens, WINDOW)
-        runner._packed_attention = _SegmentedSdpa()
+        runner.packed_attention = _SegmentedSdpa()
         reference = runner.run_layers(hidden, cu_seqlens, WINDOW)
     torch.testing.assert_close(packed, reference, rtol=2e-2, atol=2e-2)
 
@@ -290,8 +290,8 @@ def test_capture_all_records_a_graph_for_every_bucket() -> None:
     tower = _RealTower().to(torch.device("cuda", 0), torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=torch.device("cuda", 0), window=WINDOW)
     runner.capture_all()
-    assert runner.has_graphs, runner._disabled_reason
-    assert sorted(runner._graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
+    assert runner.has_graphs, runner.disabled_reason
+    assert sorted(runner.graphs) == sorted(DEFAULT_TOKEN_BUCKETS)
 
 
 @pytest.mark.accelerator
@@ -302,7 +302,7 @@ def test_replay_matches_the_uncaptured_packed_stack_across_bucket_boundaries() -
     tower = _RealTower().to(device, torch.bfloat16)
     runner = AudioLayerGraphRunner(tower, device=device, window=WINDOW)
     runner.capture_all()
-    assert runner.has_graphs, runner._disabled_reason
+    assert runner.has_graphs, runner.disabled_reason
 
     cases = (
         [104, 23],

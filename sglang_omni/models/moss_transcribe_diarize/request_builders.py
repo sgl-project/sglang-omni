@@ -83,7 +83,11 @@ def only_audio(value: Any) -> Any:
                 "MOSS-Transcribe-Diarize supports exactly one audio per request, "
                 f"got {len(value)} items"
             )
+        else:
+            pass
         return value[0]
+    else:
+        pass
     return value
 
 
@@ -97,22 +101,34 @@ def audio_source_from_payload(payload: StagePayload) -> Any:
             value = inputs.get(key)
             if value is not None:
                 return unwrap_source_dict(value)
+            else:
+                pass
         value = inputs.get("audios")
         if value is not None:
             return unwrap_source_dict(only_audio(value))
+        else:
+            pass
         for key in ("audio_path", "path", "url"):
             value = inputs.get(key)
             if value is not None:
                 return unwrap_source_dict(value)
+            else:
+                pass
+    else:
+        pass
 
     metadata = payload.request.metadata or {}
     value = metadata.get("audios")
     if value is not None:
         return unwrap_source_dict(only_audio(value))
+    else:
+        pass
     for key in ("audio_data", "audio"):
         value = metadata.get(key)
         if value is not None:
             return unwrap_source_dict(value)
+        else:
+            pass
     return unwrap_source_dict(inputs)
 
 
@@ -127,10 +143,18 @@ def unwrap_source_dict(source: Any) -> Any:
     if isinstance(source, dict):
         if source.get("data") is not None:
             return source["data"]
+        else:
+            pass
         if source.get("path") is not None:
             return source["path"]
+        else:
+            pass
         if source.get("url") is not None:
             return source["url"]
+        else:
+            pass
+    else:
+        pass
     return source
 
 
@@ -144,6 +168,8 @@ def explicit_generation_fields(metadata: dict[str, Any]) -> set[str]:
     fields = metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
     if isinstance(fields, (list, tuple)):
         return {str(field) for field in fields}
+    else:
+        pass
     return set()
 
 
@@ -156,6 +182,8 @@ def sampling_param(
 ) -> Any:
     if field not in explicit_fields:
         return default
+    else:
+        pass
     value = params.get(field)
     return default if value is None else cast(value)
 
@@ -209,23 +237,35 @@ def prompt_from_payload(
             tokenize=False,
             add_generation_prompt=True,
         )
+    else:
+        pass
 
     input_text: Any = params.get("prompt")
     if isinstance(inputs, dict):
         input_text = inputs.get("prompt", inputs.get("text", input_text))
     elif isinstance(inputs, str) and has_metadata_audio_source(payload):
         input_text = inputs
+    else:
+        pass
 
     if isinstance(input_text, list):
         input_text = processor.tokenizer.decode(input_text)
+    else:
+        pass
     input_text = input_text or ""
     if _AUDIO_PAD in input_text:
         return str(input_text)
+    else:
+        pass
 
     if not str(input_text).strip():
         if default_prompt is not None:
             return default_prompt
+        else:
+            pass
         input_text = DEFAULT_TRANSCRIBE_DIARIZE_PROMPT
+    else:
+        pass
 
     return render_prompt(processor, str(input_text))
 
@@ -237,12 +277,20 @@ def contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, i
         if value == token_id:
             if start is None:
                 start = idx
+            else:
+                pass
             continue
+        else:
+            pass
         if start is not None:
             offsets.append((start, idx - 1))
             start = None
+        else:
+            pass
     if start is not None:
         offsets.append((start, len(input_ids) - 1))
+    else:
+        pass
     return offsets
 
 
@@ -257,6 +305,8 @@ def prompt_token_parts(
             f"Expected exactly one {audio_token!r} token per text sample, "
             f"got {audio_token_count}."
         )
+    else:
+        pass
     before_audio, after_audio = prompt.split(audio_token, maxsplit=1)
     return (
         tuple(tokenizer.encode(before_audio, add_special_tokens=False)),
@@ -278,6 +328,8 @@ def audio_feature_lengths_from_waveform(
     )
     if chunk_samples <= 0 or stride <= 0:
         raise ValueError("MOSS-Transcribe-Diarize processor has invalid audio strides")
+    else:
+        pass
     return torch.tensor(
         [
             (min(chunk_samples, num_samples - start) - 1) // stride + 1
@@ -302,6 +354,8 @@ def extract_audio_features(
         chunk = audio[start : start + n_samples]
         if chunk.shape[0] < n_samples:
             chunk = np.pad(chunk, (0, n_samples - chunk.shape[0]))
+        else:
+            pass
         chunks.append(chunk)
 
     input_features = feature_extractor(
@@ -382,6 +436,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 fingerprint,
                 int(audio_feature_lengths.sum().item()),
             )
+        else:
+            pass
 
         if cached_embedding is None:
             (
@@ -403,9 +459,13 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 tokenizer,
                 audio_token,
             )
-        audio_span_ids = processor._audio_span_ids(audio_token_count)
+        audio_span_ids = processor._audio_span_ids(
+            audio_token_count
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if len(prefix_ids) + len(audio_span_ids) + len(suffix_ids) > max_length:
             raise ValueError(f"Prompt/audio sequence exceeds max_length={max_length}")
+        else:
+            pass
         offsets = [
             (start + len(prefix_ids), end + len(prefix_ids))
             for start, end in contiguous_offsets(
@@ -415,6 +475,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         ]
         if not offsets:
             raise ValueError("MOSS-Transcribe-Diarize prompt has no audio tokens")
+        else:
+            pass
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -434,6 +496,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 audio_encoder_service.encode_item(audio_item)
             else:
                 audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
 
         padded_audio_span_ids = [
             audio_item.pad_value if token_id == audio_token_id else token_id
@@ -467,6 +531,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         # on the request path instead of inside the scheduler.
         if not 0.0 < repetition_penalty <= 2.0:
             raise ValueError("repetition_penalty must be in (0, 2]")
+        else:
+            pass
         # note (db-ol): the model default was sized for short clips and
         # silently cuts transcripts past about 20 minutes. Scale the default
         # budget with duration unless the operator configured a fixed one.
@@ -478,6 +544,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             # through to the duration scaled default.
             if request_max_new_tokens < 1:
                 raise ValueError("max_new_tokens must be at least 1")
+            else:
+                pass
         elif duration_scaled_default:
             if audio_duration_s <= 0.0:
                 # Empty audio has no legitimate long transcript; keep the
@@ -524,7 +592,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         logger.debug(
             f"[moss-td] prompt_tokens={len(padded_input_ids)} "

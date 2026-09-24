@@ -35,17 +35,17 @@ def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
         await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "hi"})
         )
-        assert not coordinator._completion_futures["req-1"].done()
+        assert not coordinator.completion_futures["req-1"].done()
         await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", True, result={"audio": "ok"})
         )
-        assert coordinator._completion_futures["req-1"].result() == {
+        assert coordinator.completion_futures["req-1"].result() == {
             "decode": {"text": "hi"},
             "code2wav": {"audio": "ok"},
         }
 
         await coordinator.submit_request("req-2", "hello")
-        future = coordinator._completion_futures["req-2"]
+        future = coordinator.completion_futures["req-2"]
         assert await coordinator.abort("req-2") is True
         assert control_plane.aborts[0].request_id == "req-2"
         with pytest.raises(asyncio.CancelledError):
@@ -79,13 +79,13 @@ def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
         await coordinator.handle_completion(
             CompleteMessage("text-req", "decode", True, result={"text": "hi"})
         )
-        assert coordinator._completion_futures["text-req"].result() == {"text": "hi"}
+        assert coordinator.completion_futures["text-req"].result() == {"text": "hi"}
 
         await coordinator.submit_request("raw-text-req", "hello")
         await coordinator.handle_completion(
             CompleteMessage("raw-text-req", "decode", True, result={"text": "raw"})
         )
-        assert coordinator._completion_futures["raw-text-req"].result() == {
+        assert coordinator.completion_futures["raw-text-req"].result() == {
             "text": "raw"
         }
 
@@ -96,7 +96,7 @@ def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
         await coordinator.handle_completion(
             CompleteMessage("audio-req", "decode", True, result={"text": "hi"})
         )
-        assert not coordinator._completion_futures["audio-req"].done()
+        assert not coordinator.completion_futures["audio-req"].done()
         await coordinator.handle_completion(
             CompleteMessage(
                 "audio-req",
@@ -105,7 +105,7 @@ def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
                 result={"audio": "ok"},
             )
         )
-        assert coordinator._completion_futures["audio-req"].result() == {
+        assert coordinator.completion_futures["audio-req"].result() == {
             "decode": {"text": "hi"},
             "code2wav": {"audio": "ok"},
         }
@@ -132,7 +132,7 @@ def test_coordinator_rejects_invalid_resolved_terminal_subset() -> None:
 
             with pytest.raises(ValueError, match=error):
                 await coordinator.submit_request("req-1", OmniRequest(inputs="hello"))
-            assert coordinator._requests == {}
+            assert coordinator.requests == {}
             assert coordinator.control_plane.submitted == []
 
     asyncio.run(_run())
@@ -155,8 +155,8 @@ def test_coordinator_stream_cleans_queue_when_terminal_resolver_rejects() -> Non
             await stream.__anext__()
         await stream.aclose()
 
-        assert coordinator._stream_queues == {}
-        assert coordinator._completion_futures == {}
+        assert coordinator.stream_queues == {}
+        assert coordinator.completion_futures == {}
         assert coordinator.control_plane.submitted == []
 
     asyncio.run(_run())
@@ -182,7 +182,7 @@ def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None
 
         task = asyncio.create_task(_consume())
         for _ in range(10):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_completion(
@@ -210,7 +210,7 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
             terminal_stages=["decode"],
         )
         queue: asyncio.Queue = asyncio.Queue()
-        coordinator._stream_queues["req-1"] = queue
+        coordinator.stream_queues["req-1"] = queue
 
         await coordinator.handle_stream(
             StreamMessage(
@@ -271,11 +271,11 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         await coordinator.submit_request("req-1", "hello")
-        future = coordinator._completion_futures["req-1"]
+        future = coordinator.completion_futures["req-1"]
         await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "hi"})
         )
-        assert coordinator._partial_results["req-1"] == {"decode": {"text": "hi"}}
+        assert coordinator.partial_results["req-1"] == {"decode": {"text": "hi"}}
 
         await coordinator.handle_completion(
             CompleteMessage("req-1", "code2wav", False, error="boom")
@@ -283,8 +283,8 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
 
         with pytest.raises(RuntimeError, match="boom"):
             await future
-        assert "req-1" not in coordinator._requests
-        assert "req-1" not in coordinator._partial_results
+        assert "req-1" not in coordinator.requests
+        assert "req-1" not in coordinator.partial_results
         assert control_plane.aborts[-1].request_id == "req-1"
 
     asyncio.run(_run())
@@ -302,14 +302,14 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         await coordinator.submit_request("req-1", "hello")
-        future = coordinator._completion_futures["req-1"]
+        future = coordinator.completion_futures["req-1"]
 
         await coordinator.fail_pending_requests(RuntimeError("stage died"))
 
         with pytest.raises(RuntimeError, match="stage died"):
             await future
-        assert coordinator._requests == {}
-        assert coordinator._partial_results == {}
+        assert coordinator.requests == {}
+        assert coordinator.partial_results == {}
 
     asyncio.run(_run())
 
@@ -328,10 +328,10 @@ async def _drive_stream_until_registered(coordinator: Coordinator, request_id: s
 
     task = asyncio.create_task(_consume())
     for _ in range(100):
-        if request_id in coordinator._completion_futures:
+        if request_id in coordinator.completion_futures:
             break
         await asyncio.sleep(0)
-    future = coordinator._completion_futures[request_id]
+    future = coordinator.completion_futures[request_id]
     return task, error_sink, future
 
 
@@ -350,7 +350,7 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
         stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
         first_chunk = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if "req-1" in coordinator._stream_queues:
+            if "req-1" in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -365,9 +365,9 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
         await stream.aclose()
 
         assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
-        assert "req-1" not in coordinator._requests
-        assert "req-1" not in coordinator._stream_queues
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.requests
+        assert "req-1" not in coordinator.stream_queues
+        assert "req-1" not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -387,22 +387,22 @@ def test_stream_close_after_one_terminal_aborts_remaining_terminal_work() -> Non
         stream = coordinator.stream("req-1", "hello")
         first_terminal = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "done"})
         )
         assert (await first_terminal).from_stage == "decode"
-        assert coordinator._partial_results["req-1"] == {"decode": {"text": "done"}}
+        assert coordinator.partial_results["req-1"] == {"decode": {"text": "done"}}
 
         await stream.aclose()
 
         assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
-        assert coordinator._requests == {}
-        assert coordinator._partial_results == {}
-        assert coordinator._completion_futures == {}
-        assert coordinator._stream_queues == {}
+        assert coordinator.requests == {}
+        assert coordinator.partial_results == {}
+        assert coordinator.completion_futures == {}
+        assert coordinator.stream_queues == {}
 
     asyncio.run(_run())
 
@@ -429,7 +429,7 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
 
         task = asyncio.create_task(_consume())
         for _ in range(100):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_completion(
@@ -444,9 +444,9 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
 
         assert len(messages) == 1
         assert control_plane.aborts == []
-        assert "req-1" not in coordinator._requests
-        assert "req-1" not in coordinator._stream_queues
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.requests
+        assert "req-1" not in coordinator.stream_queues
+        assert "req-1" not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -464,16 +464,16 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
         await coordinator.submit_request("req-1", "original")
-        original_request = coordinator._requests["req-1"]
-        original_future = coordinator._completion_futures["req-1"]
+        original_request = coordinator.requests["req-1"]
+        original_future = coordinator.completion_futures["req-1"]
 
         duplicate = coordinator.stream("req-1", "duplicate")
         with pytest.raises(ValueError, match="already exists"):
             await anext(duplicate)
 
-        assert coordinator._requests["req-1"] is original_request
-        assert coordinator._completion_futures["req-1"] is original_future
-        assert "req-1" not in coordinator._stream_queues
+        assert coordinator.requests["req-1"] is original_request
+        assert coordinator.completion_futures["req-1"] is original_future
+        assert "req-1" not in coordinator.stream_queues
         assert control_plane.aborts == []
 
         assert await coordinator.abort("req-1") is True
@@ -498,7 +498,7 @@ def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
         stream = coordinator.stream("req-1", "original")
         terminal_event = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_completion(
@@ -506,20 +506,20 @@ def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
         )
         assert (await terminal_event).result == {"text": "done"}
 
-        old_future = coordinator._completion_futures["req-1"]
-        old_queue = coordinator._stream_queues["req-1"]
-        assert "req-1" not in coordinator._requests
+        old_future = coordinator.completion_futures["req-1"]
+        old_queue = coordinator.stream_queues["req-1"]
+        assert "req-1" not in coordinator.requests
 
         with pytest.raises(ValueError, match="already exists"):
             await coordinator.submit_request("req-1", "replacement")
-        assert coordinator._completion_futures["req-1"] is old_future
-        assert coordinator._stream_queues["req-1"] is old_queue
+        assert coordinator.completion_futures["req-1"] is old_future
+        assert coordinator.stream_queues["req-1"] is old_queue
 
         await stream.aclose()
-        assert "req-1" not in coordinator._completion_futures
-        assert "req-1" not in coordinator._stream_queues
+        assert "req-1" not in coordinator.completion_futures
+        assert "req-1" not in coordinator.stream_queues
         await coordinator.submit_request("req-1", "replacement")
-        assert coordinator._requests["req-1"].request_id == "req-1"
+        assert coordinator.requests["req-1"].request_id == "req-1"
 
     asyncio.run(_run())
 
@@ -550,7 +550,7 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
         stream = coordinator.stream("req-1", "original")
         first_chunk = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -569,17 +569,17 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
         await coordinator.handle_completion(
             CompleteMessage("req-1", "decode", True, result={"text": "done"})
         )
-        assert "req-1" not in coordinator._requests
-        assert "req-1" in coordinator._abort_tasks
+        assert "req-1" not in coordinator.requests
+        assert "req-1" in coordinator.abort_tasks
 
         with pytest.raises(ValueError, match="already exists"):
             await coordinator.submit_request("req-1", "replacement")
 
         control_plane.release_abort.set()
         await close_task
-        assert coordinator._abort_tasks == {}
-        assert coordinator._completion_futures == {}
-        assert coordinator._stream_queues == {}
+        assert coordinator.abort_tasks == {}
+        assert coordinator.completion_futures == {}
+        assert coordinator.stream_queues == {}
 
     asyncio.run(_run())
 
@@ -598,7 +598,7 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
 
         next_event = asyncio.create_task(anext(coordinator.stream("req-1", "hello")))
         for _ in range(100):
-            if "req-1" in coordinator._requests:
+            if "req-1" in coordinator.requests:
                 break
             await asyncio.sleep(0)
 
@@ -607,10 +607,10 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
             await next_event
 
         assert [msg.request_id for msg in control_plane.aborts] == ["req-1"]
-        assert coordinator._requests == {}
-        assert coordinator._completion_futures == {}
-        assert coordinator._stream_queues == {}
-        assert coordinator._abort_tasks == {}
+        assert coordinator.requests == {}
+        assert coordinator.completion_futures == {}
+        assert coordinator.stream_queues == {}
+        assert coordinator.abort_tasks == {}
 
     asyncio.run(_run())
 
@@ -637,7 +637,7 @@ def test_coordinator_stream_abort_failure_is_logged(
         stream = coordinator.stream("req-1", OmniRequest(inputs="hello"))
         first_chunk = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if "req-1" in coordinator._stream_queues:
+            if "req-1" in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -651,8 +651,8 @@ def test_coordinator_stream_abort_failure_is_logged(
         await first_chunk
         await stream.aclose()
 
-        assert "req-1" not in coordinator._stream_queues
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.stream_queues
+        assert "req-1" not in coordinator.completion_futures
 
     with caplog.at_level("WARNING"):
         asyncio.run(_run())
@@ -693,7 +693,7 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
         # carrying an un-retrieved exception.
         assert error_sink == ["aborted"]
         assert future.cancelled() is True
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.completion_futures
 
         # Dropping the future must not trip the loop's exception handler.
         del future
@@ -734,7 +734,7 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
 
         assert error_sink == ["stage died"]
         assert future.cancelled() is True
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.completion_futures
 
         del future
         gc.collect()
@@ -771,7 +771,7 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
 
         assert error_sink == ["boom"]
         assert future.cancelled() is True
-        assert "req-1" not in coordinator._completion_futures
+        assert "req-1" not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -793,7 +793,7 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
             await coordinator.submit_request("req-2", "hello")
 
         assert [msg.request_id for _, _, msg in control_plane.submitted] == ["req-1"]
-        assert list(coordinator._requests) == ["req-1"]
+        assert list(coordinator.requests) == ["req-1"]
 
         await coordinator.handle_completion(
             CompleteMessage("req-1", "preprocess", True, result={"ok": True})
@@ -951,7 +951,9 @@ def _multi_terminal_replica_runtime():
     )
 
 
-def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
+def test_coordinator_projects_one_process_choice_onto_member_stages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def _run() -> None:
         logical_plan, replica_topology = _linear_replica_runtime(tail=2)
         coordinator = Coordinator(
@@ -980,7 +982,10 @@ def test_coordinator_projects_one_process_choice_onto_member_stages() -> None:
             "normalize",
         ]
 
-    asyncio.run(_run())
+    with caplog.at_level("DEBUG", logger="sglang_omni.pipeline.coordinator"):
+        asyncio.run(_run())
+    assert "Coordinator submitted req=req-0" in caplog.text
+    assert "bindings={'decode': 1, 'postprocess': 1}" in caplog.text
 
 
 def test_binding_validation_precedes_request_registration() -> None:
@@ -1011,8 +1016,8 @@ def test_binding_validation_precedes_request_registration() -> None:
         with pytest.raises(ValueError, match="selected replica 2"):
             await coordinator.submit_request("req-retry", "hello")
 
-        assert coordinator._requests == {}
-        assert coordinator._completion_futures == {}
+        assert coordinator.requests == {}
+        assert coordinator.completion_futures == {}
 
         await coordinator.submit_request("req-retry", "hello")
         assert control_plane.submitted[0][2].replica_bindings == {

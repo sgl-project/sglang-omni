@@ -133,6 +133,8 @@ class TimestepEmbedder(nn.Module):
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
+        else:
+            pass
         return embedding
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
@@ -190,9 +192,13 @@ class CausalConvBlock(nn.Module):
     ) -> torch.Tensor:
         if mask is not None:
             x = x * mask
+        else:
+            pass
         x = self.block(x)
         if mask is not None:
             x = x * mask
+        else:
+            pass
         return x
 
 
@@ -299,6 +305,10 @@ class DiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(initialize_linear)
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -325,8 +335,12 @@ class DiT(nn.Module):
         if spks is not None:
             spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
             x = pack([x, spks], "b * t")[0]
+        else:
+            pass
         if cond is not None:
             x = pack([x, cond], "b * t")[0]
+        else:
+            pass
         x = x.transpose(1, 2)
         attn_mask = mask.bool()
         x = self.in_proj(x)

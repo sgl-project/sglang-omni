@@ -28,11 +28,15 @@ def normalize_context_length(value: Any, *, model_name: str) -> int:
         raise ValueError(
             f"{model_name} context length must be a positive integer, got {value!r}"
         )
+    else:
+        pass
     context_length = int(value)
     if context_length <= 0:
         raise ValueError(
             f"{model_name} resolved an invalid context length: {context_length}"
         )
+    else:
+        pass
     return context_length
 
 
@@ -83,6 +87,8 @@ class SGLangGenerationEngineBuilder(ABC):
             # capture rather than at configuration time.
             server_args_overrides = dict(server_args_overrides or {})
             server_args_overrides["disable_cuda_graph"] = True
+        else:
+            pass
 
         requested_context_length = (
             server_args_overrides.get("context_length")
@@ -115,7 +121,11 @@ class SGLangGenerationEngineBuilder(ABC):
                 raise ValueError(
                     f"{self.model_name} does not support a context_length override"
                 )
+            else:
+                pass
             overrides.pop("context_length")
+        else:
+            pass
         # Note (Jiaxin Deng): user fractions were rejected upstream; what remains
         # is a builder KV-tuned default, dropped so headroom derives cleanly.
         from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
@@ -128,6 +138,10 @@ class SGLangGenerationEngineBuilder(ABC):
                     f"mem_fraction_static={builder_default_fraction} because the "
                     "stage declares engine.kv_cache_bytes"
                 )
+            else:
+                pass
+        else:
+            pass
         sglang_backend.pin_resolved_device_type(overrides, concrete_device.type)
 
         server_args = sglang_backend.build_sglang_server_args(
@@ -146,11 +160,15 @@ class SGLangGenerationEngineBuilder(ABC):
                 f"{cfg.chunked_prefill_size}, prefill CUDA graph cap "
                 f"{cfg.cuda_graph_config.prefill.max_bs}"
             )
+        else:
+            pass
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
+        else:
+            pass
 
         def before_memory_pool(model_worker: Any) -> None:
             self.before_memory_pool(
@@ -171,7 +189,11 @@ class SGLangGenerationEngineBuilder(ABC):
                     "(supports_breakable_prefill_cuda_graph=False); refusing "
                     "cuda_graph_backend_prefill='breakable'"
                 )
+            else:
+                pass
             infra_kwargs.setdefault("enable_prefill_input_embeds", True)
+        else:
+            pass
         want_cuda_graph, (
             model_worker,
             tree_cache,
@@ -207,6 +229,10 @@ class SGLangGenerationEngineBuilder(ABC):
                     model_worker.model_runner,
                     operator_selected=operator_selected,
                 )
+            else:
+                pass
+        else:
+            pass
 
         try:
             # Model-local encoder graphs and caches must be initialized after
@@ -217,11 +243,7 @@ class SGLangGenerationEngineBuilder(ABC):
                 generation_cuda_graph_enabled=want_cuda_graph,
             )
 
-            output_proc = sglang_backend.SGLangOutputProcessor(
-                capture_hidden=False,
-                capture_hidden_layers=None,
-                model=model,
-            )
+            output_proc = sglang_backend.SGLangOutputProcessor()
             self.setup_runtime_resources(model, server_args)
             scheduler, model_runner = self.build_runtime(
                 model_worker=model_worker,

@@ -713,11 +713,11 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
             *,
             max_batch_size: int,
         ) -> None:
-            self._compiled_forward_kvcached_layers = forward_kvcached_layers
-            self._compiled_forward_kvcached_max_bs = max_batch_size
+            self.compiled_forward_kvcached_layers = forward_kvcached_layers
+            self.compiled_forward_kvcached_max_bs = max_batch_size
 
     audio_decoder = _AudioDecoder()
-    model = SimpleNamespace(_audio_decoder=audio_decoder)
+    model = SimpleNamespace(audio_decoder=audio_decoder)
 
     stages.compile_s2pro_codebook_decoder(model, max_batch_size=2)
 
@@ -727,8 +727,8 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
     assert getattr(target, "__name__", "") == "forward_kvcached"
     assert mode == "reduce-overhead"
     assert kwargs == {"dynamic": True}
-    assert audio_decoder._compiled_forward_kvcached_layers == ["compiled-1"]
-    assert audio_decoder._compiled_forward_kvcached_max_bs == 2
+    assert audio_decoder.compiled_forward_kvcached_layers == ["compiled-1"]
+    assert audio_decoder.compiled_forward_kvcached_max_bs == 2
     assert warmup_calls == [(model, 2)]
 
 
@@ -760,7 +760,7 @@ def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
             return decoder_input
 
     audio_decoder = _AudioDecoder()
-    model = SimpleNamespace(_audio_decoder=audio_decoder)
+    model = SimpleNamespace(audio_decoder=audio_decoder)
 
     stages.warmup_s2pro_codebook_decoder(model, max_batch_size=20)
 
@@ -809,9 +809,9 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
             self.layers = [_Layer()]
             self.embeddings = torch.nn.Embedding(32, 4)
             self.config = SimpleNamespace(num_codebooks=10)
-            self._eager_forward_kvcached_layers = ["eager"]
-            self._compiled_forward_kvcached_layers = None
-            self._compiled_forward_kvcached_max_bs = 0
+            self.eager_forward_kvcached_layers = ["eager"]
+            self.compiled_forward_kvcached_layers = None
+            self.compiled_forward_kvcached_max_bs = 0
             self.reset_calls = 0
 
         def set_compiled_forward_kvcached_layers(
@@ -820,8 +820,8 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
             *,
             max_batch_size: int,
         ) -> None:
-            self._compiled_forward_kvcached_layers = forward_kvcached_layers
-            self._compiled_forward_kvcached_max_bs = max_batch_size
+            self.compiled_forward_kvcached_layers = forward_kvcached_layers
+            self.compiled_forward_kvcached_max_bs = max_batch_size
 
         def reset_caches(self) -> None:
             self.reset_calls += 1
@@ -834,19 +834,19 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
 
         def select_forward_kvcached_layers(self) -> list[object]:
             return (
-                self._compiled_forward_kvcached_layers
-                if self._compiled_forward_kvcached_layers is not None
-                else self._eager_forward_kvcached_layers
+                self.compiled_forward_kvcached_layers
+                if self.compiled_forward_kvcached_layers is not None
+                else self.eager_forward_kvcached_layers
             )
 
     audio_decoder = _AudioDecoder()
     stages.compile_s2pro_codebook_decoder(
-        SimpleNamespace(_audio_decoder=audio_decoder),
+        SimpleNamespace(audio_decoder=audio_decoder),
         max_batch_size=8,
     )
 
-    assert audio_decoder._compiled_forward_kvcached_layers is None
-    assert audio_decoder._compiled_forward_kvcached_max_bs == 0
+    assert audio_decoder.compiled_forward_kvcached_layers is None
+    assert audio_decoder.compiled_forward_kvcached_max_bs == 0
     assert audio_decoder.select_forward_kvcached_layers() == ["eager"]
     assert audio_decoder.reset_calls == 3
 
@@ -940,7 +940,7 @@ def _run_s2pro_engine_with_fake_buffers(
         text_model = kwargs["text_model"]
         audio_decoder = kwargs["audio_decoder"]
         text_model.vq_decode_max_batch_size = text_buffer_bs
-        text_model._audio_decoder = audio_decoder
+        text_model.audio_decoder = audio_decoder
         audio_decoder.kv_cache_max_batch_size = audio_buffer_bs
 
     monkeypatch.setattr(
@@ -1688,7 +1688,7 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
     decoder.input_pos = torch.zeros(1, dtype=torch.long)
     decoder.freqs_cis = torch.zeros(8, 1, 1, dtype=torch.float32)
     decoder.layers = [_EagerLayer()]
-    decoder._eager_forward_kvcached_layers = [
+    decoder.eager_forward_kvcached_layers = [
         layer.forward_kvcached for layer in decoder.layers
     ]
     decoder.norm = lambda x: x
@@ -1706,8 +1706,8 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
         seen_calls.append("compiled")
         return x + 1
 
-    decoder._compiled_forward_kvcached_layers = [compiled]
-    decoder._compiled_forward_kvcached_max_bs = 2
+    decoder.compiled_forward_kvcached_layers = [compiled]
+    decoder.compiled_forward_kvcached_max_bs = 2
 
     x = torch.zeros((2, 1, 4), dtype=torch.float32)
     out = FishQwen3AudioDecoder.forward_kvcached(decoder, x=x, codebook_idx=2)

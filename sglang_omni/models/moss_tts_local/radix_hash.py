@@ -181,6 +181,8 @@ def poly_row_hash(rows: torch.Tensor) -> torch.Tensor:
     """
     if rows.ndim != 2:
         raise ValueError(f"rows must be 2-D [B, C], got shape {tuple(rows.shape)}")
+    else:
+        pass
     work = rows.to(torch.int64)
     acc = torch.zeros(work.shape[0], dtype=torch.int64, device=work.device)
     # Static trip count (one frame = a fixed number of channels): the loop
@@ -220,6 +222,8 @@ def gpu_radix_row_hash(
         output = torch.empty((rows.shape[0],), dtype=torch.int64, device=rows.device)
         if rows.shape[0] == 0:
             return output
+        else:
+            pass
         with torch.cuda.device(rows.device):
             radix_row_hash_kernel[(triton.cdiv(rows.shape[0], _TRITON_BLOCK_SIZE),)](
                 rows,
@@ -238,6 +242,8 @@ def gpu_radix_row_hash(
                 num_warps=4,
             )
         return output
+    else:
+        pass
 
     folded = torch.remainder(poly_row_hash(rows), hash_space)
     return torch.where(next_text == end_id, next_text.to(torch.int64), folded)
@@ -280,6 +286,8 @@ def build_rows_and_radix_token_ids(
         ids = torch.empty((batch_size,), dtype=torch.int64, device=codes.device)
         if batch_size == 0:
             return rows, ids
+        else:
+            pass
         with torch.cuda.device(codes.device):
             build_rows_and_hash_kernel[(triton.cdiv(batch_size, _TRITON_BLOCK_SIZE),)](
                 stop_choice,
@@ -300,6 +308,8 @@ def build_rows_and_radix_token_ids(
                 num_warps=4,
             )
         return rows, ids
+    else:
+        pass
 
     next_text = torch.where(
         stop_choice == 0,

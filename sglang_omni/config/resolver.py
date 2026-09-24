@@ -44,16 +44,16 @@ class ConfigResolver:
     """Applies a patch set to a baseline config."""
 
     def __init__(self, base: PipelineConfig) -> None:
-        self._base = base
+        self.base = base
 
     @property
     def config_cls(self) -> type[PipelineConfig]:
-        return type(self._base)
+        return type(self.base)
 
     def resolve(self, patchset: ConfigPatchSet) -> ResolvedConfig:
         patchset.require_no_conflicts()
 
-        data = self._base.model_dump()
+        data = self.base.model_dump()
         provenance = ProvenanceMap.from_patchset(patchset)
 
         ordered = patchset.ordered()
@@ -71,9 +71,11 @@ class ConfigResolver:
         if (
             "model_path" in touched
             and "name" not in touched
-            and data.get("name") == self._base.model_path
+            and data.get("name") == self.base.model_path
         ):
             data["name"] = None
+        else:
+            pass
 
         config = self.config_cls(**data)
 
@@ -98,6 +100,8 @@ def apply(data: dict[str, Any], patch: ConfigPatch) -> None:
     if patch.path.is_leaf or not isinstance(patch.value, dict):
         patch.path.write(data, deepcopy(patch.value))
         return
+    else:
+        pass
 
     existing = safe_read(patch.path, data)
     if isinstance(existing, dict):
@@ -165,8 +169,12 @@ def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
             if key not in expected or key not in actual:
                 out.append(ConfigDifference(child, expected.get(key), actual.get(key)))
                 continue
+            else:
+                pass
             out.extend(diff(expected[key], actual[key], child))
         return out
+    else:
+        pass
 
     if is_named_list(expected) and is_named_list(actual):
         out = []
@@ -181,11 +189,17 @@ def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
                     )
                 )
                 continue
+            else:
+                pass
             out.extend(diff(expected_by_name[name], actual_by_name[name], child))
         return out
+    else:
+        pass
 
     if expected != actual:
         return [ConfigDifference(prefix, expected, actual)]
+    else:
+        pass
     return []
 
 

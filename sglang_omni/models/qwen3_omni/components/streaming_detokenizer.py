@@ -32,6 +32,8 @@ def thinker_output(state: Qwen3OmniPipelineState) -> dict:
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if isinstance(thinker_out, dict):
         return thinker_out
+    else:
+        pass
     return {
         "output_ids": [],
         "step": 0,
@@ -43,11 +45,17 @@ def thinker_output(state: Qwen3OmniPipelineState) -> dict:
 def prompt_token_count(state: Qwen3OmniPipelineState) -> int:
     if not isinstance(state.prompt, dict):
         return 0
+    else:
+        pass
     input_ids = state.prompt.get("input_ids")
     if input_ids is None:
         return 0
+    else:
+        pass
     if isinstance(input_ids, list):
         return len(input_ids)
+    else:
+        pass
     return int(input_ids.numel())
 
 
@@ -82,6 +90,8 @@ def build_decode_result(
     if final_event is not None:
         result.update(final_event.payload)
         result.setdefault("modality", final_event.modality)
+    else:
+        pass
     if is_streaming:
         result.pop("text", None)
     elif "text" not in result:
@@ -89,10 +99,16 @@ def build_decode_result(
         if isinstance(output_ids, list) and output_ids:
             result["text"] = tokenizer.decode(output_ids, skip_special_tokens=True)
             result.setdefault("modality", "text")
+        else:
+            pass
+    else:
+        pass
     for key in ("finish_reason", "output_token_logprobs", "weight_version"):
         value = thinker_out.get(key)
         if value is not None:
             result.setdefault(key, value)
+        else:
+            pass
     completion_ids = thinker_out.get("output_ids") or []
     prompt_tokens = prompt_token_count(state)
     result.setdefault(

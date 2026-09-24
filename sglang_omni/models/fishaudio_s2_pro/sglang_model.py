@@ -89,6 +89,8 @@ class S2ProAttention(nn.Module):
         if qk_norm:
             self.q_norm = RMSNorm(head_dim, eps=rms_norm_eps)
             self.k_norm = RMSNorm(head_dim, eps=rms_norm_eps)
+        else:
+            pass
 
     def forward(
         self,
@@ -100,6 +102,8 @@ class S2ProAttention(nn.Module):
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if self.qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
+        else:
+            pass
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch)
         output, _ = self.o_proj(attn_output)
@@ -204,6 +208,8 @@ class S2ProSGLangTextModel(nn.Module):
             rms_norm_eps = tc.norm_eps
             qk_norm = tc.attention_qk_norm
             tie_word_embeddings = tc.tie_word_embeddings
+        else:
+            pass
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -211,7 +217,7 @@ class S2ProSGLangTextModel(nn.Module):
         self.tie_word_embeddings = tie_word_embeddings
 
         # Set via setup_vq_decode() after model load
-        self._vq_ready = False
+        self.vq_ready = False
 
         self.embed_tokens = VocabParallelEmbedding(vocab_size, hidden_size)
         self.start_layer = 0
@@ -238,6 +244,8 @@ class S2ProSGLangTextModel(nn.Module):
             from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
+        else:
+            pass
 
     def setup_vq_decode(
         self,
@@ -255,23 +263,23 @@ class S2ProSGLangTextModel(nn.Module):
         device = self.embed_tokens.weight.device
 
         # Audio decoder (fast head)
-        self._audio_decoder = audio_decoder
-        self._codebook_size = codebook_size
-        self._num_codebooks = num_codebooks
-        self._semantic_begin_id = semantic_begin_id
-        self._semantic_end_id = semantic_end_id
-        self._im_end_token_id = int(im_end_token_id)
+        self.audio_decoder = audio_decoder
+        self.codebook_size = codebook_size
+        self.num_codebooks = num_codebooks
+        self.semantic_begin_id = semantic_begin_id
+        self.semantic_end_id = semantic_end_id
+        self.im_end_token_id = int(im_end_token_id)
 
         # Shared codebook embedding from audio decoder (for VQ input combination)
-        self._vq_codebook_embeddings = audio_decoder.codebook_embeddings
-        self._vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
-        self._vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
+        self.vq_codebook_embeddings = audio_decoder.codebook_embeddings
+        self.vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
+        self.vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
 
         # Input buffers: VQ codes from previous step (updated by ModelRunner)
-        self._vq_codes = torch.zeros(
+        self.vq_codes = torch.zeros(
             max_batch_size, num_codebooks, dtype=torch.long, device=device
         )
-        self._vq_mask = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
+        self.vq_mask = torch.zeros(max_batch_size, dtype=torch.bool, device=device)
 
         # Semantic bias: mask all non-semantic and non-EOS tokens
         bias = torch.full(
@@ -279,55 +287,57 @@ class S2ProSGLangTextModel(nn.Module):
         )
         bias[semantic_begin_id : semantic_end_id + 1] = 0.0
         bias[im_end_token_id] = 0.0
-        self._semantic_bias = bias
+        self.semantic_bias = bias
 
         # Output buffers: written by _decode_codebooks, read by ModelRunner
-        self._output_codes = torch.zeros(
+        self.output_codes = torch.zeros(
             max_batch_size, num_codebooks + 1, dtype=torch.long, device=device
         )
-        self._output_semantic_ids = torch.zeros(
+        self.output_semantic_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
 
-        self._graph_top_k = _GRAPH_TOP_K
-        self._sampling_temperature = torch.full(
+        self.graph_top_k = _GRAPH_TOP_K
+        self.sampling_temperature = torch.full(
             (max_batch_size,), _DEFAULT_TEMPERATURE, device=device
         )
-        self._sampling_top_p = torch.full(
+        self.sampling_top_p = torch.full(
             (max_batch_size,), _DEFAULT_TOP_P, device=device
         )
-        self._sampling_top_k = torch.full(
+        self.sampling_top_k = torch.full(
             (max_batch_size,), _GRAPH_TOP_K, dtype=torch.long, device=device
         )
-        self._sampling_rep_penalty = torch.full(
+        self.sampling_rep_penalty = torch.full(
             (max_batch_size,), _DEFAULT_REP_PENALTY, device=device
         )
         # Per-request seed (``_NO_SEED`` = unseeded) + AR step for reproducible
         # semantic-token sampling via multinomial_with_seed.
-        self._sampling_seeds = torch.full(
+        self.sampling_seeds = torch.full(
             (max_batch_size,), _NO_SEED, dtype=torch.long, device=device
         )
-        self._step_count = torch.zeros(max_batch_size, dtype=torch.long, device=device)
-        self._ras_temperature = torch.full((max_batch_size,), 1.0, device=device)
-        self._ras_top_p = torch.full((max_batch_size,), 0.9, device=device)
-        self._prev_tokens = torch.zeros(
+        self.step_count = torch.zeros(max_batch_size, dtype=torch.long, device=device)
+        self.ras_temperature = torch.full((max_batch_size,), 1.0, device=device)
+        self.ras_top_p = torch.full((max_batch_size,), 0.9, device=device)
+        self.prev_tokens = torch.zeros(
             max_batch_size, rep_history_len, dtype=torch.long, device=device
         )
-        self._prev_token_count = torch.zeros(
+        self.prev_token_count = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
-        self._rep_history_len = rep_history_len
-        self._rep_positions = torch.arange(rep_history_len, device=device)
-        self._top_k_positions = torch.arange(_GRAPH_TOP_K, device=device)
-        self._ras_range = torch.arange(4, 0, -1, device=device)
+        self.rep_history_len = rep_history_len
+        self.rep_positions = torch.arange(rep_history_len, device=device)
+        self.top_k_positions = torch.arange(_GRAPH_TOP_K, device=device)
+        self.ras_range = torch.arange(4, 0, -1, device=device)
 
-        self._vq_ready = True
+        self.vq_ready = True
 
     @property
     def vq_decode_max_batch_size(self) -> int:
-        if not self._vq_ready:
+        if not self.vq_ready:
             raise RuntimeError("VQ decode buffers are not initialized")
-        return int(self._vq_codes.shape[0])
+        else:
+            pass
+        return int(self.vq_codes.shape[0])
 
     def forward(
         self,
@@ -338,6 +348,8 @@ class S2ProSGLangTextModel(nn.Module):
     ) -> LogitsProcessorOutput:
         if input_embeds is None and forward_batch.input_embeds is not None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
 
         if input_embeds is not None:
             # Prefill: input_embeds from ModelRunner (with VQ injection)
@@ -346,17 +358,19 @@ class S2ProSGLangTextModel(nn.Module):
             hidden_states = self.embed_tokens(input_ids)
 
             # Decode: VQ combination from persistent buffers (CUDA-graph-safe)
-            if self._vq_ready:
+            if self.vq_ready:
                 bs = hidden_states.shape[0]
-                vq_codes = self._vq_codes[:bs]
-                vq_mask = self._vq_mask[:bs]
-                offset_parts = vq_codes + self._vq_codebook_offsets[None, :]
-                all_embeds = self._vq_codebook_embeddings(offset_parts)
+                vq_codes = self.vq_codes[:bs]
+                vq_mask = self.vq_mask[:bs]
+                offset_parts = vq_codes + self.vq_codebook_offsets[None, :]
+                all_embeds = self.vq_codebook_embeddings(offset_parts)
                 vq_sum = all_embeds.sum(dim=1).to(hidden_states.dtype)
-                combined = (hidden_states + vq_sum) * self._vq_scale
+                combined = (hidden_states + vq_sum) * self.vq_scale
                 hidden_states = torch.where(
                     vq_mask.unsqueeze(-1), combined, hidden_states
                 )
+            else:
+                pass
 
         # Transformer
         residual = None
@@ -370,6 +384,8 @@ class S2ProSGLangTextModel(nn.Module):
         if forward_batch.forward_mode.is_extend():
             last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden_states = hidden_states[last_index]
+        else:
+            pass
 
         # Logits
         if self.tie_word_embeddings:
@@ -378,8 +394,10 @@ class S2ProSGLangTextModel(nn.Module):
             logits = self.lm_head(hidden_states)
 
         # Codebook decode: constrained sampling + batched codebook loop
-        if self._vq_ready:
+        if self.vq_ready:
             self.decode_codebooks(logits, hidden_states)
+        else:
+            pass
 
         return LogitsProcessorOutput(
             next_token_logits=logits,
@@ -396,41 +414,41 @@ class S2ProSGLangTextModel(nn.Module):
         """
         bs = logits.shape[0]
 
-        biased_logits = logits + self._semantic_bias
+        biased_logits = logits + self.semantic_bias
         biased_logits = biased_logits.to(torch.bfloat16).to(torch.float32)
 
-        count = self._prev_token_count[:bs]
-        idx_base = count.unsqueeze(1) - self._ras_range.unsqueeze(0)
+        count = self.prev_token_count[:bs]
+        idx_base = count.unsqueeze(1) - self.ras_range.unsqueeze(0)
         idx_base = idx_base.clamp(min=0)
-        last4 = torch.gather(self._prev_tokens[:bs], 1, idx_base)
+        last4 = torch.gather(self.prev_tokens[:bs], 1, idx_base)
         sorted_last4 = torch.sort(last4, dim=-1).values
         has_dup = (sorted_last4[:, 1:] == sorted_last4[:, :-1]).any(dim=-1)
         use_ras = has_dup & (count >= 4)
 
         temperature = torch.where(
-            use_ras, self._ras_temperature[:bs], self._sampling_temperature[:bs]
+            use_ras, self.ras_temperature[:bs], self.sampling_temperature[:bs]
         ).unsqueeze(1)
         top_p = torch.where(
-            use_ras, self._ras_top_p[:bs], self._sampling_top_p[:bs]
+            use_ras, self.ras_top_p[:bs], self.sampling_top_p[:bs]
         ).unsqueeze(1)
 
-        prev = self._prev_tokens[:bs]
+        prev = self.prev_tokens[:bs]
         scores = torch.gather(biased_logits, dim=-1, index=prev)
-        rep_penalty = self._sampling_rep_penalty[:bs].unsqueeze(1)
+        rep_penalty = self.sampling_rep_penalty[:bs].unsqueeze(1)
         penalized = torch.where(scores < 0, scores * rep_penalty, scores / rep_penalty)
-        valid_mask = self._rep_positions.unsqueeze(0) < count.unsqueeze(1)
+        valid_mask = self.rep_positions.unsqueeze(0) < count.unsqueeze(1)
         scores = torch.where(valid_mask, penalized, scores)
         biased_logits.scatter_(dim=-1, index=prev, src=scores.to(biased_logits.dtype))
 
         top_k_logits, top_k_indices = torch.topk(
-            biased_logits, self._graph_top_k, dim=-1
+            biased_logits, self.graph_top_k, dim=-1
         )
         effective_k = torch.where(
-            self._sampling_top_k[:bs] > 0,
-            self._sampling_top_k[:bs].clamp(max=self._graph_top_k),
-            self._graph_top_k,
+            self.sampling_top_k[:bs] > 0,
+            self.sampling_top_k[:bs].clamp(max=self.graph_top_k),
+            self.graph_top_k,
         )
-        per_k_mask = self._top_k_positions.unsqueeze(0) >= effective_k.unsqueeze(1)
+        per_k_mask = self.top_k_positions.unsqueeze(0) >= effective_k.unsqueeze(1)
         top_k_logits = top_k_logits.masked_fill(per_k_mask, -float("inf"))
 
         cum_probs = torch.cumsum(
@@ -444,41 +462,41 @@ class S2ProSGLangTextModel(nn.Module):
         )
         # Seeded rows draw reproducibly from (seed, step); unseeded rows keep the
         # legacy torch.multinomial draw, so unseeded decode is unchanged.
-        seeds = self._sampling_seeds[:bs]
+        seeds = self.sampling_seeds[:bs]
         unseeded_choice = torch.multinomial(probs, num_samples=1)
         seeded_choice = multinomial_with_seed(
-            torch.log(probs), seeds.clamp_min(0), self._step_count[:bs]
+            torch.log(probs), seeds.clamp_min(0), self.step_count[:bs]
         )
         choice = torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
 
         # Batched codebook loop
-        self._audio_decoder.reset_caches()
-        fast_input = self._audio_decoder.project_in(hidden_states)
+        self.audio_decoder.reset_caches()
+        fast_input = self.audio_decoder.project_in(hidden_states)
         fast_input = fast_input.unsqueeze(1)  # [bs, 1, fast_dim]
-        self._audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
+        self.audio_decoder.forward_kvcached(fast_input, codebook_idx=0)
 
-        is_eos = semantic_token == self._im_end_token_id
-        sem_id = (semantic_token - self._semantic_begin_id).clamp(
+        is_eos = semantic_token == self.im_end_token_id
+        sem_id = (semantic_token - self.semantic_begin_id).clamp(
             min=0,
-            max=self._codebook_size - 1,
+            max=self.codebook_size - 1,
         )
         sem_id = torch.where(is_eos, torch.zeros_like(sem_id), sem_id)
-        cb_hidden = self._audio_decoder.embeddings(sem_id).unsqueeze(1)
+        cb_hidden = self.audio_decoder.embeddings(sem_id).unsqueeze(1)
 
-        self._output_codes[:bs, 0] = semantic_token
-        self._output_codes[:bs, 1] = sem_id
+        self.output_codes[:bs, 0] = semantic_token
+        self.output_codes[:bs, 1] = sem_id
 
-        for cb_idx in range(1, self._num_codebooks):
-            cb_logits = self._audio_decoder.forward_kvcached(
+        for cb_idx in range(1, self.num_codebooks):
+            cb_logits = self.audio_decoder.forward_kvcached(
                 cb_hidden, codebook_idx=cb_idx
             )
-            cb_logits = cb_logits[:, 0, : self._codebook_size]
+            cb_logits = cb_logits[:, 0, : self.codebook_size]
             cb_token = torch.argmax(cb_logits, dim=-1)  # [bs]
-            cb_hidden = self._audio_decoder.embeddings(cb_token).unsqueeze(1)
-            self._output_codes[:bs, cb_idx + 1] = cb_token
+            cb_hidden = self.audio_decoder.embeddings(cb_token).unsqueeze(1)
+            self.output_codes[:bs, cb_idx + 1] = cb_token
 
-        self._output_semantic_ids[:bs] = semantic_token
+        self.output_semantic_ids[:bs] = semantic_token
 
     def get_embed_tokens(self):
         return self.embed_tokens
@@ -495,6 +513,8 @@ class S2ProSGLangTextModel(nn.Module):
 
             if self.load_remapped_weight(name, loaded_weight, params_dict):
                 continue
+            else:
+                pass
 
             if name in params_dict:
                 param = params_dict[name]
@@ -525,9 +545,13 @@ class S2ProSGLangTextModel(nn.Module):
         for ckpt_suffix, target in remap.items():
             if not name.endswith(ckpt_suffix):
                 continue
+            else:
+                pass
             prefix = name[: -len(ckpt_suffix)]
             if target is None:
                 return self.load_fused_qkv(prefix, loaded_weight, params_dict)
+            else:
+                pass
             if isinstance(target, tuple):
                 target_suffix, shard_id = target
             else:
@@ -550,6 +574,8 @@ class S2ProSGLangTextModel(nn.Module):
         target_name = prefix + "self_attn.qkv_proj.weight"
         if target_name not in params_dict:
             return True
+        else:
+            pass
         param = params_dict[target_name]
         layer = self.layers[int(prefix.split(".")[1])]
         q_size = layer.self_attn.q_size

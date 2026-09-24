@@ -27,7 +27,7 @@ from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel
 
 class _FakeGraphRunner:
     def __init__(self, model, keys) -> None:
-        self._model = model
+        self.model = model
         self._keys = set(keys)
         self.calls: list[tuple[tuple[int, ...], bool, str]] = []
 
@@ -48,7 +48,7 @@ class _FakeGraphRunner:
         else:
             mode, reason = "eager", "ineligible"
         self.calls.append((tuple(codes.shape), eligible, mode))
-        return Code2WavRunResult(self._model(codes), mode, key, reason)
+        return Code2WavRunResult(self.model(codes), mode, key, reason)
 
     def stats(self) -> dict:
         return {
@@ -81,7 +81,7 @@ def _make_chunk_aligned_scheduler(**kwargs) -> Code2WavScheduler:
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
         **kwargs,
     )
 
@@ -251,7 +251,7 @@ def _states_with_ready(count: int, ready: int) -> list[tuple[str, Code2WavStream
 
 def test_eager_step_plan_is_one_forward() -> None:
     scheduler = _make_batching_scheduler()
-    assert scheduler._cuda_graph_runner is None
+    assert scheduler.cuda_graph_runner is None
     participants = [(f"r{i}", Code2WavStreamState()) for i in range(7)]
     assert scheduler.build_step_plan(participants) == [7]
 
@@ -260,7 +260,7 @@ def test_step_plan_follows_runner_availability_for_the_window() -> None:
     runner = _AvailabilityRunner((4, 2, 1))
     scheduler = _make_batching_scheduler(
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     participants = _states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [4, 2, 1]
@@ -273,7 +273,7 @@ def test_step_plan_without_published_graphs_stays_one_eager_forward() -> None:
     runner = _AvailabilityRunner(())
     scheduler = _make_batching_scheduler(
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     participants = _states_with_ready(7, ready=6)
     assert scheduler.build_step_plan(participants) == [7]
@@ -284,7 +284,7 @@ def test_five_streams_take_one_forward_not_two() -> None:
     rids = [f"req-{i}" for i in range(5)]
     _feed_batch(scheduler, [(rid, 1) for rid in rids])
     _feed_batch(scheduler, [(rid, 2) for rid in rids])
-    assert scheduler._model.calls == [(5, 2, 2)]
+    assert scheduler.model.calls == [(5, 2, 2)]
     for rid in rids:
         assert scheduler.stream_states[rid].emitted == 2
 
@@ -294,7 +294,7 @@ def test_first_window_fires_immediately() -> None:
     _feed_batch(scheduler, [("req-1", 1), ("req-1", 2)])
     messages = _drain_outbox(scheduler)
     assert [m.type for m in messages] == ["stream"]
-    assert scheduler._model.calls == [(1, 2, 2)]
+    assert scheduler.model.calls == [(1, 2, 2)]
 
 
 def test_floor_fires_without_deadline() -> None:
@@ -305,7 +305,7 @@ def test_floor_fires_without_deadline() -> None:
     _feed_batch(scheduler, [("req-a", 5), ("req-a", 6), ("req-b", 7), ("req-b", 8)])
     messages = _drain_outbox(scheduler)
     assert sorted(m.request_id for m in messages) == ["req-a", "req-b"]
-    assert scheduler._model.calls == [(1, 2, 2), (1, 2, 2), (2, 2, 3)]
+    assert scheduler.model.calls == [(1, 2, 2), (1, 2, 2), (2, 2, 3)]
 
 
 def test_deadline_fires_single() -> None:
@@ -315,7 +315,7 @@ def test_deadline_fires_single() -> None:
     _feed_batch(scheduler, [("req-1", 3), ("req-1", 4)])
     messages = _drain_outbox(scheduler)
     assert [m.request_id for m in messages] == ["req-1"]
-    assert scheduler._model.calls == [(1, 2, 2), (1, 2, 3)]
+    assert scheduler.model.calls == [(1, 2, 2), (1, 2, 3)]
 
 
 def test_bucket_isolation() -> None:
@@ -334,7 +334,7 @@ def test_bucket_isolation() -> None:
             ("req-b", 10),
         ],
     )
-    steady_calls = scheduler._model.calls[2:]
+    steady_calls = scheduler.model.calls[2:]
     assert all(call[0] == 1 for call in steady_calls)
     assert sorted(steady_calls) == [(1, 2, 3), (1, 2, 5)]
     assert scheduler.stream_states["req-a"].emitted == 4
@@ -388,7 +388,7 @@ def test_bitwise_equivalence() -> None:
             entries.append((rid, codes[round_start + 1]))
         _feed_batch(batched, entries)
 
-    assert any(call[0] > 1 for call in batched._model.calls)
+    assert any(call[0] > 1 for call in batched.model.calls)
     for rid in schedule:
         control_state = control.stream_states[rid]
         batched_state = batched.stream_states[rid]
@@ -408,7 +408,7 @@ def test_mixed_stream_enabled() -> None:
     )
     messages = _drain_outbox(scheduler)
     assert [(m.type, m.request_id) for m in messages] == [("stream", "req-a")]
-    assert scheduler._model.calls == [(2, 2, 2)]
+    assert scheduler.model.calls == [(2, 2, 2)]
     for rid in ("req-a", "req-b"):
         state = scheduler.stream_states[rid]
         assert state.emitted == 2
@@ -485,7 +485,7 @@ def test_step_failure_after_success_keeps_decoded_sub_batches() -> None:
     assert "req-c" not in scheduler.stream_states
     assert scheduler.is_aborted("req-c")
     assert cleaned == ["req-c"]
-    assert scheduler._pending_step_failures == []
+    assert scheduler.pending_step_failures == []
 
     scheduler.forward_codes = real_forward
     _feed_batch(scheduler, [("req-a", 3), ("req-a", 4)])
@@ -535,10 +535,10 @@ def test_factory_flags_reach_scheduler(monkeypatch) -> None:
         batch_floor=3,
         batch_ceiling=4,
     )
-    assert scheduler._enable_batching is True
+    assert scheduler.enable_batching is True
     assert scheduler.max_batch_wait_s == 0.25
-    assert scheduler._batch_floor == 3
-    assert scheduler._batch_ceiling == 4
+    assert scheduler.batch_floor == 3
+    assert scheduler.batch_ceiling == 4
     assert scheduler.can_batch_stream_chunks is True
 
 
@@ -698,7 +698,7 @@ def test_ingest_without_recorder_does_not_read_profile_clocks(monkeypatch) -> No
 def test_batching_and_cuda_graph_coexist() -> None:
     scheduler = _make_chunk_aligned_scheduler()
     assert scheduler.chunk_aligned_dispatch is True
-    assert scheduler._cuda_graph_runner is not None
+    assert scheduler.cuda_graph_runner is not None
     legacy = _make_batching_scheduler()
     assert legacy.chunk_aligned_dispatch is False
 
@@ -720,9 +720,9 @@ def test_chunk_aligned_step_plan_decomposes() -> None:
 def test_chunk_aligned_backlog_drains_in_uniform_graph_windows() -> None:
     scheduler = _make_chunk_aligned_scheduler(max_batch_wait_ms=0, batch_floor=2)
     _feed_batch(scheduler, [("req-1", code) for code in (1, 2, 3, 4, 5, 6)])
-    assert scheduler._model.calls == [(1, 2, 2), (1, 2, 3), (1, 2, 3)]
+    assert scheduler.model.calls == [(1, 2, 2), (1, 2, 3), (1, 2, 3)]
     assert scheduler.stream_states["req-1"].emitted == 6
-    runner = scheduler._cuda_graph_runner
+    runner = scheduler.cuda_graph_runner
     assert [mode for _, _, mode in runner.calls] == ["cuda_graph"] * 3
 
 
@@ -745,10 +745,10 @@ def test_chunk_aligned_buckets_merge_mixed_backlogs() -> None:
     # Note (ruoyu): legacy buckets isolate ready=2 from ready=4 (see
     # test_bucket_isolation); chunk-aligned buckets collapse to
     # (context, context+chunk) and merge them.
-    assert scheduler._model.calls[2:] == [(2, 2, 3), (1, 2, 3)]
+    assert scheduler.model.calls[2:] == [(2, 2, 3), (1, 2, 3)]
     assert scheduler.stream_states["req-a"].emitted == 4
     assert scheduler.stream_states["req-b"].emitted == 6
-    runner = scheduler._cuda_graph_runner
+    runner = scheduler.cuda_graph_runner
     assert [(call[1], call[2]) for call in runner.calls[-2:]] == [
         (True, "cuda_graph"),
         (True, "cuda_graph"),
@@ -789,7 +789,7 @@ def test_pinned_slot_pool_covers_a_coalesced_step() -> None:
         enable_batching=True,
         batch_ceiling=16,
     )
-    assert scheduler._max_pinned_slots == scheduler._MAX_PINNED_SLOTS + 16
+    assert scheduler.max_pinned_slots == scheduler.MAX_PINNED_SLOTS + 16
 
 
 def test_bucket_batch_ceiling_is_per_window() -> None:
@@ -804,7 +804,7 @@ def test_bucket_batch_ceiling_is_per_window() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=16,
-        _cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
+        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 16, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 16
     assert scheduler.bucket_batch_ceiling(12) == 16
@@ -824,7 +824,7 @@ def test_bucket_batch_ceiling_honours_a_lower_configured_ceiling() -> None:
         enable_cuda_graph=True,
         initial_codec_chunk_frames=2,
         batch_ceiling=4,
-        _cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
+        cuda_graph_runner=_FakeGraphRunner(model, batched_graph_keys(10, 25, 4, 2)),
     )
     assert scheduler.bucket_batch_ceiling(2) == 4
     assert scheduler.bucket_batch_ceiling(35) == 4
@@ -888,7 +888,7 @@ def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
     # Note (ruoyu): a serial-only runner may have dropped batched graphs after
     # their eager warmup OOMed, so retrying the group as one eager forward is
@@ -900,7 +900,7 @@ def test_serial_only_runner_splits_groups_into_safe_b1_replays() -> None:
 def test_runtime_disable_stops_chunk_aligned_dispatch() -> None:
     scheduler = _make_chunk_aligned_scheduler()
     assert scheduler.chunk_aligned_dispatch is True
-    scheduler._cuda_graph_runner._keys = set()
+    scheduler.cuda_graph_runner._keys = set()
     assert scheduler.chunk_aligned_dispatch is False
     participants = [(f"r{i}", Code2WavStreamState()) for i in range(3)]
     assert scheduler.build_step_plan(participants) == [3]
@@ -912,7 +912,7 @@ def test_chunk_aligned_groups_replay_batched_graphs() -> None:
         scheduler,
         [(rid, code) for rid in ("req-a", "req-b") for code in (1, 2, 3, 4)],
     )
-    runner = scheduler._cuda_graph_runner
+    runner = scheduler.cuda_graph_runner
     batched_calls = [call for call in runner.calls if call[0][0] > 1]
     assert batched_calls
     assert all(mode == "cuda_graph" for _, _, mode in batched_calls)
@@ -941,7 +941,7 @@ def test_chunk_aligned_waveforms_match_serial_reference() -> None:
         [(rid, code) for rid, codes in schedule.items() for code in codes],
     )
 
-    assert any(call[0] > 1 for call in quantized._model.calls)
+    assert any(call[0] > 1 for call in quantized.model.calls)
     for rid in schedule:
         assert quantized.stream_states[rid].emitted == 6
         assert np.array_equal(
@@ -975,7 +975,7 @@ class _StubGraphRunner:
     misses (eager fallback) for batch sizes it does not publish."""
 
     def __init__(self, model, sizes: tuple[int, ...]) -> None:
-        self._model = model
+        self.model = model
         self.sizes = sizes
         self.run_calls: list[tuple[tuple[int, ...], bool]] = []
 
@@ -988,7 +988,7 @@ class _StubGraphRunner:
         key = GraphKey(batch_size=int(codes.shape[0]), frames=int(codes.shape[2]))
         hit = eligible and key.batch_size in self.sizes
         return Code2WavRunResult(
-            output=self._model(codes),
+            output=self.model(codes),
             execution_mode="cuda_graph" if hit else "eager",
             key=key,
             fallback_reason=None if hit else "key_miss",
@@ -1008,7 +1008,7 @@ def _make_graph_batching_scheduler(
         sample_rate=24000,
         enable_batching=True,
         enable_cuda_graph=True,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
         **kwargs,
     )
     return scheduler, runner
@@ -1096,7 +1096,7 @@ def test_initial_codec_chunk_frames_fires_first_window_early() -> None:
     _feed_batch(scheduler, [("req-1", 1)])
     messages = _drain_outbox(scheduler)
     assert [m.type for m in messages] == ["stream"]
-    assert scheduler._model.calls == [(1, 2, 1)]
+    assert scheduler.model.calls == [(1, 2, 1)]
     assert scheduler.stream_states["req-1"].emitted == 1
     _feed_batch(scheduler, [("req-1", 2)])
     assert _drain_outbox(scheduler) == []

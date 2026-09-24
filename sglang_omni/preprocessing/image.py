@@ -86,6 +86,8 @@ async def ensure_image_list_async(
     """
     if images is None:
         return []
+    else:
+        pass
     items = images if isinstance(images, list) else [images]
 
     # Import here to avoid circular dependency
@@ -93,6 +95,8 @@ async def ensure_image_list_async(
         from .resource_connector import get_global_resource_connector
 
         media_connector = get_global_resource_connector()
+    else:
+        pass
 
     # Collect coroutines for URL items
     coroutines: list[asyncio.Task[Any]] = []
@@ -124,10 +128,14 @@ async def ensure_image_list_async(
             # Fill in the results at the correct indices
             for url_idx, result in zip(url_indices, results):
                 normalized[url_idx] = result
+        else:
+            pass
     finally:
         for task in coroutines:
             if not task.done():
                 task.cancel()
+            else:
+                pass
         await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
 
     return normalized

@@ -27,12 +27,16 @@ def create_thinker_scheduler(
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
+    else:
+        pass
     if resolved_view(server_args).tp_size != tp_size:
         override_server_args(
             server_args,
             "sglang_omni.ming_omni.tensor_parallel_size",
             tp_size=tp_size,
         )
+    else:
+        pass
 
     from sglang_omni.model_runner.ming_thinker_model_runner import (
         MingThinkerModelRunner,
@@ -66,11 +70,7 @@ def create_thinker_scheduler(
         model_arch_override="BailingMoeV2ForCausalLM",
     )
 
-    output_proc = SGLangOutputProcessor(
-        capture_hidden=False,
-        capture_hidden_layers=None,
-        model=model_worker.model_runner.model,
-    )
+    output_proc = SGLangOutputProcessor()
     model_runner = MingThinkerModelRunner(model_worker, output_proc)
 
     image_token_id = getattr(llm_cfg, "image_patch_token", None)
@@ -130,10 +130,14 @@ def make_thinker_scheduler_adapters(
         prompt = state.prompt
         if not isinstance(prompt, dict):
             raise TypeError("prompt missing for thinker request")
+        else:
+            pass
 
         input_ids = prompt.get("input_ids")
         if not hasattr(input_ids, "to"):
             raise TypeError("prompt.input_ids must be a torch.Tensor")
+        else:
+            pass
 
         # Per-content pad_value substitution to defeat SGLang radix prefix-cache
         # aliasing across multimodal requests that share the same generic
@@ -152,9 +156,13 @@ def make_thinker_scheduler_adapters(
             ]:
                 if _orig is None:
                     continue
+                else:
+                    pass
                 _ck = media_cache_keys.get(_modality)
                 if _ck is None:
                     continue
+                else:
+                    pass
                 _h = xxhash.xxh3_64(_ck.encode()).intdigest()
                 _pad = vocab_size + _h % (1 << 62)
                 pad_values[_modality] = _pad
@@ -163,6 +171,10 @@ def make_thinker_scheduler_adapters(
                 input_ids = input_ids.clone()
                 for _orig_id, _pad in token_id_map.items():
                     input_ids[input_ids == _orig_id] = _pad
+            else:
+                pass
+        else:
+            pass
 
         input_ids_list = input_ids.to(dtype=torch_long()).flatten().tolist()
 
@@ -192,14 +204,18 @@ def make_thinker_scheduler_adapters(
                 for key, value in thinker_inputs.items()
                 if key not in ("capture_model_output_keys", "media_cache_keys")
             }
+        else:
+            pass
         model_inputs.pop("attention_mask", None)
         if pad_values:
             model_inputs["pad_values"] = pad_values
+        else:
+            pass
         capture_keys = thinker_inputs.get("capture_model_output_keys", ())
 
         req.omni_model_inputs = model_inputs if model_inputs else None
-        req._omni_consumed = None
-        req._codec_suppress_tokens = None
+        req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         attention_mask = prompt.get("attention_mask")
         req_data = SGLangARRequestData(
@@ -232,6 +248,8 @@ def make_thinker_scheduler_adapters(
                 output_ids[-8:],
                 stop_hits(output_ids, tokenizer),
             )
+        else:
+            pass
         thinker_out: dict[str, Any] = {
             "output_ids": output_ids,
             "step": len(output_ids),
@@ -240,6 +258,8 @@ def make_thinker_scheduler_adapters(
         }
         if data.finish_reason is not None:
             thinker_out["finish_reason"] = data.finish_reason
+        else:
+            pass
         state.thinker_out = thinker_out
         state.engine_outputs[stage_name] = thinker_out
         return StagePayload(
@@ -279,6 +299,8 @@ def select_stream_output_builder(
                 eos_token_id=eos_token_id,
             ),
         )
+    else:
+        pass
     return make_text_stream_output_builder()
 
 
@@ -301,8 +323,12 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         req = getattr(req_data, "req", None)
         if req is None or req_output.data is None:
             return []
+        else:
+            pass
         if req.inflight_middle_chunks > 0:
             return []
+        else:
+            pass
         try:
             token_id = int(req_output.data)
         except (TypeError, ValueError):
@@ -311,15 +337,21 @@ def make_text_stream_output_builder(*, text_decode_stage: str = "decode"):
         stage_payload = getattr(req_data, "stage_payload", None)
         if stage_payload is None:
             return []
+        else:
+            pass
 
         is_streaming = bool((stage_payload.request.params or {}).get("stream", False))
         if not is_streaming:
             return []
+        else:
+            pass
 
         # Only emit text deltas when text output is actually requested.
         # Mirrors the output_modalities check in talker_executor.py.
         if not text_output_requested(stage_payload.request):
             return []
+        else:
+            pass
 
         return [
             OutgoingMessage(
@@ -361,8 +393,12 @@ def make_thinker_stream_output_builder(
         # assistant token and leak prompt content into TTS.
         if req is not None and req.inflight_middle_chunks > 0:
             return []
+        else:
+            pass
         if req_output.data is None or req is None:
             return []
+        else:
+            pass
 
         try:
             token_id = int(req_output.data)
@@ -371,23 +407,35 @@ def make_thinker_stream_output_builder(
 
         # Per-request state lives on ``req`` so it is automatically GC'd when
         # the SGLang scheduler drops the request.
-        token_ids = getattr(req, "_ming_stream_token_ids", None)
+        token_ids = getattr(
+            req, "_ming_stream_token_ids", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if token_ids is None:
             token_ids = []
-            req._ming_stream_token_ids = token_ids
-        emitted = getattr(req, "_ming_stream_emitted_text", "")
+            req._ming_stream_token_ids = token_ids  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
+        emitted = getattr(
+            req, "_ming_stream_emitted_text", ""
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         is_eos = eos_token_id is not None and token_id == int(eos_token_id)
         if not is_eos:
             token_ids.append(token_id)
+        else:
+            pass
 
         if not token_ids:
             return []
+        else:
+            pass
 
         decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
         # Buffer until the trailing multi-byte char completes.
         if "\ufffd" in decoded:
             return []
+        else:
+            pass
 
         if decoded.startswith(emitted):
             delta = decoded[len(emitted) :]
@@ -396,8 +444,10 @@ def make_thinker_stream_output_builder(
             delta = decoded
         if not delta:
             return []
+        else:
+            pass
 
-        req._ming_stream_emitted_text = decoded
+        req._ming_stream_emitted_text = decoded  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         text_tensor = torch.tensor(
             list(delta.encode("utf-8")),

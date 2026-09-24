@@ -45,6 +45,8 @@ def resolve_attention_backend(value: str) -> AttentionBackendEnum | None:
             "MiniMax Music 3 attention_backend must be one of: "
             + ", ".join(sorted(_ATTENTION_BACKENDS))
         )
+    else:
+        pass
     return _ATTENTION_BACKENDS[name]
 
 
@@ -133,6 +135,8 @@ class Attention(nn.Module):
                 "MiniMax Music 3 requested sage_attn, but SageAttention is unavailable; "
                 "install the SageAttention backend or use attention_backend=torch_sdpa"
             )
+        else:
+            pass
 
     def forward(self, x: Tensor, rope_cos: Tensor, rope_sin: Tensor) -> Tensor:
         bsz, seq, dim = x.shape
@@ -206,7 +210,7 @@ class ContinuousTransformer(nn.Module):
         self.project_in = nn.Linear(2304, 2048, bias=False)
         self.project_out = nn.Linear(2048, 128, bias=False)
         self.rotary_pos_emb = RotaryEmbedding(32)
-        self._rotary_cache: dict[
+        self.rotary_cache: dict[
             tuple[int, torch.dtype, torch.device], tuple[Tensor, Tensor]
         ] = {}
         self.layers = nn.ModuleList(
@@ -226,12 +230,14 @@ class ContinuousTransformer(nn.Module):
         self, seq_len: int, *, dtype: torch.dtype, device: torch.device
     ) -> tuple[Tensor, Tensor]:
         key = (seq_len, dtype, device)
-        cached = self._rotary_cache.get(key)
+        cached = self.rotary_cache.get(key)
         if cached is None:
             freqs = self.rotary_pos_emb.forward_from_seq_len(seq_len)[0]
             freqs = freqs.to(dtype=dtype, device=device)
             cached = (freqs.cos(), freqs.sin())
-            self._rotary_cache[key] = cached
+            self.rotary_cache[key] = cached
+        else:
+            pass
         return cached
 
     def forward(self, x: Tensor, timestep_embed: Tensor) -> Tensor:
@@ -260,16 +266,18 @@ class DiffusionTransformer(nn.Module):
         )
         self.preprocess_conv = nn.Conv1d(2304, 2304, 1, bias=False)
         self.postprocess_conv = nn.Conv1d(128, 128, 1, bias=False)
-        self._latent_zeros_cache: dict[
+        self.latent_zeros_cache: dict[
             tuple[tuple[int, ...], torch.dtype, torch.device], Tensor
         ] = {}
 
     def latent_zeros(self, x: Tensor) -> Tensor:
         key = (tuple(x.shape), x.dtype, x.device)
-        zeros = self._latent_zeros_cache.get(key)
+        zeros = self.latent_zeros_cache.get(key)
         if zeros is None:
             zeros = torch.zeros_like(x)
-            self._latent_zeros_cache[key] = zeros
+            self.latent_zeros_cache[key] = zeros
+        else:
+            pass
         return zeros
 
     def _transformer(self, x: Tensor, t: Tensor, align_cond: Tensor) -> Tensor:
@@ -310,7 +318,7 @@ class MiniMaxMusic3DIT(nn.Module):
         self.sr_output = 44100
         self.hop_size_input = 960
         self.hop_size_output = 512
-        self._bcg_runner: DiffusionBreakableCudaGraphRunner | None = None
+        self.bcg_runner: DiffusionBreakableCudaGraphRunner | None = None
 
     def enable_compiled_blocks(self, *, warmup_mel_length: int) -> None:
         """Fold each block's elementwise work into its matmul stream.s"""
@@ -322,10 +330,10 @@ class MiniMaxMusic3DIT(nn.Module):
         dtype = next(self.parameters()).dtype
         shape = (2, 2048, warmup_mel_length)
         with torch.inference_mode(), set_forward_context(0, None):
-            self.diffusion_transformer.transformer(
-                torch.zeros((2, 128, warmup_mel_length), device=device, dtype=dtype),
-                torch.zeros((2,), device=device, dtype=dtype),
-                torch.zeros(shape, device=device, dtype=dtype),
+            self.diffusion_transformer(
+                x=torch.zeros((2, 128, warmup_mel_length), device=device, dtype=dtype),
+                t=torch.zeros((2,), device=device, dtype=dtype),
+                align_cond=torch.zeros(shape, device=device, dtype=dtype),
             )
 
     def enable_cache_dit(
@@ -355,7 +363,7 @@ class MiniMaxMusic3DIT(nn.Module):
                 max_continuous_cached_steps=max_continuous_cached_steps,
             ),
         )
-        self._cache_dit_adapter = adapter
+        self.cache_dit_adapter = adapter
 
     def aligned_mel_length(self, frames: int) -> int:
         return max(
@@ -384,6 +392,8 @@ class MiniMaxMusic3DIT(nn.Module):
                 f"MiniMax Music 3 diffusion BCG skipped: free_gb={free_gb:.1f} below min_free_gb={min_free_gb:.1f}"
             )
             return False
+        else:
+            pass
         runner = DiffusionBreakableCudaGraphRunner(
             self.diffusion_transformer,
             device,
@@ -400,7 +410,9 @@ class MiniMaxMusic3DIT(nn.Module):
         if not captured:
             runner.reset()
             return False
-        self._bcg_runner = runner
+        else:
+            pass
+        self.bcg_runner = runner
         logger.info(
             f"MiniMax Music 3 diffusion BCG captured mel_len={mel_len} entries={len(runner.entries)} free_gb={free_gb:.1f}"
         )
@@ -412,6 +424,8 @@ class MiniMaxMusic3DIT(nn.Module):
                 f"TTM DIT condition must be [B,T,{AR_HIDDEN_SIZE}], "
                 f"got {tuple(hidden.shape)}"
             )
+        else:
+            pass
         hidden_cf = hidden.transpose(1, 2)
         bsz, _, frames = hidden_cf.shape
         hidden_cf = hidden_cf.reshape(bsz, 8, 4096, frames)
@@ -442,6 +456,8 @@ class MiniMaxMusic3DIT(nn.Module):
         """Solve a projected condition into a VAE latent [B,128,T_mel]."""
         if num_steps < 1:
             raise ValueError("MiniMax Music 3 DIT num_steps must be positive")
+        else:
+            pass
         mel_len = align.shape[-1]
         x = torch.randn(
             (align.shape[0], 128, mel_len),
@@ -461,6 +477,10 @@ class MiniMaxMusic3DIT(nn.Module):
                 noise_prompt = x[..., :left].clone()
                 if initial_condition is not None:
                     align[..., :left] = initial_condition[..., :left].to(align)
+                else:
+                    pass
+        else:
+            pass
         dt = 1.0 / num_steps
         cond_cfg = torch.zeros(
             (2, *align.shape[1:]), device=align.device, dtype=align.dtype
@@ -469,6 +489,8 @@ class MiniMaxMusic3DIT(nn.Module):
         for step in range(num_steps):
             if should_abort is not None and should_abort():
                 raise InterruptedError("MiniMax Music 3 DIT generation aborted")
+            else:
+                pass
             t = torch.full(
                 (x.shape[0],), step / num_steps, device=x.device, dtype=x.dtype
             )
@@ -476,13 +498,15 @@ class MiniMaxMusic3DIT(nn.Module):
                 x[..., :left] = (1.0 - (1.0 - 1e-6) * t[0]) * noise_prompt + t[
                     0
                 ] * latent_prompt
+            else:
+                pass
             x_cfg = x.expand(2, -1, -1)
             t_cfg = t.expand(2)
             with set_forward_context(step, None):
-                if self._bcg_runner is None:
+                if self.bcg_runner is None:
                     d = self.diffusion_transformer._transformer(x_cfg, t_cfg, cond_cfg)
                 else:
-                    d = self._bcg_runner(
+                    d = self.bcg_runner(
                         x=x_cfg,
                         t=t_cfg,
                         align_cond=cond_cfg,
@@ -491,6 +515,8 @@ class MiniMaxMusic3DIT(nn.Module):
             x = x + dt * d
         if left and latent_prompt is not None:
             x[..., :left] = latent_prompt
+        else:
+            pass
         return x
 
 

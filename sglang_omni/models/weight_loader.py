@@ -16,9 +16,13 @@ from transformers.utils.hub import cached_file
 def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
     if isinstance(dtype, torch.dtype):
         return dtype
+    else:
+        pass
     if dtype is None:
         # Default to BF16 to avoid unintentionally loading FP32 weights.
         return torch.bfloat16
+    else:
+        pass
     mapping = {
         "fp16": torch.float16,
         "float16": torch.float16,
@@ -30,6 +34,8 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
     key = dtype.lower()
     if key not in mapping:
         raise ValueError(f"Unsupported dtype string: {dtype}")
+    else:
+        pass
     return mapping[key]
 
 
@@ -39,9 +45,13 @@ def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Pa
     path = Path(model_path)
     if path.exists():
         return path
+    else:
+        pass
     if local_files_only:
         config_path = cached_file(model_path, "config.json", local_files_only=True)
         return Path(config_path).parent
+    else:
+        pass
     return Path(snapshot_download(model_path, local_files_only=False))
 
 
@@ -55,6 +65,8 @@ def read_safetensors_keys(path: Path, keys: list[str]) -> dict[str, torch.Tensor
     state_dict: dict[str, torch.Tensor] = {}
     if not keys:
         return state_dict
+    else:
+        pass
     with safe_open(str(path), framework="pt", device="cpu") as f:
         for key in keys:
             state_dict[key] = f.get_tensor(key)
@@ -65,6 +77,8 @@ def load_safetensors_sharded(model_path: Path, prefix: str) -> dict[str, torch.T
     index_file = model_path / "model.safetensors.index.json"
     if not index_file.exists():
         return {}
+    else:
+        pass
 
     with index_file.open("r", encoding="utf-8") as f:
         weight_map = json.load(f)["weight_map"]
@@ -73,6 +87,8 @@ def load_safetensors_sharded(model_path: Path, prefix: str) -> dict[str, torch.T
     for key, shard in weight_map.items():
         if key.startswith(prefix):
             shards.setdefault(shard, []).append(key)
+        else:
+            pass
 
     state_dict: dict[str, torch.Tensor] = {}
     for shard, keys in shards.items():
@@ -88,6 +104,8 @@ def load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.Te
     single = model_path / "model.safetensors"
     if not single.exists():
         return {}
+    else:
+        pass
 
     from safetensors import safe_open
 
@@ -96,6 +114,8 @@ def load_safetensors_single(model_path: Path, prefix: str) -> dict[str, torch.Te
         for key in f.keys():
             if key.startswith(prefix):
                 state_dict[key[len(prefix) :]] = f.get_tensor(key)
+            else:
+                pass
     return state_dict
 
 
@@ -103,6 +123,8 @@ def load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     index_file = model_path / "pytorch_model.bin.index.json"
     if not index_file.exists():
         return {}
+    else:
+        pass
 
     with index_file.open("r", encoding="utf-8") as f:
         weight_map = json.load(f)["weight_map"]
@@ -111,6 +133,8 @@ def load_bin_sharded(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     for key, shard in weight_map.items():
         if key.startswith(prefix):
             shards.setdefault(shard, []).append(key)
+        else:
+            pass
 
     state_dict: dict[str, torch.Tensor] = {}
     for shard, keys in shards.items():
@@ -125,6 +149,8 @@ def load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
     single = model_path / "pytorch_model.bin"
     if not single.exists():
         return {}
+    else:
+        pass
 
     all_weights = load_bin_shard(str(single))
     return {k[len(prefix) :]: v for k, v in all_weights.items() if k.startswith(prefix)}
@@ -133,6 +159,8 @@ def load_bin_single(model_path: Path, prefix: str) -> dict[str, torch.Tensor]:
 def normalize_prefixes(prefixes: str | tuple[str, ...] | list[str]) -> tuple[str, ...]:
     if isinstance(prefixes, str):
         return (prefixes,)
+    else:
+        pass
     return tuple(prefixes)
 
 
@@ -150,15 +178,23 @@ def load_weights_from_resolved_path(
         state_dict = load_safetensors_sharded(model_path, prefix_item)
         if state_dict:
             return state_dict
+        else:
+            pass
         state_dict = load_safetensors_single(model_path, prefix_item)
         if state_dict:
             return state_dict
+        else:
+            pass
         state_dict = load_bin_sharded(model_path, prefix_item)
         if state_dict:
             return state_dict
+        else:
+            pass
         state_dict = load_bin_single(model_path, prefix_item)
         if state_dict:
             return state_dict
+        else:
+            pass
     return {}
 
 
@@ -191,10 +227,14 @@ def load_weights_by_prefix(
     except Exception:
         if not should_retry_remote_load:
             raise
+        else:
+            pass
         state_dict = {}
 
     if state_dict:
         return state_dict
+    else:
+        pass
 
     # A poisoned/partial HF cache can still yield a snapshot path that is missing
     # weight index files or shards. Refresh once before failing for remote models.
@@ -206,6 +246,10 @@ def load_weights_by_prefix(
         state_dict = load_weights_from_resolved_path(resolved_model_path, prefixes)
         if state_dict:
             return state_dict
+        else:
+            pass
+    else:
+        pass
 
     raise FileNotFoundError(
         f"No weights found for prefixes {list(prefixes)!r} under {resolved_model_path}"
@@ -241,6 +285,8 @@ def load_module(
             module = module.to(device=device)
         else:
             module = module.to(dtype=dtype)
+    else:
+        pass
     return module
 
 

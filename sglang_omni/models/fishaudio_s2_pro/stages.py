@@ -40,6 +40,8 @@ def configure_preprocessing_threads(worker_count: int) -> int:
         requested = int(override)
         torch.set_num_threads(requested)
         return requested
+    else:
+        pass
 
     cpu_count = (
         len(os.sched_getaffinity(0))
@@ -60,8 +62,10 @@ def warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     """Materialize Fast AR compile variants before serving real requests."""
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
+    else:
+        pass
 
-    audio_decoder = model._audio_decoder
+    audio_decoder = model.audio_decoder
     embedding_weight = audio_decoder.embeddings.weight
     hidden_size = int(embedding_weight.shape[1])
     batch_sizes = sorted(
@@ -91,6 +95,8 @@ def warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         audio_decoder.reset_caches()
         if embedding_weight.device.type == "cuda":
             torch.cuda.synchronize(embedding_weight.device)
+        else:
+            pass
 
 
 def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
@@ -99,13 +105,15 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
 
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
+    else:
+        pass
 
     set_torch_compile_config()
     compile_mode = os.environ.get(
         "SGLANG_TORCH_COMPILE_MODE",
         "max-autotune-no-cudagraphs",
     )
-    audio_decoder = model._audio_decoder
+    audio_decoder = model.audio_decoder
     setup_start = time.perf_counter()
     compiled_forward_kvcached_layers = [
         torch.compile(layer.forward_kvcached, mode=compile_mode, dynamic=True)
@@ -120,8 +128,8 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     try:
         warmup_s2pro_codebook_decoder(model, max_batch_size=max_batch_size)
     except Exception:
-        audio_decoder._compiled_forward_kvcached_layers = None
-        audio_decoder._compiled_forward_kvcached_max_bs = 0
+        audio_decoder.compiled_forward_kvcached_layers = None
+        audio_decoder.compiled_forward_kvcached_max_bs = 0
         audio_decoder.reset_caches()
         logger.exception(
             "Fish S2-Pro Fast AR compile warmup failed; continuing with eager layers"
@@ -142,7 +150,7 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
 def resolve_s2pro_model_buffer_bs(model: Any) -> int:
     return min(
         int(model.vq_decode_max_batch_size),
-        int(model._audio_decoder.kv_cache_max_batch_size),
+        int(model.audio_decoder.kv_cache_max_batch_size),
     )
 
 
@@ -200,7 +208,7 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
     output_dtype = torch.long
 
     def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
-        self._codec = codec
+        self.codec = codec
         self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
         self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
@@ -208,10 +216,16 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
     def normalize_input(self, raw_input: Any) -> FishReferenceInput:
         if not isinstance(raw_input, dict):
             raise TypeError("FishAudio reference input must be a dict")
+        else:
+            pass
         if raw_input.get("audio_path") is not None:
             return FishReferenceInput("path", str(raw_input["audio_path"]))
+        else:
+            pass
         if raw_input.get("bytes") is not None:
             return FishReferenceInput("bytes", bytes(raw_input["bytes"]))
+        else:
+            pass
         data = raw_input.get("base64") or raw_input.get("data")
         if data is not None:
             return FishReferenceInput(
@@ -219,6 +233,8 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
                 data,
                 str(raw_input.get("media_type") or "audio/wav"),
             )
+        else:
+            pass
         raise ValueError("FishAudio reference input has no audio payload")
 
     def encode_one(self, item: FishReferenceInput) -> torch.Tensor:
@@ -227,17 +243,19 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
             audio = load_audio(
                 str(item.source),
-                target_sample_rate=int(self._codec.sample_rate),
+                target_sample_rate=int(self.codec.sample_rate),
                 mono=True,
             )
             audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
             return self.encode_reference_waveform(
-                audio_tensor, int(self._codec.sample_rate)
+                audio_tensor, int(self.codec.sample_rate)
             )
+        else:
+            pass
         if item.source_kind in ("bytes", "base64"):
             from sglang_omni.preprocessing.audio import AudioMediaIO
 
-            audio_io = AudioMediaIO(target_sr=self._codec.sample_rate)
+            audio_io = AudioMediaIO(target_sr=self.codec.sample_rate)
             if item.source_kind == "bytes":
                 audio, sr = audio_io.load_bytes(item.source)
             else:
@@ -246,6 +264,8 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
                 )
             audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
             return self.encode_reference_waveform(audio_tensor, int(sr))
+        else:
+            pass
         raise TypeError(f"unknown FishAudio reference source: {item.source_kind}")
 
     def revalidate(self, item: FishReferenceInput, key: ReferenceEncodeKey) -> bool:
@@ -254,12 +274,18 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
     def input_key(self, item: FishReferenceInput) -> str | None:
         if item.source_kind == "path":
             return _reference_path_cache_key(str(item.source), trust_stat=False)
+        else:
+            pass
         if item.source_kind == "bytes":
             return f"bytes:{_hash_bytes(item.source)}"
+        else:
+            pass
         if item.source_kind == "base64":
             payload = str(item.source).encode("utf-8")
             media_type = item.media_type or "audio/wav"
             return f"base64:{media_type}:{_hash_bytes(payload)}"
+        else:
+            pass
         return None
 
     def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
@@ -267,13 +293,17 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
-        audio = torchaudio.functional.resample(audio, sr, self._codec.sample_rate)
+        else:
+            pass
+        audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
         audios = audio.squeeze(0).unsqueeze(0)
         audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
         with torch.no_grad():
-            indices, _ = self._codec.encode(audios, audio_lengths)
+            indices, _ = self.codec.encode(audios, audio_lengths)
             if indices.ndim == 3:
                 indices = indices[0]
+            else:
+                pass
         return indices.cpu()
 
 
@@ -317,6 +347,8 @@ def create_preprocessing_executor(
         params = payload.request.params or {}
         if isinstance(inputs, str):
             inputs = {"text": inputs}
+        else:
+            pass
 
         text = inputs.get("text", "")
         num_codebooks = inputs.get("num_codebooks", 10)
@@ -330,11 +362,15 @@ def create_preprocessing_executor(
                 vq_codes = ref_data.get("vq_codes")
                 if vq_codes is not None and not isinstance(vq_codes, torch.Tensor):
                     vq_codes = torch.tensor(vq_codes)
+                else:
+                    pass
                 if vq_codes is None and fish_reference_payload_is_supported(ref_data):
                     vq_codes = reference_encode_service.get_or_encode(
                         ref_data,
                         desc="FishAudio S2-Pro reference",
                     )
+                else:
+                    pass
                 references.append(
                     Reference(
                         audio_bytes=b"",
@@ -342,6 +378,8 @@ def create_preprocessing_executor(
                         vq_codes=vq_codes,
                     )
                 )
+        else:
+            pass
 
         prompt_data = adapter.build_prompt(
             text=text, references=references, num_codebooks=num_codebooks

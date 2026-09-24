@@ -322,19 +322,19 @@ def test_validate_weight_share_architecture_allows_and_rejects():
     # still rejected by the gate.
     expected_supported = {
         "HiggsMultimodalQwen3ForConditionalGeneration": frozenset(),
-        "MossTTSLocalSGLangModel": frozenset({"_decode_input_embedding.weight"}),
-        "MossTTSDelaySGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MossTTSLocalSGLangModel": frozenset({"decode_input_embedding.weight"}),
+        "MossTTSDelaySGLangModel": frozenset({"decode_input_embedding.weight"}),
         "MossTranscribeDiarizeForConditionalGeneration": frozenset(),
         "Qwen3ASRForConditionalGeneration": frozenset(),
         "WhisperForConditionalGeneration": frozenset(),
         "FunAsrNanoForConditionalGeneration": frozenset(),
     }
     expected_audit_only = {
-        "MingTTSSGLangModel": frozenset({"_decode_input_embedding.weight"}),
+        "MingTTSSGLangModel": frozenset({"decode_input_embedding.weight"}),
         "VoxtralSGLangTTSModel": frozenset(),
         "S2ProSGLangTextModel": frozenset(),
         "LLaDA2MoeModelLM": frozenset(),
-        "Qwen3TTSTalker": frozenset({"model._decode_feedback_embedding.weight"}),
+        "Qwen3TTSTalker": frozenset({"model.decode_feedback_embedding.weight"}),
         "Qwen3OmniThinkerForCausalLM": frozenset(),
         "Qwen3OmniTalker": frozenset(),
     }

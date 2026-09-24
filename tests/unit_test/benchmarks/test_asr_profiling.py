@@ -11,13 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchmarks.benchmarker import fingerprint
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
 from benchmarks.eval import asr_profiling
 from benchmarks.eval import benchmark_asr_seedtts as seedtts_benchmark
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     build_stage_breakdown,
-    collect_environment_fingerprint,
-    collect_server_identity,
     run_profiled_pass,
     start_request_profile,
     stop_request_profile,
@@ -284,16 +287,16 @@ def test_utilization_sampler_summarizes_cpu_and_gpu(
 def test_environment_fingerprint_is_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(asr_profiling, "_run_command", lambda command: None)
+    monkeypatch.setattr(fingerprint, "_run_command", lambda command: None)
 
-    fingerprint = collect_environment_fingerprint("Qwen/Qwen3-ASR-1.7B")
+    environment = collect_environment_fingerprint("Qwen/Qwen3-ASR-1.7B")
 
-    assert fingerprint["git"]["sha"] is None
-    assert fingerprint["dependency_freeze_sha256"] is None
-    assert fingerprint["gpus"] is None
-    assert fingerprint["model_path"] == "Qwen/Qwen3-ASR-1.7B"
-    assert "torch" in fingerprint["packages"]
-    assert "CUDA_VISIBLE_DEVICES" in fingerprint["env"]
+    assert environment["git"]["sha"] is None
+    assert environment["dependency_freeze_sha256"] is None
+    assert environment["gpus"] is None
+    assert environment["model_path"] == "Qwen/Qwen3-ASR-1.7B"
+    assert "torch" in environment["packages"]
+    assert "CUDA_VISIBLE_DEVICES" in environment["env"]
 
 
 def _repeat(concurrency: int, repeat: int, median: float) -> dict:
@@ -340,7 +343,7 @@ def test_server_identity_reports_models_best_effort(
             return {"data": [{"id": "Qwen/Qwen3-ASR-1.7B"}]}
 
     monkeypatch.setattr(
-        asr_profiling.requests,
+        fingerprint.requests,
         "get",
         lambda url, *, timeout, proxies: _ModelsResponse(),
     )
@@ -351,9 +354,9 @@ def test_server_identity_reports_models_best_effort(
     }
 
     def _down(url, *, timeout, proxies):
-        raise asr_profiling.requests.ConnectionError("down")
+        raise fingerprint.requests.ConnectionError("down")
 
-    monkeypatch.setattr(asr_profiling.requests, "get", _down)
+    monkeypatch.setattr(fingerprint.requests, "get", _down)
     identity = collect_server_identity("http://127.0.0.1:8000")
     assert identity["url"] == "http://127.0.0.1:8000"
     assert identity["models"] is None
@@ -373,8 +376,8 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         lambda **kwargs: emitted.append(kwargs["request_id"]),
     )
     scheduler = object.__new__(omni_scheduler.OmniScheduler)
-    scheduler._prefill_start_done = {"r1"}
-    scheduler._prefill_end_done = {"r1"}
+    scheduler.prefill_start_done = {"r1"}
+    scheduler.prefill_end_done = {"r1"}
 
     class _ExplodingBatch:
         # note (luojiaxuan): the O(1) fast path must return before touching
@@ -390,8 +393,8 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
     scheduler.emit_prefill_end_for_batch(_ExplodingBatch())
     assert emitted == []
 
-    scheduler._prefill_start_done = {"r1", "r2"}
+    scheduler.prefill_start_done = {"r1", "r2"}
     batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r2")], is_extend_in_batch=True)
     scheduler.emit_prefill_end_for_batch(batch)
     assert emitted == ["r2"]
-    assert scheduler._prefill_end_done == {"r1", "r2"}
+    assert scheduler.prefill_end_done == {"r1", "r2"}

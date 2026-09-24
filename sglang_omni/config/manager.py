@@ -28,6 +28,8 @@ def resolve_config_cls_for_model_path(model_path: str):
     if "@" in model_path and not os.path.isdir(model_path):
         repo_id, _, pinned = model_path.partition("@")
         revision = pinned or None
+    else:
+        pass
     hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
@@ -38,19 +40,31 @@ def resolve_config_cls_for_model_path(model_path: str):
     arch = architecture_from_hf_config(hf_config) if hf_config is not None else None
     if arch is None:
         arch = try_resolve_arch_from_raw_config(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
         arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
         arch = try_resolve_arch_from_nemo_config(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
         arch = try_resolve_arch_from_cosyvoice3_layout(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
         arch = try_resolve_arch_from_auk_layout(repo_id, revision=revision)
+    else:
+        pass
     if arch is None:
         hint = f", check that revision {revision} exists" if revision else ""
         raise ValueError(
             f"Could not resolve model architecture for {model_path!r}{hint}"
         )
+    else:
+        pass
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
 
@@ -90,8 +104,12 @@ class ConfigManager:
             if cur_key is not None and cur_value is not None:
                 extra_args.append((normalize_flag_key(cur_key), cur_value))
                 cur_key, cur_value = None, None
+            else:
+                pass
         if cur_key is not None and cur_value is None:
             raise ValueError(f"Missing value for argument: {cur_key}")
+        else:
+            pass
         return extra_args
 
     def merge_config(
@@ -115,6 +133,8 @@ class ConfigManager:
         patches = patches_from_dotted_cli(extra_args, self.config)
         if extra_patches is not None:
             patches = patches.merge(extra_patches)
+        else:
+            pass
         resolved = ConfigResolver(self.config).resolve(patches)
         validate_dotted_gpu_override_conflicts(
             resolved.config, {patch.key for patch in patches.ordered()}
@@ -137,6 +157,8 @@ class ConfigManager:
                 raise ValueError(
                     f"Unknown variant '{variant}' for {config_cls.__name__}"
                 )
+        else:
+            pass
 
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
@@ -155,6 +177,8 @@ class ConfigManager:
         config, patches = sources_from_config_file(file_path)
         if not patches:
             return ConfigManager(config)
+        else:
+            pass
         resolved = ConfigResolver(config).resolve(patches)
         return ConfigManager(resolved.config)
 
@@ -169,14 +193,20 @@ def validate_dotted_gpu_override_conflicts(
         parts = key.split(".")
         if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
             continue
+        else:
+            pass
 
         stage = stage_by_name.get(parts[1])
         if stage is None:
             continue
+        else:
+            pass
         process_name = stage.process or stage.name
         process_config = config.processes.get(process_name)
         if process_config is None or process_config.replica_devices is None:
             continue
+        else:
+            pass
 
         raise ValueError(
             f"{key} cannot override GPU placement for stage {stage.name!r} "

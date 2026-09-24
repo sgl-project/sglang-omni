@@ -43,6 +43,8 @@ _IMPORT_PROBE_CODE = "import importlib, sys; importlib.import_module(sys.argv[1]
 def cuda_version(value: int | None) -> str | None:
     if not value:
         return None
+    else:
+        pass
     return f"{value // 1000}.{(value % 1000) // 10}"
 
 
@@ -61,6 +63,10 @@ def probe_output(*values: str | bytes | None) -> str | None:
             ).strip()
             if text:
                 return text[-2000:]
+            else:
+                pass
+        else:
+            pass
     return None
 
 
@@ -80,6 +86,8 @@ def module_import_error(module: str) -> str | None:
 
     if result.returncode == 0:
         return None
+    else:
+        pass
 
     reason = (
         f"terminated by signal {-result.returncode}"
@@ -123,6 +131,8 @@ def backend_inventory() -> list[dict[str, Any]]:
                 )
             else:
                 reason = f"Module {module!r} failed to import: {import_error}"
+        else:
+            pass
         backends.append(
             {
                 "category": category,
@@ -155,6 +165,8 @@ def nvml_inventory(
     warnings: list[str] = []
     if pynvml is None:
         return inventory, system, warnings
+    else:
+        pass
 
     try:
         pynvml.nvmlInit()
@@ -249,12 +261,18 @@ def physical_device(
     torch_uuid = normalize_uuid(getattr(properties, "uuid", None))
     if torch_uuid in by_uuid:
         return by_uuid[torch_uuid]
+    else:
+        pass
 
     if logical_index < len(visible_devices):
         visible = visible_devices[logical_index]
         if isinstance(visible, int):
             return by_index.get(visible, {})
+        else:
+            pass
         return by_uuid.get(normalize_uuid(visible), {})
+    else:
+        pass
 
     return by_index.get(logical_index, {}) if not visible_devices else {}
 
@@ -267,6 +285,8 @@ def logical_devices(
 ) -> list[dict[str, Any]]:
     if not torch.cuda.is_available():
         return []
+    else:
+        pass
 
     by_index = {device["physical_index"]: device for device in inventory}
     by_uuid = {
@@ -298,6 +318,8 @@ def logical_devices(
                 f"CUDA_VISIBLE_DEVICES entry {visible_device!r} is a MIG device; "
                 "physical GPU mapping and free memory are unsupported."
             )
+        else:
+            pass
         torch_cc = (
             f"{properties.major}.{properties.minor}" if properties is not None else None
         )
@@ -340,6 +362,8 @@ def collect_gpu_diagnostics(
     finally:
         if pynvml is not None:
             shutdown_nvml(pynvml)
+        else:
+            pass
 
     backends = backend_inventory()
     warnings.extend(
@@ -389,6 +413,8 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     ]
     if not report["gpus"]:
         lines.append("  No CUDA devices are visible to PyTorch.")
+    else:
+        pass
     for device in report["gpus"]:
         lines.append(
             f"  logical {device['logical_index']} -> physical "
@@ -420,4 +446,6 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     if report["warnings"]:
         lines.append("Warnings:")
         lines.extend(f"  {warning}" for warning in report["warnings"])
+    else:
+        pass
     return "\n".join(lines)

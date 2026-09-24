@@ -56,6 +56,8 @@ def resolve_local_model_dir(model_path: str) -> str:
     path = Path(model_path)
     if path.exists():
         return str(path)
+    else:
+        pass
     try:
         return str(resolve_model_path(model_path, local_files_only=True))
     except (FileNotFoundError, OSError) as exc:
@@ -71,6 +73,8 @@ def combine_cache_keys(*keys: str | None) -> str | None:
     parts = [key for key in keys if key]
     if not parts:
         return None
+    else:
+        pass
     return "|".join(parts)
 
 
@@ -82,16 +86,24 @@ def merge_extracted_video_audio(
 
     if not extracted_audios:
         return explicit_audios, False
+    else:
+        pass
     missing = [audio is None or not len(audio) for audio in extracted_audios]
     if all(missing):
         return explicit_audios, False
+    else:
+        pass
     if any(missing):
         raise ValueError(
             "use_audio_in_video requires every video in a multi-video request "
             "to contain a decodable audio track"
         )
+    else:
+        pass
     if not explicit_audios:
         return list(extracted_audios), True
+    else:
+        pass
     explicit = (
         explicit_audios if isinstance(explicit_audios, list) else [explicit_audios]
     )
@@ -121,12 +133,16 @@ def extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
     config_path = Path(model_dir) / "tokenizer_config.json"
     if not config_path.is_file():
         return {}
+    else:
+        pass
     try:
         config = json.loads(config_path.read_text())
     except (OSError, ValueError):
         return {}
     if "extra_special_tokens" in config:
         return {}
+    else:
+        pass
     return {
         key: config[key]
         for key in _QWEN3_OMNI_SPECIAL_TOKEN_KEYS
@@ -137,11 +153,15 @@ def extra_special_tokens_compat(model_dir: str) -> dict[str, str]:
 def contextualize_cache_key(base_key: str | None, **context: Any) -> str | None:
     if base_key is None:
         return None
+    else:
+        pass
     parts = [base_key]
     for key in sorted(context):
         value = context[key]
         if value is not None:
             parts.append(f"{key}={value}")
+        else:
+            pass
     return "|".join(parts)
 
 
@@ -158,6 +178,8 @@ def validate_prompt_seq_len(
 ) -> None:
     if max_seq_len is None:
         return
+    else:
+        pass
     prompt_len = int(input_ids.numel())
     if prompt_len >= max_seq_len:
         logger.info(
@@ -168,6 +190,8 @@ def validate_prompt_seq_len(
             f"The input ({prompt_len} tokens) is longer than the model's "
             f"context length ({max_seq_len} tokens)."
         )
+    else:
+        pass
     total_tokens = prompt_len + int(max_new_tokens)
     if total_tokens >= max_seq_len:
         logger.info(
@@ -183,6 +207,8 @@ def validate_prompt_seq_len(
             f"the number of tokens in the input messages or the completion to "
             f"fit within the limit."
         )
+    else:
+        pass
 
 
 def is_pretokenized_prompt(inputs: Any) -> bool:
@@ -248,6 +274,8 @@ class Qwen3OmniPreprocessor:
         except TypeError:
             if not compat_kwargs:
                 raise
+            else:
+                pass
             logger.warning(
                 "Qwen3OmniMoeProcessor.from_pretrained() rejected "
                 "extra_special_tokens compat kwargs for %s; retrying without "
@@ -262,6 +290,8 @@ class Qwen3OmniPreprocessor:
         except (OSError, ValueError, RuntimeError):
             if Path(model_path).exists():
                 raise
+            else:
+                pass
             self.processor = Qwen3OmniMoeProcessor.from_pretrained(
                 model_path,
                 trust_remote_code=True,
@@ -278,6 +308,8 @@ class Qwen3OmniPreprocessor:
             self.tokenizer, "chat_template", None
         ):
             self.processor.chat_template = self.tokenizer.chat_template
+        else:
+            pass
 
     def build_multimodal_messages(
         self,
@@ -290,6 +322,8 @@ class Qwen3OmniPreprocessor:
         """Convert simple messages to HF's structured multimodal format."""
         if num_images == 0 and num_audios == 0 and num_videos == 0:
             return messages
+        else:
+            pass
 
         result: list[dict[str, Any]] = []
         for i, msg in enumerate(messages):
@@ -374,6 +408,8 @@ class Qwen3OmniPreprocessor:
                     "unknown multimodal_train_inputs tensors: "
                     + ", ".join(sorted(unknown_names))
                 )
+            else:
+                pass
             cache_parts = []
             for name in sorted(bundle["tensors"]):
                 spec = bundle["tensors"][name]
@@ -393,6 +429,8 @@ class Qwen3OmniPreprocessor:
             processed_cache_key = "processed:" + xxhash.xxh3_64_hexdigest(
                 json.dumps(cache_parts, separators=(",", ":")).encode()
             )
+        else:
+            pass
 
         input_ids = torch.tensor(token_ids, dtype=torch.long)
         attention_mask = torch.ones_like(input_ids)
@@ -433,16 +471,26 @@ class Qwen3OmniPreprocessor:
                 "multimodal_train_inputs provides image/video metadata "
                 "without pixel_values or pixel_values_videos"
             )
+        else:
+            pass
         if audio_encoder_inputs and not has_audio_payload:
             raise ValueError(
                 "multimodal_train_inputs provides audio metadata "
                 "without input_features"
             )
+        else:
+            pass
         if processed_cache_key is not None:
             if image_encoder_inputs:
                 image_encoder_inputs["cache_key"] = processed_cache_key
+            else:
+                pass
             if audio_encoder_inputs:
                 audio_encoder_inputs["cache_key"] = processed_cache_key
+            else:
+                pass
+        else:
+            pass
         return self.finalize_state(
             payload,
             input_ids=input_ids,
@@ -467,6 +515,8 @@ class Qwen3OmniPreprocessor:
         inputs = payload.request.inputs
         if is_pretokenized_prompt(inputs):
             return self.preprocess_train_inputs(payload, inputs)
+        else:
+            pass
         if isinstance(inputs, dict):
             multimodal_train_inputs = inputs.get("multimodal_train_inputs")
             if multimodal_train_inputs is not None:
@@ -475,6 +525,8 @@ class Qwen3OmniPreprocessor:
                     inputs["input_ids"],
                     multimodal_train_inputs,
                 )
+            else:
+                pass
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_videos = inputs.get("videos") or inputs.get("video")
@@ -534,6 +586,8 @@ class Qwen3OmniPreprocessor:
                 num_explicit_audios = (
                     len(raw_audios) if isinstance(raw_audios, list) else 1
                 )
+            else:
+                pass
 
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
@@ -566,6 +620,8 @@ class Qwen3OmniPreprocessor:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
+                    else:
+                        pass
                 try:
                     await asyncio.gather(*tasks, return_exceptions=True)
                 finally:
@@ -642,31 +698,53 @@ class Qwen3OmniPreprocessor:
                 raise ValueError(
                     "Qwen3-Omni requires all videos in a request to have the same sampled FPS"
                 )
+            else:
+                pass
             videos_kwargs["fps"] = sampled_video_fps[0]
         elif resolved_video_fps is not None:
             videos_kwargs["fps"] = resolved_video_fps
+        else:
+            pass
         if resolved_video_max_frames is not None:
             videos_kwargs["max_frames"] = resolved_video_max_frames
+        else:
+            pass
         if resolved_video_min_pixels is not None:
             videos_kwargs["min_pixels"] = resolved_video_min_pixels
+        else:
+            pass
         if resolved_video_max_pixels is not None:
             videos_kwargs["max_pixels"] = resolved_video_max_pixels
+        else:
+            pass
         if resolved_video_total_pixels is not None:
             videos_kwargs["total_pixels"] = resolved_video_total_pixels
+        else:
+            pass
         if effective_use_audio_in_video is not None:
             videos_kwargs["use_audio_in_video"] = effective_use_audio_in_video
+        else:
+            pass
         if resolved_video_seconds_per_chunk is not None:
             videos_kwargs["seconds_per_chunk"] = resolved_video_seconds_per_chunk
+        else:
+            pass
         if resolved_video_position_id_per_seconds is not None:
             videos_kwargs["position_id_per_seconds"] = float(
                 resolved_video_position_id_per_seconds
             )
+        else:
+            pass
         if videos:
             # torchcodec backend expects a non-None device string
             videos_kwargs.setdefault("device", "cpu")
+        else:
+            pass
         processor_kwargs: dict[str, Any] = {}
         if videos_kwargs:
             processor_kwargs["videos_kwargs"] = videos_kwargs
+        else:
+            pass
 
         hf_inputs = self.processor(
             text=prompt_text,
@@ -701,6 +779,8 @@ class Qwen3OmniPreprocessor:
         }
         if effective_use_audio_in_video is not None:
             full_mm_inputs["video"]["use_audio_in_video"] = effective_use_audio_in_video
+        else:
+            pass
 
         # Build encoder_inputs with cache_key for efficient caching.
         # Include preprocessing parameters that materially change encoder outputs.
@@ -713,6 +793,8 @@ class Qwen3OmniPreprocessor:
             effective_video_fps = tuple(float(fps) for fps in sampled_video_fps)
         elif resolved_video_fps is not None:
             effective_video_fps = (resolved_video_fps,)
+        else:
+            pass
 
         contextual_video_cache_key = contextualize_cache_key(
             video_cache_key,
@@ -728,6 +810,8 @@ class Qwen3OmniPreprocessor:
         )
         if combined_cache_key:
             image_encoder_inputs["cache_key"] = combined_cache_key
+        else:
+            pass
 
         audio_encoder_inputs = {**full_mm_inputs["audio"]}
         contextualized_audio_cache_key = contextualize_cache_key(
@@ -743,8 +827,12 @@ class Qwen3OmniPreprocessor:
                     target_sr=audio_target_sr,
                 ),
             )
+        else:
+            pass
         if contextualized_audio_cache_key:
             audio_encoder_inputs["cache_key"] = contextualized_audio_cache_key
+        else:
+            pass
 
         encoder_inputs: dict[str, dict[str, Any]] = {}
         image_encoder_inputs = {

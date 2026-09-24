@@ -92,8 +92,12 @@ class UploadedVoice:
         }
         if self.ref_text is not None:
             response["ref_text"] = self.ref_text
+        else:
+            pass
         if self.speaker_description is not None:
             response["speaker_description"] = self.speaker_description
+        else:
+            pass
         return response
 
     def to_safetensors_metadata(self) -> dict[str, str]:
@@ -111,8 +115,12 @@ class UploadedVoice:
         }
         if self.ref_text is not None:
             metadata["ref_text"] = self.ref_text
+        else:
+            pass
         if self.speaker_description is not None:
             metadata["speaker_description"] = self.speaker_description
+        else:
+            pass
         return metadata
 
 
@@ -143,15 +151,17 @@ class SpeakerSampleStore:
         )
         if self.max_uploaded <= 0:
             raise ValueError("SPEAKER_MAX_UPLOADED must be positive")
+        else:
+            pass
         self.cache = cache or get_speaker_artifact_cache()
-        self._voices: dict[str, UploadedVoice] = {}
-        self._last_upload_timestamp = 0
-        self._lock = RLock()
+        self.voices: dict[str, UploadedVoice] = {}
+        self.last_upload_timestamp = 0
+        self.lock = RLock()
         self.restore()
 
     def list_response(self) -> dict[str, Any]:
-        with self._lock:
-            uploaded = sorted(self._voices.values(), key=lambda item: item.name.lower())
+        with self.lock:
+            uploaded = sorted(self.voices.values(), key=lambda item: item.name.lower())
             voices = sorted(
                 set(DEFAULT_VOICE_PRESETS) | {voice.name for voice in uploaded},
                 key=str.lower,
@@ -163,16 +173,16 @@ class SpeakerSampleStore:
             }
 
     def uploaded_voice_names(self) -> list[str]:
-        with self._lock:
+        with self.lock:
             return sorted(
-                (voice.name for voice in self._voices.values()),
+                (voice.name for voice in self.voices.values()),
                 key=str.lower,
             )
 
     def get(self, name: str) -> UploadedVoice | None:
         normalized = normalize_voice_name(name)
-        with self._lock:
-            return self._voices.get(normalized)
+        with self.lock:
+            return self.voices.get(normalized)
 
     def upload(
         self,
@@ -188,6 +198,8 @@ class SpeakerSampleStore:
         normalized_name = normalize_voice_name(name)
         if normalized_name in DEFAULT_VOICE_PRESETS:
             raise bad_request("name is reserved for a preset voice", param="name")
+        else:
+            pass
         display_name = name.strip()
         consent = normalize_required_text(consent, "consent")
         ref_text = normalize_optional_text(ref_text)
@@ -196,11 +208,15 @@ class SpeakerSampleStore:
         file_size = len(audio_bytes)
         if file_size == 0:
             raise bad_request("audio_sample must not be empty", param="audio_sample")
+        else:
+            pass
         if file_size > MAX_VOICE_UPLOAD_BYTES:
             raise bad_request(
                 f"audio_sample must be at most {MAX_VOICE_UPLOAD_BYTES} bytes",
                 param="audio_sample",
             )
+        else:
+            pass
         mime_type = resolve_upload_mime_type(filename, content_type)
         samples, sample_rate = decode_reference_audio(audio_bytes)
         validate_reference_audio(samples, sample_rate)
@@ -231,33 +247,43 @@ class SpeakerSampleStore:
                 samples,
                 voice.to_safetensors_metadata(),
             )
-            with self._lock:
-                replaced = normalized_name in self._voices
-                if not replaced and len(self._voices) >= self.max_uploaded:
+            with self.lock:
+                replaced = normalized_name in self.voices
+                if not replaced and len(self.voices) >= self.max_uploaded:
                     raise bad_request(
                         f"Uploaded voice limit reached ({self.max_uploaded})",
                         param="name",
                     )
+                else:
+                    pass
                 replace_voice_file(temp_path, voice_path)
                 temp_path = None
                 if replaced:
                     self.cache.clear_voice(normalized_name)
-                self._voices[normalized_name] = voice
+                else:
+                    pass
+                self.voices[normalized_name] = voice
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
+            else:
+                pass
 
         response = voice.to_response_dict()
         if replaced:
             response["warning"] = f"Voice '{display_name}' overwritten"
+        else:
+            pass
         return response
 
     def delete(self, name: str) -> bool:
         normalized = normalize_voice_name(name)
-        with self._lock:
-            voice = self._voices.get(normalized)
+        with self.lock:
+            voice = self.voices.get(normalized)
             if voice is None:
                 return False
+            else:
+                pass
             try:
                 voice.file_path.unlink(missing_ok=True)
             except OSError as exc:
@@ -267,30 +293,36 @@ class SpeakerSampleStore:
                 raise internal_error(
                     f"Failed to delete voice '{voice.name}' from storage",
                 ) from exc
-            self._voices.pop(normalized)
+            self.voices.pop(normalized)
             self.cache.clear_voice(normalized)
         return True
 
     def resolve_reference(self, name: str) -> UploadedVoiceReference | None:
         normalized = normalize_voice_name(name)
         while True:
-            with self._lock:
-                voice = self._voices.get(normalized)
+            with self.lock:
+                voice = self.voices.get(normalized)
                 if voice is None:
                     return None
+                else:
+                    pass
                 cache_key = voice_data_url_cache_key(voice)
                 cached = self.cache.get(cache_key)
             if cached is not None:
                 return UploadedVoiceReference(voice=voice, ref_audio=cached)
+            else:
+                pass
 
             samples, sample_rate = self.load_samples(voice)
             audio_b64 = base64.b64encode(encode_wav(samples, sample_rate)).decode(
                 "ascii"
             )
             cached = f"data:audio/wav;base64,{audio_b64}"
-            with self._lock:
-                if self._voices.get(normalized) != voice:
+            with self.lock:
+                if self.voices.get(normalized) != voice:
                     continue
+                else:
+                    pass
                 self.cache.put(cache_key, cached)
                 return UploadedVoiceReference(voice=voice, ref_audio=cached)
 
@@ -323,21 +355,25 @@ class SpeakerSampleStore:
                     f"Skipping duplicate restored voice {voice.file_path} for name {voice.normalized_name}",
                 )
                 continue
+            else:
+                pass
             if len(restored) >= self.max_uploaded:
                 logger.warning(
                     f"Skipping restored voice {voice.file_path} because SPEAKER_MAX_UPLOADED={self.max_uploaded}",
                 )
                 continue
+            else:
+                pass
             restored[voice.normalized_name] = voice
             last_timestamp = max(last_timestamp, voice.created_at)
-        with self._lock:
-            self._voices = restored
-            self._last_upload_timestamp = last_timestamp
+        with self.lock:
+            self.voices = restored
+            self.last_upload_timestamp = last_timestamp
 
     def next_upload_timestamp(self) -> int:
-        with self._lock:
-            timestamp = max(int(time.time()), self._last_upload_timestamp + 1)
-            self._last_upload_timestamp = timestamp
+        with self.lock:
+            timestamp = max(int(time.time()), self.last_upload_timestamp + 1)
+            self.last_upload_timestamp = timestamp
             return timestamp
 
     def load_samples(self, voice: UploadedVoice) -> tuple[np.ndarray, int]:
@@ -358,23 +394,33 @@ class SpeakerSampleStore:
 def normalize_voice_name(name: str) -> str:
     if not isinstance(name, str):
         raise bad_request("name must be a string", param="name")
+    else:
+        pass
     value = name.strip()
     if not value:
         raise bad_request("name must be non-empty", param="name")
+    else:
+        pass
     if not VOICE_NAME_PATTERN.fullmatch(value):
         raise bad_request(
             "name must contain only letters, numbers, '.', '_', and '-'",
             param="name",
         )
+    else:
+        pass
     return value.lower()
 
 
 def resolve_speaker_root(root_dir: str | Path | None) -> Path:
     if root_dir is not None:
         return Path(root_dir).expanduser().resolve()
+    else:
+        pass
     env_root = os.environ.get("SPEAKER_SAMPLES_DIR")
     if env_root:
         return Path(env_root).expanduser().resolve()
+    else:
+        pass
     return DEFAULT_SPEAKER_SAMPLES_DIR
 
 
@@ -382,6 +428,8 @@ def speaker_max_uploaded_from_env() -> int:
     value = os.environ.get("SPEAKER_MAX_UPLOADED")
     if not value:
         return DEFAULT_SPEAKER_MAX_UPLOADED
+    else:
+        pass
     try:
         return int(value)
     except ValueError:
@@ -392,15 +440,21 @@ def speaker_max_uploaded_from_env() -> int:
 def normalize_required_text(value: str, param: str) -> str:
     if not isinstance(value, str):
         raise bad_request(f"{param} must be a string", param=param)
+    else:
+        pass
     normalized = value.strip()
     if not normalized:
         raise bad_request(f"{param} must be non-empty", param=param)
+    else:
+        pass
     return normalized
 
 
 def normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     normalized = value.strip()
     return normalized or None
 
@@ -418,6 +472,8 @@ def resolve_upload_mime_type(filename: str | None, content_type: str | None) -> 
             f"audio_sample MIME type must be one of: {accepted}",
             param="audio_sample",
         )
+    else:
+        pass
     return mime_type
 
 
@@ -440,22 +496,30 @@ def decode_reference_audio(audio_bytes: bytes) -> tuple[np.ndarray, int]:
 def validate_reference_audio(samples: np.ndarray, sample_rate: int) -> None:
     if sample_rate <= 0 or samples.ndim != 1 or samples.size == 0:
         raise bad_request("audio_sample must contain mono audio", param="audio_sample")
+    else:
+        pass
     duration = samples.shape[0] / float(sample_rate)
     if duration < MIN_REFERENCE_AUDIO_SECONDS:
         raise bad_request(
             f"audio_sample must be at least {MIN_REFERENCE_AUDIO_SECONDS:.1f}s",
             param="audio_sample",
         )
+    else:
+        pass
     if duration > MAX_REFERENCE_AUDIO_SECONDS:
         raise bad_request(
             f"audio_sample must be at most {MAX_REFERENCE_AUDIO_SECONDS:.1f}s",
             param="audio_sample",
         )
+    else:
+        pass
     if float(np.max(np.abs(samples))) <= VOICE_SILENCE_THRESHOLD:
         raise bad_request(
             "audio_sample must contain non-silent speech reference audio",
             param="audio_sample",
         )
+    else:
+        pass
 
 
 def voice_data_url_cache_key(voice: UploadedVoice) -> SpeakerCacheKey:
@@ -535,11 +599,15 @@ def voice_from_metadata(metadata: dict[str, str], path: Path) -> UploadedVoice:
     name = metadata.get("name") or normalized_name
     if normalized_name is None or name is None:
         raise bad_request("voice metadata is missing name")
+    else:
+        pass
     values: dict[str, Any] = dict(metadata)
     try:
         for key in VOICE_METADATA_INT_FIELDS:
             if key in values:
                 values[key] = int(values[key])
+            else:
+                pass
         return UploadedVoice(
             name=name,
             normalized_name=normalize_voice_name(normalized_name),

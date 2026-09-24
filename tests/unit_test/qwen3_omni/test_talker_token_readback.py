@@ -60,8 +60,8 @@ def test_process_prefers_staged_host_copy_and_skips_device_readback():
 
 def _bare_runner() -> ModelRunner:
     runner = ModelRunner.__new__(ModelRunner)
-    runner._token_id_host_bufs = None
-    runner._token_id_host_slot = 0
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
     return runner
 
 

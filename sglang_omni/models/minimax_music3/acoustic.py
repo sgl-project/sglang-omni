@@ -62,6 +62,8 @@ def resample_waveform(waveform: Tensor) -> Tensor:
 def positive_int(name: str, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"MiniMax Music 3 {name} must be a positive integer")
+    else:
+        pass
     return value
 
 
@@ -73,12 +75,16 @@ def non_negative_number(name: str, value: Any) -> float:
         or float(value) < 0
     ):
         raise ValueError(f"MiniMax Music 3 {name} must be finite and non-negative")
+    else:
+        pass
     return float(value)
 
 
 def boolean(name: str, value: Any) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"MiniMax Music 3 {name} must be a boolean")
+    else:
+        pass
     return value
 
 
@@ -104,6 +110,8 @@ def resolve_acoustic_dtype(value: str | torch.dtype) -> torch.dtype:
             "MiniMax Music 3 acoustic dtype must be one of: "
             + ", ".join(sorted(SUPPORTED_ACOUSTIC_DTYPES))
         )
+    else:
+        pass
     return {
         "float32": torch.float32,
         "bfloat16": torch.bfloat16,
@@ -136,6 +144,8 @@ class MiniMaxMusic3AcousticDecoder:
             raise RuntimeError(
                 "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
             )
+        else:
+            pass
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
@@ -143,6 +153,8 @@ class MiniMaxMusic3AcousticDecoder:
             raise RuntimeError(
                 "MiniMax Music 3 acoustic inference requires a CUDA/MUSA device"
             )
+        else:
+            pass
         self.dtype = resolve_acoustic_dtype(dtype)
         if self.dtype is torch.float32:
             # note (chenyang): TF32 keeps float32's range with a 10-bit mantissa
@@ -153,6 +165,8 @@ class MiniMaxMusic3AcousticDecoder:
             # shares this process.
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.set_float32_matmul_precision("high")
+        else:
+            pass
         self.dit_steps = positive_int("dit_steps", dit_steps)
         self.dit_cfg_scale = non_negative_number("dit_cfg_scale", dit_cfg_scale)
         self.attention_backend = attention_backend.strip().lower()
@@ -166,10 +180,14 @@ class MiniMaxMusic3AcousticDecoder:
             raise ValueError(
                 "MiniMax Music 3 cache_dit and breakable_cuda_graph cannot be enabled together"
             )
+        else:
+            pass
         if breakable_cuda_graph_min_free_gb is None:
             breakable_cuda_graph_min_free_gb = (
                 24.0 if self.dtype is torch.float32 else 10.0
             )
+        else:
+            pass
         self.breakable_cuda_graph_min_free_gb = non_negative_number(
             "breakable_cuda_graph_min_free_gb", breakable_cuda_graph_min_free_gb
         )
@@ -180,6 +198,8 @@ class MiniMaxMusic3AcousticDecoder:
             raise ValueError(
                 "MiniMax Music 3 fa and sage_attn backends require dtype=bfloat16"
             )
+        else:
+            pass
 
         paths = resolve_checkpoint(model_path)
         load_started = time.perf_counter()
@@ -232,11 +252,15 @@ class MiniMaxMusic3AcousticDecoder:
                 "DIT blocks",
                 lambda: self.dit.enable_compiled_blocks(warmup_mel_length=window),
             )
+        else:
+            pass
         if self.breakable_cuda_graph_requested:
             self.breakable_cuda_graph = self.dit.enable_breakable_cuda_graph(
                 mel_len=window,
                 min_free_gb=self.breakable_cuda_graph_min_free_gb,
             )
+        else:
+            pass
         if self.cache_dit:
             self.dit.enable_cache_dit(
                 num_steps=self.dit_steps,
@@ -246,6 +270,8 @@ class MiniMaxMusic3AcousticDecoder:
                 residual_diff_threshold=cache_dit_residual_diff_threshold,
                 max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
             )
+        else:
+            pass
 
     def build_dav(self, dav_path: str) -> int:
         """Load the DAV decoder and return how many weight norms were folded."""
@@ -263,6 +289,8 @@ class MiniMaxMusic3AcousticDecoder:
                 "DAV decoder",
                 lambda: self.dav.enable_compiled_decoder(warmup_mel_length=window),
             )
+        else:
+            pass
         return removed_weight_norms
 
     @torch.inference_mode()
@@ -278,6 +306,8 @@ class MiniMaxMusic3AcousticDecoder:
     ) -> tuple[Tensor, Tensor, Tensor]:
         if should_abort is not None and should_abort():
             raise InterruptedError("MiniMax Music 3 acoustic generation aborted")
+        else:
+            pass
         hidden = hidden.unsqueeze(0).to(
             device=self.device, dtype=self.dtype, non_blocking=True
         )
@@ -296,9 +326,13 @@ class MiniMaxMusic3AcousticDecoder:
         )
         if should_abort is not None and should_abort():
             raise InterruptedError("MiniMax Music 3 acoustic generation aborted")
+        else:
+            pass
         waveform = self.dav(latent)
         if should_abort is not None and should_abort():
             raise InterruptedError("MiniMax Music 3 acoustic generation aborted")
+        else:
+            pass
         overlap = overlap_mel_length()
         start = max(0, latent.shape[-1] - 2 * overlap)
         end = max(start, latent.shape[-1] - overlap)
@@ -331,18 +365,20 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         self,
         decoder: MiniMaxMusic3AcousticDecoder,
     ) -> None:
-        self._decoder = decoder
-        self._stream_states: dict[str, AcousticStreamState] = {}
+        self.decoder = decoder
+        self.stream_states: dict[str, AcousticStreamState] = {}
         super().__init__(compute_fn=None, max_batch_size=1)
 
     def is_streaming_payload(self, payload: Any) -> bool:
         if not isinstance(payload, StagePayload):
             return False
+        else:
+            pass
         data = payload.data if isinstance(payload.data, dict) else {}
         return bool(data.get("internal_chunk_stream", False))
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        state = self._stream_states.setdefault(request_id, AcousticStreamState())
+        state = self.stream_states.setdefault(request_id, AcousticStreamState())
         state.final_state = MiniMaxMusic3State.from_dict(payload.data)
         logger.info(
             f"MiniMax Music 3 acoustic request={request_id} payload_ready seed={state.final_state.seed} expected_frames={state.final_state.generated_frames}"
@@ -355,6 +391,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
             raise ValueError(
                 "MiniMax Music 3 acoustic chunk data must be a hidden tensor"
             )
+        else:
+            pass
         if (
             item.data.ndim != 3
             or item.data.shape[0] != 1
@@ -364,13 +402,17 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 f"MiniMax Music 3 acoustic hidden must be [1,T,{AR_HIDDEN_SIZE}], "
                 f"got {tuple(item.data.shape)}"
             )
+        else:
+            pass
         hidden = item.data[0]
-        state = self._stream_states.setdefault(request_id, AcousticStreamState())
+        state = self.stream_states.setdefault(request_id, AcousticStreamState())
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise ValueError(
                 "MiniMax Music 3 acoustic chunk metadata must be a mapping"
             )
+        else:
+            pass
         chunk_idx = int(metadata["chunk_idx"])
         start_frame = int(metadata["start_frame"])
         end_frame = int(metadata["end_frame"])
@@ -382,16 +424,20 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 f"expected idx={state.next_chunk_idx} start={state.next_start_frame}, "
                 f"got idx={chunk_idx} start={start_frame}"
             )
+        else:
+            pass
         if end_frame <= start_frame or end_frame - start_frame != hidden.shape[0]:
             raise ValueError(
                 "MiniMax Music 3 acoustic chunk frame range does not match hidden length"
             )
+        else:
+            pass
         logger.info(
             f"MiniMax Music 3 acoustic chunk request={request_id} idx={chunk_idx} frames={hidden.shape[0]} frame_range=[{start_frame},{end_frame}) final={is_last}"
         )
         try:
             wave, state.last_latent, state.last_condition = (
-                self._decoder.decode_with_state(
+                self.decoder.decode_with_state(
                     hidden,
                     seed=seed,
                     chunk_idx=chunk_idx,
@@ -403,6 +449,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         except InterruptedError:
             if state.abort_event.is_set():
                 return []
+            else:
+                pass
             raise
         left_trim, right_trim = crop_sample_bounds(
             ChunkWindow(chunk_idx, 0, int(hidden.shape[0]), chunk_idx == 0, is_last),
@@ -415,13 +463,17 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         return []
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        state = self._stream_states.get(request_id)
+        state = self.stream_states.get(request_id)
         if state is None or state.final_state is None:
             raise ValueError("MiniMax Music 3 stream completed without final payload")
+        else:
+            pass
         if not state.wave_chunks:
             raise ValueError(
                 "MiniMax Music 3 stream completed without decoded audio chunks"
             )
+        else:
+            pass
         waveform_44k = torch.cat(state.wave_chunks, dim=1)
         waveform_32k = resample_waveform(waveform_44k)
         final_state = state.final_state
@@ -435,6 +487,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         usage = build_usage(final_state)
         if usage is not None:
             payload_data["usage"] = usage
+        else:
+            pass
         payload_data["finish_reason"] = final_state.finish_reason or "stop"
         logger.info(
             f"MiniMax Music 3 acoustic done request={request_id} hidden_frames={state.hidden_frames} samples={waveform_44k.shape[-1]}->{waveform_32k.shape[-1]} duration={waveform_32k.shape[-1] / OUTPUT_SAMPLE_RATE:.2f}s sample_rate={OUTPUT_SAMPLE_RATE} finish_reason={payload_data['finish_reason']} elapsed={time.perf_counter() - state.started_at:.1f}s"
@@ -452,19 +506,23 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         ]
 
     def abort(self, request_id: str) -> None:
-        state = self._stream_states.get(request_id)
+        state = self.stream_states.get(request_id)
         if state is not None:
             state.abort_event.set()
+        else:
+            pass
         super().abort(request_id)
 
     def clear_stream_state(self, request_id: str) -> None:
-        state = self._stream_states.pop(request_id, None)
+        state = self.stream_states.pop(request_id, None)
         if state is not None:
             state.abort_event.set()
             state.wave_chunks.clear()
             state.final_state = None
             state.last_latent = None
             state.last_condition = None
+        else:
+            pass
 
 
 __all__ = [

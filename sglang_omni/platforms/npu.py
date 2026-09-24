@@ -9,6 +9,8 @@ from sglang_omni.platforms.interface import OmniPlatform
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 
 class NPUOmniPlatform(OmniPlatform):

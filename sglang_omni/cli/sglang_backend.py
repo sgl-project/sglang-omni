@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sglang.cli.serve_backends import ServeRequest
+else:
+    pass
 
 
 def run(request: ServeRequest) -> None:

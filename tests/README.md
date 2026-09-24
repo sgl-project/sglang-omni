@@ -81,7 +81,6 @@ tests/
     │   └── test_model_capabilities.py
     ├── model_runner/
     │   ├── test_arch_override.py
-    │   ├── test_hidden_capture.py
     │   └── test_prefill_cuda_graph_usage.py
     ├── audar_tts/
     │   └── test_pipeline.py

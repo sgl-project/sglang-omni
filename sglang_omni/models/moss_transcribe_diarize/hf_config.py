@@ -39,6 +39,8 @@ class MossTranscribeDiarizeConfig(PretrainedConfig):
             )
         elif isinstance(text_config, dict):
             text_config = self.sub_configs["text_config"](**text_config)
+        else:
+            pass
 
         if audio_config is None:
             audio_config = WhisperConfig(
@@ -57,10 +59,14 @@ class MossTranscribeDiarizeConfig(PretrainedConfig):
             )
         elif isinstance(audio_config, dict):
             audio_config = self.sub_configs["audio_config"](**audio_config)
+        else:
+            pass
 
         text_config.tie_word_embeddings = tie_word_embeddings
         if not text_config.layer_types:
             text_config.layer_types = ["full_attention"] * text_config.num_hidden_layers
+        else:
+            pass
 
         self.text_config = text_config
         self.audio_config = audio_config

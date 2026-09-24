@@ -30,12 +30,12 @@ class _Service(PreLMEncoderService[int, list[int], int]):
         super().__init__(worker_name="test-pre-lm-encoder")
 
     def close(self) -> None:
-        if self._thread.is_alive():
-            self._queue.put(_STOP)
-            self._thread.join(timeout=2)
+        if self.thread.is_alive():
+            self.queue.put(_STOP)
+            self.thread.join(timeout=2)
 
     def next_batch(self) -> tuple[list[QueueEntry[int]], bool]:
-        first = self._queue.get()
+        first = self.queue.get()
         if first is _STOP:
             return [], True
         if self.drain_gate is not None:
@@ -43,7 +43,7 @@ class _Service(PreLMEncoderService[int, list[int], int]):
         batch = [first]
         while True:
             try:
-                batch.append(self._queue.get_nowait())
+                batch.append(self.queue.get_nowait())
             except queue.Empty:
                 break
         return batch, False

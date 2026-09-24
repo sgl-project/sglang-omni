@@ -159,7 +159,7 @@ def test_native_scheduler_keeps_offline_decode_out_of_streaming_state(
             torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         torch.testing.assert_close(actual_stream, expected_stream, rtol=0, atol=0)
         # The wrappers isolate state without duplicating model weights.
-        assert list(scheduler._nonstream_decoder.parameters()) == list(
+        assert list(scheduler.nonstream_decoder.parameters()) == list(
             model.decoder.parameters()
         )
     finally:

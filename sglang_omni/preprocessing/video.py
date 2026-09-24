@@ -160,6 +160,8 @@ async def ensure_video_list_async(
     """
     if videos is None:
         return [], None, None
+    else:
+        pass
     if isinstance(videos, list):
         items = videos
     else:
@@ -174,6 +176,8 @@ async def ensure_video_list_async(
         from .resource_connector import get_global_resource_connector
 
         resource_connector = get_global_resource_connector()
+    else:
+        pass
 
     async def _load_video_with_audio(
         video_item: str | Path, is_url: bool
@@ -222,6 +226,8 @@ async def ensure_video_list_async(
                     for task in tasks:
                         if not task.done():
                             task.cancel()
+                        else:
+                            pass
                     await await_media_cleanup(
                         asyncio.gather(*tasks, return_exceptions=True)
                     )
@@ -244,6 +250,8 @@ async def ensure_video_list_async(
                     sample_fps_list.append(0.0)  # Placeholder for fps
                     if extract_audio:
                         extracted_audios.append(None)  # Placeholder for audio
+                    else:
+                        pass
                 elif Path(video_item).exists():
                     # Load from local path with optional audio extraction
                     coro = _load_video_with_audio(video_item, is_url=False)
@@ -254,18 +262,24 @@ async def ensure_video_list_async(
                     sample_fps_list.append(0.0)  # Placeholder for fps
                     if extract_audio:
                         extracted_audios.append(None)  # Placeholder for audio
+                    else:
+                        pass
                 else:
                     # Path doesn't exist, treat as already processed
                     normalized.append(video_item)
                     all_paths = False
                     if extract_audio:
                         extracted_audios.append(None)
+                    else:
+                        pass
             else:
                 # Already processed (torch Tensor, etc.)
                 normalized.append(video_item)
                 all_paths = False
                 if extract_audio:
                     extracted_audios.append(None)
+                else:
+                    pass
 
         # Wait for all loads to complete
         if coroutines:
@@ -276,10 +290,16 @@ async def ensure_video_list_async(
                 sample_fps_list[url_idx] = sample_fps
                 if extract_audio:
                     extracted_audios[url_idx] = audio
+                else:
+                    pass
+        else:
+            pass
     finally:
         for task in coroutines:
             if not task.done():
                 task.cancel()
+            else:
+                pass
         await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
 
     if all_paths:
@@ -288,6 +308,8 @@ async def ensure_video_list_async(
             sample_fps_list,
             extracted_audios if extract_audio else None,
         )
+    else:
+        pass
     return normalized, None, extracted_audios if extract_audio else None
 
 
@@ -301,6 +323,8 @@ def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | No
             )
             if audio_stream is None:
                 return None
+            else:
+                pass
 
             sample_rate = audio_stream.rate
             resampler = av.AudioResampler(
@@ -319,6 +343,8 @@ def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | No
             raise VideoDecodeError(
                 f"Embedded audio stream decoded no samples: {video_path}"
             )
+        else:
+            pass
         audio = librosa.to_mono(np.concatenate(chunks, axis=1))
         return librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
     except VideoDecodeError:
@@ -336,20 +362,28 @@ def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | No
 def is_invalid_video(path: Path, error: Exception) -> bool:
     if isinstance(error, (av.error.InvalidDataError, av.error.EOFError)):
         return True
+    else:
+        pass
     if isinstance(error, (OSError, MemoryError, ImportError, torch.OutOfMemoryError)):
         return False
+    else:
+        pass
     # Some readers swallow PyAV errors or report only missing frame metadata.
     try:
         with av.open(str(path)) as container:
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 return True
+            else:
+                pass
             packet_count = 0
             for packet_count, packet in enumerate(
                 islice(container.demux(stream), 32), 1
             ):
                 if packet.decode():
                     return False
+                else:
+                    pass
             # An inconclusive probe must not reclassify a backend failure.
             return packet_count < 32
     except (av.error.InvalidDataError, av.error.EOFError):
@@ -371,14 +405,24 @@ def load_video_path(
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
+    else:
+        pass
     if max_frames is not None:
         ele["max_frames"] = int(max_frames)
+    else:
+        pass
     if min_pixels is not None:
         ele["min_pixels"] = int(min_pixels)
+    else:
+        pass
     if max_pixels is not None:
         ele["max_pixels"] = int(max_pixels)
+    else:
+        pass
     if total_pixels is not None:
         ele["total_pixels"] = int(total_pixels)
+    else:
+        pass
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
@@ -388,10 +432,14 @@ def load_video_path(
                 raise VideoDecodeError(
                     f"Invalid media data while decoding video path={path}: {backend_exc}"
                 ) from backend_exc
+            else:
+                pass
             raise VideoDecodeError(
                 f"Failed to decode video path={path}; torchvision failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}"
             ) from backend_exc
+        else:
+            pass
         logger.warning(f"Video reader {backend} failed, falling back to torchvision")
         try:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
@@ -400,6 +448,8 @@ def load_video_path(
                 raise VideoDecodeError(
                     f"Invalid media data while decoding video path={path}: {fallback_exc}"
                 ) from fallback_exc
+            else:
+                pass
             raise VideoDecodeError(
                 f"Failed to decode video path={path}; {backend} failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}; "
@@ -411,6 +461,8 @@ def load_video_path(
         raise VideoDecodeError(
             f"Invalid media data while decoding video path={path}: no frames"
         )
+    else:
+        pass
     min_pixels = ele.get("min_pixels", qwen_vision.VIDEO_MIN_PIXELS)
     total_pixels = ele.get("total_pixels", qwen_vision.VIDEO_TOTAL_PIXELS)
     max_pixels = max(
@@ -473,6 +525,8 @@ def compute_video_cache_key(
     base = compute_media_cache_key(videos, prefix="video")
     if base is None:
         return None
+    else:
+        pass
     decode_sig = (
         f"|fps={fps}|max_frames={max_frames}"
         f"|min_px={min_pixels}|max_px={max_pixels}|total_px={total_pixels}"

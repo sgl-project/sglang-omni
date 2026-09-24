@@ -207,7 +207,7 @@ async def test_partial_is_replaced_by_one_final_segment(
     completed = websocket.events[-1]
     assert completed["type"] == "transcription.completed"
     assert completed["text"] == "hello world"
-    assert session._decode_worker_task.done()
+    assert session.decode_worker_task.done()
 
 
 @pytest.mark.asyncio
@@ -244,7 +244,7 @@ async def test_teardown_aborts_inflight_decode(
     await session.teardown()
 
     assert client.aborted == [client.calls[0]]
-    assert session._decode_worker_task.done()
+    assert session.decode_worker_task.done()
     assert websocket.client_state == WebSocketState.DISCONNECTED
 
 
@@ -287,9 +287,9 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
     assert session.audio_buffer.is_empty()
     assert session.active_segment is None
     assert vad.reset_calls == 1
-    assert not session._decode_worker_task.done()
-    assert not session._pending_finals
-    assert not session._final_waiters
+    assert not session.decode_worker_task.done()
+    assert not session.pending_finals
+    assert not session.final_waiters
     assert websocket.events[-1]["type"] == "input_audio_buffer.cleared"
     assert not any(
         event["type"] == "transcription.segment"

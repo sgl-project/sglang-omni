@@ -60,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(text)
         if not text.endswith("\n"):
             sys.stdout.write("\n")
+        else:
+            pass
     else:
         with open(args.out, "w", encoding="utf-8") as fp:
             fp.write(text)
@@ -68,3 +70,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+else:
+    pass

@@ -148,7 +148,7 @@ class RealtimeTranscriptionSession:
         self.session_id = session_id or new_id("sess")
         self.closed = False
         self.event_index = 0
-        self._send_lock = asyncio.Lock()
+        self.send_lock = asyncio.Lock()
         self.transcription_config = transcription_config
         self.strategy = strategy
         self.settings = TranscriptionSessionSettings(
@@ -174,13 +174,13 @@ class RealtimeTranscriptionSession:
         self.buffer_origin_samples = 0
         self.active_segment: ActiveTranscriptionSegment | None = None
         self.committed_segments: list[CommittedTranscriptionSegment] = []
-        self._next_segment_id = 0
-        self._decode_event = asyncio.Event()
-        self._pending_finals: deque[FinalDecode] = deque()
-        self._final_waiters: set[asyncio.Future[None]] = set()
-        self._inflight_request_id: str | None = None
-        self._decode_worker_task = self.spawn_decode_worker()
-        self._input_done = False
+        self.next_segment_id = 0
+        self.decode_event = asyncio.Event()
+        self.pending_finals: deque[FinalDecode] = deque()
+        self.final_waiters: set[asyncio.Future[None]] = set()
+        self.inflight_request_id: str | None = None
+        self.decode_worker_task = self.spawn_decode_worker()
+        self.input_done = False
 
     async def run(self) -> None:
         await self.send(self.initial_event())
@@ -188,8 +188,12 @@ class RealtimeTranscriptionSession:
             message = await self.websocket.receive()
             if message["type"] == "websocket.disconnect":
                 break
+            else:
+                pass
             if message["type"] != "websocket.receive":
                 continue
+            else:
+                pass
             try:
                 payload = json.loads(message["text"])
             except (KeyError, TypeError, json.JSONDecodeError):
@@ -204,6 +208,8 @@ class RealtimeTranscriptionSession:
                     "Top-level payload must be a JSON object.",
                 )
                 continue
+            else:
+                pass
             await self.dispatch(payload)
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
@@ -219,6 +225,8 @@ class RealtimeTranscriptionSession:
                 f"Unsupported event type: {payload.get('type')!r}",
             )
             return
+        else:
+            pass
         try:
             await getattr(self, self.handlers[type(event)])(event)
         except Exception:
@@ -242,17 +250,25 @@ class RealtimeTranscriptionSession:
         # segment the two are still consistent and nothing needs to change.
         if self.vad is None or self.active_segment is not None:
             return
+        else:
+            pass
         self.vad.reset()
         self.vad_origin_samples = self.buffer_origin_samples
 
     async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
         if self.closed:
             return
+        else:
+            pass
         if self.websocket.application_state != WebSocketState.CONNECTED:
             return
+        else:
+            pass
         if isinstance(event, TranscriptionServerEvent):
             event = event.model_dump(exclude={"event_id", "event_index"})
-        async with self._send_lock:
+        else:
+            pass
+        async with self.send_lock:
             self.event_index += 1
             event.setdefault("event_id", new_id("evt"))
             event.setdefault("event_index", self.event_index)
@@ -275,10 +291,14 @@ class RealtimeTranscriptionSession:
         """
         if task is None or task.done():
             return
+        else:
+            pass
         task.cancel()
         try:
             if request_id is not None:
                 await self.client.abort(request_id)
+            else:
+                pass
         except Exception as exc:
             asyncio.get_running_loop().call_exception_handler(
                 {
@@ -317,19 +337,27 @@ class RealtimeTranscriptionSession:
         # Padding must fit inside the silence window (minus the one frame the VAD reports late) or segments would overlap.
         if config.prefix_padding_ms < 0:
             return "prefix_padding_ms must not be negative."
+        else:
+            pass
         if config.silence_duration_ms <= 0:
             return "silence_duration_ms must be positive."
+        else:
+            pass
         if config.prefix_padding_ms + _VAD_FRAME_MS > config.silence_duration_ms:
             return (
                 "prefix_padding_ms must be at most silence_duration_ms minus "
                 f"{_VAD_FRAME_MS} ms."
             )
+        else:
+            pass
         return None
 
     @classmethod
     def new_vad(cls, turn_detection: TurnDetection | None) -> StreamingVAD | None:
         if turn_detection is None:
             return None
+        else:
+            pass
         return StreamingVAD(cls.vad_config(turn_detection))
 
     async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
@@ -344,10 +372,14 @@ class RealtimeTranscriptionSession:
                 "while uncommitted audio is buffered.",
             )
             return
+        else:
+            pass
 
         if "language" in update:
             language = update["language"]
             self.settings.language = language.strip() if language else None
+        else:
+            pass
         if "turn_detection" in update:
             turn_detection = event.session.turn_detection
             if (
@@ -360,6 +392,8 @@ class RealtimeTranscriptionSession:
                     "Realtime transcription supports only server_vad or null.",
                 )
                 return
+            else:
+                pass
             if turn_detection is not None and not self.transcription_config.server_vad:
                 await self.send_error(
                     "invalid_request_error",
@@ -367,6 +401,8 @@ class RealtimeTranscriptionSession:
                     "This model does not support server-side turn detection.",
                 )
                 return
+            else:
+                pass
             if turn_detection is not None:
                 problem = self.vad_config_error(self.vad_config(turn_detection))
                 if problem is not None:
@@ -374,21 +410,31 @@ class RealtimeTranscriptionSession:
                         "invalid_request_error", "invalid_turn_detection", problem
                     )
                     return
+                else:
+                    pass
+            else:
+                pass
             if self.vad is not None:
                 self.vad.reset()
+            else:
+                pass
             self.settings.turn_detection = turn_detection
             self.vad = self.new_vad(turn_detection)
             self.vad_origin_samples = self.buffer_origin_samples
+        else:
+            pass
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        if self._input_done:
+        if self.input_done:
             await self.send_error(
                 "invalid_request_error",
                 "input_already_done",
                 "Audio cannot be appended after transcription.done.",
             )
             return
+        else:
+            pass
         try:
             pcm = base64.b64decode(event.audio, validate=False)
         except (ValueError, binascii.Error):
@@ -403,6 +449,8 @@ class RealtimeTranscriptionSession:
                 "PCM16 audio must contain complete 16-bit samples.",
             )
             return
+        else:
+            pass
         append_start_sample = self.buffer_origin_samples + self.audio_buffer.num_samples
         try:
             self.audio_buffer.append_bytes(pcm)
@@ -414,6 +462,8 @@ class RealtimeTranscriptionSession:
         if self.vad is None:
             if self.active_segment is None and pcm:
                 self.start_segment(append_start_sample)
+            else:
+                pass
         else:
             emits = await asyncio.to_thread(self.vad.process, pcm)
             for emit in emits:
@@ -434,6 +484,8 @@ class RealtimeTranscriptionSession:
         if emit.event_type == VADEvent.SPEECH_STARTED:
             if self.active_segment is None:
                 self.start_segment(absolute_sample)
+            else:
+                pass
             await self.send(
                 TranscriptionSpeechStarted(
                     audio_start_ms=offsets_to_ms(absolute_sample),
@@ -441,6 +493,8 @@ class RealtimeTranscriptionSession:
                 )
             )
             return
+        else:
+            pass
         if emit.event_type == VADEvent.SPEECH_STOPPED:
             segment_id = (
                 self.active_segment.segment_id
@@ -454,11 +508,13 @@ class RealtimeTranscriptionSession:
                 )
             )
             await self.finalize_through(absolute_sample)
+        else:
+            pass
 
     def start_segment(self, start_sample: int) -> ActiveTranscriptionSegment:
         interval_samples = self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
         segment = ActiveTranscriptionSegment(
-            segment_id=self._next_segment_id,
+            segment_id=self.next_segment_id,
             start_sample=start_sample,
             strategy_state=self.strategy.create_state(
                 model_name=self.model_name,
@@ -466,7 +522,7 @@ class RealtimeTranscriptionSession:
             ),
             next_refresh_sample=start_sample + interval_samples,
         )
-        self._next_segment_id += 1
+        self.next_segment_id += 1
         self.active_segment = segment
         return segment
 
@@ -474,12 +530,16 @@ class RealtimeTranscriptionSession:
         max_segment_s = self.transcription_config.max_segment_s
         if max_segment_s is None:
             return None
+        else:
+            pass
         return int(max_segment_s * PCM_SAMPLE_RATE)
 
     async def enforce_hard_limit(self) -> None:
         max_samples = self.max_segment_samples()
         if max_samples is None:
             return
+        else:
+            pass
         end_sample = self.absolute_buffer_end()
         while (
             self.active_segment is not None
@@ -500,6 +560,8 @@ class RealtimeTranscriptionSession:
         """
         if self.vad is None or self.active_segment is not None:
             return
+        else:
+            pass
         keep_samples = (
             self.vad.config.prefix_padding_ms * PCM_SAMPLE_RATE // 1000
             + 2 * VAD_FRAME_SAMPLES
@@ -507,12 +569,16 @@ class RealtimeTranscriptionSession:
         excess_bytes = self.audio_buffer.num_bytes - keep_samples * 2
         if excess_bytes <= 0:
             return
+        else:
+            pass
         self.audio_buffer.drop_prefix(excess_bytes)
         self.buffer_origin_samples += excess_bytes // 2
 
     async def finalize_through(self, end_sample: int) -> None:
         if self.active_segment is None:
             return
+        else:
+            pass
         end_sample = min(end_sample, self.absolute_buffer_end())
         max_samples = self.max_segment_samples()
         while (
@@ -527,11 +593,15 @@ class RealtimeTranscriptionSession:
             and end_sample > self.active_segment.start_sample
         ):
             await self.queue_final(end_sample)
+        else:
+            pass
 
     async def queue_final(self, end_sample: int) -> None:
         segment = self.active_segment
         if segment is None or end_sample <= segment.start_sample:
             return
+        else:
+            pass
         start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
         end_byte = min(
             self.audio_buffer.num_bytes,
@@ -539,9 +609,9 @@ class RealtimeTranscriptionSession:
         )
         pcm = bytes(self.audio_buffer.buf[start_byte:end_byte])
         done = asyncio.get_running_loop().create_future()
-        done.add_done_callback(self._final_waiters.discard)
-        self._final_waiters.add(done)
-        self._pending_finals.append(
+        done.add_done_callback(self.final_waiters.discard)
+        self.final_waiters.add(done)
+        self.pending_finals.append(
             FinalDecode(
                 segment=segment,
                 pcm=pcm,
@@ -553,7 +623,7 @@ class RealtimeTranscriptionSession:
         self.audio_buffer.drop_prefix(end_byte)
         self.buffer_origin_samples += end_byte // 2
         self.active_segment = None
-        self._decode_event.set()
+        self.decode_event.set()
         await self.send(
             TranscriptionCommitted(
                 segment_id=segment.segment_id,
@@ -564,8 +634,12 @@ class RealtimeTranscriptionSession:
         segment = self.active_segment
         if segment is None:
             return
+        else:
+            pass
         if self.absolute_buffer_end() >= segment.next_refresh_sample:
-            self._decode_event.set()
+            self.decode_event.set()
+        else:
+            pass
 
     def spawn_decode_worker(self) -> asyncio.Task[None]:
         task = asyncio.create_task(self.decode_worker())
@@ -577,6 +651,8 @@ class RealtimeTranscriptionSession:
         # waits on, make sure the cause reaches the log.
         if task.cancelled() or task.exception() is None:
             return
+        else:
+            pass
         logger.error(
             "Realtime transcription decode worker crashed: session=%s",
             self.session_id,
@@ -585,13 +661,15 @@ class RealtimeTranscriptionSession:
 
     async def decode_worker(self) -> None:
         while True:
-            await self._decode_event.wait()
-            self._decode_event.clear()
+            await self.decode_event.wait()
+            self.decode_event.clear()
             if self.closed:
                 return
+            else:
+                pass
 
-            while self._pending_finals:
-                final = self._pending_finals.popleft()
+            while self.pending_finals:
+                final = self.pending_finals.popleft()
                 try:
                     if self.is_silent(final.pcm):
                         await self.emit_hypothesis(final.segment, "", is_final=True)
@@ -602,13 +680,19 @@ class RealtimeTranscriptionSession:
                 finally:
                     if not final.done.done():
                         final.done.set_result(None)
+                    else:
+                        pass
 
             segment = self.active_segment
             if segment is None:
                 continue
+            else:
+                pass
             end_sample = self.absolute_buffer_end()
             if end_sample < segment.next_refresh_sample:
                 continue
+            else:
+                pass
             interval_samples = (
                 self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
             )
@@ -618,6 +702,8 @@ class RealtimeTranscriptionSession:
             pcm = bytes(self.audio_buffer.buf[start_byte:])
             if self.is_silent(pcm):
                 continue
+            else:
+                pass
             await self.decode_and_emit(
                 segment,
                 self.audio_buffer.pcm_to_wav_bytes(pcm),
@@ -628,6 +714,8 @@ class RealtimeTranscriptionSession:
     def is_silent(pcm: bytes) -> bool:
         if not pcm:
             return True
+        else:
+            pass
         samples = np.frombuffer(pcm, dtype="<i2")
         return bool(
             samples.size == 0
@@ -649,7 +737,7 @@ class RealtimeTranscriptionSession:
             is_final=is_final,
             request_id=request_id,
         )
-        self._inflight_request_id = request_id
+        self.inflight_request_id = request_id
         try:
             result = await self.client.completion(request, request_id=request_id)
         except asyncio.CancelledError:
@@ -658,10 +746,14 @@ class RealtimeTranscriptionSession:
             await self.send_error("server_error", "transcription_failed", str(exc))
             return
         finally:
-            if self._inflight_request_id == request_id:
-                self._inflight_request_id = None
+            if self.inflight_request_id == request_id:
+                self.inflight_request_id = None
+            else:
+                pass
         if not is_final and self.active_segment is not segment:
             return
+        else:
+            pass
         text = self.strategy.update_hypothesis(
             generated_text=result.text,
             language=result.language,
@@ -669,6 +761,8 @@ class RealtimeTranscriptionSession:
         )
         if not is_final and text == segment.last_text:
             return
+        else:
+            pass
         await self.emit_hypothesis(segment, text, is_final=is_final)
 
     async def emit_hypothesis(
@@ -693,6 +787,8 @@ class RealtimeTranscriptionSession:
                     text=text,
                 )
             )
+        else:
+            pass
 
     async def handle_audio_commit(self, event: InputAudioBufferCommit) -> None:
         del event
@@ -700,17 +796,21 @@ class RealtimeTranscriptionSession:
 
     async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
         del event
-        request_id = self._inflight_request_id
-        await self.cancel_and_abort(self._decode_worker_task, request_id)
-        for final in self._pending_finals:
+        request_id = self.inflight_request_id
+        await self.cancel_and_abort(self.decode_worker_task, request_id)
+        for final in self.pending_finals:
             if not final.done.done():
                 final.done.cancel()
-        for waiter in list(self._final_waiters):
+            else:
+                pass
+        for waiter in list(self.final_waiters):
             if not waiter.done():
                 waiter.cancel()
-        self._pending_finals.clear()
-        self._final_waiters.clear()
-        self._decode_event.clear()
+            else:
+                pass
+        self.pending_finals.clear()
+        self.final_waiters.clear()
+        self.decode_event.clear()
 
         buffer_end = self.absolute_buffer_end()
         self.audio_buffer.clear()
@@ -718,9 +818,11 @@ class RealtimeTranscriptionSession:
         self.active_segment = None
         if self.vad is not None:
             self.vad.reset()
+        else:
+            pass
         self.vad_origin_samples = self.buffer_origin_samples
 
-        self._decode_worker_task = self.spawn_decode_worker()
+        self.decode_worker_task = self.spawn_decode_worker()
         await self.send(TranscriptionCleared())
 
     async def commit_buffer(self, reason: str) -> None:
@@ -734,26 +836,36 @@ class RealtimeTranscriptionSession:
                 self.vad.reset()
                 self.vad_origin_samples = self.buffer_origin_samples
                 return
+            else:
+                pass
             self.start_segment(self.buffer_origin_samples)
+        else:
+            pass
         await self.finalize_through(end_sample)
         if self.vad is not None:
             self.vad.reset()
             self.vad_origin_samples = self.buffer_origin_samples
+        else:
+            pass
 
     async def handle_transcription_done(self, event: TranscriptionDone) -> None:
         del event
-        if self._input_done:
+        if self.input_done:
             await self.send_error(
                 "invalid_request_error",
                 "input_already_done",
                 "transcription.done was already received.",
             )
             return
-        self._input_done = True
+        else:
+            pass
+        self.input_done = True
         await self.commit_buffer("session_end")
-        if self._final_waiters:
-            await asyncio.gather(*list(self._final_waiters))
-        await self.cancel_and_abort(self._decode_worker_task, None)
+        if self.final_waiters:
+            await asyncio.gather(*list(self.final_waiters))
+        else:
+            pass
+        await self.cancel_and_abort(self.decode_worker_task, None)
         ordered = sorted(self.committed_segments, key=lambda item: item.segment_id)
         await self.send(
             TranscriptionCompleted(
@@ -764,17 +876,23 @@ class RealtimeTranscriptionSession:
     async def teardown(self) -> None:
         self.closed = True
         self.active_segment = None
-        request_id = self._inflight_request_id
-        await self.cancel_and_abort(self._decode_worker_task, request_id)
-        for final in self._pending_finals:
+        request_id = self.inflight_request_id
+        await self.cancel_and_abort(self.decode_worker_task, request_id)
+        for final in self.pending_finals:
             if not final.done.done():
                 final.done.cancel()
-        for waiter in list(self._final_waiters):
+            else:
+                pass
+        for waiter in list(self.final_waiters):
             if not waiter.done():
                 waiter.cancel()
-        self._pending_finals.clear()
+            else:
+                pass
+        self.pending_finals.clear()
         if self.websocket.client_state == WebSocketState.CONNECTED:
             await self.websocket.close()
+        else:
+            pass
 
 
 __all__ = ["RealtimeTranscriptionSession", "StreamingASRStrategy"]

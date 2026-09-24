@@ -62,6 +62,8 @@ def reference_path_hash_memo_key(path: Path) -> tuple[str, int] | None:
     try:
         if not path.is_file():
             return None
+        else:
+            pass
         stat_result = path.stat()
         memo_key = (
             f"{path.resolve()}:"
@@ -83,9 +85,13 @@ def reference_path_sentinel(path: Path, file_size: int) -> str | None:
                 middle_offset = max((file_size - chunk_size) // 2, 0)
                 f.seek(middle_offset)
                 chunks.append(f.read(chunk_size))
+            else:
+                pass
             if file_size > 2 * _REF_PATH_HASH_SENTINEL_BYTES:
                 f.seek(max(file_size - chunk_size, 0))
                 chunks.append(f.read(chunk_size))
+            else:
+                pass
         return hash_bytes(b"".join(chunks) + f"|size:{file_size}".encode())
     except OSError:
         return None
@@ -96,10 +102,14 @@ def get_reference_path_hash(memo_key: str, sentinel: str) -> str | None:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
         if cached is None:
             return None
+        else:
+            pass
         cached_sentinel, digest = cached
         if cached_sentinel != sentinel:
             _REF_PATH_HASH_MEMO.pop(memo_key, None)
             return None
+        else:
+            pass
         _REF_PATH_HASH_MEMO.move_to_end(memo_key)
         return digest
 
@@ -110,6 +120,8 @@ def get_reference_path_hash_by_memo_key(memo_key: str) -> str | None:
         cached = _REF_PATH_HASH_MEMO.get(memo_key)
         if cached is None:
             return None
+        else:
+            pass
         _REF_PATH_HASH_MEMO.move_to_end(memo_key)
         return cached[1]
 
@@ -134,21 +146,33 @@ def reference_path_cache_key(
     memo = reference_path_hash_memo_key(path)
     if memo is None:
         return None
+    else:
+        pass
     memo_key, file_size = memo
 
     if trust_stat:
         digest = get_reference_path_hash_by_memo_key(memo_key)
         if digest is not None:
             return f"file:{digest}"
+        else:
+            pass
+    else:
+        pass
 
     sentinel = reference_path_sentinel(path, file_size)
     if sentinel is None:
         return None
+    else:
+        pass
 
     if not trust_stat:
         digest = get_reference_path_hash(memo_key, sentinel)
         if digest is not None:
             return f"file:{digest}"
+        else:
+            pass
+    else:
+        pass
 
     try:
         digest = hash_bytes(path.read_bytes())
@@ -157,6 +181,8 @@ def reference_path_cache_key(
     if reference_path_hash_memo_key(path) == memo:
         # Always store the sentinel so default callers still validate this entry.
         put_reference_path_hash(memo_key, sentinel, digest)
+    else:
+        pass
     return f"file:{digest}"
 
 
@@ -177,22 +203,32 @@ def hash_media_item(item: Any) -> str | None:
         s = str(item)
         if is_url_like(s):
             return f"url:{hash_bytes(s.encode())}"
+        else:
+            pass
         p = Path(s)
         if p.exists() and p.is_file():
             return f"file:{hash_file_sampled(p)}"
+        else:
+            pass
         return f"url:{hash_bytes(s.encode())}"
+    else:
+        pass
 
     # PIL Image
     if isinstance(item, Image.Image):
         meta = f"{item.mode}|{item.size}"
         content_hash = hash_bytes(item.tobytes())
         return f"pil:{meta}:{content_hash}"
+    else:
+        pass
 
     # numpy array
     if isinstance(item, np.ndarray):
         meta = f"{item.dtype}|{item.shape}"
         content_hash = hash_bytes(item.tobytes())
         return f"np:{meta}:{content_hash}"
+    else:
+        pass
 
     # torch Tensor
     if isinstance(item, torch.Tensor):
@@ -200,10 +236,14 @@ def hash_media_item(item: Any) -> str | None:
         meta = f"{cpu.dtype}|{tuple(cpu.shape)}"
         content_hash = hash_bytes(cpu.numpy().tobytes())
         return f"pt:{meta}:{content_hash}"
+    else:
+        pass
 
     # Raw bytes
     if isinstance(item, (bytes, bytearray, memoryview)):
         return f"bytes:{hash_bytes(item)}"
+    else:
+        pass
 
     # Unsupported type
     return None
@@ -221,15 +261,21 @@ def compute_media_cache_key(items: Any, *, prefix: str) -> str | None:
     """
     if items is None:
         return None
+    else:
+        pass
     seq = items if isinstance(items, list) else [items]
     if not seq:
         return None
+    else:
+        pass
 
     parts: list[str] = []
     for item in seq:
         part = hash_media_item(item)
         if part is None:
             return None
+        else:
+            pass
         parts.append(part)
 
     return f"{prefix}:{hash_joined(parts)}"

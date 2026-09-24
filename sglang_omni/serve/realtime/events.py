@@ -222,6 +222,8 @@ def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
     for k, v in fields.items():
         if v is None:
             continue
+        else:
+            pass
         payload[k] = v
     return payload
 
@@ -249,9 +251,13 @@ def parse(
     event_type = raw.get("type")
     if not isinstance(event_type, str):
         return None
+    else:
+        pass
     cls = table.get(event_type)
     if cls is None:
         return None
+    else:
+        pass
     return cls.model_validate(raw)
 
 

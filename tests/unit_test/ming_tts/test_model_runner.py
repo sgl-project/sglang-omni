@@ -20,9 +20,9 @@ from sglang_omni.models.ming_tts.model_runner import (
 
 def test_ming_tts_entry_tail_failure_is_published_before_reraise() -> None:
     runner = object.__new__(MingTTSModelRunner)
-    runner._tp_rank = 0
+    runner.tp_rank = 0
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4))
+        decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4))
     )
     published = []
 
@@ -71,7 +71,7 @@ def _run_ming_tts_tail_step(
 ) -> tuple[SimpleNamespace, MingTTSRequestState, MingTTSTPStepUpdate]:
     runner = object.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
+        decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
         run_tail_step=lambda _inputs: SimpleNamespace(
             sampled=torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
             feedback_embeddings=torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
@@ -79,7 +79,7 @@ def _run_ming_tts_tail_step(
         ),
     )
     request_state = MingTTSRequestState(latent_history=torch.zeros(1, 2, 3))
-    runner._request_states = {"req-ming-tts": request_state}
+    runner.request_states = {"req-ming-tts": request_state}
     request = SimpleNamespace(
         request_id="req-ming-tts",
         data=SimpleNamespace(
@@ -207,7 +207,7 @@ def test_prefill_forward_publishes_sglang_forward_context() -> None:
         seen.append(get_forward_context().attn_backend)
         return "logits"
 
-    model._decode_input_embedding = SimpleNamespace(
+    model.decode_input_embedding = SimpleNamespace(
         weight=torch.zeros(1, dtype=torch.float32)
     )
     runner.model = model
@@ -230,12 +230,12 @@ def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:
 
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.empty((1, 2), dtype=torch.float32)
         ),
         get_input_embeddings=lambda: fail_token_embedding,
     )
-    runner._request_states = {
+    runner.request_states = {
         "req-ming-tts": MingTTSRequestState(
             prefill_input_embeds=torch.tensor(
                 [[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]]
@@ -289,5 +289,5 @@ def test_runner_reads_tp_size_from_the_published_parallel_bag(monkeypatch) -> No
     with get_context().override_server_args(tp_size=2):
         runner = MingTTSModelRunner(tp_worker, output_processor=None)
 
-    assert runner._tp_rank == 1
-    assert runner._tp_size == 2
+    assert runner.tp_rank == 1
+    assert runner.tp_size == 2

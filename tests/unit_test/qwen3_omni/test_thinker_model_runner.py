@@ -13,12 +13,12 @@ from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 
 def _probe_runner(monkeypatch, method: str):
     runner = object.__new__(ThinkerModelRunner)
-    runner._text_model = SimpleNamespace(layers_to_capture=[0, 24])
+    runner.text_model = SimpleNamespace(layers_to_capture=[0, 24])
     seen: list[list[int]] = []
     monkeypatch.setattr(
         ModelRunner,
         method,
-        lambda self, _sched: seen.append(list(self._text_model.layers_to_capture)),
+        lambda self, _sched: seen.append(list(self.text_model.layers_to_capture)),
     )
     return runner, seen
 
@@ -29,7 +29,7 @@ def test_execute_keeps_layers_to_capture_stable(monkeypatch) -> None:
     runner.execute(SimpleNamespace(requests=[object()]))
 
     assert seen == [[0, 24]]
-    assert runner._text_model.layers_to_capture == [0, 24]
+    assert runner.text_model.layers_to_capture == [0, 24]
 
 
 def test_execute_launch_keeps_layers_to_capture_stable(monkeypatch) -> None:
@@ -38,7 +38,7 @@ def test_execute_launch_keeps_layers_to_capture_stable(monkeypatch) -> None:
     runner.execute_launch(SimpleNamespace(requests=[object()]))
 
     assert seen == [[0, 24]]
-    assert runner._text_model.layers_to_capture == [0, 24]
+    assert runner.text_model.layers_to_capture == [0, 24]
 
 
 def test_audio_prefill_publishes_embeds_to_sglang_runner() -> None:
@@ -104,7 +104,7 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
         assert lm_head == "lm_head"
         return "logits"
 
-    runner._outer_model = SimpleNamespace(
+    runner.outer_model = SimpleNamespace(
         model=model,
         logits_processor=logits_processor,
         lm_head="lm_head",
