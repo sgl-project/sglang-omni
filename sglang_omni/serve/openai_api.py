@@ -91,6 +91,9 @@ from sglang_omni.serve.protocol import (
     GenerateFinishReason,
     GenerateMetaInfo,
     GenerateResponse,
+    ImageGenerationData,
+    ImageGenerationRequest,
+    ImageGenerationResponse,
     InitWeightsUpdateGroupRequest,
     ModelCard,
     ModelList,
@@ -295,6 +298,8 @@ def create_app(
     _register_chat_completions(app)
     _register_voices(app)
     _register_generate(app)
+    if "NEOChatModel" in app.state.architectures:
+        _register_image_generations(app)
     _register_speech(app)
     _register_speech_batch(app)
     _register_speech_ws(app)
@@ -1018,6 +1023,52 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         output_modalities=output_modalities,
         metadata=metadata,
     )
+
+
+def _register_image_generations(app: FastAPI) -> None:
+    """Expose the native SenseNova T2I stage as a minimal Images API."""
+    from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1Sampling
+
+    @app.post("/v1/images/generations", response_model=ImageGenerationResponse)
+    async def image_generations(req: ImageGenerationRequest) -> ImageGenerationResponse:
+        if req.model is not None and req.model != app.state.model_name:
+            raise HTTPException(status_code=400, detail="Unknown image model")
+        try:
+            width_str, height_str = req.size.split("x")
+            params = {
+                "width": int(width_str),
+                "height": int(height_str),
+                "num_inference_steps": req.num_inference_steps,
+                "guidance_scale": req.guidance_scale,
+                "seed": req.seed,
+                "n": req.n,
+            }
+            SenseNovaU1Sampling.from_params(params)
+            if not req.prompt.strip():
+                raise ValueError("SenseNova-U1 requires a non-empty text prompt")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        request = GenerateRequest(
+            model=app.state.model_name,
+            prompt=req.prompt,
+            extra_params=params,
+            output_modalities=["image"],
+            stream=False,
+        )
+        request_id = str(uuid.uuid4())
+        try:
+            async for chunk in app.state.client.generate(request, request_id=request_id):
+                if chunk.image_b64 is None:
+                    raise RuntimeError("SenseNova-U1 generated no image")
+                return ImageGenerationResponse(
+                    created=int(time.time()),
+                    data=[ImageGenerationData(b64_json=chunk.image_b64)],
+                )
+        except Exception as exc:
+            logger.exception("Image generation failed for request %s", request_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
 
 
 def _register_generate(app: FastAPI) -> None:
