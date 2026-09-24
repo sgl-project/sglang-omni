@@ -15,11 +15,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, TypeVar
 
+from typing_extensions import NotRequired, TypedDict
+
 from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
 
 TableRowT = TypeVar("TableRowT", bound=Mapping[str, object])
+
+
+class ProfilerReport(TypedDict):
+    timelines: NotRequired[dict[str, list[dict[str, object]]]]
+    stage_breakdown: list[dict[str, str | int | float]]
+    hop_breakdown: list[dict[str, str | int | float]]
+    request_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -100,13 +109,13 @@ class RequestTimeline:
         assert t0 is not None and t1 is not None
         return (t1 - t0) / 1e6
 
-    def to_relative(self) -> list[dict[str, Any]]:
+    def to_relative(self) -> list[dict[str, object]]:
         """Return events with an added ``t_rel_ms`` field anchored at t0."""
         if not self.events:
             return []
         t0 = self.t0_ns
         assert t0 is not None
-        result = []
+        result: list[dict[str, object]] = []
         for ev in self.events:
             out = dict(ev)
             out["t_rel_ms"] = (ev["timestamp_ns"] - t0) / 1e6
@@ -396,7 +405,7 @@ def hop_breakdown(
 # ---------------------------------------------------------------------------
 
 
-def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
+def build_report(source: str | Path | Iterable[str | Path]) -> ProfilerReport:
     """Return all three views as a single dict for JSON serialization."""
     timelines = reconstruct_timelines(source)
     return {

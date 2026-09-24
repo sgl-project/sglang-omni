@@ -24,9 +24,12 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 import requests
+
+if TYPE_CHECKING:
+    from sglang_omni.profiler.views import ProfilerReport
 
 _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
@@ -56,7 +59,9 @@ def stop_request_profile(base_url: str, run_id: str | None = None) -> dict:
     return response.json()
 
 
-def build_stage_breakdown(event_dir: str, *, include_timelines: bool = False) -> dict:
+def build_stage_breakdown(
+    event_dir: str, *, include_timelines: bool = False
+) -> ProfilerReport:
     """Summarize profiler event JSONL into stage and hop breakdowns.
 
     Requires the benchmark to run on the same host as the server, because
