@@ -74,6 +74,8 @@ class ConfigResolver:
             and data.get("name") == self.base.model_path
         ):
             data["name"] = None
+        else:
+            pass
 
         config = self.config_cls(**data)
 
@@ -98,6 +100,8 @@ def apply(data: dict[str, Any], patch: ConfigPatch) -> None:
     if patch.path.is_leaf or not isinstance(patch.value, dict):
         patch.path.write(data, deepcopy(patch.value))
         return
+    else:
+        pass
 
     existing = safe_read(patch.path, data)
     if isinstance(existing, dict):
@@ -165,8 +169,12 @@ def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
             if key not in expected or key not in actual:
                 out.append(ConfigDifference(child, expected.get(key), actual.get(key)))
                 continue
+            else:
+                pass
             out.extend(diff(expected[key], actual[key], child))
         return out
+    else:
+        pass
 
     if is_named_list(expected) and is_named_list(actual):
         out = []
@@ -181,11 +189,17 @@ def diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
                     )
                 )
                 continue
+            else:
+                pass
             out.extend(diff(expected_by_name[name], actual_by_name[name], child))
         return out
+    else:
+        pass
 
     if expected != actual:
         return [ConfigDifference(prefix, expected, actual)]
+    else:
+        pass
     return []
 
 

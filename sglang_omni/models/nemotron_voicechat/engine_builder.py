@@ -51,6 +51,8 @@ def shim_dir(name: str, source: Path) -> Path:
     for entry in source.iterdir():
         if entry.name != "config.json":
             (shim / entry.name).symlink_to(entry)
+        else:
+            pass
     return shim
 
 
@@ -218,6 +220,8 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         self.model_arch_override = TALKER_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
+        else:
+            pass
 
     def resolve_checkpoint(self, model_path):
         source = Path(resolve_model_path(model_path))

@@ -78,6 +78,8 @@ class CausalConditionalCFM(nn.Module):
             t = t + dt
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t
+            else:
+                pass
         return x
 
     def __call__(
@@ -96,9 +98,13 @@ class CausalConditionalCFM(nn.Module):
         """
         if noise is None:
             noise = self.rand_noise[:, :, : mu.shape[2]]
+        else:
+            pass
         noise = noise.astype(mu.dtype)
         z = noise * temperature
         t_span = mx.linspace(0, 1, n_timesteps + 1, dtype=mu.dtype)
         if self.t_scheduler == "cosine":
             t_span = 1 - mx.cos(t_span * 0.5 * math.pi)
+        else:
+            pass
         return self.solve_euler(z, t_span, mu, mask, spks, cond)

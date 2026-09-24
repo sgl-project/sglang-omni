@@ -53,8 +53,12 @@ def flat_sampling_attr(sampling_info, attr: str) -> list | None:
     val = getattr(sampling_info, attr, None)
     if val is None:
         return None
+    else:
+        pass
     if hasattr(val, "cpu"):
         return val.detach().cpu().flatten().tolist()
+    else:
+        pass
     return list(val)
 
 
@@ -113,6 +117,8 @@ class HiggsTTSModel(nn.Module):
                 f"TTS path; got encoder_type={encoder_type!r}. Whisper/Qwen3-AUT "
                 f"(ASR) encoders are planned for a future PR."
             )
+        else:
+            pass
 
         num_codebooks: int = int(enc_cfg["num_codebooks"])
         vocab_size: int = int(enc_cfg["vocab_size"])
@@ -139,6 +145,8 @@ class HiggsTTSModel(nn.Module):
             self.modality_head.weight = (
                 self.multimodal_embedding.modality_embedding_0.weight
             )
+        else:
+            pass
 
         self._sampler_pool_max_running_requests = (
             get_schedule().max_running_requests
@@ -239,6 +247,8 @@ class HiggsTTSModel(nn.Module):
         row = self.rid_to_row.get(req_id)
         if row is not None:
             return row
+        else:
+            pass
         if not self.free_rows:
             max_running_requests = (
                 self._sampler_pool_max_running_requests
@@ -248,6 +258,8 @@ class HiggsTTSModel(nn.Module):
                 f"(max_running_requests={max_running_requests}); raise "
                 f"``max_running_requests`` or limit concurrent requests."
             )
+        else:
+            pass
         row = self.free_rows.pop()
         self.rid_to_row[req_id] = row
         self.sampler_pool.reset_row(row)
@@ -269,6 +281,8 @@ class HiggsTTSModel(nn.Module):
         row = self.rid_to_row.pop(req_id, None)
         if row is not None:
             self.free_rows.append(row)
+        else:
+            pass
         self.output_codes.pop(req_id, None)
 
     def reset_request(self, req_id: str) -> None:
@@ -285,6 +299,8 @@ class HiggsTTSModel(nn.Module):
                 dtype=torch.long,
                 device=self.multimodal_embedding.modality_embedding_0.weight.device,
             )
+        else:
+            pass
         return torch.stack(codes, dim=0).to(torch.long)
 
     @torch.no_grad()
@@ -301,6 +317,8 @@ class HiggsTTSModel(nn.Module):
                 f"batch size mismatch: hidden={batch_size}, "
                 f"req_ids={len(req_ids)}, gen_params={len(gen_params)}"
             )
+        else:
+            pass
 
         # fp32 for softmax numerical stability.
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
@@ -353,6 +371,8 @@ class HiggsTTSModel(nn.Module):
         for b in range(batch_size):
             if was_done_cpu[b]:
                 continue
+            else:
+                pass
             self.output_codes.setdefault(req_ids[b], []).append(codes_BN[b])
 
         text_vocab_size = self.backbone.config.vocab_size
@@ -449,10 +469,14 @@ class HiggsTTSModel(nn.Module):
                 raise RuntimeError(
                     "Higgs prefill requires runner-composed input_embeds"
                 )
+            else:
+                pass
             if omni_prefill_rids is None:
                 raise RuntimeError(
                     "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
                 )
+            else:
+                pass
             req_ids, gen_params = self.extract_batch_metadata(
                 forward_batch, omni_prefill_rids
             )
@@ -476,6 +500,8 @@ class HiggsTTSModel(nn.Module):
             hidden_states_last = hidden_states
             if hidden_states_last.ndim == 3:
                 hidden_states_last = hidden_states_last[:, -1, :]
+            else:
+                pass
 
         if is_decode:
             text_logits_BV = self.decode_codebooks_batch_cg(hidden_states_last)
@@ -506,6 +532,8 @@ class HiggsTTSModel(nn.Module):
         text_embeds = self.backbone.model.embed_tokens(input_ids)
         if text_embeds.ndim == 3:
             text_embeds = text_embeds[:, -1, :]
+        else:
+            pass
 
         return torch.where(has_codes, fused_embeds.to(text_embeds.dtype), text_embeds)
 
@@ -514,6 +542,8 @@ class HiggsTTSModel(nn.Module):
         mode = getattr(forward_batch, "forward_mode", None)
         if mode is None:
             return False
+        else:
+            pass
         is_decode = getattr(mode, "is_decode", None)
         return bool(is_decode()) if callable(is_decode) else False
 
@@ -531,6 +561,8 @@ class HiggsTTSModel(nn.Module):
         """Pull per-row sampling params off ``sampling_info``."""
         if sampling_info is None:
             return [HiggsGenParams() for _ in range(batch_size)]
+        else:
+            pass
 
         temps = flat_sampling_attr(sampling_info, "temperatures")
         top_ps = flat_sampling_attr(sampling_info, "top_ps")
@@ -555,6 +587,8 @@ class HiggsTTSModel(nn.Module):
         seq_lens = getattr(forward_batch, "seq_lens", None)
         if seq_lens is not None and hasattr(seq_lens, "shape"):
             return int(seq_lens.shape[0])
+        else:
+            pass
         return int(getattr(forward_batch, "batch_size", 1))
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> set[str]:
@@ -579,10 +613,14 @@ class HiggsTTSModel(nn.Module):
             mapped = mapper.map(name)
             if mapped is None:
                 continue
+            else:
+                pass
             if mapped.startswith("backbone."):
                 backbone_weights.append((mapped[len("backbone.") :], tensor))
             elif mapped in own_names:
                 self_weights.append((mapped, tensor))
+            else:
+                pass
 
         self.backbone.load_weights(iter(backbone_weights))
 
@@ -591,11 +629,15 @@ class HiggsTTSModel(nn.Module):
             param = own_params.get(name)
             if param is None:
                 continue
+            else:
+                pass
             if param.shape != tensor.shape:
                 raise ValueError(
                     f"Shape mismatch for {name}: expected {tuple(param.shape)}, "
                     f"got {tuple(tensor.shape)}"
                 )
+            else:
+                pass
             param.data.copy_(tensor.to(param.dtype))
             loaded.add(name)
 
@@ -606,6 +648,8 @@ class HiggsTTSModel(nn.Module):
         for name, _ in self.named_parameters(remove_duplicate=False):
             if not name.startswith("backbone."):
                 names.add(name)
+            else:
+                pass
         return names
 
 

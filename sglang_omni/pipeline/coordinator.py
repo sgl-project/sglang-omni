@@ -105,6 +105,8 @@ class Coordinator(CoordinatorSessions):
             value = int(max_in_flight)
             if value < 0:
                 raise ValueError("max_in_flight must be >= 0")
+            else:
+                pass
             self.max_in_flight = value
 
         # Control plane
@@ -174,6 +176,8 @@ class Coordinator(CoordinatorSessions):
                         error=message,
                     )
                 )
+            else:
+                pass
         self.requests.clear()
         self.partial_results.clear()
         # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
@@ -186,6 +190,8 @@ class Coordinator(CoordinatorSessions):
         for name, info in self.stages.items():
             if selected is not None and name not in selected:
                 continue
+            else:
+                pass
             try:
                 await self.control_plane.send_shutdown(name, info.control_endpoint)
                 logger.info("Sent shutdown to stage: %s", name)
@@ -203,10 +209,14 @@ class Coordinator(CoordinatorSessions):
         """Run an administrative operation against one or more stages."""
         if not self.running:
             raise RuntimeError("Coordinator is not running")
+        else:
+            pass
 
         target_stages = self.resolve_admin_stages(stages)
         if not target_stages:
             raise ValueError("No stages registered for admin operation")
+        else:
+            pass
 
         op_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
@@ -384,6 +394,8 @@ class Coordinator(CoordinatorSessions):
                 if isinstance(msg, CompleteMessage):
                     if not msg.success:
                         raise QueueFullError.from_message(msg.error)
+                    else:
+                        pass
                     yield msg
                     completed_stages.add(
                         self.replica_topology.logical_name(msg.from_stage)
@@ -393,6 +405,8 @@ class Coordinator(CoordinatorSessions):
                         or completed_stages >= expected_terminal_stages
                     ):
                         return
+                    else:
+                        pass
                 else:
                     yield msg
         finally:
@@ -405,10 +419,16 @@ class Coordinator(CoordinatorSessions):
                             # The coordinator-owned abort task logs its own failure.
                             # Do not replace the exception already leaving the stream.
                             pass
+                    else:
+                        pass
                 finally:
                     if self.stream_queues.get(request_id) is queue:
                         self.stream_queues.pop(request_id, None)
                         self.completion_futures.pop(request_id, None)
+                    else:
+                        pass
+            else:
+                pass
 
     async def submit_request(
         self,
@@ -424,8 +444,12 @@ class Coordinator(CoordinatorSessions):
         """Submit a request without waiting for completion."""
         if self.fatal_error is not None:
             raise RuntimeError(self.fatal_error)
+        else:
+            pass
         if self.request_id_is_reserved(request_id):
             raise ValueError(f"Request {request_id} already exists")
+        else:
+            pass
 
         if (
             not should_bypass_admission
@@ -439,14 +463,20 @@ class Coordinator(CoordinatorSessions):
                 self.max_in_flight,
             )
             raise QueueFullError()
+        else:
+            pass
 
         if not isinstance(request, OmniRequest):
             request = OmniRequest(inputs=request)
+        else:
+            pass
 
         if replica_bindings is None:
             replica_bindings = assign_replica_bindings(
                 self.logical_process_plan, self.binding_policy, request_id
             )
+        else:
+            pass
         bindings = replica_bindings or {}
         entry_instance = target_stage or (
             self.replica_topology.resolve(self.entry_stage, bindings[self.entry_stage])
@@ -455,6 +485,8 @@ class Coordinator(CoordinatorSessions):
         )
         if entry_instance not in self.stages:
             raise ValueError(f"Entry stage {entry_instance} not registered")
+        else:
+            pass
         entry_info = self.stages[entry_instance]
 
         # Track request
@@ -475,6 +507,8 @@ class Coordinator(CoordinatorSessions):
         self.completion_futures[request_id] = future
         if stream_queue is not None:
             self.stream_queues[request_id] = stream_queue
+        else:
+            pass
 
         payload = StagePayload(
             request_id=request_id,
@@ -503,12 +537,16 @@ class Coordinator(CoordinatorSessions):
         info = self.requests.get(request_id)
         if info is not None:
             info.state = RequestState.RUNNING
+        else:
+            pass
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 f"Coordinator submitted req={request_id} to {entry_instance} "
                 f"at {entry_info.control_endpoint} bindings={replica_bindings}"
             )
+        else:
+            pass
 
     def request_id_is_reserved(self, request_id: str) -> bool:
         """Return whether any coordinator owner still holds this request ID."""
@@ -531,6 +569,8 @@ class Coordinator(CoordinatorSessions):
         future = self.completion_futures.get(request_id)
         if future is None or future.done():
             return
+        else:
+            pass
         if request_id in self.stream_queues:
             future.cancel()
         else:
@@ -548,10 +588,14 @@ class Coordinator(CoordinatorSessions):
         abort_task = self.abort_tasks.get(request_id)
         if abort_task is not None:
             return await asyncio.shield(abort_task)
+        else:
+            pass
 
         info = self.requests.get(request_id)
         if info is None:
             return False
+        else:
+            pass
 
         if info.state in (
             RequestState.COMPLETED,
@@ -559,6 +603,8 @@ class Coordinator(CoordinatorSessions):
             RequestState.ABORTED,
         ):
             return False
+        else:
+            pass
 
         abort_task = asyncio.create_task(
             self.run_abort(request_id),
@@ -579,6 +625,8 @@ class Coordinator(CoordinatorSessions):
         info = self.requests.get(request_id)
         if info is None:
             return False
+        else:
+            pass
 
         info.state = RequestState.ABORTED
         self.reject_completion_future(
@@ -594,6 +642,8 @@ class Coordinator(CoordinatorSessions):
                     error="aborted",
                 )
             )
+        else:
+            pass
 
         self.requests.pop(request_id, None)
         self.partial_results.pop(request_id, None)
@@ -608,9 +658,13 @@ class Coordinator(CoordinatorSessions):
     ) -> None:
         if self.abort_tasks.get(request_id) is task:
             self.abort_tasks.pop(request_id, None)
+        else:
+            pass
         if task.cancelled():
             logger.warning("Coordinator abort task cancelled for req=%s", request_id)
             return
+        else:
+            pass
         exc = task.exception()
         if exc is not None:
             logger.warning(
@@ -618,6 +672,8 @@ class Coordinator(CoordinatorSessions):
                 request_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
+        else:
+            pass
 
     async def run_completion_loop(self) -> None:
         """Run the completion receiving loop.
@@ -665,6 +721,8 @@ class Coordinator(CoordinatorSessions):
                 msg.from_stage,
             )
             return
+        else:
+            pass
 
         info = self.requests[request_id]
 
@@ -673,6 +731,8 @@ class Coordinator(CoordinatorSessions):
         from_stage = self.replica_topology.logical_name(msg.from_stage)
         if from_stage != msg.from_stage:
             msg = replace(msg, from_stage=from_stage)
+        else:
+            pass
 
         # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
@@ -688,8 +748,12 @@ class Coordinator(CoordinatorSessions):
             stream_queue = self.stream_queues.get(request_id)
             if stream_queue is not None:
                 await stream_queue.put(msg)
+            else:
+                pass
             self.requests.pop(request_id, None)
             return
+        else:
+            pass
 
         expected_terminal_stages = self.expected_terminal_stages(request_id)
         if expected_terminal_stages and from_stage not in expected_terminal_stages:
@@ -701,6 +765,8 @@ class Coordinator(CoordinatorSessions):
                 sorted(expected_terminal_stages),
             )
             return
+        else:
+            pass
 
         # Single active terminal (original behavior) or no terminal_stages configured
         if len(expected_terminal_stages) <= 1:
@@ -710,10 +776,18 @@ class Coordinator(CoordinatorSessions):
                 future = self.completion_futures[request_id]
                 if not future.done():
                     future.set_result(msg.result)
+                else:
+                    pass
+            else:
+                pass
             if request_id in self.stream_queues:
                 await self.stream_queues[request_id].put(msg)
+            else:
+                pass
             self.requests.pop(request_id, None)
             return
+        else:
+            pass
 
         # Multi-terminal: collect partial results
         partials = self.partial_results.setdefault(request_id, {})
@@ -722,9 +796,13 @@ class Coordinator(CoordinatorSessions):
         # Forward stream completion per-stage
         if request_id in self.stream_queues:
             await self.stream_queues[request_id].put(msg)
+        else:
+            pass
 
         if set(partials) < expected_terminal_stages:
             return  # still waiting
+        else:
+            pass
 
         # All terminal stages done -> merge and resolve
         merged = dict(partials)
@@ -736,6 +814,10 @@ class Coordinator(CoordinatorSessions):
             future = self.completion_futures[request_id]
             if not future.done():
                 future.set_result(merged)
+            else:
+                pass
+        else:
+            pass
         self.requests.pop(request_id, None)
 
     async def handle_stream(self, msg: StreamMessage) -> None:
@@ -745,8 +827,12 @@ class Coordinator(CoordinatorSessions):
         if handler is not None:
             handler(msg)
             return
+        else:
+            pass
         if request_id not in self.stream_queues:
             return
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage="coordinator",
@@ -778,6 +864,8 @@ class Coordinator(CoordinatorSessions):
         )
         if logical != msg.from_stage or stage_name != msg.stage_name:
             msg = replace(msg, from_stage=logical, stage_name=stage_name)
+        else:
+            pass
         await self.stream_queues[request_id].put(msg)
 
     def handle_admin_result(self, result: AdminResult) -> None:
@@ -789,6 +877,8 @@ class Coordinator(CoordinatorSessions):
                 result.stage,
             )
             return
+        else:
+            pass
         pending.results[result.stage] = result
         if (
             pending.future is not None
@@ -796,10 +886,16 @@ class Coordinator(CoordinatorSessions):
         ):
             if not pending.future.done():
                 pending.future.set_result(dict(pending.results))
+            else:
+                pass
+        else:
+            pass
 
     def resolve_admin_stages(self, stages: Sequence[str] | None) -> list[str]:
         if stages is None:
             return sorted(self.stages)
+        else:
+            pass
         # Note (wenyao): dedup preserving order so a caller passing both a
         # logical name and one of its instances does not double-send admin ops.
         resolved: list[str] = []
@@ -807,9 +903,13 @@ class Coordinator(CoordinatorSessions):
             for instance in self.replica_topology.instances(name):
                 if instance not in resolved:
                     resolved.append(instance)
+                else:
+                    pass
         unknown = sorted(set(resolved) - set(self.stages))
         if unknown:
             raise ValueError(f"Unknown admin target stage(s): {unknown}")
+        else:
+            pass
         return resolved
 
     def aggregate_admin_results(
@@ -854,21 +954,31 @@ class Coordinator(CoordinatorSessions):
     def resolve_terminal_stages(self, request: OmniRequest) -> set[str]:
         if self.terminal_stages_resolver is None:
             return set(self.terminal_stages)
+        else:
+            pass
         resolved = self.terminal_stages_resolver(request)
         if resolved is None:
             return set(self.terminal_stages)
+        else:
+            pass
         if isinstance(resolved, str) or not isinstance(resolved, Sequence):
             raise ValueError(
                 "terminal_stages_resolver must return a sequence of terminal "
                 "stage names or None"
             )
+        else:
+            pass
         if not all(isinstance(stage, str) for stage in resolved):
             raise ValueError(
                 "terminal_stages_resolver must return terminal stage names"
             )
+        else:
+            pass
         resolved_stages = set(resolved)
         if not resolved_stages:
             raise ValueError("terminal_stages_resolver returned no terminal stages")
+        else:
+            pass
         unknown = resolved_stages - self.terminal_stages
         if unknown:
             raise ValueError(
@@ -876,12 +986,16 @@ class Coordinator(CoordinatorSessions):
                 f"terminal stages: {sorted(unknown)}. Allowed terminal stages: "
                 f"{sorted(self.terminal_stages)}"
             )
+        else:
+            pass
         return resolved_stages
 
     def expected_terminal_stages(self, request_id: str) -> set[str]:
         info = self.requests.get(request_id)
         if info is None or info.terminal_stages is None:
             return set(self.terminal_stages)
+        else:
+            pass
         return info.terminal_stages
 
     def health(self) -> dict[str, Any]:

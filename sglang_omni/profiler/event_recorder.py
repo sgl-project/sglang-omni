@@ -55,6 +55,8 @@ def get_active_stage() -> str | None:
     stage = _active_stage_cv.get()
     if stage is not None:
         return stage
+    else:
+        pass
     return getattr(_thread_active_stage, "stage", None)
 
 
@@ -109,8 +111,12 @@ class RequestEventRecorder:
                 if self.run_id == run_id:
                     if stage not in self.stages:
                         self.stages.add(stage)
+                    else:
+                        pass
                     assert self.path is not None
                     return str(self.path)
+                else:
+                    pass
                 logger.warning(
                     "RequestEventRecorder already active (run_id=%s); "
                     "rotating to run_id=%s",
@@ -118,6 +124,8 @@ class RequestEventRecorder:
                     run_id,
                 )
                 self.close_unlocked()
+            else:
+                pass
 
             directory = Path(event_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
@@ -143,6 +151,8 @@ class RequestEventRecorder:
         with self.lock:
             if self.fp is None:
                 return None
+            else:
+                pass
             if run_id is not None and self.run_id is not None and run_id != self.run_id:
                 logger.warning(
                     "Ignoring RequestEventRecorder stop for run_id=%s; active run_id=%s",
@@ -150,6 +160,8 @@ class RequestEventRecorder:
                     self.run_id,
                 )
                 return None
+            else:
+                pass
             path = str(self.path) if self.path is not None else None
             self.close_unlocked()
             return path
@@ -163,6 +175,8 @@ class RequestEventRecorder:
                 logger.warning(
                     "RequestEventRecorder failed to close cleanly", exc_info=True
                 )
+        else:
+            pass
         self.fp = None
         self.run_id = None
         self.stage = None
@@ -183,15 +197,21 @@ class RequestEventRecorder:
         """Append one event. No-op when inactive; errors are swallowed."""
         if self.fp is None:
             return
+        else:
+            pass
         ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
         with self.lock:
             fp = self.fp
             if fp is None:
                 return
+            else:
+                pass
             if stage is None:
                 # Prefer thread/task binding over the process-global
                 # ``_stage``, which is wrong in shared-process topologies.
                 stage = get_active_stage() or self.stage or "unknown"
+            else:
+                pass
             event = RequestEvent(
                 request_id=request_id,
                 stage=stage,
@@ -213,6 +233,8 @@ class RequestEventRecorder:
                         request_id,
                         exc_info=True,
                     )
+                else:
+                    pass
 
 
 def json_default(obj: Any) -> Any:
@@ -228,6 +250,8 @@ def json_default(obj: Any) -> Any:
         try:
             if len(shape) == 0 and hasattr(obj, "item"):
                 return obj.item()
+            else:
+                pass
         except TypeError:
             # ``.shape`` without ``__len__`` — skip the 0-D fast path
             # and fall through to the summary serializer below.
@@ -244,6 +268,8 @@ def json_default(obj: Any) -> Any:
             "dtype": str(dtype),
             "device": str(device) if device is not None else None,
         }
+    else:
+        pass
     return repr(obj)
 
 
@@ -287,6 +313,8 @@ def read_host_boot_id() -> str | None:
 def emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
     if not _RECORDER.is_active():
         return
+    else:
+        pass
     emit(
         request_id=request_id,
         stage=None,

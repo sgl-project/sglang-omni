@@ -74,6 +74,8 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
             context = self.context
             if context is not None:
                 self.inflight.add(request_id)
+            else:
+                pass
             return context
 
     def fail_inflight(self, request_id: str) -> None:
@@ -94,6 +96,8 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
             if inflight and not aborted:
                 self.prepared[request_id] = prepared
                 return True
+            else:
+                pass
             return False
 
     def abort(self, request_id: str) -> None:
@@ -102,8 +106,12 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
         with self.lock:
             if self.prepared.pop(request_id, None) is not None:
                 return
+            else:
+                pass
             if request_id in self.inflight:
                 self.aborted.add(request_id)
+            else:
+                pass
 
     def pop(self, request_id: str) -> PrepT | None:
         """Remove and return a published handoff, or None if absent."""

@@ -40,6 +40,8 @@ class MlxSchedulerModelRunner(ModelRunner):
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1:
             return False
+        else:
+            pass
         previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
@@ -48,12 +50,18 @@ class MlxSchedulerModelRunner(ModelRunner):
                 # Note (yexiaodong): Returning false makes Omni resolve the
                 # in-flight step before it runs a changed batch synchronously.
                 return False
+            else:
+                pass
+        else:
+            pass
         return super().lookahead_eligible(batch)
 
     def build_forward_batch(self, scheduler_output: Any):
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
+        else:
+            pass
         # Note (yexiaodong): SGLang's MLX worker consumes ScheduleBatch
         # directly. Its bookkeeping stub intentionally has no Torch attention
         # backend state from which ForwardBatch could be constructed.
@@ -89,8 +97,12 @@ class MlxSchedulerModelRunner(ModelRunner):
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
+        else:
+            pass
         if not schedule_batch.forward_mode.is_decode():
             raise RuntimeError("MLX lookahead launch requires a decode batch")
+        else:
+            pass
 
         # Note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
         # preceding decode token instead of input_ids, so MLX must resolve the
@@ -99,6 +111,8 @@ class MlxSchedulerModelRunner(ModelRunner):
             from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
             resolve_forward_inputs(schedule_batch, self.execution_bridge.future_map)
+        else:
+            pass
 
         reqs = list(schedule_batch.reqs)
         previous = self.last_mlx_pending
@@ -119,6 +133,8 @@ class MlxSchedulerModelRunner(ModelRunner):
                         "resolve the outstanding pending step before launching a "
                         "changed batch"
                     )
+                else:
+                    pass
                 launch = self.tp_worker.async_chained_decode_mlx(previous.launch.decode)
 
         schedule_batch_copy = schedule_batch.copy()
@@ -137,6 +153,8 @@ class MlxSchedulerModelRunner(ModelRunner):
     def execute_resolve(self, pending: MlxSchedulerPendingStep | None):
         if pending is None:
             return None
+        else:
+            pass
 
         try:
             with self.mlx_stream_context():
@@ -152,6 +170,8 @@ class MlxSchedulerModelRunner(ModelRunner):
         else:
             if self.last_mlx_pending is pending:
                 self.last_mlx_pending = None
+            else:
+                pass
 
         if (
             self.execution_bridge is not None
@@ -163,6 +183,8 @@ class MlxSchedulerModelRunner(ModelRunner):
                 pending.schedule_batch,
                 batch_result.next_token_ids,
             )
+        else:
+            pass
 
         skip_rids = {
             request.request_id
@@ -234,6 +256,8 @@ def create_mlx_model_worker(
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
                 # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
                 self.model_config.vocab_size = 6561 + 200
+            else:
+                pass
             runner_class = make_runner_class()
             mlx_model_path = (
                 config.mlx_model_path
@@ -244,6 +268,8 @@ def create_mlx_model_worker(
                 raise RuntimeError(
                     "Fun-CosyVoice3 MLX worker requires its model bundle path"
                 )
+            else:
+                pass
             init_kwargs = {
                 "model_path": mlx_model_path,
                 "trust_remote_code": get_model().trust_remote_code,
@@ -263,6 +289,8 @@ def create_mlx_model_worker(
             }
             if get_schedule().max_total_tokens is not None:
                 init_kwargs["pool_size"] = get_schedule().max_total_tokens
+            else:
+                pass
             self.mlx_runner = runner_class(**init_kwargs)
             self._model_runner = MlxModelRunnerStub(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 model_config=self.model_config,
@@ -323,6 +351,8 @@ def create_mlx_model_worker(
     nccl_port = config.nccl_port
     if nccl_port is None:
         nccl_port = PortArgs.init_new(server_args).nccl_port
+    else:
+        pass
     return OmniMlxWorker(
         server_args=server_args,
         gpu_id=gpu_id,

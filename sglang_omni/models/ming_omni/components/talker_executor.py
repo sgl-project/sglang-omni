@@ -88,6 +88,8 @@ class MingTalkerExecutor:
         config = MingOmniTalkerConfig.from_pretrained_dir(self.talker_model_path)
         if torch.device(self.device).type == "npu":
             config.use_torch_attention()
+        else:
+            pass
 
         # 2. Create model (no weights yet)
         self.talker = MingOmniTalker(config)
@@ -180,6 +182,8 @@ class MingTalkerExecutor:
         request_id = payload.request_id
         if request_id in self.aborted:
             return
+        else:
+            pass
         if not self.should_generate_audio(payload):
             logger.info(
                 "[TALKER] Skipping TTS for request %s; output_modalities=%s",
@@ -188,6 +192,8 @@ class MingTalkerExecutor:
             )
             await self.results.put(self.build_empty_audio_result(payload))
             return
+        else:
+            pass
 
         text = self.extract_text(payload)
         logger.info(
@@ -209,6 +215,8 @@ class MingTalkerExecutor:
             )
             await self.results.put(result)
             return
+        else:
+            pass
 
         t0 = time.time()
         logger.info("[TALKER] Starting TTS generation for %d chars...", len(text))
@@ -250,6 +258,8 @@ class MingTalkerExecutor:
             result = await self.results.get()
             if result.request_id in self.aborted:
                 continue
+            else:
+                pass
             return result
 
     async def abort(self, request_id: str) -> None:
@@ -264,13 +274,21 @@ class MingTalkerExecutor:
         metadata = payload.request.metadata
         if not isinstance(metadata, dict):
             return None
+        else:
+            pass
         modalities = metadata.get("output_modalities")
         if modalities is None:
             return None
+        else:
+            pass
         if isinstance(modalities, str):
             return {modalities}
+        else:
+            pass
         if isinstance(modalities, (list, tuple, set)):
             return {str(modality) for modality in modalities}
+        else:
+            pass
         return None
 
     @staticmethod
@@ -301,6 +319,8 @@ class MingTalkerExecutor:
                 f"{manifest_path}; available presets: "
                 f"{sorted(voice_dict.keys())}"
             )
+        else:
+            pass
         for name, entry in voice_dict.items():
             rel_path = entry.get("prompt_wav_path")
             if rel_path is None:
@@ -308,12 +328,16 @@ class MingTalkerExecutor:
                     f"[TALKER] voice preset {name!r} in {manifest_path} is "
                     f"missing prompt_wav_path"
                 )
+            else:
+                pass
             resolved = os.path.join(talker_dir, rel_path)
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(
                     f"[TALKER] voice preset {name!r} references missing "
                     f"prompt wav {resolved}"
                 )
+            else:
+                pass
             entry["prompt_wav_path"] = resolved
 
     def extract_text(self, payload: StagePayload) -> str:
@@ -321,6 +345,8 @@ class MingTalkerExecutor:
         data = payload.data
         if not isinstance(data, dict):
             return ""
+        else:
+            pass
 
         # Check thinker_out field
         thinker_out = data.get("thinker_out", {})
@@ -330,13 +356,23 @@ class MingTalkerExecutor:
                 tokenizer = self.thinker_tokenizer
                 if tokenizer is None and hasattr(self.talker, "tokenizer"):
                     tokenizer = self.talker.tokenizer
+                else:
+                    pass
                 if tokenizer is not None:
                     return tokenizer.decode(output_ids, skip_special_tokens=True)
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         # Fallback: pre-decoded text
         text = data.get("generated_text", "")
         if text:
             return text
+        else:
+            pass
 
         # Check stream_state
         stream_state = data.get("stream_state", {})
@@ -351,6 +387,8 @@ class MingTalkerExecutor:
         """
         if self.talker is None:
             raise RuntimeError("Talker model not loaded")
+        else:
+            pass
 
         all_wavs = []
 
@@ -363,6 +401,8 @@ class MingTalkerExecutor:
             ):
                 if tts_speech is not None:
                     all_wavs.append(tts_speech)
+                else:
+                    pass
         elif hasattr(self.talker, "instruct_audio_generation"):
             prompt = "Please generate speech based on the following description.\n"
             for tts_speech, _, _, _ in self.talker.instruct_audio_generation(
@@ -373,16 +413,22 @@ class MingTalkerExecutor:
             ):
                 if tts_speech is not None:
                     all_wavs.append(tts_speech)
+                else:
+                    pass
         else:
             raise RuntimeError("Talker has no supported generation method")
 
         if not all_wavs:
             raise RuntimeError("Talker produced no audio")
+        else:
+            pass
 
         waveform = torch.cat(all_wavs, dim=-1)
         sample_rate = 44100
         if self.vae is not None and hasattr(self.vae, "config"):
             sample_rate = getattr(self.vae.config, "sample_rate", 44100)
+        else:
+            pass
         duration = waveform.shape[-1] / sample_rate
 
         return waveform, sample_rate, duration

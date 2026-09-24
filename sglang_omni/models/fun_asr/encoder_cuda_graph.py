@@ -41,14 +41,20 @@ def bucket_batch(b: int, max_batch: int) -> int | None:
     for bucket in _BATCH_BUCKETS:
         if bucket > max_batch:
             break
+        else:
+            pass
         if bucket >= b:
             return bucket
+        else:
+            pass
     return max_batch if b <= max_batch else None
 
 
 def bucket_t(t: int) -> int | None:
     if t > _T_BUCKET_MAX:
         return None
+    else:
+        pass
     bucket = ((t + _T_BUCKET_STEP - 1) // _T_BUCKET_STEP) * _T_BUCKET_STEP
     return max(bucket, _T_BUCKET_STEP)
 
@@ -120,6 +126,8 @@ class FunASREncoderCudaGraphRunner:
 
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
+        else:
+            pass
         graph = torch.cuda.CUDAGraph()
         # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
         # thread keeps launching kernels concurrently and must not poison this
@@ -149,9 +157,13 @@ class FunASREncoderCudaGraphRunner:
         t_bucket = bucket_t(t)
         if batch_bucket is None or t_bucket is None:
             return None
+        else:
+            pass
         key = (batch_bucket, t_bucket)
         if key in self.failed:
             return None
+        else:
+            pass
 
         with self.lock:
             entry = self.graphs.get(key)
@@ -168,6 +180,8 @@ class FunASREncoderCudaGraphRunner:
                     )
                     self.failed.add(key)
                     return None
+                else:
+                    pass
                 try:
                     with torch.cuda.device(self.device):
                         entry = self.capture(batch_bucket, t_bucket, feat_dim)
@@ -182,15 +196,21 @@ class FunASREncoderCudaGraphRunner:
                     self.failed.add(key)
                     return None
                 self.graphs[key] = entry
+            else:
+                pass
 
             graph, static_xs, static_ilens, static_out = entry
             if static_xs.shape[-1] != feat_dim:
                 return None
+            else:
+                pass
             stream = torch.cuda.current_stream(self.device)
             # note (wilsonzheng0327): wait for previous caller's output copy
             # on some stream to finish before using shared resource
             if self.event_recorded:
                 self.done_event.wait(stream)
+            else:
+                pass
             static_xs.zero_()
             static_xs[:b, :t].copy_(xs, non_blocking=True)
             # Padded rows keep ilens=1: one valid zeroed frame, output dropped.

@@ -42,8 +42,12 @@ def syncfree_launch_enabled() -> bool:
     value = os.environ.get("SGLANG_OMNI_SYNCFREE_LAUNCH", "1").lower()
     if value in ("1", "true", "yes"):
         return True
+    else:
+        pass
     if value in ("0", "false", "no"):
         return False
+    else:
+        pass
     raise ValueError(
         f'"{value}" is not a valid SGLANG_OMNI_SYNCFREE_LAUNCH boolean value'
     )
@@ -121,12 +125,16 @@ class HiggsTTSModelRunner(ModelRunner):
         """
         if len(requests) == 0:
             return None
+        else:
+            pass
         n_real = len(requests)
         bs = int(forward_batch.batch_size)
         if bs < n_real:
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        else:
+            pass
         staging = self.decode_pack_gpu(n_real)
         collect_staging = self.model.cg_collect_staging
         host_buf = self.next_host_staging(collect_staging.shape, collect_staging.dtype)
@@ -136,6 +144,8 @@ class HiggsTTSModelRunner(ModelRunner):
             logprobs_BN = self.decode_step_logprobs(result, n_real)
             logprob_host = self.next_logprob_host_staging(logprobs_BN)
             logprob_host[:n_real].copy_(logprobs_BN[:n_real], non_blocking=True)
+        else:
+            pass
         # Set next_token_ids (cb0) from GPU state now, with NO host sync, so the
         # AR input chain (next step's input_ids = this step's output_ids) is
         # available at launch — the host collect (post_decode_resolve) lags by
@@ -160,9 +170,13 @@ class HiggsTTSModelRunner(ModelRunner):
         forward_mode = getattr(forward_batch, "forward_mode", None)
         if forward_mode is not None and not forward_mode.is_decode():
             return super().next_input_token_ids(result, forward_batch, requests)
+        else:
+            pass
         n_real = len(requests)
         if n_real == 0:
             return None
+        else:
+            pass
         return self.model.cg_codes_BN[:n_real, 0].clamp_min(0).to(torch.long)
 
     def post_decode_resolve(
@@ -175,6 +189,8 @@ class HiggsTTSModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         if len(requests) == 0:
             return
+        else:
+            pass
         n_real = len(requests)
         host_buf, logprob_host = host_buf
         logprobs_cpu = None if logprob_host is None else logprob_host[:n_real]
@@ -201,6 +217,8 @@ class HiggsTTSModelRunner(ModelRunner):
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        else:
+            pass
 
         model.sampler_pool.reset_row(model.padding_row)
 
@@ -210,6 +228,8 @@ class HiggsTTSModelRunner(ModelRunner):
         # rebuild so the new request cannot inherit cached params/redirects.
         if any(req.request_id not in model.rid_to_row for req in requests):
             self.cg_launch_key = None
+        else:
+            pass
 
         rows_py: list[int] = [model.acquire_row(req.request_id) for req in requests]
         # Note (Yueying Li): sync-free launch cache: temperature/top_p/top_k/row-index are
@@ -250,6 +270,8 @@ class HiggsTTSModelRunner(ModelRunner):
                 top_k_vals, dtype=torch.long, device=model.cg_top_k_buf.device
             )
             self.cg_launch_key = launch_key
+        else:
+            pass
 
         if self.async_enabled and is_lookahead and n_real > 0:
             # Async-lookahead overrun guard (GPU-side, no host sync): a request
@@ -269,6 +291,8 @@ class HiggsTTSModelRunner(ModelRunner):
             model.cg_row_indices[:n_real] = torch.where(
                 done, torch.full_like(rows_t_real, model.padding_row), rows_t_real
             )
+        else:
+            pass
 
         rows_t = model.cg_row_indices[:bs]
         pool = model.sampler_pool
@@ -313,17 +337,23 @@ class HiggsTTSModelRunner(ModelRunner):
         """
         if len(requests) == 0:
             return
+        else:
+            pass
         n_real = len(requests)
         bs = int(forward_batch.batch_size)
         if bs < n_real:
             raise ValueError(
                 f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})"
             )
+        else:
+            pass
         staging = self.decode_pack_gpu(n_real)
         combined_cpu = staging[:n_real].cpu()  # one blocking D2H (sync path)
         logprobs_cpu = None
         if self.should_capture_rollout_logprobs(requests):
             logprobs_cpu = self.decode_step_logprobs(result, n_real)[:n_real].cpu()
+        else:
+            pass
         self.decode_collect_host(
             combined_cpu,
             logprobs_cpu,
@@ -381,6 +411,8 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.inflight_middle_chunks > 0:
                 cb0_per_row.append(0)
                 continue
+            else:
+                pass
             # Already finished in an earlier step? Skip its append. Under async
             # lookahead the finished req gets one extra (wasted) forward before
             # being dropped; this prevents leaking that overrun token. Catches
@@ -390,14 +422,20 @@ class HiggsTTSModelRunner(ModelRunner):
             if req.finished():
                 cb0_per_row.append(0)
                 continue
+            else:
+                pass
             if was_done_cpu[b]:
                 cb0_per_row.append(0)
                 continue
+            else:
+                pass
             codes_N = self.append_output_code(data, codes_BN_cpu[b])
             if logprobs_cpu is not None and self.request_captures_rollout_logprobs(
                 sched_req
             ):
                 data.output_logprobs.append(logprobs_cpu[b].to(torch.float32).clone())
+            else:
+                pass
             data.generation_done = bool(gen_done_after_cpu[b])
             self.queue_or_emit_code_chunk(
                 sched_req,
@@ -431,12 +469,16 @@ class HiggsTTSModelRunner(ModelRunner):
             if not codes_rows:
                 offset = end
                 continue
+            else:
+                pass
 
             full_mask = placeholder_mask[offset:end]
             n_placeholders = int(full_mask.sum().item())
             if n_placeholders == 0:
                 offset = end
                 continue
+            else:
+                pass
 
             codes = torch.tensor(codes_rows, dtype=torch.long, device=device)
             # Radix reuse can begin this request's live extension after a
@@ -452,6 +494,8 @@ class HiggsTTSModelRunner(ModelRunner):
                     f"placeholders: consumed={consumed}, "
                     f"live={n_placeholders}, available={len(codes_rows)}"
                 )
+            else:
+                pass
             with torch.no_grad():
                 embed = fused_embed(codes[consumed : consumed + n_placeholders])
             mask_idx = full_mask.nonzero(as_tuple=True)[0] + offset
@@ -470,11 +514,15 @@ class HiggsTTSModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
+        else:
+            pass
 
         model = self.model
         logprobs_BN = None
         if self.should_capture_rollout_logprobs(requests):
             logprobs_BN = self.prefill_step_logprobs(result, requests, forward_batch)
+        else:
+            pass
         cb0_per_row: list[int] = []
         for b, sched_req in enumerate(requests):
             data = sched_req.data
@@ -490,12 +538,16 @@ class HiggsTTSModelRunner(ModelRunner):
             ):
                 cb0_per_row.append(0)
                 continue
+            else:
+                pass
             codes_N = codes_log[-1]
             codes_cpu = self.append_output_code(data, codes_N)
             if logprobs_BN is not None and self.request_captures_rollout_logprobs(
                 sched_req
             ):
                 data.output_logprobs.append(logprobs_BN[b].detach().cpu().clone())
+            else:
+                pass
             data.generation_done = bool(model.sampler_pool.generation_done[row].item())
             self.queue_or_emit_code_chunk(
                 sched_req,
@@ -548,6 +600,8 @@ class HiggsTTSModelRunner(ModelRunner):
             new_buffer[:count].copy_(buffer[:count])
             buffer = new_buffer
             data.output_code_buffer = buffer
+        else:
+            pass
 
         row = buffer[count]
         if codes_N.device.type == "cpu" and codes_N.dtype == torch.long:
@@ -562,6 +616,8 @@ class HiggsTTSModelRunner(ModelRunner):
         hidden_states = result.logits_output.hidden_states
         if hidden_states.ndim == 3:
             hidden_states = hidden_states[:, -1, :]
+        else:
+            pass
         logits_BNV = model.modality_head.generate(hidden_states[:n_real]).to(
             torch.float32
         )
@@ -581,6 +637,8 @@ class HiggsTTSModelRunner(ModelRunner):
         hidden_states = result.logits_output.hidden_states
         if hidden_states.ndim == 3:
             hidden_states = hidden_states[:, -1, :]
+        else:
+            pass
         logits_BNV = model.modality_head.generate(hidden_states[: len(requests)]).to(
             torch.float32
         )
@@ -623,11 +681,15 @@ class HiggsTTSModelRunner(ModelRunner):
         """Bridge Higgs sampler completion into upstream SGLang finish state."""
         if generation_done and req.finished_reason is None:
             req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
+        else:
+            pass
 
     @staticmethod
     def is_final_code_step(data: Any) -> bool:
         if bool(data.generation_done):
             return True
+        else:
+            pass
         try:
             max_new_tokens = int(data.max_new_tokens or 0)
         except AttributeError:
@@ -643,20 +705,28 @@ class HiggsTTSModelRunner(ModelRunner):
     ) -> None:
         if self.outbox is None:
             return
+        else:
+            pass
         data = sched_req.data
         if data.stream_metadata is None:
             return
+        else:
+            pass
 
         data.stream_code_buffer.append(codes_N)
         data.stream_code_seen_rows += 1
         if int(data.stream_code_next_flush_rows) <= 0:
             data.stream_code_next_flush_rows = self.initial_stream_flush_rows(data)
+        else:
+            pass
         if force or data.stream_code_seen_rows >= data.stream_code_next_flush_rows:
             self.flush_code_chunks(
                 sched_req.request_id,
                 data,
                 force=force,
             )
+        else:
+            pass
 
     @staticmethod
     def stream_params(data: Any) -> tuple[int, int, int, int]:
@@ -680,12 +750,16 @@ class HiggsTTSModelRunner(ModelRunner):
         initial_frames = metadata.get(INITIAL_CODEC_CHUNK_FRAMES_PARAM)
         if initial_frames is None:
             return num_codebooks, stride, followup, 0
+        else:
+            pass
         try:
             initial_frames_i = int(initial_frames)
         except (TypeError, ValueError):
             initial_frames_i = 0
         if initial_frames_i <= 0:
             return num_codebooks, stride, followup, 0
+        else:
+            pass
         steady_codec_frames = max(1, stride - num_codebooks + 1)
         return (
             num_codebooks,
@@ -700,6 +774,8 @@ class HiggsTTSModelRunner(ModelRunner):
         steady_codec_frames = max(1, stride - num_codebooks + 1)
         if 0 < initial_frames < steady_codec_frames:
             return max(num_codebooks, initial_frames + num_codebooks - 1)
+        else:
+            pass
         return max(num_codebooks, stride)
 
     @classmethod
@@ -712,6 +788,8 @@ class HiggsTTSModelRunner(ModelRunner):
         )
         if emitted_initial_chunk:
             return max(num_codebooks, stride) + followup
+        else:
+            pass
         return int(flushed_rows) + followup
 
     def flush_code_chunks(
@@ -724,6 +802,8 @@ class HiggsTTSModelRunner(ModelRunner):
         rows = data.stream_code_buffer
         if not rows:
             return
+        else:
+            pass
         if len(rows) == 1:
             payload = rows[0]
         else:
@@ -733,6 +813,8 @@ class HiggsTTSModelRunner(ModelRunner):
             data.stream_code_next_flush_rows = self.next_stream_flush_rows(
                 data, flushed_rows
             )
+        else:
+            pass
         data.stream_code_buffer = []
         data.stream_code_first_flush_done = True
         self.emit_code_chunk(request_id, data, payload)
@@ -745,9 +827,13 @@ class HiggsTTSModelRunner(ModelRunner):
     ) -> None:
         if self.outbox is None:
             return
+        else:
+            pass
         metadata = data.stream_metadata
         if metadata is None:
             return
+        else:
+            pass
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,

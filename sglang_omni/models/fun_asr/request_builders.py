@@ -66,6 +66,8 @@ def request_token_budget(
     explicit = params.get("max_new_tokens")
     if explicit is None:
         return default_token_budget(audio_duration_s, max_new_tokens)
+    else:
+        pass
 
     try:
         requested = int(explicit)
@@ -75,6 +77,8 @@ def request_token_budget(
         raise ValueError(
             f"max_new_tokens must be between 1 and {max_new_tokens}, got {requested}"
         )
+    else:
+        pass
     return requested
 
 
@@ -95,13 +99,21 @@ def resolve_language(lang_raw: str | None) -> str | None:
 
     if lang_raw is None:
         return None
+    else:
+        pass
     lang = lang_raw.strip().lower()
     if lang in ("", "auto", "null", "none"):
         return None
+    else:
+        pass
     if lang in ("zh", "cn", "chinese", "中文"):
         return None
+    else:
+        pass
     if lang in ("en", "english", "英文"):
         return "英文"
+    else:
+        pass
     return lang_raw.strip()
 
 
@@ -115,12 +127,16 @@ def build_prompt_text(language: str | None, itn: bool, hotwords: list[str]) -> s
             "如果没有相关信息，我们会留空。\n\n\n**上下文信息：**\n\n\n"
         )
         prompt += f"热词列表：[{joined}]\n"
+    else:
+        pass
     if language is None:
         prompt += "语音转写"
     else:
         prompt += f"语音转写成{language}"
     if not itn:
         prompt += "，不进行文本规整"
+    else:
+        pass
     return prompt + "："
 
 
@@ -168,9 +184,13 @@ def make_fun_asr_scheduler_adapters(
 ]:
     if feature_extractor is None:
         raise ValueError("Fun-ASR processor is missing a feature_extractor")
+    else:
+        pass
     max_new_tokens = int(max_new_tokens)
     if max_new_tokens < 1:
         raise ValueError("max_new_tokens must be at least 1")
+    else:
+        pass
 
     audio_pad_token_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_PAD))
     eos_token_id = int(tokenizer.eos_token_id)
@@ -208,6 +228,8 @@ def make_fun_asr_scheduler_adapters(
             feature_attention_mask = torch.ones(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
+        else:
+            pass
         num_lfr_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = fun_asr_low_frame_rate_length(num_lfr_frames)
         logger.debug(
@@ -233,6 +255,10 @@ def make_fun_asr_scheduler_adapters(
                 hotwords = [
                     term.strip() for term in str(prompt_hint).split(",") if term.strip()
                 ]
+            else:
+                pass
+        else:
+            pass
         prompt_text = build_prompt_text(language, itn, hotwords)
         input_ids = _build_prompt_ids(num_audio_tokens, prompt_text)
 
@@ -253,6 +279,8 @@ def make_fun_asr_scheduler_adapters(
                 f"Fun-ASR prompt missing audio placeholder {_AUDIO_PAD!r} "
                 f"(id {audio_pad_token_id}); prompt_text={prompt_text!r}"
             )
+        else:
+            pass
         audio_start = input_ids.index(audio_pad_token_id)
         input_ids = [
             audio_item.pad_value if tok == audio_pad_token_id else tok
@@ -284,6 +312,8 @@ def make_fun_asr_scheduler_adapters(
                 f"({len(input_ids)} prompt/audio tokens + {request_max_new_tokens} "
                 f"max_new_tokens > {context_length}); reduce hotwords or split the audio"
             )
+        else:
+            pass
         logger.debug(
             f"[fun-asr] prompt_tokens={len(input_ids)} "
             f"audio_tokens={num_audio_tokens} sampling temp={temperature} "
@@ -299,6 +329,8 @@ def make_fun_asr_scheduler_adapters(
 
         if audio_encoder_service is not None:
             audio_encoder_service.encode_item(audio_item)
+        else:
+            pass
 
         req = Req(
             rid=payload.request_id,

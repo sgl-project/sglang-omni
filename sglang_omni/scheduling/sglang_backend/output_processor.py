@@ -31,6 +31,8 @@ class SGLangOutputProcessor:
         ids = host_token_ids
         if ids is None:
             ids = model_output.next_token_ids
+        else:
+            pass
         token_list = ids.tolist() if ids is not None else []
 
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
@@ -44,6 +46,8 @@ class SGLangOutputProcessor:
                 scheduler_output=scheduler_output,
                 should_emit_hidden_by_request=should_emit_hidden_by_request,
             )
+        else:
+            pass
 
         outputs = {}
         for i, sched_req in enumerate(scheduler_output.requests):
@@ -60,6 +64,8 @@ class SGLangOutputProcessor:
     def should_emit_hidden_for_request(self, request: Any) -> bool:
         if self.should_emit_hidden is None:
             return True
+        else:
+            pass
         return self.should_emit_hidden(request)
 
     def build_hidden_extras_by_request(
@@ -76,13 +82,19 @@ class SGLangOutputProcessor:
         ]
         if not request_indexes:
             return {}
+        else:
+            pass
 
         logits_output = model_output.logits_output
         if logits_output is None:
             return {}
+        else:
+            pass
         raw_hidden = logits_output.hidden_states
         if raw_hidden is None:
             return {}
+        else:
+            pass
 
         return {
             request_index: {
@@ -104,6 +116,8 @@ class SGLangOutputProcessor:
     ) -> torch.Tensor:
         if tensor.ndim == 0:
             return tensor
+        else:
+            pass
 
         requests = scheduler_output.requests
         batch_data = scheduler_output.batch_data
@@ -112,6 +126,8 @@ class SGLangOutputProcessor:
 
         if tensor.shape[0] == num_requests:
             return tensor[request_index]
+        else:
+            pass
 
         is_extend = bool(batch_data.forward_mode.is_extend())
         lengths = [req.extend_range.length for req in reqs] if is_extend else None
@@ -119,8 +135,12 @@ class SGLangOutputProcessor:
             start = sum(lengths[:request_index])
             end = start + lengths[request_index]
             return tensor[start:end]
+        else:
+            pass
 
         if len(requests) == 1:
             return tensor[0] if tensor.ndim >= 2 else tensor
+        else:
+            pass
 
         return tensor

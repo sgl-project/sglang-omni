@@ -10,6 +10,8 @@ from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.interface import JointRopeInplaceKernel
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ def validate_rotary_config(
     # Q/K norm or gradient checkpointing; these are model integration limits.
     if kernel is None:
         return
+    else:
+        pass
     if (
         qk_norm is not None
         or pe_attn_head not in (None, num_heads)
@@ -42,6 +46,8 @@ def validate_rotary_config(
             f"num_heads={num_heads}, qk_norm={qk_norm!r}, "
             f"pe_attn_head={pe_attn_head!r}, grad_checkpointing={grad_checkpointing}"
         )
+    else:
+        pass
 
 
 class CachedRotaryEmbedding(RotaryEmbedding):
@@ -86,6 +92,8 @@ def build_rotary_embedding(
 ) -> RotaryEmbedding:
     if kernel is None:
         return RotaryEmbedding(dim)
+    else:
+        pass
     return CachedRotaryEmbedding(
         dim, kernel=kernel, seq_len=seq_len, max_batch_size=max_batch_size
     )
@@ -96,6 +104,8 @@ def get_rotary_inputs(
 ) -> RotaryInputs | tuple[torch.Tensor, float | torch.Tensor]:
     if isinstance(rotary, CachedRotaryEmbedding):
         return rotary.for_batch(batch_size)
+    else:
+        pass
     return rotary.forward_from_seq_len(seq_len)
 
 
@@ -125,6 +135,8 @@ def apply_rotary_embedding(
         else:
             query = apply_rotary_pos_emb(query, freqs, q_xpos_scale)
             key = apply_rotary_pos_emb(key, freqs, k_xpos_scale)
+    else:
+        pass
     return query, key
 
 

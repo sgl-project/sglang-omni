@@ -11,6 +11,8 @@ from sglang_omni.scheduling.types import ARRequestData
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 @dataclass

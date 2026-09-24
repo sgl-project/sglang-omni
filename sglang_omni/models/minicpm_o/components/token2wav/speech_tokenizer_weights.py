@@ -31,6 +31,8 @@ def rename_weights(weights_dict: dict[str, torch.Tensor]) -> dict[str, torch.Ten
                 new_weight_dict["quantizer.codebook.embed"] = weights_dict[k]
             elif "project_down" in k:
                 new_weight_dict[k] = weights_dict[k]
+            else:
+                pass
         elif "positional_embedding" in k:
             new_weight_dict[k] = weights_dict[k]
         elif "conv" in k:
@@ -120,4 +122,6 @@ def load_tokenizer_weights(onnx_path: Path) -> dict[str, torch.Tensor]:
                         weights_dict[weight_name] = weight_tensor
                     else:
                         weights_dict[weight_name] = weight_tensor.t()
+            else:
+                pass
     return rename_weights(weights_dict)

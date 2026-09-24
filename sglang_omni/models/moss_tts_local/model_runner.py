@@ -43,13 +43,19 @@ class MossTTSLocalModelRunner(ModelRunner):
         metadata = data.stream_metadata
         if metadata is None or self.outbox is None:
             return
+        else:
+            pass
         pending = data.stream_pending_rows
         if not pending:
             return
+        else:
+            pass
         first_sent = data.stream_first_batch_sent
         threshold = 1 if not first_sent else MOSS_STREAM_TRANSPORT_BATCH_FRAMES
         if not force and len(pending) < threshold:
             return
+        else:
+            pass
         rows = pending[0] if len(pending) == 1 else torch.stack(pending)
         pending.clear()
         data.stream_first_batch_sent = True
@@ -96,6 +102,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             is_prefill_only = False
         if bool(is_prefill_only):
             return
+        else:
+            pass
         self.collect_frame(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
@@ -120,6 +128,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             frame_graph_max_bs = 0
         if len(reqs) > int(frame_graph_max_bs):
             return False
+        else:
+            pass
         for req in reqs:
             try:
                 data = req._omni_data  # noqa: leading-underscore
@@ -127,12 +137,16 @@ class MossTTSLocalModelRunner(ModelRunner):
                 data = None
             if data is None:
                 continue
+            else:
+                pass
             try:
                 audio_repetition_penalty = data.audio_repetition_penalty
             except AttributeError:
                 audio_repetition_penalty = 1.0
             if float(audio_repetition_penalty) != 1.0:
                 return False
+            else:
+                pass
         return True
 
     def build_prefill_input_embeds(
@@ -145,22 +159,30 @@ class MossTTSLocalModelRunner(ModelRunner):
             rows = data.prompt_rows
             if rows is None:
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
+            else:
+                pass
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
             pool = self.model.state_pool
             if data.output_rows:
                 generated = torch.stack(data.output_rows, dim=0)
                 rows = torch.cat([rows.to(generated.device), generated], dim=0)
+            else:
+                pass
             generation_steps = int(data.generation_steps)
             data.sampling_steps = generation_steps
             pool.reset_for_refill(sched_req.request_id, generation_steps)
             if data.output_rows:
                 pool.rebuild_audio_history(sched_req.request_id, data.output_rows)
+            else:
+                pass
             current_rows = rows[prefix_len : prefix_len + req_len]
             if int(current_rows.shape[0]) != req_len:
                 raise RuntimeError(
                     f"MOSS-TTS Local prefill row mismatch for {req.rid}: have {int(current_rows.shape[0])} rows, need {req_len} (prefix={prefix_len}, prompt={int(data.prompt_rows.shape[0])}, generated={len(data.output_rows)})"
                 )
+            else:
+                pass
             embeds = self.model.prepare_multi_modal_inputs(
                 current_rows.to(device=forward_batch.input_ids.device)
             )
@@ -171,6 +193,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                 device=forward_batch.input_ids.device,
                 dtype=self.model.dtype,
             )
+        else:
+            pass
         return torch.cat(pieces, dim=0).to(
             device=forward_batch.input_ids.device, dtype=self.model.dtype
         )
@@ -179,16 +203,22 @@ class MossTTSLocalModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
+        else:
+            pass
         pool = self.model.state_pool
         weight = self.model.decode_input_embedding.weight
         if forward_batch.input_ids.numel() < batch_size:
             raise RuntimeError(
                 "MOSS-TTS Local decode input_ids must contain one row id per request"
             )
+        else:
+            pass
         if batch_size > pool.padding_row:
             raise RuntimeError(
                 f"MOSS-TTS Local decode batch exceeds the staged decode-embedding rows ({batch_size} > {pool.padding_row})"
             )
+        else:
+            pass
         row_tensor, pool_rows, has_audio_repetition_penalty = pool.prepare_active_rows(
             requests
         )
@@ -207,6 +237,8 @@ class MossTTSLocalModelRunner(ModelRunner):
     ) -> None:
         if not requests:
             return
+        else:
+            pass
         rows, end_id, next_token_ids = self.run_frame_decode(
             result, forward_batch, requests
         )
@@ -229,8 +261,12 @@ class MossTTSLocalModelRunner(ModelRunner):
             raise RuntimeError(
                 "MOSS-TTS Local model output did not include hidden states"
             )
+        else:
+            pass
         if hidden_states.ndim == 3:
             hidden_states = hidden_states[:, -1, :]
+        else:
+            pass
         cfg = self.model.config
         device = hidden_states.device
         pool = self.model.state_pool
@@ -301,11 +337,15 @@ class MossTTSLocalModelRunner(ModelRunner):
                 )
                 if int(presence.shape[-1]) != int(logits.shape[-1]):
                     presence = presence[:, : logits.shape[-1]]
+                else:
+                    pass
                 self.apply_audio_repetition_penalty_mask(
                     logits,
                     presence,
                     rep_penalties.to(device=logits.device, dtype=logits.dtype),
                 )
+            else:
+                pass
             return MossTTSModelRunner.sample_tokens(
                 logits,
                 temperature=audio_temp,
@@ -351,6 +391,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             embeds = self.model.prepare_multi_modal_inputs(
                 rows.to(device=self.model.device)
             )
+        else:
+            pass
         if emit_indices:
             emit_pool_rows = [pool_rows[i] for i in emit_indices]
             all_emit = len(emit_indices) == batch_size
@@ -374,6 +416,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                 )
                 if has_audio_repetition_penalty:
                     emit_next_text = emit_rows[:, 0]
+                else:
+                    pass
             pool.sampling_steps[emit_row_t] = (emit_steps + 1).to(
                 device=pool.sampling_steps.device, dtype=torch.int64
             )
@@ -389,6 +433,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                     emit_row_t[keep_history.to(device=emit_row_t.device)],
                     emit_rows[keep_history.to(device=emit_rows.device)],
                 )
+            else:
+                pass
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device, dtype=pool.feedback_embeds.dtype
             )
@@ -397,6 +443,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                 pool_rows=emit_pool_rows,
                 rows=emit_rows,
             )
+        else:
+            pass
         return (rows, end_id, next_token_ids)
 
     def post_decode_launch(self, result: Any, forward_batch: Any, requests: list):
@@ -410,6 +458,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         """
         if not requests:
             return None
+        else:
+            pass
         rows, end_id, next_token_ids = self.run_frame_decode(
             result, forward_batch, requests
         )
@@ -432,6 +482,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         del forward_batch, schedule_batch, requests
         if launch_buf is not None and result is not None:
             result.next_token_ids = launch_buf
+        else:
+            pass
 
     @staticmethod
     def advance_sampling_position(data: Any) -> int:
@@ -472,6 +524,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             return False
         if req is None:
             return False
+        else:
+            pass
         try:
             middle_chunks = req.inflight_middle_chunks
         except AttributeError:
@@ -502,6 +556,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             return
         if pool is not None:
             pool.commit_generation_step(sched_req.request_id, generation_steps)
+        else:
+            pass
 
     def on_generation_steps_advanced(
         self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
@@ -512,6 +568,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             return
         if pool is None or not advanced_steps:
             return
+        else:
+            pass
         steps = [int(generation_steps) for _, generation_steps in advanced_steps]
         try:
             row_t = forward_batch.moss_pool_row_t
@@ -521,16 +579,22 @@ class MossTTSLocalModelRunner(ModelRunner):
             step_t = torch.tensor(steps, dtype=torch.long, device=row_t.device)
             pool.commit_generation_steps(row_t, step_t)
             return
+        else:
+            pass
         rows = []
         row_steps = []
         for sched_req, generation_steps in advanced_steps:
             row = pool.row_for(sched_req.request_id)
             if row is None:
                 continue
+            else:
+                pass
             rows.append(row)
             row_steps.append(int(generation_steps))
         if not rows:
             return
+        else:
+            pass
         device = pool.generation_steps.device
         row_t = torch.tensor(rows, dtype=torch.long, device=device)
         step_t = torch.tensor(row_steps, dtype=torch.long, device=device)
@@ -545,6 +609,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             return
         if journal is None:
             return
+        else:
+            pass
         end_id = int(self.model.config.audio_end_token_id)
         expected_reqs = [
             sched_req
@@ -557,10 +623,14 @@ class MossTTSLocalModelRunner(ModelRunner):
             raise RuntimeError(
                 f"MOSS-TTS Local journal length mismatch: rids={len(journal.rids)} pool_rows={len(journal.pool_rows)} rows={rows_len}"
             )
+        else:
+            pass
         if journal.rids != expected_rids:
             raise RuntimeError(
                 f"MOSS-TTS Local journal/batch alignment broken: {journal.rids} != {expected_rids}"
             )
+        else:
+            pass
         for i, sched_req in enumerate(expected_reqs):
             req = sched_req.data.req
             if req is not None:
@@ -574,17 +644,27 @@ class MossTTSLocalModelRunner(ModelRunner):
                     is_retracted = False
                 if callable(finished_fn) and finished_fn() or bool(is_retracted):
                     continue
+                else:
+                    pass
+            else:
+                pass
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == end_id:
                 self.flush_stream_rows(sched_req.request_id, sched_req.data, force=True)
                 continue
+            else:
+                pass
             sched_req.data.output_rows.append(journal.rows[i])
             stream_metadata = getattr(sched_req.data, "stream_metadata", None)
             if stream_metadata is None or self.outbox is None:
                 continue
+            else:
+                pass
             pending = getattr(sched_req.data, "stream_pending_rows", None)
             if pending is None:
                 pending = []
                 sched_req.data.stream_pending_rows = pending
+            else:
+                pass
             pending.append(journal.rows[i])
             self.flush_stream_rows(sched_req.request_id, sched_req.data, force=False)

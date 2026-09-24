@@ -78,6 +78,8 @@ def compute_mel_spectrogram(
         # Use whisper's built-in mel computation for exact compatibility
         if waveform.dtype != np.float32:
             waveform = waveform.astype(np.float32)
+        else:
+            pass
         audio_tensor = torch.from_numpy(waveform)
         mel = whisper.log_mel_spectrogram(audio_tensor, n_mels=n_mels)
         # mel shape: [n_mels, num_frames] -> transpose to [num_frames, n_mels]
@@ -152,6 +154,8 @@ def inject_top_level_images(
     for idx, msg in enumerate(messages):
         if msg.get("role") != "user":
             continue
+        else:
+            pass
         content = msg.get("content", "")
         new_content: list[dict[str, Any]] = [
             {"type": "image_url", "image_url": {"url": url}} for url in images
@@ -160,6 +164,8 @@ def inject_top_level_images(
             new_content.append({"type": "text", "text": content})
         elif isinstance(content, list):
             new_content.extend(content)
+        else:
+            pass
         messages[idx] = {**msg, "content": new_content}
         break
     return messages
@@ -184,12 +190,16 @@ def inject_top_level_audios(
     for idx, msg in enumerate(messages):
         if msg.get("role") != "user":
             continue
+        else:
+            pass
         content = msg.get("content", "")
         new_content: list[dict[str, Any]] = []
         if isinstance(content, str):
             new_content.append({"type": "text", "text": content})
         elif isinstance(content, list):
             new_content.extend(content)
+        else:
+            pass
         new_content.extend(audio_items)
         messages[idx] = {**msg, "content": new_content}
         break
@@ -212,12 +222,16 @@ def inject_top_level_videos(
     for idx, msg in enumerate(messages):
         if msg.get("role") != "user":
             continue
+        else:
+            pass
         content = msg.get("content", "")
         new_content: list[dict[str, Any]] = []
         if isinstance(content, str):
             new_content.append({"type": "text", "text": content})
         elif isinstance(content, list):
             new_content.extend(content)
+        else:
+            pass
         new_content.extend(video_items)
         messages[idx] = {**msg, "content": new_content}
         break
@@ -249,9 +263,13 @@ class MingPreprocessor:
         self.image_patch_id = getattr(llm_config, "image_patch_token", None)
         if self.image_patch_id is None:
             self.image_patch_id = self.tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
+        else:
+            pass
         self.video_patch_id = getattr(llm_config, "video_patch_token", None)
         if self.video_patch_id is None:
             self.video_patch_id = self.tokenizer.convert_tokens_to_ids(VIDEO_PATCH)
+        else:
+            pass
 
         # Lazy-init vision processors
         self.image_processor = None
@@ -270,6 +288,8 @@ class MingPreprocessor:
                 temporal_patch_size=vc.temporal_patch_size,
                 merge_size=vc.spatial_merge_size,
             )
+        else:
+            pass
         return self.image_processor
 
     def get_video_processor(self):
@@ -285,6 +305,8 @@ class MingPreprocessor:
                 temporal_patch_size=vc.temporal_patch_size,
                 merge_size=vc.spatial_merge_size,
             )
+        else:
+            pass
         return self.video_processor
 
     def process_images(
@@ -335,6 +357,8 @@ class MingPreprocessor:
             # (T, C, H, W) -> (T, H, W, C)
             if arr.ndim == 4 and arr.shape[1] in (1, 3):
                 arr = np.transpose(arr, (0, 2, 3, 1))
+            else:
+                pass
             np_videos.append(arr)
         result = processor.preprocess(np_videos, return_tensors="pt")
         pixel_values_videos = result["pixel_values_videos"]
@@ -376,10 +400,16 @@ class MingPreprocessor:
         # placeholder insertion and image extraction use a single code path.
         if top_level_images:
             messages = inject_top_level_images(messages, top_level_images)
+        else:
+            pass
         if audio_urls:
             messages = inject_top_level_audios(messages, audio_urls)
+        else:
+            pass
         if top_level_videos:
             messages = inject_top_level_videos(messages, top_level_videos)
+        else:
+            pass
 
         # --- Extract image / video URLs/data from messages ---
         raw_images: list[Any] = []
@@ -399,10 +429,14 @@ class MingPreprocessor:
                             )
                             if url:
                                 raw_images.append(url)
+                            else:
+                                pass
                         elif item_type == "image":
                             img = item.get("image", "")
                             if img:
                                 raw_images.append(img)
+                            else:
+                                pass
                         elif item_type == "video_url":
                             url_data = item.get("video_url", {})
                             url = (
@@ -412,10 +446,20 @@ class MingPreprocessor:
                             )
                             if url:
                                 raw_videos.append(url)
+                            else:
+                                pass
                         elif item_type == "video":
                             vid = item.get("video", "")
                             if vid:
                                 raw_videos.append(vid)
+                            else:
+                                pass
+                        else:
+                            pass
+                    else:
+                        pass
+            else:
+                pass
 
         # Compute cache keys BEFORE async loading; same content -> same key so
         # SGLang's radix prefix cache can correctly reuse KVs across requests, and
@@ -479,8 +523,12 @@ class MingPreprocessor:
         all_tasks: list[Any] = []
         if image_coro is not None:
             all_tasks.append(image_coro)
+        else:
+            pass
         if video_coro is not None:
             all_tasks.append(video_coro)
+        else:
+            pass
         all_tasks.extend(audio_coros)
 
         if all_tasks:
@@ -499,6 +547,10 @@ class MingPreprocessor:
                 images = img_result
             elif isinstance(img_result, BaseException):
                 logger.error("Failed to load images: %s", img_result)
+            else:
+                pass
+        else:
+            pass
         if video_coro is not None:
             vid_result = results[idx]
             idx += 1
@@ -507,6 +559,8 @@ class MingPreprocessor:
             else:
                 # ensure_video_list_async returns (videos, sample_fps, audio)
                 videos = vid_result[0] if isinstance(vid_result, tuple) else vid_result
+        else:
+            pass
         audio_results = results[idx:]
 
         waveforms: list[np.ndarray] = [
@@ -522,6 +576,8 @@ class MingPreprocessor:
             pixel_values, image_grid_thw, image_token_counts = await asyncio.to_thread(
                 self.process_images, images
             )
+        else:
+            pass
 
         # --- Process videos ---
         video_token_counts: list[int] = []
@@ -534,6 +590,8 @@ class MingPreprocessor:
                 video_grid_thw,
                 video_token_counts,
             ) = await asyncio.to_thread(self.process_videos, videos)
+        else:
+            pass
 
         # --- Compute mel features FIRST so we know exact placeholder counts ---
         mel_features_list: list[torch.Tensor] = []
@@ -561,6 +619,8 @@ class MingPreprocessor:
                 mel_features_list.append(mel_tensor)
                 mel_lengths_list.append(mel_len)
                 audio_token_counts.append(audio_token_count)
+        else:
+            pass
 
         # Build prompt with placeholder counts and token IDs
         prompt_text, input_ids, audio_positions = self.build_prompt(
@@ -591,6 +651,8 @@ class MingPreprocessor:
             for i, num_tokens in enumerate(audio_token_counts):
                 if i < len(audio_positions):
                     placeholder_loc_lens_list.append([audio_positions[i], num_tokens])
+                else:
+                    pass
 
             concat_mel = torch.cat(mel_features_list, dim=0).unsqueeze(0)
             mel_lens = torch.tensor([mel_lengths_list], dtype=torch.long)
@@ -605,6 +667,10 @@ class MingPreprocessor:
             }
             if audio_cache_key:
                 encoder_inputs[AUDIO_STAGE]["cache_key"] = audio_cache_key
+            else:
+                pass
+        else:
+            pass
 
         has_image = pixel_values is not None and image_grid_thw is not None
         has_video = pixel_values_videos is not None and video_grid_thw is not None
@@ -613,17 +679,29 @@ class MingPreprocessor:
             if has_image:
                 stage_inputs["pixel_values"] = pixel_values
                 stage_inputs["image_grid_thw"] = image_grid_thw
+            else:
+                pass
             if has_video:
                 stage_inputs["pixel_values_videos"] = pixel_values_videos
                 stage_inputs["video_grid_thw"] = video_grid_thw
+            else:
+                pass
             keys = []
             if image_cache_key:
                 keys.append(f"img:{image_cache_key}")
+            else:
+                pass
             if video_cache_key:
                 keys.append(f"vid:{video_cache_key}")
+            else:
+                pass
             if keys:
                 stage_inputs["cache_key"] = "|".join(keys)
+            else:
+                pass
             encoder_inputs[IMAGE_STAGE] = stage_inputs
+        else:
+            pass
 
         state = MingOmniPipelineState(
             raw_inputs=raw_inputs,
@@ -673,6 +751,8 @@ class MingPreprocessor:
         def flush_text() -> None:
             if not text_buffer:
                 return
+            else:
+                pass
             input_ids.extend(
                 self.tokenizer.encode("".join(text_buffer), add_special_tokens=False)
             )
@@ -682,6 +762,8 @@ class MingPreprocessor:
             value = str(text)
             if not value:
                 return
+            else:
+                pass
             parts.append(value)
             text_buffer.append(value)
 
@@ -724,6 +806,8 @@ class MingPreprocessor:
 
             if role == "system":
                 continue
+            else:
+                pass
 
             role_tag = ROLE_HUMAN if role == "user" else ROLE_ASSISTANT
 
@@ -774,8 +858,12 @@ class MingPreprocessor:
                                 n_tokens,
                             )
                             video_idx += 1
+                        else:
+                            pass
                     elif isinstance(item, str):
                         append_text(item)
+                    else:
+                        pass
                 append_text(role_end)
             else:
                 append_text(f"{role_tag}{content}{role_end}")

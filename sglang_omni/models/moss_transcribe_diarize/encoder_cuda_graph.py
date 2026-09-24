@@ -63,6 +63,8 @@ class WhisperEncoderCudaGraphRunner:
 
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
+        else:
+            pass
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):
             static_out = self.encoder(static_feat, static_pos, forward_batch)
@@ -86,6 +88,8 @@ class WhisperEncoderCudaGraphRunner:
             ):
                 if c in self.graphs:
                     continue
+                else:
+                    pass
                 enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
@@ -96,6 +100,8 @@ class WhisperEncoderCudaGraphRunner:
                         c,
                     )
                     continue
+                else:
+                    pass
                 try:
                     self.capture_bucket(c, encoder_len, forward_batch)
                 except Exception as exc:
@@ -116,9 +122,13 @@ class WhisperEncoderCudaGraphRunner:
         chunk_bucket = min((c for c in self.graphs if c >= n), default=None)
         if chunk_bucket is None or input_features.shape[-1] != self.input_feature_len:
             return self.encoder(input_features, encoder_position_ids, forward_batch)
+        else:
+            pass
         graph, static_feat, _static_pos, static_out = self.graphs[chunk_bucket]
         static_feat[:n].copy_(input_features)
         if n < chunk_bucket:
             static_feat[n:].zero_()
+        else:
+            pass
         graph.replay()
         return static_out[:n].clone()

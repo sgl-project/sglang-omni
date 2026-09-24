@@ -30,6 +30,8 @@ def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
             module.padding_right = module.padding_total // 2
             module.padding_left = module.padding_total - module.padding_right
             count += 1
+        else:
+            pass
     return count
 
 
@@ -135,6 +137,8 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         if bucket is None:
             self.misses += 1
             return None
+        else:
+            pass
         captured = self.graphs[bucket]
         captured.static_input[0, 0, :samples].copy_(waveform)
         captured.static_input[0, 0, samples:].zero_()

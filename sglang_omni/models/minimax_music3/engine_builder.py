@@ -35,6 +35,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = int(max_running_requests)
         if self.max_running_requests <= 0:
             raise ValueError("MiniMax Music 3 max_running_requests must be positive")
+        else:
+            pass
         self.model_runner: Any | None = None
         self.checkpoint_root: str | None = None
 
@@ -65,11 +67,15 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("MiniMax Music 3 does not support TP")
+        else:
+            pass
         requested = int(
             overrides.get("max_running_requests", self.max_running_requests)
         )
         if requested <= 0:
             raise ValueError("MiniMax Music 3 max_running_requests must be positive")
+        else:
+            pass
         self.max_running_requests = requested
         rows = 2 * requested
         overrides["max_running_requests"] = rows
@@ -79,6 +85,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         overrides["chunked_prefill_size"] = 0
         if not bool(overrides.get("disable_cuda_graph", False)):
             overrides["enable_return_hidden_states"] = True
+        else:
+            pass
 
     def setup_model(
         self,
@@ -109,6 +117,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
                     int(get_decode_cuda_graph_max_bs(server_args) or 0),
                 ),
             )
+        else:
+            pass
         model.eval()
 
     def setup_model_resources(
@@ -178,9 +188,13 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         config = json.loads(config_path.read_text())
         if config.get("model_type") == "qwen3":
             return
+        else:
+            pass
         backup_path = config_path.with_suffix(".json.bak")
         if not backup_path.exists():
             backup_path.write_text(config_path.read_text())
+        else:
+            pass
         config["model_type"] = "qwen3"
         config_path.unlink()
         config_path.write_text(json.dumps(config, indent=2))
@@ -196,6 +210,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             Qwen3ForCausalLM.load_weights, "_minimax_filtered", False
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return
+        else:
+            pass
         load_weights = Qwen3ForCausalLM.load_weights
 
         def filtered_load_weights(self, weights):

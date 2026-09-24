@@ -13,6 +13,8 @@ from sglang_omni.models.ming_omni.pipeline.sampling import build_ming_sampling_p
 
 if TYPE_CHECKING:
     from sglang_omni.engines.omni.runtime.sglang_ar import SGLangARRequestData
+else:
+    pass
 
 
 def build_encoder_request(
@@ -21,12 +23,16 @@ def build_encoder_request(
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(input_dict={"_skip": True, "_result": {}})
+    else:
+        pass
     if inputs.get("_skip"):
         skip_result = inputs.get("_result")
         return EncoderRequestData(
             input_dict=inputs,
             output_dict=skip_result if isinstance(skip_result, dict) else {},
         )
+    else:
+        pass
     cache_key = inputs.get("cache_key")
     return EncoderRequestData(
         input_dict=inputs,
@@ -62,10 +68,14 @@ def build_thinker_request(
     prompt = state.prompt
     if not isinstance(prompt, dict):
         raise TypeError("prompt missing for thinker request")
+    else:
+        pass
 
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
+    else:
+        pass
 
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
@@ -75,6 +85,8 @@ def build_thinker_request(
         model_inputs = {
             k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
         }
+    else:
+        pass
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     model_inputs.pop("attention_mask", None)
@@ -110,10 +122,14 @@ def build_sglang_thinker_request(
     prompt = state.prompt
     if not isinstance(prompt, dict):
         raise TypeError("prompt missing for thinker request")
+    else:
+        pass
 
     input_ids = prompt.get("input_ids")
     if not isinstance(input_ids, torch.Tensor):
         raise TypeError("prompt.input_ids must be a torch.Tensor")
+    else:
+        pass
 
     input_ids_list = input_ids.to(dtype=torch.long).flatten().tolist()
 
@@ -125,6 +141,8 @@ def build_sglang_thinker_request(
         model_inputs = {
             k: v for k, v in thinker_inputs.items() if k != "capture_model_output_keys"
         }
+    else:
+        pass
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     model_inputs.pop("attention_mask", None)
 

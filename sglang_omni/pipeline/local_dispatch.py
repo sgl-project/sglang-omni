@@ -31,6 +31,8 @@ class LocalStageDispatcher:
                 f"Local stage target {to_stage!r} is not registered "
                 f"for traffic from {from_stage!r}"
             )
+        else:
+            pass
         return target
 
     async def send_payload(

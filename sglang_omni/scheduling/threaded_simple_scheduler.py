@@ -32,6 +32,8 @@ class CountingInbox(_queue_mod.Queue):
         super()._put(item)
         if item.type != "new_request":
             return
+        else:
+            pass
         request_id = item.request_id
         self.request_counts[request_id] = self.request_counts.get(request_id, 0) + 1
 
@@ -39,6 +41,8 @@ class CountingInbox(_queue_mod.Queue):
         item = super()._get()
         if item.type != "new_request":
             return item
+        else:
+            pass
         request_id = item.request_id
         remaining = self.request_counts.get(request_id, 0) - 1
         if remaining > 0:
@@ -101,17 +105,23 @@ class ThreadedSimpleScheduler:
                 self.wait_for_capacity()
                 if not self.running:
                     break
+                else:
+                    pass
                 try:
                     msg = self.inbox.get(timeout=0.1)
                 except _queue_mod.Empty:
                     continue
                 if msg.type != "new_request":
                     continue
+                else:
+                    pass
                 request_id = msg.request_id
                 with self.lock:
                     try:
                         if self.consume_reachable_tombstone(request_id):
                             continue
+                        else:
+                            pass
                         future = self.executor.submit(self.run_one, msg.data)
                         self.pending[request_id] = future
                     finally:
@@ -130,10 +140,14 @@ class ThreadedSimpleScheduler:
         if msg.type != "new_request":
             self.inbox.put(msg)
             return
+        else:
+            pass
         with self.lock:
             if msg.request_id in self.speculative_aborts:
                 self.speculative_aborts.pop(msg.request_id, None)
                 self.queued_aborts.add(msg.request_id)
+            else:
+                pass
             self.inbox.put(msg)
 
     def abort(self, request_id: str) -> None:
@@ -148,11 +162,15 @@ class ThreadedSimpleScheduler:
                 self.record_speculative_abort(request_id)
         if future is not None:
             future.cancel()
+        else:
+            pass
         self.run_abort_callback(request_id)
 
     def run_abort_callback(self, request_id: str) -> None:
         if self.abort_callback is None:
             return
+        else:
+            pass
         try:
             self.abort_callback(request_id)
         except Exception:
@@ -165,17 +183,25 @@ class ThreadedSimpleScheduler:
             self.queued_aborts.discard(request_id)
             self.speculative_aborts.pop(request_id, None)
             return True
+        else:
+            pass
         if request_id in self.speculative_aborts:
             self.speculative_aborts.pop(request_id, None)
             return True
+        else:
+            pass
         return False
 
     def record_speculative_abort(self, request_id: str) -> None:
         if request_id in self.speculative_aborts:
             return
+        else:
+            pass
         if len(self.speculative_aborts) >= _ABORTED_REQUEST_ID_LIMIT:
             while len(self.speculative_aborts) >= _ABORTED_REQUEST_ID_RETAINED:
                 self.speculative_aborts.pop(next(iter(self.speculative_aborts)), None)
+        else:
+            pass
         self.speculative_aborts[request_id] = None
 
     def has_tombstone(self, request_id: str) -> bool:
@@ -186,27 +212,37 @@ class ThreadedSimpleScheduler:
             with self.lock:
                 if len(self.pending) < self.max_concurrency:
                     return
+                else:
+                    pass
             time.sleep(0.001)
 
     def run_one(self, payload: Any) -> Any:
         result = self.fn(payload)
         if inspect.isawaitable(result):
             result = asyncio.run(result)
+        else:
+            pass
         return result
 
     def finish(self, request_id: str, future: Future) -> None:
         with self.lock:
             if self.pending.get(request_id) is future:
                 self.pending.pop(request_id, None)
+            else:
+                pass
             aborted = future in self.aborted_futures
             if aborted:
                 self.aborted_futures.discard(future)
+            else:
+                pass
         if aborted or future.cancelled():
             # Note: (Jiaxin Deng) a compute that finished after the abort may
             # have registered side effects the abort-time callback ran too
             # early to see.
             self.run_abort_callback(request_id)
             return
+        else:
+            pass
 
         try:
             result = future.result()

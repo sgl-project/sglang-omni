@@ -64,6 +64,8 @@ def resolve_dtype(*, field: str, name: str) -> torch.dtype:
         raise ValueError(
             f"AuK {field} must be one of {', '.join(_TORCH_DTYPES)}, got {name!r}"
         )
+    else:
+        pass
     return _TORCH_DTYPES[name]
 
 
@@ -115,6 +117,8 @@ def load_flow(
     flow.transformer.to(dtype=backbone_dtype)
     if compile_blocks:
         flow.transformer.enable_compiled_blocks()
+    else:
+        pass
     return flow
 
 
@@ -182,6 +186,8 @@ def warmup_flow(
                     step_graph=step_graph,
                 )
             )
+        else:
+            pass
     logger.info(f"AuK DiT: warmed the sampler in {time.perf_counter() - started:.1f}s")
 
 
@@ -223,6 +229,8 @@ def create_preprocessing_executor(
 def reference_latent(vae, device, audio, seed=None):
     if audio is None:
         return None, 0
+    else:
+        pass
     waveform = torch.from_numpy(
         np.asarray(audio, dtype=np.float32).reshape(1, 1, -1)
     ).to(device)
@@ -308,6 +316,8 @@ def sample_batch(payloads, flow, device, dtype, max_frames, sampling):
     for state, latent in zip(states, latents):
         if not torch.isfinite(latent).all():
             raise RuntimeError("AuK generated latent contains NaN/Inf")
+        else:
+            pass
         state.latent = latent
         state.conditioning = state.text_mask = state.ref_latent = None
         state.completion_tokens = latent.shape[0]
@@ -362,6 +372,8 @@ def create_auk_engine_executor(
         from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
         flow.transformer.enable_fused_qk_norm_rope(fused_qk_norm_rope)
+    else:
+        pass
     step_graph = None
     if enable_dit_cuda_graph:
         if not flow.transformer.attn_mask_enabled:
@@ -369,11 +381,19 @@ def create_auk_engine_executor(
                 "AuK enable_dit_cuda_graph needs attn_mask_enabled: without the "
                 "attention bias, padded rows would reach the valid ones"
             )
+        else:
+            pass
         step_graph = build_step_graph_runner(device, dit_cuda_graph_capture_shapes)
+    else:
+        pass
     if enable_dit_torch_compile or step_graph is not None:
         warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
+    else:
+        pass
     if step_graph is not None:
         sampling["step_graph"] = step_graph
+    else:
+        pass
     return scheduler(
         lambda payloads: sample_batch(
             payloads,
@@ -403,6 +423,8 @@ def decode_batch(payloads, vae, device):
         )
         if not torch.isfinite(waveforms).all():
             raise RuntimeError("AuK generated audio contains NaN/Inf")
+        else:
+            pass
         for index, wav in zip(indices, waveforms.float().cpu()):
             state = states[index]
             state.latent = None

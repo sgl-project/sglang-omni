@@ -33,6 +33,8 @@ class MossTtsEngineBuilder(TtsEngineBuilder):
         # only when a budget is declared, so the single-process path is untouched.
         if self.total_gpu_memory_fraction is None:
             return {}
+        else:
+            pass
         return {"total_gpu_memory_fraction": self.total_gpu_memory_fraction}
 
     def resolve_context_length(

@@ -37,6 +37,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def __init__(self, model: Any, *, max_batch_size: int = 2) -> None:
         if max_batch_size < 1:
             raise ValueError("max_batch_size must be >= 1")
+        else:
+            pass
         self.model = model
         self.max_batch_size = int(max_batch_size)
         self.device = next(model.whisper_encoder.parameters()).device
@@ -60,12 +62,16 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             future = self.submit(item)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
+        else:
+            pass
         expected_tokens = int(feature_lengths.sum())
         key = self.cache_key(item)
         cached = self._lookup_cached_embedding(key, expected_tokens)
         if cached is not None:
             self.attach_embedding(item, cached)
             return
+        else:
+            pass
         future = self.submit(item)
         future.result(timeout=self.ENCODE_TIMEOUT_S)
 
@@ -85,8 +91,12 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         cached = self.cache.get(key)
         if cached is None:
             return None
+        else:
+            pass
         if self.is_valid(cached, expected_tokens):
             return cached
+        else:
+            pass
         logger.warning(
             "MOSS-TD pre-LM cache entry %s failed validation "
             "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
@@ -101,6 +111,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         fingerprint = getattr(item, "audio_fingerprint", None)
         if fingerprint is None:
             fingerprint = getattr(item, "hash", None)
+        else:
+            pass
         return None if fingerprint is None else str(fingerprint)
 
     def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
@@ -142,6 +154,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 f"encoder output rows {embedding.shape[0]} != expected "
                 f"{sum(token_counts)}"
             )
+        else:
+            pass
         return [
             part.contiguous() for part in torch.split(embedding, token_counts, dim=0)
         ]
@@ -215,6 +229,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         if batch_exc is None:
             self.record_success(len(batch))
             return
+        else:
+            pass
         for _ in range(retry_recovered or 0):
             self.record_success(1)
 
@@ -240,6 +256,8 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
+        else:
+            pass
         try:
             self.stream.synchronize()
         except Exception:
@@ -262,3 +280,5 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 f"{self.item_count / self.batch_count:.2f} items/batch, "
                 f"last batch: {item_count})"
             )
+        else:
+            pass

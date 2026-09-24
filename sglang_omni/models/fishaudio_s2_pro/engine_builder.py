@@ -27,6 +27,8 @@ def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
     if current_platform.is_npu():
         # Ascend NPU uses the built-in "ascend" attention backend.
         return "ascend"
+    else:
+        pass
 
     sm_version = get_visible_gpu_sm_version(gpu_id)
     if sm_version is None:
@@ -34,6 +36,8 @@ def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
             "FishAudio S2-Pro cannot validate Fast-AR attention because "
             f"CUDA compute capability for gpu_id={gpu_id} could not be detected."
         )
+    else:
+        pass
 
     backend = _VALIDATED_AUTO_ATTENTION_BACKENDS.get(sm_version)
     if backend is None:
@@ -42,6 +46,8 @@ def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
             "supported architectures are SM89, SM90, SM100, and SM120. "
             "A Slow-AR attention_backend override cannot bypass this requirement."
         )
+    else:
+        pass
 
     if backend == "flashinfer" and not is_flashinfer_available():
         raise RuntimeError(
@@ -50,6 +56,8 @@ def resolve_fast_ar_attention_backend(*, gpu_id: int) -> str:
             "SGLANG_IS_FLASHINFER_AVAILABLE is not false; a Slow-AR "
             "attention_backend override cannot bypass this requirement."
         )
+    else:
+        pass
     return backend
 
 
@@ -94,6 +102,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
                 "enable_torch_compile": False,
                 "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
             }
+        else:
+            pass
 
         sm_version = get_visible_gpu_sm_version(self.gpu_id)
         return {
@@ -112,10 +122,14 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         fast_ar_backend = resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend
+        else:
+            pass
         if current_platform.is_npu():
             # Bound decode graph buckets to avoid OOM on 64 GB cards.
             overrides["cuda_graph_bs"] = [1, 2, 4, 8, 16]
             overrides["cuda_graph_max_bs"] = 16
+        else:
+            pass
 
     def customize_server_args(self, server_args: Any) -> None:
         updates: dict[str, Any] = {"disable_overlap_schedule": True}
@@ -178,6 +192,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
                 "sglang_omni.fishaudio_s2_pro.compile_complete",
                 enable_torch_compile=False,
             )
+        else:
+            pass
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

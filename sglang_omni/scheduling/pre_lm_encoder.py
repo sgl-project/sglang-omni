@@ -34,6 +34,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def __init__(self, *, worker_name: str, max_queue_size: int = 0) -> None:
         if max_queue_size < 0:
             raise ValueError(f"max_queue_size must be >= 0, got {max_queue_size}")
+        else:
+            pass
         self.queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
         self.worker_state_lock = threading.Lock()
         self.worker_error: Exception | None = None
@@ -60,6 +62,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                         raise RuntimeError(
                             "pre-LM encoder worker has failed"
                         ) from self.worker_error
+                    else:
+                        pass
 
     def submit(
         self,
@@ -68,16 +72,22 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     ) -> concurrent.futures.Future[Any]:
         if future is None:
             future = concurrent.futures.Future()
+        else:
+            pass
         with self.worker_state_lock:
             if self.worker_error is not None:
                 raise RuntimeError(
                     "pre-LM encoder worker has failed"
                 ) from self.worker_error
+            else:
+                pass
         self.enqueue(item, future)
         with self.worker_state_lock:
             worker_error = self.worker_error
         if worker_error is not None and not future.done():
             future.set_exception(worker_error)
+        else:
+            pass
         return future
 
     @abstractmethod
@@ -144,6 +154,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     f"split_embeddings returned {len(embeddings)} embeddings "
                     f"for {len(items)} items"
                 )
+            else:
+                pass
             host_copies = [
                 self.stage_host_copy(item, embedding)
                 for item, embedding in zip(items, embeddings)
@@ -151,10 +163,14 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
             if attach_before_synchronize:
                 for item, embedding in zip(items, embeddings):
                     self.attach_embedding(item, embedding)
+            else:
+                pass
         self.synchronize_batch()
         if not attach_before_synchronize:
             for item, embedding in zip(items, embeddings):
                 self.attach_embedding(item, embedding)
+        else:
+            pass
         for item, embedding, host_copy in zip(items, embeddings, host_copies):
             self.cache_embedding(item, embedding, host_copy)
         return embeddings
@@ -199,6 +215,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def set_exception(entry: QueueEntry[ItemT], exc: Exception) -> None:
         if entry.future.done():
             return
+        else:
+            pass
         try:
             entry.future.set_exception(exc)
         except concurrent.futures.InvalidStateError:
@@ -207,6 +225,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def set_result(self, entry: QueueEntry[ItemT], embedding: EmbeddingT) -> None:
         if entry.future.done():
             return
+        else:
+            pass
         try:
             result = self.future_result(embedding)
             entry.future.set_result(result)
@@ -253,6 +273,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     break
                 if isinstance(queued, QueueEntry):
                     pending.append(queued)
+                else:
+                    pass
         for entry in pending:
             self.set_exception(entry, exc)
 
@@ -263,6 +285,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 batch, shutdown = self.next_batch()
                 if not batch:
                     return
+                else:
+                    pass
                 self.notify_batch_start(batch)
                 items = [entry.item for entry in batch]
                 encode_start = time.perf_counter()
@@ -281,8 +305,12 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                         )
                         if shutdown:
                             return
+                        else:
+                            pass
                         batch = []
                         continue
+                    else:
+                        pass
                     recovered = 0
                     for entry in batch:
                         try:
@@ -300,6 +328,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                     )
                     if shutdown:
                         return
+                    else:
+                        pass
                     batch = []
                     continue
                 for entry, embedding in zip(batch, embeddings):
@@ -312,6 +342,8 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 )
                 if shutdown:
                     return
+                else:
+                    pass
                 batch = []
         except Exception as worker_exc:
             logger.exception("pre-LM encoder worker failed")

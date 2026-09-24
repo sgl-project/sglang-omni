@@ -32,6 +32,8 @@ class MossTTSLocalAttention(nn.Module):
             raise ValueError(
                 f"hidden_size={hidden_size} not divisible by num_heads={num_heads}"
             )
+        else:
+            pass
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.c_attn = nn.Linear(hidden_size, 3 * hidden_size)
@@ -118,11 +120,15 @@ class MossTTSLocalTransformer(nn.Module):
             and self.kv_cache[0][0].dtype == dtype
         ):
             return
+        else:
+            pass
         if self.kv_frozen:
             raise RuntimeError(
                 "local-transformer KV cache is frozen after CUDA graph capture "
                 f"(capacity {self.kv_capacity}, requested {batch_size})"
             )
+        else:
+            pass
         capacity = max(batch_size, self.kv_capacity, 1)
         shape = (capacity, self.num_heads, self.max_positions, self.head_dim)
         self.kv_cache = [
@@ -140,6 +146,8 @@ class MossTTSLocalTransformer(nn.Module):
             raise ValueError(
                 f"local position {position} out of range [0, {self.max_positions})"
             )
+        else:
+            pass
         batch_size = hidden_states.shape[0]
         self.ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
         cos = self.rope_cos[position].to(dtype=hidden_states.dtype)

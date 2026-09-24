@@ -27,6 +27,8 @@ class NemotronTalkerScheduler(OmniScheduler):
         ):
             self.rollback_decode_prep_after_skip(batch)
             return None
+        else:
+            pass
         return batch
 
     def rollback_decode_prep_after_skip(self, batch) -> None:
@@ -35,6 +37,8 @@ class NemotronTalkerScheduler(OmniScheduler):
             new_pages = (batch.seq_lens - 1) % allocator.page_size == 0
             allocator.free(batch.out_cache_loc[new_pages])
             batch.out_cache_loc = None
+        else:
+            pass
         for req in batch.reqs:
             req.decode_batch_idx -= 1
             req.kv.kv_committed_len -= 1
@@ -47,6 +51,10 @@ class NemotronTalkerScheduler(OmniScheduler):
     def self_check_during_idle(self) -> None:
         if self.running_batch is not None and not self.running_batch.is_empty():
             return
+        else:
+            pass
         if self.waiting_queue:
             return
+        else:
+            pass
         super().self_check_during_idle()

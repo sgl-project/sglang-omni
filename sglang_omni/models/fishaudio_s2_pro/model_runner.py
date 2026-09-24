@@ -24,6 +24,8 @@ def collect_s2pro_step_outputs(
     batch_size = len(requests)
     if batch_size == 0:
         return
+    else:
+        pass
 
     result.next_token_ids = output_semantic_ids[:batch_size].clone()
     semantic_tokens = output_semantic_ids[:batch_size].tolist()
@@ -32,16 +34,22 @@ def collect_s2pro_step_outputs(
         data = sched_req.data
         if data.req.inflight_middle_chunks > 0:
             continue
+        else:
+            pass
 
         semantic_token = semantic_tokens[row_idx]
         if semantic_token == im_end_token_id:
             continue
+        else:
+            pass
 
         codes = output_codes[row_idx].unsqueeze(-1).clone()
         data.last_codebook_values = codes[1:, 0].clone()
         data.previous_semantic_tokens.append(semantic_token)
         if rep_history_len is not None:
             append_semantic_history(data, output_semantic_ids[row_idx], rep_history_len)
+        else:
+            pass
         data.output_codes.append(codes)
         data.latest_stream_code_chunk = codes
 
@@ -56,6 +64,8 @@ def append_semantic_history(data: Any, token: torch.Tensor, history_len: int) ->
         history = torch.zeros(history_len, dtype=torch.long, device=token.device)
         data.semantic_history_tokens = history
         data.semantic_history_count = 0
+    else:
+        pass
 
     count = int(data.semantic_history_count)
     if count < history_len:
@@ -87,6 +97,8 @@ class FishS2ProModelRunner(ModelRunner):
         input_embeds = self.build_prefill_input_embeds(forward_batch, requests)
         if input_embeds is not None:
             forward_batch.input_embeds = input_embeds
+        else:
+            pass
 
     def before_decode(
         self,
@@ -112,6 +124,8 @@ class FishS2ProModelRunner(ModelRunner):
             last_codes = data.last_codebook_values
             if last_codes is None:
                 continue
+            else:
+                pass
             self.model.vq_codes[row_idx].copy_(
                 last_codes.to(
                     device=self.model.vq_codes.device,
@@ -168,6 +182,8 @@ class FishS2ProModelRunner(ModelRunner):
         input_ids = forward_batch.input_ids
         if not isinstance(input_ids, torch.Tensor):
             raise TypeError("Fish prefill expects tensor input_ids")
+        else:
+            pass
 
         device = input_ids.device
         text_embeds = self.model.get_embed_tokens()(input_ids)
@@ -185,16 +201,22 @@ class FishS2ProModelRunner(ModelRunner):
             ):
                 offset += req_len
                 continue
+            else:
+                pass
 
             vq_mask = data.vq_mask_tokens.to(device=device)
             if vq_mask.dim() == 2:
                 vq_mask = vq_mask.squeeze(0)
+            else:
+                pass
 
             prefix_len = len(req.prefix_indices)
             mask_slice = vq_mask[prefix_len : prefix_len + req_len]
             if not bool(mask_slice.any()):
                 offset += req_len
                 continue
+            else:
+                pass
 
             parts = [
                 part.to(device=device).T for part in data.vq_parts if part.dim() == 2
@@ -203,6 +225,8 @@ class FishS2ProModelRunner(ModelRunner):
             if vq_parts_flat is None:
                 offset += req_len
                 continue
+            else:
+                pass
 
             vq_before = int(vq_mask[:prefix_len].sum().item()) if prefix_len > 0 else 0
             num_vq_in_slice = int(mask_slice.sum().item())

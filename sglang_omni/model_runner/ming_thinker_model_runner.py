@@ -41,11 +41,17 @@ class MingThinkerModelRunner(ModelRunner):
         embed_tokens = getattr(text_model, "embed_tokens", None)
         if embed_tokens is not None:
             return embed_tokens
+        else:
+            pass
         get_input_embeddings = getattr(text_model, "get_input_embeddings", None)
         if callable(get_input_embeddings):
             embed_tokens = get_input_embeddings()
+        else:
+            pass
         if embed_tokens is None:
             raise AttributeError("Ming thinker model does not expose embed_tokens")
+        else:
+            pass
         return embed_tokens
 
     @staticmethod
@@ -53,6 +59,8 @@ class MingThinkerModelRunner(ModelRunner):
         value = getattr(config, name, None)
         if value is None:
             value = fallback
+        else:
+            pass
         return int(value) if value is not None else None
 
     def custom_prefill_forward(
@@ -62,10 +70,14 @@ class MingThinkerModelRunner(ModelRunner):
         del requests
         if not schedule_batch.forward_mode.is_extend():
             return None
+        else:
+            pass
 
         input_embeds = self.inject_multimodal_embeds(forward_batch, schedule_batch)
         if input_embeds is None:
             return None
+        else:
+            pass
         return self.forward_with_omni_embeds(forward_batch, input_embeds)
 
     def inject_multimodal_embeds(
@@ -73,6 +85,8 @@ class MingThinkerModelRunner(ModelRunner):
     ) -> torch.Tensor | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None
+        else:
+            pass
 
         device = forward_batch.input_ids.device
         embed_input_ids = forward_batch.input_ids.clamp(
@@ -91,6 +105,8 @@ class MingThinkerModelRunner(ModelRunner):
             omni_inputs = req.omni_model_inputs
             if omni_inputs is None:
                 continue
+            else:
+                pass
 
             start = offsets[i]
             end = start + extend_lens[i]
@@ -110,6 +126,8 @@ class MingThinkerModelRunner(ModelRunner):
                 embeds = omni_inputs.get(embed_key)
                 if embeds is None:
                     continue
+                else:
+                    pass
 
                 total_rows = self.num_embed_rows(embeds)
                 offset = int(consumed.get(modality, 0))
@@ -119,7 +137,11 @@ class MingThinkerModelRunner(ModelRunner):
                         raise self.missing_match_id_error(
                             modality, req_id, remaining=total_rows - offset
                         )
+                    else:
+                        pass
                     continue
+                else:
+                    pass
 
                 mask = req_input_ids == match_id
                 if not mask.any():
@@ -127,6 +149,8 @@ class MingThinkerModelRunner(ModelRunner):
                     # this modality; aligning with qwen3 thinker_model_runner
                     # which silently continues here.
                     continue
+                else:
+                    pass
 
                 n_tokens = int(mask.sum().item())
                 available = total_rows - offset
@@ -137,6 +161,8 @@ class MingThinkerModelRunner(ModelRunner):
                         needed=n_tokens,
                         available=available,
                     )
+                else:
+                    pass
                 chunk_embeds = embeds[offset : offset + n_tokens].to(
                     device=device, dtype=input_embeds.dtype
                 )
@@ -150,6 +176,8 @@ class MingThinkerModelRunner(ModelRunner):
                 # have absorbed placeholder positions. Mirrors qwen3 path.
                 req.omni_model_inputs = None
                 req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else:
+                pass
 
         return input_embeds
 
@@ -159,6 +187,8 @@ class MingThinkerModelRunner(ModelRunner):
     ) -> int | None:
         if modality in pad_values:
             return int(pad_values[modality])
+        else:
+            pass
         return token_id
 
     @staticmethod
@@ -166,6 +196,8 @@ class MingThinkerModelRunner(ModelRunner):
         shape = getattr(embeds, "shape", None)
         if shape is not None and len(shape) > 0:
             return int(shape[0])
+        else:
+            pass
         return len(embeds)
 
     @staticmethod
@@ -184,6 +216,8 @@ class MingThinkerModelRunner(ModelRunner):
             embeds = omni_inputs.get(embed_key)
             if embeds is None:
                 continue
+            else:
+                pass
             total_rows = self.num_embed_rows(embeds)
             consumed_rows = int(consumed.get(modality, 0))
             if consumed_rows != total_rows:
@@ -192,6 +226,8 @@ class MingThinkerModelRunner(ModelRunner):
                     f"{modality} request_id={req_id}: "
                     f"consumed={consumed_rows}, total={total_rows}"
                 )
+            else:
+                pass
 
     @staticmethod
     def missing_match_id_error(
@@ -234,6 +270,8 @@ class MingThinkerModelRunner(ModelRunner):
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        else:
+            pass
 
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(

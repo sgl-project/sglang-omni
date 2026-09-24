@@ -90,6 +90,8 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
             mask[frames - 2 :] = True
             text = talker.embed_subword(ids, chars, lengths, mask)
             self.warmup_rows = talker.gated_fusion_audio_text(audio, text)
+        else:
+            pass
         return self.warmup_rows
 
     def pad_codes(self) -> torch.Tensor:
@@ -105,6 +107,8 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         talker = self.model.talker
         if self.force_silence and token == self.text_eos_id:
             prev_codes = self.model.codec_silence_tokens.unsqueeze(0)
+        else:
+            pass
         audio_1D = talker.embed_codes(prev_codes)
         ids, chars, lengths = self.char_batch([token])
         text_1D = talker.embed_subword(ids, chars, lengths)

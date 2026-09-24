@@ -64,6 +64,8 @@ class NemotronVoiceChatForCausalLM(nn.Module):
                 input_embeds,
             )
             self.fusion_mask[:batch] = False
+        else:
+            pass
         hidden = self.llm.model.forward(
             input_ids, positions, forward_batch, None, input_embeds
         )
@@ -76,6 +78,8 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         if forward_batch.forward_mode == ForwardMode.EXTEND:
             last = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden = hidden[last]
+        else:
+            pass
         logits = self.function_head.quant_method.apply(self.function_head, hidden)
         batch = logits.shape[0]
         # The function id is only sampled at greedy sampling
@@ -88,10 +92,14 @@ class NemotronVoiceChatForCausalLM(nn.Module):
                 parameter = parameters["function_head.weight"]
                 default_weight_loader(parameter, weight)
                 continue
+            else:
+                pass
             for source, target in BACKBONE_RENAMES_MAP:
                 if name.startswith(source):
                     yield target + name[len(source) :], weight
                     break
+                else:
+                    pass
 
     def load_weights(self, weights):
         parameters = dict(self.named_parameters())

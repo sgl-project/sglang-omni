@@ -99,6 +99,8 @@ class MingStreamingDetokenizeScheduler:
                     self.on_stream_chunk(msg.request_id, msg.data)
                 elif msg.type == "stream_done":
                     self.on_stream_done(msg.request_id)
+                else:
+                    pass
             except Exception as exc:
                 logger.exception(
                     "MingStreamingDetokenizeScheduler failed request %s",
@@ -128,6 +130,10 @@ class MingStreamingDetokenizeScheduler:
             self.state[request_id] = s
             if len(self.state) > _STATE_MAX:
                 self.evict_idle_orphans()
+            else:
+                pass
+        else:
+            pass
         s.last_seen = time.monotonic()
         return s
 
@@ -147,6 +153,8 @@ class MingStreamingDetokenizeScheduler:
                 len(stale),
                 _STATE_MAX,
             )
+        else:
+            pass
 
     def on_stream_chunk(self, request_id: str, item: Any) -> None:
         # item is the StreamItem the runtime wraps around the thinker's
@@ -164,10 +172,14 @@ class MingStreamingDetokenizeScheduler:
         # for the rest of the request.
         if candidate.endswith("�"):
             return
+        else:
+            pass
 
         s.pending_tokens.clear()
         if not candidate:
             return
+        else:
+            pass
 
         self.outbox.put(
             OutgoingMessage(
@@ -193,10 +205,16 @@ class MingStreamingDetokenizeScheduler:
                 with self.state_lock:
                     while len(self.done_seen) > _DONE_SEEN_EVICT_TO:
                         self.done_seen.popitem(last=False)
+            else:
+                pass
             return
+        else:
+            pass
         s.done = True
         if s.payload is not None:
             self.finalize(request_id)
+        else:
+            pass
 
     def on_new_request(self, request_id: str, payload: StagePayload) -> None:
         s = self.ensure_state(request_id)
@@ -204,15 +222,21 @@ class MingStreamingDetokenizeScheduler:
         if request_id in self.done_seen:
             s.done = True
             self.done_seen.pop(request_id, None)
+        else:
+            pass
         is_streaming = bool((payload.request.params or {}).get("stream", False))
         if s.done or not is_streaming:
             self.finalize(request_id)
+        else:
+            pass
 
     def finalize(self, request_id: str) -> None:
         s = self.state.pop(request_id, None)
         self.done_seen.pop(request_id, None)
         if s is None or s.payload is None:
             return
+        else:
+            pass
 
         # Flush any remaining pending tokens (e.g. truncated UTF-8 on max_tokens).
         if s.pending_tokens:
@@ -231,6 +255,10 @@ class MingStreamingDetokenizeScheduler:
                         metadata={"modality": "text"},
                     )
                 )
+            else:
+                pass
+        else:
+            pass
 
         is_streaming = bool((s.payload.request.params or {}).get("stream", False))
         result = self.build_result(s.payload, is_streaming=is_streaming)
@@ -255,6 +283,8 @@ class MingStreamingDetokenizeScheduler:
                 "is_final": True,
                 "extra_model_outputs": {},
             }
+        else:
+            pass
 
         step = int(thinker_out.get("step") or len(thinker_out.get("output_ids", [])))
         events = list(
@@ -279,6 +309,8 @@ class MingStreamingDetokenizeScheduler:
         if final_event is not None:
             result.update(final_event.payload)
             result.setdefault("modality", final_event.modality)
+        else:
+            pass
 
         # Streaming clients already received the full output as per-token
         # deltas; strip text from the terminal result to prevent
@@ -294,6 +326,10 @@ class MingStreamingDetokenizeScheduler:
                     output_ids, skip_special_tokens=True
                 )
                 result.setdefault("modality", "text")
+            else:
+                pass
+        else:
+            pass
 
         attach_decode_final_metadata(result, state, thinker_out)
 
@@ -318,13 +354,21 @@ def text_output_requested(request: OmniRequest) -> bool:
     metadata = request.metadata
     if not isinstance(metadata, dict):
         return True
+    else:
+        pass
     modalities = metadata.get("output_modalities")
     if modalities is None:
         return True
+    else:
+        pass
     if isinstance(modalities, str):
         return modalities.lower() == "text"
+    else:
+        pass
     if isinstance(modalities, (list, tuple, set)):
         return any(str(m).lower() == "text" for m in modalities)
+    else:
+        pass
     return True
 
 
@@ -336,6 +380,8 @@ def attach_decode_final_metadata(
     finish_reason = thinker_out.get("finish_reason")
     if finish_reason is not None:
         result.setdefault("finish_reason", finish_reason)
+    else:
+        pass
     result.setdefault("usage", build_text_usage(state, thinker_out))
 
 

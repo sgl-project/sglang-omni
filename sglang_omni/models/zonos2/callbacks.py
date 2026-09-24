@@ -34,9 +34,13 @@ def write_zonos2_buffers(
     n_real = len(requests)
     if n_real == 0:
         return
+    else:
+        pass
     bs = int(forward_batch.batch_size)
     if bs < n_real:
         raise ValueError(f"forward_batch.batch_size ({bs}) < len(requests) ({n_real})")
+    else:
+        pass
     buf = runner.model.decode_input_embedding.weight
     # note (Yue Yin): gather each request's last feedback from its on-device
     # pool row into the positional decode buffer (buf[i] = request i), instead
@@ -65,12 +69,16 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
     del result, outputs
     if runner.outbox is None:
         return
+    else:
+        pass
     chunk = runner.stream_emit_chunk_frames
     for sched_req in scheduler_output.requests:
         data = sched_req.data
         stream_metadata = getattr(data, "stream_metadata", None)
         if stream_metadata is None:
             continue
+        else:
+            pass
         done = False
         req = getattr(data, "req", None)
         if req is not None:
@@ -78,6 +86,8 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
             done = (callable(finished) and finished()) or bool(
                 getattr(req, "is_retracted", False)
             )
+        else:
+            pass
         codes = data.output_codes
         start = int(
             data._stream_emit_idx
@@ -85,11 +95,15 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
         n_new = len(codes) - start
         if n_new <= 0:
             continue
+        else:
+            pass
         if chunk == 1:
             # Legacy per-frame path (byte-identical default): one put per row;
             # a finishing step's tail is left to the on_stream_done flush.
             if done:
                 continue
+            else:
+                pass
             for row in codes[start:]:
                 runner.outbox.put(
                     OutgoingMessage(
@@ -104,6 +118,8 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
                 codes
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             continue
+        else:
+            pass
         # Coalesced path: hold rows until >= threshold have accumulated, but
         # always flush the remainder on finish so the OLA decoder receives every
         # row (on_stream_done's eos_frame cap trims the tail to the aligned
@@ -118,6 +134,8 @@ def extract_zonos2_output(runner, result, scheduler_output, outputs) -> None:
             threshold = first if (first > 0 and start == 0) else chunk
         if not done and n_new < threshold:
             continue
+        else:
+            pass
         rows = torch.stack(list(codes[start:]), dim=0)
         runner.outbox.put(
             OutgoingMessage(

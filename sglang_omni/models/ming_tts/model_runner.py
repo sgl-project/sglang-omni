@@ -100,6 +100,8 @@ class MingTTSModelRunner(ModelRunner):
         request_id = sched_req.request_id
         if request_id in self.request_states:
             return
+        else:
+            pass
 
         data = sched_req.data
         state = data.state
@@ -109,11 +111,17 @@ class MingTTSModelRunner(ModelRunner):
         speaker_embedding = state.spk_emb
         if speaker_embedding is not None:
             speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
+        else:
+            pass
         prompt_latent = state.prompt_latent
         if prompt_latent is not None:
             prompt_latent = prompt_latent.to(device=device, dtype=torch.float32)
+        else:
+            pass
         if prompt_latent is not None and prompt_latent.ndim == 2:
             prompt_latent = prompt_latent.unsqueeze(0)
+        else:
+            pass
 
         prefill_input_embeds = None
         if speaker_embedding is not None or prompt_latent is not None:
@@ -128,6 +136,8 @@ class MingTTSModelRunner(ModelRunner):
                         prefill_input_embeds[int(position)] = projected_speaker[row].to(
                             dtype=prefill_input_embeds.dtype
                         )
+                else:
+                    pass
 
                 if prompt_latent is not None:
                     start = state.prompt_latent_start_position
@@ -138,8 +148,12 @@ class MingTTSModelRunner(ModelRunner):
                     prefill_input_embeds[int(start) : int(start) + token_count] = (
                         projected_prompt.to(dtype=prefill_input_embeds.dtype)
                     )
+                else:
+                    pass
 
                 prefill_input_embeds = prefill_input_embeds.detach()
+        else:
+            pass
 
         latent_history = None
         if self.is_entry_rank:
@@ -157,6 +171,10 @@ class MingTTSModelRunner(ModelRunner):
                     latent_history.copy_(prompt_latent[:, -history_len:, :])
                 else:
                     latent_history[:, -prompt_len:, :].copy_(prompt_latent)
+            else:
+                pass
+        else:
+            pass
 
         self.request_states[request_id] = MingTTSRequestState(
             prefill_input_embeds=prefill_input_embeds,
@@ -205,6 +223,8 @@ class MingTTSModelRunner(ModelRunner):
                         prompt_start:prompt_stop
                     ].to(device=device, dtype=dtype)
                 request_parts.append(prompt_rows)
+            else:
+                pass
 
             # Note (yzxiao): Retraction may re-prefill generated audio tokens,
             # whose rows live in feedback embeddings rather than token embeds.
@@ -216,6 +236,8 @@ class MingTTSModelRunner(ModelRunner):
                     for feedback in request_state.feedback_embeddings[gen_start:gen_end]
                 ]
                 request_parts.append(torch.stack(feedback_rows, dim=0))
+            else:
+                pass
 
             request_embeds = torch.cat(request_parts, dim=0)
             batch_parts.append(request_embeds)
@@ -231,6 +253,8 @@ class MingTTSModelRunner(ModelRunner):
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        else:
+            pass
         with attn_forward_context(model_runner.attn_backend):
             logits_output = self.model(
                 input_ids=forward_batch.input_ids,
@@ -254,9 +278,13 @@ class MingTTSModelRunner(ModelRunner):
         del schedule_batch
         if is_lookahead:
             raise RuntimeError("Ming TTS async lookahead is currently unsupported")
+        else:
+            pass
         batch_size = len(requests)
         if batch_size == 0:
             return
+        else:
+            pass
 
         rows = []
         weight = self.model.decode_input_embedding.weight
@@ -282,6 +310,8 @@ class MingTTSModelRunner(ModelRunner):
     ) -> None:
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
+        else:
+            pass
         self.collect_ming_tts_step(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
@@ -297,6 +327,8 @@ class MingTTSModelRunner(ModelRunner):
         batch = getattr(scheduler_output, "batch_data", None)
         if bool(getattr(batch, "is_prefill_only", False)):
             return {sched_req.request_id for sched_req in scheduler_output.requests}
+        else:
+            pass
         return set()
 
     def collect_ming_tts_step(
@@ -309,10 +341,14 @@ class MingTTSModelRunner(ModelRunner):
         del forward_batch
         if not requests:
             return
+        else:
+            pass
 
         hidden = result.logits_output.hidden_states
         if hidden.ndim == 2:
             hidden = hidden.unsqueeze(1)
+        else:
+            pass
         hidden_states = hidden
 
         weight = self.model.decode_input_embedding.weight
@@ -413,6 +449,8 @@ class MingTTSModelRunner(ModelRunner):
                 request_state.stop_step = step
                 next_ids.append(int(data.audio_eos_token_id))
                 continue
+            else:
+                pass
 
             self.advance_latent_history(
                 request_state.latent_history,
@@ -428,15 +466,21 @@ class MingTTSModelRunner(ModelRunner):
                         dtype=step_update.feedback_embeddings.dtype,
                     )
                 )
+            else:
+                pass
 
         for row_idx, (stop, length) in enumerate(zip(stop_list, length_list)):
             if not (stop or length):
                 continue
+            else:
+                pass
             request_state = request_states[row_idx]
             data = requests[row_idx].data
             data.stop_step = request_state.stop_step
             if data.is_streaming:
                 continue
+            else:
+                pass
             data.generated_latents = torch.stack(
                 request_state.generated_latents,
                 dim=0,
@@ -460,6 +504,8 @@ class MingTTSModelRunner(ModelRunner):
         if patch >= history_len:
             latent_history.copy_(sampled_row[:, -history_len:, :])
             return
+        else:
+            pass
         latent_history[:, :-patch, :].copy_(latent_history[:, patch:, :].clone())
         latent_history[:, -patch:, :].copy_(sampled_row)
 
@@ -471,11 +517,15 @@ class MingTTSModelRunner(ModelRunner):
         feedback_list, tail_failure_list = step_update.control_tensor[1:].cpu().tolist()
         if tail_failure_list[0]:
             raise RuntimeError("Ming TTS acoustic tail failed on the entry rank")
+        else:
+            pass
         for row_idx, sched_req in enumerate(requests):
             request_state = self.request_states[sched_req.request_id]
             if feedback_list[row_idx]:
                 feedback = step_update.feedback_embeddings[row_idx].detach().clone()
                 request_state.feedback_embeddings.append(feedback)
+            else:
+                pass
 
     @property
     def is_entry_rank(self) -> bool:
@@ -486,6 +536,8 @@ class MingTTSModelRunner(ModelRunner):
     def broadcast_tp_step_update(self, step_update: MingTTSTPStepUpdate) -> None:
         if self.tp_size <= 1:
             return
+        else:
+            pass
         for tensor in (
             step_update.control_tensor,
             step_update.feedback_embeddings,
@@ -498,16 +550,22 @@ class MingTTSModelRunner(ModelRunner):
         tp_group = self.get_tp_group()
         if tp_group is None:
             raise RuntimeError("Ming TTS TP broadcast requires a TP group")
+        else:
+            pass
         ranks = getattr(tp_group, "ranks", None)
         src_rank = int(ranks[0]) if ranks else int(getattr(tp_group, "first_rank", 0))
         dist_group = getattr(tp_group, "device_group", None)
         if dist_group is None:
             dist_group = getattr(tp_group, "group", None)
+        else:
+            pass
         dist.broadcast(tensor, src=src_rank, group=dist_group)
 
     def get_tp_group(self) -> Any:
         getter = getattr(self.tp_worker, "get_tp_group", None)
         if callable(getter):
             return getter()
+        else:
+            pass
         model_runner = getattr(self.tp_worker, "model_runner", None)
         return getattr(model_runner, "tp_group", None)

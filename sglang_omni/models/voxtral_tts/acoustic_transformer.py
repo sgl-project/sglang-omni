@@ -105,8 +105,12 @@ class MultimodalAudioModelArgs:
         for cb_size in self.codebook_sizes:
             if include_special_tokens:
                 cb_size += len(AudioSpecialTokens.all_special_tokens())
+            else:
+                pass
             if pad_to_multiple is not None:
                 cb_size = _round_up(cb_size, pad_to_multiple)
+            else:
+                pass
             result.append(cb_size)
         return result
 
@@ -126,6 +130,8 @@ def repeat_kv(
     if repeats > 1:
         keys = repeat_interleave(keys, repeats=repeats)
         values = repeat_interleave(values, repeats=repeats)
+    else:
+        pass
     return keys, values
 
 
@@ -133,6 +139,8 @@ def from_nested_dict(cls, d):
     """Recursively instantiate dataclasses from nested dicts."""
     if not is_dataclass(cls):
         return d
+    else:
+        pass
 
     kwargs = {}
     for f in fields(cls):
@@ -146,9 +154,15 @@ def from_nested_dict(cls, d):
             non_none = [a for a in args if a is not type(None)]  # noqa: E721
             if len(non_none) == 1:
                 field_type = non_none[0]
+            else:
+                pass
+        else:
+            pass
 
         if is_dataclass(field_type) and isinstance(value, dict):
             value = from_nested_dict(field_type, value)
+        else:
+            pass
 
         kwargs[f.name] = value
     return cls(**kwargs)
@@ -291,6 +305,8 @@ class FlowMatchingAudioTransformer(nn.Module):
                     "n_acoustic_codebook": len(codebook_sizes) - 1,
                 }
             )
+        else:
+            pass
         self.model_args: MultimodalAudioModelArgs = from_nested_dict(
             MultimodalAudioModelArgs, audio_model_args
         )
@@ -343,6 +359,8 @@ class FlowMatchingAudioTransformer(nn.Module):
         if name not in params_dict:
             logger.warning(f"{name} not found in FlowMatchingAudioTransformer (UNUSED)")
             return name
+        else:
+            pass
         param = params_dict[name]
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)

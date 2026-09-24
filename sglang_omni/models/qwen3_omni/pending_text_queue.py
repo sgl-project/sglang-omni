@@ -17,13 +17,23 @@ def as_rows(tensor: torch.Tensor) -> torch.Tensor | None:
     if tensor.dim() == 1:
         if tensor.shape[0] == 0:
             return None
+        else:
+            pass
         return tensor.reshape(1, -1)
+    else:
+        pass
     if tensor.dim() == 2:
         if tensor.shape[0] == 0:
             return None
+        else:
+            pass
         if tensor.shape[1] == 0:
             raise ValueError("pending text rows must have a non-empty hidden dimension")
+        else:
+            pass
         return tensor
+    else:
+        pass
     raise ValueError("pending text rows must be a 1D row tensor or a 2D row batch")
 
 
@@ -69,6 +79,8 @@ class PendingTextTensorQueue:
     def __iter__(self) -> Iterator[torch.Tensor]:
         if self.rows is None:
             return
+        else:
+            pass
         for idx in range(self.cursor, int(self.rows.shape[0])):
             yield self.rows[idx]
         for chunk in self.chunks:
@@ -77,13 +89,21 @@ class PendingTextTensorQueue:
     def __getitem__(self, idx: int) -> torch.Tensor:
         if not isinstance(idx, int):
             raise TypeError("PendingTextTensorQueue indices must be integers")
+        else:
+            pass
         if self.rows is None:
             raise IndexError(idx)
+        else:
+            pass
         if idx == 0:
             return self.rows[self.cursor]
+        else:
+            pass
         remaining = self.rows[self.cursor :]
         if not self.chunks:
             return remaining[idx]
+        else:
+            pass
         return torch.cat([remaining, *self.chunks], dim=0)[idx]
 
     def popleft(self) -> torch.Tensor:
@@ -93,6 +113,8 @@ class PendingTextTensorQueue:
         if self.rows is not None and self.cursor >= int(self.rows.shape[0]):
             self.rows = self.chunks.popleft() if self.chunks else None
             self.cursor = 0
+        else:
+            pass
         return row
 
     def append(self, row: torch.Tensor) -> None:
@@ -102,6 +124,8 @@ class PendingTextTensorQueue:
         rows = as_rows(rows)
         if rows is None:
             return
+        else:
+            pass
         appended_rows = int(rows.shape[0])
         if self.rows is None or len(self) == 0:
             self.rows = rows
@@ -109,10 +133,14 @@ class PendingTextTensorQueue:
             self.chunks.clear()
             self.pending_rows = appended_rows
             return
+        else:
+            pass
         if int(rows.shape[1]) != int(self.rows.shape[1]):
             raise ValueError(
                 "pending text row hidden dimension must match the existing queue"
             )
+        else:
+            pass
         rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
         self.chunks.append(rows)
         self.pending_rows += appended_rows
@@ -121,15 +149,23 @@ class PendingTextTensorQueue:
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:
     if value is None:
         return PendingTextTensorQueue()
+    else:
+        pass
     if isinstance(value, PendingTextTensorQueue):
         return value.copy()
+    else:
+        pass
     if isinstance(value, torch.Tensor):
         return PendingTextTensorQueue.from_tensor(value)
+    else:
+        pass
     if isinstance(value, Iterable):
         queue = PendingTextTensorQueue()
         for row in value:
             queue.append(row)
         return queue
+    else:
+        pass
     raise TypeError(
         "pending text queue must be None, a tensor, a PendingTextTensorQueue, or an iterable of tensors"
     )

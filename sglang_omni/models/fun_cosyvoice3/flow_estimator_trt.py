@@ -45,6 +45,8 @@ def resolve_flow_estimator_onnx(checkpoint_dir: str) -> str:
         path = os.path.join(checkpoint_dir, name)
         if os.path.isfile(path) and os.path.getsize(path) > 0:
             return path
+        else:
+            pass
     tried = ", ".join(_DEFAULT_ONNX_CANDIDATES)
     raise FileNotFoundError(
         f"No Flow estimator ONNX found under {checkpoint_dir!r}; looked for {tried}"
@@ -95,6 +97,8 @@ def try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
     fp16_flag = getattr(trt.BuilderFlag, "FP16", None)
     if fp16_flag is None:
         return False
+    else:
+        pass
     config.set_flag(fp16_flag)
     return True
 
@@ -128,6 +132,8 @@ def require_cfg_pair_inputs(
                 f"Flow-estimator TensorRT input {name} has shape {got}, "
                 f"expected {want}"
             )
+        else:
+            pass
     return shapes
 
 
@@ -173,11 +179,15 @@ def convert_onnx_to_trt(
         if not parser.parse(f.read()):
             errs = "; ".join(str(parser.get_error(i)) for i in range(parser.num_errors))
             raise ValueError(f"Failed to parse {onnx_path}: {errs}")
+        else:
+            pass
 
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 33)
     if not strongly_typed:
         try_enable_fp16_tactics(config, trt)
+    else:
+        pass
 
     profile = builder.create_optimization_profile()
     mins = dynamic_shapes(min_time)
@@ -192,6 +202,8 @@ def convert_onnx_to_trt(
         raise RuntimeError(
             f"TensorRT failed to build Flow-estimator engine from {onnx_path}"
         )
+    else:
+        pass
     tmp = plan_path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(engine_bytes)
@@ -203,6 +215,8 @@ def canonicalize_device(device: str | torch.device) -> torch.device:
     dev = torch.device(device)
     if dev.type == "cuda" and dev.index is None:
         return torch.device("cuda", torch.cuda.current_device())
+    else:
+        pass
     return dev
 
 
@@ -226,6 +240,8 @@ class FlowEstimatorTRT:
                 raise RuntimeError(
                     "failed to create TRT execution context (out of memory?)"
                 )
+            else:
+                pass
             stream = torch.cuda.Stream(device=self.device)
             self.pool.put([ctx, stream])
 
@@ -263,6 +279,8 @@ def enqueue_once(
             "Flow-estimator TensorRT device is "
             f"{estimator.device}, got tensors on {x.device}"
         )
+    else:
+        pass
     shapes = require_cfg_pair_inputs(x, mask, mu, t, spks, cond)
     frames = int(x.shape[2])
     if frames < _PROFILE_MIN_TIME or frames > _PROFILE_MAX_TIME:
@@ -270,6 +288,8 @@ def enqueue_once(
             f"Flow-estimator TensorRT time dim {frames} is outside the "
             f"engine profile [{_PROFILE_MIN_TIME}, {_PROFILE_MAX_TIME}]"
         )
+    else:
+        pass
     [context, stream], trt_engine = estimator.acquire_estimator()
     caller_stream = torch.cuda.current_stream(estimator.device)
     stream.wait_stream(caller_stream)
@@ -289,12 +309,18 @@ def enqueue_once(
                 )
             if context.execute_async_v3(stream.cuda_stream) is not True:
                 raise RuntimeError("Flow-estimator TensorRT execute_async_v3 failed")
+            else:
+                pass
             for tensor in bound:
                 if tensor.is_cuda:
                     tensor.record_stream(stream)
+                else:
+                    pass
         caller_stream.wait_stream(stream)
         if out.is_cuda:
             out.record_stream(caller_stream)
+        else:
+            pass
         return out.to(x.dtype)
     finally:
         estimator.release_estimator(context, stream)
@@ -313,6 +339,8 @@ def run_estimator(
     # enqueue here to avoid recursion. Test doubles implement execute() instead.
     if isinstance(estimator, FlowEstimatorTRT):
         return enqueue_once(estimator, x, mask, mu, t, spks, cond)
+    else:
+        pass
     return estimator.execute(x, mask, mu, t, spks, cond)
 
 
@@ -343,13 +371,19 @@ def execute_flow_estimator(
         raise ValueError(
             f"Flow estimator CFG batch must be even and >= 2, got {cfg_batch}"
         )
+    else:
+        pass
     # note (guozhihao-224): packed Flow may pass a broadcast timestep (1,);
     # official ONNX/TRT freezes t at CFG batch=2, so expand before enqueue.
     if int(t.shape[0]) == 1 and cfg_batch > 1:
         t = t.expand(cfg_batch).contiguous()
+    else:
+        pass
     max_batch = int(estimator.max_batch)
     if cfg_batch <= max_batch:
         return run_estimator(estimator, x, mask, mu, t, spks, cond)
+    else:
+        pass
 
     # note (guozhihao-224): packed CFG is [cond_0..B, uncond_0..B]; chunk by
     # request pair (slicing the first N rows mixes two conditionals).
@@ -416,6 +450,8 @@ class FlowEstimatorTRTModule(torch.nn.Module):
                     f"the engine profile [{self.min_time}, {self.max_time}] "
                     "and no PyTorch fallback estimator is available"
                 )
+            else:
+                pass
             logger.info(
                 "Flow-estimator TensorRT profile miss (T=%d, want %d..%d); "
                 "falling back to PyTorch DiT for this call",
@@ -424,6 +460,8 @@ class FlowEstimatorTRTModule(torch.nn.Module):
                 self.max_time,
             )
             return self.fallback(x, mask, mu, t, spks, cond, streaming=streaming)
+        else:
+            pass
         # TRT ONNX freezes attention; streaming only affects the torch path.
         del streaming
         return execute_flow_estimator(self.trt, x, mask, mu, t, spks, cond)
@@ -432,10 +470,16 @@ class FlowEstimatorTRTModule(torch.nn.Module):
 def is_flow_estimator_trt(estimator: Any) -> bool:
     if isinstance(estimator, FlowEstimatorTRTModule):
         return True
+    else:
+        pass
     if isinstance(estimator, torch.nn.Module):
         return False
+    else:
+        pass
     if isinstance(estimator, FlowEstimatorTRT):
         return True
+    else:
+        pass
     return hasattr(estimator, "execute")
 
 
@@ -460,6 +504,8 @@ def build_flow_estimator_trt(
     plan_path = resolve_plan_path(onnx_path)
     if not os.path.exists(plan_path) or os.path.getsize(plan_path) == 0:
         convert_onnx_to_trt(onnx_path, plan_path, strongly_typed=strongly_typed)
+    else:
+        pass
 
     runtime = trt.Runtime(trt_logger())
     with open(plan_path, "rb") as f:
@@ -468,6 +514,8 @@ def build_flow_estimator_trt(
         raise RuntimeError(
             f"Failed to deserialize Flow-estimator TensorRT engine {plan_path}"
         )
+    else:
+        pass
     logger.info(
         "Loaded Flow-estimator TensorRT engine (%s, %.1f MiB, max_cfg_batch=%d)",
         plan_path,
@@ -482,4 +530,6 @@ def build_flow_estimator_trt(
     )
     if not wrap_module:
         return trt_engine
+    else:
+        pass
     return FlowEstimatorTRTModule(trt_engine, fallback=fallback)

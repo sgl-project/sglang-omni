@@ -23,6 +23,8 @@ if TYPE_CHECKING:
         SchedulerOutput,
         SchedulerRequest,
     )
+else:
+    pass
 
 
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
@@ -81,11 +83,17 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             req_output = outputs.get(sched_req.request_id)
             if req_output is None or req_output.extra is None:
                 continue
+            else:
+                pass
             hidden = req_output.extra.pop("hidden_states", None)
             if hidden is None:
                 continue
+            else:
+                pass
             if sched_req.data.req.inflight_middle_chunks > 0:
                 continue
+            else:
+                pass
             hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
             seq = self.pending_hidden.setdefault(sched_req.request_id, [])
             # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
@@ -108,6 +116,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
+        else:
+            pass
         stacked = torch.stack(seq).to("cpu")
         req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
 

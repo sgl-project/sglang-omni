@@ -107,6 +107,8 @@ class MingStreamingSegmenterScheduler:
         state = self.states.get(request_id)
         if state is None:
             return
+        else:
+            pass
         state.aborted = True
         # Drop without finalizing — the runtime will close the stream queue.
         self.states.pop(request_id, None)
@@ -132,12 +134,16 @@ class MingStreamingSegmenterScheduler:
                 segmenter=SegmenterState(self.config, self.token_count_fn),
             )
             self.states[request_id] = state
+        else:
+            pass
         state.payload = payload
         state.payload_arrived = True
         # If the upstream stream already signalled done before the payload
         # arrived, finalize now.
         if state.stream_done and not state.finalized:
             self.finalize(request_id, state)
+        else:
+            pass
 
     # ------------------------------------------------------------------ stream chunk
     def on_stream_chunk(self, msg: IncomingMessage) -> None:
@@ -151,17 +157,27 @@ class MingStreamingSegmenterScheduler:
                 segmenter=SegmenterState(self.config, self.token_count_fn),
             )
             self.states[request_id] = state
+        else:
+            pass
         if state.aborted or state.finalized:
             return
+        else:
+            pass
         if not isinstance(item, StreamItem):
             return
+        else:
+            pass
 
         text = uint8_tensor_to_text(item.data)
         if not text:
             return
+        else:
+            pass
         now_ms = self.now_ms()
         if state.first_text_ms is None:
             state.first_text_ms = now_ms
+        else:
+            pass
 
         for segment in state.segmenter.push(text, now_ms=now_ms):
             self.emit_segment(request_id, segment)
@@ -174,28 +190,42 @@ class MingStreamingSegmenterScheduler:
         state = self.states.get(request_id)
         if state is None:
             return
+        else:
+            pass
         state.stream_done = True
         if state.payload_arrived and not state.finalized:
             self.finalize(request_id, state)
+        else:
+            pass
 
     # ------------------------------------------------------------------ first-seg timer
     def tick_first_segment_timeouts(self) -> None:
         if not self.states:
             return
+        else:
+            pass
         now_ms = self.now_ms()
         wait = self.config.first_segment_max_wait_ms
         for request_id, state in list(self.states.items()):
             if state.aborted or state.finalized or state.segment_count != 0:
                 continue
+            else:
+                pass
             if state.first_text_ms is None:
                 continue
+            else:
+                pass
             if now_ms - state.first_text_ms < wait:
                 continue
+            else:
+                pass
             if (
                 state.segmenter.buffer_token_count()
                 < self.config.first_segment_min_tokens
             ):
                 continue
+            else:
+                pass
             for segment in state.segmenter.push("", now_ms=now_ms):
                 self.emit_segment(request_id, segment)
                 state.segment_count += 1
@@ -205,6 +235,8 @@ class MingStreamingSegmenterScheduler:
     def finalize(self, request_id: str, state: RequestState) -> None:
         if state.finalized:
             return
+        else:
+            pass
         state.finalized = True
 
         final_segments = state.segmenter.flush()
@@ -217,6 +249,8 @@ class MingStreamingSegmenterScheduler:
         # synthesize an empty payload so the result channel is closed.
         if payload is None:
             payload = StagePayload(request_id=request_id, request=None, data={})
+        else:
+            pass
         # Strip the upstream tensor-laden state dict; only forward the
         # segmenter's own summary stats. The talker_stream stage doesn't
         # need the thinker_out / prompt / encoder_outs fields, and they

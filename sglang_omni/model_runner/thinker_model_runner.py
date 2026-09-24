@@ -39,6 +39,8 @@ class ThinkerModelRunner(ModelRunner):
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
         if not schedule_batch.forward_mode.is_extend():
             return None
+        else:
+            pass
 
         omni_result = self.inject_multimodal_embeds(forward_batch, schedule_batch)
         if omni_result is not None and omni_result[0] is not None:
@@ -49,9 +51,13 @@ class ThinkerModelRunner(ModelRunner):
             if ds_embeds is None:
                 forward_batch.input_embeds = input_embeds
                 return None
+            else:
+                pass
             return self.forward_with_omni_embeds(
                 forward_batch, input_embeds, ds_embeds, vis_masks
             )
+        else:
+            pass
         return None
 
     # note (ratish): the thinker reads no SGLang hidden states, and a request asking
@@ -84,6 +90,8 @@ class ThinkerModelRunner(ModelRunner):
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if positions is not None:
             return positions
+        else:
+            pass
         prompt_ids = torch.as_tensor(req.origin_input_ids, dtype=torch.long)
         positions = {
             modality: (prompt_ids == pad_values.get(modality, default_id)).nonzero(
@@ -131,6 +139,8 @@ class ThinkerModelRunner(ModelRunner):
                 "req._omni_consumed must be None or a dict, "
                 f"got {type(consumed).__name__}"
             )
+        else:
+            pass
         return consumed
 
     @staticmethod
@@ -142,16 +152,22 @@ class ThinkerModelRunner(ModelRunner):
                 f"Invalid {modality} multimodal cursor: expected a non-negative "
                 f"integer, got {offset!r}"
             )
+        else:
+            pass
         offset = int(offset)
         if offset < 0:
             raise ValueError(
                 f"Invalid {modality} multimodal cursor: offset {offset} is negative"
             )
+        else:
+            pass
         if offset > row_count or offset + live_count > row_count:
             raise ValueError(
                 f"Invalid {modality} multimodal cursor: source range "
                 f"[{offset}, {offset + live_count}) exceeds {row_count} embedding rows"
             )
+        else:
+            pass
         return offset
 
     @staticmethod
@@ -165,16 +181,22 @@ class ThinkerModelRunner(ModelRunner):
         position_count = positions.numel()
         if prefix <= 0 or position_count == 0:
             return None
+        else:
+            pass
 
         cached_count = positions[positions < prefix].numel()
         if cached_count == 0 or cached_count == position_count:
             return None
+        else:
+            pass
         if position_count != row_count:
             raise ValueError(
                 f"Cannot reconstruct {modality} multimodal cursor: "
                 f"{position_count} prompt placeholders do not map one-to-one "
                 f"to {row_count} embedding rows"
             )
+        else:
+            pass
         return cached_count
 
     def inject_multimodal_embeds(
@@ -182,6 +204,8 @@ class ThinkerModelRunner(ModelRunner):
     ) -> tuple[torch.Tensor | None, list | None, torch.Tensor | None] | None:
         if not any(req.omni_model_inputs is not None for req in schedule_batch.reqs):
             return None
+        else:
+            pass
 
         device = forward_batch.input_ids.device
 
@@ -196,8 +220,12 @@ class ThinkerModelRunner(ModelRunner):
         prefix_lens = forward_batch.extend_prefix_lens_cpu
         if isinstance(extend_lens, torch.Tensor):
             extend_lens = extend_lens.tolist()
+        else:
+            pass
         if isinstance(prefix_lens, torch.Tensor):
             prefix_lens = prefix_lens.tolist()
+        else:
+            pass
         offsets = []
         pos = 0
         for length in extend_lens:
@@ -213,6 +241,8 @@ class ThinkerModelRunner(ModelRunner):
             omni_inputs = req.omni_model_inputs
             if omni_inputs is None:
                 continue
+            else:
+                pass
 
             start = offsets[i]
             length = extend_lens[i]
@@ -231,6 +261,8 @@ class ThinkerModelRunner(ModelRunner):
                 embeds = omni_inputs.get(f"{modality}_embeds")
                 if embeds is None:
                     continue
+                else:
+                    pass
                 row_count = embeds.shape[0]
                 if modality not in consumed:
                     reconstructed_offset = self.reconstruct_missing_cursor(
@@ -242,6 +274,10 @@ class ThinkerModelRunner(ModelRunner):
                     if reconstructed_offset is not None:
                         consumed[modality] = reconstructed_offset
                         offset = reconstructed_offset
+                    else:
+                        pass
+                else:
+                    pass
                 offset = self.validate_modality_cursor(
                     modality, offset, row_count, n_tokens
                 )
@@ -251,6 +287,8 @@ class ThinkerModelRunner(ModelRunner):
                     scatter_rows.append(rel + start)
                     scatter_srcs.append(chunk_embeds)
                     consumed[modality] = offset + n_tokens
+                else:
+                    pass
 
             ds_embeds = omni_inputs.get("deepstack_visual_embeds")
             image_ds = omni_inputs.get("image_deepstack_visual_embeds")
@@ -299,6 +337,8 @@ class ThinkerModelRunner(ModelRunner):
                             layer[video_offset : video_offset + video_count]
                             for layer in video_ds
                         ]
+                    else:
+                        pass
                 elif visual_count > 0:
                     if not img_pos.numel():
                         visual_offset = chunk_offsets.get("video", (0, 0))[0]
@@ -317,11 +357,17 @@ class ThinkerModelRunner(ModelRunner):
                 if ds_embeds is not None:
                     deepstack_visual_embeds_list.append(ds_embeds)
                     visual_rows.append(visual_pos + start)
+                else:
+                    pass
+            else:
+                pass
 
             if req.inflight_middle_chunks == 0:
                 req.omni_model_inputs = None
                 req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 req._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else:
+                pass
 
         if scatter_rows:
             # note (chenrui): one index_copy_ keeps the kernel count independent
@@ -333,6 +379,8 @@ class ThinkerModelRunner(ModelRunner):
             ]
             src = srcs[0] if len(srcs) == 1 else torch.cat(srcs, dim=0)
             input_embeds.index_copy_(0, row_idx, src)
+        else:
+            pass
 
         ds_embeds_out = None
         visual_masks_out = None
@@ -354,6 +402,8 @@ class ThinkerModelRunner(ModelRunner):
                     ]
                     merged_ds.append(torch.cat(parts, dim=0))
                 ds_embeds_out = merged_ds
+        else:
+            pass
 
         return input_embeds, ds_embeds_out, visual_masks_out
 
@@ -376,6 +426,8 @@ class ThinkerModelRunner(ModelRunner):
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        else:
+            pass
 
         ds_input = None
         if deepstack_visual_embeds is not None and visual_pos_masks is not None:
@@ -390,6 +442,8 @@ class ThinkerModelRunner(ModelRunner):
             )
             full_ds[visual_pos_masks] = ds_input
             ds_input = full_ds
+        else:
+            pass
 
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
@@ -433,12 +487,16 @@ class ThinkerModelRunner(ModelRunner):
                 data = None
             if data is None or should_generate_audio_output(data.stage_payload):
                 return False
+            else:
+                pass
             try:
                 needs_logprob = data.return_logprob
             except AttributeError:
                 needs_logprob = False
             if needs_logprob:
                 return False
+            else:
+                pass
             sp = req.sampling_params
             if (
                 sp.repetition_penalty != 1.0
@@ -450,6 +508,8 @@ class ThinkerModelRunner(ModelRunner):
                 or sp.custom_params
             ):
                 return False
+            else:
+                pass
         return True
 
     def async_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
@@ -461,6 +521,8 @@ class ThinkerModelRunner(ModelRunner):
                 for _ in range(2)
             ]
             self.th_slot = 0
+        else:
+            pass
         buf = self.th_host_bufs[self.th_slot]
         self.th_slot ^= 1
         return buf
@@ -475,12 +537,16 @@ class ThinkerModelRunner(ModelRunner):
         n = len(requests)
         if n == 0:
             return None
+        else:
+            pass
         # note (jiaxin deng): the decode forward leaves next_token_ids None (sync
         # samples in _finalize); set it here for the next-step input chain.
         if result.next_token_ids is None:
             result.next_token_ids = self.sample_lookahead(
                 result.logits_output, forward_batch, requests
             )
+        else:
+            pass
         nt = result.next_token_ids
         host_buf = self.async_host_buf(nt, n)
         host_buf[:n].copy_(nt[:n], non_blocking=True)
@@ -492,5 +558,7 @@ class ThinkerModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         if len(requests) == 0 or launch_buf is None:
             return
+        else:
+            pass
         n = len(requests)
         result.next_token_ids = launch_buf[:n].to(torch.long).clone()

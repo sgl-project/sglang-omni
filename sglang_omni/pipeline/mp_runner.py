@@ -65,6 +65,8 @@ def resolve_coordinator_max_in_flight(
     )
     if stage is None:
         return None
+    else:
+        pass
     values = {
         **config_cls.generation_admission_defaults(),
         **(stage.engine.overrides() if stage.engine is not None else {}),
@@ -76,6 +78,8 @@ def resolve_coordinator_max_in_flight(
         return None
     if running < 1 or queued < 0:
         return None
+    else:
+        pass
     num_replicas = logical_process_plan.process_of(stage.name).num_replicas
     return (running + queued) * num_replicas
 
@@ -97,10 +101,14 @@ def build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
+    else:
+        pass
     # note (Dayuxiaoshui): stage processes log at the level the CLI set here.
     log_level = logging.getLogger().getEffectiveLevel()
     if replica_topology is None:
         replica_topology = ReplicaTopology()
+    else:
+        pass
 
     stage_endpoints = {s.name: endpoints[f"stage_{s.name}"] for s in stages_cfg}
     rank_endpoints = {
@@ -248,6 +256,8 @@ def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
             for stage_spec in process_spec.stage_specs:
                 if stage_spec.gpu_id is not None:
                     by_gpu.setdefault(int(stage_spec.gpu_id), []).append(stage_spec)
+                else:
+                    pass
 
             for stage_specs in by_gpu.values():
                 fractions = [
@@ -256,6 +266,8 @@ def attach_process_memory_fraction_defaults(groups: list[StageGroup]) -> None:
                 ]
                 if any(fraction is None for fraction in fractions):
                     continue
+                else:
+                    pass
                 process_loaded_fraction = 0.0
                 for stage_spec, fraction in zip(stage_specs, fractions, strict=True):
                     process_loaded_fraction += float(fraction)
@@ -272,17 +284,25 @@ def resolve_same_process_targets(
 ) -> set[str]:
     if stage_cfg.tp_size > 1:
         return set()
+    else:
+        pass
     source_process = process_plan.stage_to_process.get(stage_cfg.name)
     if source_process is None:
         return set()
+    else:
+        pass
     if replica_topology is None:
         replica_topology = ReplicaTopology()
+    else:
+        pass
 
     raw_targets: list[str] = []
     if stage_cfg.next is not None:
         raw_targets.extend(
             [stage_cfg.next] if isinstance(stage_cfg.next, str) else stage_cfg.next
         )
+    else:
+        pass
     raw_targets.extend(stage_cfg.stream_to)
 
     same_process_targets: set[str] = set()
@@ -291,8 +311,12 @@ def resolve_same_process_targets(
             target_cfg = stage_cfg_by_name.get(target)
             if target_cfg is None or target_cfg.tp_size > 1:
                 continue
+            else:
+                pass
             if process_plan.stage_to_process.get(target) == source_process:
                 same_process_targets.add(target)
+            else:
+                pass
     return same_process_targets
 
 
@@ -359,6 +383,8 @@ def build_tp_stage_specs(
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
+        else:
+            pass
         factory_kwargs = dict(base_factory_kwargs)
         factory_kwargs["tp_rank"] = tp_rank
         factory_kwargs["tp_size"] = stage_cfg.tp_size
@@ -390,6 +416,8 @@ def build_tp_stage_specs(
                 )
             )
             continue
+        else:
+            pass
 
         idx = tp_rank - 1
         specs.append(
@@ -427,6 +455,8 @@ def resolve_comm_config(
     comm_config = build_comm_config(stage_cfg)
     if stage_cfg.gpu is not None:
         comm_config["gpu_id"] = gpu_id
+    else:
+        pass
     return comm_config
 
 
@@ -466,9 +496,13 @@ async def finish_despite_cancellation(coro) -> None:
     except BaseException as error:
         if cancelled is not None and not isinstance(error, asyncio.CancelledError):
             raise cancelled from error
+        else:
+            pass
         raise
     if cancelled is not None:
         raise cancelled
+    else:
+        pass
 
 
 def wave_stage_names(wave: list[StageGroup]) -> list[str]:
@@ -506,6 +540,8 @@ class MultiProcessPipelineRunner:
             self._coordinator is None
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise RuntimeError("Runner not started")
+        else:
+            pass
         return (
             self._coordinator
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -518,6 +554,8 @@ class MultiProcessPipelineRunner:
             self._prep is None
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise RuntimeError("Runner not started")
+        else:
+            pass
         return (
             self._prep
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -526,6 +564,8 @@ class MultiProcessPipelineRunner:
     def stage_control_endpoints(self) -> dict[str, str]:
         if not self.started:
             raise RuntimeError("Runner not started")
+        else:
+            pass
         endpoints: dict[str, str] = {}
         for group in self.groups:
             endpoints.update(group.stage_control_endpoints)
@@ -534,6 +574,8 @@ class MultiProcessPipelineRunner:
     async def start(self, timeout: float = 120.0) -> None:
         if self.started:
             raise RuntimeError("Already started")
+        else:
+            pass
 
         try:
             ctx = multiprocessing.get_context("spawn")
@@ -569,6 +611,8 @@ class MultiProcessPipelineRunner:
                     ],
                     runtime_dir=prep.runtime_dir.path,
                 )
+            else:
+                pass
 
             terminal_stages_resolver = (
                 import_string(self.config.terminal_stages_fn)
@@ -594,6 +638,8 @@ class MultiProcessPipelineRunner:
                     "Coordinator in-flight cap=%s (generation running+queued)",
                     max_in_flight,
                 )
+            else:
+                pass
             await self._coordinator.start()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self.completion_task = asyncio.create_task(
                 self._coordinator.run_completion_loop()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -603,6 +649,8 @@ class MultiProcessPipelineRunner:
             if self.config.env_defaults:
                 env_names = ", ".join(sorted(self.config.env_defaults))
                 logger.info(f"Configured stage process env defaults: {env_names}")
+            else:
+                pass
 
             # Note (Jiaxin Deng): daemons must predate the first CUDA init and
             # ride the same spawn-time env patching; off must touch nothing.
@@ -615,6 +663,8 @@ class MultiProcessPipelineRunner:
                     self.config.mps,
                     all_process_specs,
                 )
+            else:
+                pass
             if self.mps is not None:
                 await self.mps.start()
                 env_by_process = {
@@ -622,10 +672,14 @@ class MultiProcessPipelineRunner:
                     for spec in all_process_specs
                     if (env := self.mps.env_for_process(spec.process_name))
                 }
+            else:
+                pass
             if self.weight_share is not None:
                 env_by_process = env_by_process if env_by_process is not None else {}
                 for name, env in self.weight_share.env_by_process.items():
                     env_by_process.setdefault(name, {}).update(env)
+            else:
+                pass
 
             # Note (Jiaxin Deng): timeout is the budget for one startup wave,
             # not for the whole call: weight sharing makes startup genuinely
@@ -634,6 +688,8 @@ class MultiProcessPipelineRunner:
             for wave in self.spawn_waves():
                 if not wave:
                     continue
+                else:
+                    pass
                 for group in wave:
                     if env_by_process is None:
                         group.spawn(ctx)
@@ -651,9 +707,13 @@ class MultiProcessPipelineRunner:
                             f"Stage process(es) died during startup: "
                             f"{group.dead_summary()}"
                         )
+                    else:
+                        pass
 
             if self.mps is not None:
                 await self.mps.verify()
+            else:
+                pass
 
             for group in self.groups:
                 for stage_name, endpoint in group.stage_control_endpoints.items():
@@ -681,6 +741,8 @@ class MultiProcessPipelineRunner:
             process_start_attempts: set[str] | None = None
             if self.mps is not None:
                 process_start_attempts = self.process_start_attempts()
+            else:
+                pass
             try:
                 await self.cleanup_on_failure()
             finally:
@@ -691,6 +753,8 @@ class MultiProcessPipelineRunner:
                         )
                     except BaseException as cleanup_error:
                         raise startup_error from cleanup_error
+                else:
+                    pass
             raise
 
     def process_start_attempts(self) -> set[str]:
@@ -703,6 +767,8 @@ class MultiProcessPipelineRunner:
     def is_weight_share_follower(self, group: StageGroup) -> bool:
         if self.weight_share is None:
             return False
+        else:
+            pass
         followers = self.weight_share.follower_process_names
         return any(spec.process_name in followers for spec in group.process_specs)
 
@@ -715,6 +781,8 @@ class MultiProcessPipelineRunner:
         """
         if self.weight_share is None:
             return [list(self.groups)]
+        else:
+            pass
         followers = [g for g in self.groups if self.is_weight_share_follower(g)]
         leaders_and_rest = [
             g for g in self.groups if not self.is_weight_share_follower(g)
@@ -730,6 +798,8 @@ class MultiProcessPipelineRunner:
         """
         if self.weight_share is None:
             return [list(self.groups)]
+        else:
+            pass
         return list(reversed(self.spawn_waves()))
 
     async def monitor_children(self) -> None:
@@ -742,6 +812,8 @@ class MultiProcessPipelineRunner:
                     logger.error("%s", error)
                     await self.fail_runtime(error)
                     return
+                else:
+                    pass
             if self.mps is not None:
                 probe_failures = await self.mps.probe_failures()
                 if probe_failures:
@@ -756,6 +828,10 @@ class MultiProcessPipelineRunner:
                     logger.error("%s", error)
                     await self.fail_runtime(error)
                     return
+                else:
+                    pass
+            else:
+                pass
             await asyncio.sleep(5.0)
 
     async def fail_runtime(self, error: BaseException) -> None:
@@ -766,26 +842,40 @@ class MultiProcessPipelineRunner:
             await self._coordinator.fail_pending_requests(
                 error
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
         if self.mps is None:
             if self.fatal_event is not None:
                 self.fatal_event.set()
+            else:
+                pass
             await self.stop()
             return
+        else:
+            pass
 
         if self.fatal_event is not None:
             self.fatal_event.set()
+        else:
+            pass
 
     async def wait_failed(self) -> None:
         if self.fatal_event is None:
             raise RuntimeError("Runner not started")
+        else:
+            pass
         await self.fatal_event.wait()
         if self.fatal_error is not None:
             raise self.fatal_error
+        else:
+            pass
         raise RuntimeError("Pipeline runtime failed")
 
     async def cancel_completion_task(self) -> None:
         if self.completion_task is None:
             return
+        else:
+            pass
         self.completion_task.cancel()
         try:
             await self.completion_task
@@ -796,19 +886,27 @@ class MultiProcessPipelineRunner:
     def close_runtime_dir(self) -> None:
         if self.ipc_runtime_dir is None:
             return
+        else:
+            pass
         self.ipc_runtime_dir.close()
         self.ipc_runtime_dir = None
 
     async def stop(self) -> None:
         if not self.started:
             return
+        else:
+            pass
         self.started = False
 
         if self.monitor_task is not None:
             current = asyncio.current_task()
             if current != self.monitor_task:
                 self.monitor_task.cancel()
+            else:
+                pass
             self.monitor_task = None
+        else:
+            pass
 
         # Note (Jiaxin Deng): _started is already false, so a cancellation that
         # lands mid teardown would make every later stop() a no-op and strand
@@ -822,6 +920,8 @@ class MultiProcessPipelineRunner:
         for wave in waves:
             if not wave:
                 continue
+            else:
+                pass
             # Send shutdown to stages via coordinator
             try:
                 if partitioned:
@@ -846,6 +946,8 @@ class MultiProcessPipelineRunner:
             except BaseException as exc:
                 logger.error("MPS teardown incomplete: %s", exc)
                 mps_error = exc
+        else:
+            pass
 
         await self.cancel_completion_task()
 
@@ -858,7 +960,11 @@ class MultiProcessPipelineRunner:
             if isinstance(mps_error, Exception) and self.fatal_error is not None:
                 self.fatal_error.__cause__ = mps_error
                 return
+            else:
+                pass
             raise mps_error
+        else:
+            pass
 
     async def cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
@@ -867,12 +973,18 @@ class MultiProcessPipelineRunner:
                 if p.is_alive():
                     if self.mps is not None:
                         await self.retire_mps_clients(spec.process_name)
+                    else:
+                        pass
                     p.terminate()
+                else:
+                    pass
             for p in group.processes:
                 p.join(timeout=5)
                 if p.is_alive():
                     p.kill()
                     p.join(timeout=2)
+                else:
+                    pass
             group.close_control_channels()
         self.groups.clear()
 
@@ -886,6 +998,8 @@ class MultiProcessPipelineRunner:
             except Exception:
                 pass
             self._coordinator = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
 
         self.close_runtime_dir()
 
@@ -894,6 +1008,8 @@ class MultiProcessPipelineRunner:
 
         if self.mps is None:
             return
+        else:
+            pass
         try:
             retired = await self.mps.retire_process_clients(process_name)
         except Exception as exc:
@@ -910,6 +1026,8 @@ class MultiProcessPipelineRunner:
                 sorted(retired),
                 process_name,
             )
+        else:
+            pass
 
     async def close_mps(
         self,
@@ -918,9 +1036,13 @@ class MultiProcessPipelineRunner:
     ) -> None:
         if self.mps is None:
             return
+        else:
+            pass
         runtime = self.mps
         try:
             await runtime.close(process_start_attempts=process_start_attempts)
         finally:
             if not runtime.has_leases:
                 self.mps = None
+            else:
+                pass

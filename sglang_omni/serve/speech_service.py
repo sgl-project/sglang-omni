@@ -49,6 +49,8 @@ if TYPE_CHECKING:
         SpeakerSampleStore,
         UploadedVoiceReference,
     )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +98,15 @@ class SpeechRequestValidator:
     ) -> None:
         if tts_batch_max_items < 1:
             raise ValueError("tts_batch_max_items must be greater than 0")
+        else:
+            pass
         if (
             required_speech_reference_count is not None
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        else:
+            pass
         if max_speech_input_chars is not None and (
             isinstance(max_speech_input_chars, bool)
             or not isinstance(max_speech_input_chars, int)
@@ -109,6 +115,8 @@ class SpeechRequestValidator:
             raise ValueError(
                 "max_speech_input_chars must be a positive integer or None"
             )
+        else:
+            pass
         self.default_model = default_model
         self.requires_uploaded_voice_for_named_voice = (
             requires_uploaded_voice_for_named_voice
@@ -123,6 +131,8 @@ class SpeechRequestValidator:
             # names, including when a stage overrides a Base model_path.
             self.requires_uploaded_voice_for_named_voice = False
             self.supports_uploaded_voice_references = False
+        else:
+            pass
         self.speaker_keys = (
             frozenset(name.casefold() for name in custom_voice_config.speakers)
             if custom_voice_config is not None
@@ -159,6 +169,8 @@ class SpeechRequestValidator:
 
         if not isinstance(payload, dict):
             raise bad_request("speech batch request body must be a JSON object")
+        else:
+            pass
         default_payload = {
             key: value for key, value in payload.items() if key != "items"
         }
@@ -169,16 +181,22 @@ class SpeechRequestValidator:
             raise bad_request(validation_error_message(exc)) from exc
         if not request.items:
             raise bad_request("items must contain at least one request", param="items")
+        else:
+            pass
         if len(request.items) > self.tts_batch_max_items:
             raise bad_request(
                 f"items must contain at most {self.tts_batch_max_items} requests",
                 param="items",
             )
+        else:
+            pass
         if request.stream:
             raise bad_request(
                 "stream is not supported for batch speech requests",
                 param="stream",
             )
+        else:
+            pass
         self.validate_batch_defaults(request)
         return request
 
@@ -201,6 +219,8 @@ class SpeechRequestValidator:
     ) -> CreateSpeechRequest:
         if not isinstance(payload, dict):
             raise bad_request("speech request body must be a JSON object")
+        else:
+            pass
         self.validate_raw_payload(payload)
         try:
             request = CreateSpeechRequest.model_validate(payload)
@@ -232,12 +252,16 @@ class SpeechRequestValidator:
     def validate_input_text(self, input_text: str) -> None:
         if not isinstance(input_text, str) or not input_text.strip():
             raise bad_request("input must be a non-empty string", param="input")
+        else:
+            pass
         limit = self.max_speech_input_chars
         if limit is not None and len(input_text) > limit:
             raise bad_request(
                 f"input must be at most {limit} characters",
                 param="input",
             )
+        else:
+            pass
 
     def prepare_generation_updates(
         self, request: CreateSpeechRequest
@@ -250,8 +274,12 @@ class SpeechRequestValidator:
                 "stream=true requires response_format='pcm'",
                 param="response_format",
             )
+        else:
+            pass
         if not request.stream:
             self.validate_encoder_dependency(response_format)
+        else:
+            pass
         updates["response_format"] = response_format
 
         if not TTS_SPEED_MIN <= float(request.speed) <= TTS_SPEED_MAX:
@@ -259,12 +287,18 @@ class SpeechRequestValidator:
                 f"speed must be between {TTS_SPEED_MIN} and {TTS_SPEED_MAX}",
                 param="speed",
             )
+        else:
+            pass
 
         if request.task_type is not None:
             updates["task_type"] = normalize_task_type(request.task_type)
+        else:
+            pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self.normalize_language(request.language)
+        else:
+            pass
 
         validate_positive_int(request.max_new_tokens, param="max_new_tokens")
         validate_positive_int(request.token_count, param="token_count")
@@ -285,22 +319,32 @@ class SpeechRequestValidator:
         config = self.custom_voice_config
         if config is None:
             return
+        else:
+            pass
         if task_type is not None and task_type != config.task_type:
             raise bad_request(
                 f"task_type must be one of: {config.task_type}", param="task_type"
             )
+        else:
+            pass
         for field in ("ref_audio", "ref_text", "x_vector_only_mode"):
             if getattr(request, field) is not None:
                 raise bad_request(
                     f"{field} is not supported by this model", param=field
                 )
+            else:
+                pass
         if request.references:
             raise bad_request(
                 "references are not supported by this model", param="references"
             )
+        else:
+            pass
         name = request.voice.strip().casefold()
         if name in {"", "default"} or name in self.speaker_keys:
             return
+        else:
+            pass
         supported = ", ".join(("default", *config.speakers))
         raise bad_request(
             f"Unknown voice '{request.voice}'. Supported voices: {supported}",
@@ -312,6 +356,8 @@ class SpeechRequestValidator:
         if normalized is None:
             supported = ", ".join(sorted(self.tts_language_aliases.values()))
             raise bad_request(f"language must be one of: {supported}", param="language")
+        else:
+            pass
         return normalized
 
     def validate_speech_references(
@@ -328,11 +374,15 @@ class SpeechRequestValidator:
                 f"exactly {count} speech reference is required",
                 param=param,
             )
+        else:
+            pass
         if self.speech_reference_text_required and any(
             not isinstance(reference.get("text"), str) or not reference["text"].strip()
             for reference in references
         ):
             raise bad_request("reference transcript is required", param="ref_text")
+        else:
+            pass
         instructions = request.instructions
         has_instructions = isinstance(instructions, str) and bool(instructions.strip())
         has_reference_text = any(
@@ -348,6 +398,8 @@ class SpeechRequestValidator:
                 "instructions cannot be combined with a reference transcript",
                 param="instructions",
             )
+        else:
+            pass
 
     def prepare_reference_fields(
         self, request: CreateSpeechRequest
@@ -362,6 +414,8 @@ class SpeechRequestValidator:
                 ref_audio, param="ref_audio"
             )
             updates["ref_audio"] = media_reference_from_descriptor(descriptor)
+        else:
+            pass
 
         if request.references:
             references: list[SpeechReference] = []
@@ -372,18 +426,26 @@ class SpeechRequestValidator:
                     normalized_reference.model_dump(exclude_none=True)
                 )
             updates["references"] = references
+        else:
+            pass
 
         if ref_audio is not None:
             if request.ref_text is not None:
                 descriptor = dict(descriptor)
                 descriptor["text"] = request.ref_text
+            else:
+                pass
             reference_descriptors.append(descriptor)
         elif uploaded_voice is not None:
             descriptor = uploaded_voice_reference_dict(uploaded_voice)
             if uploaded_voice.voice.ref_text is not None:
                 descriptor["text"] = uploaded_voice.voice.ref_text
+            else:
+                pass
             reference_descriptors.append(descriptor)
             updates["task_type"] = "Base"
+        else:
+            pass
 
         return PreparedSpeechReferences(
             request_updates=updates,
@@ -408,6 +470,8 @@ class SpeechRequestValidator:
             uploaded_voice = prepared.uploaded_voice
         elif uploaded_voice is None and reference_descriptors is None:
             uploaded_voice = self.resolve_uploaded_voice_reference(request)
+        else:
+            pass
 
         return GenerateRequest(
             model=request.model or self.default_model,
@@ -487,6 +551,8 @@ class SpeechRequestValidator:
                             speech_generation_error(task_result), index=index
                         ),
                     )
+        else:
+            pass
 
         final_results = [result for result in results if result is not None]
         succeeded = sum(1 for result in final_results if result.status == "success")
@@ -559,6 +625,8 @@ class SpeechRequestValidator:
                     asyncio.to_thread(self.prepare_reference_fields, request)
                 )
                 reference_tasks[cache_key] = task
+            else:
+                pass
 
         prepared_references = await task
         self.validate_speech_references(request, prepared_references)
@@ -604,6 +672,8 @@ class SpeechRequestValidator:
                 "stream is not supported for batch speech requests",
                 param=f"items.{index}.stream",
             )
+        else:
+            pass
         payload.pop("stream", None)
         try:
             return CreateSpeechRequest.model_validate(payload)
@@ -621,6 +691,8 @@ class SpeechRequestValidator:
                 f"speed must be between {TTS_SPEED_MIN} and {TTS_SPEED_MAX}",
                 param="speed",
             )
+        else:
+            pass
         task_type = (
             normalize_task_type(batch.task_type)
             if batch.task_type is not None
@@ -629,6 +701,8 @@ class SpeechRequestValidator:
         self.validate_custom_voice_request(batch, task_type=task_type)
         if batch.language is not None:
             self.normalize_language(batch.language)
+        else:
+            pass
         validate_positive_int(batch.max_new_tokens, param="max_new_tokens")
         validate_positive_int(batch.token_count, param="token_count")
         validate_positive_int(batch.duration_tokens, param="duration_tokens")
@@ -652,6 +726,8 @@ class SpeechRequestValidator:
                     "POST /v1/audio/voices, or use ref_audio + ref_text.",
                     param="voice",
                 )
+            else:
+                pass
             if (
                 uploaded_voice is not None
                 and task_type is not None
@@ -661,6 +737,10 @@ class SpeechRequestValidator:
                     "uploaded voice requests require task_type='Base'",
                     param="task_type",
                 )
+            else:
+                pass
+        else:
+            pass
 
     def resolve_uploaded_voice_reference(
         self, request: CreateSpeechRequest
@@ -672,8 +752,12 @@ class SpeechRequestValidator:
             or request.references
         ):
             return None
+        else:
+            pass
         if not request.voice or request.voice.lower() == "default":
             return None
+        else:
+            pass
         uploaded_voice = self.voice_store.resolve_reference(request.voice)
         if uploaded_voice is None and self.requires_uploaded_voice_for_named_voice:
             raise bad_request(
@@ -681,6 +765,8 @@ class SpeechRequestValidator:
                 "POST /v1/audio/voices, or use ref_audio + ref_text.",
                 param="voice",
             )
+        else:
+            pass
         if uploaded_voice is not None:
             task_type = request.task_type
             if task_type is not None and normalize_task_type(task_type) != "Base":
@@ -688,6 +774,10 @@ class SpeechRequestValidator:
                     "uploaded voice requests require task_type='Base'",
                     param="task_type",
                 )
+            else:
+                pass
+        else:
+            pass
         return uploaded_voice
 
     def validate_raw_payload(self, payload: dict[str, Any]) -> None:
@@ -708,6 +798,10 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be a string", param=field_name
                     )
+                else:
+                    pass
+            else:
+                pass
         for field_name in (
             "max_new_tokens",
             "initial_codec_chunk_frames",
@@ -721,10 +815,18 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be an integer", param=field_name
                     )
+                else:
+                    pass
+            else:
+                pass
         if "top_k" in payload and payload["top_k"] is not None:
             value = payload["top_k"]
             if isinstance(value, bool) or not isinstance(value, int):
                 raise bad_request("top_k must be an integer", param="top_k")
+            else:
+                pass
+        else:
+            pass
         for field_name in ("speed", "temperature", "top_p", "repetition_penalty"):
             if field_name in payload and payload[field_name] is not None:
                 value = payload[field_name]
@@ -732,6 +834,10 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be a number", param=field_name
                     )
+                else:
+                    pass
+            else:
+                pass
         for field_name in (
             "stream",
             "x_vector_only_mode",
@@ -743,6 +849,10 @@ class SpeechRequestValidator:
                     raise bad_request(
                         f"{field_name} must be a boolean", param=field_name
                     )
+                else:
+                    pass
+            else:
+                pass
 
     def normalize_speech_reference(self, reference: SpeechReference) -> SpeechReference:
         updates: dict[str, Any] = {
@@ -755,6 +865,8 @@ class SpeechRequestValidator:
                 )
             )
             return reference.model_copy(update=updates)
+        else:
+            pass
 
         if isinstance(reference.audio_path, str):
             updates.update(
@@ -774,6 +886,8 @@ class SpeechRequestValidator:
                     reference.audio, param="references.audio"
                 )
             )
+        else:
+            pass
         return reference.model_copy(update=updates)
 
     def load_media_reference_descriptor(
@@ -785,12 +899,16 @@ class SpeechRequestValidator:
                 f"{param} must be an http, https, data, file:// URL, or local path",
                 param=param,
             )
+        else:
+            pass
         media_io = SpeechReferenceMediaIO(param)
         try:
             if url.scheme:
                 return self.reference_connector.load_resource(
                     value, media_io, max_bytes=MAX_REFERENCE_AUDIO_BYTES
                 )
+            else:
+                pass
             # Bare local paths follow the same allowlist and file checks as file://.
             return self.reference_connector.load_local_path(value, media_io)
         except (RuntimeError, ValueError, OSError) as exc:
@@ -800,6 +918,8 @@ class SpeechRequestValidator:
         message = audio_encoding_unavailable_reason(response_format)
         if message is not None:
             raise service_unavailable(message, param="response_format")
+        else:
+            pass
 
 
 def explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
@@ -830,39 +950,69 @@ def build_tts_params(
     generation_params = explicit_generation_params(request)
     if generation_params:
         tts_params["explicit_generation_params"] = generation_params
+    else:
+        pass
     if request.task_type is not None:
         tts_params["task_type"] = request.task_type
+    else:
+        pass
     if request.language is not None:
         tts_params["language"] = request.language
+    else:
+        pass
     if request.instructions is not None:
         tts_params["instructions"] = request.instructions
+    else:
+        pass
     if request.ref_audio is not None:
         tts_params["ref_audio"] = request.ref_audio
+    else:
+        pass
     if request.ref_text is not None:
         tts_params["ref_text"] = request.ref_text
+    else:
+        pass
     if uploaded_voice is not None:
         tts_params["task_type"] = "Base"
         tts_params["ref_audio"] = uploaded_voice.ref_audio
         if uploaded_voice.voice.ref_text is not None:
             tts_params["ref_text"] = uploaded_voice.voice.ref_text
+        else:
+            pass
         tts_params["uploaded_voice_name"] = uploaded_voice.voice.normalized_name
         tts_params["uploaded_voice_created_at"] = uploaded_voice.voice.created_at
+    else:
+        pass
     if request.x_vector_only_mode is not None:
         tts_params["x_vector_only_mode"] = request.x_vector_only_mode
+    else:
+        pass
     if request.stream_codec_output is not None:
         tts_params["stream_codec_output"] = request.stream_codec_output
+    else:
+        pass
     if request.suppress_bootstrap_silence is not None:
         tts_params["suppress_bootstrap_silence"] = request.suppress_bootstrap_silence
+    else:
+        pass
     if request.initial_codec_chunk_frames is not None:
         tts_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames
         )
+    else:
+        pass
     if request.token_count is not None:
         tts_params["token_count"] = request.token_count
+    else:
+        pass
     if request.duration_tokens is not None:
         tts_params["duration_tokens"] = request.duration_tokens
+    else:
+        pass
     if request.seed is not None:
         tts_params["seed"] = request.seed
+    else:
+        pass
     return tts_params
 
 
@@ -872,16 +1022,28 @@ def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
     )
     if request.max_new_tokens is not None:
         sampling.max_new_tokens = request.max_new_tokens
+    else:
+        pass
     if request.temperature is not None:
         sampling.temperature = request.temperature
+    else:
+        pass
     if request.top_p is not None:
         sampling.top_p = request.top_p
+    else:
+        pass
     if request.top_k is not None:
         sampling.top_k = request.top_k
+    else:
+        pass
     if request.repetition_penalty is not None:
         sampling.repetition_penalty = request.repetition_penalty
+    else:
+        pass
     if request.seed is not None:
         sampling.seed = request.seed
+    else:
+        pass
     return sampling
 
 
@@ -891,8 +1053,12 @@ def build_speech_prompt(
 ) -> Any:
     if reference_descriptors is None:
         reference_descriptors = reference_descriptors_from_request(request)
+    else:
+        pass
     if reference_descriptors:
         return {"text": request.input, "references": reference_descriptors}
+    else:
+        pass
     return request.input
 
 
@@ -902,6 +1068,8 @@ def build_extra_params(request: CreateSpeechRequest) -> dict[str, Any]:
         extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
             request.initial_codec_chunk_frames
         )
+    else:
+        pass
     return extra_params
 
 
@@ -922,9 +1090,13 @@ class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
             media_type.startswith("audio/") or media_type == "application/octet-stream"
         ):
             raise ValueError(f"{self.param} URL must return an audio media type")
+        else:
+            pass
         descriptor = self.load_bytes(data)
         if media_type is not None and media_type.startswith("audio/"):
             descriptor["media_type"] = media_type
+        else:
+            pass
         return descriptor
 
     def load_base64(self, media_type: str, data: str) -> dict[str, str]:
@@ -934,8 +1106,12 @@ class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
     def load_file(self, filepath: Path) -> dict[str, str]:
         if not filepath.exists():
             raise ValueError(f"{self.param} file does not exist: {filepath}")
+        else:
+            pass
         if not filepath.is_file():
             raise ValueError(f"{self.param} is not a file: {filepath}")
+        else:
+            pass
         validate_reference_size(filepath.stat().st_size, param=self.param)
         return {"audio_path": str(filepath)}
 
@@ -944,6 +1120,8 @@ def reference_dict_from_media_reference(value: str) -> dict[str, Any]:
     if value.startswith("data:"):
         media_type, encoded = parse_data_url(value, param="ref_audio")
         return {"data": encoded, "media_type": media_type}
+    else:
+        pass
     return {"audio_path": value}
 
 
@@ -955,11 +1133,17 @@ def reference_descriptors_from_request(
         references.extend(
             reference.model_dump(exclude_none=True) for reference in request.references
         )
+    else:
+        pass
     if request.ref_audio is not None:
         ref = reference_dict_from_media_reference(request.ref_audio)
         if request.ref_text is not None:
             ref["text"] = request.ref_text
+        else:
+            pass
         references.append(ref)
+    else:
+        pass
     return references
 
 
@@ -967,6 +1151,8 @@ def media_reference_from_descriptor(descriptor: dict[str, str]) -> str:
     audio_path = descriptor.get("audio_path")
     if audio_path is not None:
         return audio_path
+    else:
+        pass
     return f"data:{descriptor['media_type']};base64,{descriptor['data']}"
 
 
@@ -978,6 +1164,8 @@ def normalize_response_format(value: str) -> str:
             f"response_format must be one of: {supported}",
             param="response_format",
         )
+    else:
+        pass
     return fmt
 
 
@@ -995,6 +1183,8 @@ def uploaded_voice_reference_dict(
         media_type = header.split(";", 1)[0] or "audio/wav"
         ref["media_type"] = media_type
         ref["data"] = data
+    else:
+        pass
     return ref
 
 
@@ -1014,6 +1204,8 @@ def batch_error_result(index: int, error: SpeechAPIError) -> SpeechBatchResult:
 def batch_item_error(error: SpeechAPIError, *, index: int) -> SpeechAPIError:
     if error.param is None or error.param.startswith("items."):
         return error
+    else:
+        pass
     return SpeechAPIError(
         message=error.message,
         status_code=error.status_code,
@@ -1042,19 +1234,27 @@ def freeze_reference_value(value: Any) -> Any:
         return tuple(
             (key, freeze_reference_value(item)) for key, item in sorted(value.items())
         )
+    else:
+        pass
     if isinstance(value, list):
         return tuple(freeze_reference_value(item) for item in value)
+    else:
+        pass
     return value
 
 
 def validate_positive_int(value: int | None, *, param: str) -> None:
     if value is not None and value <= 0:
         raise bad_request(f"{param} must be greater than 0", param=param)
+    else:
+        pass
 
 
 def validate_non_negative_int(value: int | None, *, param: str) -> None:
     if value is not None and value < 0:
         raise bad_request(f"{param} must be greater than or equal to 0", param=param)
+    else:
+        pass
 
 
 def parse_data_url(value: str, *, param: str) -> tuple[str, str]:
@@ -1064,6 +1264,8 @@ def parse_data_url(value: str, *, param: str) -> tuple[str, str]:
             f"{param} data URL must include base64 media data",
             param=param,
         )
+    else:
+        pass
     media_type = header.removeprefix("data:").split(";", 1)[0] or "audio/wav"
     validate_base64_media_data(encoded, media_type=media_type, param=param)
     return media_type, encoded
@@ -1072,6 +1274,8 @@ def parse_data_url(value: str, *, param: str) -> tuple[str, str]:
 def validate_base64_media_data(encoded: str, *, media_type: str, param: str) -> None:
     if not media_type.startswith("audio/"):
         raise bad_request(f"{param} data URL must use an audio media type", param=param)
+    else:
+        pass
     validate_reference_size(estimated_base64_decoded_size(encoded), param=param)
     try:
         base64.b64decode(encoded, validate=True)
@@ -1092,6 +1296,8 @@ def validate_reference_size(size_bytes: int, *, param: str) -> None:
             f"{param} must be at most {MAX_REFERENCE_AUDIO_BYTES} bytes",
             param=param,
         )
+    else:
+        pass
 
 
 def normalize_task_type(value: str) -> str:
@@ -1101,6 +1307,8 @@ def normalize_task_type(value: str) -> str:
     if normalized is None:
         supported = ", ".join(sorted(SUPPORTED_TTS_TASK_TYPES))
         raise bad_request(f"task_type must be one of: {supported}", param="task_type")
+    else:
+        pass
     return normalized
 
 
@@ -1118,4 +1326,6 @@ def validation_error_param(
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     if not location:
         return prefix
+    else:
+        pass
     return f"{prefix}.{location}" if prefix else location

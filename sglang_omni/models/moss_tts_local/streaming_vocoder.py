@@ -76,6 +76,8 @@ class CodecStreamSession:
         self.warmup_attempted = True
         if self.closed:
             return []
+        else:
+            pass
         from sglang_omni.models.moss_tts_local.vocoder_cuda_graph import (
             MossVocoderCudaGraphRunner,
         )
@@ -90,6 +92,8 @@ class CodecStreamSession:
                 num_quantizers=self.n_vq,
                 min_free_gb=min_free_gb,
             )
+        else:
+            pass
         try:
             self.cg_runner.warmup(frames)
         except Exception:
@@ -99,6 +103,8 @@ class CodecStreamSession:
         captured = self.cg_runner.captured_frames()
         if not captured:
             self.cg_runner = None
+        else:
+            pass
         return captured
 
     def has_cuda_graph_runner(self) -> bool:
@@ -118,6 +124,8 @@ class CodecStreamSession:
     def acquire(self) -> int | None:
         if not self.free_stream_slots:
             return None
+        else:
+            pass
         slot = self.free_stream_slots.pop()
         self.stream_slots_in_use.add(slot)
         return slot
@@ -125,10 +133,14 @@ class CodecStreamSession:
     def release(self, slot: int) -> None:
         if self.closed:
             return
+        else:
+            pass
         if slot not in self.stream_slots_in_use:
             raise RuntimeError(
                 f"MOSS-Audio-Tokenizer vocoder stream slot {slot} is not leased"
             )
+        else:
+            pass
         self.reset_slots([slot])
         self.stream_slots_in_use.remove(slot)
         self.free_stream_slots.append(slot)
@@ -136,13 +148,19 @@ class CodecStreamSession:
     def close(self) -> None:
         if self.closed:
             return
+        else:
+            pass
         if self.cg_runner is not None:
             self.log_cg_stats()
+        else:
+            pass
         if self.compact_batch_sizes:
             logger.info(
                 "MOSS-Audio-Tokenizer vocoder compact streaming batches: B=%s",
                 dict(sorted(self.compact_batch_sizes.items())),
             )
+        else:
+            pass
         try:
             self.codec.close_decoder_state_pool()
         finally:
@@ -155,6 +173,8 @@ class CodecStreamSession:
         total = graph + eager
         if not total:
             return
+        else:
+            pass
         logger.info(
             "MOSS-Audio-Tokenizer vocoder CG stats: %d/%d steps graphed (%.1f%%); "
             "graph T=%s eager T=%s",
@@ -168,6 +188,8 @@ class CodecStreamSession:
     def reset_slots(self, slots: list[int]) -> None:
         if not slots:
             return
+        else:
+            pass
         slot_ids = torch.as_tensor(slots, dtype=torch.long, device=self.device)
         with torch.no_grad():
             self.codec.reset_decoder_state_slots(slot_ids)
@@ -176,36 +198,52 @@ class CodecStreamSession:
         """Advance participating slots by one uniform-length step. ``slot_codes`` maps slot -> ``[n_vq, T]`` (same T); returns slot -> ``[channels, samples]`` float32 CPU audio."""
         if not slot_codes:
             return {}
+        else:
+            pass
         for slot, codes in slot_codes.items():
             if not isinstance(slot, int) or isinstance(slot, bool):
                 raise TypeError(f"streaming slot id must be an int, got {slot!r}")
+            else:
+                pass
             if slot < 0 or slot >= self.stream_slots:
                 raise ValueError(
                     f"streaming slot {slot} is outside [0, {self.stream_slots})"
                 )
+            else:
+                pass
             if int(codes.ndim) != 2:
                 raise ValueError(
                     f"streaming slot {slot} codes must have shape [NQ, T], "
                     f"got {tuple(codes.shape)}"
                 )
+            else:
+                pass
             if int(codes.shape[0]) <= 0 or int(codes.shape[1]) <= 0:
                 raise ValueError(
                     f"streaming slot {slot} codes must have positive NQ and T, "
                     f"got {tuple(codes.shape)}"
                 )
+            else:
+                pass
         step_lengths = {int(codes.shape[1]) for codes in slot_codes.values()}
         if len(step_lengths) != 1:
             raise ValueError(
                 f"streaming step requires a uniform length, got {sorted(step_lengths)}"
             )
+        else:
+            pass
         (step_t,) = step_lengths
         n_vq = int(next(iter(slot_codes.values())).shape[0])
         if n_vq != self.n_vq:
             raise ValueError(
                 f"streaming codes must use {self.n_vq} quantizers, got {n_vq}"
             )
+        else:
+            pass
         if any(int(codes.shape[0]) != n_vq for codes in slot_codes.values()):
             raise ValueError("all streaming slots must use the same quantizer count")
+        else:
+            pass
         slots = list(slot_codes)
         # Use the same batch bucket for eager and graph execution. Changing
         # GEMM shapes on a graph miss can change BF16 PCM and live KV state.
@@ -219,6 +257,8 @@ class CodecStreamSession:
         ]
         if padding:
             rows.extend([rows[0].new_zeros(n_vq, step_t)] * padding)
+        else:
+            pass
         codes_step = torch.stack(rows, dim=1)
         codes_lengths = torch.tensor(
             [step_t] * len(slots) + [0] * padding,
@@ -250,6 +290,8 @@ class CodecStreamSession:
                     except Exception:
                         graph_failed = True
                         raise
+                else:
+                    pass
                 if graphed is not None:
                     audio, audio_lengths = graphed
                 else:
@@ -273,6 +315,8 @@ class CodecStreamSession:
                     "materialization); disabling runner, serving eager from here"
                 )
                 self.cg_runner = None
+            else:
+                pass
             raise
         if self.cg_runner is not None:
             if graphed is not None:
@@ -282,6 +326,10 @@ class CodecStreamSession:
             self.cg_total_steps += 1
             if self.cg_total_steps % 2000 == 0:
                 self.log_cg_stats()
+            else:
+                pass
+        else:
+            pass
         out: dict[int, torch.Tensor] = {}
         for index, slot in enumerate(slots):
             n_samples = int(lengths_cpu[index])
@@ -332,11 +380,15 @@ class MossTTSLocalStreamingVocoderScheduler(
     ) -> None:
         if stream_slots < 1:
             raise ValueError(f"stream_slots must be >= 1, got {stream_slots}")
+        else:
+            pass
         if not 0 < stream_chunk_frames <= max_step_frames:
             raise ValueError(
                 "stream_chunk_frames must be in (0, max_step_frames], got "
                 f"{stream_chunk_frames} (max_step_frames={max_step_frames})"
             )
+        else:
+            pass
         # Always build a separate execution view: from_module returns a native
         # decoder unchanged, which would expose live streaming offsets and KV
         # to offline requests. The new wrappers still share all model weights.
@@ -358,6 +410,8 @@ class MossTTSLocalStreamingVocoderScheduler(
                 "MOSS-TTS Local audio tokenizer has no quantizer.decode_codes; "
                 "the batched non-streaming decode path is unavailable"
             )
+        else:
+            pass
         self.quantizer_decode = quantizer.decode_codes
         self.compute_dtype = getattr(codec, "compute_dtype", None)
         # note (Zhang Yiyang): matches the codec's _restore_channels_from_codec:
@@ -400,6 +454,10 @@ class MossTTSLocalStreamingVocoderScheduler(
                     f"vocoder_cuda_graph_frames exceed max_step_frames={self.max_step_frames}: "
                     f"{too_large}"
                 )
+            else:
+                pass
+        else:
+            pass
         super().__init__(
             self.vocode,
             batch_compute_fn=self.vocode_batch,
@@ -413,6 +471,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         if self.session is not None:
             self.session.close()
             self.session = None
+        else:
+            pass
 
     def create_stream_state(self, request_id: str) -> LocalStreamState:
         del request_id
@@ -434,6 +494,8 @@ class MossTTSLocalStreamingVocoderScheduler(
             )
             self.latch_thresholds(request_id, state, params)
             return
+        else:
+            pass
         metadata: Mapping[str, Any] = source
         n_vq = metadata.get("n_vq")
         if n_vq is not None:
@@ -443,9 +505,15 @@ class MossTTSLocalStreamingVocoderScheduler(
                     f"MOSS-TTS Local stream n_vq changed for {request_id!r}: "
                     f"{state.n_vq} -> {n_vq}"
                 )
+            else:
+                pass
             state.n_vq = n_vq
+        else:
+            pass
         if state.threshold == 0:
             self.latch_thresholds(request_id, state, metadata)
+        else:
+            pass
 
     def validate_chunk(
         self, request_id: str, state: LocalStreamState, codes: torch.Tensor
@@ -455,8 +523,12 @@ class MossTTSLocalStreamingVocoderScheduler(
         n_vq = state.n_vq if state.n_vq is not None else self.n_vq
         if codes.ndim == 1 and int(codes.shape[0]) >= n_vq + 1:
             return codes[1 : 1 + n_vq]
+        else:
+            pass
         if codes.ndim == 2 and int(codes.shape[1]) >= n_vq + 1:
             return codes[:, 1 : 1 + n_vq]
+        else:
+            pass
         if codes.ndim not in (1, 2):
             shape_contract = "[channels] or [frames, channels]"
         else:
@@ -506,8 +578,12 @@ class MossTTSLocalStreamingVocoderScheduler(
                 audio_parts.append(session.step({state.slot: codes})[state.slot])
             session.release(state.slot)
             state.slot = None
+        else:
+            pass
         if not audio_parts:
             return None
+        else:
+            pass
         return torch.cat(audio_parts, dim=-1)
 
     def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
@@ -537,6 +613,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         usage = build_usage(MossTTSLocalState.from_dict(payload.data))
         if usage is not None:
             final_data["usage"] = usage
+        else:
+            pass
         return final_data
 
     def release_stream_resources(
@@ -545,6 +623,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id
         if state.slot is not None and self.session is not None:
             self.session.release(state.slot)
+        else:
+            pass
 
     def select_step_participants(self) -> list[tuple[str, LocalStreamState]]:
         """Every stream whose buffer crossed its threshold is due; due streams
@@ -562,6 +642,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         ]
         if not due:
             return []
+        else:
+            pass
         floor = min(
             min(len(state.pending) for _, state in due),
             join_floor,
@@ -584,6 +666,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         for request_id, state in participants:
             if not self.stream_has_emitted(request_id):
                 step_t = min(step_t, state.threshold)
+            else:
+                pass
         return CoalescedStepPlan(
             step_t=step_t,
             slot_codes={
@@ -610,8 +694,12 @@ class MossTTSLocalStreamingVocoderScheduler(
     ) -> bool:
         if len(state.pending) >= state.threshold:
             return True
+        else:
+            pass
         if not self.stream_has_emitted(request_id):
             return False
+        else:
+            pass
         return len(state.pending) >= floor
 
     def ensure_session(self) -> CodecStreamSession:
@@ -621,6 +709,8 @@ class MossTTSLocalStreamingVocoderScheduler(
                 stream_slots=self.stream_slots,
                 n_vq=self.n_vq,
             )
+        else:
+            pass
         return self.session
 
     def vocoder_cuda_graph_capture_frames(self) -> list[int]:
@@ -628,6 +718,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         if self.vocoder_cuda_graph_frames:
             # Validated at config (>= 1) and __init__ (<= max_step_frames); use as configured.
             return sorted(set(self.vocoder_cuda_graph_frames))
+        else:
+            pass
         # Note (Zhang Yiyang): Capture every emitted remainder length because
         # frame padding advances causal state; explicit frames may narrow it.
         max_frame = min(self.stream_chunk_frames, self.max_step_frames)
@@ -662,6 +754,8 @@ class MossTTSLocalStreamingVocoderScheduler(
                         "MOSS-Audio-Tokenizer vocoder CUDA-graph capture failed; "
                         "serving eager from this session"
                     )
+            else:
+                pass
             return session
 
     def warmup_now(self) -> None:
@@ -670,6 +764,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         graph. No-op without a CUDA codec; best-effort, degrades to eager."""
         if not self.vocoder_cuda_graph or not self.codec_on_cuda():
             return
+        else:
+            pass
         session = self.ensure_session_graphed()
         if session.has_cuda_graph_runner():
             logger.info(
@@ -685,6 +781,8 @@ class MossTTSLocalStreamingVocoderScheduler(
     def ensure_slot(self, state: LocalStreamState) -> None:
         if state.slot is None:
             state.slot = self.ensure_session_graphed().acquire()
+        else:
+            pass
 
     def latch_thresholds(
         self,
@@ -706,9 +804,13 @@ class MossTTSLocalStreamingVocoderScheduler(
         state = MossTTSLocalState.from_dict(payload.data)
         if state.audio_codes is None:
             return None
+        else:
+            pass
         rows = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if rows.numel() == 0:
             return None
+        else:
+            pass
         return self.decode_codes_rows([rows])[0]
 
     def prepare_codes(
@@ -717,10 +819,14 @@ class MossTTSLocalStreamingVocoderScheduler(
         state = MossTTSLocalState.from_dict(payload.data)
         if state.audio_codes is None:
             raise RuntimeError("MOSS-TTS Local vocoder requires audio_codes")
+        else:
+            pass
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long)
         if codes.numel() == 0:
             # Emit no audio: only this request fails downstream, not the batch.
             return state, None
+        else:
+            pass
         return state, codes
 
     def store_vocoder_result(
@@ -742,6 +848,8 @@ class MossTTSLocalStreamingVocoderScheduler(
         usage = build_usage(state)
         if usage is not None:
             payload.data["usage"] = usage
+        else:
+            pass
         return payload
 
     def decode_codes_rows(self, codes_list: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -771,6 +879,8 @@ class MossTTSLocalStreamingVocoderScheduler(
                 payload.data = state.to_dict()
                 results.append(payload)
                 continue
+            else:
+                pass
             results.append(self.store_vocoder_result(payload, state, next(decoded)))
         return results
 

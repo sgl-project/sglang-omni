@@ -134,6 +134,8 @@ class SemanticCodebook(nn.Module):
             )
             self.register_buffer("_embedding", embedding, persistent=False)
             return embedding
+        else:
+            pass
         return (
             self._embedding
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -217,9 +219,13 @@ def pad1d(
         if length <= max_pad:
             extra_pad = max_pad - length + 1
             x = F.pad(x, (0, extra_pad))
+        else:
+            pass
         padded = F.pad(x, paddings, mode, value)
         end = padded.shape[-1] - extra_pad
         return padded[..., :end]
+    else:
+        pass
     return F.pad(x, paddings, mode, value)
 
 
@@ -323,6 +329,8 @@ class Attention(nn.Module):
 
             if math.log2(n_heads).is_integer():
                 return slopes_power_of_2(n_heads)
+            else:
+                pass
             m = 2 ** math.floor(math.log2(n_heads))
             return torch.cat(
                 [slopes_power_of_2(m), slopes_power_of_2(2 * m)[::2][: n_heads - m]]
@@ -344,6 +352,8 @@ class Attention(nn.Module):
             self.k_norm = rms_norm(
                 args.n_kv_heads * args.head_dim, eps=args.qk_norm_eps
             )
+        else:
+            pass
 
     def native_attention(
         self, xq: torch.Tensor, xk: torch.Tensor, xv: torch.Tensor
@@ -357,6 +367,8 @@ class Attention(nn.Module):
             repeats = H // Hkv
             k = k.repeat_interleave(repeats, dim=1)
             v = v.repeat_interleave(repeats, dim=1)
+        else:
+            pass
 
         positions = torch.arange(S, device=xq.device)
         rel_pos = positions.unsqueeze(0) - positions.unsqueeze(1)
@@ -364,6 +376,8 @@ class Attention(nn.Module):
         attn_bias = alibi_slopes.view(H, 1, 1) * rel_pos.unsqueeze(0).to(xq.dtype)
         if self.args.causal:
             attn_bias = attn_bias.masked_fill(rel_pos.unsqueeze(0) > 0, float("-inf"))
+        else:
+            pass
         window_left = self.sliding_window
         window_right = 0 if self.args.causal else self.sliding_window
         outside_window = (rel_pos < -window_left) | (rel_pos > window_right)
@@ -383,6 +397,8 @@ class Attention(nn.Module):
         if self.args.qk_norm:
             xq = self.q_norm(xq)
             xk = self.k_norm(xk)
+        else:
+            pass
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.args.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.args.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.args.head_dim)
@@ -436,6 +452,8 @@ class TransformerBlock(nn.Module):
             self.ffn_scale = nn.Parameter(
                 torch.full((args.dim,), init_scale, requires_grad=True)
             )
+        else:
+            pass
 
     @property
     def layer_id(self) -> int:
@@ -447,10 +465,14 @@ class TransformerBlock(nn.Module):
         r = self.attention(self.attention_norm(x))
         if self.layer_scale:
             r = self.attention_scale * r
+        else:
+            pass
         h = x + r
         r = self.feed_forward(self.ffn_norm(h))
         if self.layer_scale:
             r = self.ffn_scale * r
+        else:
+            pass
         return h + r
 
 
@@ -512,6 +534,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         for s in args.encoder_convs_strides:
             if args.half_attn_window_upon_downsampling and s > 1:
                 cur_window_size = cur_window_size // 2
+            else:
+                pass
 
         decoder_blocks.append(
             CausalConv1d(
@@ -525,6 +549,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         )
         if args.half_attn_window_upon_downsampling and decoder_convs_strides[0] > 1:
             cur_window_size = cur_window_size * 2
+        else:
+            pass
 
         for idx, n_layers in enumerate(decoder_transformer_lengths):
             layer_args = deepcopy(args)
@@ -548,6 +574,10 @@ class VoxtralTTSAudioTokenizer(nn.Module):
                     and decoder_convs_strides[idx + 1] > 1
                 ):
                     cur_window_size = cur_window_size * 2
+                else:
+                    pass
+            else:
+                pass
 
         self.decoder_blocks = nn.ModuleList(decoder_blocks)
         self.quantizer = MistralAudioCodebook(args)
@@ -632,6 +662,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
 
         if not non_empty:
             return results
+        else:
+            pass
 
         all_chunks: list[torch.Tensor] = []
         chunk_lengths: list[int] = []
@@ -688,6 +720,8 @@ class VoxtralTTSAudioTokenizer(nn.Module):
             else:
                 logger.warning(f"Weight {name} not found in audio tokenizer")
                 return name
+        else:
+            pass
         param = params_dict[name]
         param.data.copy_(loaded_weight)
         return name

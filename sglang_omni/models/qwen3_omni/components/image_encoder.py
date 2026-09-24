@@ -39,9 +39,13 @@ def optimize_patch_embed(visual: nn.Module) -> None:
     patch_embed = getattr(visual, "patch_embed", None)
     if patch_embed is None:
         return
+    else:
+        pass
     conv = getattr(patch_embed, "proj", None)
     if conv is None or not isinstance(conv, nn.Conv3d):
         return
+    else:
+        pass
 
     if list(conv.kernel_size) != list(conv.stride):
         logger.debug(
@@ -50,12 +54,16 @@ def optimize_patch_embed(visual: nn.Module) -> None:
             conv.stride,
         )
         return
+    else:
+        pass
 
     if conv.padding != (0, 0, 0) or conv.dilation != (1, 1, 1) or conv.groups != 1:
         logger.debug(
             "PatchEmbed Conv3d has non-trivial padding/dilation/groups, skipping"
         )
         return
+    else:
+        pass
 
     embed_dim = conv.out_channels
     in_features = (
@@ -97,6 +105,8 @@ def unpack_visual_output(visual_out):
     """
     if isinstance(visual_out, tuple):
         return visual_out[0], visual_out[1]
+    else:
+        pass
     return visual_out.pooler_output, visual_out.deepstack_features
 
 
@@ -178,6 +188,8 @@ class Qwen3OmniImageEncoder(nn.Module):
                     "deepstack_visual_embeds_image": image_embeds_multiscale,
                 }
             )
+        else:
+            pass
 
         if isinstance(pixel_values_videos, torch.Tensor) and isinstance(
             video_grid_thw, torch.Tensor
@@ -198,5 +210,7 @@ class Qwen3OmniImageEncoder(nn.Module):
                     "deepstack_visual_embeds_video": video_embeds_multiscale,
                 }
             )
+        else:
+            pass
 
         return outputs

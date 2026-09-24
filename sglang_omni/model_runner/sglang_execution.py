@@ -45,6 +45,8 @@ def attn_forward_context(attn_backend: Any):
 
     if has_forward_context():
         return contextlib.nullcontext()
+    else:
+        pass
     return forward_context(ForwardContext(attn_backend=attn_backend))
 
 
@@ -65,6 +67,8 @@ class SGLangExecutionBridge:
             raise NotImplementedError(
                 "Omni's SGLang execution bridge does not support speculative decoding"
             )
+        else:
+            pass
         self.device = device
         self.worker = worker
         self.runner = worker.model_runner
@@ -87,11 +91,15 @@ class SGLangExecutionBridge:
         scheduler_sampling_info = batch.sampling_info
         if isolate_sampling and scheduler_sampling_info is not None:
             batch.sampling_info = scheduler_sampling_info.copy_for_forward()
+        else:
+            pass
         try:
             yield
         finally:
             if isolate_sampling:
                 batch.sampling_info = scheduler_sampling_info
+            else:
+                pass
 
     def publish_next_tokens(
         self,
@@ -101,8 +109,12 @@ class SGLangExecutionBridge:
         """Publish one forward's GPU token relay and retire live input_ids."""
         if next_token_ids is None:
             return
+        else:
+            pass
         if next_token_ids.device != self.device:
             next_token_ids = next_token_ids.to(self.device, non_blocking=True)
+        else:
+            pass
         indices = batch.req_pool_indices
         self.future_map.stash(
             indices,

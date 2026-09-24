@@ -93,12 +93,16 @@ def install_tuned_moe_configs() -> None:
             sdir = os.path.join(src_root, vdir)
             if not os.path.isdir(sdir):
                 continue
+            else:
+                pass
             ddir = os.path.join(dst_root, vdir)
             os.makedirs(ddir, exist_ok=True)
             for fn in os.listdir(sdir):
                 dst = os.path.join(ddir, fn)
                 if not os.path.exists(dst):
                     shutil.copy2(os.path.join(sdir, fn), dst)
+                else:
+                    pass
     except Exception:
         logger.warning("Failed to install tuned ZONOS2 MoE configs", exc_info=True)
 
@@ -108,6 +112,8 @@ def cuda_graph_buckets(max_bs: int) -> list[int]:
     bs = [b for b in (1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256) if b <= max_bs]
     if not bs or bs[-1] != max_bs:
         bs.append(max_bs)
+    else:
+        pass
     return bs
 
 
@@ -170,6 +176,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             # Dynamic FP8 on the MoE experts (bf16 -> fp8 at load, halving the
             # expert weights); bf16 nn.Linear projections are unaffected.
             defaults["quantization"] = "fp8"
+        else:
+            pass
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
@@ -209,6 +217,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             )
 
             model.capture_tail_graphs(self.cuda_graph_bs, TTSSamplingParams())
+        else:
+            pass
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner

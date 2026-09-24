@@ -30,6 +30,8 @@ def normalize_device(device: torch.device | str | int) -> torch.device:
     resolved = torch.device(device)
     if resolved.type == "cuda" and resolved.index is None:
         return torch.device("cuda", torch.cuda.current_device())
+    else:
+        pass
     return resolved
 
 
@@ -43,10 +45,14 @@ class GrowablePinnedBuffer:
     def __init__(self, dtype: torch.dtype, *, initial_capacity: int = 0) -> None:
         if initial_capacity < 0:
             raise ValueError("initial_capacity must be >= 0")
+        else:
+            pass
         self.dtype = dtype
         self.storage: torch.Tensor | None = None
         if initial_capacity:
             self.ensure_capacity(initial_capacity)
+        else:
+            pass
 
     @property
     def capacity(self) -> int:
@@ -56,8 +62,12 @@ class GrowablePinnedBuffer:
         """Grow to ``required`` elements. On failure the old storage is kept."""
         if required < 0:
             raise ValueError("required capacity must be >= 0")
+        else:
+            pass
         if required <= self.capacity:
             return
+        else:
+            pass
         storage = allocate_pinned(required, self.dtype)
         self.storage = storage
 
@@ -68,9 +78,13 @@ class GrowablePinnedBuffer:
                 f"requested {numel} elements from a pinned buffer with capacity "
                 f"{self.capacity}"
             )
+        else:
+            pass
         if self.storage is None:
             with torch.inference_mode(False):
                 return torch.empty(0, dtype=self.dtype)
+        else:
+            pass
         return self.storage[:numel]
 
 
@@ -115,6 +129,8 @@ class PinnedTransferSlot:
     def device_guard(self) -> contextlib.AbstractContextManager[Any]:
         if self.device.type == "cuda":
             return torch.cuda.device(self.device)
+        else:
+            pass
         return contextlib.nullcontext()
 
     def record(self, stream: Any) -> None:
@@ -135,9 +151,13 @@ class PinnedTransferSlot:
                 f"cannot record a transfer slot on {self.device} from a stream on "
                 f"{stream_device}"
             )
+        else:
+            pass
         with self.device_guard():
             if self.event is None:
                 self.event = torch.cuda.Event()
+            else:
+                pass
             self.event.record(stream)
         self.recorded = True
 
@@ -147,6 +167,8 @@ class PinnedTransferSlot:
                 "transfer event was not recorded: no record() has succeeded on "
                 "this slot since it was created or since its last record() raised"
             )
+        else:
+            pass
         return self.event
 
     def query(self) -> bool:

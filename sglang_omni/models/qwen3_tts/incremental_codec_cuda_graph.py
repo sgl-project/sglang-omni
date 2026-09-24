@@ -108,6 +108,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             raise ValueError(
                 "incremental Codec graph mode must be 'cold', 'warm' or 'window'"
             )
+        else:
+            pass
         self.fresh_frames = tuple(
             sorted({int(frames) for frames in fresh_frames if int(frames) > 0})
         )
@@ -116,6 +118,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         )
         if not math.isfinite(float(min_free_gb)) or float(min_free_gb) < 0:
             raise ValueError("incremental Codec graph min_free_gb must be >= 0")
+        else:
+            pass
         self.min_free_bytes = int(float(min_free_gb) * 1024**3)
         self.configured = bool(
             enabled
@@ -143,6 +147,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """Capture every configured hot shape before serving readiness."""
         if not self.configured or self.capture_complete:
             return
+        else:
+            pass
         self.capture_complete = True
         keys = [
             IncrementalCodecGraphKey(frames, batch_size)
@@ -223,6 +229,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
     ) -> None:
         if int(free_bytes) >= self.min_free_bytes:
             return
+        else:
+            pass
         key_text = (
             ""
             if key is None
@@ -287,6 +295,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             synchronized = self.retain_capture_resources_if_unsynchronized(resources)
             if synchronized and graph is not None:
                 self.reset_graph(graph, context=f"unpublished key {key}")
+            else:
+                pass
             raise
 
     def warmup_capture_shape(
@@ -306,6 +316,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 )
                 resources.keepalives.append(trace_state)
                 self.decoder.precompile(static_codes, trace_state)
+            else:
+                pass
             for _ in range(self.WARMUP_ITERATIONS):
                 warmup_state = self.arena.gather_by_index(
                     self.scratch_index(key.batch_bucket)
@@ -360,6 +372,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 )
             )
             return
+        else:
+            pass
         self.tear_down_graphs(temporary, context="capture rollback")
         self.retained_capture_resources.clear()
 
@@ -401,6 +415,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """Return published batch buckets for one fresh-frame count."""
         if not self.enabled:
             return ()
+        else:
+            pass
         return tuple(
             sorted(
                 (
@@ -416,6 +432,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """Split total_frames into captured widths; None while disabled."""
         if not self.enabled:
             return None
+        else:
+            pass
         with self.graphs_lock:
             widths = {key.fresh_frames for key in self.graphs}
         return split_frames_by_width(total_frames, widths)
@@ -424,6 +442,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """The widest cohort one replay takes at any captured width; 0 while disabled."""
         if not self.enabled:
             return 0
+        else:
+            pass
         with self.graphs_lock:
             return max((key.batch_bucket for key in self.graphs), default=0)
 
@@ -447,18 +467,26 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             raise RuntimeError(
                 f"Qwen3-TTS incremental Codec graph runner belongs to PID {self.owner_pid}, but was used in PID {os.getpid()}"
             )
+        else:
+            pass
         if not self.enabled or not self.graphs:
             with self.graphs_lock:
                 self.misses["disabled_or_uncaptured"] += 1
             return None
+        else:
+            pass
         self.validate_codes(codes)
         if int(codes.shape[2]) not in self.fresh_frames:
             with self.graphs_lock:
                 self.misses["uncaptured_fresh_frames"] += 1
             return None
+        else:
+            pass
         batch_size = int(codes.shape[0])
         if batch_size != len(slots):
             raise ValueError("decode_slots needs one slot per code row")
+        else:
+            pass
         bucket = next(
             (
                 size
@@ -472,11 +500,15 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             with self.graphs_lock:
                 self.misses["missing_batch_bucket"] += 1
             return None
+        else:
+            pass
         entry = self.graphs[IncrementalCodecGraphKey(int(codes.shape[2]), bucket)]
         entry.static_index[:batch_size].copy_(self.arena.stage_index(slots))
         if batch_size < bucket:
             entry.static_index[batch_size:].fill_(int(self.arena.scratch_slot))
             entry.static_codes[batch_size:].zero_()
+        else:
+            pass
         entry.static_codes[:batch_size].copy_(codes)
         try:
             entry.graph.replay()
@@ -495,24 +527,36 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
     def validate_codes(self, codes: torch.Tensor) -> None:
         if codes.ndim != 3:
             raise ValueError("incremental Codec graph input must have shape [B, Q, T]")
+        else:
+            pass
         if int(codes.shape[0]) < 1:
             raise ValueError("incremental Codec graph input requires at least one row")
+        else:
+            pass
         if int(codes.shape[1]) != self.num_quantizers:
             raise ValueError(
                 f"incremental Codec graph input must contain {self.num_quantizers} quantizers"
             )
+        else:
+            pass
         if codes.dtype != torch.long:
             raise TypeError("incremental Codec graph input must use torch.long")
+        else:
+            pass
         if codes.device != self.device:
             raise ValueError(
                 f"incremental Codec graph input must be on {self.device}, got {codes.device}"
             )
+        else:
+            pass
 
     def disable_runtime(self, reason: str) -> None:
         self.enabled = False
         self.disable_reason = reason
         if not self.synchronize_device("runtime disable"):
             return
+        else:
+            pass
         with self.graphs_lock:
             graphs = dict(self.graphs)
             self.graphs.clear()

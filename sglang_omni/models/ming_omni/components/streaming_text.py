@@ -24,6 +24,8 @@ class CompletedResult:
 def is_done_signal(item: Any) -> bool:
     if item is None:
         return True
+    else:
+        pass
     return isinstance(item, StreamSignal) and item.is_done and item.error is None
 
 
@@ -34,6 +36,8 @@ def text_to_uint8_tensor(text: str) -> torch.Tensor:
 def uint8_tensor_to_text(tensor: torch.Tensor) -> str:
     if tensor.dtype != torch.uint8:
         raise TypeError("uint8_tensor_to_text expects a torch.uint8 tensor")
+    else:
+        pass
     values = tensor.detach().cpu().flatten().tolist()
     return bytes(values).decode("utf-8", errors="ignore")
 
@@ -42,6 +46,8 @@ def split_whitespace_tokens(text: str, max_tokens: int) -> tuple[str, str]:
     parts = text.split()
     if len(parts) <= max_tokens:
         return text, ""
+    else:
+        pass
     return " ".join(parts[:max_tokens]), " ".join(parts[max_tokens:])
 
 
@@ -55,16 +61,28 @@ class SegmenterConfig:
     def __post_init__(self) -> None:
         if self.segment_min_tokens <= 0:
             raise ValueError("segment_min_tokens must be positive")
+        else:
+            pass
         if self.segment_max_tokens <= 0:
             raise ValueError("segment_max_tokens must be positive")
+        else:
+            pass
         if self.first_segment_min_tokens <= 0:
             raise ValueError("first_segment_min_tokens must be positive")
+        else:
+            pass
         if self.segment_min_tokens > self.segment_max_tokens:
             raise ValueError("segment_min_tokens must be <= segment_max_tokens")
+        else:
+            pass
         if self.first_segment_min_tokens > self.segment_max_tokens:
             raise ValueError("first_segment_min_tokens must be <= segment_max_tokens")
+        else:
+            pass
         if self.first_segment_max_wait_ms < 0:
             raise ValueError("first_segment_max_wait_ms must be non-negative")
+        else:
+            pass
 
 
 @dataclass(frozen=True)
@@ -89,13 +107,19 @@ class SegmenterState:
     def push(self, text: str, *, now_ms: int) -> list[TextSegment]:
         if text and self.first_text_ms is None:
             self.first_text_ms = now_ms
+        else:
+            pass
         self.buffer += text
         if not self.buffer:
             return []
+        else:
+            pass
 
         tokens = self.token_count_fn(self.buffer)
         if tokens >= self.config.segment_max_tokens:
             return [self.emit_max_window(now_ms=now_ms)]
+        else:
+            pass
 
         first_timeout_ready = (
             self.segment_id == 0
@@ -109,6 +133,8 @@ class SegmenterState:
         ) or first_timeout_ready
         if not should_emit:
             return []
+        else:
+            pass
 
         return [self.emit(is_final_segment=False)]
 
@@ -118,6 +144,8 @@ class SegmenterState:
     def flush(self) -> list[TextSegment]:
         if not self.buffer:
             return []
+        else:
+            pass
         return [self.emit(is_final_segment=True)]
 
     def has_segment_end_punctuation(self) -> bool:

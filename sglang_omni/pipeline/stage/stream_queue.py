@@ -54,6 +54,8 @@ class StreamQueue:
             self.queues[request_id] = (
                 asyncio.Queue()
             )  # unbounded; backpressure at sender
+        else:
+            pass
 
     def has(self, request_id: str) -> bool:
         return request_id in self.queues
@@ -64,12 +66,16 @@ class StreamQueue:
             # The queue can disappear between an ingress guard and delivery
             # when request cleanup races an in-flight stream chunk.
             return
+        else:
+            pass
         queue.put_nowait(item)
 
     def put_done(self, request_id: str, from_stage: str | None = None) -> None:
         queue = self.queues.get(request_id)
         if queue is None:
             return
+        else:
+            pass
         queue.put_nowait(StreamSignal(from_stage=from_stage, is_done=True))
 
     def put_error(
@@ -78,6 +84,8 @@ class StreamQueue:
         queue = self.queues.get(request_id)
         if queue is None:
             return
+        else:
+            pass
         queue.put_nowait(StreamSignal(from_stage=from_stage, error=error))
 
     async def get(self, request_id: str) -> StreamItem | None:
@@ -86,7 +94,11 @@ class StreamQueue:
         if queue is None:
             if request_id in self.closed:
                 return None  # queue was closed — treat as done
+            else:
+                pass
             raise RuntimeError(f"No queue for {request_id}")
+        else:
+            pass
 
         try:
             item = queue.get_nowait()
@@ -96,7 +108,11 @@ class StreamQueue:
         if isinstance(item, StreamSignal):
             if item.error:
                 raise item.error
+            else:
+                pass
             return None
+        else:
+            pass
         return item
 
     async def get_with_source(self, request_id: str) -> StreamItem | StreamSignal:
@@ -105,7 +121,11 @@ class StreamQueue:
         if queue is None:
             if request_id in self.closed:
                 return StreamSignal(is_done=True)  # abort signal
+            else:
+                pass
             raise RuntimeError(f"No queue for {request_id}")
+        else:
+            pass
 
         try:
             item = queue.get_nowait()
@@ -123,6 +143,10 @@ class StreamQueue:
             it = iter(self.closed)
             to_remove = [next(it) for _ in range(excess)]
             self.closed -= set(to_remove)
+        else:
+            pass
         if q is not None:
             # Wake any blocked get() calls with a proper sentinel
             q.put_nowait(StreamSignal(is_done=True))
+        else:
+            pass

@@ -78,6 +78,8 @@ def norm_rope_kernel(
         k = k.to(K_OUT.dtype.element_ty).to(tl.float32)
         q_pair = q_pair.to(Q_OUT.dtype.element_ty).to(tl.float32)
         k_pair = k_pair.to(K_OUT.dtype.element_ty).to(tl.float32)
+    else:
+        pass
     table_offset = batch * CB + position * CS + dim * CD
     cosine = tl.load(COS + table_offset).to(tl.float32)
     sine = tl.load(SIN + table_offset).to(tl.float32)
@@ -100,6 +102,8 @@ def fused_qk_norm_rope(
     """
     if rope.scale != 1.0:
         raise ValueError("AuK Q/K fusion requires XPos disabled")
+    else:
+        pass
     cosine, sine = rope.cos, rope.sin
     if cosine.ndim == 2:
         strides = (0, *cosine.stride())

@@ -67,6 +67,8 @@ def create_thinker_scheduler(
             model_worker.model_runner,
             operator_selected=operator_selected_prefill_backend,
         )
+    else:
+        pass
 
     output_proc = SGLangOutputProcessor()
 
@@ -172,12 +174,16 @@ def create_talker_scheduler(
     _runner_cfg = model_worker.model_runner.model_config
     if _runner_cfg is not model_config:
         _runner_cfg.vocab_size = _codec_vocab_size
+    else:
+        pass
     model_worker.model_runner.model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         # Equivalent to init_cuda_graphs() while the talker requests no prefill
         # embeds slot, but keeps both stages on one path so enabling talker
         # prefill graphs later cannot silently miss the embeds view.
         init_sglang_cuda_graphs(model_worker)
+    else:
+        pass
 
     output_proc = SGLangOutputProcessor()
 

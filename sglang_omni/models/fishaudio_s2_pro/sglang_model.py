@@ -89,6 +89,8 @@ class S2ProAttention(nn.Module):
         if qk_norm:
             self.q_norm = RMSNorm(head_dim, eps=rms_norm_eps)
             self.k_norm = RMSNorm(head_dim, eps=rms_norm_eps)
+        else:
+            pass
 
     def forward(
         self,
@@ -100,6 +102,8 @@ class S2ProAttention(nn.Module):
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if self.qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
+        else:
+            pass
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v, forward_batch)
         output, _ = self.o_proj(attn_output)
@@ -204,6 +208,8 @@ class S2ProSGLangTextModel(nn.Module):
             rms_norm_eps = tc.norm_eps
             qk_norm = tc.attention_qk_norm
             tie_word_embeddings = tc.tie_word_embeddings
+        else:
+            pass
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
@@ -238,6 +244,8 @@ class S2ProSGLangTextModel(nn.Module):
             from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 
             self.lm_head = ParallelLMHead(vocab_size, hidden_size)
+        else:
+            pass
 
     def setup_vq_decode(
         self,
@@ -327,6 +335,8 @@ class S2ProSGLangTextModel(nn.Module):
     def vq_decode_max_batch_size(self) -> int:
         if not self.vq_ready:
             raise RuntimeError("VQ decode buffers are not initialized")
+        else:
+            pass
         return int(self.vq_codes.shape[0])
 
     def forward(
@@ -338,6 +348,8 @@ class S2ProSGLangTextModel(nn.Module):
     ) -> LogitsProcessorOutput:
         if input_embeds is None and forward_batch.input_embeds is not None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
 
         if input_embeds is not None:
             # Prefill: input_embeds from ModelRunner (with VQ injection)
@@ -357,6 +369,8 @@ class S2ProSGLangTextModel(nn.Module):
                 hidden_states = torch.where(
                     vq_mask.unsqueeze(-1), combined, hidden_states
                 )
+            else:
+                pass
 
         # Transformer
         residual = None
@@ -370,6 +384,8 @@ class S2ProSGLangTextModel(nn.Module):
         if forward_batch.forward_mode.is_extend():
             last_index = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden_states = hidden_states[last_index]
+        else:
+            pass
 
         # Logits
         if self.tie_word_embeddings:
@@ -380,6 +396,8 @@ class S2ProSGLangTextModel(nn.Module):
         # Codebook decode: constrained sampling + batched codebook loop
         if self.vq_ready:
             self.decode_codebooks(logits, hidden_states)
+        else:
+            pass
 
         return LogitsProcessorOutput(
             next_token_logits=logits,
@@ -495,6 +513,8 @@ class S2ProSGLangTextModel(nn.Module):
 
             if self.load_remapped_weight(name, loaded_weight, params_dict):
                 continue
+            else:
+                pass
 
             if name in params_dict:
                 param = params_dict[name]
@@ -525,9 +545,13 @@ class S2ProSGLangTextModel(nn.Module):
         for ckpt_suffix, target in remap.items():
             if not name.endswith(ckpt_suffix):
                 continue
+            else:
+                pass
             prefix = name[: -len(ckpt_suffix)]
             if target is None:
                 return self.load_fused_qkv(prefix, loaded_weight, params_dict)
+            else:
+                pass
             if isinstance(target, tuple):
                 target_suffix, shard_id = target
             else:
@@ -550,6 +574,8 @@ class S2ProSGLangTextModel(nn.Module):
         target_name = prefix + "self_attn.qkv_proj.weight"
         if target_name not in params_dict:
             return True
+        else:
+            pass
         param = params_dict[target_name]
         layer = self.layers[int(prefix.split(".")[1])]
         q_size = layer.self_attn.q_size

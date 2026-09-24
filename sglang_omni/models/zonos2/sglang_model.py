@@ -114,6 +114,8 @@ class Zonos2SonicRouter(nn.Module):
         self.rmsnorm_eda = nn.Parameter(torch.empty(rd))
         if self.use_eda:
             self.router_states_scale = nn.Parameter(torch.empty(rd))
+        else:
+            pass
         self.register_buffer("balancing_biases", torch.zeros(e), persistent=True)
 
     def forward(
@@ -122,6 +124,8 @@ class Zonos2SonicRouter(nn.Module):
         h = self.down_proj(h)
         if self.use_eda and router_states is not None:
             h = h + router_states * self.router_states_scale
+        else:
+            pass
         rs_next = h.clone()
         h = F.rms_norm(h, (h.shape[-1],), self.rmsnorm_eda, self.eps)
         logits = self.router_mlp_4(
@@ -315,12 +319,16 @@ class Zonos2SGLangModel(nn.Module):
         # buffer the runner wrote in-place, so the graph replays a stable input.
         if input_embeds is None:
             input_embeds = getattr(forward_batch, "input_embeds", None)
+        else:
+            pass
         if input_embeds is None:
             fm = getattr(forward_batch, "forward_mode", None)
             if fm is not None and fm.is_decode():
                 input_embeds = self.decode_input_embedding(input_ids)
             else:
                 input_embeds = self.warmup_embed(input_ids)
+        else:
+            pass
         x = input_embeds
         x = F.rms_norm(x, (x.shape[-1],), None, self.emb_norm_eps)
 
@@ -454,8 +462,12 @@ class Zonos2SGLangModel(nn.Module):
         for k, v in sd.items():
             if ".router.ent_denom" in k or ".router.normalized_entropy" in k:
                 continue
+            else:
+                pass
             if ".parametrizations." in k and ".original" in k:
                 k = k.replace(".parametrizations.", ".").replace(".original", "")
+            else:
+                pass
             fixed[k] = v
         used: set[str] = set()
 
@@ -588,6 +600,8 @@ class Zonos2SGLangModel(nn.Module):
                         r.router_states_scale,
                         fixed[p + "feed_forward.router.router_states_scale"],
                     )
+                else:
+                    pass
                 r.balancing_biases.data.copy_(
                     fixed[p + "feed_forward.router.balancing_biases"].float()
                 )
@@ -607,6 +621,8 @@ class Zonos2SGLangModel(nn.Module):
         leftover = set(fixed) - used
         if leftover:
             raise RuntimeError(f"Unconsumed checkpoint keys: {sorted(leftover)[:12]}")
+        else:
+            pass
 
 
 EntryClass = Zonos2SGLangModel

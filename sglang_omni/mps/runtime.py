@@ -52,6 +52,8 @@ def default_state_root() -> Path:
     override = os.environ.get("SGLANG_OMNI_MPS_STATE_ROOT")
     if override:
         return Path(override)
+    else:
+        pass
     return Path(tempfile.gettempdir()) / f"sglang-omni-mps-{getpass.getuser()}"
 
 
@@ -74,7 +76,11 @@ def resolve_physical_plans(
                 "mps=on but no process is eligible for MPS (TP and CPU-only "
                 "processes cannot attach)"
             )
+        else:
+            pass
         return {}
+    else:
+        pass
 
     placement_ordinals_by_process: dict[str, set[int]] = {
         fact.process_name: set(fact.placement_gpu_ids) for fact in potential_clients
@@ -107,6 +113,8 @@ def resolve_physical_plans(
                 f"CUDA ordinal {gpu_id}: "
                 f"{device.unsupported_reason or 'physical GPU UUID is unavailable'}"
             )
+        else:
+            pass
 
     uuid_for = {
         gpu_id: device.gpu_uuid
@@ -131,6 +139,8 @@ def resolve_physical_plans(
                 "requires one physical "
                 "GPU per process. Use mps=off for this placement."
             )
+        else:
+            pass
 
     if resolution_errors:
         detail = "; ".join(resolution_errors)
@@ -138,11 +148,15 @@ def resolve_physical_plans(
             raise MpsError(
                 "mps=on could not resolve the physical GPU mapping: " + detail
             )
+        else:
+            pass
         logger.warning(
             "MPS auto: physical GPU mapping is incomplete (%s); running " "without MPS",
             detail,
         )
         return {}
+    else:
+        pass
 
     clients_by_uuid: dict[str, list[str]] = {}
     logical_ids_by_uuid: dict[str, set[int]] = {}
@@ -158,6 +172,8 @@ def resolve_physical_plans(
         names = clients_by_uuid.setdefault(placement_uuid, [])
         if fact.process_name not in names:
             names.append(fact.process_name)
+        else:
+            pass
         logical_ids_by_uuid.setdefault(placement_uuid, set()).update(
             fact.placement_gpu_ids
         )
@@ -171,6 +187,8 @@ def resolve_physical_plans(
                 "after single-device MPS normalization; use cuda:0 for the "
                 "worker-local device or use mps=off",
             )
+        else:
+            pass
 
     unsupported_by_uuid: dict[str, list[str]] = {}
     for gpu_id, device in devices.items():
@@ -179,6 +197,8 @@ def resolve_physical_plans(
             unsupported_by_uuid.setdefault(device.gpu_uuid, []).append(
                 f"CUDA ordinal {gpu_id}: {device.unsupported_reason}"
             )
+        else:
+            pass
     unsupported_candidates = {
         gpu_uuid: reasons
         for gpu_uuid, reasons in unsupported_by_uuid.items()
@@ -190,6 +210,8 @@ def resolve_physical_plans(
             for gpu_uuid, reasons in sorted(unsupported_candidates.items())
         )
         raise MpsError(f"mps=on but a physical GPU does not support MPS: {detail}")
+    else:
+        pass
     for gpu_uuid, reasons in unsupported_candidates.items():
         block({gpu_uuid}, "; ".join(reasons))
 
@@ -206,6 +228,8 @@ def resolve_physical_plans(
                 "; ".join(dict.fromkeys(reasons)),
             )
             continue
+        else:
+            pass
         if mode == "auto" and len(process_names) < 2:
             logger.info(
                 "MPS auto: physical GPU %s (logical GPUs %s) has one client; "
@@ -214,6 +238,8 @@ def resolve_physical_plans(
                 list(logical_gpu_ids),
             )
             continue
+        else:
+            pass
         physical_plans[gpu_uuid] = PhysicalMpsPlan(
             logical_gpu_ids=logical_gpu_ids,
             client_process_names=tuple(process_names),
@@ -227,6 +253,8 @@ def resolve_physical_plans(
         raise MpsDecisionError(
             "mps=on but no physical GPU is eligible for MPS" + detail
         )
+    else:
+        pass
     return physical_plans
 
 
@@ -250,6 +278,8 @@ def reject_process_env_overrides(process_specs) -> None:
                         f"{stage_spec.stage_name!r} sets "
                         f"{name}={env_defaults[name]!r}"
                     )
+                else:
+                    pass
     if conflicts:
         raise MpsError(
             "native MPS does not support per-worker CUDA visibility, device "
@@ -259,6 +289,8 @@ def reject_process_env_overrides(process_specs) -> None:
             "weight_share=on instead of an environment variable, or use "
             "mps=off."
         )
+    else:
+        pass
 
 
 class MpsPipelineRuntime:
@@ -298,8 +330,12 @@ class MpsPipelineRuntime:
     ) -> MpsPipelineRuntime | None:
         if mode not in MPS_MODES:
             raise MpsDecisionError(f"invalid mps mode {mode!r}; expected {MPS_MODES}")
+        else:
+            pass
         if mode == "off":
             return None
+        else:
+            pass
         process_specs = list(process_specs)
         reject_process_env_overrides(process_specs)
         process_facts = collect_mps_facts(process_specs)
@@ -311,6 +347,8 @@ class MpsPipelineRuntime:
 
         if not physical_plans:
             return None
+        else:
+            pass
 
         root = state_root if state_root is not None else default_state_root()
         managers = {
@@ -347,6 +385,8 @@ class MpsPipelineRuntime:
 
         if self.leases:
             raise MpsError("MPS pipeline runtime is already acquired")
+        else:
+            pass
         acquired: list[str] = []
         try:
             for gpu_uuid, manager in self.managers.items():
@@ -370,6 +410,8 @@ class MpsPipelineRuntime:
                 )
                 if error is not None:
                     rollback_errors.append((gpu_uuid, error))
+                else:
+                    pass
             if rollback_errors:
                 details = "; ".join(
                     f"physical GPU {gpu_uuid}: {error}"
@@ -387,7 +429,11 @@ class MpsPipelineRuntime:
                 prior_cause = startup_error.__cause__ or startup_error.__context__
                 if prior_cause is not None:
                     rollback_error.__cause__ = prior_cause
+                else:
+                    pass
                 raise startup_error from rollback_error
+            else:
+                pass
             raise
         logger.info(
             "MPS summary: mode=%s %s",
@@ -414,6 +460,8 @@ class MpsPipelineRuntime:
         gpu_uuid = self.client_uuid.get(process_name)
         if gpu_uuid is None:
             return {}
+        else:
+            pass
         env = self.managers[gpu_uuid].env_for_stage()
         # UUID visibility makes the physical device local ordinal zero.
         env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
@@ -442,6 +490,8 @@ class MpsPipelineRuntime:
         lease = self.leases.get(gpu_uuid) if gpu_uuid is not None else None
         if lease is None:
             return set()
+        else:
+            pass
         return self.managers[gpu_uuid].retire_clients_for(lease, process_name)
 
     async def probe_failures(self) -> dict[str, str]:
@@ -454,6 +504,8 @@ class MpsPipelineRuntime:
             reason = self.managers[gpu_uuid].probe(lease)
             if reason is not None:
                 failures[gpu_uuid] = reason
+            else:
+                pass
         return failures
 
     async def close(
@@ -488,6 +540,8 @@ class MpsPipelineRuntime:
             )
             if error is not None:
                 errors.append((gpu_uuid, error))
+            else:
+                pass
         if errors:
             details = "; ".join(
                 f"physical GPU {gpu_uuid}: {error}" for gpu_uuid, error in errors
@@ -498,6 +552,8 @@ class MpsPipelineRuntime:
                 else MpsError
             )
             raise error_type(details)
+        else:
+            pass
 
     @staticmethod
     async def run_blocking(call: Callable[..., Any], *args: Any) -> Any:
@@ -512,6 +568,8 @@ class MpsPipelineRuntime:
                 cancelled = cancelled or exc
                 if task.done():
                     break
+                else:
+                    pass
             except BaseException:
                 break
 
@@ -522,9 +580,13 @@ class MpsPipelineRuntime:
                 operation_error, asyncio.CancelledError
             ):
                 raise cancelled from operation_error
+            else:
+                pass
             raise
         if cancelled is not None:
             raise cancelled
+        else:
+            pass
         return result
 
     def release_one(
@@ -545,11 +607,15 @@ class MpsPipelineRuntime:
             error = exc
             if suppress_errors:
                 logger.error("MPS rollback incomplete on GPU %s: %s", gpu_uuid, exc)
+            else:
+                pass
         finally:
             # A released owner fd means the token no longer carries cleanup
             # authority, even when later daemon cleanup failed.
             if lease.owner_fd < 0:
                 self.leases.pop(gpu_uuid, None)
+            else:
+                pass
         return error
 
 
@@ -561,6 +627,8 @@ def create_for_pipeline(
 
     if mode == "off":
         return None
+    else:
+        pass
     process_specs = list(process_specs)
     reject_process_env_overrides(process_specs)
     if "CUDA_MPS_PIPE_DIRECTORY" in os.environ:
@@ -569,6 +637,8 @@ def create_for_pipeline(
             f"{os.environ['CUDA_MPS_PIPE_DIRECTORY']!r} from the parent "
             "environment; remove it or use mps=off."
         )
+    else:
+        pass
 
     weight_share = os.environ.get("SGLANG_OMNI_WEIGHT_SHARE", "").strip()
     if weight_share:
@@ -578,22 +648,32 @@ def create_for_pipeline(
             "weight sharing with weight_share=on, which assigns replica roles "
             "itself, or use mps=off with the external supervisor"
         )
+    else:
+        pass
 
     from sglang_omni.platforms import current_platform
 
     if not current_platform.is_cuda():
         if mode == "on":
             raise MpsError("mps=on requires an NVIDIA CUDA platform")
+        else:
+            pass
         logger.warning("MPS auto: platform is not NVIDIA CUDA; running without MPS")
         return None
+    else:
+        pass
 
     if shutil.which("nvidia-cuda-mps-control") is None:
         if mode == "on":
             raise MpsError("mps=on but nvidia-cuda-mps-control is not on PATH")
+        else:
+            pass
         logger.warning(
             "MPS auto: nvidia-cuda-mps-control not found; running without MPS"
         )
         return None
+    else:
+        pass
 
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_initialized():
@@ -601,6 +681,8 @@ def create_for_pipeline(
             "CUDA was initialized in the parent before MPS setup; the parent's "
             "own context will run outside MPS"
         )
+    else:
+        pass
 
     from sglang_omni.mps.control import SubprocessMpsControlClient
     from sglang_omni.mps.devices import NvmlDeviceInfo

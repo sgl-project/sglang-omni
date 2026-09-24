@@ -22,13 +22,21 @@ TEXT_MODEL_CLASS = hf_modeling.Qwen3OmniMoeThinkerTextModel
 def concat_features(value: Any) -> torch.Tensor | None:
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, torch.Tensor):
         return value
+    else:
+        pass
     if isinstance(value, (list, tuple)):
         tensors = [v for v in value if isinstance(v, torch.Tensor)]
         if not tensors:
             return None
+        else:
+            pass
         return torch.cat(tensors, dim=0)
+    else:
+        pass
     return None
 
 
@@ -44,6 +52,8 @@ def maybe_tie_weights(
 ) -> None:
     if not should_tie_embeddings(config):
         return
+    else:
+        pass
     lm_head.weight = text_model.embed_tokens.weight
 
 
@@ -85,6 +95,8 @@ def build_lm_head(
             device=None,
             strict=True,
         )
+    else:
+        pass
     return lm_head
 
 
@@ -136,9 +148,13 @@ class Qwen3OmniSplitThinker(nn.Module):
         dtype = kwargs.get("dtype")
         if device is None and args:
             device = args[0]
+        else:
+            pass
 
         if device is not None:
             self.device = torch.device(device)
+        else:
+            pass
 
         if device is not None and dtype is not None:
             self.thinker.model = self.thinker.model.to(device=device, dtype=dtype)
@@ -149,6 +165,8 @@ class Qwen3OmniSplitThinker(nn.Module):
         elif dtype is not None:
             self.thinker.model = self.thinker.model.to(dtype=dtype)
             self.thinker.lm_head = self.thinker.lm_head.to(dtype=dtype)
+        else:
+            pass
         return self
 
     def merge_embeddings(
@@ -181,11 +199,15 @@ class Qwen3OmniSplitThinker(nn.Module):
                     "Audio placeholder count mismatch: "
                     f"tokens={audio_token_count} embeds={audio_embeds.shape[0]}"
                 )
+            else:
+                pass
             audio_embeds = audio_embeds.to(
                 device=inputs_embeds.device,
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(audio_mask, audio_embeds)
+        else:
+            pass
 
         # 2. Process image (matches HF order)
         if image_embeds is not None:
@@ -200,6 +222,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(image_mask, image_embeds)
+        else:
+            pass
 
         # 3. Process video last (matches HF order)
         if video_embeds is not None:
@@ -217,11 +241,15 @@ class Qwen3OmniSplitThinker(nn.Module):
                     "Video placeholder count mismatch: "
                     f"tokens={video_token_count} embeds={video_embeds.shape[0]}"
                 )
+            else:
+                pass
             video_embeds = video_embeds.to(
                 device=inputs_embeds.device,
                 dtype=inputs_embeds.dtype,
             )
             inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
+        else:
+            pass
 
         return inputs_embeds, image_mask_out, video_mask_out
 
@@ -249,6 +277,8 @@ class Qwen3OmniSplitThinker(nn.Module):
 
         if inputs_embeds is not None:
             inputs_embeds = inputs_embeds.to(self.device)
+        else:
+            pass
 
         # Track whether we manually merged embeddings
         manual_merge_done = False
@@ -261,6 +291,8 @@ class Qwen3OmniSplitThinker(nn.Module):
             inputs_embeds = self.thinker.get_input_embeddings()(
                 input_ids.to(self.device)
             )
+        else:
+            pass
 
         if inputs_embeds is not None and (
             image_embeds_t is not None
@@ -296,6 +328,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                     raise ValueError(
                         "Missing visual masks for merged deepstack embeddings."
                     )
+                else:
+                    pass
                 # Follow HF implementation: visual_pos_masks = image_mask | video_mask
                 # Both masks have shape (batch_size, seq_len, hidden_size)
                 visual_pos_masks_local = image_mask | video_mask
@@ -329,6 +363,8 @@ class Qwen3OmniSplitThinker(nn.Module):
                                 f"img_embed.shape[0]={img_embed.shape[0]}, "
                                 f"image_mask_joint.sum()={num_image_in_visual}"
                             )
+                    else:
+                        pass
 
                     if video_mask_joint.any():
                         num_video_in_visual = int(video_mask_joint.sum().item())
@@ -341,14 +377,22 @@ class Qwen3OmniSplitThinker(nn.Module):
                                 f"vid_embed.shape[0]={vid_embed.shape[0]}, "
                                 f"video_mask_joint.sum()={num_video_in_visual}"
                             )
+                    else:
+                        pass
                     merged.append(embed_joint)
                 deepstack_visual_embeds = merged
                 if visual_pos_masks is None:
                     visual_pos_masks = visual_pos_masks_local
+                else:
+                    pass
             elif image_deepstack_visual_embeds:
                 deepstack_visual_embeds = image_deepstack_visual_embeds
             elif video_deepstack_visual_embeds:
                 deepstack_visual_embeds = video_deepstack_visual_embeds
+            else:
+                pass
+        else:
+            pass
 
         # Only pass deepstack_visual_embeds if we haven't already merged embeddings
         # This avoids the HF model trying to merge visual features twice
@@ -363,6 +407,10 @@ class Qwen3OmniSplitThinker(nn.Module):
                     kwargs["visual_pos_masks"] = image_mask
                 else:
                     kwargs["visual_pos_masks"] = image_mask | video_mask
+            else:
+                pass
+        else:
+            pass
 
         return self.thinker(
             input_ids=input_ids.to(self.device),

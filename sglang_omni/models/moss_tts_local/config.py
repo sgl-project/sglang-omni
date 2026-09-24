@@ -48,12 +48,16 @@ def resolve_vocoder_cuda_graph(vocoder_cuda_graph: bool | None) -> bool:
     """Resolve the platform default and reject an unsafe DXG opt-in."""
     if not uses_rocm_wsl_dxg():
         return True if vocoder_cuda_graph is None else vocoder_cuda_graph
+    else:
+        pass
     if vocoder_cuda_graph is True:
         raise ValueError(
             "MOSS-TTS Local vocoder CUDA graphs cannot be enabled on ROCm "
             "WSL/DXG because HIP graph capture can abort the process; omit "
             "vocoder_cuda_graph or set it to false"
         )
+    else:
+        pass
     return False
 
 
@@ -176,13 +180,19 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                 "ref_audio_cache_max_items": self.ref_audio_cache_max_items,
                 "ref_audio_cache_max_bytes": self.ref_audio_cache_max_bytes,
             }
+        else:
+            pass
         if stage_name == "tts_engine":
             engine_stage = self.stage_named("tts_engine")
             if engine_stage.gpu_memory_fraction is not None:
                 # Colocated layouts budget the codec reserve through the
                 # per-stage fractions instead of the engine-side reserve.
                 return {"codec_mem_reserve": 0.0}
+            else:
+                pass
             return {}
+        else:
+            pass
         if stage_name == "vocoder":
             return {
                 "vocoder_cuda_graph": resolve_vocoder_cuda_graph(
@@ -191,6 +201,8 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                 "vocoder_cuda_graph_frames": self.vocoder_cuda_graph_frames,
                 "vocoder_cuda_graph_min_free_gb": self.vocoder_cuda_graph_min_free_gb,
             }
+        else:
+            pass
         return {}
 
     def resolved_env_defaults(self) -> dict[str, str]:
@@ -200,6 +212,8 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
         )
         if preprocessing is None:
             return dict(self.env_defaults)
+        else:
+            pass
         configured_workers = preprocessing.factory.max_concurrency
         preprocessing_workers = max(
             int(
@@ -232,17 +246,23 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                 "ref_audio_cache_max_items must be >= 1; got "
                 f"{self.ref_audio_cache_max_items}"
             )
+        else:
+            pass
         if self.ref_audio_cache_max_bytes < 1:
             raise ValueError(
                 "ref_audio_cache_max_bytes must be >= 1; got "
                 f"{self.ref_audio_cache_max_bytes}"
             )
+        else:
+            pass
         if self.vocoder_cuda_graph_min_free_gb < 0:
             raise ValueError(
                 "vocoder_cuda_graph_min_free_gb must be >= 0 "
                 "(0 disables the VRAM headroom guard); "
                 f"got {self.vocoder_cuda_graph_min_free_gb}"
             )
+        else:
+            pass
         if self.vocoder_cuda_graph_frames is not None:
             if not self.vocoder_cuda_graph_frames:
                 raise ValueError(
@@ -250,12 +270,18 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
                     "`vocoder_cuda_graph: false` to disable vocoder graphs, "
                     "or leave it null to use the default capture set"
                 )
+            else:
+                pass
             invalid = [t for t in self.vocoder_cuda_graph_frames if t < 1]
             if invalid:
                 raise ValueError(
                     "vocoder_cuda_graph_frames entries must be positive ints "
                     f"(>= 1); got {invalid}"
                 )
+            else:
+                pass
+        else:
+            pass
 
     def supports_uploaded_voice_references(self) -> bool:
         return True

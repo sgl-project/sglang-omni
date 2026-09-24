@@ -154,6 +154,8 @@ class MingAudioEncoder(nn.Module):
         audio_feats = audio_feats.to(device=self.device)
         if audio_feats_lengths is not None:
             audio_feats_lengths = audio_feats_lengths.to(device=self.device)
+        else:
+            pass
 
         # Whisper encoder expects [B, T, n_mels] and we process segments independently
         # Unwrap segments for per-segment encoding
@@ -191,12 +193,16 @@ class MingAudioEncoder(nn.Module):
             # Normalize if configured
             if self.norm_query_embeds:
                 projected = F.normalize(projected, dim=-1)
+            else:
+                pass
 
         # Re-wrap to batch-concatenated format if needed
         if audio_feats_lengths is not None and audio_feats_lengths.dim() == 2:
             projected, _, out_lengths = self.wrap_feats(
                 projected, audio_feats_lengths, out_lengths
             )
+        else:
+            pass
 
         return {
             "audio_embeds": projected,
@@ -242,6 +248,8 @@ class MingAudioEncoder(nn.Module):
                 feat_len = feats_lengths[i, j].item()
                 if feat_len == 0:
                     break
+                else:
+                    pass
                 feat_segs.append(feats[i, feat_index : feat_index + feat_len])
                 feat_seg_lengths.append(feat_len)
                 feat_index += feat_len
@@ -268,6 +276,8 @@ class MingAudioEncoder(nn.Module):
                 feat_len = feats_lengths[i, j].item()
                 if feat_len == 0:
                     break
+                else:
+                    pass
                 out_len = feats_seg_lengths[feat_idx].item()
                 feat_buffer.append(feat_segs[feat_idx, :out_len])
                 feat_lengths_buffer.append(out_len)

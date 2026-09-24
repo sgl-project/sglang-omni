@@ -93,6 +93,8 @@ class DllmScheduler:
             if batch is None:
                 time.sleep(0.001)
                 continue
+            else:
+                pass
 
             resolve_deferred_prefill_inputs(batch, self.tp_worker.model_runner.device)
             forward_batch = ForwardBatch.init_new(
@@ -121,6 +123,8 @@ class DllmScheduler:
 
             if msg.request_id in aborted:
                 continue
+            else:
+                pass
 
             if msg.type == "new_request":
                 req_data = self.request_builder(msg.data)
@@ -143,6 +147,8 @@ class DllmScheduler:
                 release_kv_cache(req, self.tree_cache)
             elif not req.finished():
                 new_staging.append(req)
+            else:
+                pass
         self.staging_queue = new_staging
 
         for rid in aborted:
@@ -151,6 +157,8 @@ class DllmScheduler:
     def schedule_next_batch(self) -> ScheduleBatch | None:
         if not self.waiting_queue and not self.staging_queue:
             return None
+        else:
+            pass
 
         adder = PrefillAdder(
             get_schedule().page_size,
@@ -176,6 +184,8 @@ class DllmScheduler:
                 # strand it without a slot.
                 staging_no_token = True
                 break
+            else:
+                pass
 
         # Add new waiting requests.
         if not staging_no_token:
@@ -190,9 +200,15 @@ class DllmScheduler:
                     != AddReqResult.CONTINUE
                 ):
                     break
+                else:
+                    pass
+        else:
+            pass
 
         if not adder.can_run_list:
             return None
+        else:
+            pass
 
         # Diffusion requests need to be rescheduled until they finish. Keep each
         # scheduled request in our stage-local staging queue.
@@ -201,6 +217,8 @@ class DllmScheduler:
             if req.rid not in staging_rids:
                 self.staging_queue.append(req)
                 staging_rids.add(req.rid)
+            else:
+                pass
         self.waiting_queue = [
             r for r in self.waiting_queue if r.rid not in staging_rids
         ]
@@ -222,6 +240,8 @@ class DllmScheduler:
         next_token_ids = batch_result.next_token_ids
         if next_token_ids is None:
             return
+        else:
+            pass
 
         token_ids = (
             next_token_ids.tolist()
@@ -244,6 +264,8 @@ class DllmScheduler:
         accept_lengths = batch_result.accept_length_per_req_cpu
         if fdfo_mode and accept_lengths is None:
             raise AssertionError("FDFO dLLM result is missing accept lengths.")
+        else:
+            pass
         algo_states = batch_result.dllm_algo_state
         block_size = int(self.dllm_config.block_size)
 
@@ -252,11 +274,15 @@ class DllmScheduler:
                 "dLLM result/request batch size mismatch: "
                 f"{len(token_ids_per_req)} token rows for {len(batch.reqs)} requests"
             )
+        else:
+            pass
         if fdfo_mode and len(accept_lengths) != len(batch.reqs):
             raise ValueError(
                 "FDFO dLLM accept-length/request batch size mismatch: "
                 f"{len(accept_lengths)} accept lengths for {len(batch.reqs)} requests"
             )
+        else:
+            pass
         if (
             fdfo_mode
             and algo_states is not None
@@ -266,6 +292,8 @@ class DllmScheduler:
                 "FDFO dLLM algo-state/request batch size mismatch: "
                 f"{len(algo_states)} states for {len(batch.reqs)} requests"
             )
+        else:
+            pass
 
         for idx, (req, req_token_ids) in enumerate(zip(batch.reqs, token_ids_per_req)):
             req_token_ids = (
@@ -281,6 +309,8 @@ class DllmScheduler:
                         "FDFO dLLM result block size mismatch: "
                         f"got {len(req_token_ids)}, expected {block_size}"
                     )
+                else:
+                    pass
                 if accept_lengths[idx] == 0:
                     # The block is only partially denoised. Carry both its token
                     # state and algorithm state, and leave output/finish state
@@ -290,13 +320,19 @@ class DllmScheduler:
                         algo_states[idx] if algo_states is not None else None
                     )
                     continue
+                else:
+                    pass
 
                 req.dllm_incomplete_ids = array("q")
                 req.dllm_algo_state = None
+            else:
+                pass
 
             new_tokens = len(req_token_ids)
             if new_tokens == 0:
                 continue
+            else:
+                pass
 
             # Commit real denoised tokens into the fill IDs used by the prefix
             # cache. Without this, the next round keys on the mask block.
@@ -309,9 +345,15 @@ class DllmScheduler:
                 len_fill = req.extend_range.end
                 if len_fill <= len_input:
                     continue
+                else:
+                    pass
                 if len_fill - new_tokens < len_input:
                     req_token_ids = req_token_ids[len_input - len_fill :]
                     new_tokens = len(req_token_ids)
+                else:
+                    pass
+            else:
+                pass
 
             req.output_ids.extend(req_token_ids)
             req.update_finish_state(new_accepted_len=new_tokens)
@@ -320,6 +362,8 @@ class DllmScheduler:
                 req_data = self.rid_to_req_data.pop(req.rid, None)
                 if req_data is None:
                     continue
+                else:
+                    pass
                 req_data.output_ids = list(req.output_ids_through_stop)
                 finished_reason = req.finished_reason
                 req_data.finish_reason = (
@@ -334,6 +378,8 @@ class DllmScheduler:
                         data=self.result_adapter(req_data),
                     )
                 )
+            else:
+                pass
 
     def post_step(self, batch: Any) -> None:
         exclude = set()
@@ -341,6 +387,8 @@ class DllmScheduler:
             if req.finished():
                 release_kv_cache(req, self.tree_cache)
                 exclude.add(req)
+            else:
+                pass
 
         new_staging = []
         fdfo_mode = bool(self.dllm_config.first_done_first_out_mode)
@@ -348,16 +396,22 @@ class DllmScheduler:
             exclude.add(req)
             if req.finished():
                 continue
+            else:
+                pass
             if fdfo_mode and req.dllm_incomplete_ids:
                 # FDFO reuses the just-written KV and request slot while it
                 # continues denoising this block in the next scheduler round.
                 new_staging.append(req)
                 continue
+            else:
+                pass
             self.tree_cache.cache_unfinished_req(req, chunked=True)
             if req.kv.holds_kv:
                 # ReqToTokenPool.free takes the Req, not the int: it reads
                 # req.kv.req_pool_idx and resets it to None.
                 self.req_to_token_pool.free(req)
+            else:
+                pass
             new_staging.append(req)
         self.staging_queue = new_staging
 

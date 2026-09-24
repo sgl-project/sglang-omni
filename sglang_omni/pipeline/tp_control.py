@@ -81,6 +81,8 @@ class TPLeaderFanout:
         """Collect one admin result from every TP follower."""
         if not self.follower_admin_result_queues:
             return []
+        else:
+            pass
 
         loop = asyncio.get_running_loop()
         tasks = [
@@ -97,11 +99,15 @@ class TPLeaderFanout:
                 raise ValueError(
                     f"Unexpected TP follower admin result: {type(msg).__name__}"
                 )
+            else:
+                pass
             if msg.result.op_id != op_id:
                 raise ValueError(
                     "Unexpected TP follower admin op id: "
                     f"{msg.result.op_id} != {op_id}"
                 )
+            else:
+                pass
             results.append(msg)
         return results
 
@@ -154,12 +160,16 @@ class TPFollowerControlPlane:
             ),
         ):
             return msg
+        else:
+            pass
         raise ValueError(f"Unexpected TP follower work message: {type(msg)}")
 
     async def recv_abort(self) -> AbortMessage:
         msg = await self.recv_from_queue(self.abort_queue)
         if isinstance(msg, AbortMessage):
             return msg
+        else:
+            pass
         raise ValueError(f"Unexpected TP follower abort message: {type(msg)}")
 
     async def send_admin_result(self, msg: AdminResultMessage) -> None:
@@ -167,6 +177,8 @@ class TPFollowerControlPlane:
             raise RuntimeError(
                 f"TP follower stage {self.stage_name} has no admin result queue"
             )
+        else:
+            pass
         self.admin_result_queue.put_nowait(msg)
 
     async def recv_from_queue(self, q: Any) -> Any:
@@ -176,6 +188,8 @@ class TPFollowerControlPlane:
                 raise RuntimeError(
                     f"TP follower control plane closed for stage {self.stage_name}"
                 )
+            else:
+                pass
             try:
                 return await loop.run_in_executor(
                     None,

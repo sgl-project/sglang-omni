@@ -124,6 +124,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         buckets = [int(b) for b in (chunk_buckets or []) if int(b) >= 1]
         if not buckets:
             return
+        else:
+            pass
         runner = WhisperEncoderCudaGraphRunner(
             self.whisper_encoder,
             num_mel_bins=int(self.config.audio_config.num_mel_bins),
@@ -149,6 +151,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         buckets = sorted({int(b) for b in (chunk_buckets or []) if int(b) >= 1})
         if not buckets:
             return
+        else:
+            pass
         set_torch_compile_config()
         self.compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
         self.compiled_input_feature_len = int(input_feature_len)
@@ -195,9 +199,13 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             if cached is not None:
                 device = next(self.vq_adaptor.parameters()).device
                 return cached.to(device, non_blocking=True)
+            else:
+                pass
             output = self.get_audio_feature_uncached(items, forward_batch)
             cache.put(str(key), output)
             return output
+        else:
+            pass
         return self.get_audio_feature_uncached(items, forward_batch)
 
     def get_audio_feature_uncached(
@@ -217,6 +225,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 raise ValueError(
                     "MOSS-Transcribe-Diarize audio item is missing input_features."
                 )
+            else:
+                pass
             input_features = item.feature
             num_chunks = input_features.shape[0]
 
@@ -225,12 +235,16 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 raise ValueError(
                     "MOSS-Transcribe-Diarize audio item is missing audio_feature_lengths."
                 )
+            else:
+                pass
             feature_lengths = feature_lengths.to(device="cpu", dtype=torch.long)
             if feature_lengths.numel() != num_chunks:
                 raise ValueError(
                     "audio_feature_lengths must contain one length per input_features "
                     f"chunk: got {feature_lengths.numel()} lengths for {num_chunks} chunks."
                 )
+            else:
+                pass
 
             chunk_mapping = getattr(item, "audio_chunk_mapping", None)
             if chunk_mapping is None:
@@ -242,6 +256,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                     "audio_chunk_mapping must contain one sample index per input_features "
                     f"chunk: got {chunk_mapping.numel()} indices for {num_chunks} chunks."
                 )
+            else:
+                pass
             feature_lengths = feature_lengths.tolist()
             chunk_mapping = chunk_mapping.tolist()
 
@@ -259,6 +275,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             return torch.empty(
                 (0, hidden_size), device=adaptor_param.device, dtype=adaptor_param.dtype
             )
+        else:
+            pass
 
         with torch.no_grad():
             batched_features = torch.stack(chunks).to(
@@ -339,8 +357,12 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             original_name = name
             if "rotary_emb.inv_freq" in name:
                 return
+            else:
+                pass
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
                 return
+            else:
+                pass
 
             if name == "lm_head.weight":
                 name = "language_model.lm_head.weight"
@@ -350,6 +372,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 name = "whisper_encoder." + name[len("model.whisper_encoder.") :]
             elif name.startswith("model.vq_adaptor."):
                 name = "vq_adaptor." + name[len("model.vq_adaptor.") :]
+            else:
+                pass
 
             if (
                 name == "language_model.model.embed_tokens.weight"
@@ -359,41 +383,63 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 param = params_dict["language_model.lm_head.weight"]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)
+            else:
+                pass
 
             handled = False
             if name.startswith("whisper_encoder."):
                 for param_name, weight_name, shard_id in whisper_stacked_params_mapping:
                     if weight_name not in name:
                         continue
+                    else:
+                        pass
                     mapped_name = name.replace(weight_name, param_name)
                     if mapped_name.endswith(".bias") and mapped_name not in params_dict:
                         handled = True
                         break
+                    else:
+                        pass
                     if mapped_name in params_dict:
                         param = params_dict[mapped_name]
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
+                    else:
+                        pass
                     break
+            else:
+                pass
 
             if name.startswith("language_model."):
                 for param_name, weight_name, shard_id in stacked_params_mapping:
                     if weight_name not in name:
                         continue
+                    else:
+                        pass
                     mapped_name = name.replace(weight_name, param_name)
                     if mapped_name.endswith(".bias") and mapped_name not in params_dict:
                         handled = True
                         break
+                    else:
+                        pass
                     if mapped_name in params_dict:
                         param = params_dict[mapped_name]
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
+                    else:
+                        pass
                     break
+            else:
+                pass
 
             if handled:
                 return
+            else:
+                pass
 
             if name.endswith(".bias") and name not in params_dict:
                 return
+            else:
+                pass
 
             if name in params_dict:
                 param = params_dict[name]
@@ -416,6 +462,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                         device=loaded_weight.device,
                     ),
                 )
+            else:
+                pass
 
 
 EntryClass = MossTranscribeDiarizeForConditionalGeneration

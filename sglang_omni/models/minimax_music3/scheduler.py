@@ -30,9 +30,13 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         uncond = req_data.cfg_uncond
         if uncond is None:
             return
+        else:
+            pass
         if request_admission_lock_held:
             self.enqueue_cfg_uncond(req_data, uncond)
             return
+        else:
+            pass
         with self.request_admission_lock:
             self.enqueue_cfg_uncond(req_data, uncond)
 
@@ -40,6 +44,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         cond_req = req_data.req
         if not self.waiting_queue or self.waiting_queue[-1] is not cond_req:
             return
+        else:
+            pass
         req = uncond.req
         self.normalize_req_token_arrays(req)
         req._coalesce_enqueue_t = (
@@ -54,6 +60,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         limit = self.pair_admission_limit(queue, running_batch)
         if limit >= len(queue):
             return super().get_new_batch_prefill(running_batch)
+        else:
+            pass
         deferred = queue[limit:]
         del queue[limit:]
         try:
@@ -74,6 +82,8 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
             )
             if index and tokens + pair_tokens > budget:
                 return index
+            else:
+                pass
             tokens += pair_tokens
         return limit
 
@@ -85,14 +95,20 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
             if not self.is_cfg_uncond(req):
                 conditioned.append(req)
                 continue
+            else:
+                pass
             if req.finished():
                 self.close_completed_request(req)
+            else:
+                pass
         super().stream_output(conditioned, return_logprob, skip_req)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
         if is_cfg_uncond_rid(request_id):
             return
+        else:
+            pass
         super().abort(
             cfg_uncond_rid(request_id), defer_running_cleanup=defer_running_cleanup
         )

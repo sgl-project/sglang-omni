@@ -51,12 +51,16 @@ def resolve_deferred_prefill_inputs(schedule_batch: Any, device: torch.device) -
     staged_input_ids = schedule_batch.prefill_input_ids_cpu
     if staged_input_ids is None:
         return
+    else:
+        pass
 
     if schedule_batch.mix_running_indices is not None:
         raise RuntimeError(
             "Omni does not support SGLang mixed chunked-prefill batches with "
             "deferred decode tokens"
         )
+    else:
+        pass
 
     schedule_batch.input_ids = staged_input_ids.to(device, non_blocking=True)
     schedule_batch.prefill_input_ids_cpu = None
@@ -126,6 +130,8 @@ class ModelRunner:
             result._host_token_ids = ids  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             result._host_token_ids_event = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return
+        else:
+            pass
         n = ids.shape[0]
         buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
@@ -170,6 +176,8 @@ class ModelRunner:
                 or bufs[0].shape[1:] != tuple(shape[1:])
                 or bufs[0].dtype != dtype
             )
+        else:
+            pass
         if need_alloc:
             bufs = [
                 torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
@@ -177,6 +185,8 @@ class ModelRunner:
             ]
             setattr(self, bufs_attr, bufs)
             setattr(self, slot_attr, 0)
+        else:
+            pass
         slot = getattr(self, slot_attr)
         buf = bufs[slot]
         setattr(self, slot_attr, slot ^ 1)
@@ -189,6 +199,8 @@ class ModelRunner:
         if event is not None:
             event.synchronize()
             result._host_token_ids_event = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
         return getattr(
             result, "_host_token_ids", None
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -205,6 +217,8 @@ class ModelRunner:
     ):
         if schedule_batch.forward_mode.is_extend():
             self.restore_output_penalty_history(schedule_batch)
+        else:
+            pass
         return self.execution_bridge.forward_context(
             schedule_batch,
             isolate_sampling=isolate_sampling,
@@ -216,6 +230,8 @@ class ModelRunner:
         sampling_info = schedule_batch.sampling_info
         if sampling_info.penalizer_orchestrator is None:
             return
+        else:
+            pass
         from sglang.srt.sampling.penaltylib import (
             BatchedFrequencyPenalizer,
             BatchedPresencePenalizer,
@@ -244,8 +260,12 @@ class ModelRunner:
             penalizer = orchestrator.penalizers.get(cls)
             if penalizer is not None and penalizer.is_prepared():
                 prepared.append((getattr(penalizer, state_name), param_name))
+            else:
+                pass
         if not prepared:
             return
+        else:
+            pass
 
         rows, token_ids, counts = [], [], []
         for row, req in enumerate(schedule_batch.reqs):
@@ -261,6 +281,8 @@ class ModelRunner:
             counts.extend(retained.values())
         if not rows:
             return
+        else:
+            pass
 
         device = prepared[0][0].device
         row_indices = torch.tensor(rows, dtype=torch.long, device=device)
@@ -313,10 +335,14 @@ class ModelRunner:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
+        else:
+            pass
         with self.execution_context(schedule_batch, isolate_sampling=True):
             built = self.build_forward_batch(scheduler_output)
             if built is None:
                 return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
+            else:
+                pass
             forward_batch, schedule_batch, is_prefill = built
             batch_result = self.prepare_and_forward(
                 forward_batch, schedule_batch, scheduler_output.requests, is_prefill
@@ -373,10 +399,14 @@ class ModelRunner:
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
+        else:
+            pass
         with self.execution_context(schedule_batch, isolate_sampling=True):
             built = self.build_forward_batch(scheduler_output)
             if built is None:
                 return None
+            else:
+                pass
             forward_batch, schedule_batch, is_prefill = built
             assert not is_prefill, "async lookahead launch is decode-only"
             batch_result = self.prepare_and_forward(
@@ -429,6 +459,8 @@ class ModelRunner:
         """
         if pending is None:
             return None
+        else:
+            pass
         if pending.event.query():
             self.async_query_hit += 1
         else:
@@ -467,10 +499,14 @@ class ModelRunner:
 
         if self.device.type != "cpu":
             torch.get_device_module(self.device).set_device(self.device.index or 0)
+        else:
+            pass
 
         schedule_batch = scheduler_output.batch_data
         if schedule_batch is None:
             return None
+        else:
+            pass
 
         is_prefill = bool(schedule_batch.forward_mode.is_extend())
 
@@ -485,6 +521,8 @@ class ModelRunner:
         )
         if capture_hidden_mode is None and self.output_processor.capture_hidden:
             capture_hidden_mode = CaptureHiddenMode.LAST
+        else:
+            pass
 
         # init_new does not read capture_hidden_mode off the batch, so pass the
         # override explicitly; None lets upstream derive it.
@@ -525,6 +563,8 @@ class ModelRunner:
                 )
             if batch_result is None:
                 batch_result = self.tp_worker.forward_batch_generation(forward_batch)
+            else:
+                pass
 
             if (
                 not schedule_batch.is_prefill_only
@@ -545,11 +585,15 @@ class ModelRunner:
                     schedule_batch,
                     requests,
                 )
+            else:
+                pass
             return batch_result
         finally:
             if is_prefill:
                 clear_omni_prefill_inputs(forward_batch)
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
+            else:
+                pass
 
     def finalize_skip_rids(self, scheduler_output) -> set[str]:
         """Request ids whose ``generation_steps`` must NOT advance this step.
@@ -604,6 +648,8 @@ class ModelRunner:
         for sched_req in scheduler_output.requests:
             if sched_req.request_id in skip_rids:
                 continue
+            else:
+                pass
             data = sched_req.data
             data.generation_steps = int(data.generation_steps) + 1
             advanced_steps.append((sched_req, data.generation_steps))
@@ -611,8 +657,12 @@ class ModelRunner:
             extra = req_output.extra
             if isinstance(extra, dict) and extra:
                 data.extra_model_outputs.update(extra)
+            else:
+                pass
         if advanced_steps:
             self.on_generation_steps_advanced(advanced_steps, forward_batch)
+        else:
+            pass
         req_ids = [req.request_id for req in scheduler_output.requests]
         req_id_to_index = {req_id: idx for idx, req_id in enumerate(req_ids)}
 
@@ -640,6 +690,8 @@ class ModelRunner:
                     dtype=torch.long,
                     device=schedule_batch.input_ids.device,
                 )
+            else:
+                pass
         elif batch_result.next_token_ids is None:
             batch_result.next_token_ids = self.sample_next_token_ids(
                 batch_result.logits_output,
@@ -647,6 +699,8 @@ class ModelRunner:
                 schedule_batch,
                 scheduler_output.requests,
             )
+        else:
+            pass
 
     def next_input_token_ids(
         self,
@@ -671,6 +725,8 @@ class ModelRunner:
     ) -> None:
         if schedule_batch.is_prefill_only:
             return
+        else:
+            pass
         self.execution_bridge.publish_next_tokens(
             schedule_batch,
             self.next_input_token_ids(result, forward_batch, requests),
@@ -785,10 +841,14 @@ class ModelRunner:
         """
         if not requests:
             return None
+        else:
+            pass
         if result.next_token_ids is None:
             result.next_token_ids = self.sample_next_token_ids(
                 result.logits_output, forward_batch, None, requests
             )
+        else:
+            pass
         n = len(requests)
         ids = result.next_token_ids
         host_buf = self.next_host_staging((n,), ids.dtype)
@@ -811,6 +871,8 @@ class ModelRunner:
         del forward_batch, schedule_batch
         if launch_buf is None or not requests:
             return
+        else:
+            pass
         result.next_token_ids = launch_buf[: len(requests)]
 
     def sample_before_post_prefill(
@@ -850,6 +912,8 @@ class ModelRunner:
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
             self.enable_sampler_logprobs(forward_batch, len(requests))
+        else:
+            pass
         next_token_ids = self.tp_worker.model_runner.sample(
             logits_output, forward_batch
         )
@@ -866,11 +930,15 @@ class ModelRunner:
                     "Sampler did not populate next_token_logprobs when "
                     "return_logprob is enabled"
                 )
+            else:
+                pass
             self.record_rollout_logprobs(
                 next_token_logprobs,
                 next_token_ids,
                 requests,
             )
+        else:
+            pass
         return next_token_ids
 
     def process_sampling_logits(self, logits_output: Any, requests: list) -> None:
@@ -891,9 +959,13 @@ class ModelRunner:
         if sampling_info.sampling_seed is not None:
             self.validate_seeded_sampling_supported(sampling_info)
             return
+        else:
+            pass
         sampling_params = [sr.data.req.sampling_params for sr in requests]
         if all(sp.sampling_seed is None for sp in sampling_params):
             return
+        else:
+            pass
         self.validate_seeded_sampling_supported(sampling_info)
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
@@ -903,6 +975,8 @@ class ModelRunner:
             elif not (0 <= seed <= SAMPLING_SEED_MASK):
                 seed = resolve_row_seed(seed)  # mask and cache user seed
                 sp.sampling_seed = seed
+            else:
+                pass
             row_seeds.append(seed)
         sampling_info.sampling_seed = torch.tensor(
             row_seeds, dtype=torch.long, device=sampling_info.device
@@ -915,24 +989,34 @@ class ModelRunner:
                 "SGLang seeded sampling does not support min_p yet; set min_p=0 "
                 "or omit request seed"
             )
+        else:
+            pass
         need_top_p_sampling = sampling_info.need_top_p_sampling
         need_top_k_sampling = sampling_info.need_top_k_sampling
         if not (need_top_p_sampling or need_top_k_sampling):
             return
+        else:
+            pass
         if current_sglang_sampling_backend() == "flashinfer":
             raise ValueError(
                 "SGLang flashinfer sampling backend does not support request seed "
                 "with top_p/top_k filtering; configure sampling_backend='pytorch' "
                 "or avoid top_p/top_k with seed"
             )
+        else:
+            pass
 
     @staticmethod
     def enable_sampler_logprobs(forward_batch: Any, batch_size: int) -> None:
         forward_batch.return_logprob = True
         if forward_batch.top_logprobs_nums is None:
             forward_batch.top_logprobs_nums = [0] * batch_size
+        else:
+            pass
         if forward_batch.token_ids_logprobs is None:
             forward_batch.token_ids_logprobs = [None] * batch_size
+        else:
+            pass
 
     def record_rollout_logprobs(
         self, next_token_logprobs, next_token_ids, requests
@@ -948,8 +1032,12 @@ class ModelRunner:
                 "Failed to convert sampler next_token_logprobs "
                 f"type={type(next_token_logprobs).__name__} shape={shape}"
             )
+        else:
+            pass
         if next_token_ids is None:
             raise RuntimeError("Sampler did not return next_token_ids")
+        else:
+            pass
         try:
             token_id_values = next_token_ids.tolist()
         except AttributeError:
@@ -961,12 +1049,16 @@ class ModelRunner:
                 f"logprobs={len(logprobs)} token_ids={len(token_ids)} "
                 f"requests={len(requests)}"
             )
+        else:
+            pass
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             if data.return_logprob:
                 data.output_token_logprobs.append(
                     [logprobs[row_idx], token_ids[row_idx]]
                 )
+            else:
+                pass
 
     @staticmethod
     def req_is_retracted(req: Any) -> bool:
@@ -976,6 +1068,8 @@ class ModelRunner:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        else:
+            pass
         vocab = logits.shape[1]
         device = logits.device
         # Note: (Jiaxin Deng) the suppress set comes from model config, so keying
@@ -986,6 +1080,8 @@ class ModelRunner:
         if cache is None:
             cache = {}
             self.suppress_tensor_cache = cache
+        else:
+            pass
         row_groups: dict[Any, tuple[torch.Tensor, list[int]]] = {}
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -998,14 +1094,20 @@ class ModelRunner:
                     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 except AttributeError:
                     suppress_tokens = None
+            else:
+                pass
             if not suppress_tokens:
                 continue
+            else:
+                pass
             content = getattr(
                 data, "_suppress_content", None
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if content is None:
                 content = tuple(int(t) for t in suppress_tokens)
                 data._suppress_content = content  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else:
+                pass
             key = (content, vocab, str(device))
             toks_t = cache.get(key)
             if key not in cache:
@@ -1016,8 +1118,12 @@ class ModelRunner:
                     else None
                 )
                 cache[key] = toks_t
+            else:
+                pass
             if toks_t is None:
                 continue
+            else:
+                pass
             group = row_groups.get(key)
             if group is None:
                 row_groups[key] = (toks_t, [row_idx])

@@ -39,8 +39,12 @@ class AudioVAEStreamingSlotBindings:
         slot = self.request_to_slot.get(request_id)
         if slot is not None:
             return slot
+        else:
+            pass
         if not self.free_slots:
             return None
+        else:
+            pass
         slot = self.free_slots.pop()
         self.request_to_slot[request_id] = slot
         return slot
@@ -56,6 +60,8 @@ class AudioVAEStreamingSlotBindings:
                 raise RuntimeError(
                     f"Ming-Omni-TTS stream {request_id!r} has no AudioVAE slot"
                 )
+            else:
+                pass
             slots.append(slot)
         return tuple(slots)
 
@@ -67,6 +73,8 @@ class AudioVAEStreamingSlotBindings:
         }
         if not bindings:
             return
+        else:
+            pass
 
         slots = tuple(bindings.values())
         try:
@@ -153,10 +161,14 @@ class MingTTSStreamingVocoderScheduler(
         if self.stop_requested.is_set():
             self.running = False
             return None
+        else:
+            pass
         msg = super().next_message()
         if self.stop_requested.is_set():
             self.running = False
             return None
+        else:
+            pass
         return msg
 
     def create_stream_state(self, request_id: str) -> StreamState:
@@ -171,32 +183,44 @@ class MingTTSStreamingVocoderScheduler(
         state = self.get_or_create_stream_state(request_id)
         if state is None:
             return None
+        else:
+            pass
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise TypeError(
                 f"Ming-Omni-TTS stream chunk for {request_id!r} must include "
                 "metadata"
             )
+        else:
+            pass
         if item.chunk_id != state.expected_chunk_id:
             raise ValueError(
                 f"Ming-Omni-TTS stream chunk for {request_id!r} has "
                 f"chunk_id={item.chunk_id}, expected {state.expected_chunk_id}"
             )
+        else:
+            pass
         if state.terminal_received:
             raise ValueError(
                 f"Ming-Omni-TTS stream chunk arrived after the terminal patch "
                 f"for {request_id!r}"
             )
+        else:
+            pass
         is_last = metadata.get("is_last")
         if not isinstance(is_last, bool):
             raise TypeError(
                 f"Ming-Omni-TTS stream chunk for {request_id!r} must include "
                 "boolean metadata['is_last']"
             )
+        else:
+            pass
         super().ingest_stream_item(request_id, item)
         state.expected_chunk_id += 1
         if is_last:
             state.terminal_received = True
+        else:
+            pass
         return state
 
     def validate_chunk(
@@ -211,17 +235,23 @@ class MingTTSStreamingVocoderScheduler(
                 "Ming-Omni-TTS stream latent must be on CPU, "
                 f"got device {latents.device}"
             )
+        else:
+            pass
         if latents.dtype != torch.float32:
             raise TypeError(
                 "Ming-Omni-TTS stream latent dtype must be torch.float32, "
                 f"got {latents.dtype}"
             )
+        else:
+            pass
         expected_shape = (self.patch_size, self.latent_dim)
         if tuple(latents.shape) != expected_shape:
             raise ValueError(
                 f"Ming-Omni-TTS stream latent shape must be {expected_shape}, "
                 f"got {tuple(latents.shape)}"
             )
+        else:
+            pass
         return latents.contiguous()
 
     def ingest(
@@ -236,13 +266,19 @@ class MingTTSStreamingVocoderScheduler(
     def has_executable_work(self, state: StreamState) -> bool:
         if state.terminal_committed:
             return False
+        else:
+            pass
         if state.terminal_received:
             return bool(state.pending_patches)
+        else:
+            pass
         return len(state.pending_patches) >= self.next_chunk_patches(state)
 
     def next_chunk_patches(self, state: StreamState) -> int:
         if state.initial_group_consumed:
             return self.steady_chunk_patches
+        else:
+            pass
         return self.initial_chunk_patches
 
     def select_step_participants(self) -> list[tuple[str, StreamState]]:
@@ -253,8 +289,12 @@ class MingTTSStreamingVocoderScheduler(
         for request_id, state in self.stream_state_items():
             if self.is_aborted(request_id) or not self.has_executable_work(state):
                 continue
+            else:
+                pass
             if self.slot_bindings.try_bind(request_id) is None:
                 continue
+            else:
+                pass
             participants.append((request_id, state))
         return participants
 
@@ -302,6 +342,8 @@ class MingTTSStreamingVocoderScheduler(
                 state.terminal_committed = True
             elif not state.initial_group_consumed:
                 state.initial_group_consumed = True
+            else:
+                pass
             state.emitted_samples += int(waveform.numel())
 
         terminal_request_ids = tuple(
@@ -309,6 +351,8 @@ class MingTTSStreamingVocoderScheduler(
         )
         if terminal_request_ids:
             self.slot_bindings.release_clean(terminal_request_ids)
+        else:
+            pass
 
         return {
             request_id: waveform
@@ -338,17 +382,25 @@ class MingTTSStreamingVocoderScheduler(
                 f"Ming-Omni-TTS stream {request_id!r} ended without a "
                 "terminal latent patch"
             )
+        else:
+            pass
         if not state.terminal_committed:
             if self.slot_bindings.slot_for(request_id) is None:
                 return None
+            else:
+                pass
             raise RuntimeError(
                 f"Ming-Omni-TTS stream {request_id!r} ended before its terminal "
                 "AudioVAE transition completed"
             )
+        else:
+            pass
         if state.emitted_samples <= 0:
             raise RuntimeError(
                 f"Ming-Omni-TTS stream {request_id!r} completed without audio"
             )
+        else:
+            pass
         return None
 
     def fallback_full_decode(
@@ -365,6 +417,8 @@ class MingTTSStreamingVocoderScheduler(
             raise RuntimeError(
                 f"Ming-Omni-TTS stream {request_id!r} completed without audio"
             )
+        else:
+            pass
         state.emitted_samples = sample_count
         return waveform
 
@@ -372,6 +426,8 @@ class MingTTSStreamingVocoderScheduler(
         pending = tuple(self.pending_release_ids)
         if not pending:
             return
+        else:
+            pass
         try:
             self.slot_bindings.reset_and_release(pending)
         except Exception:
@@ -390,6 +446,8 @@ class MingTTSStreamingVocoderScheduler(
         del state
         if self.slot_bindings.slot_for(request_id) is None:
             return
+        else:
+            pass
         self.pending_release_ids.add(request_id)
 
     def warmup_now(self) -> None:
@@ -398,14 +456,20 @@ class MingTTSStreamingVocoderScheduler(
     def on_serving_start(self) -> None:
         if self.stop_requested.is_set():
             return
+        else:
+            pass
         if not self.decoder.streaming_ready:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE backend is not prepared"
             )
+        else:
+            pass
 
     def on_serving_stop(self) -> None:
         if self.serving_stopped:
             return
+        else:
+            pass
         self.serving_stopped = True
         try:
             self.slot_bindings.reset_all()
@@ -430,6 +494,8 @@ class MingTTSStreamingVocoderScheduler(
         usage = build_usage(final_state)
         if usage is not None:
             data["usage"] = usage
+        else:
+            pass
         return data
 
 

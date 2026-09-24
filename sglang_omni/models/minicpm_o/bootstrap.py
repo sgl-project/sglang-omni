@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.types import SchedulerRequest
+else:
+    pass
 
 
 def create_talker_scheduler(
@@ -74,6 +76,8 @@ def create_talker_scheduler(
     model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         init_sglang_cuda_graphs(model_worker)
+    else:
+        pass
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
@@ -145,6 +149,8 @@ def create_thinker_scheduler(
             enable_return_hidden_states=True,
             return_hidden_states_mode="full",
         )
+    else:
+        pass
 
     try:
         infrastructure = create_sglang_infrastructure(
@@ -158,6 +164,8 @@ def create_thinker_scheduler(
         )
         if defer_cuda_graph_capture:
             init_sglang_cuda_graphs(infrastructure[0])
+        else:
+            pass
     finally:
         if defer_cuda_graph_capture:
             override_server_args(
@@ -166,6 +174,8 @@ def create_thinker_scheduler(
                 enable_return_hidden_states=saved_return_hidden_states,
                 return_hidden_states_mode=saved_return_hidden_states_mode,
             )
+        else:
+            pass
 
     (
         model_worker,

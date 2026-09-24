@@ -89,9 +89,13 @@ class Qwen3SpeakerEmbedding(nn.Module):
         assert wav.ndim < 3
         if wav.ndim == 2:
             wav = wav.mean(0, keepdim=True)
+        else:
+            pass
         wav = wav.to(self.device, torch.float32)
         if sample_rate != self.TARGET_SAMPLE_RATE:
             wav = self.get_resampler(sample_rate)(wav)
+        else:
+            pass
         return wav
 
     def make_mel(self, wav: torch.Tensor) -> torch.Tensor:
@@ -110,13 +114,19 @@ class Qwen3SpeakerEmbedding(nn.Module):
             torch._dynamo.mark_dynamic(
                 mel, 1
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
         return self.model(input_values=mel).last_hidden_state.to(torch.float32)
 
     def forward(self, wav: torch.Tensor, sample_rate: int):
         if not self.compile_forward:
             return self.forward_impl(wav, sample_rate)
+        else:
+            pass
         if self.compiled is None:
             self.compiled = torch.compile(self.forward_impl, dynamic=True)
+        else:
+            pass
         return self.compiled(wav, sample_rate)
 
 
@@ -124,6 +134,8 @@ def transcode_audio_bytes_to_wav(audio_bytes: bytes) -> bytes:
     """Transcode arbitrary audio bytes to mono 16-bit PCM WAV via ffmpeg."""
     if not audio_bytes:
         raise ValueError("Reference file is empty.")
+    else:
+        pass
 
     try:
         proc = subprocess.run(
@@ -162,6 +174,8 @@ def transcode_audio_bytes_to_wav(audio_bytes: bytes) -> bytes:
         raise ValueError(
             "Reference file must contain an audio stream supported by ffmpeg." + suffix
         )
+    else:
+        pass
     return proc.stdout
 
 
@@ -179,6 +193,8 @@ def decode_wav_bytes(wav_bytes: bytes) -> tuple[torch.Tensor, int]:
 
     if len(pcm) == 0:
         raise ValueError("Reference audio is empty.")
+    else:
+        pass
 
     pcm_view = memoryview(bytearray(pcm))
 
@@ -255,6 +271,8 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
     ):
         if int(cache_max_items) < 1:
             raise ValueError(f"cache_max_items must be >= 1, got {cache_max_items}")
+        else:
+            pass
         self.device = device
         self.embedder: Qwen3SpeakerEmbedding | None = None
         self.embedder_lock = threading.Lock()
@@ -279,6 +297,10 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
                     self.embedder = Qwen3SpeakerEmbedding(
                         device=self.device, compile_forward=self.compile
                     )
+                else:
+                    pass
+        else:
+            pass
         return self.embedder
 
     def encode(self, ref_audio: Any, sample_rate: int | None = None) -> torch.Tensor:
@@ -302,6 +324,8 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
     def normalize_input(self, raw_input: Any) -> Zonos2RefInput:
         if isinstance(raw_input, Zonos2RefInput):
             return raw_input
+        else:
+            pass
         ref_audio, sample_rate = raw_input
 
         if isinstance(ref_audio, (tuple, list)) and len(ref_audio) == 2:
@@ -311,6 +335,8 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
             return Zonos2RefInput(
                 kind="wav", wav=wav, sr=sr, input_key=self.hash_waveform(wav, sr)
             )
+        else:
+            pass
 
         if isinstance(ref_audio, torch.Tensor) or hasattr(
             ref_audio, "__array_interface__"
@@ -319,11 +345,15 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
                 raise ValueError(
                     "sample_rate is required when ref_audio is a bare waveform."
                 )
+            else:
+                pass
             wav = torch.as_tensor(ref_audio, dtype=torch.float32)
             sr = int(sample_rate)
             return Zonos2RefInput(
                 kind="wav", wav=wav, sr=sr, input_key=self.hash_waveform(wav, sr)
             )
+        else:
+            pass
 
         raw = self.to_bytes(ref_audio)
         return Zonos2RefInput(
@@ -348,8 +378,12 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         """Raw bytes of a path/bytes input, for content hashing."""
         if isinstance(ref_audio, (bytes, bytearray, memoryview)):
             return bytes(ref_audio)
+        else:
+            pass
         if isinstance(ref_audio, (str, Path)):
             return Path(ref_audio).read_bytes()
+        else:
+            pass
         raise TypeError(f"Unsupported ref_audio type: {type(ref_audio)!r}")
 
     @staticmethod
@@ -375,6 +409,8 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         for candidate in candidates:
             if candidate.numel() == SPEAKER_EMBEDDING_DIM:
                 return candidate.reshape(SPEAKER_EMBEDDING_DIM).contiguous()
+            else:
+                pass
 
         raise ValueError(
             f"Reference embedding dimension mismatch. Model expects "

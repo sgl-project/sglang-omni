@@ -35,9 +35,13 @@ def create_tree_cache(
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
         return ChunkCache(params)
+    else:
+        pass
 
     if params.eviction_policy.lower() == "lru":
         return EvictHeapRadixCache(params)
+    else:
+        pass
 
     from sglang.srt.mem_cache.radix_cache import RadixCache
 

@@ -22,6 +22,8 @@ def request_generator(
 ) -> torch.Generator | None:
     if seed is None:
         return None
+    else:
+        pass
     return torch.Generator(device=device).manual_seed(int(seed))
 
 
@@ -37,6 +39,8 @@ def pad_rows(tensor: torch.Tensor, rows: int) -> torch.Tensor:
     extra = rows - tensor.shape[1]
     if extra <= 0:
         return tensor
+    else:
+        pass
     return F.pad(tensor, [0, 0] * (tensor.ndim - 2) + [0, extra])
 
 
@@ -50,12 +54,20 @@ def build_time_grid(
         grid = torch.tensor(list(t_grid), device=device, dtype=torch.float32)
         if grid.ndim != 1 or grid.numel() < 2:
             raise ValueError("t_grid must hold at least two time points")
+        else:
+            pass
         return grid
+    else:
+        pass
     if steps < 1:
         raise ValueError("AuK nfe must be positive")
+    else:
+        pass
     t = torch.linspace(0, 1, steps + 1, device=device, dtype=torch.float32)
     if sway_sampling_coef is not None:
         t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+    else:
+        pass
     return t
 
 
@@ -147,6 +159,8 @@ class AuKFlowMatching(nn.Module):
                 text=max(item.conditioning.shape[0] for item in items),
                 batch=len(items),
             )
+        else:
+            pass
         frame_rows, ref_rows, text_rows = (
             padding if padding is not None else (None, None, None)
         )
@@ -206,6 +220,8 @@ class AuKFlowMatching(nn.Module):
                 ],
                 dim=1,
             )
+        else:
+            pass
 
         inputs = dict(
             text=text,
@@ -227,6 +243,8 @@ class AuKFlowMatching(nn.Module):
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
                 )
+            else:
+                pass
             pred = self.transformer(**kwargs, cfg_infer=True)
             v_cond, v_uncond = torch.chunk(pred, 2, dim=0)
             return v_cond + (v_cond - v_uncond) * cfg_strength
@@ -235,6 +253,8 @@ class AuKFlowMatching(nn.Module):
         fn = None
         if padding is not None:
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
+        else:
+            pass
         try:
             result = integrate(fn or partial(step, inputs), y0, t)
             return [latent[: item.target_frames] for item, latent in zip(items, result)]

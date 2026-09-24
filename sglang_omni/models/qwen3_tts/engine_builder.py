@@ -29,10 +29,16 @@ logger = logging.getLogger(__name__)
 def is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
+    else:
+        pass
     if isinstance(value, int):
         return value != 0
+    else:
+        pass
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        pass
     return False
 
 
@@ -78,6 +84,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         qwen_tts = importlib.import_module("qwen_tts")
         if not hasattr(qwen_tts, "Qwen3TTSModel"):
             raise ImportError("qwen_tts does not expose Qwen3TTSModel")
+        else:
+            pass
 
         return super().resolve_checkpoint(model_path)
 
@@ -157,6 +165,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
         if disable_cuda_graph:
             return
+        else:
+            pass
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
         subtalker = request_builders.resolve_subtalker_sampling(
@@ -184,6 +194,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
+        else:
+            pass
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner

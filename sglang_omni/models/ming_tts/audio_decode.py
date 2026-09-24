@@ -89,6 +89,8 @@ class MingAudioDecoder:
     def decode_full(self, latents: torch.Tensor) -> torch.Tensor:
         if int(latents.shape[0]) == 0:
             return torch.empty((0,), dtype=torch.float32)
+        else:
+            pass
         first_parameter = next(self.audio_vae.parameters())
         device = first_parameter.device
         dtype = first_parameter.dtype
@@ -196,8 +198,12 @@ class AudioVAEFixedStreamingTransition:
             or (not isinstance(max_step_latents, Integral))
         ):
             raise TypeError("capacity and max_step_latents must be integers")
+        else:
+            pass
         if capacity <= 0 or max_step_latents <= 0:
             raise ValueError("capacity and max_step_latents must be positive")
+        else:
+            pass
         self._capacity = int(capacity)  # noqa: leading-underscore
         self._max_step_latents = int(max_step_latents)  # noqa: leading-underscore
         patch_size = int(decoder.patch_size)
@@ -205,6 +211,8 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 "AudioVAE fixed streaming requires a positive decoder patch_size"
             )
+        else:
+            pass
         latent_dim = int(decoder.latent_dim)
         hop_length = int(decoder.hop_length)
         qwen = decoder.decoder
@@ -228,6 +236,8 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 f"AudioVAE fixed streaming requires sliding-only Qwen2 with sliding_window > 1 and SDPA, got layer_types={layer_types!r}, sliding_window={sliding_window!r}, backend={attention_backend!r}"
             )
+        else:
+            pass
         sliding_window = int(sliding_window)
         configured_head_dim = getattr(config, "head_dim", None)
         head_dim = int(
@@ -250,6 +260,8 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 f"AudioVAE fixed streaming requires exact StreamingLinearUpsample(nn.Upsample) semantics matching decoder patch_size={patch_size}; got wrapper={type(upsampling).__name__}, wrapper_scale={getattr(upsampling, 'scale_factor', None)!r}, inner={type(upsampler).__name__}, mode={getattr(upsampler, 'mode', None)!r}, align_corners={getattr(upsampler, 'align_corners', None)!r}, size={getattr(upsampler, 'size', None)!r}, inner_scale={getattr(upsampler, 'scale_factor', None)!r}, recompute_scale_factor={getattr(upsampler, 'recompute_scale_factor', None)!r}"
             )
+        else:
+            pass
         istft = decoder.head.istft
         win_length = int(istft.win_length)
         overlap = win_length - hop_length
@@ -257,11 +269,15 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 "AudioVAE fixed streaming requires same-padding ISTFT with an even positive overlap"
             )
+        else:
+            pass
         frames_per_patch = patch_size * patch_size
         if frames_per_patch * hop_length < overlap:
             raise ValueError(
                 "AudioVAE fixed streaming requires each non-empty patch to cover the ISTFT overlap"
             )
+        else:
+            pass
         first_parameter = next(decoder.parameters())
         device = first_parameter.device
         input_dtype = first_parameter.dtype
@@ -273,6 +289,8 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 f"AudioVAE fixed streaming requires an eval-mode CUDA BF16 decoder for serving or an eval-mode CPU FP32 decoder for internal verification, got device={device}, dtype={input_dtype}, training={decoder.training}"
             )
+        else:
+            pass
         self._latent_dim = latent_dim  # noqa: leading-underscore
         self._device = device  # noqa: leading-underscore
         self._input_dtype = input_dtype  # noqa: leading-underscore
@@ -313,6 +331,8 @@ class AudioVAEFixedStreamingTransition:
             raise ValueError(
                 "AudioVAE fixed streaming requires an FP32 ISTFT envelope tail"
             )
+        else:
+            pass
         self.window_envelope_tail = window_envelope_tail
         kv_shape = (layer_count, self.capacity, kv_heads, self.cache_size, head_dim)
         self.state = AudioVAEFixedStreamingStateBank(
@@ -428,6 +448,8 @@ class AudioVAEFixedStreamingTransition:
         slots = self.validate_slot_ids(slot_ids)
         if not slots:
             return
+        else:
+            pass
         device_context = (
             torch.cuda.device(self.device)
             if self.device.type == "cuda"
@@ -439,6 +461,8 @@ class AudioVAEFixedStreamingTransition:
                 tensor.index_fill_(row_dim, indices, 0)
             if self.device.type == "cuda":
                 torch.cuda.current_stream(self.device).synchronize()
+            else:
+                pass
 
     def reset_all(self) -> None:
         device_context = (
@@ -451,20 +475,30 @@ class AudioVAEFixedStreamingTransition:
                 tensor.zero_()
             if self.device.type == "cuda":
                 torch.cuda.current_stream(self.device).synchronize()
+            else:
+                pass
 
     def validate_slot_ids(self, slot_ids: Sequence[int]) -> tuple[int, ...]:
         if not isinstance(slot_ids, Sequence):
             raise TypeError("slot_ids must be a host sequence of integers")
+        else:
+            pass
         slots: list[int] = []
         for slot_id in slot_ids:
             if isinstance(slot_id, bool) or not isinstance(slot_id, Integral):
                 raise TypeError("slot_ids must contain non-bool integers")
+            else:
+                pass
             slot = int(slot_id)
             if slot < 0 or slot >= self.capacity:
                 raise ValueError(f"slot_id {slot} is outside [0, {self.capacity})")
+            else:
+                pass
             slots.append(slot)
         if len(set(slots)) != len(slots):
             raise ValueError("slot_ids must not contain duplicates")
+        else:
+            pass
         return tuple(slots)
 
     def upsample(
@@ -839,6 +873,8 @@ class MingAudioStreamingRunner:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE backend is not prepared"
             )
+        else:
+            pass
         captured = self.captured_graph
         self.host_latents.zero_()
         self.host_latent_lengths.zero_()
@@ -881,6 +917,8 @@ class MingAudioStreamingRunner:
                     raise RuntimeError(
                         f"AudioVAE fixed streaming returned invalid sample length {sample_count} for slot {slot}"
                     )
+                else:
+                    pass
                 sample_counts.append(sample_count)
         except Exception:
             if graph_attempted:
@@ -888,6 +926,8 @@ class MingAudioStreamingRunner:
                 logger.exception(
                     "Ming-Omni-TTS streaming AudioVAE CUDA graph failed; future streaming waves will use eager execution"
                 )
+            else:
+                pass
             raise
         waveforms = []
         for slot, sample_count in zip(slot_ids, sample_counts, strict=True):
@@ -905,10 +945,14 @@ class MingAudioStreamingRunner:
     def prepare_cuda_graph(self) -> None:
         if not self.cuda_graph_required_at_startup:
             return
+        else:
+            pass
         if self.startup_prepared:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE CUDA graph is already prepared"
             )
+        else:
+            pass
         candidate_graph: torch.cuda.CUDAGraph | None = None
         try:
             with torch.cuda.device(self.transition.device):
@@ -968,6 +1012,8 @@ class MingAudioStreamingRunner:
                     logger.exception(
                         "Failed to reset an unpublished Ming-Omni-TTS streaming AudioVAE CUDA graph"
                     )
+            else:
+                pass
             raise
         logger.info(
             "ming_tts_audio_vae_streaming_graph stage=audio_decode streaming_graph_ready=true allocator_allocated_before_bytes=%d allocator_allocated_after_bytes=%d allocator_allocated_delta_bytes=%d allocator_reserved_before_bytes=%d allocator_reserved_after_bytes=%d allocator_reserved_delta_bytes=%d",
@@ -984,6 +1030,8 @@ class MingAudioStreamingRunner:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid output type"
             )
+        else:
+            pass
         expected_waveform_shape = (
             self.transition.capacity,
             self.transition.max_output_samples,
@@ -999,6 +1047,8 @@ class MingAudioStreamingRunner:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid waveform contract"
             )
+        else:
+            pass
         sample_lengths = output.sample_lengths
         if (
             tuple(sample_lengths.shape) != (self.transition.capacity,)
@@ -1010,6 +1060,8 @@ class MingAudioStreamingRunner:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE CUDA graph returned an invalid sample-length contract"
             )
+        else:
+            pass
 
     def close(self) -> None:
         captured = self.captured_graph
@@ -1017,6 +1069,8 @@ class MingAudioStreamingRunner:
         self.captured_graph = None
         if captured is None:
             return
+        else:
+            pass
         with torch.cuda.device(self.transition.device):
             torch.cuda.current_stream(self.transition.device).synchronize()
             captured.graph.reset()
@@ -1032,6 +1086,8 @@ def decode_ming_tts_audio_payload(
     state.duration_s = float(waveform.numel() / int(decoder.sample_rate))
     if not keep_latents:
         state.generated_latents = None
+    else:
+        pass
     payload = store_ming_tts_state(payload, state)
     payload.data.update(
         audio_waveform_payload(
@@ -1044,6 +1100,8 @@ def decode_ming_tts_audio_payload(
     usage = build_usage(state)
     if usage is not None:
         payload.data["usage"] = usage
+    else:
+        pass
     return payload
 
 

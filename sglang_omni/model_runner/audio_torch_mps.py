@@ -28,6 +28,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise RuntimeError(
                 f"{self.model_name} Torch MPS currently requires max_running_requests=1"
             )
+        else:
+            pass
         return requests[0]
 
     def next_token_result(self, next_token_ids: torch.Tensor) -> Any:
@@ -54,15 +56,21 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS requires exactly one audio item"
             )
+        else:
+            pass
         item = mm_inputs.mm_items[0]
         if item.feature is None or item.pad_value is None:
             raise ValueError(
                 f"{self.model_name} Torch MPS requires audio features and pad value"
             )
+        else:
+            pass
         if mm_inputs.audio_token_id is None:
             raise ValueError(
                 f"{self.model_name} Torch MPS is missing its audio token ID"
             )
+        else:
+            pass
 
         token_ids = [int(token_id) for token_id in schedule_batch.input_ids.tolist()]
         pad_value = int(item.pad_value)
@@ -80,6 +88,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS prefill has no audio placeholders"
             )
+        else:
+            pass
         audio_start = audio_positions[0]
         if audio_positions != list(
             range(audio_start, audio_start + len(audio_positions))
@@ -87,6 +97,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS audio placeholders must be contiguous"
             )
+        else:
+            pass
 
         language_model = self.model.language_model
         input_ids = torch.tensor(
@@ -108,6 +120,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
         # Audio families return either [tokens, hidden] or [1, tokens, hidden].
         if audio_features.ndim == 2:
             audio_features = audio_features.unsqueeze(0)
+        else:
+            pass
         if audio_features.shape != (
             1,
             len(audio_positions),
@@ -117,6 +131,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
                 f"{self.model_name} Torch MPS audio embedding shape does not match its "
                 f"placeholder span: {tuple(audio_features.shape)}"
             )
+        else:
+            pass
         input_embeddings[0, audio_start : audio_start + len(audio_positions), :] = (
             audio_features[0]
         )

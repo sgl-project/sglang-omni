@@ -78,10 +78,14 @@ def load_auk_config(model_path: str) -> AuKRuntimeConfig:
         if candidate.is_file():
             raw = load_yaml(candidate)
             break
+        else:
+            pass
     else:
         config_json = root / "config.json"
         if config_json.is_file():
             raw = load_json(config_json)
+        else:
+            pass
 
     model = raw.get("model") if isinstance(raw.get("model"), dict) else raw
     model = model or {}
@@ -102,6 +106,8 @@ def load_auk_config(model_path: str) -> AuKRuntimeConfig:
             "AuK: no model.arch section under %s; falling back to architecture defaults",
             model_path,
         )
+    else:
+        pass
 
     return AuKRuntimeConfig(
         model_path=str(model_path),
@@ -124,4 +130,6 @@ def make_runtime_config(
     config = load_auk_config(model_path)
     if text_encoder_path:
         config.text_encoder_path = text_encoder_path
+    else:
+        pass
     return config

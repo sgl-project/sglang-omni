@@ -13,6 +13,8 @@ def pointwise_conv1d_parameters(
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     if not isinstance(module, nn.Conv1d):
         raise TypeError(f"expected Conv1d, got {module.__class__.__name__}")
+    else:
+        pass
     if (
         module.kernel_size != (1,)
         or module.stride != (1,)
@@ -21,6 +23,8 @@ def pointwise_conv1d_parameters(
         or module.groups != 1
     ):
         raise ValueError("cached quantizer decode requires pointwise Conv1d")
+    else:
+        pass
     weight = module.weight.detach().squeeze(-1).to(dtype=torch.float32)
     bias = None if module.bias is None else module.bias.detach().to(dtype=torch.float32)
     return weight, bias
@@ -33,6 +37,8 @@ class MossAudioTokenizerQuantizerDecoder:
         quantizers = list(getattr(source, "quantizers", ()))
         if not quantizers:
             raise ValueError("MOSS quantizer has no residual codebooks")
+        else:
+            pass
 
         codebooks: list[torch.Tensor] = []
         weights: list[torch.Tensor] = []
@@ -43,9 +49,13 @@ class MossAudioTokenizerQuantizerDecoder:
             codebook = getattr(getattr(quantizer, "codebook", None), "weight", None)
             if not isinstance(codebook, torch.Tensor) or codebook.ndim != 2:
                 raise TypeError("MOSS quantizer codebook must be a 2D tensor")
+            else:
+                pass
             weight, bias = pointwise_conv1d_parameters(quantizer.out_proj)
             if int(codebook.shape[1]) != int(weight.shape[1]):
                 raise ValueError("MOSS codebook and projection dimensions do not match")
+            else:
+                pass
             if not codebooks:
                 codebook_size = int(codebook.shape[0])
                 output_dim = int(weight.shape[0])
@@ -56,6 +66,8 @@ class MossAudioTokenizerQuantizerDecoder:
                 raise ValueError(
                     "MOSS residual codebooks must share input and output sizes"
                 )
+            else:
+                pass
             codebooks.append(codebook.detach().to(dtype=torch.float32))
             weights.append(weight)
             biases.append(bias)
@@ -70,6 +82,8 @@ class MossAudioTokenizerQuantizerDecoder:
                 raise ValueError(
                     "MOSS quantizer output projection has an unexpected input size"
                 )
+            else:
+                pass
 
         self.num_quantizers = len(quantizers)
         self.output_dim = output_dim
@@ -96,16 +110,22 @@ class MossAudioTokenizerQuantizerDecoder:
             raise ValueError(
                 f"MOSS quantizer codes must be [N, B, T], got {tuple(codes.shape)}"
             )
+        else:
+            pass
         num_quantizers = int(codes.shape[0])
         if num_quantizers <= 0 or num_quantizers > self.num_quantizers:
             raise ValueError(
                 "MOSS quantizer codebook count must be within "
                 f"[1, {self.num_quantizers}], got {num_quantizers}"
             )
+        else:
+            pass
         if codes.device != self.flat_codebooks.device:
             raise ValueError(
                 "MOSS quantizer codes and cached weights must share one device"
             )
+        else:
+            pass
 
         _, batch_size, frames = codes.shape
         decoded = torch.zeros(
@@ -133,6 +153,8 @@ class MossAudioTokenizerQuantizerDecoder:
                 self.output_weight.unsqueeze(-1),
                 self.output_bias,
             )
+        else:
+            pass
         return decoded
 
 

@@ -22,6 +22,8 @@ def make_admin_auth_dependency(admin_api_key: str | None):
             return
 
         return _no_auth
+    else:
+        pass
 
     async def _check_admin_key(
         authorization: str | None = Header(default=None),
@@ -33,11 +35,15 @@ def make_admin_auth_dependency(admin_api_key: str | None):
                 detail="Admin API key required: Authorization: Bearer <key>",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        else:
+            pass
         if not hmac.compare_digest(
             token.encode("utf-8"),
             admin_api_key.encode("utf-8"),
         ):
             raise HTTPException(status_code=403, detail="Invalid admin API key")
+        else:
+            pass
 
     return _check_admin_key
 
@@ -45,7 +51,11 @@ def make_admin_auth_dependency(admin_api_key: str | None):
 def extract_bearer_token(authorization: str | None) -> str | None:
     if not authorization:
         return None
+    else:
+        pass
     parts = authorization.split(None, 1)
     if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
         return None
+    else:
+        pass
     return parts[1]

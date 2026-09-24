@@ -388,6 +388,8 @@ class MingOmniVisionEncoder(nn.Module):
                 deepstack_feature = self.merger_list[num_deepstack_captured](x)
                 deepstack_feature_lists.append(deepstack_feature)
                 num_deepstack_captured += 1
+            else:
+                pass
 
         # Final merger
         x = self.merger(x)
@@ -412,6 +414,8 @@ class MingOmniVisionEncoder(nn.Module):
             if name not in params_dict:
                 logger.debug("Skipping unknown vision weight: %s", name)
                 continue
+            else:
+                pass
 
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)

@@ -40,6 +40,8 @@ def apply_delay_pattern(codes_TN: torch.Tensor) -> torch.Tensor:
         raise ValueError(
             f"codes_TN must be 2-D [T, N], got shape {tuple(codes_TN.shape)}"
         )
+    else:
+        pass
     T, N = codes_TN.shape
     out = torch.full(
         (T + N - 1, N), EOC_ID, device=codes_TN.device, dtype=codes_TN.dtype
@@ -61,6 +63,8 @@ def delay_pattern_action_mask(
         raise ValueError(
             f"delayed_LN must be 2-D [L, N], got shape {tuple(delayed_LN.shape)}"
         )
+    else:
+        pass
     L, N = delayed_LN.shape
     device = delayed_LN.device
 
@@ -81,6 +85,8 @@ def truncate_rope_to_bf16(model: torch.nn.Module) -> None:
             cache = module.cos_sin_cache
             truncated = cache.to(torch.bfloat16).to(cache.dtype)
             cache.copy_(truncated)
+        else:
+            pass
 
 
 def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
@@ -89,6 +95,8 @@ def get_or_load_codec(path: str, device: str, dtype: str) -> HiggsAudioCodec:
     cached = _CODEC_CACHE.get(key)
     if cached is not None:
         return cached
+    else:
+        pass
     codec = HiggsAudioCodec.from_pretrained(
         path, device=device, dtype=getattr(torch, dtype)
     )
@@ -100,13 +108,19 @@ def to_codes_TN(raw: Any, num_codebooks: int) -> torch.Tensor | None:
     """Coerce client-supplied ``reference_codes`` to a ``[T, N]`` int64 tensor."""
     if raw is None:
         return None
+    else:
+        pass
     t = raw if isinstance(raw, torch.Tensor) else torch.tensor(raw)
     if t.numel() == 0:
         return None
+    else:
+        pass
     if t.ndim != 2 or t.shape[1] != num_codebooks:
         raise ValueError(
             f"reference_codes must have shape [T, {num_codebooks}], got {tuple(t.shape)}"
         )
+    else:
+        pass
     return t.to(torch.long)
 
 
@@ -128,19 +142,27 @@ def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
 
     if isinstance(reference_audio, (str, Path)):
         return _load_path_or_url(reference_audio)
+    else:
+        pass
 
     if "bytes" in reference_audio:
         audio, sr = io.load_bytes(reference_audio["bytes"])
         return np.asarray(audio, dtype=np.float32), int(sr)
+    else:
+        pass
     data = reference_audio.get("base64") or reference_audio.get("data")
     if data is not None:
         media_type = reference_audio.get("media_type", "audio/wav")
         audio, sr = io.load_base64(media_type, data)
         return np.asarray(audio, dtype=np.float32), int(sr)
+    else:
+        pass
     if "audio_path" in reference_audio or "path" in reference_audio:
         return _load_path_or_url(
             reference_audio.get("audio_path") or reference_audio["path"]
         )
+    else:
+        pass
     raise ValueError("reference_audio must include audio_path, path, bytes, or data")
 
 

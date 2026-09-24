@@ -43,6 +43,8 @@ class Connection:
         if remote_engine_id not in self.remote_agents:
             agent_name = self.nixl.add_remote_agent(remote_meta_bytes)
             self.remote_agents[remote_engine_id] = agent_name
+        else:
+            pass
         return self.remote_agents[remote_engine_id]
 
 
@@ -82,6 +84,8 @@ class PutOperation(NixlOperation):
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self.completed:
             return
+        else:
+            pass
 
         start = time.time()
         try:
@@ -92,14 +96,20 @@ class PutOperation(NixlOperation):
                     if self.expected_notification in msgs:
                         found = True
                         break
+                    else:
+                        pass
 
                 if found:
                     break
+                else:
+                    pass
 
                 if time.time() - start > timeout:
                     raise TimeoutError(
                         f"PutOperation timed out waiting for {self.expected_notification}"
                     )
+                else:
+                    pass
 
                 # Non-blocking wait
                 await asyncio.sleep(0.0001)
@@ -139,6 +149,8 @@ class GetOperation(NixlOperation):
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self.completed:
             return
+        else:
+            pass
 
         try:
             # 1. Wait for RDMA Transfer
@@ -148,6 +160,8 @@ class GetOperation(NixlOperation):
                     break
                 elif state != "PROC":
                     raise RuntimeError(f"Transfer failed with state: {state}")
+                else:
+                    pass
 
                 await asyncio.sleep(0.00001)
 
@@ -193,6 +207,8 @@ class NixlRelay(Relay):
                 self.device_id = int(device.split(":")[1])
             except ValueError:
                 self.device_id = 0
+        else:
+            pass
 
         # 2. Initialize memory pool
         slot_bytes = slot_size_mb * 1024 * 1024
@@ -231,6 +247,8 @@ class NixlRelay(Relay):
         size_bytes = tensor.numel() * tensor.element_size()
         if size_bytes > self.allocator.slot_size:
             raise ValueError(f"Tensor size {size_bytes} exceeds slot size")
+        else:
+            pass
 
         # 1. Async Wait for Credit
         offset = await self.allocator.acquire_async()
@@ -289,6 +307,8 @@ class NixlRelay(Relay):
 
         if data_size > self.allocator.slot_size:
             raise ValueError("Data size exceeds local slot size")
+        else:
+            pass
 
         # 1. Async Wait for Local Credit (Buffer)
         local_offset = await self.allocator.acquire_async()
@@ -354,3 +374,5 @@ class NixlRelay(Relay):
                 self.connection.nixl.deregister_memory(self.pool_handle)
             except Exception:
                 logger.exception("Failed to deregister NIXL memory pool")
+        else:
+            pass

@@ -38,6 +38,8 @@ def packed_attention_backend(capability: tuple[int, int], *, is_hip: bool) -> st
         # Note (zijiecode): HIP reports gfx950 as (9, 5), which the Hopper check
         # would send to FA3; FA3 does not exist on HIP.
         return "triton_attn"
+    else:
+        pass
     major, _ = capability
     return "fa3" if major == _HOPPER else "triton_attn"
 
@@ -104,6 +106,8 @@ class AudioLayerGraphRunner:
     ) -> None:
         if device.type != "cuda":
             raise ValueError("audio layer CUDA graphs require a CUDA device")
+        else:
+            pass
         self.tower = tower
         # Note (wenyao): an indexless "cuda" never equals a tensor's "cuda:N",
         # so resolve the index or every replay silently declines.
@@ -138,6 +142,8 @@ class AudioLayerGraphRunner:
         segments = [self.window] * full
         if remainder:
             segments.append(remainder)
+        else:
+            pass
         return segments
 
     def capture_segments(self, bucket: int) -> list[int]:
@@ -151,6 +157,8 @@ class AudioLayerGraphRunner:
     def resolve_attention(self) -> None:
         if self.packed_attention is not None or self.disabled_reason is not None:
             return
+        else:
+            pass
         try:
             self.packed_attention, self.backend = resolve_packed_attention(self.device)
         except Exception as exc:
@@ -181,6 +189,8 @@ class AudioLayerGraphRunner:
             if hidden_states.dtype == torch.float16:
                 clamp_value = torch.finfo(hidden_states.dtype).max - 1000
                 hidden_states = torch.clamp(hidden_states, -clamp_value, clamp_value)
+            else:
+                pass
         return hidden_states
 
     def capture(self, bucket: int) -> Captured | None:
@@ -221,12 +231,16 @@ class AudioLayerGraphRunner:
         self.resolve_attention()
         if self.disabled_reason is not None:
             return
+        else:
+            pass
         for bucket in self.token_buckets:
             captured = self.capture(bucket)
             if captured is None:
                 self.disabled_reason = f"capture failed at bucket {bucket}"
                 self.graphs.clear()
                 return
+            else:
+                pass
             self.graphs[bucket] = captured
         logger.info(
             "audio layer CUDA graphs captured for buckets %s with %s attention",
@@ -239,6 +253,8 @@ class AudioLayerGraphRunner:
             segment < 0 or segment > self.window for segment in segments
         ):
             return None
+        else:
+            pass
         for bucket in self.token_buckets:
             if bucket >= tokens and self.graphs.get(bucket) is not None:
                 required_slots = len(segments) + len(
@@ -246,6 +262,10 @@ class AudioLayerGraphRunner:
                 )
                 if required_slots <= self.graphs[bucket].segment_slots:
                     return bucket
+                else:
+                    pass
+            else:
+                pass
         return None
 
     def maybe_replay(
@@ -254,12 +274,18 @@ class AudioLayerGraphRunner:
         """Return the layer-stack output, or None when the caller must run eager."""
         if self.disabled_reason is not None or not self.graphs:
             return None
+        else:
+            pass
         if os.getpid() != self.owner_pid or hidden_states.device != self.device:
             return None
+        else:
+            pass
         tokens = hidden_states.shape[0]
         bucket = self.select(tokens, segments)
         if bucket is None:
             return None
+        else:
+            pass
         captured = self.graphs[bucket]
         padded = [*segments, *self.window_segments(bucket - tokens)]
         # Note (wenyao): real segments are never widened, only new ones added,

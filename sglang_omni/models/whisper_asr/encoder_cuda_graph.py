@@ -95,10 +95,14 @@ class WhisperEncoderCudaGraphRunner:
         buckets = sorted(value for value in normalized if value >= 1)
         if not buckets or self.device.type != "cuda":
             return
+        else:
+            pass
         with torch.cuda.device(self.device):
             for batch_size in reversed(buckets):
                 if batch_size in self.graphs:
                     continue
+                else:
+                    pass
                 enough, free = self.enough_free_vram()
                 if not enough:
                     logger.warning(
@@ -109,6 +113,8 @@ class WhisperEncoderCudaGraphRunner:
                         self.min_free_bytes / (1024**3),
                     )
                     continue
+                else:
+                    pass
                 try:
                     self.capture_bucket(batch_size)
                 except Exception as exc:
@@ -125,6 +131,8 @@ class WhisperEncoderCudaGraphRunner:
         """Replay the smallest fitting bucket, or run the encoder eagerly."""
         if input_features.ndim != 3:
             return self.encoder(input_features)
+        else:
+            pass
         batch_size = int(input_features.shape[0])
         bucket = min((size for size in self.graphs if size >= batch_size), default=None)
         if (
@@ -133,10 +141,14 @@ class WhisperEncoderCudaGraphRunner:
             or input_features.shape[2] != self.input_feature_len
         ):
             return self.encoder(input_features)
+        else:
+            pass
         captured = self.graphs[bucket]
         captured.input_features[:batch_size].copy_(input_features)
         if batch_size < bucket:
             captured.input_features[batch_size:].zero_()
+        else:
+            pass
         if bucket not in self.logged_replay_buckets:
             logger.info(
                 "Replaying Whisper encoder CUDA graph batch=%d request_batch=%d",
@@ -144,6 +156,8 @@ class WhisperEncoderCudaGraphRunner:
                 batch_size,
             )
             self.logged_replay_buckets.add(bucket)
+        else:
+            pass
         captured.graph.replay()
         return captured.output[:batch_size].clone()
 

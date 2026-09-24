@@ -18,13 +18,19 @@ class StreamingLinearUpsample(nn.Module):
         # Initialize state
         if state is None:
             state = {"prev_chunk": None, "history_last": None, "is_first": True}
+        else:
+            pass
 
         if x is None and not is_last:
             return None, state
+        else:
+            pass
 
         if state["is_first"] and is_last:
             out = self.upsampler(x.transpose(1, 2)).transpose(1, 2)
             return out, None  # Clean up state
+        else:
+            pass
 
         output_chunks = []
 
@@ -33,6 +39,10 @@ class StreamingLinearUpsample(nn.Module):
             state["is_first"] = False
             if not is_last:
                 return None, state
+            else:
+                pass
+        else:
+            pass
 
         if state["prev_chunk"] is not None:
             p = state["prev_chunk"].transpose(1, 2)
@@ -53,6 +63,8 @@ class StreamingLinearUpsample(nn.Module):
             output_chunks.append(out_prev.transpose(1, 2))
             state["history_last"] = p[:, :, -1:]
             state["prev_chunk"] = x
+        else:
+            pass
 
         if is_last:
             p = state["prev_chunk"].transpose(1, 2)
@@ -61,6 +73,8 @@ class StreamingLinearUpsample(nn.Module):
             out_last = up[:, :, self.scale_factor :]
             output_chunks.append(out_last.transpose(1, 2))
             state = None  # 结束
+        else:
+            pass
 
         final_out = torch.cat(output_chunks, dim=1) if output_chunks else None
         return final_out, state
@@ -86,6 +100,8 @@ class Encoder(nn.Module):
             self.aggregator = Qwen2Model(config)
             self.cls_embed = nn.Parameter(torch.rand(1, 1, config.hidden_size))
             self.cls_embed.data.normal_(0, 0.02)
+        else:
+            pass
 
     def get_frames(self, x):
         num_frames_total = (x.size(-1) + self.hop_size - 1) // self.hop_size
@@ -127,6 +143,8 @@ class Encoder(nn.Module):
             bsz, _, dim = x.size()
             x = x.reshape(-1, self.patch_size + 1, dim)
             x = x[:, -1:, :].reshape(bsz, -1, dim)
+        else:
+            pass
 
         x = self.fc3(x)
         return x, waveform.unsqueeze(1)
@@ -150,6 +168,8 @@ class Decoder(nn.Module):
         self.patch_size = patch_size
         if self.patch_size != -1:
             self.upsampling = StreamingLinearUpsample(scale_factor=patch_size)
+        else:
+            pass
 
     def low_level_reconstruct(
         self,
@@ -175,8 +195,12 @@ class Decoder(nn.Module):
                         stream_state,
                         past_key_values,
                     )
+                else:
+                    pass
             else:
                 x = self.upsampling.upsampler(x.transpose(1, 2)).transpose(1, 2)
+        else:
+            pass
 
         hidden_states_list = []
 
@@ -210,6 +234,10 @@ class Decoder(nn.Module):
                 past_key_values = outputs.past_key_values
 
                 x = x[:, fill_len:, :]
+            else:
+                pass
+        else:
+            pass
 
         outputs = self.decoder(
             inputs_embeds=x, past_key_values=past_key_values, use_cache=use_cache

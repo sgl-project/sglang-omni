@@ -407,6 +407,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 )
                 if delta.numel() > 0:
                     decoded[request_id] = delta
+                else:
+                    pass
             now = self.clock()
             for request_id, state in participants:
                 state.token_offset += state.hop_len
@@ -417,6 +419,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 )
                 if request_id in decoded and state.first_emit_at is None:
                     state.first_emit_at = now
+                else:
+                    pass
                 if state.next_decode() != "wait":
                     state.ready_since = now
                 else:

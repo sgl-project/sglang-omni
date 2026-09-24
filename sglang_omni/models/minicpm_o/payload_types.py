@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 class PromptInputs(TypedDict):
@@ -44,6 +46,8 @@ class MiniCPMOPipelineState:
     def from_dict(cls, data: Any) -> "MiniCPMOPipelineState":
         if not isinstance(data, dict):
             data = {}
+        else:
+            pass
 
         def _dict(key: str) -> dict[str, Any]:
             value = data.get(key)
@@ -65,18 +69,34 @@ class MiniCPMOPipelineState:
         data: dict[str, Any] = {}
         if self.prompt is not None:
             data["prompt"] = self.prompt
+        else:
+            pass
         if self.mm_inputs:
             data["mm_inputs"] = self.mm_inputs
+        else:
+            pass
         if self.encoder_inputs:
             data["encoder_inputs"] = self.encoder_inputs
+        else:
+            pass
         if self.encoder_outs:
             data["encoder_outs"] = self.encoder_outs
+        else:
+            pass
         if self.thinker_inputs:
             data["thinker_inputs"] = self.thinker_inputs
+        else:
+            pass
         if self.thinker_out is not None:
             data["thinker_out"] = self.thinker_out
+        else:
+            pass
         if self.engine_outputs:
             data["engine_outputs"] = self.engine_outputs
+        else:
+            pass
         if self.stream_state:
             data["stream_state"] = self.stream_state
+        else:
+            pass
         return data

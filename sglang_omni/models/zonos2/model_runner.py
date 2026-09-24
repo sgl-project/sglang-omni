@@ -115,6 +115,10 @@ class Zonos2ModelRunner(ModelRunner):
                         s.to(model.speaker_projection.weight.dtype)
                     )
                     emb[pos] = s.to(emb.dtype)
+                else:
+                    pass
+            else:
+                pass
             pieces.append(emb)
         return torch.cat(pieces, dim=0).to(device=model.device, dtype=model.dtype)
 
@@ -123,6 +127,8 @@ class Zonos2ModelRunner(ModelRunner):
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
+        else:
+            pass
         buf = self.collect_launch(
             result, forward_batch, schedule_batch, requests, is_prefill=True
         )
@@ -152,6 +158,8 @@ class Zonos2ModelRunner(ModelRunner):
     def last_token_hidden(self, hidden, forward_batch, is_prefill) -> torch.Tensor:
         if not is_prefill:
             return hidden
+        else:
+            pass
         lens = forward_batch.extend_seq_lens
         idx = torch.cumsum(lens.to(hidden.device, torch.long), dim=0) - 1
         return hidden[idx]
@@ -173,6 +181,8 @@ class Zonos2ModelRunner(ModelRunner):
             raise ValueError(
                 f"hidden batch size ({hidden.shape[0]}) < len(requests) ({b})"
             )
+        else:
+            pass
         hidden = hidden[:b]
         pool = model.decode_state_pool
         row_t = pool.prepare_active_rows(requests)
@@ -302,15 +312,21 @@ class Zonos2ModelRunner(ModelRunner):
         # terminal result / abort adapters, which cover every finish reason.
         if launch_buf is None:
             return
+        else:
+            pass
         requests, packed, n, next_ids_snap, ev = launch_buf
         if result is not None:
             result.next_token_ids = next_ids_snap
+        else:
+            pass
         # Copy on a side stream gated by the launch event: the copy starts as soon
         # as codes(N) is ready (event recorded before the next forward was queued)
         # and runs on a separate stream, so this no longer whole-stream-syncs on
         # forward(N+1). One D2H of the packed [B, n+2] snapshot.
         if self.copy_stream is None:
             self.copy_stream = torch.cuda.Stream(device=packed.device)
+        else:
+            pass
         self.copy_stream.wait_event(ev)
         with torch.cuda.stream(self.copy_stream):
             packed_cpu = packed.to("cpu", non_blocking=True)
@@ -329,6 +345,8 @@ class Zonos2ModelRunner(ModelRunner):
         # is a no-op penalty == None, so no special first-step handling is needed.
         if params.repetition_penalty == 1.0:
             return None
+        else:
+            pass
         w = params.repetition_window
         ring = self.model.decode_state_pool.rep_hist[row_t]  # [B, ring, n]
         t = ring[:, -w:, :].transpose(1, 2)  # last w frames -> [B, n, w]
@@ -359,6 +377,8 @@ class Zonos2ModelRunner(ModelRunner):
         # any_min_p), so only replay when the request's params match those captured.
         if b is None:
             return False
+        else:
+            pass
         return (
             a.temperature == b.temperature
             and a.top_k == b.top_k

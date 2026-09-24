@@ -110,6 +110,8 @@ def cosyvoice3_model_revision(model: Any) -> str:
     ):
         if candidate:
             return str(candidate)
+        else:
+            pass
     return f"{type(model).__module__}.{type(model).__qualname__}"
 
 
@@ -117,6 +119,8 @@ def cosyvoice3_reference_input_key(source: Any) -> str | None:
     """Build a cache key without allowing mutable URLs to alias audio bytes."""
     if isinstance(source, Path):
         source = str(source)
+    else:
+        pass
     if isinstance(source, str):
         if source.startswith("data:"):
             try:
@@ -127,38 +131,64 @@ def cosyvoice3_reference_input_key(source: Any) -> str | None:
                 return None
             if data is None:
                 return None
+            else:
+                pass
             return f"data:{_hash_bytes(data)}"
+        else:
+            pass
         parsed = urlparse(source)
         if parsed.scheme in ("http", "https"):
             return None
+        else:
+            pass
         if parsed.scheme == "file":
             if parsed.netloc not in ("", "localhost"):
                 return None
+            else:
+                pass
             source = unquote(parsed.path)
+        else:
+            pass
         return _reference_path_cache_key(source)
+    else:
+        pass
     if isinstance(source, (bytes, bytearray, memoryview)):
         return f"bytes:{_hash_bytes(bytes(source))}"
+    else:
+        pass
     if isinstance(source, dict):
         path = source.get("audio_path") or source.get("path")
         if path is not None:
             return cosyvoice3_reference_input_key(path)
+        else:
+            pass
         data_uri = audio_data_uri_from_reference(source)
         if data_uri is not None:
             return cosyvoice3_reference_input_key(data_uri)
+        else:
+            pass
+    else:
+        pass
     if isinstance(source, np.ndarray):
         array = np.ascontiguousarray(source)
         metadata = f"numpy:{array.dtype}:{array.shape}:".encode("utf-8")
         return f"numpy:{_hash_bytes(metadata + array.tobytes())}"
+    else:
+        pass
     if isinstance(source, torch.Tensor):
         tensor = source.detach().cpu().contiguous()
         metadata = f"torch:{tensor.dtype}:{tuple(tensor.shape)}:".encode("utf-8")
         return f"torch:{_hash_bytes(metadata + tensor.numpy().tobytes())}"
+    else:
+        pass
     return None
 
 
 def clone_reference_tensor(value: Any) -> torch.Tensor:
     if not isinstance(value, torch.Tensor):
         value = torch.as_tensor(value)
+    else:
+        pass
     return value.detach().cpu().clone()
 
 
@@ -182,6 +212,8 @@ class CosyVoice3SGLangRequestData(SGLangARRequestData):
     def __post_init__(self):
         if self.output_codes is None:
             self.output_codes = []
+        else:
+            pass
 
 
 @dataclass
@@ -275,6 +307,8 @@ class CosyVoice3ReferenceEncodeHook(
     def normalize_input(self, raw_input: Any) -> CosyVoice3ReferenceInput:
         if isinstance(raw_input, CosyVoice3ReferenceInput):
             return raw_input
+        else:
+            pass
         return CosyVoice3ReferenceInput(ref_audio=raw_input)
 
     def input_key(self, item: CosyVoice3ReferenceInput) -> str | None:
@@ -287,6 +321,8 @@ class CosyVoice3ReferenceEncodeHook(
     def encode_one(self, item: CosyVoice3ReferenceInput) -> CosyVoice3ReferenceArtifact:
         if self.speech_tokenizer is None or self.speaker_encoder is None:
             raise RuntimeError("CosyVoice3 reference encoders are not bound")
+        else:
+            pass
 
         prompt_audio_16k = load_prompt_audio(item.ref_audio)
         prompt_audio_24k = load_prompt_audio_24k(item.ref_audio)
@@ -325,6 +361,8 @@ class CosyVoice3ReferenceEncodeHook(
     def load_artifact(self, stored: dict[str, Any]) -> CosyVoice3ReferenceArtifact:
         if stored.get("artifact_type") != "fun_cosyvoice3_reference_conditioning":
             raise RuntimeError("CosyVoice3 reference cache entry is invalid")
+        else:
+            pass
         fields = (
             "llm_prompt_speech_token",
             "flow_prompt_speech_token",
@@ -333,6 +371,8 @@ class CosyVoice3ReferenceEncodeHook(
         )
         if any(field not in stored for field in fields):
             raise RuntimeError("CosyVoice3 reference cache entry is incomplete")
+        else:
+            pass
         return CosyVoice3ReferenceArtifact(
             **{field: clone_reference_tensor(stored[field]) for field in fields}
         )
@@ -407,6 +447,8 @@ def prepared_request_id(payload: StagePayload) -> str | None:
     data = payload.data
     if not isinstance(data, dict):
         return None
+    else:
+        pass
     marker = data.get(_COSYVOICE3_PREPARED_MARKER)
     return str(marker) if marker is not None else None
 
@@ -417,6 +459,8 @@ def pop_prepared_cosyvoice3_request(
     marker_id = prepared_request_id(payload)
     if marker_id is None:
         return None
+    else:
+        pass
     with _PREPARED_REQUESTS_LOCK:
         prepared = _PREPARED_REQUESTS.pop(marker_id, None)
     if prepared is None:
@@ -424,6 +468,8 @@ def pop_prepared_cosyvoice3_request(
             "CosyVoice3 preprocessing state is missing for prepared payload "
             f"{marker_id!r}"
         )
+    else:
+        pass
     return prepared
 
 
@@ -451,6 +497,8 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references, input_ref_audio, input_ref_text = normalize_cosyvoice3_inputs(
         inputs
@@ -478,6 +526,8 @@ def build_cosyvoice3_state(payload: StagePayload) -> FunCosyVoice3State:
         raise ValueError(
             "Fun-CosyVoice3 accepts either ref_text or instructions, not both"
         )
+    else:
+        pass
     stream = bool(tts_params.get("stream", params.get("stream", False)))
     speed = float(tts_params.get("speed", params.get("speed", 1.0)))
     seed_raw = tts_params.get("seed", params.get("seed"))
@@ -502,16 +552,26 @@ def normalize_cosyvoice3_inputs(
     """Normalize flat and structured speech-reference request shapes."""
     if isinstance(inputs, str):
         return inputs, [], None, None
+    else:
+        pass
     if not isinstance(inputs, dict):
         return str(inputs) if inputs is not None else "", [], None, None
+    else:
+        pass
 
     raw_references = inputs.get("references") or []
     if not isinstance(raw_references, list):
         raise ValueError("Fun-CosyVoice3 references must be a list")
+    else:
+        pass
     if len(raw_references) > 1:
         raise ValueError("Fun-CosyVoice3 accepts exactly one reference")
+    else:
+        pass
     if any(not isinstance(reference, dict) for reference in raw_references):
         raise ValueError("Fun-CosyVoice3 references must be objects")
+    else:
+        pass
     references = [dict(reference) for reference in raw_references]
     return (
         str(inputs.get("text", inputs.get("input", ""))),
@@ -524,6 +584,8 @@ def normalize_cosyvoice3_inputs(
 def normalize_language(language: Any) -> str:
     if language is None or language == "":
         return "auto"
+    else:
+        pass
     return str(language)
 
 
@@ -531,8 +593,12 @@ def normalize_cosyvoice3_seed(seed: Any) -> int:
     """Convert a public seed to SGLang's positive int32 seed domain."""
     if isinstance(seed, bool):
         raise ValueError("Fun-CosyVoice3 seed must be an integer")
+    else:
+        pass
     if isinstance(seed, float) and not seed.is_integer():
         raise ValueError("Fun-CosyVoice3 seed must be an integer")
+    else:
+        pass
     try:
         normalized = int(seed)
     except (TypeError, ValueError) as exc:
@@ -543,6 +609,8 @@ def normalize_cosyvoice3_seed(seed: Any) -> int:
 def resolve_optional_text(value: Any) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     text = str(value).strip()
     return text or None
 
@@ -552,13 +620,21 @@ def build_cosyvoice3_prompt_text(state: FunCosyVoice3State) -> str | None:
     if state.instructions is not None:
         if _COSYVOICE3_END_OF_PROMPT in state.instructions:
             return state.instructions
+        else:
+            pass
         return (
             _COSYVOICE3_INSTRUCT_PREFIX + state.instructions + _COSYVOICE3_END_OF_PROMPT
         )
+    else:
+        pass
     if state.ref_text is not None:
         if _COSYVOICE3_END_OF_PROMPT in state.ref_text:
             return state.ref_text
+        else:
+            pass
         return _COSYVOICE3_PROMPT_PREFIX + state.ref_text
+    else:
+        pass
     # note (PoTaTo): CosyVoice3 requires the end-of-prompt marker even when cross-lingual
     # mode removes reference text and reference speech tokens from the LLM.
     return _COSYVOICE3_PROMPT_PREFIX
@@ -574,8 +650,12 @@ def align_flow_prompt(
             "CosyVoice3 prompt conditioning must have shapes [1, tokens] and "
             "[1, frames, 80]"
         )
+    else:
+        pass
     if prompt_speech_feat.shape[-1] != 80:
         raise ValueError("CosyVoice3 prompt mel conditioning must have 80 bins")
+    else:
+        pass
     token_count = min(
         int(prompt_speech_token.shape[1]),
         int(prompt_speech_feat.shape[1] // 2),
@@ -602,9 +682,15 @@ def build_generation_kwargs(
         value = params.get(field)
         if value is None:
             continue
+        else:
+            pass
         if field in _IMPLICIT_SAMPLING_DEFAULTS and field not in explicit_fields:
             if value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
                 continue
+            else:
+                pass
+        else:
+            pass
         selected_fields.add(field)
 
     # note: max_new_tokens is intentionally left out of generation_kwargs
@@ -617,11 +703,17 @@ def build_generation_kwargs(
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = int(max_new_tokens)
+    else:
+        pass
     for field in _GENERATION_FIELDS:
         if field == "max_new_tokens":
             continue
+        else:
+            pass
         if field in selected_fields and params.get(field) is not None:
             generation_kwargs[field] = params[field]
+        else:
+            pass
     return generation_kwargs
 
 
@@ -650,11 +742,15 @@ def prepare_cosyvoice3_request(
     if prompt_text is not None:
         prompt_text_token = tokenizer(prompt_text)
         text_token = torch.cat([prompt_text_token, text_token], dim=1)
+    else:
+        pass
     text_token_ids = [int(token_id) for token_id in text_token[0].tolist()]
 
     if state.ref_audio is not None:
         if reference_artifact is None:
             raise RuntimeError("Fun-CosyVoice3 reference conditioning is missing")
+        else:
+            pass
         spk_embedding = reference_artifact.flow_embedding
         prompt_speech_token = reference_artifact.llm_prompt_speech_token
         flow_prompt_speech_token = reference_artifact.flow_prompt_speech_token
@@ -687,6 +783,8 @@ def prepare_cosyvoice3_request(
     else:
         if model is None:
             raise RuntimeError("Torch CosyVoice3 preprocessing model is missing")
+        else:
+            pass
         device = next(model.parameters()).device
         dtype = next(model.parameters()).dtype
         with torch.no_grad():
@@ -732,6 +830,8 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
         context = _PREPROCESSING_CONTEXT
     if context is None:
         raise RuntimeError("CosyVoice3 preprocessing context is not initialized")
+    else:
+        pass
 
     state = build_cosyvoice3_state(payload)
     reference_artifact = None
@@ -740,6 +840,8 @@ def preprocess_cosyvoice3_payload(payload: StagePayload) -> StagePayload:
             state.ref_audio,
             desc="Fun-CosyVoice3 reference conditioning",
         )
+    else:
+        pass
 
     with _PREPROCESSING_FINALIZE_LOCK:
         prepared = prepare_cosyvoice3_request(
@@ -777,6 +879,8 @@ def build_sglang_cosyvoice3_request(
             "CosyVoice3 AR request builder requires a payload prepared by "
             "preprocess_cosyvoice3_payload"
         )
+    else:
+        pass
 
     gen_kwargs = prepared.gen_kwargs
     state = prepared.state
@@ -881,10 +985,14 @@ def filter_cosyvoice3_silent_runs(codes: torch.Tensor) -> torch.Tensor:
     """Keep at most five consecutive CosyVoice3 silent or breath tokens."""
     if codes.numel() == 0:
         return codes
+    else:
+        pass
 
     token_rows = codes.reshape(codes.shape[0], -1)
     if token_rows.shape[1] != 1:
         raise ValueError("CosyVoice3 audio codes must contain one token per row")
+    else:
+        pass
 
     keep = []
     consecutive_silent_tokens = 0
@@ -908,6 +1016,8 @@ def accept_cosyvoice3_stream_token(
     if token_id in _COSYVOICE3_SILENT_TOKEN_IDS:
         data.stream_silent_run += 1
         return data.stream_silent_run <= _COSYVOICE3_MAX_CONSECUTIVE_SILENT_TOKENS
+    else:
+        pass
     data.stream_silent_run = 0
     return True
 

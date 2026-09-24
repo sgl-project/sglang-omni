@@ -54,6 +54,8 @@ def bind_default_weight_loaders(module: nn.Module) -> None:
     for param in module.parameters():
         if not hasattr(param, "weight_loader"):
             param.weight_loader = default_weight_loader
+        else:
+            pass
 
 
 class PredictorDecodeGraph:
@@ -126,6 +128,8 @@ class PredictorDecodeGraph:
 
         if self.result_codes is None or self.summed_embeddings is None:
             raise RuntimeError("Qwen3-Omni predictor CUDA graph captured no outputs")
+        else:
+            pass
 
     @torch.inference_mode()
     def replay(
@@ -139,6 +143,8 @@ class PredictorDecodeGraph:
                 "Qwen3-Omni predictor CUDA graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live_batch_size}"
             )
+        else:
+            pass
 
         with torch.cuda.device(self.layer0_codes.device):
             self.layer0_codes[:live_batch_size].copy_(layer0_codes)
@@ -146,6 +152,8 @@ class PredictorDecodeGraph:
             if live_batch_size < self.batch_size:
                 self.layer0_codes[live_batch_size:].zero_()
                 self.talker_hidden[live_batch_size:].zero_()
+            else:
+                pass
             self.graph.replay()
         assert self.result_codes is not None
         assert self.summed_embeddings is not None
@@ -314,6 +322,8 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
         linear_dtype = self.shared_expert_gate.weight.dtype
         if linear_hidden_states.dtype != linear_dtype:
             linear_hidden_states = linear_hidden_states.to(dtype=linear_dtype)
+        else:
+            pass
 
         # Shared branch must consume the original MLP input before routed experts.
         # The fused MoE implementation mutates `hidden_states` in-place.
@@ -335,6 +345,8 @@ class Qwen3OmniMoeTalkerSparseMoeBlock(Qwen3OmniMoeThinkerTextSparseMoeBlock):
             and not should_use_flashinfer_cutlass_moe_fp4_allgather()
         ):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+        else:
+            pass
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
@@ -397,6 +409,8 @@ class Qwen3OmniMoeTalkerDecoderLayer(Qwen3OmniMoeThinkerTextDecoderLayer):
                 hidden_states=hidden_states,
                 forward_batch=forward_batch,
             )
+        else:
+            pass
 
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states, residual, forward_batch
@@ -512,6 +526,8 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                     hidden_states,
                 )
                 self.feedback_mask[:bs] = False
+            else:
+                pass
         else:
             hidden_states = input_embeds
 
@@ -523,6 +539,8 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
         # layer 0 is the embedding output (input to the first transformer layer).
         if 0 in capture_layers or "embed" in capture_layers:
             aux_hidden_states.append(hidden_states.clone())
+        else:
+            pass
 
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
@@ -541,9 +559,13 @@ class Qwen3OmniMoeTalkerTextModel(nn.Module):
                 hidden_states = self.norm(hidden_states)
             else:
                 hidden_states, _ = self.norm(hidden_states, residual)
+        else:
+            pass
 
         if aux_hidden_states:
             return hidden_states, aux_hidden_states
+        else:
+            pass
         return hidden_states
 
 
@@ -655,6 +677,8 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         """
         if forward_batch is None:
             return self.forward_direct(inputs_embeds=inputs_embeds, positions=positions)
+        else:
+            pass
 
         # SGLang layers expect 2D [total_tokens, hidden]; reshape if 3D
         needs_reshape = inputs_embeds.ndim == 3
@@ -686,6 +710,8 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
 
         if needs_reshape:
             hidden_states = hidden_states.reshape(batch_size, seq_len, -1)
+        else:
+            pass
         return hidden_states
 
     def forward_direct(
@@ -735,6 +761,8 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
         hidden_states = hidden_states.reshape(batch_size, seq_len, hidden_size)
         if needs_reshape:
             return hidden_states
+        else:
+            pass
         return hidden_states.squeeze(0)
 
     def flatten_positions(
@@ -753,12 +781,16 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
                     f"Unexpected positions shape {tuple(positions.shape)} for "
                     f"batch_size={batch_size}, seq_len={seq_len}"
                 )
+            else:
+                pass
         elif positions.ndim == 2:
             if tuple(positions.shape) != (batch_size, seq_len):
                 raise ValueError(
                     f"Unexpected positions shape {tuple(positions.shape)} for "
                     f"batch_size={batch_size}, seq_len={seq_len}"
                 )
+            else:
+                pass
         else:
             raise ValueError(f"Unsupported positions rank: {positions.ndim}")
         return positions.to(device=device, dtype=torch.long).reshape(-1)
@@ -1027,6 +1059,8 @@ class Qwen3OmniTalker(nn.Module):
         next_code = torch.argmax(logits[:, -1, :], dim=-1)
         if next_code.ndim == 1:
             next_code = next_code.unsqueeze(-1)
+        else:
+            pass
         return next_code
 
     def reuse_decode_buffers(self, requests: list) -> bool:
@@ -1035,18 +1069,26 @@ class Qwen3OmniTalker(nn.Module):
         prev_rids = self.decode_prep_rids
         if prev_rids is None or len(prev_rids) != len(requests):
             return False
+        else:
+            pass
         prev_lens = self.decode_prep_out_lens
         for row_idx, sched_req in enumerate(requests):
             req = sched_req.data.req
             if req.rid != prev_rids[row_idx]:
                 return False
+            else:
+                pass
             out_len = len(req.output_ids) if req.output_ids else 0
             if out_len != prev_lens[row_idx] + 1:
                 return False
+            else:
+                pass
 
         rep_rows = self.decode_prep_rep_rows
         if rep_rows is not None:
             self.repetition_mask[rep_rows, self.sampled_token_ids[rep_rows]] = True
+        else:
+            pass
         for row_idx in range(len(prev_lens)):
             prev_lens[row_idx] += 1
         return True
@@ -1060,9 +1102,13 @@ class Qwen3OmniTalker(nn.Module):
         batch_size = len(requests)
         if batch_size == 0:
             return
+        else:
+            pass
 
         if self.reuse_decode_buffers(requests):
             return
+        else:
+            pass
 
         device = self.repetition_mask.device
         rep_vocab = self.repetition_mask.shape[1]
@@ -1101,6 +1147,8 @@ class Qwen3OmniTalker(nn.Module):
             elif not (0 <= seed <= SAMPLING_SEED_MASK):
                 seed = resolve_row_seed(seed)
                 sp.sampling_seed = seed
+            else:
+                pass
             sampling_seeds.append(seed)
 
             if penalty != 1.0 and req.output_ids:
@@ -1112,6 +1160,10 @@ class Qwen3OmniTalker(nn.Module):
                 if unique:
                     rep_rows.extend([row_idx] * len(unique))
                     rep_toks.extend(unique)
+                else:
+                    pass
+            else:
+                pass
 
             suppress_tokens = (
                 data.suppress_tokens or req._codec_suppress_tokens
@@ -1125,11 +1177,17 @@ class Qwen3OmniTalker(nn.Module):
                 if valid_sup:
                     sup_rows.extend([row_idx] * len(valid_sup))
                     sup_toks.extend(valid_sup)
+                else:
+                    pass
+            else:
+                pass
 
         if self.sampling_staging_event is not None:
             # Note (akazaakane): guards the prior async copy still reading
             # this buffer before we overwrite it.
             self.sampling_staging_event.synchronize()
+        else:
+            pass
         staging_cpu = self.sampling_staging_cpu
         staging_cpu_f64 = staging_cpu.view(torch.float64)
         staging_cpu_f64[0, :batch_size] = torch.tensor(
@@ -1146,6 +1204,8 @@ class Qwen3OmniTalker(nn.Module):
         staging_gpu.copy_(staging_cpu, non_blocking=True)
         if self.sampling_staging_event is not None:
             self.sampling_staging_event.record()
+        else:
+            pass
         staging_gpu_f64 = staging_gpu.view(torch.float64)
         self.repetition_penalties[:batch_size, 0].copy_(staging_gpu_f64[0, :batch_size])
         self.sampling_temperatures[:batch_size, 0].copy_(
@@ -1163,6 +1223,8 @@ class Qwen3OmniTalker(nn.Module):
             self.repetition_mask[
                 rep_pairs[: len(rep_rows)], rep_pairs[len(rep_rows) :]
             ] = True
+        else:
+            pass
 
         if sup_rows:
             sup_pairs = torch.tensor(
@@ -1171,6 +1233,8 @@ class Qwen3OmniTalker(nn.Module):
             self.suppress_mask[
                 sup_pairs[: len(sup_rows)], sup_pairs[len(sup_rows) :]
             ] = True
+        else:
+            pass
 
         self.decode_prep_rids = [sched_req.data.req.rid for sched_req in requests]
         self.decode_prep_out_lens = [
@@ -1201,8 +1265,12 @@ class Qwen3OmniTalker(nn.Module):
         """
         if thinker_hidden_states is None or is_multimodal_mask is None:
             return self.text_projection(thinker_embeds)
+        else:
+            pass
         if thinker_embeds is None:
             return self.hidden_projection(thinker_hidden_states)
+        else:
+            pass
 
         # Mixed: use mask to select projection
         output = torch.empty(
@@ -1214,9 +1282,13 @@ class Qwen3OmniTalker(nn.Module):
             output[is_multimodal_mask] = self.hidden_projection(
                 thinker_hidden_states[is_multimodal_mask]
             )
+        else:
+            pass
         text_mask = ~is_multimodal_mask
         if text_mask.any():
             output[text_mask] = self.text_projection(thinker_embeds[text_mask])
+        else:
+            pass
         return output
 
     @torch.no_grad()
@@ -1254,6 +1326,8 @@ class Qwen3OmniTalker(nn.Module):
         del omni_prefill_rids
         if forward_batch.forward_mode.is_extend():
             self.invalidate_decode_buffers()
+        else:
+            pass
 
         if input_embeds is not None and not input_embeds_are_projected:
             # Prefill: project thinker hidden states → talker dimension
@@ -1267,6 +1341,8 @@ class Qwen3OmniTalker(nn.Module):
                 )
             else:
                 input_embeds = self.prepare_input_embeds(thinker_embeds=input_embeds)
+        else:
+            pass
 
         # Use 3D mrope_positions only when the backbone is mrope; the plain
         # RotaryEmbedding path needs the 1D positions instead.
@@ -1283,6 +1359,8 @@ class Qwen3OmniTalker(nn.Module):
         )
         if forward_batch.forward_mode.is_extend() and input_embeds is not None:
             return self.manual_extend_logits(hidden_states, forward_batch)
+        else:
+            pass
         logits_output = self.manual_decode_logits(hidden_states)
         if forward_batch.forward_mode.is_decode():
             sampled_token_ids = self.sample_decode_tokens(
@@ -1295,6 +1373,8 @@ class Qwen3OmniTalker(nn.Module):
                 sampled_token_ids.unsqueeze(1),
                 hidden_states.unsqueeze(1),
             )
+        else:
+            pass
         return logits_output
 
     def manual_extend_logits(
@@ -1350,6 +1430,8 @@ class Qwen3OmniTalker(nn.Module):
         )
         if self.sampler is None:
             return torch.argmax(logits, dim=-1)
+        else:
+            pass
         sampling_info = self.build_static_sampling_info(batch_size)
         sampled = self.sampler(
             logits_output,
@@ -1361,6 +1443,8 @@ class Qwen3OmniTalker(nn.Module):
         )
         if sampled.ndim > 1:
             sampled = sampled.squeeze(-1)
+        else:
+            pass
         return sampled
 
     def build_static_sampling_info(self, batch_size: int) -> SamplingBatchInfo:
@@ -1401,6 +1485,8 @@ class Qwen3OmniTalker(nn.Module):
         extend_seq_lens = forward_batch.extend_seq_lens
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
+        else:
+            pass
 
         # The static-padded variant that used ForwardBatch.padded_static_len is
         # gone: only the EAGLE draft-extend graph runners ever set that field,
@@ -1421,8 +1507,12 @@ class Qwen3OmniTalker(nn.Module):
         """Run the predictor one token at a time using a per-layer single-turn KV cache."""
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        else:
+            pass
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
+        else:
+            pass
 
         batch_size, seq_len = layer0_codes.shape
         if talker_hidden.shape[:2] != (batch_size, seq_len):
@@ -1430,6 +1520,8 @@ class Qwen3OmniTalker(nn.Module):
                 "talker_hidden shape must align with layer0_codes: "
                 f"{tuple(talker_hidden.shape)} vs {tuple(layer0_codes.shape)}"
             )
+        else:
+            pass
         if self.can_use_predictor_decode_graph(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
@@ -1443,6 +1535,10 @@ class Qwen3OmniTalker(nn.Module):
             )
             if graph_result is not None:
                 return graph_result
+            else:
+                pass
+        else:
+            pass
 
         return self.code_predictor_forward_incremental_eager(
             layer0_codes=layer0_codes,
@@ -1458,14 +1554,24 @@ class Qwen3OmniTalker(nn.Module):
     ) -> bool:
         if seq_len != 1:
             return False
+        else:
+            pass
         if layer0_codes.dtype not in (torch.int, torch.long):
             return False
+        else:
+            pass
         if not torch.cuda.is_available():
             return False
+        else:
+            pass
         if not layer0_codes.is_cuda or not talker_hidden.is_cuda:
             return False
+        else:
+            pass
         if torch.cuda.is_current_stream_capturing():
             return False
+        else:
+            pass
         # Note (zijiecode): SGLang's decode-graph warmup runs this forward before
         # its own capture. On ROCm (torch 2.9) the predictor must not register
         # the CUDA generator first, or SGLang's no_grad capture_begin() fails
@@ -1473,6 +1579,8 @@ class Qwen3OmniTalker(nn.Module):
         # capture.
         if current_platform.is_rocm() and get_is_capture_mode():
             return False
+        else:
+            pass
         return True
 
     @staticmethod
@@ -1488,6 +1596,8 @@ class Qwen3OmniTalker(nn.Module):
         raw_batch_sizes = get_decode_cuda_graph_bs(server_args)
         if raw_batch_sizes is None:
             raw_batch_sizes = (max_batch_size,)
+        else:
+            pass
 
         normalized = sorted(
             {
@@ -1498,12 +1608,16 @@ class Qwen3OmniTalker(nn.Module):
         )
         if not normalized or normalized[-1] < int(max_batch_size):
             normalized.append(int(max_batch_size))
+        else:
+            pass
         return tuple(normalized)
 
     def predictor_decode_graph_bucket_size(self, batch_size: int) -> int | None:
         for bucket_size in self.predictor_decode_graph_batch_sizes:
             if bucket_size >= batch_size:
                 return bucket_size
+            else:
+                pass
         return None
 
     def code_predictor_forward_single_token_graph(
@@ -1517,10 +1631,14 @@ class Qwen3OmniTalker(nn.Module):
         bucket_size = self.predictor_decode_graph_bucket_size(batch_size)
         if bucket_size is None:
             return None
+        else:
+            pass
 
         key = (bucket_size, code_dtype)
         if key in self.predictor_decode_graph_disabled:
             return None
+        else:
+            pass
 
         graph = self.predictor_decode_graphs.get(key)
         if graph is None:
@@ -1543,6 +1661,8 @@ class Qwen3OmniTalker(nn.Module):
                 bucket_size,
                 code_dtype,
             )
+        else:
+            pass
 
         return graph.replay(layer0_codes, talker_hidden)
 
@@ -1554,8 +1674,12 @@ class Qwen3OmniTalker(nn.Module):
         """Eager predictor implementation used for prefill and graph fallback."""
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        else:
+            pass
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
+        else:
+            pass
 
         batch_size, seq_len = layer0_codes.shape
         if talker_hidden.shape[:2] != (batch_size, seq_len):
@@ -1563,6 +1687,8 @@ class Qwen3OmniTalker(nn.Module):
                 "talker_hidden shape must align with layer0_codes: "
                 f"{tuple(talker_hidden.shape)} vs {tuple(layer0_codes.shape)}"
             )
+        else:
+            pass
 
         predictor_input = self.predictor_input_buffer[:batch_size]
         predictor_input.zero_()
@@ -1631,6 +1757,8 @@ class Qwen3OmniTalker(nn.Module):
                         cache_len=cache_len,
                     )
                     cache_len += 1
+                else:
+                    pass
 
         return result_codes, summed_embeddings
 
@@ -1690,6 +1818,8 @@ class Qwen3OmniTalker(nn.Module):
             raise ValueError(
                 f"Cached predictor attention expects exactly one token, got seq_len={seq_len}"
             )
+        else:
+            pass
 
         flat_hidden = hidden_states.reshape(-1, hidden_size)
         qkv, _ = attn.qkv_proj(flat_hidden)
@@ -1781,6 +1911,8 @@ class Qwen3OmniTalker(nn.Module):
                 name = name[len("talker.") :]
             elif "." in name and name.split(".")[0] in ("thinker", "code2wav"):
                 continue
+            else:
+                pass
 
             # 1. Handle stacked parameters (qkv_proj, gate_up_proj)
             handled = False
@@ -1793,8 +1925,14 @@ class Qwen3OmniTalker(nn.Module):
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
+                    else:
+                        pass
+                else:
+                    pass
             if handled:
                 continue
+            else:
+                pass
 
             # 2. Handle MoE expert parameters
             for param_name, weight_name, expert_id, shard_id in expert_params:
@@ -1812,11 +1950,19 @@ class Qwen3OmniTalker(nn.Module):
                         )
                         handled = True
                         break
+                    else:
+                        pass
+                else:
+                    pass
             if handled:
                 continue
+            else:
+                pass
 
             # 3. Direct parameter loading
             param = params_dict.get(name)
             if param is not None:
                 loaded_weight = preprocess_weight(name, loaded_weight)
                 param.weight_loader(param, loaded_weight)
+            else:
+                pass

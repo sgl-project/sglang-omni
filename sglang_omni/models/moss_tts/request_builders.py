@@ -136,9 +136,13 @@ def close_moss_tts_preprocessing_context(
 ) -> None:
     if context is None:
         return
+    else:
+        pass
     close = getattr(context.reference_encoder, "close", None)
     if callable(close):
         close()
+    else:
+        pass
 
 
 def set_moss_tts_preprocessing_context(
@@ -156,6 +160,8 @@ def set_moss_tts_preprocessing_context(
         )
         if previous is not None and previous.reference_encoder is reference_encoder:
             return
+        else:
+            pass
         close_moss_tts_preprocessing_context(previous)
 
 
@@ -186,25 +192,35 @@ def pop_prepared_moss_tts_request(
     marker = data.get(_MOSS_TTS_PREPARED_MARKER)
     if marker is None:
         return None
+    else:
+        pass
     prepared = _QUEUE.pop(str(marker))
     if prepared is None:
         raise RuntimeError(
             "MOSS-TTS preprocessing state is missing for prepared payload "
             f"{marker!r}; the AR scheduler must not rebuild it"
         )
+    else:
+        pass
     return prepared
 
 
 def normalize_moss_tts_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]]]:
     if isinstance(inputs, str):
         return inputs, []
+    else:
+        pass
     if isinstance(inputs, dict):
         references = inputs.get("references") or []
         if not isinstance(references, list):
             raise ValueError("MOSS-TTS references must be a list")
+        else:
+            pass
         return str(inputs.get("text", inputs.get("input", ""))), [
             dict(reference) for reference in references if isinstance(reference, dict)
         ]
+    else:
+        pass
     return str(inputs) if inputs is not None else "", []
 
 
@@ -227,6 +243,8 @@ def resolve_moss_reference(
 def resolve_optional_text(value: Any) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     text = str(value).strip()
     return text or None
 
@@ -251,19 +269,31 @@ def resolve_token_count(
                 value = source[key]
                 if isinstance(value, bool):
                     raise ValueError("MOSS-TTS token_count must be an integer")
+                else:
+                    pass
                 count = int(value)
                 if count <= 0:
                     raise ValueError("MOSS-TTS token_count must be > 0")
+                else:
+                    pass
                 return text, count
+            else:
+                pass
 
     match = _TOKEN_PREFIX_RE.match(text)
     if match:
         count = int(match.group(1))
         if count <= 0:
             raise ValueError("MOSS-TTS ${token:N} count must be > 0")
+        else:
+            pass
         return text[match.end() :].lstrip(), count
+    else:
+        pass
     if _TOKEN_PREFIX_START_RE.match(text):
         raise ValueError("MOSS-TTS ${token:N} count must be a positive integer")
+    else:
+        pass
     return text, None
 
 
@@ -274,6 +304,8 @@ def build_moss_tts_state(payload: StagePayload) -> MossTTSState:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
@@ -336,12 +368,18 @@ def build_generation_kwargs(
     if "temperature" in explicit_fields and params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
+    else:
+        pass
     if "top_p" in explicit_fields and params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
+    else:
+        pass
     if "top_k" in explicit_fields and params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
+    else:
+        pass
     if (
         "repetition_penalty" in explicit_fields
         and params.get("repetition_penalty") is not None
@@ -349,6 +387,8 @@ def build_generation_kwargs(
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )
+    else:
+        pass
 
     for source in (tts_params, params):
         for param_name in (
@@ -365,12 +405,18 @@ def build_generation_kwargs(
                 generation_kwargs[param_name] = (
                     int(value) if param_name.endswith("top_k") else float(value)
                 )
+            else:
+                pass
 
     seed = tts_params.get("seed")
     if seed is None:
         seed = params.get("seed")
+    else:
+        pass
     if seed is not None:
         generation_kwargs["seed"] = seed
+    else:
+        pass
 
     validate_moss_tts_generation_kwargs(generation_kwargs)
     return generation_kwargs
@@ -383,31 +429,43 @@ def validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
         raise ValueError(
             f"MOSS-TTS max_new_tokens must be > 0, got {kwargs['max_new_tokens']!r}"
         )
+    else:
+        pass
     for param_name in ("text_temperature", "audio_temperature"):
         if float(kwargs[param_name]) < 0:
             raise ValueError(
                 f"MOSS-TTS {param_name} must be >= 0, got {kwargs[param_name]!r}"
             )
+        else:
+            pass
     for param_name in ("text_top_p", "audio_top_p"):
         if not 0.0 < float(kwargs[param_name]) <= 1.0:
             raise ValueError(
                 f"MOSS-TTS {param_name} must be in (0, 1], got {kwargs[param_name]!r}"
             )
+        else:
+            pass
     for param_name in ("text_top_k", "audio_top_k"):
         if int(kwargs[param_name]) < -1:
             raise ValueError(
                 f"MOSS-TTS {param_name} must be >= -1, got {kwargs[param_name]!r}"
             )
+        else:
+            pass
     if float(kwargs["audio_repetition_penalty"]) <= 0:
         raise ValueError(
             "MOSS-TTS audio_repetition_penalty must be > 0, got "
             f"{kwargs['audio_repetition_penalty']!r}"
         )
+    else:
+        pass
     seed = kwargs.get("seed")
     if seed is not None and (
         isinstance(seed, bool) or not isinstance(seed, int) or seed < 0
     ):
         raise ValueError(f"MOSS-TTS seed must be a non-negative integer, got {seed!r}")
+    else:
+        pass
 
 
 def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
@@ -428,12 +486,20 @@ def reference_for_processor(
 ) -> list[Any] | None:
     if ref_audio is None:
         return None
+    else:
+        pass
     if isinstance(ref_audio, os.PathLike):
         ref_audio = os.fsdecode(ref_audio)
+    else:
+        pass
     if not isinstance(ref_audio, str):
         return [ref_audio]
+    else:
+        pass
     if reference_encoder is not None:
         return [reference_encoder.encode(ref_audio)]
+    else:
+        pass
     return [ref_audio]
 
 
@@ -470,6 +536,8 @@ def prepare_moss_tts_request(
         raise ValueError(
             "MOSS-TTS processor must return input_ids with shape [1, T, C]"
         )
+    else:
+        pass
     prompt_rows = input_rows[0].detach().to(dtype=torch.long, device="cpu")
     input_ids_list = build_row_cache_key_ids(prompt_rows)
     return MossTTSPreparedRequest(
@@ -491,6 +559,8 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
             "MOSS-TTS preprocessing context is not initialized; "
             "create_preprocessing_executor must register it before requests run"
         )
+    else:
+        pass
 
     try:
         prepared = prepare_moss_tts_request(
@@ -509,6 +579,8 @@ def preprocess_moss_tts_payload(payload: StagePayload) -> StagePayload:
     data = prepared.state.to_dict()
     if published:
         data[_MOSS_TTS_PREPARED_MARKER] = payload.request_id
+    else:
+        pass
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )
@@ -518,6 +590,8 @@ def last_equal(rows: torch.Tensor, value: int) -> int:
     matches = (rows[:, 0] == int(value)).nonzero(as_tuple=False).flatten()
     if matches.numel() == 0:
         return -1
+    else:
+        pass
     return int(matches[-1].item())
 
 
@@ -532,6 +606,8 @@ def resolve_audio_payload_bounds(
         )
         if gen_pos.numel() == 0:
             return None
+        else:
+            pass
         start = int(gen_pos[0].item())
     else:
         start = int(bos_pos[0].item()) + 1
@@ -548,13 +624,19 @@ def resolve_audio_payload_bounds(
             matches = (text[start:] == token_id).nonzero(as_tuple=False)
             if matches.numel() > 0:
                 end_candidates.append(start + int(matches[-1].item()) + 1)
+            else:
+                pass
         if not end_candidates:
             return None
+        else:
+            pass
         end = max(end_candidates)
 
     n_vq = int(rows.shape[1] - 1)
     if end <= start or end <= start + n_vq:
         return None
+    else:
+        pass
     return start, end
 
 
@@ -581,6 +663,8 @@ def moss_stream_metadata(
         metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
             INITIAL_CODEC_CHUNK_FRAMES_PARAM
         ]
+    else:
+        pass
     return metadata
 
 
@@ -600,17 +684,29 @@ def collect_moss_stream_rows(
                     data.stream_audio_active = True
                     data.stream_audio_ended = False
                     continue
+                else:
+                    pass
                 if token == int(config.audio_end_token_id):
                     data.stream_audio_active = False
                     data.stream_audio_ended = True
                     continue
+                else:
+                    pass
                 if not data.stream_audio_active and token == int(
                     config.audio_assistant_gen_slot_token_id
                 ):
                     data.stream_audio_active = True
+                else:
+                    pass
                 if data.stream_audio_active and not data.stream_audio_ended:
                     rows.append(row[1:].detach().clone())
+                else:
+                    pass
+        else:
+            pass
         data.stream_prefix_scanned = True
+    else:
+        pass
 
     output_rows = data.output_rows
     start = min(int(data.stream_output_row_count), len(output_rows))
@@ -625,16 +721,24 @@ def collect_moss_stream_rows(
             data.stream_audio_active = True
             data.stream_audio_ended = False
             continue
+        else:
+            pass
         if token == int(config.audio_end_token_id):
             data.stream_audio_active = False
             data.stream_audio_ended = True
             continue
+        else:
+            pass
         if not data.stream_audio_active and token == int(
             config.audio_assistant_gen_slot_token_id
         ):
             data.stream_audio_active = True
+        else:
+            pass
         if data.stream_audio_active and not data.stream_audio_ended:
             rows.append(row[1:].detach().clone())
+        else:
+            pass
     data.stream_output_row_count = len(output_rows)
     return rows
 
@@ -650,16 +754,24 @@ def make_moss_tts_stream_output_builder():
         params = getattr(getattr(data.stage_payload, "request", None), "params", None)
         if not isinstance(params, dict) or not bool(params.get("stream", False)):
             return []
+        else:
+            pass
         req = data.req
         if req is not None and int(getattr(req, "inflight_middle_chunks", 0) or 0):
             return []
+        else:
+            pass
 
         rows = collect_moss_stream_rows(data, req_output)
         if not rows:
             return []
+        else:
+            pass
         n_vq = int(rows[0].shape[0])
         if n_vq <= 0 or any(int(row.shape[0]) != n_vq for row in rows):
             raise RuntimeError("MOSS-TTS stream rows have inconsistent codebook widths")
+        else:
+            pass
 
         row_index = int(data.stream_row_count)
         data.stream_row_count += len(rows)
@@ -687,6 +799,8 @@ def initialize_generation_state(
     prompt_rows = data.prompt_rows
     if prompt_rows is None or prompt_rows.numel() == 0:
         return
+    else:
+        pass
     cfg = model.config
     seq_len = int(prompt_rows.shape[0])
     last_text = int(prompt_rows[-1, 0].item())
@@ -714,6 +828,8 @@ def build_sglang_moss_tts_request(
             "MOSS-TTS AR request builder requires a payload prepared by "
             "preprocess_moss_tts_payload"
         )
+    else:
+        pass
 
     cfg = model.config
     gen_kwargs = prepared.gen_kwargs

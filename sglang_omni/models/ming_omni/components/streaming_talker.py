@@ -85,8 +85,12 @@ class MingStreamingTalkerScheduler:
         self.running = True
         if self.talker is None:
             self.load_models()
+        else:
+            pass
         if self.sample_rate is None:
             self.sample_rate = self.resolve_sample_rate()
+        else:
+            pass
 
         while self.running:
             try:
@@ -119,6 +123,8 @@ class MingStreamingTalkerScheduler:
             state = self.states.get(request_id)
             if state is None:
                 return
+            else:
+                pass
             state.aborted = True
             state.abort_event.set()
 
@@ -141,24 +147,34 @@ class MingStreamingTalkerScheduler:
             if state is None:
                 state = RequestState()
                 self.states[request_id] = state
+            else:
+                pass
             state.payload = msg.data
             state.payload_arrived = True
             should_finalize = state.stream_done and not state.finalized
         if should_finalize:
             self.finalize(request_id)
+        else:
+            pass
 
     def on_stream_chunk(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
         item = msg.data
         if not isinstance(item, StreamItem):
             return
+        else:
+            pass
         with self.states_lock:
             state = self.states.get(request_id)
             if state is None:
                 state = RequestState()
                 self.states[request_id] = state
+            else:
+                pass
             if state.aborted or state.finalized:
                 return
+            else:
+                pass
 
         metadata = dict(item.metadata or {})
         is_final_segment = bool(metadata.get("is_final_segment", False))
@@ -171,6 +187,8 @@ class MingStreamingTalkerScheduler:
                 segment_id=int(metadata.get("segment_id", state.segment_count)),
             )
             state.segment_count += 1
+        else:
+            pass
         # is_final_segment is informational; we still wait for stream_done
         # to finalize the result payload.
         if is_final_segment:
@@ -179,6 +197,8 @@ class MingStreamingTalkerScheduler:
                 request_id,
                 state.segment_count,
             )
+        else:
+            pass
 
     def on_stream_done(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
@@ -186,10 +206,14 @@ class MingStreamingTalkerScheduler:
             state = self.states.get(request_id)
             if state is None:
                 return
+            else:
+                pass
             state.stream_done = True
             should_finalize = state.payload_arrived and not state.finalized
         if should_finalize:
             self.finalize(request_id)
+        else:
+            pass
 
     # ------------------------------------------------------------------ generation
     def generate_audio_for_segment(
@@ -202,19 +226,27 @@ class MingStreamingTalkerScheduler:
     ) -> None:
         if self.talker is None:
             raise RuntimeError("Talker model not loaded")
+        else:
+            pass
         t_start = time.perf_counter()
         generator = self.build_generation_iterator(text, state.abort_event)
         try:
             for item in generator:
                 if state.abort_event.is_set():
                     break
+                else:
+                    pass
                 waveform = self.extract_waveform(item)
                 if waveform is None or self.waveform_numel(waveform) == 0:
                     continue
+                else:
+                    pass
                 if state.first_audio_emit_ms is None:
                     state.first_audio_emit_ms = (
                         time.perf_counter() - state.request_t_start_s
                     ) * 1000.0
+                else:
+                    pass
                 self.emit_audio_chunk(
                     request_id, state, waveform, segment_id=segment_id
                 )
@@ -226,6 +258,8 @@ class MingStreamingTalkerScheduler:
                     "[TALKER_STREAM] segment %d aborted for %s", segment_id, request_id
                 )
                 return
+            else:
+                pass
             raise
         finally:
             logger.debug(
@@ -244,6 +278,8 @@ class MingStreamingTalkerScheduler:
                 stream=True,
                 abort_event=abort_event,
             )
+        else:
+            pass
         if hasattr(self.talker, "instruct_audio_generation"):
             return self.talker.instruct_audio_generation(
                 prompt="Please generate speech based on the following description.\n",
@@ -252,6 +288,8 @@ class MingStreamingTalkerScheduler:
                 stream=True,
                 abort_event=abort_event,
             )
+        else:
+            pass
         raise RuntimeError("Talker has no streaming generation method")
 
     # ------------------------------------------------------------------ outbox
@@ -275,6 +313,8 @@ class MingStreamingTalkerScheduler:
         }
         if state.first_audio_emit_ms is not None:
             payload["talker_first_audio_ms"] = state.first_audio_emit_ms
+        else:
+            pass
         state.audio_chunk_count += 1
         self.outbox.put(
             OutgoingMessage(
@@ -291,6 +331,8 @@ class MingStreamingTalkerScheduler:
             state = self.states.get(request_id)
             if state is None or state.finalized:
                 return
+            else:
+                pass
             state.finalized = True
 
         # Build the final result payload as a fresh small dict — do not
@@ -301,6 +343,8 @@ class MingStreamingTalkerScheduler:
         payload = state.payload
         if payload is None:
             payload = StagePayload(request_id=request_id, request=None, data={})
+        else:
+            pass
         payload.data = {
             "modality": "audio",
             "audio_chunk_count": state.audio_chunk_count,
@@ -322,16 +366,24 @@ class MingStreamingTalkerScheduler:
     def extract_waveform(item: Any) -> Any | None:
         if isinstance(item, tuple):
             return item[0] if item else None
+        else:
+            pass
         return item
 
     @staticmethod
     def waveform_numel(waveform: Any) -> int:
         if isinstance(waveform, torch.Tensor):
             return int(waveform.numel())
+        else:
+            pass
         if isinstance(waveform, np.ndarray):
             return int(waveform.size)
+        else:
+            pass
         if isinstance(waveform, (bytes, bytearray, memoryview)):
             return len(waveform)
+        else:
+            pass
         return int(np.asarray(waveform).size)
 
     @staticmethod
@@ -351,11 +403,15 @@ class MingStreamingTalkerScheduler:
     def resolve_sample_rate(self) -> int:
         if self.sample_rate is not None:
             return int(self.sample_rate)
+        else:
+            pass
         for owner in (self.audio_detokenizer, self.talker):
             sr = self.sample_rate_from(owner)
             if sr is not None:
                 self.sample_rate = sr
                 return sr
+            else:
+                pass
         self.sample_rate = DEFAULT_SAMPLE_RATE
         return self.sample_rate
 
@@ -363,10 +419,14 @@ class MingStreamingTalkerScheduler:
     def sample_rate_from(owner: Any) -> int | None:
         if owner is None:
             return None
+        else:
+            pass
         config = getattr(owner, "config", None)
         sr = getattr(config, "sample_rate", None)
         if sr is None:
             sr = getattr(owner, "sample_rate", None)
+        else:
+            pass
         return int(sr) if sr is not None else None
 
     def validate_voice_presets(
@@ -383,6 +443,8 @@ class MingStreamingTalkerScheduler:
                 f"{manifest_path}; available presets: "
                 f"{sorted(voice_dict.keys())}"
             )
+        else:
+            pass
         for name, entry in voice_dict.items():
             rel_path = entry.get("prompt_wav_path")
             if rel_path is None:
@@ -390,12 +452,16 @@ class MingStreamingTalkerScheduler:
                     f"[TALKER_STREAM] voice preset {name!r} in "
                     f"{manifest_path} is missing prompt_wav_path"
                 )
+            else:
+                pass
             resolved = os.path.join(talker_dir, rel_path)
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(
                     f"[TALKER_STREAM] voice preset {name!r} references "
                     f"missing prompt wav {resolved}"
                 )
+            else:
+                pass
             entry["prompt_wav_path"] = resolved
 
     # ------------------------------------------------------------------ model load
@@ -404,6 +470,8 @@ class MingStreamingTalkerScheduler:
             raise RuntimeError(
                 "MingStreamingTalkerScheduler needs model_path to load talker"
             )
+        else:
+            pass
         from transformers import AutoTokenizer
 
         from sglang_omni.models.ming_omni.talker import (
@@ -426,6 +494,8 @@ class MingStreamingTalkerScheduler:
         config = MingOmniTalkerConfig.from_pretrained_dir(talker_dir)
         if torch.device(self.device).type == "npu":
             config.use_torch_attention()
+        else:
+            pass
         talker = MingOmniTalker(config)
         talker.eval()
         weights = load_weights_by_prefix(talker_dir, prefix="")

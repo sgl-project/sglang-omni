@@ -35,6 +35,8 @@ def iter_weights_by_prefix(model_dir: Path, prefix: str):
     for key, shard in weight_map.items():
         if key.startswith(prefix):
             shards.setdefault(shard, []).append(key)
+        else:
+            pass
     for shard, keys in sorted(shards.items()):
         with safe_open(str(model_dir / shard), framework="pt", device="cpu") as f:
             for key in keys:
@@ -99,6 +101,8 @@ class MingImageEncoder(nn.Module):
             from dataclasses import asdict
 
             return asdict(vision_cfg)
+        else:
+            pass
         return {k: v for k, v in vars(vision_cfg).items() if not k.startswith("_")}
 
     did_init_tp = False
@@ -122,7 +126,11 @@ class MingImageEncoder(nn.Module):
                 raise RuntimeError(
                     f"TP already initialized with tp_size={dp._ATTN_TP_SIZE}, cannot reinitialize with tp_size={tp_size}"  # noqa: leading-underscore
                 )
+            else:
+                pass
             return
+        else:
+            pass
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         if nccl_port is not None:
             os.environ["MASTER_PORT"] = str(nccl_port)
@@ -132,6 +140,8 @@ class MingImageEncoder(nn.Module):
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("", 0))
                 os.environ["MASTER_PORT"] = str(s.getsockname()[1])
+        else:
+            pass
         from sglang.srt.server_args import (
             ServerArgs,
             set_global_server_args_for_scheduler,
@@ -150,6 +160,8 @@ class MingImageEncoder(nn.Module):
             )
             parallel_state.initialize_model_parallel(tensor_model_parallel_size=tp_size)
             cls.did_init_tp = True
+        else:
+            pass
         dp._ATTN_TP_SIZE = tp_size  # noqa: leading-underscore
         dp._ATTN_TP_RANK = tp_rank  # noqa: leading-underscore
 
@@ -162,12 +174,16 @@ class MingImageEncoder(nn.Module):
         """
         if not cls.did_init_tp:
             return
+        else:
+            pass
         cls.did_init_tp = False
         from sglang.srt.distributed import parallel_state
 
         if parallel_state.model_parallel_is_initialized():
             parallel_state.destroy_model_parallel()
             logger.info("Cleaned up model parallel state for thinker reuse")
+        else:
+            pass
 
     def encode(
         self, pixel_values: torch.Tensor, grid_thw: torch.Tensor
@@ -181,6 +197,8 @@ class MingImageEncoder(nn.Module):
             embeds = self.visual(pixel_values, grid_thw)
             if self.visual.use_deepstack:
                 embeds = embeds[:, : self.visual.image_emb_dim]
+            else:
+                pass
             embeds = self.linear_proj(embeds)
             embeds = F.normalize(embeds, dim=-1)
         merge_sq = self.spatial_merge_size**2
@@ -214,6 +232,8 @@ class MingImageEncoder(nn.Module):
             result["image_embeds"] = image_embeds
             result["image_grid_thw"] = image_grid_thw.to(device=self.visual.device)
             result["image_token_counts"] = image_token_counts
+        else:
+            pass
         if pixel_values_videos is not None and video_grid_thw is not None:
             video_embeds, video_token_counts = self.encode(
                 pixel_values_videos, video_grid_thw
@@ -221,14 +241,22 @@ class MingImageEncoder(nn.Module):
             result["video_embeds"] = video_embeds
             result["video_grid_thw"] = video_grid_thw.to(device=self.visual.device)
             result["video_token_counts"] = video_token_counts
+        else:
+            pass
         return result
 
 
 def resolve_dtype(dtype: str | None) -> torch.dtype:
     if dtype is None or dtype == "bfloat16":
         return torch.bfloat16
+    else:
+        pass
     if dtype == "float16":
         return torch.float16
+    else:
+        pass
     if dtype == "float32":
         return torch.float32
+    else:
+        pass
     return torch.bfloat16

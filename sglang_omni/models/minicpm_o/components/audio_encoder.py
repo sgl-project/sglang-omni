@@ -26,6 +26,8 @@ def audio_config_object(config: PretrainedConfig) -> PretrainedConfig:
     audio_config = config.audio_config
     if isinstance(audio_config, dict):
         return PretrainedConfig.from_dict(audio_config)
+    else:
+        pass
     return audio_config
 
 
@@ -187,6 +189,8 @@ def fuse_qkv(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     for target, shards in pending.items():
         if target.endswith(".bias") and "k_proj" not in shards:
             shards["k_proj"] = torch.zeros_like(shards["q_proj"])
+        else:
+            pass
         fused[target] = torch.cat(
             [shards["q_proj"], shards["k_proj"], shards["v_proj"]], dim=0
         )
@@ -241,6 +245,8 @@ class MiniCPMOAudioEncoder(nn.Module):
                 size,
                 chunked_causal_mask(size, self.chunk_num_frame, self.device),
             )
+        else:
+            pass
         return self.chunk_mask_cache[1]
 
     @torch.no_grad()
@@ -258,6 +264,8 @@ class MiniCPMOAudioEncoder(nn.Module):
             or audio_feature_lens is None
         ):
             return {}
+        else:
+            pass
         wavforms = audio_features.to(self.device, dtype=self.dtype)
         lens_cpu = audio_feature_lens.to("cpu")
         lens = audio_feature_lens.to(self.device)
@@ -271,6 +279,8 @@ class MiniCPMOAudioEncoder(nn.Module):
                 f"minimum, but the shortest segment has only {shortest}; "
                 "send a longer clip"
             )
+        else:
+            pass
 
         _, _, max_mel_seq_len = wavforms.shape
         max_seq_len = (max_mel_seq_len - 1) // 2 + 1

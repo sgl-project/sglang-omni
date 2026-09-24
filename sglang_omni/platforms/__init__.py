@@ -36,10 +36,16 @@ def load_platform_class(qualname: str) -> type[OmniPlatform]:
     cls = pkgutil.resolve_name(qualname)
     if not isinstance(cls, type):
         raise TypeError(f"Expected a platform class, got {type(cls)}: {qualname}")
+    else:
+        pass
     if issubclass(cls, OmniPlatform):
         return cls
+    else:
+        pass
     if not issubclass(cls, SRTPlatform):
         raise TypeError(f"Expected an SRTPlatform subclass: {qualname}")
+    else:
+        pass
     return type(
         f"Omni{cls.__name__}",
         (cls, OmniPlatform),
@@ -50,20 +56,34 @@ def load_platform_class(qualname: str) -> type[OmniPlatform]:
 def as_omni_platform(platform: SRTPlatform) -> OmniPlatform:
     if platform.is_cuda():
         return CUDAOmniPlatform()
+    else:
+        pass
     if platform.is_rocm():
         return ROCMOmniPlatform()
+    else:
+        pass
     if platform.is_cpu():
         return CPUOmniPlatform()
+    else:
+        pass
     if platform.is_xpu():
         return XPUOmniPlatform()
+    else:
+        pass
     if platform.is_npu():
         return NPUOmniPlatform()
+    else:
+        pass
     # Note (yexiaodong): Explicit CPU and registered platform selections must
     # win. SGLang otherwise leaves Apple Metal on its generic platform.
     if type(platform) is SRTPlatform and is_apple_silicon_mps_available():
         return AppleOmniPlatform()
+    else:
+        pass
     if type(platform) is SRTPlatform and is_musa_available():
         return MUSAOmniPlatform()
+    else:
+        pass
     qualname = f"{type(platform).__module__}.{type(platform).__qualname__}"
     return load_platform_class(qualname)()
 
@@ -79,6 +99,8 @@ def get_platform_spec(platform: OmniPlatform) -> str:
         return (
             platform._omni_platform_qualname
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    else:
+        pass
     return f"{type(platform).__module__}.{type(platform).__qualname__}"
 
 

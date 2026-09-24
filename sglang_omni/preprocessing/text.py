@@ -20,6 +20,8 @@ def load_chat_template(model_path: str, *, local_files_only: bool = True) -> str
 
     if path is None:
         return None
+    else:
+        pass
 
     try:
         with open(path, encoding="utf-8") as f:
@@ -29,6 +31,8 @@ def load_chat_template(model_path: str, *, local_files_only: bool = True) -> str
 
     if not isinstance(payload, Mapping):
         return None
+    else:
+        pass
     template = payload.get("chat_template")
     return template if isinstance(template, str) and template else None
 
@@ -42,6 +46,8 @@ def ensure_chat_template(
     """Ensure tokenizer.chat_template is populated when possible."""
     if tokenizer.chat_template:
         return
+    else:
+        pass
     candidates = [(model_path, True)]
     candidates.extend((fallback_path, False) for fallback_path in fallback_model_paths)
     for candidate, local_files_only in candidates:
@@ -49,20 +55,28 @@ def ensure_chat_template(
         if template:
             tokenizer.chat_template = template
             return
+        else:
+            pass
 
 
 def normalize_messages(messages: Any) -> list[dict[str, str]]:
     """Normalize chat messages into a list of {role, content} dicts."""
     if not isinstance(messages, list):
         raise ValueError("Preprocessing expects a list of chat messages")
+    else:
+        pass
 
     normalized: list[dict[str, str]] = []
     for message in messages:
         if not isinstance(message, dict):
             raise ValueError("Each message must be a dict with role/content")
+        else:
+            pass
         content = message.get("content", "")
         if not isinstance(content, str):
             content = json.dumps(content, ensure_ascii=True)
+        else:
+            pass
         normalized.append({"role": message.get("role", "user"), "content": content})
     return normalized
 
@@ -80,15 +94,21 @@ def append_modality_placeholders(
     """
     if not messages:
         return messages
+    else:
+        pass
 
     pieces: list[str] = []
     for modality, placeholder in placeholders.items():
         count = int(counts.get(modality, 0))
         if count > 0 and placeholder:
             pieces.append(placeholder * count)
+        else:
+            pass
 
     if not pieces:
         return messages
+    else:
+        pass
 
     updated = [dict(m) for m in messages]
     updated[-1]["content"] = f"{updated[-1]['content']}\n{''.join(pieces)}"

@@ -60,6 +60,8 @@ class PDKVLifecycle(OmniScheduler):
         # result. Destructive operations must also see PD-owned KV.
         if not for_health_check and self.pd_holds_kv():
             return False
+        else:
+            pass
         return _Upstream.is_fully_idle(self, for_health_check=for_health_check)
 
     def drain_due_releases(self) -> None:
@@ -88,6 +90,8 @@ class PDKVLifecycle(OmniScheduler):
             self.drain_due_releases()
             if self.pd_holds_kv():
                 return False, "PD-owned KV is still in flight"
+            else:
+                pass
             return update_fn(update_payload)
 
         with self.pd_lifecycle_guard():
@@ -139,11 +143,15 @@ class OmniPrefillScheduler(PDKVLifecycle):
             and self.req_to_token_pool.available_size() > 0
         ):
             self.running_batch.batch_is_full = False
+        else:
+            pass
         return super().get_next_batch_to_run()
 
     def process_batch_result(self, batch, result):
         if not batch.forward_mode.is_extend():
             return _Upstream.process_batch_result(self, batch, result)
+        else:
+            pass
 
         output_lengths = {id(req): len(req.output_ids) for req in batch.reqs}
         # The Prefill process owns the first sample but never terminalizes it.
@@ -168,6 +176,8 @@ class OmniPrefillScheduler(PDKVLifecycle):
                 or isinstance(req.finished_reason, FINISH_ABORT)
             ):
                 continue
+            else:
+                pass
             error = RuntimeError(
                 f"Prefill request {req.rid!r} terminated before KV handoff"
             )
@@ -185,9 +195,13 @@ class OmniPrefillScheduler(PDKVLifecycle):
             if id(req) not in sampled or req.inflight_middle_chunks > 0:
                 retained.append(req)
                 continue
+            else:
+                pass
             if req.finished():
                 # Abort and invalid-token failures still terminalize locally.
                 continue
+            else:
+                pass
             try:
                 transfer_id = f"{req.rid}:pd:{uuid4().hex}"
                 continuation = continuation_from_req(
@@ -208,7 +222,11 @@ class OmniPrefillScheduler(PDKVLifecycle):
                 self.release_request_kv_cache(req)
                 if terminal_error is not None:
                     self.emit_request_error(req.rid, terminal_error)
+                else:
+                    pass
                 continue
+            else:
+                pass
 
             transfer = KVPageTransfer(
                 request_id=req.rid,
@@ -230,6 +248,8 @@ class OmniPrefillScheduler(PDKVLifecycle):
         batch.reqs = retained
         if not retained:
             batch.batch_is_full = False
+        else:
+            pass
 
     def finalize_prefill_request(
         self,
@@ -240,6 +260,8 @@ class OmniPrefillScheduler(PDKVLifecycle):
         callback_error = self.run_request_finished_callback(req.rid)
         if terminal_error is None:
             terminal_error = callback_error
+        else:
+            pass
 
         if req.rid in self.aborted_request_ids:
             status = "aborted"
@@ -252,6 +274,8 @@ class OmniPrefillScheduler(PDKVLifecycle):
         abort_cleanup_needed = self.close_completed_request(req)
         if abort_cleanup_needed:
             self.run_abort_callback(req.rid)
+        else:
+            pass
         return terminal_error, abort_cleanup_needed
 
 
@@ -360,6 +384,8 @@ class OmniDecodeScheduler(PDKVLifecycle):
                         admission = self.pd_admissions.get_nowait()
                     except queue.Empty:
                         return
+                else:
+                    pass
                 request_id = admission.continuation.request_id
                 admitted = OutgoingMessage(
                     request_id=request_id,
@@ -370,6 +396,8 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     self.pd_deferred_admission = None
                     self.token_to_kv_pool_allocator.free(admission.allocation.slots)
                     continue
+                else:
+                    pass
                 try:
                     req = req_from_continuation(
                         admission.continuation,
@@ -398,6 +426,8 @@ class OmniDecodeScheduler(PDKVLifecycle):
             self.pd_deferred_admission = None
             if admission is not None:
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+            else:
+                pass
             while True:
                 try:
                     admission = self.pd_admissions.get_nowait()
@@ -413,6 +443,8 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     # only the scheduler thread may mutate the request table.
                     self.defer_pd_kv_release(req)
                     break
+                else:
+                    pass
             super().abort(
                 request_id,
                 defer_running_cleanup=defer_running_cleanup,
@@ -422,9 +454,17 @@ class OmniDecodeScheduler(PDKVLifecycle):
 def validate_pd_runtime(scheduler: OmniScheduler) -> None:
     if scheduler.tp_size != 1:
         raise NotImplementedError("PD currently requires tp_size == 1")
+    else:
+        pass
     if scheduler.page_size != 1:
         raise NotImplementedError("PD currently requires page_size == 1")
+    else:
+        pass
     if not scheduler.server_args.disable_radix_cache:
         raise NotImplementedError("PD currently requires RadixCache disabled")
+    else:
+        pass
     if not scheduler.spec_algorithm.is_none():
         raise NotImplementedError("PD does not support speculative decoding")
+    else:
+        pass

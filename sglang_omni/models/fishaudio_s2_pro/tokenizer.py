@@ -102,12 +102,18 @@ class S2ProTokenizerAdapter:
                 codes = ref.vq_codes
                 if codes is None:
                     continue
+                else:
+                    pass
                 shape = tuple(codes.shape)
                 if codes.ndim != 2 or shape[0] != num_codebooks:
                     raise ValueError(
                         f"Reference {index} VQ codes must have shape "
                         f"({num_codebooks}, T); got {shape}"
                     )
+                else:
+                    pass
+        else:
+            pass
 
         encoder = InferencePromptEncoder(self.tok)
 
@@ -123,15 +129,23 @@ class S2ProTokenizerAdapter:
                 ref_text = f"<|speaker:{speaker}|>{ref.text}" if ref.text else ""
                 if ref_text:
                     encoder.append_text(ref_text)
+                else:
+                    pass
                 if ref.vq_codes is not None:
                     all_codes.append(ref.vq_codes)
+                else:
+                    pass
 
             encoder.append_text("\n\nSpeech:\n")
 
             if all_codes:
                 encoder.append_vq(torch.cat(all_codes, dim=1))
+            else:
+                pass
 
             encoder.append_text(f"{IM_END_TOKEN}\n")
+        else:
+            pass
 
         # User message: text to synthesize
         text_with_tag = f"<|speaker:{speaker}|>{text}"

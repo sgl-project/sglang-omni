@@ -117,6 +117,8 @@ def text_hidden_size(model: Any) -> int:
     hidden_size = getattr(model.config, "hidden_size", None)
     if hidden_size is None:
         raise RuntimeError("ARK-ASR config does not expose hidden_size")
+    else:
+        pass
     return int(hidden_size)
 
 
@@ -182,6 +184,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         with self.lifecycle_lock:
             if self.closed:
                 return
+            else:
+                pass
             self.closed = True
             self.queue.put(_SHUTDOWN)
         self.thread.join(timeout=5)
@@ -201,6 +205,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             with self.lifecycle_lock:
                 if self.closed:
                     raise RuntimeError("ARK-ASR pre-LM encoder service is closed")
+                else:
+                    pass
                 try:
                     self.queue.put_nowait(entry)
                     break
@@ -211,11 +217,15 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                     raise RuntimeError(
                         "pre-LM encoder worker has failed"
                     ) from self.worker_error
+                else:
+                    pass
             time.sleep(0.01)
         queue_depth = self.queue.qsize()
         with self.lock:
             if queue_was_full:
                 self.queue_full_waits += 1
+            else:
+                pass
             self.queue_depth_max = max(self.queue_depth_max, queue_depth)
 
     def submit_item(self, item: Any) -> concurrent.futures.Future[torch.Tensor]:
@@ -225,10 +235,14 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             raise RuntimeError(
                 "ARK-ASR pre-LM encode requires the item's num_audio_tokens"
             )
+        else:
+            pass
         key = self.cache_key(item)
 
         if key is None:
             return self.track_submission(self.submit(item))
+        else:
+            pass
 
         cached = self.cache.get(key)
         if cached is not None:
@@ -241,6 +255,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 )
                 future.set_result(cached)
                 return self.track_submission(future)
+            else:
+                pass
             logger.warning(
                 f"ARK-ASR pre-LM cache entry {key} failed validation "
                 f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
@@ -248,6 +264,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             )
             self.cache.remove_if_same(key, cached)
             cached = None
+        else:
+            pass
 
         follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
@@ -273,6 +291,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             )
             completed.set_result(cached)
             return self.track_submission(completed)
+        else:
+            pass
         if leader:
             future.add_done_callback(
                 lambda done, cache_key=key: self.clear_inflight(cache_key, done)
@@ -282,9 +302,15 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             except Exception as exc:
                 if not future.done():
                     future.set_exception(exc)
+                else:
+                    pass
                 raise
+        else:
+            pass
         if follower_of is None:
             return self.track_submission(future)
+        else:
+            pass
 
         item.feature = None
         completion: concurrent.futures.Future[torch.Tensor] = (
@@ -299,6 +325,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                         f"ARK-ASR pre-LM encode leader for {key} returned an "
                         "invalid embedding"
                     )
+                else:
+                    pass
                 self.attach_embedding(item, embedding)
                 completion.set_result(embedding)
             except Exception as exc:
@@ -332,6 +360,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 self.pending -= 1
                 if failed:
                     self.failed += 1
+                else:
+                    pass
 
         future.add_done_callback(finish)
         return future
@@ -344,6 +374,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         with self.lock:
             if self.inflight.get(key) is future:
                 del self.inflight[key]
+            else:
+                pass
 
     def stats(self) -> dict[str, int | float]:
         with self.lock:
@@ -377,6 +409,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         item_hash = getattr(item, "audio_fingerprint", None)
         if item_hash is None:
             return None
+        else:
+            pass
         return f"{self.namespace}:{item_hash}"
 
     def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
@@ -396,6 +430,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             # allocator cannot recycle the block for a later batch while LM
             # reads are still queued.
             embedding.record_stream(torch.cuda.default_stream(self.device))
+        else:
+            pass
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -410,6 +446,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         first = self.queue.get()
         if first is _SHUTDOWN:
             return [], True
+        else:
+            pass
         batch = [cast(QueueEntry[Any], first)]
         deadline = time.monotonic() + self.max_batch_wait_s
         shutdown = False
@@ -426,6 +464,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if queued is _SHUTDOWN:
                 shutdown = True
                 break
+            else:
+                pass
             batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
@@ -456,6 +496,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 raise RuntimeError(
                     "ARK-ASR pre-LM encode item is missing its audio token count"
                 )
+            else:
+                pass
             token_counts.append(expected)
         # get_audio_feature concatenates each item's [tokens_i, hidden] block
         # along the token axis, so the result is already flat.
@@ -470,12 +512,16 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 f"({embedding.dtype}) != expected rows "
                 f"{sum(token_counts)}x{self.hidden_size} ({self.dtype})"
             )
+        else:
+            pass
         parts = torch.split(embedding, token_counts, dim=0)
         return [part.clone() for part in parts]
 
     def synchronize_batch(self) -> None:
         if self.stream is not None:
             self.stream.synchronize()
+        else:
+            pass
 
     def cache_embedding(
         self,
@@ -487,6 +533,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         key = self.cache_key(item)
         if key is not None:
             self.cache.put(key, embedding)
+        else:
+            pass
 
     def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         return len(batch) > 1
@@ -550,6 +598,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
     def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
+        else:
+            pass
         if self.stream is not None:
             try:
                 self.stream.synchronize()
@@ -558,6 +608,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                     "ARK-ASR encoder stream cleanup failed after OOM",
                     exc_info=True,
                 )
+        else:
+            pass
         try:
             with torch.cuda.device(self.device):
                 torch.cuda.empty_cache()
@@ -593,7 +645,11 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                     # retried items are single-item batches.
                     self.batch_count += retry_recovered
                     self.item_count += retry_recovered
+                else:
+                    pass
                 return
+            else:
+                pass
             self.batch_count += 1
             self.item_count += len(batch)
             batch_count = self.batch_count
@@ -605,6 +661,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                 f"{item_count / batch_count:.2f} items/batch, "
                 f"last batch: {len(batch)}), cache: {self.stats()}"
             )
+        else:
+            pass
 
 
 __all__ = [

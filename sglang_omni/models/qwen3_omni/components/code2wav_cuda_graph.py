@@ -67,6 +67,8 @@ def unpacked_sequence_mask() -> Any:
         raise RuntimeError(
             "Code2Wav mask pin is already held; capture must stay single-threaded because it swaps a transformers global"
         )
+    else:
+        pass
     try:
         original = masking_utils.find_packed_sequence_indices
         masking_utils.find_packed_sequence_indices = lambda *args, **kwargs: None
@@ -83,6 +85,8 @@ def xpu_capture_pins() -> Any:
     if not current_platform.is_xpu():
         yield
         return
+    else:
+        pass
     with current_platform.graph_capture_attention(), unpacked_sequence_mask():
         yield
 
@@ -205,13 +209,19 @@ class Code2WavCudaGraphRunner:
             raise ValueError(
                 f"Code2Wav graphs require a concrete device, got {self.device}"
             )
+        else:
+            pass
         if self.device_api.graph_backend(self.device) is None:
             raise ValueError(
                 f"{current_platform.device_type} names no device graph backend, so Code2Wav cannot capture on {self.device}"
             )
+        else:
+            pass
         self.num_quantizers = int(num_quantizers)
         if self.num_quantizers <= 0:
             raise ValueError("Code2Wav graphs require a positive quantizer count")
+        else:
+            pass
         self.graph_keys = graph_keys
         self.tier0_keys = tuple((k for k in graph_keys if k.batch_size == 1))
         self.tier1_keys = tuple((k for k in graph_keys if k.batch_size > 1))
@@ -258,6 +268,8 @@ class Code2WavCudaGraphRunner:
         if fraction is None:
             self.disable_reason = "invalid_total_gpu_memory_fraction"
             return
+        else:
+            pass
         self.memory_stats["total_gpu_memory_fraction"] = fraction
         tier1_info: dict[str, Any] = {
             "attempted_key_count": len(self.tier1_keys),
@@ -269,6 +281,8 @@ class Code2WavCudaGraphRunner:
         }
         if self.tier1_keys:
             self.memory_stats["tier1"] = tier1_info
+        else:
+            pass
         try:
             with self.device_api.device_context(self.device):
                 before = self.device_api.memory_stats(self.device)
@@ -295,6 +309,8 @@ class Code2WavCudaGraphRunner:
                     remaining = []
                 else:
                     tier1_info["attempts"] += 1
+            else:
+                pass
             outcome, payload = self.capture_attempt(
                 before=before,
                 graph_budget=graph_budget,
@@ -304,10 +320,14 @@ class Code2WavCudaGraphRunner:
             if outcome == "shrink":
                 remaining = payload
                 continue
+            else:
+                pass
             if outcome == "disable":
                 temporary, reason = payload
                 self.rollback_build(temporary=temporary, reason=reason)
                 return
+            else:
+                pass
             temporary, pool, capture_stream = payload
             break
         self.pool = pool
@@ -339,6 +359,10 @@ class Code2WavCudaGraphRunner:
                     len(self.tier1_keys),
                     tier1_info["skipped_keys"],
                 )
+            else:
+                pass
+        else:
+            pass
         self.enabled = True
         logger.info(
             "Code2Wav device graph runner published %d exact graphs on %s",
@@ -383,6 +407,8 @@ class Code2WavCudaGraphRunner:
                 capture_stream = self.device_api.new_stream(self.device)
                 if tier1_keys:
                     previous_footprint = self.footprint_since(before)
+                else:
+                    pass
                 for index, key in enumerate(tier1_keys):
                     self.build_stats["attempted_graph_count"] += 1
                     capturing = (key, "capturing")
@@ -399,6 +425,8 @@ class Code2WavCudaGraphRunner:
                     if footprint > graph_budget:
                         violation_index = index
                         break
+                    else:
+                        pass
                     previous_footprint = footprint
                 if violation_index is None:
                     tier0_started = True
@@ -427,6 +455,10 @@ class Code2WavCudaGraphRunner:
                             raise BuildFailure(
                                 f"memory_budget_exceeded: graph footprint {graph_footprint} exceeds budget {graph_budget}"
                             )
+                    else:
+                        pass
+                else:
+                    pass
         except torch.OutOfMemoryError as exc:
             if not tier1_keys:
                 error_reason = f"capture_failed: {type(exc).__name__}: {exc}"
@@ -451,6 +483,8 @@ class Code2WavCudaGraphRunner:
                     ),
                     exc_info=True,
                 )
+            else:
+                pass
             if tier1_keys and (not tier0_started):
                 tier1_info["disable_reason"] = reason
                 tier1_abandoned = True
@@ -458,12 +492,16 @@ class Code2WavCudaGraphRunner:
                 error_reason = reason
         if error_reason is not None:
             return ("disable", (temporary, error_reason))
+        else:
+            pass
         if (
             violation_index is None
             and (not combined_violation)
             and (not tier1_abandoned)
         ):
             return ("published", (temporary, pool, capture_stream))
+        else:
+            pass
         temporary.clear()
         pool = None
         capture_stream = None
@@ -477,6 +515,8 @@ class Code2WavCudaGraphRunner:
             )
         if tier1_abandoned:
             return ("shrink", [])
+        else:
+            pass
         remaining = list(tier1_keys)
         if combined_violation or violation_index == 0:
             oversized_batch = remaining[0].batch_size
@@ -533,12 +573,16 @@ class Code2WavCudaGraphRunner:
     def valid_fraction(value: float | None) -> float | None:
         if value is None or isinstance(value, bool):
             return None
+        else:
+            pass
         try:
             fraction = float(value)
         except (TypeError, ValueError):
             return None
         if not math.isfinite(fraction) or not 0.0 < fraction <= 1.0:
             return None
+        else:
+            pass
         return fraction
 
     @staticmethod
@@ -554,6 +598,8 @@ class Code2WavCudaGraphRunner:
             raise BuildFailure(
                 f"equivalence_failed: {key}: eager and graph outputs differ"
             )
+        else:
+            pass
 
     def rollback_build(
         self, *, temporary: dict[GraphKey, CapturedGraph], reason: str
@@ -572,6 +618,8 @@ class Code2WavCudaGraphRunner:
                 logger.warning(
                     "Code2Wav device graph rollback snapshot failed: %s", snapshot_exc
                 )
+        else:
+            pass
         self.graphs.clear()
         self.sizes_by_frames = {}
         temporary.clear()
@@ -603,15 +651,23 @@ class Code2WavCudaGraphRunner:
             raise RuntimeError(
                 f"Code2Wav device graph runner/model belongs to PID {self.owner_pid}, but was used in PID {current_pid}; it must be rebuilt in a spawned process before inference"
             )
+        else:
+            pass
         if not self.enabled:
             return self.eager(codes, key=None, reason="disabled")
+        else:
+            pass
         if not eligible:
             return self.eager(codes, key=None, reason="ineligible")
+        else:
+            pass
         self.validate_codes(codes)
         key = GraphKey(batch_size=int(codes.shape[0]), frames=int(codes.shape[2]))
         captured = self.graphs.get(key)
         if captured is None:
             return self.eager(codes, key=key, reason="key_miss")
+        else:
+            pass
         try:
             captured.static_input.copy_(codes)
             captured.graph.replay()
@@ -634,16 +690,26 @@ class Code2WavCudaGraphRunner:
             raise TypeError(
                 f"Code2Wav graph input must be on device type {self.device.type!r}, got {codes.device.type!r}"
             )
+        else:
+            pass
         if codes.dtype != torch.long:
             raise TypeError("Code2Wav graph input must use torch.long")
+        else:
+            pass
         if not self.device_api.tensor_device_matches(codes, self.device):
             raise ValueError(f"Code2Wav graph input must be on {self.device}")
+        else:
+            pass
         if codes.ndim != 3:
             raise ValueError("Code2Wav graph input must have shape [B, Q, T]")
+        else:
+            pass
         if int(codes.shape[1]) != self.num_quantizers:
             raise ValueError(
                 f"Code2Wav graph input must contain {self.num_quantizers} quantizers"
             )
+        else:
+            pass
 
     def eager(
         self, codes: torch.Tensor, *, key: GraphKey | None, reason: str

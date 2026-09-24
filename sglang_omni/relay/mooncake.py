@@ -99,6 +99,8 @@ class MooncakeConnection:
             raise RuntimeError(
                 f"Failed to initialize Mooncake TransferEngine (error code: {ret})"
             )
+        else:
+            pass
         self.session_id = f"{hostname}:{self.engine.get_rpc_port()}"
         self.memory_handles: Dict[int, int] = {}
         logger.info(
@@ -119,9 +121,13 @@ class MooncakeConnection:
         if ptr in self.memory_handles:
             logger.warning(f"Memory at {hex(ptr)} already registered")
             return self.memory_handles[ptr]
+        else:
+            pass
         ret = self.engine.register_memory(ptr, size)
         if ret != 0:
             raise RuntimeError(f"Failed to register memory (error code: {ret})")
+        else:
+            pass
         self.memory_handles[ptr] = ptr
         logger.debug(f"Registered memory: ptr={hex(ptr)}, size={size} bytes")
         return ptr
@@ -131,6 +137,8 @@ class MooncakeConnection:
         if handle not in self.memory_handles:
             logger.warning(f"Memory handle {hex(handle)} not found")
             return
+        else:
+            pass
         try:
             self.engine.unregister_memory(handle)
             del self.memory_handles[handle]
@@ -156,6 +164,8 @@ class MooncakeConnection:
         ret = self.engine.transfer_sync_write(session_id, src_ptr, dst_ptr, size)
         if ret < 0:
             raise RuntimeError(f"Transfer failed with error code: {ret}")
+        else:
+            pass
         return ret
 
     def transfer_sync_read(
@@ -176,6 +186,8 @@ class MooncakeConnection:
         ret = self.engine.transfer_sync_read(session_id, local_ptr, remote_ptr, size)
         if ret < 0:
             raise RuntimeError(f"Transfer failed with error code: {ret}")
+        else:
+            pass
         return ret
 
     def transfer_sync(
@@ -206,6 +218,8 @@ class MooncakeConnection:
         )
         if ret < 0:
             raise RuntimeError(f"Transfer failed with error code: {ret}")
+        else:
+            pass
         return ret
 
     def get_notifies(self):
@@ -265,6 +279,8 @@ class PutOperation(MooncakeOperation):
         """
         if self.completed:
             return
+        else:
+            pass
         try:
             await MooncakeRelay.wait_for_mooncake_notification(
                 self.transfer_id, timeout
@@ -273,6 +289,8 @@ class PutOperation(MooncakeOperation):
             self.completed = True
             if self.on_completion_cb:
                 self.on_completion_cb()
+            else:
+                pass
 
 
 class GetOperation(MooncakeOperation):
@@ -303,6 +321,8 @@ class GetOperation(MooncakeOperation):
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         if self.completed:
             return
+        else:
+            pass
         try:
             notify = TransferNotify(self.transfer_id, "transfer_complete")
             await asyncio.get_event_loop().run_in_executor(
@@ -319,6 +339,8 @@ class GetOperation(MooncakeOperation):
             self.completed = True
             if self.on_completion_cb:
                 self.on_completion_cb()
+            else:
+                pass
 
 
 @register_relay("mooncake")
@@ -369,8 +391,12 @@ class MooncakeRelay(Relay):
                 self.device_id = int(device.split(":")[1])
             except ValueError:
                 self.device_id = 0
+        else:
+            pass
         if hostname is None:
             hostname = socket.gethostname()
+        else:
+            pass
         self.connection = MooncakeConnection(
             engine_id=engine_id,
             hostname=hostname,
@@ -431,6 +457,8 @@ class MooncakeRelay(Relay):
             raise ValueError(
                 f"Tensor size {size_bytes} exceeds slot size {self.slot_size}"
             )
+        else:
+            pass
         transfer_id = f"{self.engine_id}_{uuid.uuid4().hex[:8]}"
         logger.debug(
             f"[{self.engine_id}] put_async: transfer_id={transfer_id}, size={size_bytes}"
@@ -499,6 +527,8 @@ class MooncakeRelay(Relay):
             raise ValueError(
                 f"Data size {data_size} exceeds slot size {self.slot_size}"
             )
+        else:
+            pass
         local_credit_id = await self.allocator.acquire_async()
         try:
             dest_size = dest_tensor.numel() * dest_tensor.element_size()
@@ -506,6 +536,8 @@ class MooncakeRelay(Relay):
                 raise ValueError(
                     f"Destination tensor size {dest_size} is smaller than data size {data_size}"
                 )
+            else:
+                pass
             local_ptr = self.pool_ptr + local_credit_id
 
             def cleanup_callback():
@@ -542,6 +574,8 @@ class MooncakeRelay(Relay):
                 logger.error(
                     f"[{self.engine_id}] Failed to start notification listener: {e}"
                 )
+        else:
+            pass
 
     async def notification_listener_loop(self) -> None:
         """
@@ -563,6 +597,8 @@ class MooncakeRelay(Relay):
                             logger.debug(
                                 f"[{self.engine_id}] Triggered event for {transfer_id}"
                             )
+                        else:
+                            pass
                 await asyncio.sleep(0.001)
             except Exception as e:
                 if self.running:
@@ -570,6 +606,8 @@ class MooncakeRelay(Relay):
                         f"[{self.engine_id}] Error in notification listener: {e}"
                     )
                     await asyncio.sleep(0.1)
+                else:
+                    pass
         logger.debug(f"[{self.engine_id}] Notification listener loop stopped")
 
     @classmethod
@@ -629,6 +667,8 @@ class MooncakeRelay(Relay):
         if self.listener_task is not None and (not self.listener_task.done()):
             self.listener_task.cancel()
             logger.info(f"[{self.engine_id}] Notification listener task cancelled")
+        else:
+            pass
         self.connection.deregister_memory(self.pool_handle)
         logger.info(f"[{self.engine_id}] Memory pool deregistered")
         self.connection.close()

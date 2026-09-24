@@ -32,6 +32,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         self.max_running_requests = int(max_running_requests)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
+        else:
+            pass
         self.model_runner: Any | None = None
         self.acoustic_tail: Any | None = None
 
@@ -53,6 +55,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             from sglang_omni.models.dots_tts.stages import configure_optimized_kernels
 
             configure_optimized_kernels()
+        else:
+            pass
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         return {
@@ -70,11 +74,15 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("dots.tts base support does not implement TP")
+        else:
+            pass
         requested = int(
             overrides.get("max_running_requests", self.max_running_requests)
         )
         if requested <= 0:
             raise ValueError("dots.tts max_running_requests must be positive")
+        else:
+            pass
         self.max_running_requests = requested
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
@@ -82,11 +90,15 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             raise ValueError(
                 "dots.tts uses its DiT compile path; SGLang backbone compile is disabled"
             )
+        else:
+            pass
         if not bool(overrides.get("disable_cuda_graph", True)):
             # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
             # its can_run gate requires an exact hidden-mode match with the
             # acoustic tail's per-step request.
             overrides["enable_return_hidden_states"] = True
+        else:
+            pass
 
     def setup_model(
         self,
@@ -118,6 +130,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                     256,
                 )
             )
+        else:
+            pass
         model.flow.optimize = self.optimize and max_running_requests == 1
         model.eval()
         if max_running_requests > 1:
@@ -128,6 +142,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 optimize=self.optimize,
             )
             self.acoustic_tail = model.flow.batched_tail
+        else:
+            pass
         if max_running_requests == 1:
             tail_backend = (
                 "compiled single-request DiT/semantic encoder"
@@ -184,6 +200,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.acoustic_tail is None:
             return {}
+        else:
+            pass
         return {"shutdown_callback": self.acoustic_tail.log_graph_counters}
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:

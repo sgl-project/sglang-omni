@@ -29,6 +29,8 @@ class StreamingCodec:
     def flush(self) -> torch.Tensor:
         if not self.codes_rows:
             return torch.zeros(0)
+        else:
+            pass
         return self.advance(final=True)
 
     def advance(self, *, final: bool) -> torch.Tensor:
@@ -94,6 +96,8 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         state = self.states.get(request_id)
         if state is None:
             return []
+        else:
+            pass
         messages: list[OutgoingMessage] = []
         if state.codec.codes_rows:
             tail = state.codec.flush()
@@ -112,6 +116,10 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
                         metadata={"modality": "audio"},
                     )
                 )
+            else:
+                pass
+        else:
+            pass
         waveform = torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
         return messages + [
             OutgoingMessage(

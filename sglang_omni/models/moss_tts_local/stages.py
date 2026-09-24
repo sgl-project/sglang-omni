@@ -92,6 +92,8 @@ def configure_pipeline_threads(worker_count: int) -> int:
         requested = int(override)
         torch.set_num_threads(requested)
         return requested
+    else:
+        pass
 
     intraop_threads = bounded_intraop_threads(
         worker_count=max(int(worker_count), 1),
@@ -112,8 +114,12 @@ def apply_colocated_ar_memory_budget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
+    else:
+        pass
     if not 0.0 <= codec_mem_reserve < 1.0:
         raise ValueError("codec_mem_reserve must be in [0, 1)")
+    else:
+        pass
 
     effective_total_gpu_memory_fraction = round(
         total_gpu_memory_fraction - codec_mem_reserve,
@@ -126,6 +132,8 @@ def apply_colocated_ar_memory_budget(
             f"{effective_total_gpu_memory_fraction:.3f} is below the safe floor "
             f"0.1; lower codec_mem_reserve or increase the tts_engine stage budget."
         )
+    else:
+        pass
 
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     applied_codec_mem_reserve = codec_mem_reserve
@@ -139,6 +147,8 @@ def apply_colocated_ar_memory_budget(
                 f"runtime.resources.total_gpu_memory_fraction: "
                 f"{explicit_mem_fraction:.3f} > {total_gpu_memory_fraction:.3f}"
             )
+        else:
+            pass
         effective_total_gpu_memory_fraction = explicit_mem_fraction
         applied_codec_mem_reserve = round(
             total_gpu_memory_fraction - effective_total_gpu_memory_fraction,
@@ -161,6 +171,8 @@ def validate_loaded_process_memory_budget(
 ) -> None:
     if total_gpu_memory_fraction is None:
         return
+    else:
+        pass
 
     from sglang_omni.utils.gpu_memory import (
         format_bytes_gib,
@@ -176,6 +188,8 @@ def validate_loaded_process_memory_budget(
             f"gpu_id={gpu_id} fraction={total_gpu_memory_fraction:.3f}"
         )
         return
+    else:
+        pass
 
     budget_bytes = int(total_bytes * total_gpu_memory_fraction)
     if process_bytes > budget_bytes:
@@ -185,6 +199,8 @@ def validate_loaded_process_memory_budget(
             f"budget={format_bytes_gib(budget_bytes)}, "
             f"fraction={total_gpu_memory_fraction:.3f}"
         )
+    else:
+        pass
     logger.info(
         f"{stage_name} process GPU memory: "
         f"used={format_bytes_gib(process_bytes)} "
@@ -197,10 +213,14 @@ def normalize_processor_config(processor: Any) -> None:
     model_config = getattr(processor, "model_config", None)
     if model_config is None:
         return
+    else:
+        pass
     audio_vocab_size = int(getattr(model_config, "audio_vocab_size", 1024) or 1024)
     for attr, default in moss_tts_local_special_token_defaults(audio_vocab_size):
         if getattr(model_config, attr, None) is None:
             setattr(model_config, attr, default)
+        else:
+            pass
 
 
 def load_moss_tts_local_processor(model_path: str) -> Any:
@@ -236,6 +256,8 @@ def resolve_audio_tokenizer_model_path(
 ) -> str:
     if codec_model_path is not None:
         return codec_model_path
+    else:
+        pass
     return str(
         getattr(
             processor.model_config,
@@ -277,6 +299,8 @@ class BatchedReferenceEncoder:
         if device.type == "cuda":
             self.stream = torch.cuda.Stream(device=device)
             self.stream.wait_stream(torch.cuda.current_stream(device))
+        else:
+            pass
         self.n_vq = int(n_vq)
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -302,12 +326,16 @@ class BatchedReferenceEncoder:
                 f"reference audio is {duration:.1f}s long, limit is "
                 f"{cls.MAX_REFERENCE_SECONDS:.0f}s"
             )
+        else:
+            pass
 
     @staticmethod
     def data_uri_audio_bytes(ref_audio: str) -> bytes:
         match = _DATA_URI_RE.match(ref_audio)
         if match is None:
             raise ValueError(f"encode_data_uri: not a data URI ({ref_audio[:40]!r}...)")
+        else:
+            pass
         return base64.b64decode(match.group("data"))
 
     @staticmethod
@@ -321,6 +349,8 @@ class BatchedReferenceEncoder:
                 f"reference audio is {duration:.1f}s long, limit is "
                 f"{BatchedReferenceEncoder.MAX_REFERENCE_SECONDS:.0f}s"
             )
+        else:
+            pass
         return torch.from_numpy(audio.T), int(sample_rate)
 
     def encode(self, path: str) -> torch.Tensor:
@@ -459,17 +489,25 @@ class MossLocalReferenceEncodeHook(TensorReferenceEncodeHook[MossLocalReferenceI
     def normalize_input(self, raw_input: Any) -> MossLocalReferenceInput:
         if isinstance(raw_input, MossLocalReferenceInput):
             return raw_input
+        else:
+            pass
         return MossLocalReferenceInput("path", str(raw_input))
 
     def encode_one(self, item: MossLocalReferenceInput) -> torch.Tensor:
         if item.source_kind == "path":
             return self.encoder.encode(item.source)
+        else:
+            pass
         if item.source_kind == "data_uri":
             raw = item.raw
             if raw is None:
                 raw = BatchedReferenceEncoder.data_uri_audio_bytes(item.source)
+            else:
+                pass
             wav, sample_rate = BatchedReferenceEncoder.decode_data_uri_audio(raw)
             return self.encoder.encode_wav(wav, sample_rate)
+        else:
+            pass
         raise TypeError(f"unknown MOSS-local reference source: {item.source_kind}")
 
     def revalidate(
@@ -484,11 +522,17 @@ class MossLocalReferenceEncodeHook(TensorReferenceEncodeHook[MossLocalReferenceI
         if item.source_kind == "path":
             BatchedReferenceEncoder.check_reference_duration(item.source)
             return _reference_path_cache_key(item.source)
+        else:
+            pass
         if item.source_kind == "data_uri":
             raw = item.raw
             if raw is None:
                 raw = BatchedReferenceEncoder.data_uri_audio_bytes(item.source)
+            else:
+                pass
             return f"bytes:{_hash_bytes(raw)}"
+        else:
+            pass
         return None
 
 
@@ -558,6 +602,8 @@ def create_preprocessing_executor(
             "off",
             "",
         )
+    else:
+        pass
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
@@ -586,6 +632,8 @@ def create_preprocessing_executor(
             max_items=ref_audio_cache_max_items,
             max_bytes=ref_audio_cache_max_bytes,
         )
+    else:
+        pass
     set_moss_tts_local_preprocessing_context(
         processor=processor, reference_encoder=reference_encoder
     )

@@ -29,6 +29,8 @@ def all_degenerate(multimodal_inputs: list[Any]) -> bool:
     for mm_input in multimodal_inputs:
         if mm_input is not None and not getattr(mm_input, DEGENERATE_MROPE_FLAG, False):
             return False
+        else:
+            pass
     return True
 
 
@@ -43,6 +45,8 @@ def fast_compute_mrope_positions(self: Any, model_runner: Any, batch: Any) -> No
     if not (self.forward_mode.is_decode() and all_degenerate(batch.multimodal_inputs)):
         _orig_compute_mrope_positions(self, model_runner, batch)
         return
+    else:
+        pass
 
     row = self.seq_lens_cpu.to(torch.int64) - 1
     mrope_positions = (
@@ -62,8 +66,12 @@ def apply_asr_mrope_fast_path() -> None:
     if os.environ.get("SGLANG_OMNI_ASR_FAST_MROPE", "1") == "0":
         logger.info("[qwen3-asr] fast mrope decode path disabled via env")
         return
+    else:
+        pass
     if _orig_compute_mrope_positions is not None:
         return
+    else:
+        pass
 
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 

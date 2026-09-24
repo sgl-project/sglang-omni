@@ -44,6 +44,8 @@ class Aggregator(nn.Module):
         )
         if execution_config.attn_backend is not None:
             kwargs["attn_backend"] = execution_config.attn_backend
+        else:
+            pass
         norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
@@ -87,6 +89,10 @@ class Aggregator(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(_basic_init)
 
@@ -119,6 +125,8 @@ class Aggregator(nn.Module):
         if mask is not None:
             mask_pad = mask.clone().detach()[:, :1]
             mask = torch.cat([mask_pad, mask], dim=-1)
+        else:
+            pass
         for block in self.blocks:
             x = block(x, mask, rope)  # (N, T, D)
         x = self.final_layer(x)  # (N, T, patch_size ** 2 * out_channels)

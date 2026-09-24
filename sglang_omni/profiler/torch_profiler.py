@@ -12,6 +12,8 @@ from sglang_omni.platforms import current_platform
 
 if current_platform.is_npu():
     import torch_npu
+else:
+    pass
 
 from .base_profiler import ProfilerBase
 
@@ -55,6 +57,8 @@ class TorchProfiler(ProfilerBase):
             if cls.profiler is not None:
                 if run_id is not None and cls.active_run_id == run_id:
                     return f"{cls.trace_template}_rank{rank}.trace.json.gz"
+                else:
+                    pass
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
                     rank,
@@ -70,6 +74,8 @@ class TorchProfiler(ProfilerBase):
                 cls.profiler = None
                 cls.active_run_id = None
                 cls.trace_template = ""
+            else:
+                pass
             rank = cls.get_rank()
             trace_path_template = os.path.abspath(trace_path_template)
             cls.trace_template = trace_path_template
@@ -122,6 +128,8 @@ class TorchProfiler(ProfilerBase):
         with cls.lock:
             if cls.profiler is None:
                 return None
+            else:
+                pass
             rank = cls.get_rank()
             active = cls.active_run_id
             if run_id is not None and active is not None and (active != run_id):
@@ -132,6 +140,8 @@ class TorchProfiler(ProfilerBase):
                     active,
                 )
                 return None
+            else:
+                pass
             base_path = f"{cls.trace_template}_rank{rank}"
             json_path = f"{base_path}.trace.json"
             gz_path = f"{json_path}.gz"
@@ -166,6 +176,8 @@ class TorchProfiler(ProfilerBase):
     def step(cls):
         if cls.profiler is not None:
             cls.profiler.step()
+        else:
+            pass
 
     @classmethod
     def is_active(cls) -> bool:
@@ -186,6 +198,8 @@ class TorchNPUProfiler(TorchProfiler):
             if cls.profiler is not None:
                 if run_id is not None and cls.active_run_id == run_id:
                     return trace_path_template
+                else:
+                    pass
                 rank = cls.get_rank()
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
@@ -202,6 +216,8 @@ class TorchNPUProfiler(TorchProfiler):
                 cls.profiler = None
                 cls.active_run_id = None
                 cls.trace_template = ""
+            else:
+                pass
             cls.active_run_id = run_id
             cls.trace_template = trace_path_template
             os.makedirs(trace_path_template, exist_ok=True)
@@ -231,6 +247,8 @@ class TorchNPUProfiler(TorchProfiler):
         with cls.lock:
             if cls.profiler is None:
                 return None
+            else:
+                pass
             rank = cls.get_rank()
             active = cls.active_run_id
             trace_path = cls.trace_template
@@ -242,6 +260,8 @@ class TorchNPUProfiler(TorchProfiler):
                     active,
                 )
                 return None
+            else:
+                pass
             profiler = cls.profiler
             try:
                 profiler.stop()

@@ -134,6 +134,8 @@ class SessionInbox(queue.Queue[IncomingMessage]):
     ) -> None:
         if message.type == "new_request":
             self.register(message)
+        else:
+            pass
         super().put(message, block, timeout)
 
 
@@ -209,6 +211,8 @@ class SessionScheduler(SimpleScheduler):
                         cursor.runnable_sequence += 1
                     if cursor.runnable_sequence == cursor.next_sequence:
                         self.cursors_by_session.pop(arrival.session_identity)
+                    else:
+                        pass
                     self.operation_finished.notify_all()
 
     def consume_if_aborted(self, request_id: str) -> bool:
@@ -266,6 +270,8 @@ class SessionScheduler(SimpleScheduler):
                 if session is not None:
                     with session.lock:
                         self.close_session(session_identity, session)
+                else:
+                    pass
                 self.finish_operation(payload.request_id)
 
     def cancel_operation(self, request_id: str) -> None:
@@ -273,6 +279,8 @@ class SessionScheduler(SimpleScheduler):
             cancel_event = self.append_cancel_events.get(request_id)
             if cancel_event is not None:
                 cancel_event.set()
+            else:
+                pass
 
     def release_sessions_on_scheduler_stop(self) -> None:
         """Release every session still open when this stage's scheduler stops.
@@ -296,8 +304,12 @@ class SessionScheduler(SimpleScheduler):
                     errors.append(exc)
                 finally:
                     session.lock.release()
+            else:
+                pass
         if errors:
             raise RuntimeError("session shutdown cleanup failed") from errors[0]
+        else:
+            pass
 
     def close_session(
         self, session_identity: SessionIdentity, session: StageSession
@@ -312,6 +324,8 @@ class SessionScheduler(SimpleScheduler):
         if session.is_open:
             self.session_hooks.close(session_identity)
             session.is_open = False
+        else:
+            pass
         with self.session_table_lock:
             self.open_sessions.pop(session_identity, None)
 
@@ -329,6 +343,8 @@ class SessionScheduler(SimpleScheduler):
                 > self.max_state_bytes
             ):
                 raise QueueFullError()
+            else:
+                pass
 
     def open_session(
         self, session_identity: SessionIdentity, request: OmniRequest
@@ -353,6 +369,8 @@ class SessionScheduler(SimpleScheduler):
             self.update_usage(session, session_identity)
             if self.is_shutting_down:
                 raise RuntimeError("session scheduler is stopping")
+            else:
+                pass
         except BaseException:
             self.close_session(session_identity, session)
             raise
@@ -395,6 +413,8 @@ class SessionScheduler(SimpleScheduler):
                             self.append_cancel_events[payload.request_id] = cancel_event
                         if self.is_aborted(payload.request_id):
                             cancel_event.set()
+                        else:
+                            pass
 
                         def emit_chunk(chunk: TimedChunk) -> None:
                             if not cancel_event.is_set():
@@ -406,6 +426,8 @@ class SessionScheduler(SimpleScheduler):
                                         metadata={"modality": chunk.modality},
                                     )
                                 )
+                            else:
+                                pass
 
                         try:
                             updated_payload = self.session_hooks.append(

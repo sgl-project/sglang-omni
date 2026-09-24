@@ -41,6 +41,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
+        else:
+            pass
         self.token_hop_len = hop
         self.ar_followup_flush_tokens = hop
         self.outbox: Any | None = None
@@ -124,10 +126,14 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 schedule_batch,
                 requests,
             )
+        else:
+            pass
         if len(requests) != 1:
             raise RuntimeError(
                 "Fun-CosyVoice3 Torch MPS currently requires " "max_running_requests=1"
             )
+        else:
+            pass
 
         self.apply_repetition_penalty(logits_output, requests)
         self.apply_codec_suppress_tokens(logits_output, requests)
@@ -154,14 +160,20 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 device_type="mps",
             )
             sampling_info.sampling_seed = None
+        else:
+            pass
 
         wants_rollout_logprob = any(sr.data.return_logprob for sr in requests)
         if wants_rollout_logprob:
             self.enable_sampler_logprobs(forward_batch, len(requests))
+        else:
+            pass
         try:
             with rng_context:
                 if installed_seeds is not None:
                     torch.manual_seed(step_seed)
+                else:
+                    pass
                 # Note (yexiaodong): Scope eager mode to sampling because
                 # SGLang compiles the repetition helper independently.
                 with torch.compiler.set_stance("force_eager"):
@@ -184,11 +196,15 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     "Sampler did not populate next_token_logprobs when "
                     "return_logprob is enabled"
                 )
+            else:
+                pass
             self.record_rollout_logprobs(
                 next_token_logprobs,
                 next_token_ids,
                 requests,
             )
+        else:
+            pass
         return next_token_ids
 
     def apply_ras_fallback(
@@ -216,6 +232,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             # Note (yexiaodong): MPS sampling is single-request; clear state
             # here because aborts can bypass the normal finish hook.
             self.cosyvoice3_recent_tokens.clear()
+        else:
+            pass
         recent = self.cosyvoice3_recent_tokens.setdefault(request_id, [])
         token_ids = next_token_ids.reshape(-1)
         token_id = int(token_ids[0].item())
@@ -227,6 +245,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     raise RuntimeError(
                         "CosyVoice3 Torch/MPS RAS requires sampled probabilities"
                     )
+                else:
+                    pass
                 fallback_probs = probs[0].to(dtype=torch.float32).clone()
                 fallback_probs[token_id] = 0.0
                 fallback_probs.clamp_(min=0.0)
@@ -242,6 +262,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     next_token_ids = next_token_ids.clone()
                     next_token_ids[0] = fallback.to(dtype=next_token_ids.dtype)
                     token_id = int(fallback[0].item())
+                else:
+                    pass
                 if (
                     fallback is not None
                     and logits_output.next_token_logprobs is not None
@@ -254,18 +276,30 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                     logits_output.next_token_logprobs = fallback_logprobs.gather(
                         1, next_token_ids.long().view(-1, 1)
                     ).view(-1)
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         if 0 <= token_id < VOCAB_SIZE:
             recent.append(token_id)
             del recent[:-_COSYVOICE3_RAS_WINDOW_SIZE]
+        else:
+            pass
         return next_token_ids
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
             self.flush_code_chunks(request_id, req_data, force=True)
+        else:
+            pass
         recent_tokens = getattr(self, "cosyvoice3_recent_tokens", None)
         if recent_tokens is not None:
             recent_tokens.pop(str(request_id), None)
+        else:
+            pass
 
     def collect_tokens(
         self,
@@ -276,15 +310,21 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> None:
         if result.next_token_ids is None:
             return
+        else:
+            pass
         token_ids = result.next_token_ids
         if token_ids.ndim != 1:
             token_ids = token_ids.reshape(-1)
+        else:
+            pass
         # note (guozhihao-224): one batched D2H instead of per-request .item() syncs.
         token_ids_cpu = token_ids.tolist()
         for idx, sched_req in enumerate(requests):
             token_id = int(token_ids_cpu[idx])
             if token_id >= VOCAB_SIZE:
                 continue
+            else:
+                pass
             token = torch.tensor([token_id], dtype=torch.long)
             sched_req.data.output_codes.append(token)
             self.queue_or_emit_code_chunk(sched_req, token)
@@ -297,8 +337,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         data = sched_req.data
         if self.outbox is None or data.stream_metadata is None:
             return
+        else:
+            pass
         if not accept_cosyvoice3_stream_token(data, token):
             return
+        else:
+            pass
         data.stream_code_buffer.append(token)
         data.stream_code_seen += 1
         if int(data.stream_code_next_flush) <= 0:
@@ -308,8 +352,12 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 prompt_token_len(data.flow_prompt_speech_token),
                 hop_len=self.token_hop_len,
             )
+        else:
+            pass
         if data.stream_code_seen >= data.stream_code_next_flush:
             self.flush_code_chunks(sched_req.request_id, data, force=False)
+        else:
+            pass
 
     def flush_code_chunks(
         self,
@@ -321,12 +369,16 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         pending = data.stream_code_buffer
         if not pending:
             return
+        else:
+            pass
         payload = pending[0] if len(pending) == 1 else torch.cat(pending, dim=0)
         pending.clear()
         if not force:
             data.stream_code_next_flush = (
                 int(data.stream_code_seen) + self.ar_followup_flush_tokens
             )
+        else:
+            pass
         self.emit_code_chunk(request_id, data, payload)
 
     def emit_code_chunk(
@@ -337,9 +389,13 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     ) -> None:
         if self.outbox is None:
             return
+        else:
+            pass
         metadata = data.stream_metadata
         if metadata is None:
             return
+        else:
+            pass
         chunk_metadata = dict(metadata)
         # note (guozhihao-224): first chunk carries Flow prompt tensors so
         # vocoder can start before the AR payload arrives.
@@ -348,6 +404,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             chunk_metadata["flow_prompt_speech_feat"] = data.flow_prompt_speech_feat
             chunk_metadata["flow_embedding"] = data.flow_embedding
             data.stream_prompt_sent = True
+        else:
+            pass
         self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
@@ -374,6 +432,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
                 raise RuntimeError(
                     "Fun-CosyVoice3 prefill requires prompt_input_embeds"
                 )
+            else:
+                pass
             pieces.append(prompt_embeds[prefix_len : prefix_len + req_len])
         return torch.cat(pieces, dim=0).to(
             device=forward_batch.input_ids.device,
@@ -392,6 +452,8 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         positions = forward_batch.positions
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        else:
+            pass
         input_embeds = input_embeds.to(
             device=forward_batch.input_ids.device,
             dtype=model_dtype,
@@ -429,6 +491,8 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
+        else:
+            pass
         self.token_hop_len = hop
 
     def set_stream_outbox(self, outbox: Any) -> None:
@@ -438,16 +502,24 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
             self.flush_code_chunks(request_id, req_data, force=True)
+        else:
+            pass
 
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1 or batch.has_grammar:
             return False
+        else:
+            pass
         previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in batch.reqs]
             if previous.launch.mode != "decode" or previous_ids != current_ids:
                 return False
+            else:
+                pass
+        else:
+            pass
         req = batch.reqs[0]
         sampling_params = req.sampling_params
         return (
@@ -466,6 +538,8 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         token_ids = result.next_token_ids
         if token_ids is None:
             return
+        else:
+            pass
         token_ids = token_ids.reshape(-1).tolist()
         requests = scheduler_output.requests
         if len(token_ids) != len(requests):
@@ -473,21 +547,31 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 "Fun-CosyVoice3 MLX sampled-token row count does not match "
                 f"the scheduler batch ({len(token_ids)} != {len(requests)})"
             )
+        else:
+            pass
         for sched_req, token_id in zip(requests, token_ids, strict=True):
             if sched_req.request_id in self.resolve_skip_rids:
                 continue
+            else:
+                pass
             token_id = int(token_id)
             if 0 <= token_id < VOCAB_SIZE:
                 token = torch.tensor([token_id], dtype=torch.long)
                 sched_req.data.output_codes.append(token)
                 self.queue_or_emit_code_chunk(sched_req, token)
+            else:
+                pass
 
     def queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
         data = sched_req.data
         if getattr(self, "outbox", None) is None or data.stream_metadata is None:
             return
+        else:
+            pass
         if not accept_cosyvoice3_stream_token(data, token):
             return
+        else:
+            pass
         data.stream_code_buffer.append(token)
         data.stream_code_seen += 1
         if int(data.stream_code_next_flush) <= 0:
@@ -495,31 +579,43 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 prompt_token_len(data.flow_prompt_speech_token),
                 hop_len=getattr(self, "token_hop_len", TOKEN_HOP_LEN),
             )
+        else:
+            pass
         if data.stream_code_seen >= data.stream_code_next_flush:
             self.flush_code_chunks(sched_req.request_id, data, force=False)
+        else:
+            pass
 
     def flush_code_chunks(self, request_id: str, data: Any, *, force: bool) -> None:
         pending = data.stream_code_buffer
         if not pending:
             return
+        else:
+            pass
         payload = pending[0] if len(pending) == 1 else torch.cat(pending, dim=0)
         pending.clear()
         if not force:
             data.stream_code_next_flush = int(data.stream_code_seen) + getattr(
                 self, "token_hop_len", TOKEN_HOP_LEN
             )
+        else:
+            pass
         self.emit_code_chunk(request_id, data, payload)
 
     def emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
         outbox = getattr(self, "outbox", None)
         if outbox is None or data.stream_metadata is None:
             return
+        else:
+            pass
         metadata = dict(data.stream_metadata)
         if not data.stream_prompt_sent:
             metadata["flow_prompt_speech_token"] = data.flow_prompt_speech_token
             metadata["flow_prompt_speech_feat"] = data.flow_prompt_speech_feat
             metadata["flow_embedding"] = data.flow_embedding
             data.stream_prompt_sent = True
+        else:
+            pass
         outbox.put(
             OutgoingMessage(
                 request_id=request_id,

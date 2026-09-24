@@ -122,12 +122,16 @@ def pop_prepared_moss_tts_local_request(
     marker = data.get(_MOSS_TTS_LOCAL_PREPARED_MARKER)
     if marker is None:
         return None
+    else:
+        pass
     prepared = _QUEUE.pop(str(marker))
     if prepared is None:
         raise RuntimeError(
             "MOSS-TTS Local preprocessing state is missing for prepared payload "
             f"{marker!r}; the AR scheduler must not rebuild it"
         )
+    else:
+        pass
     return prepared
 
 
@@ -138,6 +142,8 @@ def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
 
     text, references = normalize_moss_tts_inputs(inputs)
     ref_audio, ref_text = resolve_moss_reference(references, tts_params)
@@ -146,6 +152,8 @@ def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
     )
     if language is not None and language.casefold() == "auto":
         language = None
+    else:
+        pass
     instructions = resolve_optional_text(
         tts_params.get("instructions")
         or tts_params.get("instruct")
@@ -193,6 +201,8 @@ def build_generation_kwargs(
             f"{_MOSS_TTS_LOCAL_AUDIO_FRAME_RATE:g} audio frames/s), "
             f"got {max_new_tokens}"
         )
+    else:
+        pass
 
     generation_kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
@@ -208,12 +218,18 @@ def build_generation_kwargs(
     if "temperature" in explicit_fields and params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
+    else:
+        pass
     if "top_p" in explicit_fields and params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
+    else:
+        pass
     if "top_k" in explicit_fields and params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
+    else:
+        pass
     if (
         "repetition_penalty" in explicit_fields
         and params.get("repetition_penalty") is not None
@@ -221,6 +237,8 @@ def build_generation_kwargs(
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )
+    else:
+        pass
 
     for source in (tts_params, params):
         for field_name in (
@@ -237,12 +255,18 @@ def build_generation_kwargs(
                 generation_kwargs[field_name] = (
                     int(value) if field_name.endswith("top_k") else float(value)
                 )
+            else:
+                pass
 
     seed = tts_params.get("seed")
     if seed is None:
         seed = params.get("seed")
+    else:
+        pass
     if seed is not None:
         generation_kwargs["seed"] = seed
+    else:
+        pass
 
     validate_moss_tts_generation_kwargs(generation_kwargs)
     return generation_kwargs
@@ -285,6 +309,8 @@ def prepare_moss_tts_local_request(
         raise ValueError(
             "MOSS-TTS Local processor must return input_ids with shape [1, T, C]"
         )
+    else:
+        pass
     prompt_rows = input_rows[0].detach().to(dtype=torch.long, device="cpu")
     input_ids_list = build_row_cache_key_ids(prompt_rows)
     return MossTTSLocalPreparedRequest(
@@ -306,6 +332,8 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
             "MOSS-TTS Local preprocessing context is not initialized; "
             "create_preprocessing_executor must register it before requests run"
         )
+    else:
+        pass
 
     try:
         prepared = prepare_moss_tts_local_request(
@@ -324,6 +352,8 @@ def preprocess_moss_tts_local_payload(payload: StagePayload) -> StagePayload:
     data = prepared.state.to_dict()
     if published:
         data[_MOSS_TTS_LOCAL_PREPARED_MARKER] = payload.request_id
+    else:
+        pass
     return StagePayload(
         request_id=payload.request_id, request=payload.request, data=data
     )
@@ -338,6 +368,8 @@ def build_moss_tts_local_stream_metadata(
     params = payload.request.params if isinstance(payload.request.params, dict) else {}
     if not params.get("stream"):
         return None
+    else:
+        pass
     metadata: dict[str, Any] = {
         "stream": True,
         "modality": "audio_codes",
@@ -347,6 +379,8 @@ def build_moss_tts_local_stream_metadata(
         metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[
             INITIAL_CODEC_CHUNK_FRAMES_PARAM
         ]
+    else:
+        pass
     return metadata
 
 
@@ -364,6 +398,8 @@ def build_sglang_moss_tts_local_request(
             "MOSS-TTS Local AR request builder requires a payload prepared by "
             "preprocess_moss_tts_local_payload"
         )
+    else:
+        pass
 
     cfg = model.config
     gen_kwargs = prepared.gen_kwargs
@@ -432,6 +468,8 @@ def apply_sglang_moss_tts_local_result(
         raise RuntimeError(
             "MOSS-TTS Local generated no audio frames. Please retry the request."
         )
+    else:
+        pass
     generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
     state.audio_codes = generated_rows[:, 1:].detach().cpu()
 

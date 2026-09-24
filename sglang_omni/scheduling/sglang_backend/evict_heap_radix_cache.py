@@ -32,6 +32,8 @@ class EvictHeapRadixCache(RadixCache):
         )
         if len(self.evict_heap) > max(1024, 4 * len(self.evictable_leaves)):
             self.evict_heap_rebuild()
+        else:
+            pass
 
     def evict_heap_rebuild(self) -> None:
         self.evict_heap = [
@@ -46,10 +48,14 @@ class EvictHeapRadixCache(RadixCache):
         super()._update_leaf_status(node)
         if not was_evictable and node in self.evictable_leaves:
             self.evict_heap_push(node)
+        else:
+            pass
 
     def evict(self, params: EvictParams) -> EvictResult:
         if self.disable:
             return EvictResult()
+        else:
+            pass
 
         start_time = time.perf_counter()
         num_tokens = params.num_tokens
@@ -60,10 +66,14 @@ class EvictHeapRadixCache(RadixCache):
 
             if x not in self.evictable_leaves:
                 continue
+            else:
+                pass
             current_priority = self.eviction_strategy.get_priority(x)
             if current_priority != priority:
                 self.evict_heap_push(x)
                 continue
+            else:
+                pass
 
             # Tree values are page-aligned copies of a kv row: page-exact segment.
             self.token_to_kv_pool_allocator.free_segment(x.value, start_pos=0)

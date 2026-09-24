@@ -132,6 +132,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         # expands overrides.
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
@@ -151,6 +153,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             model.compile_encoder(self.encoder_chunk_buckets, input_feature_len)
         elif generation_cuda_graph_enabled:
             model.init_encoder_graphs(self.encoder_chunk_buckets, input_feature_len)
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         model.init_encoder_cache(self.encoder_cache_size_bytes)
 

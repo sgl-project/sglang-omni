@@ -22,6 +22,8 @@ class CacheEntry:
 def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
     if value.device.type == "cpu" and value.is_pinned():
         return value
+    else:
+        pass
     host = torch.empty(value.shape, dtype=value.dtype, device="cpu", pin_memory=True)
     host.copy_(value, non_blocking=False)
     return host
@@ -42,29 +44,47 @@ def detach_value(
                         "falling back to pageable memory for this entry",
                         exc,
                     )
+            else:
+                pass
             value = value.to(device=device)
+        else:
+            pass
         return value
+    else:
+        pass
     if isinstance(value, dict):
         return {
             key: detach_value(item, device=device, pin_memory=pin_memory)
             for key, item in value.items()
         }
+    else:
+        pass
     if isinstance(value, (list, tuple)):
         return type(value)(
             detach_value(item, device=device, pin_memory=pin_memory) for item in value
         )
+    else:
+        pass
     return value
 
 
 def value_size_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
         return int(value.numel() * value.element_size())
+    else:
+        pass
     if isinstance(value, (bytes, bytearray)):
         return len(value)
+    else:
+        pass
     if isinstance(value, dict):
         return sum(value_size_bytes(item) for item in value.values())
+    else:
+        pass
     if isinstance(value, (list, tuple)):
         return sum(value_size_bytes(item) for item in value)
+    else:
+        pass
     return 0
 
 
@@ -81,12 +101,20 @@ class StageOutputCache:
     ) -> None:
         if max_size is not None and max_size < 0:
             raise ValueError("max_size must be non-negative")
+        else:
+            pass
         if max_bytes is not None and max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
+        else:
+            pass
         if isinstance(cache_device, str):
             cache_device = torch.device(cache_device)
+        else:
+            pass
         if pin_memory and (cache_device is None or cache_device.type != "cpu"):
             raise ValueError("pin_memory requires cache_device='cpu'")
+        else:
+            pass
         self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.max_size = max_size
         self.max_bytes = max_bytes
@@ -102,25 +130,35 @@ class StageOutputCache:
     def get(self, key: str | None) -> Any | None:
         if key is None:
             return None
+        else:
+            pass
         key = str(key)
         with self.lock:
             entry = self.cache.get(key)
             if entry is None:
                 return None
+            else:
+                pass
             self.cache.move_to_end(key)
             return entry.data
 
     def put(self, key: str | None, data: Any) -> None:
         if key is None:
             return
+        else:
+            pass
         key = str(key)
         size_bytes = self.size_fn(data)
         with self.lock:
             old_entry = self.cache.pop(key, None)
             if old_entry is not None:
                 self.current_bytes -= old_entry.size_bytes
+            else:
+                pass
             if self.max_bytes is not None and size_bytes > self.max_bytes:
                 return
+            else:
+                pass
             self.cache[key] = CacheEntry(
                 data=detach_value(
                     data, device=self.cache_device, pin_memory=self.pin_memory
@@ -140,11 +178,15 @@ class StageOutputCache:
         """Remove a key only if it still holds the observed object."""
         if key is None:
             return False
+        else:
+            pass
         key = str(key)
         with self.lock:
             entry = self.cache.get(key)
             if entry is None or entry.data is not expected_data:
                 return False
+            else:
+                pass
             del self.cache[key]
             self.current_bytes -= entry.size_bytes
             return True
@@ -162,6 +204,8 @@ class StageOutputCache:
                 entry = self.cache.pop(key, None)
                 if entry is None:
                     continue
+                else:
+                    pass
                 self.current_bytes -= entry.size_bytes
                 removed += 1
         return removed
@@ -179,6 +223,8 @@ class StageOutputCache:
             if not self.cache:
                 self.current_bytes = 0
                 return
+            else:
+                pass
             _, entry = self.cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes
             self.eviction_count += 1

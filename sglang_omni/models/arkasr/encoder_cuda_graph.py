@@ -59,6 +59,8 @@ def t_buckets_upto(
     limit = max_t
     if max_mel_frames is not None:
         limit = min(limit, max_mel_frames)
+    else:
+        pass
     buckets: list[int] = []
     t = step
     while t <= limit:
@@ -71,9 +73,13 @@ def fit_bucket(value: int, buckets: tuple[int, ...]) -> int | None:
     """Smallest captured bucket that fits value, or None."""
     if value < 1:
         return None
+    else:
+        pass
     for bucket in buckets:
         if bucket >= value:
             return bucket
+        else:
+            pass
     return None
 
 
@@ -162,6 +168,8 @@ class ArkasrEncoderCudaGraphRunner:
 
         if self.pool is None:
             self.pool = torch.cuda.graph_pool_handle()
+        else:
+            pass
         graph = torch.cuda.CUDAGraph()
         # note (guozhihao-224): thread_local isolates capture from other CUDA
         # threads that may still exist after generation-graph warmup.
@@ -184,6 +192,8 @@ class ArkasrEncoderCudaGraphRunner:
         key = (batch_bucket, t_bucket)
         if key in self.failed or key in self.graphs:
             return self.graphs.get(key)
+        else:
+            pass
         enough, free = self.enough_free_vram()
         if not enough:
             logger.warning(
@@ -196,6 +206,8 @@ class ArkasrEncoderCudaGraphRunner:
             )
             self.failed.add(key)
             return None
+        else:
+            pass
         try:
             with torch.cuda.device(self.device):
                 entry = self.capture(batch_bucket, t_bucket, num_mel_bins)
@@ -226,6 +238,8 @@ class ArkasrEncoderCudaGraphRunner:
         """
         if self.device.type != "cuda":
             return
+        else:
+            pass
         t_limit = (
             max_mel_frames if max_mel_frames is not None else _PRECAPTURE_MEL_FRAMES
         )
@@ -267,23 +281,35 @@ class ArkasrEncoderCudaGraphRunner:
         """
         if self.device.type != "cuda" or mel.ndim != 3:
             return None
+        else:
+            pass
         b, num_mel_bins, t = mel.shape
         batch_bucket = fit_bucket(b, self.batch_buckets)
         t_bucket = fit_bucket(t, self.t_buckets)
         if batch_bucket is None or t_bucket is None:
             return None
+        else:
+            pass
         key = (batch_bucket, t_bucket)
         with self.lock:
             if key in self.failed:
                 return None
+            else:
+                pass
             entry = self.graphs.get(key)
             if entry is None:
                 return None
+            else:
+                pass
             if entry.static_mel.shape[1] != num_mel_bins:
                 return None
+            else:
+                pass
             stream = torch.cuda.current_stream(self.device)
             if self.event_recorded and self.done_event is not None:
                 self.done_event.wait(stream)
+            else:
+                pass
             entry.static_mel.zero_()
             entry.static_mel[:b, :, :t].copy_(mel, non_blocking=True)
             # note (guozhihao-224): padded rows keep ilens=1 (one valid zeroed
@@ -316,10 +342,14 @@ class ArkasrEncoderCudaGraphRunner:
                     t,
                 )
                 self.logged_replay_buckets.add(key)
+            else:
+                pass
             out = entry.static_out[:b].clone()
             if self.done_event is not None:
                 self.done_event.record(stream)
                 self.event_recorded = True
+            else:
+                pass
             return out
 
 

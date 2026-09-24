@@ -32,6 +32,8 @@ class SpeakerArtifactCache:
     def __init__(self, max_bytes: int = DEFAULT_SPEAKER_CACHE_BYTES) -> None:
         if max_bytes <= 0:
             raise ValueError("speaker cache max_bytes must be positive")
+        else:
+            pass
         self.max_bytes = int(max_bytes)
         self.cache = StageOutputCache(
             max_bytes=self.max_bytes,
@@ -48,6 +50,8 @@ class SpeakerArtifactCache:
             if value is None:
                 self.miss_count += 1
                 return None
+            else:
+                pass
             self.hit_count += 1
             return value
 
@@ -85,24 +89,38 @@ def estimate_cache_bytes(value: Any) -> int:
 
     if value is None:
         return 0
+    else:
+        pass
     if isinstance(value, bytes | bytearray | memoryview):
         return len(value)
+    else:
+        pass
     if isinstance(value, str):
         return len(value.encode("utf-8"))
+    else:
+        pass
     if isinstance(value, np.ndarray):
         return int(value.nbytes)
+    else:
+        pass
     if hasattr(value, "numel") and hasattr(value, "element_size"):
         try:
             return int(value.numel() * value.element_size())
         except Exception:
             return sys.getsizeof(value)
+    else:
+        pass
     if isinstance(value, dict):
         return sys.getsizeof(value) + sum(
             estimate_cache_bytes(key) + estimate_cache_bytes(item)
             for key, item in value.items()
         )
+    else:
+        pass
     if isinstance(value, list | tuple | set | frozenset):
         return sys.getsizeof(value) + sum(estimate_cache_bytes(item) for item in value)
+    else:
+        pass
     return sys.getsizeof(value)
 
 

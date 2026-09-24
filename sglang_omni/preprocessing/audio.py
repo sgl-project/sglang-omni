@@ -27,6 +27,8 @@ def decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         audio_stream = next((s for s in container.streams if s.type == "audio"), None)
         if audio_stream is None:
             raise ValueError("No audio stream found in data")
+        else:
+            pass
 
         sample_rate = audio_stream.rate
         frames = []
@@ -36,12 +38,16 @@ def decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
                 # Planar formats (fltp, s16p, etc.): shape is (channels, samples)
                 # Average channels to mono
                 arr = arr.mean(axis=0)
+            else:
+                pass
             frames.append(arr.flatten().astype(np.float32))
     finally:
         container.close()
 
     if not frames:
         raise ValueError("No audio frames decoded")
+    else:
+        pass
 
     audio = np.concatenate(frames)
     # Normalize integer formats to [-1, 1] float range
@@ -49,6 +55,10 @@ def decode_audio_bytes_av(data: bytes) -> tuple[np.ndarray, int]:
         peak = max(abs(audio.max()), abs(audio.min()))
         if peak > 0:
             audio = audio / peak
+        else:
+            pass
+    else:
+        pass
     return audio, int(sample_rate)
 
 
@@ -56,11 +66,15 @@ def parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int
     """Parse PCM/IEEE-float WAV from bytes without external deps."""
     if len(data) < 12:
         raise ValueError(f"Invalid WAV header: {source}")
+    else:
+        pass
 
     header = data[:12]
     riff, _, wave = struct.unpack("<4sI4s", header)
     if riff != b"RIFF" or wave != b"WAVE":
         raise ValueError(f"Not a RIFF/WAVE file: {source}")
+    else:
+        pass
 
     fmt_tag = None
     channels = None
@@ -72,29 +86,43 @@ def parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int
     while offset < len(data):
         if offset + 8 > len(data):
             break
+        else:
+            pass
         chunk_header = data[offset : offset + 8]
         chunk_id, chunk_size = struct.unpack("<4sI", chunk_header)
         offset += 8
 
         if offset + chunk_size > len(data):
             break
+        else:
+            pass
         chunk_data = data[offset : offset + chunk_size]
         offset += chunk_size
         if chunk_size % 2 == 1:
             offset += 1
+        else:
+            pass
 
         if chunk_id == b"fmt ":
             if len(chunk_data) >= 16:
                 fmt_tag, channels, sample_rate, _, _, bits_per_sample = struct.unpack(
                     "<HHIIHH", chunk_data[:16]
                 )
+            else:
+                pass
         elif chunk_id == b"data":
             data_bytes = chunk_data
+        else:
+            pass
 
     if fmt_tag is None or sample_rate is None or bits_per_sample is None:
         raise ValueError(f"Missing fmt chunk in WAV: {source}")
+    else:
+        pass
     if not data_bytes:
         raise ValueError(f"Missing data chunk in WAV: {source}")
+    else:
+        pass
 
     if fmt_tag == 3:  # IEEE float
         if bits_per_sample == 32:
@@ -120,6 +148,8 @@ def parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int
 
     if channels and channels > 1:
         audio = audio.reshape(-1, channels).mean(axis=1)
+    else:
+        pass
 
     return audio.astype(np.float32, copy=False), int(sample_rate)
 
@@ -127,8 +157,12 @@ def parse_wav_bytes(data: bytes, source: str = "bytes") -> tuple[np.ndarray, int
 def resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     if orig_sr == target_sr:
         return audio.astype(np.float32, copy=False)
+    else:
+        pass
     if audio.size == 0:
         return audio.astype(np.float32, copy=False)
+    else:
+        pass
     duration = audio.shape[0] / float(orig_sr)
     new_len = max(int(round(duration * target_sr)), 1)
     old_idx = np.arange(audio.shape[0], dtype=np.float64)
@@ -208,6 +242,8 @@ async def ensure_audio_list_async(
     """
     if audios is None:
         return []
+    else:
+        pass
     items = audios if isinstance(audios, list) else [audios]
 
     # Import here to avoid circular dependency
@@ -215,6 +251,8 @@ async def ensure_audio_list_async(
         from .resource_connector import get_global_resource_connector
 
         resource_connector = get_global_resource_connector()
+    else:
+        pass
 
     # Collect coroutines for URL items
     coroutines: list[asyncio.Task[tuple[npt.NDArray, float]] | None] = []
@@ -246,6 +284,8 @@ async def ensure_audio_list_async(
         # Fill in the results at the correct indices (extract audio array, ignore sample rate)
         for url_idx, (audio, _) in zip(url_indices, results):
             normalized[url_idx] = audio
+    else:
+        pass
 
     return normalized
 
@@ -260,6 +300,8 @@ def build_audio_mm_inputs(hf_inputs: dict[str, Any]) -> dict[str, Any]:
         audio_feature_lengths = torch.sum(feature_attention_mask, dim=1).to(
             dtype=torch.long
         )
+    else:
+        pass
     return {
         "input_features": hf_inputs.get("input_features"),
         "feature_attention_mask": feature_attention_mask,

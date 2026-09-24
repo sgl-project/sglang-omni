@@ -99,6 +99,8 @@ def text_hidden_size(model: Any) -> int:
     hidden_size = getattr(text_config, "hidden_size", None)
     if hidden_size is None:
         raise RuntimeError("Qwen3-ASR config does not expose text hidden_size")
+    else:
+        pass
     return int(hidden_size)
 
 
@@ -158,6 +160,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         with self.lifecycle_lock:
             if self.closed:
                 return
+            else:
+                pass
             self.closed = True
             self.queue.put(_SHUTDOWN)
         self.thread.join(timeout=5)
@@ -170,6 +174,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         with self.lifecycle_lock:
             if self.closed:
                 raise RuntimeError("Qwen3-ASR pre-LM encoder service is closed")
+            else:
+                pass
             self.queue.put(
                 QueueEntry(
                     item=item,
@@ -185,10 +191,14 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             raise RuntimeError(
                 "Qwen3-ASR pre-LM encode requires the item's num_audio_tokens"
             )
+        else:
+            pass
         key = self.cache_key(item)
 
         if key is None:
             return self.count_failed(self.submit(item))
+        else:
+            pass
 
         cached = self.lookup_cached_embedding(
             getattr(item, "audio_fingerprint", None), expected_tokens
@@ -198,6 +208,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             done: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
             done.set_result(cached)
             return done
+        else:
+            pass
 
         follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
@@ -225,6 +237,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             )
             completed.set_result(cached)
             return completed
+        else:
+            pass
         if leader:
             future.add_done_callback(
                 lambda done, cache_key=key: self.clear_inflight(cache_key, done)
@@ -235,8 +249,12 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             except Exception as exc:
                 if not future.done():
                     future.set_exception(exc)
+                else:
+                    pass
                 raise
             return future
+        else:
+            pass
 
         item.feature = None
         completion: concurrent.futures.Future[torch.Tensor] = (
@@ -251,6 +269,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                         f"Qwen3-ASR pre-LM encode leader for {key} returned an "
                         "invalid embedding"
                     )
+                else:
+                    pass
                 self.attach_embedding(item, embedding)
                 completion.set_result(embedding)
             except Exception as exc:
@@ -278,6 +298,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             if failed:
                 with self.lock:
                     self.failed += 1
+            else:
+                pass
 
         future.add_done_callback(finish)
         return future
@@ -290,6 +312,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         with self.lock:
             if self.inflight.get(key) is future:
                 del self.inflight[key]
+            else:
+                pass
 
     def lookup_cached_embedding(
         self,
@@ -301,10 +325,14 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         cached = self.cache.get(key)
         if cached is None:
             return None
+        else:
+            pass
         if self.is_valid(cached, expected_tokens):
             with self.lock:
                 self.hits += 1
             return cached
+        else:
+            pass
         logger.warning(
             "Qwen3-ASR pre-LM cache entry %s failed validation "
             "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
@@ -345,6 +373,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
     def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
         if audio_fingerprint is None:
             return None
+        else:
+            pass
         return f"{self.namespace}:{audio_fingerprint}"
 
     def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
@@ -365,6 +395,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             # later batch while LM reads are still queued.
             device_module = torch.get_device_module(embedding.device)
             embedding.record_stream(device_module.default_stream(embedding.device))
+        else:
+            pass
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -380,6 +412,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         first = self.queue.get()
         if first is _SHUTDOWN:
             return [], True
+        else:
+            pass
         batch = [cast(QueueEntry[Any], first)]
         deadline = time.monotonic() + self.max_batch_wait_s
         shutdown = False
@@ -396,6 +430,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             if queued is _SHUTDOWN:
                 shutdown = True
                 break
+            else:
+                pass
             batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
@@ -426,6 +462,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 raise RuntimeError(
                     "Qwen3-ASR pre-LM encode item is missing its audio token count"
                 )
+            else:
+                pass
             token_counts.append(expected)
         # note (luojiaxuan): get_audio_feature feeds the tower one packed
         # frame stream (per-item lengths via feature_lens), so
@@ -433,6 +471,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         # unit batch dim before the row-count check splits per item.
         if embedding.dim() == 3 and embedding.shape[0] == 1:
             embedding = embedding.squeeze(0)
+        else:
+            pass
         if (
             embedding.dim() != 2
             or embedding.shape[0] != sum(token_counts)
@@ -444,12 +484,16 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 f"({embedding.dtype}) != expected rows "
                 f"{sum(token_counts)}x{self.hidden_size} ({self.dtype})"
             )
+        else:
+            pass
         parts = torch.split(embedding, token_counts, dim=0)
         return [part.clone() for part in parts]
 
     def synchronize_batch(self) -> None:
         if self.stream is not None:
             self.stream.synchronize()
+        else:
+            pass
 
     def cache_embedding(
         self,
@@ -461,6 +505,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         key = self.cache_key(item)
         if key is not None:
             self.cache.put(key, embedding)
+        else:
+            pass
 
     def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         return len(batch) > 1
@@ -524,6 +570,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
     def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
+        else:
+            pass
         if self.stream is not None:
             try:
                 self.stream.synchronize()
@@ -532,6 +580,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     "Qwen3-ASR encoder stream cleanup failed after OOM",
                     exc_info=True,
                 )
+        else:
+            pass
         try:
             device_module = torch.get_device_module(self.device)
             with device_module.device(self.device):
@@ -570,7 +620,11 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     # note (luojiaxuan): retried items are single-item batches.
                     self.batch_count += retry_recovered
                     self.item_count += retry_recovered
+                else:
+                    pass
                 return
+            else:
+                pass
             self.batch_count += 1
             self.item_count += len(batch)
             batch_count = self.batch_count
@@ -582,6 +636,8 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 f"{item_count / batch_count:.2f} items/batch, "
                 f"last batch: {len(batch)}), cache: {self.stats()}"
             )
+        else:
+            pass
 
 
 __all__ = [

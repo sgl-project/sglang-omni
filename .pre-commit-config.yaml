@@ -81,3 +81,12 @@ repos:
         types: [python]
         files: ^sglang_omni/
         exclude: ^sglang_omni/vendor/
+      # Every if must end in else. No noqa exemption. --fix is the one-time
+      # migration; the hook itself only checks.
+      - id: if-else-required
+        name: if statements must have else
+        entry: python3 scripts/check_if_else.py
+        language: system
+        types: [python]
+        files: ^sglang_omni/
+        exclude: ^sglang_omni/vendor/

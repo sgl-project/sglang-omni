@@ -60,6 +60,8 @@ def capture_safe_quantizer_decode(quantizer: Any, codes: torch.Tensor) -> torch.
     """
     if int(codes.shape[0]) == 0:
         raise ValueError("Higgs codec decode requires at least one quantizer")
+    else:
+        pass
     quantized_out = quantizer.quantizers[0].decode(codes[0])
     for i, indices in enumerate(codes[1:], start=1):
         quantized_out = quantized_out + quantizer.quantizers[i].decode(indices)
@@ -79,12 +81,20 @@ def to_mono_3d(waveform: WaveformInput) -> torch.Tensor:
 
     if wav.ndim == 1:
         return wav.view(1, 1, -1)
+    else:
+        pass
     if wav.ndim == 2:
         return wav[:1].unsqueeze(0)
+    else:
+        pass
     if wav.ndim == 3:
         if wav.shape[1] != 1:
             raise ValueError(f"audio must be mono, got shape {tuple(wav.shape)}")
+        else:
+            pass
         return wav
+    else:
+        pass
     raise ValueError(f"waveform must be 1-, 2- or 3-D, got {wav.ndim}-D")
 
 
@@ -93,6 +103,8 @@ def resolve_ckpt_dir(model_path: str | Path) -> str:
     p = str(model_path)
     if os.path.isdir(p):
         return p
+    else:
+        pass
     return snapshot_download(p)
 
 
@@ -108,6 +120,8 @@ def load_codec_state_dict(tts_ckpt_dir: str) -> dict[str, torch.Tensor]:
         for full_name, shard in weight_map.items():
             if full_name.startswith(_CODEC_IN_TTS_CKPT_PREFIX):
                 shards.setdefault(shard, []).append(full_name)
+            else:
+                pass
     else:
         shards = {"model.safetensors": None}  # single-shard layout
 
@@ -177,6 +191,8 @@ class HiggsAudioCodec:
                 f"No codec weights found under {_CODEC_IN_TTS_CKPT_PREFIX!r} in "
                 f"{ckpt_dir}; this checkpoint doesn't bundle the audio codec."
             )
+        else:
+            pass
 
         missing, unexpected = model.load_state_dict(state, strict=False)
         # Some upstream init keys (e.g. `weight_g`/`weight_v` weight-norm parts)
@@ -187,6 +203,8 @@ class HiggsAudioCodec:
                 f"{len(state)} loaded; bundled codec config may be incompatible "
                 "with the installed Transformers version."
             )
+        else:
+            pass
         model = model.to(device=device)
         for p in model.parameters():
             p.requires_grad_(False)
@@ -209,12 +227,16 @@ class HiggsAudioCodec:
         """
         if self.device.type != "cuda":
             raise RuntimeError("Higgs codec CUDA graphs require a CUDA device")
+        else:
+            pass
         # Descending so the shared mempool is sized once from the largest shape
         # rather than grown across captures: 130 vs 146 MiB reserved on the
         # default 1..150 domain.
         frames = tuple(sorted({int(value) for value in frame_counts}, reverse=True))
         if not frames or any(value <= 0 for value in frames):
             raise ValueError("decode CUDA graph frame counts must be positive")
+        else:
+            pass
 
         num_quantizers = int(self.model.config.num_quantizers)
         current_stream = torch.cuda.current_stream(self.device)
@@ -296,8 +318,12 @@ class HiggsAudioCodec:
         sr = sample_rate or self.SAMPLE_RATE
         if sr != self.SAMPLE_RATE:
             wav = torchaudio.functional.resample(wav, sr, self.SAMPLE_RATE)
+        else:
+            pass
         if wav.shape[-1] < self.SAMPLE_RATE:
             wav = F.pad(wav, (0, self.SAMPLE_RATE - wav.shape[-1]))
+        else:
+            pass
 
         wav = wav.to(device=self.device, dtype=self.dtype)
         codes_BNT = self.model.encode(wav).audio_codes
@@ -315,8 +341,12 @@ class HiggsAudioCodec:
         """Run single_fn on singleton buckets and batch_fn on multi-item buckets."""
         if not items:
             return []
+        else:
+            pass
         if len(items) == 1:
             return [single_fn(items[0])]
+        else:
+            pass
 
         buckets: dict[int, list[int]] = {}
         for i, item in enumerate(items):
@@ -335,6 +365,8 @@ class HiggsAudioCodec:
         for i, result in enumerate(results):
             if result is None:
                 raise RuntimeError(f"{error_label} did not produce result for item {i}")
+            else:
+                pass
             out.append(result)
         return out
 
@@ -346,6 +378,8 @@ class HiggsAudioCodec:
             wav = to_mono_3d(w).to(torch.float32)
             if wav.shape[-1] < self.SAMPLE_RATE:
                 wav = F.pad(wav, (0, self.SAMPLE_RATE - wav.shape[-1]))
+            else:
+                pass
             padded.append(wav)
 
         def _batch_fn(batch_items: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -372,6 +406,8 @@ class HiggsAudioCodec:
             raise ValueError(
                 f"codes must be 2-D [T, num_codebooks], got {tuple(codes_TN.shape)}"
             )
+        else:
+            pass
         frame_count = int(codes_TN.shape[0])
         decode_graphs = self.decode_cuda_graphs
         decode_graph = decode_graphs.get(frame_count)
@@ -383,6 +419,8 @@ class HiggsAudioCodec:
                     f"codes have {int(codes_BNT.shape[1])} quantizers, expected "
                     f"{int(decode_graph.input_codes.shape[1])}"
                 )
+            else:
+                pass
             decode_graph.input_codes.copy_(
                 codes_BNT.to(dtype=torch.long), non_blocking=True
             )
@@ -397,6 +435,10 @@ class HiggsAudioCodec:
                         f"Higgs codec decode CUDA graph miss for frame count "
                         f"{frame_count}; using eager decode"
                     )
+                else:
+                    pass
+            else:
+                pass
             audio = self.model.decode(
                 codes_BNT.to(device=self.device, dtype=torch.long)
             ).audio_values
@@ -409,6 +451,8 @@ class HiggsAudioCodec:
                 f"hits={self.decode_cuda_graph_hits} "
                 f"misses={self.decode_cuda_graph_misses}"
             )
+        else:
+            pass
         return audio.squeeze(0).squeeze(0).cpu()
 
     @torch.no_grad()
@@ -416,6 +460,8 @@ class HiggsAudioCodec:
         """Batch-decode variable-length ``[T_i, N]`` tensors into ``[L_i]`` waveforms."""
         if not codes_list:
             return []
+        else:
+            pass
 
         def _batch_fn(batch_items: list[torch.Tensor]) -> list[torch.Tensor]:
             stacked = torch.stack(batch_items)

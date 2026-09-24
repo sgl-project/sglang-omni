@@ -26,6 +26,8 @@ def register_relay(name: str):
     def decorator(cls):
         if name in RELAY_REGISTRY:
             logger.warning(f"Relay type '{name}' is already registered. Overwriting!")
+        else:
+            pass
         RELAY_REGISTRY[name] = cls
         return cls
 
@@ -52,14 +54,20 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
                 from .nixl import NixlRelay  # noqa: F401 - Register backend.
             elif relay_type == "mooncake":
                 from .mooncake import MooncakeRelay  # noqa: F401 - Register backend.
+            else:
+                pass
         except ImportError:
             pass
+    else:
+        pass
 
     if relay_type not in RELAY_REGISTRY:
         available = list(RELAY_REGISTRY.keys())
         raise ValueError(
             f"Unknown relay type: '{relay_type}'. Available types: {available}"
         )
+    else:
+        pass
 
     relay_cls = RELAY_REGISTRY[relay_type]
 
@@ -73,6 +81,8 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
             # If class accepts **kwargs, pass all remaining parameters
             valid_kwargs.update(kwargs)
             break
+        else:
+            pass
 
     return relay_cls(**valid_kwargs)
 

@@ -25,6 +25,8 @@ def linear_interpolate_align_false(x: mx.array, new_size: int) -> mx.array:
     T = x.shape[-1]
     if new_size == T:
         return x
+    else:
+        pass
     dst = mx.arange(new_size).astype(x.dtype)
     src = (dst + 0.5) * (T / new_size) - 0.5
     src = mx.clip(src, 0, T - 1)
@@ -67,6 +69,8 @@ class CausalConv1d(nn.Module):
                 else [(0, 0), (0, self.causal_padding), (0, 0)]
             )
             x = mx.pad(x, widths)
+        else:
+            pass
         y = mx.conv1d(x, self.weight, stride=1, padding=0, dilation=self.dilation)
         return y + self.bias
 
@@ -244,6 +248,8 @@ class CausalSineGen(nn.Module):
             phase_t = mx.pad(phase_t, [(0, 0), (0, 0), (0, diff)])
         elif diff < 0:
             phase_t = phase_t[:, :, :T]
+        else:
+            pass
         phase = mx.swapaxes(phase_t, 1, 2)  # (B, T, H+1)
 
         sine_waves = mx.sin(phase) * self.sine_amp
@@ -436,6 +442,8 @@ class CausalHiFTGenerator(nn.Module):
 
             if i == self.num_upsamples - 1:
                 x = mx.concatenate([x[:, :, 1:2], x], axis=2)  # reflection pad (1, 0)
+            else:
+                pass
 
             si = mx.swapaxes(s_stft, 1, 2)
             si = self.source_downs[i](si)

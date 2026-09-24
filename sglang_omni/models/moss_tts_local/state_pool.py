@@ -115,11 +115,15 @@ class MossTTSLocalDecodeStatePool:
         existing = self.rid_to_row.get(rid)
         if existing is not None:
             return existing
+        else:
+            pass
         if not self.free_rows:
             raise RuntimeError(
                 "MOSS-TTS Local decode-state pool exhausted "
                 f"({self.padding_row} rows, all held); raise max_running_requests"
             )
+        else:
+            pass
         row_idx = self.free_rows.pop()
         self.rid_to_row[rid] = row_idx
         return row_idx
@@ -129,6 +133,8 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self.rid_to_row.pop(rid, None)
         if row_idx is None:
             return
+        else:
+            pass
         self.params_written_rids.discard(rid)
         self.reset_row(row_idx)
         self.free_rows.append(row_idx)
@@ -178,6 +184,8 @@ class MossTTSLocalDecodeStatePool:
         if rid not in self.params_written_rids:
             self.write_params(row_idx, data)
             self.params_written_rids.add(rid)
+        else:
+            pass
 
     def invalidate_params(self, rid: str) -> None:
         """Force params to be rewritten on the next ``ensure_params`` call."""
@@ -188,6 +196,8 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self.row_for(rid)
         if row_idx is None:
             return
+        else:
+            pass
         step = int(generation_steps)
         self.generation_steps[row_idx] = step
         self.sampling_steps[row_idx] = torch.maximum(
@@ -201,6 +211,8 @@ class MossTTSLocalDecodeStatePool:
         """Mirror committed generation steps into active pool rows in one write."""
         if row_t.numel() == 0:
             return
+        else:
+            pass
         steps = generation_steps.to(device=self.device, dtype=torch.int64)
         row_t = row_t.to(device=self.device, dtype=torch.long)
         self.generation_steps[row_t] = steps
@@ -214,6 +226,8 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False
+        else:
+            pass
         self.invalidate_params(rid)
         self.reset_row(row_idx)
         self.generation_steps[row_idx] = int(generation_steps)
@@ -228,11 +242,15 @@ class MossTTSLocalDecodeStatePool:
         """Mark generated audio codes as present for future repetition penalty."""
         if row_t.numel() == 0:
             return
+        else:
+            pass
         if rows.ndim != 2 or int(rows.shape[1]) != self.n_vq + 1:
             raise RuntimeError(
                 "MOSS-TTS Local audio history rows must have shape "
                 f"[B, {self.n_vq + 1}], got {tuple(rows.shape)}"
             )
+        else:
+            pass
         codes = rows[:, 1:].to(device=self.device, dtype=torch.long)
         row_t = row_t.to(device=self.device, dtype=torch.long)
         if int(row_t.numel()) != int(codes.shape[0]):
@@ -240,6 +258,8 @@ class MossTTSLocalDecodeStatePool:
                 "MOSS-TTS Local audio history row index mismatch: "
                 f"{int(row_t.numel())} rows for {int(codes.shape[0])} code rows"
             )
+        else:
+            pass
         valid = (codes >= 0) & (codes < self.audio_vocab_size)
         row_idx = row_t.view(-1, 1).expand_as(codes)
         channel_idx = torch.arange(self.n_vq, device=self.device).view(1, -1)
@@ -253,9 +273,13 @@ class MossTTSLocalDecodeStatePool:
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False
+        else:
+            pass
         self.audio_token_presence[row_idx].zero_()
         if not output_rows:
             return True
+        else:
+            pass
         rows = torch.stack(output_rows, dim=0)
         row_t = torch.full(
             (int(rows.shape[0]),),
@@ -283,6 +307,8 @@ class MossTTSLocalDecodeStatePool:
             self.ensure_params(row_idx, rid, sched_req.data)
             if int(row_idx) in self.audio_repetition_penalty_rows:
                 has_audio_repetition_penalty = True
+            else:
+                pass
         return (
             torch.tensor(pool_rows, dtype=torch.long, device=self.device),
             pool_rows,

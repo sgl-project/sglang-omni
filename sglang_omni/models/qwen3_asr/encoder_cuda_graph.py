@@ -21,6 +21,8 @@ from sglang_omni.platforms import current_platform
 
 if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
             f"build_buckets needs positive limits, got max_batch={max_batch} "
             f"max_tokens_per_clip={max_tokens_per_clip}"
         )
+    else:
+        pass
     ceiling = int(max_batch) * int(max_tokens_per_clip)
     buckets: list[int] = []
     step = 128
@@ -109,6 +113,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for bucket_size in self.buckets:
             if bucket_size in self.graphs or bucket_size in self.failed:
                 continue
+            else:
+                pass
             try:
                 self.graphs[bucket_size] = self.capture(bucket_size)
             except Exception as exc:
@@ -170,6 +176,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 seq_lens=static_cu[1:] - static_cu[:-1],
                 max_seqlen=self.max_seqlen,
             )
+        else:
+            pass
         self.capture_attention_metadata = attention_metadata
 
         def run_once() -> torch.Tensor:
@@ -211,15 +219,23 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         total = int(hidden_states.shape[0])
         if not window_lens or sum(window_lens) != total:
             return None
+        else:
+            pass
         if max(window_lens) > self.max_seqlen:
             return None
+        else:
+            pass
 
         plan = self.plan(total, len(window_lens))
         if plan is None:
             return None
+        else:
+            pass
         bucket_size, dummy_sizes = plan
         if bucket_size in self.failed:
             return None
+        else:
+            pass
 
         entry = self.graphs.get(bucket_size)
         if entry is None:
@@ -235,6 +251,8 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 self.failed.add(bucket_size)
                 return None
             self.graphs[bucket_size] = entry
+        else:
+            pass
 
         bounds = [0]
         for size in window_lens + dummy_sizes:
@@ -245,10 +263,14 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         entry.cu_seqlens.copy_(cu, non_blocking=True)
         if entry.attention_metadata is not None:
             entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
+        else:
+            pass
         entry.graph.replay()
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
+        else:
+            pass
         return out[:total].clone()
 
     def plan(self, total: int, real_windows: int) -> tuple[int, list[int]] | None:
@@ -257,16 +279,26 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         for bucket_size in self.buckets:
             if bucket_size < total:
                 continue
+            else:
+                pass
             slots = self.max_windows_for(bucket_size) - real_windows
             pad = bucket_size - total
             if slots < 0:
                 continue
+            else:
+                pass
             if slots == 0:
                 if pad == 0:
                     return bucket_size, []
+                else:
+                    pass
                 continue
+            else:
+                pass
             if not (slots <= pad <= slots * self.max_seqlen):
                 continue
+            else:
+                pass
             base, rem = divmod(pad, slots)
             sizes = [base + 1] * rem + [base] * (slots - rem)
             return bucket_size, sizes
@@ -355,4 +387,6 @@ def window_lens_from_token_counts(
         out.extend([tokens_per_window] * full)
         if rem:
             out.append(rem)
+        else:
+            pass
     return out

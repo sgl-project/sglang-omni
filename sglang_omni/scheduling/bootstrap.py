@@ -52,11 +52,15 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         # Note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
         return
+    else:
+        pass
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
         # phase runner from init_cuda_graphs().
         model_worker.model_runner.init_cuda_graphs()
         return
+    else:
+        pass
 
     model_config = model_worker.model_config
     original_is_multimodal = model_config.is_multimodal
@@ -108,6 +112,8 @@ def create_sglang_infrastructure(
             "an SGLang AR engine must own its OS process. Place SGLang AR "
             "stages in separate processes."
         )
+    else:
+        pass
 
     logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
 
@@ -132,6 +138,8 @@ def create_sglang_infrastructure(
                 "engine.kv_cache_bytes is not supported on the MLX path; "
                 "remove it or run this stage on CUDA"
             )
+        else:
+            pass
         from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
         model_worker = create_mlx_model_worker(
@@ -152,6 +160,8 @@ def create_sglang_infrastructure(
         # note(ratish): sglang sizes the pool from free memory at this point, so
         # whatever the stage keeps resident has to exist before the reading.
         before_memory_pool(model_worker)
+    else:
+        pass
 
     # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner
@@ -160,6 +170,8 @@ def create_sglang_infrastructure(
 
     if not defer_cuda_graph_capture:
         init_sglang_cuda_graphs(model_worker)
+    else:
+        pass
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 

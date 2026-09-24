@@ -54,10 +54,16 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream_stride and stream_followup_stride must be > 0")
+        else:
+            pass
         if stream_overlap_tokens < 0:
             raise ValueError("stream_overlap_tokens must be >= 0")
+        else:
+            pass
         if stream_holdback_tokens < 0:
             raise ValueError("stream_holdback_tokens must be >= 0")
+        else:
+            pass
 
         self.codec = codec
         self.stream_stride = int(stream_stride)
@@ -95,6 +101,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                     f"Higgs streaming payload for {request_id!r} must be a dict, "
                     f"got {type(payload.data).__name__}"
                 )
+            else:
+                pass
             missing = [
                 key
                 for key in ("num_codebooks", "codebook_size")
@@ -105,6 +113,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                     f"Higgs streaming payload for {request_id!r} is missing fields: "
                     f"{', '.join(missing)}"
                 )
+            else:
+                pass
             self.latch_contract_values(
                 request_id,
                 state,
@@ -122,6 +132,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 ),
             )
             return
+        else:
+            pass
         metadata: Mapping[str, Any] = source
         missing = [
             key for key in ("num_codebooks", "codebook_size") if key not in metadata
@@ -131,6 +143,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 f"Higgs stream chunk for {request_id!r} is missing metadata fields: "
                 f"{', '.join(missing)}"
             )
+        else:
+            pass
         if "num_codebooks" in metadata and "codebook_size" in metadata:
             self.latch_contract_values(
                 request_id,
@@ -139,12 +153,16 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 codebook_size=metadata["codebook_size"],
                 source=origin,
             )
+        else:
+            pass
         if INITIAL_CODEC_CHUNK_FRAMES_PARAM in metadata:
             self.latch_initial_codec_chunk_frames_from_mapping(
                 request_id,
                 state,
                 metadata,
             )
+        else:
+            pass
 
     def validate_chunk(
         self, request_id: str, state: HiggsStreamState, codes: torch.Tensor
@@ -165,6 +183,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 f"Higgs stream chunk has {int(rows.shape[1])} codebooks, "
                 f"expected {num_codebooks}"
             )
+        else:
+            pass
         return rows
 
     def ingest(
@@ -179,9 +199,13 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         delayed_count = len(state.delayed_rows)
         if delayed_count == 0:
             return None
+        else:
+            pass
         num_codebooks, codebook_size = self.require_stream_contract(state, "<stream>")
         if delayed_count < num_codebooks:
             return None
+        else:
+            pass
         raw_total = delayed_count - num_codebooks + 1
 
         steady_codec_frames = max(1, self.stream_stride - num_codebooks + 1)
@@ -202,18 +226,24 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         if not is_final and delayed_count < next_decode_rows:
             state.next_decode_rows = next_decode_rows
             return None
+        else:
+            pass
 
         emit_until_raw = raw_total
         if use_initial_chunk and not is_final:
             emit_until_raw = min(raw_total, state.initial_codec_chunk_frames)
         elif not is_final and self.stream_holdback_tokens:
             emit_until_raw = max(0, raw_total - self.stream_holdback_tokens)
+        else:
+            pass
         can_flush_codec_tail = is_final and self.samples_per_frame is not None
         if emit_until_raw < state.emitted_raw_frames or (
             emit_until_raw == state.emitted_raw_frames and not can_flush_codec_tail
         ):
             state.next_decode_rows = delayed_count + self.stream_followup_stride
             return None
+        else:
+            pass
 
         window_start_raw = max(0, state.emitted_raw_frames - self.stream_overlap_tokens)
         rows_end = emit_until_raw + num_codebooks - 1
@@ -239,6 +269,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         if delta.numel() == 0:
             state.next_decode_rows = delayed_count + self.stream_followup_stride
             return None
+        else:
+            pass
 
         state.emitted_raw_frames = emit_until_raw
         state.next_decode_rows = self.next_decode_rows_after_emit(
@@ -275,8 +307,12 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         usage = build_usage(final_state)
         if usage is not None:
             final_data["usage"] = usage
+        else:
+            pass
         if final_state.omni_rollout is not None:
             final_data["omni_rollout"] = final_state.omni_rollout
+        else:
+            pass
         return final_data
 
     @staticmethod
@@ -301,16 +337,22 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 f"Higgs {source} for {request_id!r} has invalid "
                 f"num_codebooks={num_codebooks_i}, codebook_size={codebook_size_i}"
             )
+        else:
+            pass
         if state.num_codebooks is not None and state.num_codebooks != num_codebooks_i:
             raise ValueError(
                 f"Higgs stream num_codebooks changed for {request_id!r}: "
                 f"{state.num_codebooks} -> {num_codebooks_i}"
             )
+        else:
+            pass
         if state.codebook_size is not None and state.codebook_size != codebook_size_i:
             raise ValueError(
                 f"Higgs stream codebook_size changed for {request_id!r}: "
                 f"{state.codebook_size} -> {codebook_size_i}"
             )
+        else:
+            pass
         state.num_codebooks = num_codebooks_i
         state.codebook_size = codebook_size_i
 
@@ -338,6 +380,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 f"Higgs stream contract for {request_id!r} is missing "
                 "num_codebooks or codebook_size"
             )
+        else:
+            pass
         return state.num_codebooks, state.codebook_size
 
     def next_decode_rows_after_emit(
@@ -349,6 +393,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
     ) -> int:
         if emitted_initial_chunk:
             return max(num_codebooks, self.stream_stride) + self.stream_followup_stride
+        else:
+            pass
         return delayed_count + self.stream_followup_stride
 
     def vocode_payload(self, payload: StagePayload) -> StagePayload:
@@ -366,8 +412,12 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                     f"Higgs vocoder decode_batch returned {len(wavs)} audios "
                     f"for {len(valid)} requests"
                 )
+            else:
+                pass
             for idx, wav in zip(indices, wavs):
                 waveforms[idx] = wav
+        else:
+            pass
         return [
             self.store_vocoder_result(payload, state, wav)
             for payload, (state, _), wav in zip(payloads, items, waveforms)
@@ -381,9 +431,13 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         delayed_rows = state.output_codes_delayed
         if not delayed_rows:
             return state, None
+        else:
+            pass
         delayed_LN = torch.tensor(delayed_rows, dtype=torch.long)
         if delayed_LN.shape[0] < state.num_codebooks:
             return state, None
+        else:
+            pass
         codes_TN = reverse_delay_pattern(delayed_LN)
         codec_vocab = int(state.codebook_size) - 2
         return state, torch.where(
@@ -405,8 +459,12 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage
+        else:
+            pass
         if state.omni_rollout is not None:
             data["omni_rollout"] = state.omni_rollout
+        else:
+            pass
         payload.data = data
         return payload
 
@@ -414,9 +472,13 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         delayed_rows = state.output_codes_delayed
         if not delayed_rows:
             return None
+        else:
+            pass
         rows = [torch.tensor(row, dtype=torch.long) for row in delayed_rows]
         if len(rows) < int(state.num_codebooks):
             return None
+        else:
+            pass
         return self.decode_delayed_rows(
             rows,
             num_codebooks=int(state.num_codebooks),
@@ -435,6 +497,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
                 f"Higgs delayed rows must include at least {num_codebooks} rows, "
                 f"got {len(rows)}"
             )
+        else:
+            pass
         delayed_LN = torch.stack(rows, dim=0).to(torch.long)
         codes_TN = reverse_delay_pattern(delayed_LN)
         codec_vocab = int(codebook_size) - 2
@@ -449,6 +513,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         hop_length = getattr(hop_length, "hop_length", None)
         if hop_length is None:
             return None
+        else:
+            pass
         hop_length_i = int(hop_length)
         return hop_length_i if hop_length_i > 0 else None
 

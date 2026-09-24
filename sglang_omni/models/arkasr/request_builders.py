@@ -88,6 +88,8 @@ def build_suppressed_token_ids(tokenizer: Any) -> list[int]:
     for tok, tid in added.items():
         if isinstance(tok, str) and tok.startswith("<") and tok.endswith(">"):
             bad.add(int(tid))
+        else:
+            pass
     bad -= keep
     return sorted(bad)
 
@@ -106,6 +108,8 @@ def make_arkasr_scheduler_adapters(
 ]:
     if feature_extractor is None:
         raise ValueError("ARK-ASR processor is missing a feature_extractor")
+    else:
+        pass
 
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
@@ -155,6 +159,8 @@ def make_arkasr_scheduler_adapters(
             feature_attention_mask = torch.ones(
                 (features.shape[0], features.shape[-1]), dtype=torch.long
             )
+        else:
+            pass
         num_mel_frames = int(feature_attention_mask.sum().item())
         num_audio_tokens = arkasr_num_audio_tokens(num_mel_frames, merge_factor)
 
@@ -225,6 +231,8 @@ def make_arkasr_scheduler_adapters(
         )
         if audio_encoder_service is None:
             return req_data
+        else:
+            pass
         return DeferredAdmission(
             value=req_data,
             ready=audio_encoder_service.submit_item(audio_item),
@@ -239,6 +247,8 @@ def make_arkasr_scheduler_adapters(
         if _suppressed_ids:
             _drop = set(_suppressed_ids)
             output_ids = [t for t in output_ids if t not in _drop]
+        else:
+            pass
         text = decode_token_ids(tokenizer, output_ids, skip_special_tokens=True).strip()
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
@@ -278,6 +288,8 @@ def make_arkasr_stream_output_builder(
     def _decode_stream_ids(ids: list[int]) -> str:
         if suppressed:
             ids = [tid for tid in ids if tid not in suppressed]
+        else:
+            pass
         # note (guozhihao): do not strip each delta; that would eat spaces
         # between words. result_adapter strips the full transcript, so
         # transcript.text.done is authoritative and

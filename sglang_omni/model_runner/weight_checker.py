@@ -40,12 +40,20 @@ class StrictWeightChecker:
     def run(self, action: str) -> dict[str, Any]:
         if action == "snapshot":
             return self.snapshot()
+        else:
+            pass
         if action == "reset_tensors":
             return self.reset_tensors()
+        else:
+            pass
         if action == "compare":
             return self.compare()
+        else:
+            pass
         if action == "checksum":
             return self.checksum()
+        else:
+            pass
         raise ValueError(
             "Unsupported weights_checker action "
             f"{action!r}; expected snapshot, reset_tensors, compare, or checksum"
@@ -75,6 +83,8 @@ class StrictWeightChecker:
             self._snapshot is None
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise RuntimeError("weights_checker compare requires snapshot first")
+        else:
+            pass
         current = self.digest_model()
         missing = sorted(
             set(self._snapshot) - set(current)
@@ -115,6 +125,8 @@ class StrictWeightChecker:
         model = getattr(self.model_runner, "model", None)
         if model is None:
             raise RuntimeError("model_runner has no model for weights_checker")
+        else:
+            pass
 
         logger.warning(
             "weights_checker: starting full-model SHA256 digest; "
@@ -141,8 +153,12 @@ class StrictWeightChecker:
                 obj_id = id(tensor)
                 if obj_id in seen:
                     continue
+                else:
+                    pass
                 seen.add(obj_id)
                 yield name, tensor
+        else:
+            pass
 
         named_buffers = getattr(model, "named_buffers", None)
         if callable(named_buffers):
@@ -150,8 +166,12 @@ class StrictWeightChecker:
                 obj_id = id(tensor)
                 if obj_id in seen:
                     continue
+                else:
+                    pass
                 seen.add(obj_id)
                 yield name, tensor
+        else:
+            pass
 
     @staticmethod
     def summary(
@@ -195,6 +215,8 @@ def tensor_bytes(tensor: Any) -> bytes:
             return numpy().tobytes()
         except (TypeError, RuntimeError):
             pass
+    else:
+        pass
 
     view = getattr(tensor, "view", None)
     if callable(view):
@@ -205,10 +227,14 @@ def tensor_bytes(tensor: Any) -> bytes:
             return byte_view.numpy().tobytes()
         except Exception:
             pass
+    else:
+        pass
 
     tobytes = getattr(tensor, "tobytes", None)
     if callable(tobytes):
         return tobytes()
+    else:
+        pass
     raise TypeError(
         f"Cannot extract raw bytes from tensor type {type(tensor).__name__}"
     )

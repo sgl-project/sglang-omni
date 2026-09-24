@@ -88,10 +88,16 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             raise ValueError(
                 f"encoder_token_count must be >= 1, got {encoder_token_count}"
             )
+        else:
+            pass
         if cache_max_entries < 0:
             raise ValueError(f"cache_max_entries must be >= 0, got {cache_max_entries}")
+        else:
+            pass
         if cache_max_bytes is not None and cache_max_bytes < 0:
             raise ValueError(f"cache_max_bytes must be >= 0, got {cache_max_bytes}")
+        else:
+            pass
         self.model = model
         reference = next(model.model.encoder.parameters())
         self.device = reference.device
@@ -137,6 +143,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             self.prewarm_pinned_pool(
                 self._cache_capacity_entries
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
         self.namespace = cache_namespace
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -202,6 +210,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         """
         if entries <= 0:
             return
+        else:
+            pass
         started = time.perf_counter()
         blocks: list[torch.Tensor] = []
         try:
@@ -235,6 +245,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             not self._pin_host_memory
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return
+        else:
+            pass
         self._pin_host_memory = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.cache.pin_memory = False
         logger.warning(
@@ -247,6 +259,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         with self.lifecycle_lock:
             if self.closed:
                 return
+            else:
+                pass
             self.closed = True
             self.queue.put(_SHUTDOWN)
         self.thread.join(timeout=5)
@@ -259,6 +273,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         with self.lifecycle_lock:
             if self.closed:
                 raise RuntimeError("Whisper ASR pre-LM encoder service is closed")
+            else:
+                pass
             self.queue.put(
                 QueueEntry(
                     item=item,
@@ -274,17 +290,23 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             raise RuntimeError(
                 "Whisper pre-LM encode requires the item's num_audio_tokens"
             )
+        else:
+            pass
         key = self.cache_key(item)
 
         if key is None:
             future = self.submit(item)
             future.result(timeout=self.ENCODE_TIMEOUT_S)
             return
+        else:
+            pass
 
         cached = self.lookup_cached_embedding(item.audio_fingerprint, expected_tokens)
         if cached is not None:
             self.attach_embedding(item, cached)
             return
+        else:
+            pass
 
         leader = False
         with self.lock:
@@ -309,6 +331,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         if cached is not None:
             self.attach_embedding(item, cached)
             return
+        else:
+            pass
         try:
             embedding = future.result(timeout=self.ENCODE_TIMEOUT_S)
         except Exception:
@@ -320,8 +344,14 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 with self.lock:
                     if self.inflight.get(key) is future:
                         del self.inflight[key]
+                    else:
+                        pass
+            else:
+                pass
         if leader:
             return
+        else:
+            pass
         if not self.is_valid(embedding, expected_tokens):
             with self.lock:
                 self.failed += 1
@@ -329,6 +359,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 f"Whisper pre-LM encode leader for {key} returned an invalid "
                 f"embedding"
             )
+        else:
+            pass
         self.attach_embedding(item, embedding)
 
     def lookup_cached_embedding(
@@ -341,10 +373,14 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         cached = self.cache.get(key)
         if cached is None:
             return None
+        else:
+            pass
         if self.is_valid(cached, expected_tokens):
             with self.lock:
                 self.hits += 1
             return cached
+        else:
+            pass
         logger.warning(
             f"Whisper pre-LM cache entry {key} failed validation "
             f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
@@ -387,6 +423,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def cache_key_from_fingerprint(self, audio_fingerprint: str | None) -> str | None:
         if audio_fingerprint is None:
             return None
+        else:
+            pass
         return f"{self.namespace}:{audio_fingerprint}"
 
     def is_valid(self, embedding: Any, expected_tokens: int) -> bool:
@@ -402,6 +440,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         embedding = embedding.to(self.device, non_blocking=True)
         if self.stream is not None and embedding.is_cuda:
             embedding.record_stream(torch.cuda.default_stream(self.device))
+        else:
+            pass
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -410,6 +450,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         first = self.queue.get()
         if first is _SHUTDOWN:
             return [], True
+        else:
+            pass
         batch = [cast(QueueEntry[Any], first)]
         deadline = time.monotonic() + self.max_batch_wait_s
         shutdown = False
@@ -426,6 +468,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             if queued is _SHUTDOWN:
                 shutdown = True
                 break
+            else:
+                pass
             batch.append(cast(QueueEntry[Any], queued))
         return batch, shutdown
 
@@ -454,15 +498,21 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 f"Whisper encoder output rank {encoded.dim()} != 3 "
                 f"(expected [B, T, H])"
             )
+        else:
+            pass
         if encoded.shape[0] != len(items):
             raise RuntimeError(
                 f"Whisper encoder batch {encoded.shape[0]} != {len(items)} items"
             )
+        else:
+            pass
         if encoded.shape[2] != self.hidden_size or encoded.dtype != self.dtype:
             raise RuntimeError(
                 f"Whisper encoder output {tuple(encoded.shape)} ({encoded.dtype}) "
                 f"!= expected hidden {self.hidden_size} ({self.dtype})"
             )
+        else:
+            pass
         parts: list[torch.Tensor] = []
         for index, item in enumerate(items):
             expected = expected_audio_tokens(item)
@@ -470,10 +520,14 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 raise RuntimeError(
                     "Whisper pre-LM encode item is missing its audio token count"
                 )
+            else:
+                pass
             if encoded.shape[1] < expected:
                 raise RuntimeError(
                     f"Whisper encoder T={encoded.shape[1]} < expected {expected}"
                 )
+            else:
+                pass
             parts.append(encoded[index, :expected].clone())
         return parts
 
@@ -492,6 +546,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             not self._pin_host_memory or self.cache_key(item) is None
         ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return None
+        else:
+            pass
         try:
             host = self.new_pinned_host(int(embedding.shape[0]))
         except RuntimeError as exc:
@@ -504,6 +560,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def synchronize_batch(self) -> None:
         if self.stream is not None:
             self.stream.synchronize()
+        else:
+            pass
 
     def cache_embedding(
         self,
@@ -514,6 +572,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         key = self.cache_key(item)
         if key is None:
             return
+        else:
+            pass
         # note (Jeffro): host_copy is complete here (synchronize_batch ran in
         # between) and already pinned, so the cache stores it without another copy.
         self.cache.put(key, host_copy if host_copy is not None else embedding)
@@ -521,6 +581,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def retry_batch(self, batch: list[QueueEntry[Any]], _exc: Exception) -> bool:
         if len(batch) == 1:
             return False
+        else:
+            pass
         logger.exception(
             "Whisper batched audio encode failed for %d items; retrying per item",
             len(batch),
@@ -555,7 +617,11 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 if retry_recovered is not None:
                     self.batch_count += retry_recovered
                     self.item_count += retry_recovered
+                else:
+                    pass
                 return
+            else:
+                pass
             self.batch_count += 1
             self.item_count += len(batch)
             batch_count = self.batch_count
@@ -567,6 +633,8 @@ class WhisperPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
                 f"{item_count / batch_count:.2f} items/batch, "
                 f"last batch: {len(batch)}), cache: {self.stats()}"
             )
+        else:
+            pass
 
 
 __all__ = [
