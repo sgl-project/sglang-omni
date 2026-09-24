@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import math
 import os
 import subprocess
 import sys
@@ -13,11 +15,17 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import soundfile as sf
 import torch
 
 from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT, TimestepEmbedder
+from sglang_omni.models.minicpm_o.components.token2wav.flow import CausalConditionalCFM
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
 )
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
@@ -29,6 +37,127 @@ from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_timestep_frequencies_preserve_input_precision(dtype: torch.dtype) -> None:
+    embedder = TimestepEmbedder(16).to(dtype=dtype)
+    for input_dtype in (torch.float32, dtype):
+        t = torch.tensor([0.1, 500.0, 1000.0], dtype=input_dtype)
+        frequencies = torch.exp(-math.log(10000) * torch.arange(128) / 128).to(t)
+        phases = t[:, None] * frequencies[None]
+        expected = torch.cat([phases.cos(), phases.sin()], dim=-1)
+        torch.testing.assert_close(
+            embedder.timestep_embedding(t), expected, atol=0, rtol=0
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@torch.inference_mode()
+def test_whole_flow_graph_matches_eager(dtype: torch.dtype) -> None:
+    torch.manual_seed(42)
+    estimator = DiT(16, 4, depth=2, num_heads=2, head_dim=8, hidden_size=16)
+    for parameter in estimator.parameters():
+        torch.nn.init.normal_(parameter, std=0.1)
+    decoder = CausalConditionalCFM(estimator).to(device="cuda", dtype=dtype).eval()
+    runner = FlowCudaGraphRunner(
+        decoder,
+        capture_shapes=((1, 32), (2, 32)),
+        frame_bucket=16,
+        n_timesteps=10,
+        conditioning_dtype=torch.float32,
+    )
+    runner.capture_all()
+    assert runner.select(1, 17) is not None
+    assert runner.select(3, 17) is None
+    assert runner.select(1, 33) is None
+    previous = None
+    saved = None
+    for batch_size, frames in [(1, 32), (2, 27), (1, 17), (2, 31)]:
+        mu = torch.randn(batch_size, 4, frames, device="cuda", dtype=torch.float32)
+        mask = torch.ones(batch_size, 1, frames, device="cuda", dtype=torch.float32)
+        mask[-1, :, frames // 2 :] = 0
+        spks = torch.randn(batch_size, 4, device="cuda", dtype=dtype)
+        cond = torch.randn_like(mu)
+        noise = torch.randn_like(mu, dtype=dtype)
+        t_span = 1 - torch.cos(
+            torch.linspace(0, 1, 11, device="cuda", dtype=torch.float32)
+            * 0.5
+            * torch.pi
+        )
+        with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+            expected = decoder.solve_euler(noise, t_span, mu, mask, spks, cond)
+            actual = runner.run(noise, t_span, mu, mask, spks, cond)
+        assert actual is not None and actual.shape == expected.shape
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+        if previous is not None:
+            torch.testing.assert_close(previous, saved, atol=0, rtol=0)
+        previous, saved = actual, actual.clone()
+    assert runner.run(noise, t_span[:-1], mu, mask, spks, cond) is None
+    for steps in (10, 5):
+        with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+            expected = decoder(mu, mask, spks, cond, n_timesteps=steps, temperature=0.5)
+            decoder.cuda_graph_runner = runner
+            actual = decoder(mu, mask, spks, cond, n_timesteps=steps, temperature=0.5)
+            decoder.cuda_graph_runner = None
+        torch.testing.assert_close(actual, expected, atol=2e-3, rtol=2e-3)
+    with pytest.raises(RuntimeError, match="startup"):
+        runner.capture_all()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@torch.inference_mode()
+def test_flow_graph_capture_failure_stays_eager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoder = (
+        CausalConditionalCFM(
+            DiT(16, 4, depth=1, num_heads=2, head_dim=8, hidden_size=16)
+        )
+        .cuda()
+        .eval()
+    )
+    runner = FlowCudaGraphRunner(
+        decoder,
+        capture_shapes=((1, 16), (2, 16)),
+        frame_bucket=16,
+        n_timesteps=10,
+        conditioning_dtype=torch.float32,
+    )
+    solve_euler = decoder.solve_euler
+    calls = 0
+
+    def fail_second_capture(
+        x: torch.Tensor,
+        t_span: torch.Tensor,
+        mu: torch.Tensor,
+        mask: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+    ) -> torch.Tensor:
+        nonlocal calls
+        output = solve_euler(x, t_span, mu, mask, spks, cond)
+        if torch.cuda.is_current_stream_capturing():
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected active capture failure")
+        return output
+
+    monkeypatch.setattr(decoder, "solve_euler", fail_second_capture)
+    runner.capture_all()
+    assert calls == 2
+    assert runner.select(1, 16) is None
+    assert runner.select(2, 16) is None
+    mu = torch.zeros(1, 4, 16, device="cuda")
+    mask = torch.ones(1, 1, 16, device="cuda")
+    spks = torch.zeros(1, 4, device="cuda")
+    expected = decoder(mu, mask, spks, mu)
+    decoder.cuda_graph_runner = runner
+    torch.testing.assert_close(decoder(mu, mask, spks, mu), expected)
 
 
 def test_native_vocoder_import_does_not_require_legacy_packages() -> None:
@@ -110,6 +239,133 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
         batched[1].shape == single_b.shape == (len(tokens_b) * SAMPLES_PER_CODEC_TOKEN,)
     )
     assert all(np.isfinite(wave).all() for wave in (*batched, single_a, single_b))
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@torch.inference_mode()
+def test_native_vocoder_graph_matches_eager(
+    dtype: torch.dtype, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint = _checkpoint_dir()
+    if checkpoint is None or not torch.cuda.is_available():
+        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
+    eager = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0", dtype=dtype)
+    prompt_tokens, _, _, prompt_mels = eager.speaker_prompt(None)
+    reference_tokens = prompt_tokens.flatten().tolist()
+    cases = {
+        "b1_short": [26],
+        "b1_long": [67],
+        "b4_mixed": [25, 33, 49, 67],
+        "b8_mixed": [25, 29, 33, 37, 41, 49, 57, 67],
+    }
+    quantum = 16
+    capture_shapes = tuple(
+        (
+            len(lengths),
+            (
+                prompt_mels.shape[1]
+                + max(lengths) * eager.token2wav.flow.up_rate
+                + quantum
+                - 1
+            )
+            // quantum
+            * quantum,
+        )
+        for lengths in cases.values()
+    )
+    graphed = MiniCPMOCode2Wav(
+        str(checkpoint),
+        device="cuda:0",
+        dtype=dtype,
+        flow_cuda_graph_capture_shapes=capture_shapes,
+        flow_cuda_graph_frame_bucket=quantum,
+    )
+    decoder = graphed.token2wav.flow.decoder
+    decoder.rand_noise.copy_(eager.token2wav.flow.decoder.rand_noise)
+    eager_solver = MagicMock(wraps=decoder.solve_euler)
+    monkeypatch.setattr(decoder, "solve_euler", eager_solver)
+    mel_features: list[torch.Tensor] = []
+
+    def record_mel(
+        module: torch.nn.Module,
+        args: tuple[torch.Tensor, ...],
+        kwargs: dict[str, torch.Tensor],
+    ) -> None:
+        mel_features.append(kwargs["speech_feat"].clone())
+
+    eager.token2wav.hift.register_forward_pre_hook(record_mel, with_kwargs=True)
+    graphed.token2wav.hift.register_forward_pre_hook(record_mel, with_kwargs=True)
+    results = []
+    cases["batch_miss"] = [25, 33, 49]
+    cases["length_miss"] = [97]
+    for name, lengths in cases.items():
+        token_sequences = [
+            (
+                reference_tokens
+                * ((length + len(reference_tokens) - 1) // len(reference_tokens))
+            )[:length]
+            for length in lengths
+        ]
+        torch.manual_seed(1234)
+        mel_features.clear()
+        expected = eager.vocode(token_sequences, None)
+        expected_mel_count = len(mel_features)
+        torch.manual_seed(1234)
+        eager_solver.reset_mock()
+        actual = graphed.vocode(token_sequences, None)
+        assert eager_solver.call_count == (1 if name.endswith("miss") else 0)
+        assert len(actual) == len(lengths)
+        assert len(mel_features) == 2 * expected_mel_count
+        mel_bit_exact = True
+        max_mel_error = 0.0
+        for reference_mel, actual_mel in zip(
+            mel_features[:expected_mel_count],
+            mel_features[expected_mel_count:],
+            strict=True,
+        ):
+            torch.testing.assert_close(actual_mel, reference_mel, atol=2e-3, rtol=2e-3)
+            mel_bit_exact = mel_bit_exact and torch.equal(actual_mel, reference_mel)
+            max_mel_error = max(
+                max_mel_error, (actual_mel - reference_mel).abs().max().item()
+            )
+        max_error = 0.0
+        max_relative_rmse = 0.0
+        for index, (wave, reference, length) in enumerate(
+            zip(actual, expected, lengths, strict=True)
+        ):
+            assert wave.shape == reference.shape == (length * SAMPLES_PER_CODEC_TOKEN,)
+            assert wave.dtype == np.float32 and np.isfinite(wave).all()
+            assert 1e-5 < np.max(np.abs(wave)) <= 0.99
+            # note (Codex): Bound waveform variation below -60 dB after checking mel equivalence.
+            relative_rmse = float(
+                np.linalg.norm(wave - reference) / np.linalg.norm(reference)
+            )
+            assert relative_rmse < 1e-3
+            np.testing.assert_allclose(wave, reference, atol=1e-3, rtol=0)
+            max_relative_rmse = max(max_relative_rmse, relative_rmse)
+            max_error = max(max_error, float(np.max(np.abs(wave - reference))))
+            sf.write(
+                tmp_path / f"{name}_{index}_graph.wav", wave, 24000, subtype="FLOAT"
+            )
+            sf.write(
+                tmp_path / f"{name}_{index}_eager.wav",
+                reference,
+                24000,
+                subtype="FLOAT",
+            )
+        results.append(
+            {
+                "case": name,
+                "token_lengths": lengths,
+                "eager_solver_calls": eager_solver.call_count,
+                "max_abs_waveform_error": max_error,
+                "max_relative_waveform_rmse": max_relative_rmse,
+                "mel_bit_exact": mel_bit_exact,
+                "max_abs_mel_error": max_mel_error,
+            }
+        )
+    (tmp_path / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
 
 def _data_uri(audio: bytes) -> str:

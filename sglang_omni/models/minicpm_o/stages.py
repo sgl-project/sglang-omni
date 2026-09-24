@@ -227,11 +227,15 @@ def create_code2wav_executor(
     batch_wait_when_idle: bool = False,
     dtype: str | None = None,
     max_batch_cost: int | None = None,
+    flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (),
+    flow_cuda_graph_frame_bucket: int | None = None,
 ) -> SimpleScheduler:
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
+        flow_cuda_graph_capture_shapes=flow_cuda_graph_capture_shapes,
+        flow_cuda_graph_frame_bucket=flow_cuda_graph_frame_bucket,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:

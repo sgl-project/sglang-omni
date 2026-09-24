@@ -27,6 +27,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     make_pad_mask,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
+)
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -36,6 +39,7 @@ class CausalConditionalCFM(torch.nn.Module):
         self.estimator = estimator
         self.inference_cfg_rate = inference_cfg_rate
         self.out_channels = estimator.out_channels
+        self.cuda_graph_runner: FlowCudaGraphRunner | None = None
         self.register_buffer(
             "rand_noise",
             torch.randn([1, self.out_channels, 50 * 600]),
@@ -103,7 +107,14 @@ class CausalConditionalCFM(torch.nn.Module):
         )
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-        return self.solve_euler(z, t_span, mu, mask, spks, cond)
+        if self.cuda_graph_runner is not None:
+            output = self.cuda_graph_runner.run(z, t_span, mu, mask, spks, cond)
+        else:
+            output = None
+        if output is None:
+            return self.solve_euler(z, t_span, mu, mask, spks, cond)
+        else:
+            return output
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):

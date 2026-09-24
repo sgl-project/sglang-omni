@@ -14,6 +14,9 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+from sglang_omni.models.minicpm_o.components.token2wav.flow_cuda_graph import (
+    FlowCudaGraphRunner,
+)
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
@@ -35,8 +38,16 @@ class MiniCPMOCode2Wav(nn.Module):
         dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
+        flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (),
+        flow_cuda_graph_frame_bucket: int | None = None,
     ) -> None:
         super().__init__()
+        if flow_cuda_graph_capture_shapes and flow_cuda_graph_frame_bucket is None:
+            raise ValueError(
+                "flow_cuda_graph_frame_bucket is required with capture shapes"
+            )
+        else:
+            pass
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
 
         dev = torch.device(device)
@@ -71,6 +82,20 @@ class MiniCPMOCode2Wav(nn.Module):
             self.token2wav = Token2Wav(
                 Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
             )
+            if flow_cuda_graph_capture_shapes:
+                assert flow_cuda_graph_frame_bucket is not None
+                runner = FlowCudaGraphRunner(
+                    self.token2wav.flow.decoder,
+                    capture_shapes=flow_cuda_graph_capture_shapes,
+                    frame_bucket=flow_cuda_graph_frame_bucket,
+                    n_timesteps=n_timesteps,
+                    # note (Codex): Encoder LayerNorm keeps conditioning in FP32 under autocast.
+                    conditioning_dtype=torch.float32,
+                )
+                runner.capture_all()
+                self.token2wav.flow.decoder.cuda_graph_runner = runner
+            else:
+                pass
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")

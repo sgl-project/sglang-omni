@@ -118,18 +118,20 @@ class TimestepEmbedder(nn.Module):
         )
         self.frequency_embedding_size = frequency_embedding_size
         self.scale = 1000
+        self.frequencies: dict[tuple[torch.device, torch.dtype], torch.Tensor] = {}
 
-    @staticmethod
-    def timestep_embedding(
-        t: torch.Tensor, dim: int, max_period: int = 10000
-    ) -> torch.Tensor:
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
-        ).to(t)
-        args = t[:, None] * freqs[None]
+    def timestep_embedding(self, t: torch.Tensor) -> torch.Tensor:
+        key = (t.device, t.dtype)
+        if key not in self.frequencies:
+            half = self.frequency_embedding_size // 2
+            self.frequencies[key] = torch.exp(
+                -math.log(10000) * torch.arange(half) / half
+            ).to(t)
+        else:
+            pass
+        args = t[:, None] * self.frequencies[key][None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
+        if self.frequency_embedding_size % 2:
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
@@ -138,7 +140,7 @@ class TimestepEmbedder(nn.Module):
         return embedding
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        t_freq = self.timestep_embedding(t * self.scale, self.frequency_embedding_size)
+        t_freq = self.timestep_embedding(t * self.scale)
         t_emb = self.mlp(t_freq)
         return t_emb
 
