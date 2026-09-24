@@ -98,7 +98,7 @@ def test_runner_masks_controls_and_penalizes_each_repeated_id_once() -> None:
     runner.cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner.cosyvoice3_seen_masks = {"req": (speech_ids == 5) | (speech_ids == 6)}
-    runner.first_attention_cache = lambda cache: SimpleNamespace(offset=5)
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=5)
     runner.req_token_ids = {"req": [0, 0, 5, 5, 6]}
 
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)
@@ -125,7 +125,7 @@ def test_runner_chained_constraint_includes_the_lazy_predecessor() -> None:
     runner.cosyvoice3_recent_tokens = {"req": []}
     speech_ids = mx.arange(SPEECH_TOKEN_SIZE, dtype=mx.int32)
     runner.cosyvoice3_seen_masks = {"req": speech_ids == 5}
-    runner.first_attention_cache = lambda cache: SimpleNamespace(offset=4)
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=4)
     raw_logits = np.zeros((1, TOTAL_VOCAB_SIZE), dtype=np.float32)
     raw_logits[0, 5] = 4.0
     raw_logits[0, 6] = 6.0
@@ -164,8 +164,8 @@ def test_runner_ras_redraws_a_repeated_primary_token() -> None:
     runner.rng_key = mx.random.key(0)
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
-    runner.first_attention_cache = lambda cache: SimpleNamespace(offset=3)
-    runner.edited_logits = lambda logits, edit_rows: logits
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
 
     logits = mx.full((1, TOTAL_VOCAB_SIZE), -10.0, dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
@@ -187,8 +187,8 @@ def test_runner_ras_keeps_a_repeated_greedy_primary_token() -> None:
     runner.rng_key = mx.random.key(0)
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
-    runner.first_attention_cache = lambda cache: SimpleNamespace(offset=3)
-    runner.edited_logits = lambda logits, edit_rows: logits
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
 
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 5].add(10.0)
@@ -210,8 +210,8 @@ def test_runner_ras_keeps_a_non_repeated_primary_token() -> None:
     runner.rng_key = mx.random.key(0)
     runner.cosyvoice3_recent_tokens = {"req": [5]}
     runner.cosyvoice3_sampling_pending_tokens = None
-    runner.first_attention_cache = lambda cache: SimpleNamespace(offset=3)
-    runner.edited_logits = lambda logits, edit_rows: logits
+    runner._first_attention_cache = lambda cache: SimpleNamespace(offset=3)
+    runner._edited_logits = lambda logits, edit_rows: logits
 
     logits = mx.zeros((1, TOTAL_VOCAB_SIZE), dtype=mx.float32)
     logits = logits.at[0, 6].add(10.0)

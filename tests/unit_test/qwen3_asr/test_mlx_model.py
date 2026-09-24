@@ -278,7 +278,7 @@ def test_shared_mlx_prefill_matches_direct_greedy_forward() -> None:
     runner = object.__new__(Qwen3ASRMlxModelRunner)
     runner.model = _tiny_model()
     runner.disable_radix_cache = True
-    runner.acquire_cache = runner.model.make_cache
+    runner._acquire_cache = runner.model.make_cache
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(
             audio_token_id=10,

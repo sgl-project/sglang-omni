@@ -2410,7 +2410,7 @@ def test_omni_scheduler_initializes_upstream_queue_limit(monkeypatch) -> None:
             {"pp_max_micro_batch_size": 1},
         )
     ]
-    assert scheduler.abort_on_queued_limit(object()) is False
+    assert scheduler._abort_on_queued_limit(object()) is False
 
 
 def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None:

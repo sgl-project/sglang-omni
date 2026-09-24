@@ -398,7 +398,7 @@ class OmniScheduler:
         )
         self.dynamic_chunk_sizer = None
         self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
-        self.prefill_decode_interval_remaining = 0
+        self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore
         self.processed_tokens_counter = 0
 
         # Schedule policy
