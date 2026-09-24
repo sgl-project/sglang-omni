@@ -232,6 +232,16 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 _ENGINE_FACTORIES = {
+    "nemotron_voicechat_thinker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatEngineBuilder",
+    ),
+    "nemotron_voicechat_talker": (
+        "sglang_omni.models.nemotron_voicechat.stages.create_talker_executor",
+        "sglang_omni.models.nemotron_voicechat.engine_builder",
+        "NemotronVoiceChatTalkerEngineBuilder",
+    ),
     "arkasr": (
         "sglang_omni.models.arkasr.stages.create_sglang_arkasr_executor",
         "sglang_omni.models.arkasr.engine_builder",

@@ -91,6 +91,7 @@ jobs:
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload non-streaming speed artifact
+        if: always() && !cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: tts-stage-nonstream-speed-results
@@ -149,6 +150,7 @@ jobs:
           TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
 
       - name: Upload streaming speed artifact
+        if: always() && !cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: tts-stage-stream-speed-results

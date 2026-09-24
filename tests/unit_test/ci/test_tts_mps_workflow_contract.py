@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,3 +110,18 @@ def test_mps_stage_measures_the_pool_model_not_the_rotation_model() -> None:
         tts_ci["with"]["tts_ci_model"]
         == "${{ needs.pick-tts-model.outputs.selected_model }}"
     )
+
+
+@pytest.mark.parametrize(
+    ("job_id", "step_name"),
+    [
+        ("stage-1-non-streaming", "Upload non-streaming speed artifact"),
+        ("stage-2-streaming", "Upload streaming speed artifact"),
+    ],
+)
+def test_consistency_inputs_are_uploaded_after_benchmark_failure(
+    job_id: str, step_name: str
+) -> None:
+    upload = _step(_workflow(TTS_WORKFLOW)["jobs"][job_id], step_name)
+    assert upload.get("if") == "always() && !cancelled()"
+    assert upload["with"]["if-no-files-found"] == "error"
