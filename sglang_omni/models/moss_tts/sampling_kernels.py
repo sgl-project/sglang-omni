@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -11,6 +12,94 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
+_UINT32_MASK = (1 << 32) - 1
+
+
+def rotl32_host(value: np.ndarray, bits: int) -> np.ndarray:
+    return (value << np.uint32(bits)) | (value >> np.uint32(32 - bits))
+
+
+def murmur3_mix_host(h: np.ndarray, key: np.ndarray) -> np.ndarray:
+    key = key * np.uint32(0xCC9E2D51)
+    key = rotl32_host(key, 15)
+    key = key * np.uint32(0x1B873593)
+    h = rotl32_host(h ^ key, 13)
+    return h * np.uint32(5) + np.uint32(0xE6546B64)
+
+
+def fmix32_host(h: np.ndarray) -> np.ndarray:
+    h = h ^ (h >> np.uint32(16))
+    h = h * np.uint32(0x85EBCA6B)
+    h = h ^ (h >> np.uint32(13))
+    h = h * np.uint32(0xC2B2AE35)
+    return h ^ (h >> np.uint32(16))
+
+
+def multinomial_with_seed_host(
+    logprobs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    token_ids: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Run SGLang's seeded Gumbel-max semantics on the host."""
+    output_device = logprobs.device
+    scores = logprobs.detach().to(device="cpu", dtype=torch.float32).numpy()
+    seeds_host = (
+        seeds.detach()
+        .to(device="cpu", dtype=torch.int64)
+        .numpy()
+        .astype(np.uint64, copy=False)
+        .reshape(-1, 1)
+    )
+    positions_host = (
+        positions.detach()
+        .to(device="cpu", dtype=torch.int64)
+        .numpy()
+        .astype(np.uint32, copy=False)
+        .reshape(-1, 1)
+    )
+    rows, vocab_size = scores.shape
+    if seeds_host.shape != (rows, 1) or positions_host.shape != (rows, 1):
+        raise ValueError("seeded Gumbel metadata shape mismatch")
+
+    if token_ids is None:
+        columns = np.arange(vocab_size, dtype=np.uint32)
+    else:
+        columns = (
+            token_ids.detach()
+            .to(device="cpu", dtype=torch.int64)
+            .numpy()
+            .astype(np.uint32, copy=False)
+        )
+        if columns.shape != (vocab_size,):
+            raise ValueError("seeded Gumbel token id shape mismatch")
+    columns = columns.reshape(1, -1)
+
+    hashes = np.zeros((rows, 1), dtype=np.uint32)
+    hashes = murmur3_mix_host(hashes, seeds_host.astype(np.uint32))
+    hashes = murmur3_mix_host(
+        hashes,
+        (seeds_host >> np.uint64(32)).astype(np.uint32),
+    )
+    hashes = murmur3_mix_host(hashes, positions_host)
+    hashes = murmur3_mix_host(hashes, columns)
+    hashes = fmix32_host(hashes ^ np.uint32(16))
+
+    noise = hashes.astype(np.float64) / np.float64(_UINT32_MASK)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        np.log(noise, out=noise)
+        np.clip(
+            noise,
+            np.finfo(np.float64).min,
+            -(2.0**-32),
+            out=noise,
+        )
+        np.negative(noise, out=noise)
+        np.log(noise, out=noise)
+        np.negative(noise, out=noise)
+    noise += scores.astype(np.float64)
+    sampled = np.argmax(noise, axis=1).astype(np.int64)
+    return torch.from_numpy(sampled).to(device=output_device)
 
 
 @triton.jit

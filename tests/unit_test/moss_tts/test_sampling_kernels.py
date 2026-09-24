@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
@@ -10,12 +12,143 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
+    multinomial_with_seed_host,
     seeded_gumbel_argmax,
 )
 
 pytestmark = pytest.mark.accelerator
 
 _UINT32_MAX_HASH_POSITION = 1_707_985_137
+_UINT32_MASK = (1 << 32) - 1
+
+
+def _murmur_hash32_scalar(seed: int, position: int, column: int) -> int:
+    """Independent scalar reference for SGLang's four-block MurmurHash32."""
+
+    def rotl32(value: int, bits: int) -> int:
+        return ((value << bits) | (value >> (32 - bits))) & _UINT32_MASK
+
+    def mix(hash_value: int, key: int) -> int:
+        key = (key * 0xCC9E2D51) & _UINT32_MASK
+        key = rotl32(key, 15)
+        key = (key * 0x1B873593) & _UINT32_MASK
+        hash_value = rotl32(hash_value ^ key, 13)
+        return (hash_value * 5 + 0xE6546B64) & _UINT32_MASK
+
+    seed &= (1 << 64) - 1
+    hash_value = 0
+    for key in (
+        seed & _UINT32_MASK,
+        (seed >> 32) & _UINT32_MASK,
+        position & _UINT32_MASK,
+        column & _UINT32_MASK,
+    ):
+        hash_value = mix(hash_value, key)
+    hash_value ^= 16
+    hash_value ^= hash_value >> 16
+    hash_value = (hash_value * 0x85EBCA6B) & _UINT32_MASK
+    hash_value ^= hash_value >> 13
+    hash_value = (hash_value * 0xC2B2AE35) & _UINT32_MASK
+    return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
+
+
+def _sample_seeded_scalar(
+    scores: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    token_ids: torch.Tensor | None = None,
+) -> list[int]:
+    """Independent scalar reference for the GPU sampler's Gumbel-max step."""
+    columns = (
+        list(range(scores.shape[1]))
+        if token_ids is None
+        else [int(value) for value in token_ids.tolist()]
+    )
+    result = []
+    for row in range(scores.shape[0]):
+        values = []
+        for column_index, hash_column in enumerate(columns):
+            hashed = _murmur_hash32_scalar(
+                int(seeds[row]), int(positions[row]), hash_column
+            )
+            uniform = hashed / _UINT32_MASK
+            log_uniform = math.log(uniform) if uniform else -math.inf
+            log_uniform = min(log_uniform, -(2.0**-32))
+            log_uniform = max(log_uniform, -float.fromhex("0x1.fffffffffffffp+1023"))
+            gumbel = -math.log(-log_uniform)
+            values.append(float(scores[row, column_index]) + gumbel)
+        result.append(max(range(len(values)), key=values.__getitem__))
+    return result
+
+
+def test_host_seeded_sampler_preserves_gpu_hash_columns() -> None:
+    scores = torch.zeros((1, 2), dtype=torch.float32)
+    seeds = torch.tensor([0], dtype=torch.long)
+    positions = torch.tensor([_UINT32_MAX_HASH_POSITION], dtype=torch.long)
+
+    assert multinomial_with_seed_host(scores, seeds, positions).item() == 0
+    assert (
+        multinomial_with_seed_host(
+            scores,
+            seeds,
+            positions,
+            token_ids=torch.tensor([1, 0], dtype=torch.long),
+        ).item()
+        == 1
+    )
+
+
+@pytest.mark.parametrize("compact", [False, True], ids=["full", "compact"])
+def test_host_seeded_sampler_matches_independent_scalar_reference(
+    compact: bool,
+) -> None:
+    generator = torch.Generator().manual_seed(20260915)
+    rows = 9
+    token_ids = (
+        torch.tensor([31, 7, 1024, 1, 0, 511, 12, 99, 3, 2048, 13]) if compact else None
+    )
+    vocab_size = len(token_ids) if token_ids is not None else 257
+    scores = torch.randn(rows, vocab_size, generator=generator) * 3
+    scores[0].zero_()  # Exercise deterministic tie-breaking.
+    scores[1, ::3] = -torch.inf  # Exercise masked vocabulary lanes.
+    scores[2].fill_(-torch.inf)  # All-masked rows choose the first lane.
+    seeds = torch.tensor(
+        [0, 1, 2**32 - 1, 2**32, 2**40, 2**63 - 1, 1234, 42, 20260915],
+        dtype=torch.long,
+    )
+    positions = torch.tensor(
+        [0, 1, _UINT32_MAX_HASH_POSITION, 2**32 - 1, 2**32, 2**33, 17, 99, 7],
+        dtype=torch.long,
+    )
+
+    expected = _sample_seeded_scalar(scores, seeds, positions, token_ids)
+    actual = multinomial_with_seed_host(scores, seeds, positions, token_ids)
+    assert actual.tolist() == expected
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_host_seeded_sampler_matches_cuda_sampler() -> None:
+    device = torch.device("cuda")
+    scores = torch.zeros((4, 16), dtype=torch.float32, device=device)
+    seeds = torch.tensor([0, 1, 20260720, 2**40], dtype=torch.long, device=device)
+    positions = torch.tensor(
+        [0, _UINT32_MAX_HASH_POSITION, 17, 2**33],
+        dtype=torch.long,
+        device=device,
+    )
+    token_ids = torch.tensor([1, 3, 5, 7], dtype=torch.long, device=device)
+
+    expected = multinomial_with_seed(scores, seeds, positions).view(-1)
+    actual = multinomial_with_seed_host(scores, seeds, positions)
+    assert torch.equal(expected, actual)
+
+    expected_compact = multinomial_with_seed_and_token_ids(
+        scores[:, token_ids], seeds, positions, token_ids
+    )
+    actual_compact = multinomial_with_seed_host(
+        scores[:, token_ids], seeds, positions, token_ids
+    )
+    assert torch.equal(expected_compact, actual_compact)
 
 
 @pytest.mark.parametrize("equal_scores", [False, True], ids=["random", "tied"])
