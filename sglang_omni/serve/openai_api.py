@@ -1082,86 +1082,112 @@ def _register_image_generations(app: FastAPI) -> None:
 
 
 def _register_image_edits(app: FastAPI) -> None:
-    """Expose SenseNova's native single-reference I2I path."""
+    """Expose SenseNova's native I2I path."""
     from sglang_omni.models.sensenova_u1.sampling import (
         SenseNovaU1ImageEditSampling,
     )
 
     @app.post("/v1/images/edits", response_model=ImageGenerationResponse)
     async def image_edits(
-        image: list[UploadFile] = File(...),  # noqa: B008
+        image: list[UploadFile] | None = File(default=None),  # noqa: B008
+        image_array: list[UploadFile] | None = File(  # noqa: B008
+            default=None, alias="image[]"
+        ),
         prompt: str = Form(...),
         mask: UploadFile | None = File(default=None),  # noqa: B008
         model: str | None = Form(default=None),
         n: int = Form(default=1),
-        response_format: str = Form(default="b64_json"),
-        size: str = Form(default="256x256"),
-        seed: int = Form(default=0),
-        num_inference_steps: int = Form(default=30),
-        guidance_scale: float = Form(default=1.0),
-        img_cfg_scale: float = Form(default=1.0),
+        response_format: str | None = Form(default=None),
+        size: str | None = Form(default=None),
+        seed: int | None = Form(default=None),
+        num_inference_steps: int | None = Form(default=None),
+        guidance_scale: float | None = Form(default=None),
+        img_cfg_scale: float | None = Form(default=None),
     ) -> ImageGenerationResponse:
         if model is not None and model != app.state.model_name:
             raise HTTPException(status_code=400, detail="Unknown image model")
-        if len(image) != 1:
+        uploads = image or image_array
+        if not uploads:
             raise HTTPException(
-                status_code=400,
-                detail="SenseNova-U1 currently supports exactly one reference image",
+                status_code=422,
+                detail="Field 'image' is required",
             )
         if mask is not None:
             raise HTTPException(
                 status_code=400,
                 detail="SenseNova-U1 image edits do not support masks yet",
             )
-        if response_format != "b64_json":
+        resolved_response_format = (response_format or "b64_json").lower()
+        if resolved_response_format != "b64_json":
             raise HTTPException(
                 status_code=400,
                 detail="SenseNova-U1 image edits only support response_format=b64_json",
             )
         try:
-            width_str, height_str = size.split("x")
-            params = {
-                "width": int(width_str),
-                "height": int(height_str),
-                "num_inference_steps": num_inference_steps,
-                "guidance_scale": guidance_scale,
-                "img_cfg_scale": img_cfg_scale,
-                "seed": seed,
-                "n": n,
-            }
-            SenseNovaU1ImageEditSampling.from_params(params)
+            num_outputs = max(1, min(int(n or 1), 10))
+            params = {"n": 1, "size_explicit": size is not None}
+            if size is not None:
+                width_str, height_str = size.split("x")
+                params.update(width=int(width_str), height=int(height_str))
+            for name, value in (
+                ("num_inference_steps", num_inference_steps),
+                ("guidance_scale", guidance_scale),
+                ("img_cfg_scale", img_cfg_scale),
+                ("seed", seed),
+            ):
+                if value is not None:
+                    params[name] = value
+            options = SenseNovaU1ImageEditSampling.from_params(params)
+            params.update(
+                width=options.width,
+                height=options.height,
+                num_inference_steps=options.num_inference_steps,
+                guidance_scale=options.guidance_scale,
+                img_cfg_scale=options.img_cfg_scale,
+                seed=options.seed,
+            )
             if not prompt.strip():
                 raise ValueError("SenseNova-U1 requires a non-empty image edit prompt")
-            image_bytes = await _read_image_edit_upload(image[0])
+            image_bytes = [await _read_image_edit_upload(upload) for upload in uploads]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        request = GenerateRequest(
-            model=app.state.model_name,
-            prompt={
-                "task": "image_edit",
-                "prompt": prompt,
-                "image_b64": base64.b64encode(image_bytes).decode("ascii"),
-            },
-            extra_params=params,
-            output_modalities=["image"],
-            stream=False,
-        )
-        request_id = str(uuid.uuid4())
+        encoded_images = [
+            base64.b64encode(item).decode("ascii") for item in image_bytes
+        ]
+        data = []
+        parent_request_id = str(uuid.uuid4())
         try:
-            async for chunk in app.state.client.generate(
-                request, request_id=request_id
-            ):
-                if chunk.image_b64 is None:
-                    raise RuntimeError("SenseNova-U1 generated no image")
-                return ImageGenerationResponse(
-                    created=int(time.time()),
-                    data=[ImageGenerationData(b64_json=chunk.image_b64)],
+            for output_index in range(num_outputs):
+                output_params = dict(params)
+                output_params["seed"] = options.seed + output_index
+                request = GenerateRequest(
+                    model=app.state.model_name,
+                    prompt={
+                        "task": "image_edit",
+                        "prompt": prompt,
+                        "image_b64": encoded_images,
+                    },
+                    extra_params=output_params,
+                    output_modalities=["image"],
+                    stream=False,
                 )
+                request_id = f"{parent_request_id}:{output_index}"
+                async for chunk in app.state.client.generate(
+                    request, request_id=request_id
+                ):
+                    if chunk.image_b64 is None:
+                        raise RuntimeError("SenseNova-U1 generated no image")
+                    data.append(ImageGenerationData(b64_json=chunk.image_b64))
+                    break
         except Exception as exc:
-            logger.exception("Image edit failed for request %s", request_id)
+            logger.exception("Image edit failed for request %s", parent_request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
+        if len(data) != num_outputs:
+            raise HTTPException(
+                status_code=500, detail="SenseNova-U1 returned no result"
+            )
+        return ImageGenerationResponse(created=int(time.time()), data=data)
 
 
 async def _read_image_edit_upload(image: UploadFile) -> bytes:

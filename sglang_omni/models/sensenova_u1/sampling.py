@@ -23,19 +23,36 @@ class SenseNovaU1Sampling:
 
 @dataclass(frozen=True)
 class SenseNovaU1ImageEditSampling:
-    """I2I defaults from the source model's ``it2i_generate`` method."""
+    """I2I defaults aligned with SGLang's SenseNova serving pipeline."""
 
-    width: int = 256
-    height: int = 256
-    num_inference_steps: int = 30
-    guidance_scale: float = 1.0
+    width: int = 2048
+    height: int = 2048
+    num_inference_steps: int = 50
+    guidance_scale: float = 4.0
     img_cfg_scale: float = 1.0
-    seed: int = 0
+    seed: int = 42
+    input_max_pixels: int | None = None
+    do_resize: bool = True
+    size_explicit: bool = False
 
     @classmethod
     def from_params(cls, params: dict[str, Any]) -> SenseNovaU1ImageEditSampling:
+        input_max_pixels = params.get("input_max_pixels")
+        if input_max_pixels is not None and (
+            type(input_max_pixels) is not int or input_max_pixels < 512 * 512
+        ):
+            raise ValueError("input_max_pixels must be at least 262144")
+        do_resize = params.get("do_resize", True)
+        if type(do_resize) is not bool:
+            raise ValueError("do_resize must be a boolean")
+        size_explicit = params.get("size_explicit", False)
+        if type(size_explicit) is not bool:
+            raise ValueError("size_explicit must be a boolean")
         return cls(
-            **_validated_values(cls, params, ("guidance_scale", "img_cfg_scale"))
+            **_validated_values(cls, params, ("guidance_scale", "img_cfg_scale")),
+            input_max_pixels=input_max_pixels,
+            do_resize=do_resize,
+            size_explicit=size_explicit,
         )
 
 

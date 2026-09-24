@@ -62,6 +62,10 @@ def npu_fia_available() -> bool:
     return hasattr(torch.ops.npu, "npu_fused_infer_attention_score")
 
 
+def npu_swiglu_available() -> bool:
+    return hasattr(torch.ops.npu, "npu_swiglu")
+
+
 def set_attn_backend(backend: str) -> str:
     """Choose the attention kernel used by the Qwen3 layers at runtime.
 
@@ -394,7 +398,7 @@ class Qwen3MLP(nn.Module):
             or self.config.hidden_act != "silu"
         ):
             return False
-        return hasattr(torch.ops.npu, "npu_swiglu")
+        return npu_swiglu_available()
 
     def forward(self, x):
         if self._use_npu_fused_mlp(x):

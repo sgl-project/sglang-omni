@@ -36,11 +36,14 @@ class TestSenseNovaSampling(unittest.TestCase):
 
     def test_image_edit_defaults_and_overrides(self):
         defaults = SenseNovaU1ImageEditSampling.from_params({})
-        self.assertEqual((defaults.width, defaults.height), (256, 256))
-        self.assertEqual(defaults.num_inference_steps, 30)
-        self.assertEqual(defaults.guidance_scale, 1.0)
+        self.assertEqual((defaults.width, defaults.height), (2048, 2048))
+        self.assertEqual(defaults.num_inference_steps, 50)
+        self.assertEqual(defaults.guidance_scale, 4.0)
         self.assertEqual(defaults.img_cfg_scale, 1.0)
-        self.assertEqual(defaults.seed, 0)
+        self.assertEqual(defaults.seed, 42)
+        self.assertIsNone(defaults.input_max_pixels)
+        self.assertTrue(defaults.do_resize)
+        self.assertFalse(defaults.size_explicit)
 
         options = SenseNovaU1ImageEditSampling.from_params(
             {"width": 512, "height": 768, "img_cfg_scale": 2.0}
@@ -52,6 +55,9 @@ class TestSenseNovaSampling(unittest.TestCase):
         for params in (
             {"img_cfg_scale": float("inf")},
             {"img_cfg_scale": -1},
+            {"input_max_pixels": 512 * 512 - 1},
+            {"do_resize": "false"},
+            {"size_explicit": 1},
             {"n": 2},
             {"think_mode": True},
         ):

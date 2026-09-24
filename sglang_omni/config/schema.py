@@ -234,6 +234,7 @@ class FactoryArgs(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=1)
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
+    max_batch_cost: int | None = Field(default=None, ge=1)
     enable_async_decode: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
