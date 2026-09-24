@@ -286,6 +286,7 @@ class DiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
+        sequence_ids: torch.Tensor,
         cu_seqlens: torch.Tensor,
         max_length: int,
         conv_positions: torch.Tensor,
@@ -301,7 +302,7 @@ class DiTBlock(nn.Module):
             shift_conv,
             scale_conv,
             gate_conv,
-        ) = self.adaLN_modulation(c).chunk(9, dim=-1)
+        ) = self.adaLN_modulation(c)[sequence_ids].chunk(9, dim=-1)
         x = x + gate_msa * self.attn.forward_packed(
             modulate(self.norm1(x), shift_msa, scale_msa),
             cu_seqlens,
@@ -330,6 +331,18 @@ class FinalLayer(nn.Module):
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
+
+    def forward_packed(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        sequence_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        shift, scale = self.adaLN_modulation(conditioning)[sequence_ids].chunk(
+            2, dim=-1
+        )
+        x = modulate(self.norm_final(x), shift, scale)
+        return self.linear(x)
 
 
 class DiT(nn.Module):
@@ -416,7 +429,7 @@ class DiT(nn.Module):
             0
         ) < lengths.unsqueeze(1)
         x = x[valid]
-        conditioning = torch.repeat_interleave(conditioning.squeeze(1), lengths, dim=0)
+        conditioning = conditioning.squeeze(1)
         cu_seqlens = torch.nn.functional.pad(
             lengths.cumsum(0, dtype=torch.int32), (1, 0)
         )
@@ -438,12 +451,13 @@ class DiT(nn.Module):
             x = block.forward_packed(
                 x,
                 conditioning,
+                sequence_ids,
                 cu_seqlens,
                 max_length,
                 conv_positions,
                 conv_valid,
             )
-        x = self.final_layer(x, conditioning)
+        x = self.final_layer.forward_packed(x, conditioning, sequence_ids)
         dense = x.new_zeros(batch_size, padded_length, self.out_channels)
         dense[valid] = x
         return dense.transpose(1, 2)
