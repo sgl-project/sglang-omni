@@ -8,7 +8,7 @@ import io
 import pickle
 from dataclasses import fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, overload
 
 import torch
 
@@ -821,7 +821,17 @@ def _ipc_pickle(obj: object) -> bytes:
     return buf.getvalue()
 
 
-def _serialize_direct_ipc_metadata_value(value: object) -> Any:
+@overload
+def _serialize_direct_ipc_metadata_value(
+    value: dict[str, MetadataValueT],
+) -> dict[str, object]: ...
+
+
+@overload
+def _serialize_direct_ipc_metadata_value(value: object) -> object: ...
+
+
+def _serialize_direct_ipc_metadata_value(value: object) -> object:
     if isinstance(value, torch.Tensor):
         return {"_ipc_tensor": _ipc_pickle(value)}
     if isinstance(value, dict):
