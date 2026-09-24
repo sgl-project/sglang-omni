@@ -2,8 +2,6 @@
 """Shared ServerArgs construction for SGLang AR engines."""
 from __future__ import annotations
 
-from typing import Any
-
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
@@ -75,7 +73,7 @@ def build_sglang_server_args(
     **overrides: object,
 ) -> ServerArgs:
     """Build ServerArgs with shared defaults for all SGLang AR engines."""
-    kwargs: dict[str, Any] = {
+    kwargs: dict[str, object] = {
         "model_path": model_path,
         "trust_remote_code": True,
         "tp_size": 1,

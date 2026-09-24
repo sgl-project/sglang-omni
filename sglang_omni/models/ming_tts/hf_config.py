@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from transformers import PretrainedConfig
 
@@ -63,7 +62,7 @@ class BailingMoeTTSConfig(PretrainedConfig):
         image_start_token: int | None = None,
         video_start_token: int | None = None,
         use_grouped_gemm: bool = False,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         super().__init__(
             pad_token_id=pad_token_id,
@@ -138,12 +137,12 @@ class BailingMMTTSConfig(PretrainedConfig):
 
     def __init__(
         self,
-        llm_config: BailingMoeTTSConfig | dict[str, Any] | None = None,
-        audio_tokenizer_config: PretrainedConfig | dict[str, Any] | None = None,
-        ditar_config: dict[str, Any] | None = None,
-        aggregator_config: dict[str, Any] | None = None,
+        llm_config: BailingMoeTTSConfig | dict[str, object] | None = None,
+        audio_tokenizer_config: PretrainedConfig | dict[str, object] | None = None,
+        ditar_config: Mapping[str, object] | None = None,
+        aggregator_config: Mapping[str, object] | None = None,
         model_type: str | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         if isinstance(llm_config, dict):
             llm_config = BailingMoeTTSConfig(**llm_config)

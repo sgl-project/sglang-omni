@@ -6,7 +6,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from numbers import Integral
-from typing import Any
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
@@ -74,7 +73,7 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     return values
 
 
-def _explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
+def _explicit_prefill_cap(overrides: Mapping[str, object]) -> int | None:
     """The cap SGLang derives inside ServerArgs once its inputs are explicit."""
     declared = overrides.get("cuda_graph_max_bs_prefill")
     if declared is not None:
@@ -118,9 +117,9 @@ def build_generation_batch_overrides(
     max_running_requests: int,
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
-    server_args_overrides: Mapping[str, Any] | None = None,
-    **stage_defaults: Any,
-) -> dict[str, Any]:
+    server_args_overrides: Mapping[str, object] | None = None,
+    **stage_defaults: object,
+) -> dict[str, object]:
     incoming = dict(server_args_overrides or {})
     # note(ratish): the nested form wins in sglang; mirror its prefill
     # fields into the flat keys.

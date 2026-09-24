@@ -13,7 +13,7 @@ import logging
 import multiprocessing
 import socket
 from collections.abc import Mapping
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from sglang_omni.config.placement import (
     StagePlacementPlan,
@@ -323,7 +323,7 @@ def _build_single_stage_spec(
     recv_endpoint: str,
     base_factory_kwargs: Mapping[str, object],
     typed_kwargs: Mapping[str, object],
-    stage_kwargs: dict[str, Any],
+    stage_kwargs: Mapping[str, object],
 ) -> StageLaunchConfig:
     comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
     return StageLaunchConfig(
@@ -355,7 +355,7 @@ def _build_tp_stage_specs(
     recv_endpoint: str,
     base_factory_kwargs: Mapping[str, object],
     typed_kwargs: Mapping[str, object],
-    stage_kwargs: dict[str, Any],
+    stage_kwargs: Mapping[str, object],
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
     follower_abort_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]

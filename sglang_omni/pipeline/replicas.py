@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Protocol
 
 from sglang_omni.config.schema import (
     REPLICA_SEPARATOR,
@@ -95,7 +96,7 @@ class ReplicaTopology:
         return {name: list(instances) for name, instances in self.replicas.items()}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ReplicaTopology":
+    def from_dict(cls, data: Mapping[str, object] | None) -> "ReplicaTopology":
         if not data:
             return cls()
         return cls(

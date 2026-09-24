@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 from transformers import PretrainedConfig, Qwen2Config
 
@@ -23,9 +22,9 @@ class DotsTTSConfig(PretrainedConfig):
 
     def __init__(
         self,
-        llm_config: Qwen2Config | dict[str, Any] | None = None,
+        llm_config: Qwen2Config | dict[str, object] | None = None,
         dots_tts_config: Mapping[str, object] | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         if isinstance(llm_config, dict):
             llm_config = Qwen2Config(**llm_config)
