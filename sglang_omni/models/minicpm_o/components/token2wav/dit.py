@@ -14,6 +14,12 @@ import torch.nn.functional as F
 from einops import pack, repeat
 from torch.nn.attention.varlen import varlen_attn
 
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    build_fixed_packed_layout,
+    pack_fixed_capacity,
+    unpack_fixed_capacity,
+)
+
 TIMESTEP_MAX_PERIOD = 10000
 
 
@@ -416,6 +422,8 @@ class DiT(nn.Module):
         t: torch.Tensor,
         spks: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
+        *,
+        packed_capacity: int | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
@@ -434,7 +442,14 @@ class DiT(nn.Module):
         if self.enable_variable_length and x.shape[0] > 2:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
-                return self.forward_packed(packed_input, t.to(torch.bfloat16), lengths)
+                conditioning = t.to(torch.bfloat16)
+                if packed_capacity is not None:
+                    return self.forward_packed_fixed(
+                        packed_input, conditioning, lengths, packed_capacity
+                    )
+                else:
+                    pass
+                return self.forward_packed(packed_input, conditioning, lengths)
         else:
             pass
         x = self.in_proj(x)
@@ -470,6 +485,60 @@ class DiT(nn.Module):
             dtype=torch.bool,
         )
         conv_valid[conv_positions] = True
+        x = self.run_packed_blocks(
+            x,
+            conditioning,
+            sequence_ids,
+            cu_seqlens,
+            max_length,
+            conv_positions,
+            conv_valid,
+        )
+        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
+        dense[valid] = x
+        return dense.transpose(1, 2)
+
+    def forward_packed_fixed(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        lengths: torch.Tensor,
+        capacity: int,
+    ) -> torch.Tensor:
+        """Run packed DiT blocks with static tensor shapes for graph replay."""
+        padded_length = x.shape[1]
+        layout = build_fixed_packed_layout(
+            lengths, padded_length, capacity, self.blocks[0].conv.kernel_size - 1
+        )
+        packed = pack_fixed_capacity(x, layout)
+        conditioning_rows = torch.cat(
+            (
+                conditioning.squeeze(1),
+                conditioning.new_zeros((1, conditioning.shape[-1])),
+            ),
+            dim=0,
+        )
+        packed = self.run_packed_blocks(
+            packed,
+            conditioning_rows,
+            layout.row_ids,
+            layout.cu_seqlens,
+            padded_length,
+            layout.conv_positions,
+            layout.conv_valid,
+        )
+        return unpack_fixed_capacity(packed, layout).transpose(1, 2)
+
+    def run_packed_blocks(
+        self,
+        x: torch.Tensor,
+        conditioning: torch.Tensor,
+        sequence_ids: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        max_length: int,
+        conv_positions: torch.Tensor,
+        conv_valid: torch.Tensor,
+    ) -> torch.Tensor:
         for block in self.blocks:
             x = block.forward_packed(
                 x,
@@ -481,6 +550,4 @@ class DiT(nn.Module):
                 conv_valid,
             )
         x = self.final_layer.forward_packed(x, conditioning, sequence_ids)
-        dense = x.new_zeros(batch_size, padded_length, self.out_channels)
-        dense[valid] = x
-        return dense.transpose(1, 2)
+        return x

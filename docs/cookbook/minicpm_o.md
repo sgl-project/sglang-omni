@@ -70,4 +70,9 @@ remaining buckets stay usable.
 Resident graphs consume GPU memory even when requests do not hit them.
 Override `flow_cuda_graph_capture_shapes` when a measured serving workload has
 different resident shapes. With variable-length DiT enabled, only batch-1
-shapes are captured; larger batches use packed DiT eagerly.
+shapes are captured by default; larger batches use packed DiT eagerly. An
+experimental packed graph shape can be specified as `(batch, mel frames,
+packed capacity)`. The capacity must be 16-aligned and leave one or more
+dummy frames after the CFG-doubled valid frames, with no more than one mel
+frame width of dummy tokens. Requests outside the captured capacity run packed
+DiT eagerly.

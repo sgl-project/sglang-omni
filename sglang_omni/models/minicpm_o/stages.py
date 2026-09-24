@@ -214,7 +214,7 @@ def create_code2wav_executor(
     enable_flow_variable_length: bool = False,
     enable_dit_torch_compile: bool = True,
     enable_flow_cuda_graph: bool = True,
-    flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
+    flow_cuda_graph_capture_shapes: tuple[tuple[int, ...], ...] | None = None,
 ) -> SimpleScheduler:
     model = MiniCPMOCode2Wav(
         model_path,
