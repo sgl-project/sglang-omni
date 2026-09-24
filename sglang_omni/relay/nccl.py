@@ -5,8 +5,8 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Callable
-from typing import Any, Generic, TypedDict, TypeVar
+from collections.abc import Callable, Mapping
+from typing import Generic, TypedDict, TypeVar
 
 import torch
 import torch.distributed as dist
@@ -312,7 +312,7 @@ class NcclRelay(Relay):
 
     async def get_async(
         self,
-        metadata: dict[str, Any],
+        metadata: Mapping[str, object],
         dest_tensor: torch.Tensor,
         request_id: str | None = None,
         src_rank: int | None = None,

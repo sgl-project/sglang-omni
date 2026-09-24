@@ -12,7 +12,7 @@ from array import array
 from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager, contextmanager
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Generic, Literal, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, ParamSpec, TypeVar
 
 import msgspec
 import torch
@@ -75,7 +75,7 @@ class DecodeContinuation:
     origin_input_ids: list[int]
     output_ids: list[int]
     vocab_size: int
-    sampling_params: dict[str, Any]
+    sampling_params: dict[str, object]
     stage_payload: dict[str, object]
     origin_input_ids_unpadded: list[int] | None = None
     eos_token_ids: list[int] | None = None
@@ -159,9 +159,9 @@ class DecodeAdmission:
 
 
 StateBuilder = Callable[
-    ["Req"], tuple[dict[str, Any], dict[str, Any] | None, list[int]]
+    ["Req"], tuple[dict[str, object], dict[str, object] | None, list[int]]
 ]
-StateRestorer = Callable[["Req", SGLangARRequestData, dict[str, Any] | None], None]
+StateRestorer = Callable[["Req", SGLangARRequestData, dict[str, object] | None], None]
 
 
 def continuation_from_req(

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Annotated, TypeVar
 
 import msgspec
 
@@ -68,7 +68,7 @@ class TensorMeta(msgspec.Struct, frozen=True):
 
 class BackendRef(msgspec.Struct, frozen=True):
     transport: TransportKind
-    info: dict[str, Any]
+    info: dict[str, Annotated[object, msgspec.Meta(extra_json_schema={"anyOf": [{}]})]]
     length: int
 
     @classmethod

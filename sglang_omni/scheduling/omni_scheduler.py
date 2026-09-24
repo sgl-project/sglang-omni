@@ -23,7 +23,7 @@ from collections import deque
 from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice
-from typing import TYPE_CHECKING, Any, Callable, Generic, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, TypedDict, TypeVar
 
 import torch
 from sglang.srt.environ import envs
@@ -1950,7 +1950,9 @@ class OmniScheduler(Generic[RequestDataT]):
             and threading.get_ident() != scheduler_thread_id
         )
 
-    def _enqueue_admin(self, action: str, payload: dict[str, Any]) -> AdminActionResult:
+    def _enqueue_admin(
+        self, action: str, payload: Mapping[str, object]
+    ) -> AdminActionResult:
         timeout_s = float(payload.get("_admin_timeout_s", 300.0))
         queued_payload = dict(payload)
         queued_payload.pop("_admin_timeout_s", None)

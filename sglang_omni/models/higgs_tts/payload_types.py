@@ -7,11 +7,12 @@ Carried between stages via :class:`sglang_omni.proto.StagePayload.data`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
     import torch
 
     from sglang_omni.models.higgs_tts.rollout_trace import HiggsRolloutTrace
@@ -51,10 +52,10 @@ class HiggsTtsState(DeclarativeStateBase):
 
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
-    omni_rollout: HiggsRolloutTrace | dict[str, Any] | None = None
+    omni_rollout: HiggsRolloutTrace | dict[str, object] | None = None
 
     # vocoder
-    audio_samples: Any | None = None
+    audio_samples: torch.Tensor | npt.ArrayLike | None = None
 
     def to_dict(self) -> dict[str, object]:
         data = super().to_dict()

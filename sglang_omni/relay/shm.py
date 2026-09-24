@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Mapping
 from multiprocessing import shared_memory as _shm
-from typing import Any, Callable, Generic, TypedDict, TypeVar
+from typing import Callable, Generic, TypedDict, TypeVar
 
 import numpy as np
 import torch
@@ -111,11 +112,11 @@ class ShmPutOperation(ShmOperation[ShmMetadataT]):
             shm.close()
 
 
-class ShmGetOperation(ShmOperation[dict[str, object] | ShmPutMetadata]):
+class ShmGetOperation(ShmOperation[Mapping[str, object] | ShmPutMetadata]):
     """Receiver-side copy from SHM to destination tensor."""
 
     def __init__(
-        self, metadata: dict[str, Any] | ShmPutMetadata, dest_tensor: torch.Tensor
+        self, metadata: Mapping[str, object] | ShmPutMetadata, dest_tensor: torch.Tensor
     ) -> None:
         super().__init__(metadata)
         self._transfer_info = metadata["transfer_info"]
@@ -207,7 +208,7 @@ class ShmRelay(Relay):
 
     async def get_async(
         self,
-        metadata: dict[str, Any] | ShmPutMetadata,
+        metadata: Mapping[str, object] | ShmPutMetadata,
         dest_tensor: torch.Tensor,
         request_id: str = None,
     ) -> ShmGetOperation:

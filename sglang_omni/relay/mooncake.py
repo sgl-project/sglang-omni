@@ -5,7 +5,8 @@ import asyncio
 import logging
 import socket
 import uuid
-from typing import Any, Callable, Dict, Generic, TypeVar
+from collections.abc import Mapping
+from typing import Callable, Dict, Generic, TypeVar
 
 import torch
 
@@ -576,7 +577,7 @@ class MooncakeRelay(Relay):
 
     async def get_async(
         self,
-        metadata: dict[str, Any],
+        metadata: Mapping[str, object],
         dest_tensor: torch.Tensor,
         request_id: str = None,
     ) -> GetOperation:

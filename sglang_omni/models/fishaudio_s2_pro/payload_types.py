@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
     import torch
 
 
@@ -20,7 +21,9 @@ class S2ProState(DeclarativeStateBase):
     sample_rate: int = 44100
 
     # -- From preprocessing ------------------------------------------------
-    input_ids: Any = wire(None, codec="tensor_list")  # [seq_len] as list
+    input_ids: torch.Tensor | npt.ArrayLike | None = wire(
+        None, codec="tensor_list"
+    )  # [seq_len] as list
     vq_mask_tokens: torch.Tensor | list[bool] | None = wire(
         None, codec="tensor_list"
     )  # [seq_len] bool

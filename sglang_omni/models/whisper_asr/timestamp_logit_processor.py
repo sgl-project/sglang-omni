@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping, Sequence
 
 import torch
 from sglang.srt.sampling.custom_logit_processor import CustomLogitProcessor
@@ -15,7 +15,7 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
     def __call__(
         self,
         logits: torch.Tensor,
-        custom_param_list: list[dict[str, Any]] | None = None,
+        custom_param_list: Sequence[Mapping[str, object] | None] | None = None,
     ) -> torch.Tensor:
         if not custom_param_list:
             return logits

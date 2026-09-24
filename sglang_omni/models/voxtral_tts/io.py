@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
     import torch
 
 
@@ -24,4 +25,4 @@ class VoxtralTTSState(DeclarativeStateBase):
     audio_codes: torch.Tensor | None = wire(None, codec="typed_tensor")
 
     # Vocoder output
-    audio_samples: Any | None = wire(None, codec="tensor_list")
+    audio_samples: torch.Tensor | npt.ArrayLike | None = wire(None, codec="tensor_list")

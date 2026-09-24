@@ -7,10 +7,10 @@ import asyncio
 import logging
 import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from typing import Any, Generic, Literal, NamedTuple, TypedDict, TypeVar
+from typing import Generic, Literal, NamedTuple, TypedDict, TypeVar
 
 import torch
 from torch.multiprocessing.reductions import rebuild_cuda_tensor
@@ -781,7 +781,7 @@ class CudaIpcRelay(Relay):
 
     def _get_remote_pool(
         self,
-        metadata: dict[str, Any],
+        metadata: Mapping[str, object],
         *,
         device: torch.device,
     ) -> torch.Tensor:
@@ -918,7 +918,7 @@ class CudaIpcRelay(Relay):
 
     async def get_async(
         self,
-        metadata: dict[str, Any],
+        metadata: Mapping[str, object],
         dest_tensor: torch.Tensor,
         request_id: str | None = None,
     ) -> CudaIpcGetOperation:

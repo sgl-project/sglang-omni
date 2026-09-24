@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any
 
 import torch
 
@@ -36,7 +36,7 @@ class CommRouter:
         gpu_stage_names: set[str] | None,
         stage_gpu_ids: dict[str, tuple[int, ...]] | None = None,
         remote_stage_names: set[str] | None = None,
-        comm_config: dict[str, Any] | None = None,
+        comm_config: Mapping[str, object] | None = None,
         injected_relay: Relay | None = None,
     ) -> None:
         self.stage_name = stage_name

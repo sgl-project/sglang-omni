@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import TypedDict
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -19,9 +19,9 @@ class ThinkerOutput(TypedDict, total=False):
 class LLaDA2UniPipelineState:
     """Typed view of the per-request pipeline state."""
 
-    prompt: dict[str, Any] | None = None
+    prompt: dict[str, object] | None = None
     encoder_inputs: dict[str, object] = field(default_factory=dict)
-    encoder_outs: dict[str, Any] = field(default_factory=dict)
+    encoder_outs: dict[str, object] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, object] = field(default_factory=dict)
 

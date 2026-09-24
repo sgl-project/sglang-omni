@@ -13,7 +13,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping, TypeVar
+from typing import Iterable, Iterator, Mapping, TypeVar
 
 from typing_extensions import NotRequired, TypedDict
 
@@ -86,7 +86,7 @@ class RequestTimeline:
     """All events for a single request, sorted by time."""
 
     request_id: str
-    events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def t0_ns(self) -> int | None:
