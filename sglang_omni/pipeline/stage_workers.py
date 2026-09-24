@@ -13,7 +13,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Sequence, get_args
 
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -25,7 +25,9 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
+from sglang_omni.pipeline.umm import route_umm
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.proto.continuation import ContinuationPhase
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -772,20 +774,37 @@ def construct_stage(
         return returned_targets[0] if isinstance(targets, str) else returned_targets
 
     # --- Build routing ---
-    if spec.is_terminal:
-        get_next = lambda request_id, output: None
-    elif spec.route_fn:
+    if spec.route_fn:
         route_fn = import_string(spec.route_fn)
         allowed_route_targets = set(_target_list(spec.next_stages))
+        umm_phase_stages = set(get_args(ContinuationPhase))
+        if route_fn is route_umm and not spec.is_terminal:
+            raise ValueError(
+                f"Stage {spec.stage_name!r} routes with route_umm, so it must be "
+                "terminal. Its final decision completes the request"
+            )
+        else:
+            pass
+        if route_fn is route_umm and allowed_route_targets != umm_phase_stages:
+            raise ValueError(
+                f"Stage {spec.stage_name!r} routes with route_umm, so next must "
+                f"name exactly the UMM phase stages {sorted(umm_phase_stages)}, "
+                f"not {sorted(allowed_route_targets)}. Name the understanding "
+                "stage reasoner and the generation stage generation"
+            )
+        else:
+            pass
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
                 _fn(request_id, output),
                 allowed_targets=allowed_route_targets,
-                allow_empty=False,
+                allow_empty=spec.is_terminal,
                 hook_name="route_fn",
             )
 
+    elif spec.is_terminal:
+        get_next = lambda request_id, output: None
     else:
         target = spec.next_stages
         if isinstance(target, str):

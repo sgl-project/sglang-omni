@@ -164,6 +164,7 @@ class Stage:
         self.running = False
         self.aborted: set[str] = set()
         self.active_requests: set[str] = set()
+        self.request_arrivals: dict[str, object] = {}
         self.stream_queue: StreamQueue | None = None
         self.stream_chunk_counters: dict[tuple[str, str], int] = {}
         self.first_stream_chunk_seen: set[str] = set()
@@ -500,6 +501,14 @@ class Stage:
     async def on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
         if request_id in self.aborted:
+            # A new coordinator admission needs an explicit answer. Late
+            # downstream data still follows the silent stale-result path. The
+            # message keeps the duplicate ID form so both map to one status.
+            await self.send_failure(
+                request_id,
+                f"Request {request_id} (retired after abort or failure, use a "
+                "fresh request ID) already exists",
+            )
             return
         else:
             pass
@@ -1087,6 +1096,12 @@ class Stage:
             self.tp_fanout.fanout_work(payload)
         else:
             pass
+        arrival_id = object()
+        self.request_arrivals[request_id] = arrival_id
+        if isinstance(payload, StagePayload):
+            payload.arrival_id = arrival_id
+        else:
+            pass
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
@@ -1287,6 +1302,16 @@ class Stage:
                             )
                     elif out.type == "error":
                         await self.send_failure(out.request_id, str(out.data))
+                    elif out.type == "discard":
+                        metadata = out.metadata or {}
+                        if not metadata.get(
+                            "keep_active", False
+                        ) and self.request_arrivals.get(out.request_id) is metadata.get(
+                            "arrival_id"
+                        ):
+                            self.clear_request_state(out.request_id)
+                        else:
+                            pass
                     else:
                         pass
                 else:
@@ -1423,6 +1448,16 @@ class Stage:
             return
         else:
             pass
+        validate_result = getattr(self.scheduler, "validate_result", None)
+        if validate_result is not None and not validate_result(result):
+            return
+        else:
+            pass
+        arrival_id = (
+            result.arrival_id
+            if isinstance(result, StagePayload) and result.arrival_id is not None
+            else self.request_arrivals.get(request_id)
+        )
         session_operation = (
             find_session_operation(result.request.metadata)
             if isinstance(result, StagePayload)
@@ -1532,7 +1567,20 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self.clear_request_state(request_id)
+        # Sending can yield into a fast cycle that has already dispatched the
+        # next turn. Never clear the newer arrival's input or stream state.
+        # Only the stage that completes the request waits for its forwarded
+        # continuation to return.
+        if self.request_arrivals.get(request_id) is arrival_id:
+            self.clear_request_state(
+                request_id,
+                keep_continuation=self.is_terminal
+                and next_stages is not None
+                and isinstance(result, StagePayload)
+                and result.continuation is not None,
+            )
+        else:
+            pass
 
     async def send_to_stage(
         self,
@@ -2100,17 +2148,28 @@ class Stage:
         )
         self.clear_request_state(request_id)
 
-    def clear_request_state(self, request_id: str) -> None:
-        self.active_requests.discard(request_id)
+    def clear_request_state(
+        self, request_id: str, *, keep_continuation: bool = False
+    ) -> None:
+        if not keep_continuation:
+            self.active_requests.discard(request_id)
+            self.request_arrivals.pop(request_id, None)
+        else:
+            pass
         self.input_handler.cancel(request_id)
         if self.stream_queue is not None:
             self.stream_queue.close(request_id)
         else:
             pass
-        stale_keys = [key for key in self.stream_chunk_counters if key[0] == request_id]
-        for key in stale_keys:
-            self.stream_chunk_counters.pop(key, None)
-        self.first_stream_chunk_seen.discard(request_id)
+        if not keep_continuation:
+            stale_keys = [
+                key for key in self.stream_chunk_counters if key[0] == request_id
+            ]
+            for key in stale_keys:
+                self.stream_chunk_counters.pop(key, None)
+            self.first_stream_chunk_seen.discard(request_id)
+        else:
+            pass
         self.local_stream_targets.pop(request_id, None)
         self.nonlocal_stream_targets.pop(request_id, None)
         self.replica_bindings.pop(request_id, None)

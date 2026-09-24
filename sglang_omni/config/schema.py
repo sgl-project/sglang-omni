@@ -584,6 +584,7 @@ class PipelineConfig(BaseModel):
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
+    max_in_flight: int | None = Field(default=None, gt=0, strict=True)
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
@@ -851,15 +852,18 @@ class PipelineConfig(BaseModel):
             else:
                 pass
             has_next = s.next is not None
-            if has_next == bool(s.terminal):
+            # A dynamic terminal stage may continue to a declared stage or
+            # return None to complete the request.
+            if s.route_fn is not None:
+                if not s.next:
+                    raise ValueError(
+                        f"Stage {s.name!r} dynamic routing requires declared next stages"
+                    )
+                else:
+                    pass
+            elif has_next == bool(s.terminal):
                 raise ValueError(
                     f"Stage {s.name!r} must set exactly one of 'next' or 'terminal'"
-                )
-            else:
-                pass
-            if s.terminal and s.route_fn is not None:
-                raise ValueError(
-                    f"Stage {s.name!r} cannot set route_fn on a terminal stage"
                 )
             else:
                 pass
