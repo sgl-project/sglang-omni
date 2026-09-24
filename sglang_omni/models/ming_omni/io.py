@@ -15,16 +15,6 @@ class PromptInputs(TypedDict):
     prompt_text: str
 
 
-class PreprocessingData(TypedDict, total=False):
-    """Preprocessing outputs stored on StagePayload.data."""
-
-    raw_inputs: object
-    prompt: PromptInputs
-    mm_inputs: dict[str, Any]
-    encoder_inputs: dict[str, dict[str, Any]]
-    stream_state: dict[str, Any]
-
-
 class ThinkerOutput(TypedDict, total=False):
     """Normalized thinker output used for decoding and streaming."""
 

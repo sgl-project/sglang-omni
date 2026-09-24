@@ -334,6 +334,8 @@ def test_qwen_thinker_stream_embed_preserves_talker_prefill_contract():
     assert torch.equal(talker_chunk.data, embed[0])
     assert talker_chunk.metadata == {"token_id": 11}
     assert torch.equal(current["input_embeds"], legacy["input_embeds"])
+    assert current["pending_text_queue"].rows is not None
+    assert legacy["pending_text_queue"].rows is not None
     assert torch.equal(
         current["pending_text_queue"].rows,
         legacy["pending_text_queue"].rows,

@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, overload
 
 import torch
 import xxhash
@@ -48,6 +48,7 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
 
+KeyT = TypeVar("KeyT")
 ValueT = TypeVar("ValueT")
 
 
@@ -257,8 +258,8 @@ def apply_encoder_result(
 
 
 def build_lightweight_mm_inputs(
-    mm_inputs: dict[str, Any],
-) -> dict[str, dict[str, object]]:
+    mm_inputs: Mapping[str, Mapping[str, ValueT]],
+) -> dict[str, dict[str, ValueT]]:
     mm_image = mm_inputs.get("image", {})
     mm_audio = mm_inputs.get("audio", {})
     mm_video = mm_inputs.get("video", {})
@@ -379,7 +380,15 @@ def _payload_with_state(
     )
 
 
-def _copy_mutable_containers(value: object) -> Any:
+@overload
+def _copy_mutable_containers(value: dict[KeyT, ValueT]) -> dict[KeyT, object]: ...
+
+
+@overload
+def _copy_mutable_containers(value: object) -> object: ...
+
+
+def _copy_mutable_containers(value: object) -> object:
     if isinstance(value, torch.Tensor):
         return value
     if isinstance(value, dict):
@@ -471,7 +480,7 @@ def _has_encoder_model_input(stage_name: str, stage_inputs: object) -> bool:
 
 
 def _select_present_fields(
-    source: dict[str, ValueT],
+    source: Mapping[str, ValueT],
     keys: tuple[str, ...],
 ) -> dict[str, ValueT]:
     selected: dict[str, ValueT] = {}

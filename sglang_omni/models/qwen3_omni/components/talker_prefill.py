@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import torch
 from safetensors import safe_open
@@ -125,6 +125,15 @@ def merge_prompt_modality(
     prompt_hidden[mask] = 0.0
 
 
+class TalkerPromptPrefill(TypedDict):
+    input_embeds: torch.Tensor
+    input_ids: torch.Tensor
+    pending_text_queue: PendingTextTensorQueue
+    tts_pad_embed: torch.Tensor
+    tts_eos_embed: torch.Tensor
+    prompt_model_inputs: dict[str, object]
+
+
 def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> int:
     speaker_name = str(params.get("speaker", "Ethan")).lower()
     if speaker_name in speaker_map:
@@ -201,7 +210,7 @@ class TalkerPrefillBuilder:
         thinker_chunks: list["StreamItem"],
         *,
         thinker_done: bool,
-    ) -> dict[str, Any]:
+    ) -> TalkerPromptPrefill:
         if not thinker_chunks:
             raise ValueError("prompt prefill requires thinker chunks")
 

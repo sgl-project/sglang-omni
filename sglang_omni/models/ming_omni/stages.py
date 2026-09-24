@@ -7,7 +7,7 @@ Ming's config remains usable in lightweight environments.
 
 from __future__ import annotations
 
-from typing import Any, TypeVar
+from typing import Any, TypeVar, overload
 
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
@@ -15,6 +15,8 @@ from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
 
 EncoderInputT = TypeVar("EncoderInputT")
+KeyT = TypeVar("KeyT")
+ValueT = TypeVar("ValueT")
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
@@ -142,7 +144,15 @@ def _slim_thinker_out(thinker_out: object) -> dict[str, Any] | None:
     return projected
 
 
-def _copy_mutable_containers(value: object) -> Any:
+@overload
+def _copy_mutable_containers(value: dict[KeyT, ValueT]) -> dict[KeyT, object]: ...
+
+
+@overload
+def _copy_mutable_containers(value: object) -> object: ...
+
+
+def _copy_mutable_containers(value: object) -> object:
     if isinstance(value, dict):
         return {key: _copy_mutable_containers(item) for key, item in value.items()}
     if isinstance(value, list):

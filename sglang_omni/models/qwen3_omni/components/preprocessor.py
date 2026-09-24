@@ -333,7 +333,7 @@ class Qwen3OmniPreprocessor:
         input_ids: "torch.Tensor",
         attention_mask: "torch.Tensor",
         prompt_text: str,
-        full_mm_inputs: dict[str, Any],
+        full_mm_inputs: Mapping[str, Mapping[str, object]],
         encoder_inputs: dict[str, dict[str, Any]],
     ) -> StagePayload:
         """Assemble the thinker-ready pipeline state (single source of shape)."""
