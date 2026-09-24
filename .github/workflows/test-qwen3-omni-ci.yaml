@@ -30,7 +30,6 @@ env:
   # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
   NCCL_NVLS_ENABLE: "0"
 
-# Invoked by omni-ci.yaml after TTS CI. Restores omni only.
 # DAG:
 #   stage-1-thinker -> stage-2-tts -> stage-3-mmmu -> stage-4-mmmu-talker
 #     -> stage-5-mmsu -> stage-6-mmsu-talker -> stage-7-videomme

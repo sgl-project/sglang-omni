@@ -217,6 +217,7 @@ jobs:
   pick-asr-model:
     name: pick ASR model
     needs: [preflight, setup]
+    if: ${{ !contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-omni') }}
     runs-on: ubuntu-latest
     outputs:
       asr_ci_model: ${{ steps.pick.outputs.asr_ci_model }}
@@ -272,6 +273,7 @@ jobs:
   pick-tts-model:
     name: pick TTS model
     needs: [preflight, setup]
+    if: ${{ !contains(fromJson(needs.preflight.outputs.labels || '[]'), 'run-qwen3-omni') }}
     runs-on: ubuntu-latest
     outputs:
       selected_model: ${{ steps.tts.outputs.selected_model }}
