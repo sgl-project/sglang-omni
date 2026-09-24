@@ -36,8 +36,9 @@ long as the label remains. Use `/tag-and-rerun-ci higgs` or
 `/tag-and-rerun-ci moss` or `/tag-and-rerun-ci qwen3-tts` or
 `/tag-and-rerun-ci cosyvoice3` to select a TTS CI model, and
 `/tag-and-rerun-ci fun-asr`, `/tag-and-rerun-ci qwen3-asr` or
-`/tag-and-rerun-ci whisper-asr` to select an ASR CI model. One selector from
-each family can be combined, for example `/tag-and-rerun-ci moss fun-asr`.
-Use `/tag-and-rerun-ci qwen3-omni` to skip standalone ASR/TTS suites and run
-Qwen3-Omni CI.
+`/tag-and-rerun-ci whisper-asr` to select an ASR CI model. Use
+`/tag-and-rerun-ci qwen3-omni` or `/tag-and-rerun-ci minicpmo` to select
+the Omni CI model (Qwen3-Omni by default). One selector from each family
+can be combined, for example `/tag-and-rerun-ci moss fun-asr minicpmo`.
+Model selection does not skip other CI stages.
 Draft PRs are skipped even if labeled.

@@ -293,9 +293,13 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`, `run-cosyvoice3`; `run-fun-asr`, `run-qwen3-asr`,
-`run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
+GPU CI needs the `run-ci` label. Model selectors choose presets within each
+family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
+`run-qwen3-tts-custom-voice`), ASR (`run-fun-asr`, `run-qwen3-asr`,
+`run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
+with `/tag-and-rerun-ci <selectors>`, for example
+`/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
+Qwen3-Omni; selecting MiniCPM-o does not skip ASR or TTS CI. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
 
