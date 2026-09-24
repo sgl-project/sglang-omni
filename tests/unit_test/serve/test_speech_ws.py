@@ -437,6 +437,7 @@ def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
             reference_descriptors=prepared.reference_descriptors,
         )
         assert generate_request.model == "served-model"
+        assert isinstance(generate_request.metadata["tts_params"], dict)
         assert generate_request.metadata["tts_params"]["voice"] == "default"
 
     asyncio.run(run())
@@ -635,6 +636,7 @@ def test_speech_websocket_default_config_does_not_mark_generation_params_explici
             uploaded_voice=session._config_uploaded_voice(),
         )
 
+        assert isinstance(gen_req.metadata["tts_params"], dict)
         assert "explicit_generation_params" not in gen_req.metadata["tts_params"]
 
     asyncio.run(run())
@@ -688,6 +690,7 @@ def test_speech_websocket_preserves_explicit_generation_params() -> None:
             uploaded_voice=session._config_uploaded_voice(),
         )
 
+        assert isinstance(gen_req.metadata["tts_params"], dict)
         assert gen_req.metadata["tts_params"]["explicit_generation_params"] == [
             "temperature",
             "top_k",

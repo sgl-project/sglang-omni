@@ -316,6 +316,7 @@ def test_openai_speech_request_lowers_to_audar_state() -> None:
         validate=False,
         reference_descriptors=prepared.reference_descriptors,
     )
+    assert isinstance(generation_request.metadata["tts_params"], dict)
     assert generation_request.metadata["tts_params"]["explicit_generation_params"] == [
         "max_new_tokens",
         "seed",

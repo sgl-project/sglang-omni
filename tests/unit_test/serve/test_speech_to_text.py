@@ -49,9 +49,9 @@ def test_build_request_marks_repetition_penalty_explicit() -> None:
 def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
     req = _build_request()
 
-    assert "repetition_penalty" not in req.metadata.get(
-        "explicit_generation_params", []
-    )
+    explicit_generation_params = req.metadata.get("explicit_generation_params", [])
+    assert isinstance(explicit_generation_params, list)
+    assert "repetition_penalty" not in explicit_generation_params
     assert req.sampling.repetition_penalty == 1.0
 
 

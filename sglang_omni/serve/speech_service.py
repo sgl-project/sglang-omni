@@ -928,7 +928,7 @@ def _build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
 def _build_speech_prompt(
     request: CreateSpeechRequest,
     reference_descriptors: list[SpeechReferenceDescriptor] | None,
-) -> str | dict[str, str | list[SpeechReferenceDescriptor]]:
+) -> str | dict[str, object]:
     if reference_descriptors is None:
         reference_descriptors = _reference_descriptors_from_request(request)
     if reference_descriptors:

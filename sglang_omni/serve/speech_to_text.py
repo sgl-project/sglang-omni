@@ -151,7 +151,7 @@ def build_speech_to_text_generate_request(
     params: dict[str, object] = {"task": task}
     if detect_language:
         params["detect_language"] = True
-    metadata: dict[str, str | list[str]] = {"task": "asr"}
+    metadata: dict[str, object] = {"task": "asr"}
     explicit_fields: list[str] = []
     if language is not None:
         params["language"] = language

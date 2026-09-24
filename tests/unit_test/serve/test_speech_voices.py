@@ -423,6 +423,9 @@ def test_speech_service_resolves_uploaded_voice_to_reference(tmp_path: Path) -> 
     gen_req = service.build_generate_request(request)
     tts_params = gen_req.metadata["tts_params"]
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
+    assert isinstance(tts_params, dict)
     assert gen_req.prompt["references"][0]["audio_path"].startswith(
         "data:audio/wav;base64,"
     )
@@ -462,8 +465,11 @@ def test_speech_service_explicit_reference_overrides_uploaded_voice(
     )
     gen_req = service.build_generate_request(request)
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
     ref = gen_req.prompt["references"][0]
     assert "uploaded_voice_name" not in ref
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["voice"] == "anchor"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 
@@ -508,6 +514,7 @@ def test_speech_service_allows_uploaded_voice_with_explicit_base_task_type(
     )
     gen_req = service.build_generate_request(request, validate=False)
 
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["task_type"] == "Base"
 
 
@@ -541,8 +548,11 @@ def test_speech_service_uses_same_uploaded_voice_resolution_for_prompt_and_param
         uploaded_voice=prepared.uploaded_voice,
     )
 
+    assert isinstance(gen_req.prompt, dict)
+    assert isinstance(gen_req.prompt["references"], list)
     ref = gen_req.prompt["references"][0]
     tts_params = gen_req.metadata["tts_params"]
+    assert isinstance(tts_params, dict)
     assert ref["uploaded_voice_created_at"] == first["created_at"]
     assert tts_params["uploaded_voice_created_at"] == first["created_at"]
 
@@ -620,6 +630,7 @@ def test_speech_service_preserves_preset_voice_names(tmp_path: Path) -> None:
     gen_req = service.build_generate_request(request, validate=False)
 
     assert gen_req.prompt == "hello"
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
 
 
@@ -644,6 +655,7 @@ def test_speech_service_can_disable_uploaded_voice_resolution(
     gen_req = service.build_generate_request(request)
 
     assert gen_req.prompt == "hello"
+    assert isinstance(gen_req.metadata["tts_params"], dict)
     assert gen_req.metadata["tts_params"]["voice"] == "Vivian"
     assert "uploaded_voice_name" not in gen_req.metadata["tts_params"]
 

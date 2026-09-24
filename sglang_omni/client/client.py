@@ -655,7 +655,7 @@ def _extract_inputs(request: GenerateRequest) -> object:
     # If we have any media, return a dict with messages and media
     # Otherwise, return just the messages list (for backward compatibility)
     if audios or images or videos:
-        result = {"messages": messages}
+        result: dict[str, object] = {"messages": messages}
         if images:
             result["images"] = images
         if audios:

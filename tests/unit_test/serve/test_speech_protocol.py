@@ -50,6 +50,7 @@ def test_speech_generation_uses_served_model_and_default_voice() -> None:
     assert prepared.request.model is None
     assert prepared.request.voice == "default"
     assert generate_request.model == "tts"
+    assert isinstance(generate_request.metadata["tts_params"], dict)
     assert generate_request.metadata["tts_params"]["voice"] == "default"
 
 
@@ -137,6 +138,7 @@ def test_custom_voice_config_preserves_model_owned_defaults(
         reference_descriptors=prepared.reference_descriptors,
     )
     params = generated.metadata["tts_params"]
+    assert isinstance(params, dict)
     assert service.custom_voice_config is config
     assert service.requires_uploaded_voice_for_named_voice is False
     assert service.supports_uploaded_voice_references is False
@@ -205,7 +207,9 @@ def test_speech_generation_accepts_seedtts_reference_payload_without_voice(
 
     assert generate_request.model == "seedtts"
     assert generate_request.stream is stream
+    assert isinstance(generate_request.metadata["tts_params"], dict)
     assert generate_request.metadata["tts_params"]["voice"] == "default"
+    assert isinstance(generate_request.prompt, dict)
     assert generate_request.prompt["references"] == [
         {"data": ref_audio, "media_type": "audio/wav", "text": "reference transcript"}
     ]
@@ -393,6 +397,7 @@ def test_speech_service_normalizes_tts_extension_fields_into_tts_params() -> Non
     gen_req = service.build_generate_request(request)
     tts_params = gen_req.metadata["tts_params"]
 
+    assert isinstance(tts_params, dict)
     assert gen_req.model == "tts"
     assert tts_params["voice"] == "alloy"
     assert tts_params["response_format"] == "wav"

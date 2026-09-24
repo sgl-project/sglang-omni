@@ -94,7 +94,7 @@ class GenerateRequest:
 
     model: str | None = None
 
-    prompt: str | dict[str, Any] | None = None
+    prompt: str | dict[str, object] | None = None
     prompt_token_ids: list[int] | None = None
     messages: list[Message] | None = None
 
@@ -109,7 +109,7 @@ class GenerateRequest:
     output_modalities: list[str] | None = None
     multimodal_train_inputs: dict[str, object] | None = None
 
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
