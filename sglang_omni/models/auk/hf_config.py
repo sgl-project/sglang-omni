@@ -7,7 +7,6 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from omegaconf import OmegaConf
 
@@ -25,7 +24,7 @@ class AuKRuntimeConfig:
     model_path: str
     name: str = "AuK"
     arch: dict[str, object] = field(default_factory=dict)
-    vae: dict[str, Any] = field(default_factory=dict)
+    vae: dict[object, object] = field(default_factory=dict)
     schedule: dict[str, object] = field(default_factory=dict)
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER
 
@@ -57,12 +56,12 @@ class AuKRuntimeConfig:
         return frames * self.downsample_rate / self.sample_rate
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
+def _load_yaml(path: Path) -> dict[object, object]:
     loaded = OmegaConf.to_container(OmegaConf.load(str(path)), resolve=True)
     return loaded if isinstance(loaded, dict) else {}
 
 
-def _load_json(path: Path) -> dict[str, Any]:
+def _load_json(path: Path) -> object:
     import json
 
     with path.open("r", encoding="utf-8") as handle:
@@ -72,7 +71,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 def load_auk_config(model_path: str) -> AuKRuntimeConfig:
     """Read config.yaml or config.json from a checkpoint."""
     root = Path(model_path)
-    raw: dict[str, Any] = {}
+    raw: object = {}
     for name in CONFIG_YAML_NAMES:
         candidate = root / name
         if candidate.is_file():

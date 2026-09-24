@@ -443,7 +443,7 @@ class ConfigPath:
         Missing containers are created only where the schema allows a free
         mapping key; a missing stage is an error, never a silent insert.
         """
-        current: Any = data
+        current: object = data
         for segment in self.segments[:-1]:
             current = _read_segment(
                 current, segment, path=self.raw, create_missing=True
@@ -707,7 +707,7 @@ def _read_segment(
     *,
     path: str,
     create_missing: bool = False,
-) -> Any:
+) -> object:
     if segment.kind is SegmentKind.NAMED_ITEM:
         if not isinstance(current, list):
             raise ConfigPathError(

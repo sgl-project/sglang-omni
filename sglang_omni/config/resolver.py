@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TypeGuard, TypeVar
 
 from sglang_omni.config.patch import ConfigPatch, ConfigPatchSet
 from sglang_omni.config.path import ConfigPath, ConfigPathError
@@ -164,7 +164,7 @@ def _as_dump(value: PipelineConfig | dict[str, ValueT]) -> Mapping[str, object]:
     return value.model_dump() if isinstance(value, PipelineConfig) else value
 
 
-def _diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
+def _diff(expected: object, actual: object, prefix: str) -> list[ConfigDifference]:
     if isinstance(expected, dict) and isinstance(actual, dict):
         out: list[ConfigDifference] = []
         for key in sorted(set(expected) | set(actual)):
@@ -196,7 +196,7 @@ def _diff(expected: Any, actual: Any, prefix: str) -> list[ConfigDifference]:
     return []
 
 
-def _is_named_list(value: object) -> bool:
+def _is_named_list(value: object) -> TypeGuard[list[dict[object, object]]]:
     return (
         isinstance(value, list)
         and bool(value)

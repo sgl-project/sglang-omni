@@ -34,7 +34,6 @@ provenance and conflict detection stay per value.
 from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping
-from typing import Any
 
 import yaml
 from pydantic import ValidationError
@@ -405,7 +404,7 @@ def sources_from_config_file(
     # file twice -- the baseline would already carry the value, so a diff
     # against it shows nothing and provenance calls the same value both the
     # model default and the file's write.
-    construction: dict[str, Any] = {}
+    construction: dict[str, object] = {}
     while True:
         try:
             config = config_cls(**construction)

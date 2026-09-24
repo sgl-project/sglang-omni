@@ -7,7 +7,7 @@ import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -198,7 +198,7 @@ class EngineArgs(BaseModel):
                 "byte-derived pool"
             )
 
-    def overrides(self) -> dict[str, Any]:
+    def overrides(self) -> dict[str, object]:
         """Return the keys set on this block, declared and free-form alike.
 
         A declared key left at ``None`` means "not set" and is omitted, so
@@ -654,7 +654,7 @@ class PipelineConfig(BaseModel):
     terminal_stages_fn: str | None = None
     config_cls: str | None = None
 
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+    def model_dump(self, **kwargs: object) -> dict[str, object]:
         """Dump with each stage serialized by its runtime class.
 
         Pydantic serializes a ``list[StageConfig]`` field by the declared

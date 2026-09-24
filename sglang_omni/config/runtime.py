@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping
-from typing import Any
 
 from sglang_omni.config.schema import (
     PLACEMENT_OWNED_FACTORY_KWARGS,
@@ -45,7 +44,7 @@ _PLACEMENT_OWNED_KWARGS = PLACEMENT_OWNED_FACTORY_KWARGS
 def resolve_stage_factory_kwargs(
     stage_cfg: StageConfig,
     global_cfg: PipelineConfig,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return the pipeline author's constructor kwargs for one stage."""
 
     logical_stage_name, _ = parse_replica_instance_name(stage_cfg.name)
@@ -60,7 +59,7 @@ def resolve_stage_factory_kwargs(
     return kwargs
 
 
-def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
+def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, object]:
     """Return the stage's set group values, keyed by factory kwarg.
 
     ``factory.*`` entries pass through under their own names -- declared
@@ -206,7 +205,7 @@ def resolve_stage_factory_args(
     global_cfg: PipelineConfig,
     *,
     gpu_id: int | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Resolve final factory kwargs for a stage, importing its factory.
 
     One-process equivalent of the parent/worker split: author kwargs plus
