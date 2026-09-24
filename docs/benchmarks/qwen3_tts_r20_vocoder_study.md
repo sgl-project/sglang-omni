@@ -1438,3 +1438,83 @@ rps 1:D0 29.6、D1 32.4、D2 29.8、D0b 29.6 ms。D1 = `--vocoder.process vocode
 
 **下一步**:同一 build 加一组 `mps: on` 的独立进程臂,看 MPS 能否把这 16 ms 拿回来(作业已排)。
 若能,建议是"独立进程必须配 MPS";若不能,建议是 CustomVoice 的推荐部署保持同进程。
+
+## 第三十六轮:给 #2293 的延迟阶段做校准并定 gate(2026-09-23 18:29-19:30 PT)
+
+**背景**:#2293 给 Qwen3-TTS 的两个 CI 臂(Base 克隆音色、CustomVoice 命名音色)加了"流式首帧延迟"阶段:单 worker、
+开环 Poisson 到达,1 rps 60 条、20 rps 1088 条(SeedTTS EN 全集),指标 `audio_ttfp_*` 是从发出请求到第一个可播放音频块的时间,
+越小越好。此前它未校准,只打印不判。luojiaxuan 要求用 Radix 拿 H100 按校准手册(私有仓库 `sglang-omni-calibration` 的
+`calibrate-h100-ci`)做校准,定一个合适的 gate。
+
+**顺手发现并修掉的 bug**:Base 臂的 preset 没有写 `--tts_engine.engine.max_running_requests`,而延迟阶段要用它当客户端并发上限,
+原代码直接断言失败。CI 只跑过 CustomVoice 臂,所以没暴露。现在从 worker 启动参数里找,找不到就取 Qwen3-TTS 的默认值 64。
+另外两个臂原来共用一组延迟点,现在各有各的参照:克隆音色在首块之前要先编码参考音频,两者首帧差一倍以上。
+
+**做法**
+- 主机:eval-h100(Radix 租约 `01M38GGKPV09SDVES04RGWZWXN`,GPU 0 与 1,H100 80GB HBM3,Xeon 8462Y+),不是 CI runner 所在那台
+  (CI 的 latency job 跑在 `host-85-234-79-221`,不在 Radix 上,租不到)。
+- 环境:CI 镜像按 digest 拉(`hongccc/sglang-omni@sha256:ebe4239e…`),用 CI 自己的 `reconcile_omni_ci_env.sh` 建 venv,
+  依赖哈希 `29d6e78a…` 与 CI 那次运行逐字一致;router 用 `prepare_rust_router.sh build` 按同一 crate tree 构建。
+- 执行单元:每次观测就是 CI 那条命令 `run_flaky_pytest.sh pytest tests/test_model/test_tts_ci.py -v -s -x --tts-stage tts-stage-latency`
+  (`OMNI_CI_MAX_ATTEMPTS=1`),每次新起服务;没走 `tune.py`,因为它没有 TTFP 这类指标,而且按整个测试文件为单位跑
+  (非流式、流式、ASR WER 全带上,要 2 卡),而 CI 里这个阶段的执行单元恰好就是这条带 stage 过滤的命令。
+- 两臂并行,各占一卡;CPU 按 CI lane 的 cpuset 绑核(`pin_to_ci_cpuset.sh`),每轮交换 lane A `2-15,66-79` 与 lane B `16-31,80-95`,
+  让每臂都覆盖两种 lane。第 0 轮是不计数的冷启动热身;第 1 到 5 轮校准;第 6、7 轮留出(事先定好,不参与定阈值)。
+- 手册规则照做:每臂 5 次干净观测、破坏性轮次剔除(MAD z > 3.5 且与最近邻差 ≥ 20%,本轮无一命中)、worst-of-5 作参照、
+  阈值 = 参照 × 1.25(`tts_ci_config.py` 已有的越小越好速度指标 slack `THRESHOLD_SLACK_LOWER`),slack 只乘一次。
+
+**结果**(ms,每格是一次运行的中位数,20 rps 另列 p95;全部 16 次观测 rc = 0,完成 60/60 与 1088/1088,client slot 等待 0)
+
+| 臂 / 点 | r1 | r2 | r3 | r4 | r5 | 参照(worst) | gate | 留出 r6 / r7 |
+|---|---|---|---|---|---|---|---|---|
+| Base 1 rps 中位数 | 59.4 | 55.7 | 55.9 | 60.0 | 58.7 | 60.0 | 75.0 | 57.1 / 58.0 |
+| Base 20 rps 中位数 | 107.1 | 109.6 | 111.4 | 109.6 | 106.0 | 111.4 | 139.2 | 106.1 / 117.5 |
+| Base 20 rps p95 | 188.1 | 178.9 | 186.6 | 189.4 | 173.9 | 189.4 | 236.8 | 184.9 / 187.3 |
+| CustomVoice 1 rps 中位数 | 24.6 | 24.3 | 25.2 | 24.0 | 24.4 | 25.2 | 31.5 | 24.1 / 24.7 |
+| CustomVoice 20 rps 中位数 | 37.4 | 37.5 | 36.5 | 37.8 | 36.1 | 37.8 | 47.3 | 36.3 / 35.9 |
+| CustomVoice 20 rps p95 | 51.1 | 52.3 | 49.8 | 54.1 | 51.6 | 54.1 | 67.6 | 51.9 / 48.6 |
+
+**读法**
+- 同一台机器上很稳:CustomVoice 各点五次的极差约 5%,Base 1 rps 约 7%、20 rps 约 5%。
+- 留出的 Base 20 rps r7(117.5 ms)比五次校准的最大值还大,这正是"worst-of-5 之后第六次超过它的概率是 1/6"的那种情况,
+  所以 gate 不能只用最大值、必须带余量;它离 gate 还有 22 ms。
+- **主机差异**:CI 主机上 CustomVoice 那一次是 1 rps 20.2、20 rps 34.8 ms,比这里的中位数(24.4、37.4)快 4.2 与 2.6 ms。
+  所以用这台校准出的 gate 在 CI 主机上偏松:按那一次算,CI 上要慢 11.3 ms(1 rps)、12.5 ms(20 rps)才会触发。
+- 开环不是很精确:到达过程没有固定 seed,20 rps 各轮实际吞吐在 18.5 到 20.1 之间,1 rps 在 0.78 到 1.14 之间;这是轮间波动的一个来源。
+
+**这个 gate 管什么、不管什么**:它是"慢了 25% 以上"的绊线,与同文件其他 TTS 速度 gate 同一规则;
+抓得住 CUDA graph 路径丢失、混合 prefill 那种 40 ms 到 2.7 s、以及 CustomVoice 上 +13 ms 以上的回归(在 CI 主机上余量更紧);
+**抓不住** Base 20 rps 上 +13 到 16 ms 这一量级(参照 111 ms 的 25% 是 28 ms),也不是亚毫秒优化的裁判。小的变化靠每次 CI
+上传的 `tts-stage-latency-results` 工件看趋势。
+
+**决策四件套**
+- 问题一:参照取哪台机器。默认:eval-h100(luojiaxuan 指定用 Radix 的 H100 校准),CI 主机的观测只做迁移验证。
+  理由:CI 主机租不到,要攒 5 次 CI 主机观测得排 CI 队列(本轮发起的一次重跑在 CI 队列里排了很久才开始);这台比 CI 主机慢,
+  所以 gate 在 CI 上只会偏松、不会误报。回滚:CI 每次都上传延迟工件(保留 30 天),攒够每臂 5 次 CI 主机观测后,
+  把 `_QWEN3_TTS_*_LATENCY_REFERENCE` 换成 CI 主机的 worst 即可,只改数字。
+- 问题二:阈值规则。默认:worst × 1.25(沿用同文件规则),不用逐点加性余量。理由:与其他 TTS 速度 gate 一致、只有一个旋钮;
+  逐点加性余量要一个对 CI 主机分布的估计,而这里只有另一台机器的 5 个点,硬算出来的余量看着精确、其实没有依据。
+  回滚:改 `_calibrated_latency` 里的一行。
+- 问题三:要不要 gate 20 rps 的 p95。默认:要,只在 20 rps(1088 条,p95 之上约 54 个观测);1 rps 的 p95 只打印(60 条里只有 3 个)。
+  理由:中位数 gate 看不见只拖慢最慢那一成请求的回归。回滚:删掉参照里的 `ttfp_p95_s`。
+- 问题四:没有校准的点会不会被静默跳过。默认:改成 fail-closed,`calibrated=True` 时每个点都必须带中位数阈值,单元测试强制;
+  测试里的判定不再对缺失阈值放行。
+- 外审(ChatGPT 6 Pro,`docs/reviews/2026-09-23-qwen3-tts-latency-gate-calibration.md`):
+  - 它同意:worst × 1.25 可以作为"约 25% 回归"的明确政策;5 次校准 + 2 次事先定好的留出是合理的起步;20 rps p95 应当单独 gate。
+  - 它反对且我改判的:我原来写"1.25 倍能抓住 +13 到 16 ms 的回归",它指出 Base 20 rps 的余量是 28 ms,根本抓不住;
+    CustomVoice 在 CI 主机上 +13 ms 也只剩 0.55 ms 余地。已把 gate 的定位改成"25% 绊线",不再声称能抓 +13 ms。
+    它指出的两处 fail-open(已校准却缺阈值时静默跳过;客户端并发上限只从 preset 参数里找,漏了公共参数)都已修。
+  - 它反对但我暂不采纳的:(1)参照应取自 CI 主机的多次重跑:同意这是更好的终态,但现在拿不到,见问题一的回滚路径;
+    (2)逐点加性余量:见问题二;(3)开环保真度(带 seed 的到达序列、记录计划到达与实际发送的时间差)和连续性 guard:
+    这两项要改共用的 benchmark runner,范围超出本 PR,记为后续。
+
+**上线验证**:把参照写进 #2293(`4606c6b9`)后,在同一台机器上用最终提交开着 gate 各跑一轮(r8):Base 58.1 / 110.8 ms、
+p95 194.2 ms;CustomVoice 24.3 / 37.0 ms、p95 51.6 ms,全部通过。Base 20 rps 的 p95 这次(194.2)也高于五次校准的最大值(189.4),
+离 gate(236.8)还有 43 ms。另外用 black 24.10.0(CI lint 的版本)检查过改动的三个文件,契约测试 26 项全过。
+
+**数据与收尾**:每次运行的 summary 存在 `docs/benchmarks/data/2026-09-23-qwen3-tts-latency-calibration.json`(18 次,含轮次、
+cpuset、提交、起止时间)。容器 `sglang-omni-jaxan-1` 已删、map 行已清、租约已释放(`radix machines mine` 里剩下的 hyper00
+4 卡租约不是本任务的)。节点上留着 CI 镜像(40 GB)、`/data/luojiaxuan/omni-ci`(venv、router、编译缓存)和 HF 缓存,
+下次在这台上重校准可以直接复用;原始观测在 `/data/luojiaxuan/runs/20260924T0130Z/obs/`。
+#2293 的 CI 标签从 `run-qwen3-tts-custom-voice` 换成 `run-qwen3-tts`,让这次推送的 CI 跑一次 Base 臂(它的延迟阶段此前从没在 CI 上跑过);
+之前对 CustomVoice 那次 CI 延迟 job 发起的重跑因为新推送而被并发组取消。
