@@ -43,7 +43,7 @@ class AdminOperation:
 
     op_id: str
     action: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, object] = field(default_factory=dict)
     target_stages: list[str] | None = None
     timeout_s: float | None = None
 

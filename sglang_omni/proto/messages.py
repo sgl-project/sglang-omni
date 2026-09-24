@@ -56,7 +56,7 @@ class DataReadyMessage:
     request_id: str
     from_stage: str
     to_stage: str
-    data_ref: dict[str, Any] | StageDataRef | None
+    data_ref: dict[str, object] | StageDataRef | None
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None

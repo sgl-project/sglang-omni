@@ -77,7 +77,7 @@ class KVTransferReadyMessage:
     success: bool
     destination_pool_id: str | None = None
     destination_page_indices: tuple[int, ...] = ()
-    destination_ref: dict[str, Any] | None = None
+    destination_ref: dict[str, object] | None = None
     error: str | None = None
 
     def to_dict(self) -> dict[str, object]:

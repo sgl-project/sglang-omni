@@ -121,7 +121,7 @@ class Relay(ABC):
     @abstractmethod
     async def get_async(
         self,
-        metadata: dict[str, Any],
+        metadata: dict[str, object],
         dest_tensor: torch.Tensor,
         request_id: str = None,
     ) -> RelayOperation:

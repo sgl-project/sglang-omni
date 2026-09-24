@@ -128,7 +128,7 @@ class DataRef(msgspec.Struct, frozen=True):
     dtype: str | None = None
     device: str | None = None
     offset: int | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
     metadata_tensors: tuple[MetadataTensorRef, ...] = ()
 
     def to_dict(self) -> dict[str, object]:

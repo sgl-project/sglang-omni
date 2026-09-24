@@ -11,7 +11,7 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
@@ -222,7 +222,7 @@ class MultiModalResourceConnector:
 
     def __init__(
         self,
-        media_io_kwargs: dict[str, dict[str, Any]] | None = None,
+        media_io_kwargs: dict[str, dict[str, object]] | None = None,
         *,
         connection: ResourceHTTPConnection = global_http_connection,
         allowed_local_media_path: str | Path | None = None,
