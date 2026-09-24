@@ -987,6 +987,7 @@ def test_ming_merge_extracts_video_embeds_into_thinker_inputs() -> None:
     model_inputs = result.get("model_inputs", {})
     assert "image_embeds" in model_inputs
     assert "video_embeds" in model_inputs
+    assert isinstance(model_inputs["video_embeds"], torch.Tensor)
     assert tuple(model_inputs["video_embeds"].shape) == (12, 8)
     assert result["media_cache_keys"]["image"] == "image:img:abc|vid:def"
     # Video must have its own modality-keyed cache entry; the SGLang adapter

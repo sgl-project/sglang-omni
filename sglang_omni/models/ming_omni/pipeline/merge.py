@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, TypeGuard
+from typing import TYPE_CHECKING, Iterable, Mapping, TypeGuard
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -67,7 +67,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 def build_thinker_inputs(
     state: MingOmniPipelineState,
     encoder_outs: object,
-) -> dict[str, Any]:
+) -> dict[str, Mapping[str, torch.Tensor | str]]:
     """Build model_inputs dict for the Ming thinker from encoder outputs.
 
     The SGLang runtime's _inject_multimodal_embeds() handles embedding

@@ -66,7 +66,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 def build_thinker_inputs(
     state: Qwen3OmniPipelineState,
     encoder_outs: dict[str, Any],
-) -> dict[str, Any]:
+) -> dict[str, Mapping[str, object]]:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {})
     mm_audio = mm_inputs.get("audio", {})

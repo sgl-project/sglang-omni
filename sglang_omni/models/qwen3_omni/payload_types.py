@@ -32,6 +32,9 @@ class ThinkerOutput(TypedDict, total=False):
     step: int
     is_final: bool
     extra_model_outputs: dict[str, object]
+    finish_reason: str
+    weight_version: str
+    output_token_logprobs: list[list[float | int]]
 
 
 @dataclass

@@ -162,7 +162,7 @@ def resolve_moss_tts_context_length(
     if not isinstance(model_override_args, Mapping):
         raise ValueError("json_model_override_args must decode to a JSON object")
 
-    config_kwargs: dict[str, Any] = {
+    config_kwargs: dict[str, object] = {
         "trust_remote_code": overrides.get("trust_remote_code", True),
         "model_config_parser": overrides.get("model_config_parser", "auto"),
         "model_override_args": dict(model_override_args),
@@ -187,13 +187,16 @@ def moss_transformers_processor_compat() -> Generator[None, None, None]:
     from transformers import PreTrainedModel, processing_utils
 
     missing = object()
-    undo: list[tuple[str, Any, str, object]] = []
+    undo: list[
+        tuple[Literal["attr"], object, str, object]
+        | tuple[Literal["item"], dict[str, object], str, object]
+    ] = []
 
     def patch_attr(obj: object, name: str, value: object) -> None:
         undo.append(("attr", obj, name, getattr(obj, name, missing)))
         setattr(obj, name, value)
 
-    def patch_item(mapping: dict, key: str, value: object) -> None:
+    def patch_item(mapping: dict[str, object], key: str, value: object) -> None:
         undo.append(("item", mapping, key, mapping.get(key, missing)))
         mapping[key] = value
 
@@ -218,17 +221,20 @@ def moss_transformers_processor_compat() -> Generator[None, None, None]:
             )
         yield
     finally:
-        for kind, obj, key, old in reversed(undo):
-            if kind == "attr":
+        for record in reversed(undo):
+            if record[0] == "attr":
+                _, obj, name, old = record
                 if old is missing:
-                    if hasattr(obj, key):
-                        delattr(obj, key)
+                    if hasattr(obj, name):
+                        delattr(obj, name)
                 else:
-                    setattr(obj, key, old)
-            elif old is missing:
-                obj.pop(key, None)
+                    setattr(obj, name, old)
             else:
-                obj[key] = old
+                _, mapping, key, old = record
+                if old is missing:
+                    mapping.pop(key, None)
+                else:
+                    mapping[key] = old
 
 
 def load_moss_processor_class(checkpoint: str) -> type:

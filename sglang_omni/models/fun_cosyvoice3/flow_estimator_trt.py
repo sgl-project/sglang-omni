@@ -7,7 +7,7 @@ import hashlib
 import logging
 import os
 import queue
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, SupportsIndex, SupportsInt
 
 import torch
 
@@ -38,6 +38,9 @@ class BuilderFlagNamespace(Protocol):
 
 
 class ExecutableFlowEstimator(Protocol):
+    @property
+    def max_batch(self) -> str | bytes | bytearray | SupportsInt | SupportsIndex: ...
+
     def execute(
         self,
         x: torch.Tensor,
@@ -352,7 +355,7 @@ def _take_cfg_pairs(
 
 
 def execute_flow_estimator(
-    estimator: Any,
+    estimator: FlowEstimatorTRT | ExecutableFlowEstimator,
     x: torch.Tensor,
     mask: torch.Tensor,
     mu: torch.Tensor,

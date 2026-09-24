@@ -345,7 +345,7 @@ class TalkerPrefillBuilder:
 
     def _reconstruct_prompt_states(
         self, state: Qwen3OmniPipelineState
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, object]]:
         prompt = state.prompt or {}
         prompt_input_ids = prompt["input_ids"]
         if prompt_input_ids.dim() == 2:
@@ -406,7 +406,7 @@ class TalkerPrefillBuilder:
         gathered = unique_rows.index_select(0, inverse.to(device=unique_rows.device))
         return gathered.view(token_ids.shape[0], unique_rows.shape[-1])
 
-    def _prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, Any]:
+    def _prompt_model_inputs(self, state: Qwen3OmniPipelineState) -> dict[str, object]:
         thinker_inputs = state.thinker_inputs or {}
         model_inputs = thinker_inputs.get("model_inputs")
         if isinstance(model_inputs, dict):

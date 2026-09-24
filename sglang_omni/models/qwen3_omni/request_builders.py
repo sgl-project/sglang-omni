@@ -216,7 +216,7 @@ class EncoderRequestData:
 
     model_inputs: dict[str, Any]
     cache_key: str | None = None
-    skip_result: dict[str, Any] | None = None
+    skip_result: dict[str, object] | None = None
 
 
 def build_encoder_request(
@@ -492,7 +492,7 @@ def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
 
 def _extract_thinker_model_inputs(
     thinker_inputs: dict[str, ValueT],
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Return the model input payload without confusing an empty payload for absence.
 
     ``merge_for_thinker`` always emits ``model_inputs``.  In particular, a

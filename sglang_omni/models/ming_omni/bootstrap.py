@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
     from transformers import PreTrainedTokenizerBase
 
+    from sglang_omni.models.ming_omni.io import ThinkerOutput
     from sglang_omni.proto.request import StagePayload
     from sglang_omni.scheduling.messages import OutgoingMessage
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -249,7 +250,7 @@ def make_thinker_scheduler_adapters(
                 output_ids[-8:],
                 _stop_hits(output_ids, tokenizer),
             )
-        thinker_out: dict[str, Any] = {
+        thinker_out: ThinkerOutput = {
             "output_ids": output_ids,
             "step": len(output_ids),
             "is_final": True,
