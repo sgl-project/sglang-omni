@@ -25,7 +25,7 @@ _TALKER_PREFIX = "talker."
 _SPEAKER_ENCODER_PREFIX = "speaker_encoder."
 
 
-class _PromptProjection(nn.Module):
+class PromptProjection(nn.Module):
     """Linear-SiLU-Linear with the talker checkpoint field names."""
 
     def __init__(self, in_size: int, intermediate_size: int, out_size: int) -> None:
@@ -38,7 +38,7 @@ class _PromptProjection(nn.Module):
         return self.linear_fc2(self.act(self.linear_fc1(x)))
 
 
-class _PromptEmbeddings(nn.Module):
+class PromptEmbeddings(nn.Module):
     def __init__(self, config: Any) -> None:
         super().__init__()
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
@@ -48,7 +48,7 @@ class _PromptEmbeddings(nn.Module):
         # Note (Jiaxin Deng): the prompt builders only read this buffer's device
         # and dtype; the talker's real feedback buffer lives in the engine.
         self.register_buffer(
-            "_feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
+            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -58,7 +58,7 @@ class _PromptEmbeddings(nn.Module):
         return self.text_embedding
 
 
-class _PromptPredictorEmbeddings(nn.Module):
+class PromptPredictorEmbeddings(nn.Module):
     def __init__(self, config: Any) -> None:
         super().__init__()
         cp_config = config.code_predictor_config
@@ -86,11 +86,11 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             "sample_rate",
             24000,
         )
-        self.text_projection = _PromptProjection(
+        self.text_projection = PromptProjection(
             config.text_hidden_size, config.text_hidden_size, config.hidden_size
         )
-        self.model = _PromptEmbeddings(config)
-        self.code_predictor = _PromptPredictorEmbeddings(config)
+        self.model = PromptEmbeddings(config)
+        self.code_predictor = PromptPredictorEmbeddings(config)
         if self.tts_model_type == "base":
             apply_qwen_tts_transformers_compatibility_patches()
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
@@ -126,6 +126,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             param = params.get(target)
             if param is None:
                 continue
+            else:
+                pass
             param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
             loaded.add(target)
         missing = sorted(set(params) - loaded)
@@ -134,6 +136,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
                 f"Qwen3-TTS prompt frontend is missing {len(missing)} weights "
                 f"(e.g. {missing[:3]})"
             )
+        else:
+            pass
 
 
 def iter_checkpoint_tensors(
@@ -160,6 +164,8 @@ def iter_checkpoint_tensors(
             for name in handle.keys():
                 if name in names:
                     yield name, handle.get_tensor(name)
+                else:
+                    pass
 
 
 def load_qwen3_tts_prompt_frontend(

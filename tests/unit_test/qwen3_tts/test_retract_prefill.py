@@ -58,7 +58,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     embedding = torch.nn.Embedding(4, 2)
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
     sched_req = SimpleNamespace(
@@ -72,7 +72,7 @@ def test_write_feedback_buffers_records_decode_input_history() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([99], dtype=torch.long))
 
-    runner._write_feedback_buffers(forward_batch, [sched_req])
+    runner.write_feedback_buffers(forward_batch, [sched_req])
 
     assert len(sched_req.data.decode_input_embeds) == 1
     assert torch.equal(
@@ -91,7 +91,7 @@ def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> Non
         embedding.weight.copy_(torch.arange(8, dtype=torch.float32).reshape(4, 2))
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
     runner.model = SimpleNamespace(
-        _decode_feedback_embedding=embedding,
+        decode_feedback_embedding=embedding,
         get_input_embeddings=lambda: embedding,
     )
 
@@ -117,7 +117,7 @@ def test_write_feedback_buffers_batches_staged_rows_and_embeds_the_rest() -> Non
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([9, 9, 3], dtype=torch.long))
 
-    runner._write_feedback_buffers(forward_batch, [staged, padded, first_step])
+    runner.write_feedback_buffers(forward_batch, [staged, padded, first_step])
 
     expected = torch.tensor([[21.0, 32.0], [3.5, 4.5], [6.0, 7.0]])
     assert torch.equal(embedding.weight[:3].detach(), expected)
@@ -152,7 +152,7 @@ def test_reprefill_after_retract_replays_prompt_plus_generated() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(extend_len, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert out.shape[0] == extend_len
     assert torch.equal(out[:prompt_len], prompt)
@@ -209,8 +209,8 @@ def test_reprefill_restores_retained_repetition_penalty_history() -> None:
             return contextlib.nullcontext()
 
     runner = _runner()
-    runner._execution_bridge = _ExecutionBridge()
-    with runner._execution_context(schedule_batch, isolate_sampling=True):
+    runner.execution_bridge = _ExecutionBridge()
+    with runner.execution_context(schedule_batch, isolate_sampling=True):
         pass
 
     assert torch.equal(scaling, expected)
@@ -241,7 +241,7 @@ def test_reprefill_replays_prompt_tail_and_generated_tail() -> None:
     sched_req = _sched_req(prompt=prompt, prefix_len=8, extend_len=5, history=history)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat([prompt[8:10], torch.stack(history)], dim=0)
     assert torch.equal(out, expected)
@@ -259,7 +259,7 @@ def test_reprefill_drains_leftover_feedback_when_history_is_short() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(6, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     expected = torch.cat(
         [
@@ -280,7 +280,7 @@ def test_reprefill_without_generated_history_fails_loudly() -> None:
     forward_batch = SimpleNamespace(input_ids=torch.zeros(594, dtype=torch.long))
 
     with pytest.raises(RuntimeError, match="missing feedback/text input embeds"):
-        _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+        _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
 
 def test_decode_then_retract_reprefill_roundtrip() -> None:
@@ -293,7 +293,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     class _Model(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self._decode_feedback_embedding = torch.nn.Embedding(8, hidden)
+            self.decode_feedback_embedding = torch.nn.Embedding(8, hidden)
             self.embed = torch.nn.Embedding(8, hidden)
 
         def get_input_embeddings(self):
@@ -309,7 +309,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
             torch.full((hidden,), float(step + 1), dtype=torch.float32)
         )
         sched_req.data.pending_text_queue.append(torch.zeros(hidden))
-        runner._write_feedback_buffers(decode_batch, [sched_req])
+        runner.write_feedback_buffers(decode_batch, [sched_req])
 
     leftover = torch.full((hidden,), float(generated), dtype=torch.float32)
     sched_req.data.pending_feedback_queue.append(leftover)
@@ -322,7 +322,7 @@ def test_decode_then_retract_reprefill_roundtrip() -> None:
     prefill_batch = SimpleNamespace(
         input_ids=torch.zeros(prompt_len + generated, dtype=torch.long)
     )
-    out = runner._build_prefill_input_embeds(prefill_batch, [sched_req])
+    out = runner.build_prefill_input_embeds(prefill_batch, [sched_req])
 
     assert out.shape[0] == prompt_len + generated
     assert torch.equal(out[:prompt_len], prompt)
@@ -340,6 +340,6 @@ def test_fresh_prefill_still_uses_prompt_only_buffer() -> None:
     sched_req = _sched_req(prompt=prompt, prefix_len=1, extend_len=4)
     forward_batch = SimpleNamespace(input_ids=torch.zeros(4, dtype=torch.long))
 
-    out = _runner()._build_prefill_input_embeds(forward_batch, [sched_req])
+    out = _runner().build_prefill_input_embeds(forward_batch, [sched_req])
 
     assert torch.equal(out, prompt[1:5])

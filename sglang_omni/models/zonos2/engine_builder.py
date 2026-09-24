@@ -25,7 +25,7 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 logger = logging.getLogger(__name__)
 
 
-def _build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
+def build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
     shim = tempfile.mkdtemp(prefix="zonos2_sglang_")
     atexit.register(shutil.rmtree, shim, ignore_errors=True)
     with open(os.path.join(model_path, "params.json")) as f:
@@ -61,7 +61,7 @@ def _build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
     return shim
 
 
-def _register_zonos2_autoconfig() -> None:
+def register_zonos2_autoconfig() -> None:
     from transformers import AutoConfig
 
     try:
@@ -70,7 +70,7 @@ def _register_zonos2_autoconfig() -> None:
         pass  # already registered
 
 
-def _install_tuned_moe_configs() -> None:
+def install_tuned_moe_configs() -> None:
     # note (Yue Yin): the fused-MoE Triton kernel (46% of decode GPU time,
     # profiled) ships no config for this deployment shape (E=16,N=3072 on H100),
     # so it falls back to get_default_config -> "Performance might be sub-optimal".
@@ -93,21 +93,27 @@ def _install_tuned_moe_configs() -> None:
             sdir = os.path.join(src_root, vdir)
             if not os.path.isdir(sdir):
                 continue
+            else:
+                pass
             ddir = os.path.join(dst_root, vdir)
             os.makedirs(ddir, exist_ok=True)
             for fn in os.listdir(sdir):
                 dst = os.path.join(ddir, fn)
                 if not os.path.exists(dst):
                     shutil.copy2(os.path.join(sdir, fn), dst)
+                else:
+                    pass
     except Exception:
         logger.warning("Failed to install tuned ZONOS2 MoE configs", exc_info=True)
 
 
-def _cuda_graph_buckets(max_bs: int) -> list[int]:
+def cuda_graph_buckets(max_bs: int) -> list[int]:
     """Power-of-two decode buckets up to max_bs (+ max_bs itself)."""
     bs = [b for b in (1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256) if b <= max_bs]
     if not bs or bs[-1] != max_bs:
         bs.append(max_bs)
+    else:
+        pass
     return bs
 
 
@@ -139,18 +145,18 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
         self.mem_fraction_static = mem_fraction_static
-        self._cuda_graph_bs: list[int] = []
+        self.cuda_graph_bs: list[int] = []
 
     def resolve_checkpoint(self, model_path: str) -> str:
         local = resolve_checkpoint(model_path)
         cfg = load_zonos2_pretrained_config(local)
         self.context_length = cfg.max_seqlen
-        return _build_config_shim(local, cfg)
+        return build_config_shim(local, cfg)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
-        _register_zonos2_autoconfig()
-        _install_tuned_moe_configs()
+        register_zonos2_autoconfig()
+        install_tuned_moe_configs()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
         defaults: dict[str, Any] = {
@@ -170,11 +176,13 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             # Dynamic FP8 on the MoE experts (bf16 -> fp8 at load, halving the
             # expert weights); bf16 nn.Linear projections are unaffected.
             defaults["quantization"] = "fp8"
+        else:
+            pass
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        self._cuda_graph_bs = _cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
-        overrides["cuda_graph_bs"] = self._cuda_graph_bs
+        self.cuda_graph_bs = cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
+        overrides["cuda_graph_bs"] = self.cuda_graph_bs
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Chenchen Hong): per-frame feedback/EOS state has no rollback, so a
@@ -208,7 +216,9 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
                 TTSSamplingParams,
             )
 
-            model.capture_tail_graphs(self._cuda_graph_bs, TTSSamplingParams())
+            model.capture_tail_graphs(self.cuda_graph_bs, TTSSamplingParams())
+        else:
+            pass
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner

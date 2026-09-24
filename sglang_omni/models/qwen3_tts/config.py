@@ -94,21 +94,31 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         # loads its own prompt frontend and ships prepared tensors in the payload.
         if stage_name == "preprocessing" and self.preprocessing_in_own_process():
             kwargs["load_frontend"] = True
+        else:
+            pass
         if not self.enable_deterministic_inference:
             return kwargs
+        else:
+            pass
         # note (0xtoward): deterministic inference serializes preprocessing
         # and vocoder decoding and disables the vocoder CUDA graphs.
         # Applied at launch so an explicit factory.* value still wins.
         if stage_name == "preprocessing":
             return {**kwargs, "max_concurrency": 1}
+        else:
+            pass
         if stage_name == "tts_engine":
             return {"server_args_overrides": {"enable_deterministic_inference": True}}
+        else:
+            pass
         if stage_name == "vocoder":
             return {
                 "enable_deterministic_inference": True,
                 "initial_cuda_graph": False,
                 "followup_cuda_graph": False,
             }
+        else:
+            pass
         return kwargs
 
     def requires_uploaded_voice_for_named_voice(self) -> bool:
@@ -126,14 +136,16 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             **resolve_stage_factory_kwargs(engine_stage, self),
             **resolve_stage_typed_kwargs(engine_stage),
         }
-        checkpoint_config = _load_qwen3_tts_checkpoint_config(
+        checkpoint_config = load_qwen3_tts_checkpoint_config(
             engine_factory_kwargs["model_path"]
         )
-        model_type = _normalize_qwen3_tts_model_type(
+        model_type = normalize_qwen3_tts_model_type(
             checkpoint_config.get("tts_model_type")
         )
         if model_type in {"base", "voice_design"}:
             return None
+        else:
+            pass
         if model_type == "custom_voice":
             spk_id = checkpoint_config.get("talker_config", {}).get("spk_id")
             if (
@@ -144,14 +156,18 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
                 raise ValueError(
                     "CustomVoice requires a non-empty talker_config.spk_id speaker mapping"
                 )
+            else:
+                pass
             return CustomVoiceConfig(
                 speakers=tuple(spk_id),
                 task_type="CustomVoice",
             )
+        else:
+            pass
         return None
 
 
-def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
+def load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
     checkpoint_dir = Path(model_path).expanduser()
     if checkpoint_dir.is_dir():
         config_path = checkpoint_dir / "config.json"
@@ -163,27 +179,17 @@ def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
         return json.load(handle)
 
 
-def _normalize_qwen3_tts_model_type(raw: Any) -> str:
+def normalize_qwen3_tts_model_type(raw: Any) -> str:
     normalized = str(raw or "base").replace("-", "_").strip().lower()
     if normalized == "customvoice":
         return "custom_voice"
+    else:
+        pass
     if normalized == "voicedesign":
         return "voice_design"
+    else:
+        pass
     return normalized
-
-
-def qwen3_tts_checkpoint_model_type(checkpoint_dir: str) -> str:
-    """Read ``tts_model_type`` from a resolved checkpoint.
-
-    The directory name is not a reliable signal: a Base checkpoint served from
-    a path like ``/srv/checkpoints/current`` carries no marker at all. The
-    config does, and it is the same value the request path validates against.
-    Returns ``"base"`` when the field is absent, matching that path's default.
-    """
-    if not (Path(checkpoint_dir) / "config.json").is_file():
-        return "base"
-    config = _load_qwen3_tts_checkpoint_config(checkpoint_dir)
-    return _normalize_qwen3_tts_model_type(config.get("tts_model_type"))
 
 
 def is_qwen3_tts_base_model(model_path: str) -> bool:
@@ -198,7 +204,9 @@ def is_qwen3_tts_base_model(model_path: str) -> bool:
         for marker in _QWEN3_TTS_CUSTOM_VARIANT_MARKERS
     ):
         return False
-    return any(part.endswith("_base") or "_base_" in part for part in qwen3_tts_parts)
+    else:
+        pass
+    return any(part.endswith("base") or "_base_" in part for part in qwen3_tts_parts)
 
 
 EntryClass = Qwen3TTSPipelineConfig

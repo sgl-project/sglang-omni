@@ -19,27 +19,27 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 class _RecordingSlotPool:
     def __init__(self, *, num_slots: int = 4) -> None:
         self.num_slots = num_slots
-        self._free = list(reversed(range(num_slots)))
-        self._in_use: set[int] = set()
+        self.free = list(reversed(range(num_slots)))
+        self.in_use: set[int] = set()
         self.steps: list[dict[int, torch.Tensor]] = []
         self.flushes: list[int] = []
 
     def acquire(self) -> int:
-        if not self._free:
+        if not self.free:
             raise RuntimeError(
                 f"dots.tts streaming vocoder admission failed: ran out of slots "
                 f"(num_slots={self.num_slots})"
             )
-        slot = self._free.pop()
-        self._in_use.add(slot)
+        slot = self.free.pop()
+        self.in_use.add(slot)
         return slot
 
     def release(self, slot: int) -> None:
         slot = int(slot)
-        if slot not in self._in_use:
+        if slot not in self.in_use:
             return
-        self._in_use.remove(slot)
-        self._free.append(slot)
+        self.in_use.remove(slot)
+        self.free.append(slot)
 
     def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         self.steps.append(
@@ -62,7 +62,7 @@ class _FakeInference:
         )
         self.batch_steps: list[tuple[int, int]] = []
         self._latent_dim = latent_dim
-        self._hop_size = hop_size
+        self.hop_size = hop_size
 
     def init_stream_state(self, *, batch_size: int, chunk_size: int):
         window = torch.zeros(batch_size, self._latent_dim, chunk_size + 4)
@@ -87,7 +87,7 @@ class _FakeInference:
 
     def _decode_stream_window(self, window: torch.Tensor) -> torch.Tensor:
         return torch.zeros(
-            window.size(0), 1, window.size(-1) * self._hop_size, dtype=window.dtype
+            window.size(0), 1, window.size(-1) * self.hop_size, dtype=window.dtype
         )
 
 
@@ -144,13 +144,13 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
     pool.step({s0: older, s1: newer})
     assert inference.batch_steps[-1] == (2, 3)
-    assert pool._total_frames[s0] == 6
-    assert pool._total_frames[s1] == 3
+    assert pool.total_frames[s0] == 6
+    assert pool.total_frames[s1] == 3
 
     pool.release(s0)
     reused = pool.acquire()
     assert reused == s0
-    assert pool._total_frames[reused] == 0
+    assert pool.total_frames[reused] == 0
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
@@ -171,12 +171,12 @@ def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
         stream_slots=4,
         slot_pool=pool,
     )
-    assert vocoder._can_batch_stream_chunks is True
-    assert vocoder._stream_chunk_batch_max == 4
+    assert vocoder.can_batch_stream_chunks is True
+    assert vocoder.stream_chunk_batch_max == 4
 
     for request_id in ("a", "b"):
         state = vocoder.create_stream_state(request_id)
-        vocoder._stream_states[request_id] = state
+        vocoder.stream_states[request_id] = state
         vocoder.ingest(request_id, state, _patch(1.0 if request_id == "a" else 2.0))
 
     participants = vocoder.select_step_participants()
@@ -201,11 +201,11 @@ def test_select_step_participants_respects_max_batch_size() -> None:
         stream_slots=8,
         slot_pool=pool,
     )
-    assert vocoder._stream_chunk_batch_max == 2
+    assert vocoder.stream_chunk_batch_max == 2
 
     for request_id in ("a", "b", "c", "d"):
         state = vocoder.create_stream_state(request_id)
-        vocoder._stream_states[request_id] = state
+        vocoder.stream_states[request_id] = state
         vocoder.ingest(request_id, state, _patch(float(ord(request_id))))
 
     participants = vocoder.select_step_participants()
@@ -227,7 +227,7 @@ def test_stream_chunk_batch_cap_follows_max_batch_size_not_slots() -> None:
         stream_slots=1,
         slot_pool=_RecordingSlotPool(num_slots=1),
     )
-    assert vocoder._stream_chunk_batch_max == 8
+    assert vocoder.stream_chunk_batch_max == 8
     assert vocoder.stream_slots == 1
 
 
@@ -242,8 +242,8 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     )
     early = vocoder.create_stream_state("early")
     steady = vocoder.create_stream_state("steady")
-    vocoder._stream_states["early"] = early
-    vocoder._stream_states["steady"] = steady
+    vocoder.stream_states["early"] = early
+    vocoder.stream_states["steady"] = steady
 
     vocoder.ingest("early", early, _patch(1.0))
     # note (guozhihao-224): past the first-two-patch fast path so take_patches
@@ -253,7 +253,7 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     steady.slot = pool.acquire()
 
     participants = vocoder.select_step_participants()
-    frames = {vocoder._step_frames(state) for _, state in participants}
+    frames = {vocoder.step_frames(state) for _, state in participants}
     assert len(frames) == 1
     plan = vocoder.build_step_plan(participants)
     assert len({int(t.shape[1]) for t in plan.slot_latents.values()}) == 1
@@ -275,7 +275,7 @@ def test_stream_done_flushes_and_releases_slot() -> None:
     assert waveform is not None
     assert state.slot is None
     assert pool.flushes == [slot]
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_release_stream_resources_returns_slot() -> None:
@@ -290,7 +290,7 @@ def test_release_stream_resources_returns_slot() -> None:
     slot = state.slot
     vocoder.release_stream_resources("req", state)
     assert state.slot is None
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:
@@ -318,8 +318,8 @@ def test_on_stream_chunk_batch_uses_pool_not_compiled_stream_step() -> None:
         slot_pool=pool,
     )
     payload_state = vocoder.create_stream_state("req")
-    vocoder._stream_states["req"] = payload_state
-    vocoder._stream_payloads["req"] = SimpleNamespace(
+    vocoder.stream_states["req"] = payload_state
+    vocoder.stream_payloads["req"] = SimpleNamespace(
         request_id="req",
         request=SimpleNamespace(params={"stream": True}),
         data={},

@@ -23,7 +23,8 @@ import torch
 
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
-from sglang_omni.comm.engine import CommEngine
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
+from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
@@ -49,8 +50,9 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -63,7 +65,7 @@ GetNextFn = Callable[[str, Any], str | list[str] | None]
 GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
 
 
-def _error_text(exc: BaseException) -> str:
+def error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
@@ -122,25 +124,25 @@ class Stage:
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
-        self._project_payload = project_payload or {}
-        self._stream_targets = stream_targets or []
+        self.project_payload = project_payload or {}
+        self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
-        self._same_process_targets = same_process_targets or set()
-        self._local_dispatcher = local_dispatcher
-        self._can_accept_stream_before_payload = can_accept_stream_before_payload
-        self._disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
-        self._tp_fanout = tp_fanout
-        self._is_terminal = is_terminal
-        self._owns_external_io = role in {"single", "leader"}
-        self._replica_topology = ReplicaTopology.from_dict(replica_topology)
-        self._replica_bindings: dict[str, dict[str, int]] = {}
+        self.same_process_targets = same_process_targets or set()
+        self.local_dispatcher = local_dispatcher
+        self.can_accept_stream_before_payload = can_accept_stream_before_payload
+        self.disable_direct_cuda_ipc_payload = disable_direct_cuda_ipc_payload
+        self.tp_fanout = tp_fanout
+        self.is_terminal = is_terminal
+        self.owns_external_io = role in {"single", "leader"}
+        self.replica_topology = ReplicaTopology.from_dict(replica_topology)
+        self.replica_bindings: dict[str, dict[str, int]] = {}
 
-        self._comm = CommEngine(
+        self.comm = CommEngine(
             CommRouter(
                 stage_name=name,
                 gpu_id=self.gpu_id,
                 placement_gpu_id=placement_gpu_id,
-                same_process_targets=self._same_process_targets,
+                same_process_targets=self.same_process_targets,
                 gpu_stage_names=gpu_stage_names or set(),
                 stage_gpu_ids=stage_gpu_ids,
                 remote_stage_names=remote_stage_names or set(),
@@ -150,36 +152,46 @@ class Stage:
             tp_rank=tp_rank,
             tp_size=tp_size,
             rank_endpoints=rank_endpoints,
-            task_done_callback=self._on_background_task_done,
+            task_done_callback=self.on_background_task_done,
         )
+        for pool, receiver in getattr(scheduler, "kv_registrations", ()):
+            self.comm.register_kv_pool(pool)
+            if receiver is not None:
+                self.comm.register_kv_receiver(pool.pool_id, receiver)
+            else:
+                pass
 
-        self._running = False
-        self._aborted: set[str] = set()
-        self._active_requests: set[str] = set()
-        self._stream_queue: StreamQueue | None = None
-        self._stream_chunk_counters: dict[tuple[str, str], int] = {}
-        self._first_stream_chunk_seen: set[str] = set()
-        self._local_stream_targets: dict[str, set[str]] = {}
-        self._nonlocal_stream_targets: dict[str, set[str]] = {}
-        self._receive_tasks: set[asyncio.Task] = set()
-        self._receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
-        self._scheduler_thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._scheduler_crash_error: BaseException | None = None
-        self._background_task_error: BaseException | None = None
+        self.running = False
+        self.aborted: set[str] = set()
+        self.active_requests: set[str] = set()
+        self.stream_queue: StreamQueue | None = None
+        self.stream_chunk_counters: dict[tuple[str, str], int] = {}
+        self.first_stream_chunk_seen: set[str] = set()
+        self.local_stream_targets: dict[str, set[str]] = {}
+        self.nonlocal_stream_targets: dict[str, set[str]] = {}
+        self.receive_tasks: set[asyncio.Task] = set()
+        self.receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
+        self.scheduler_thread: threading.Thread | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.scheduler_crash_error: BaseException | None = None
+        self.background_task_error: BaseException | None = None
 
-    def _record_replica_bindings(
+    def record_replica_bindings(
         self, request_id: str, bindings: dict[str, int] | None
     ) -> None:
         if not bindings:
             return
+        else:
+            pass
         # Note (kaige): aborted requests may still have messages in flight,
         # while successful IDs can be reused after their coordinator owner closes.
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
-        self._replica_bindings.setdefault(request_id, dict(bindings))
+        else:
+            pass
+        self.replica_bindings.setdefault(request_id, dict(bindings))
 
-    def _logical_source(self, from_stage: str) -> str:
+    def logical_source(self, from_stage: str) -> str:
         """Convert an incoming physical source name to its logical stage name.
 
         Note (kaige): senders identify themselves by instance name so transport
@@ -187,27 +199,33 @@ class Stage:
         and stream routing are all declared against logical names. Names that
         are not registered replica instances pass through unchanged.
         """
-        return self._replica_topology.logical_name(from_stage)
+        return self.replica_topology.logical_name(from_stage)
 
-    def _resolve_target_instance(self, request_id: str, target: str) -> str:
-        if not self._replica_topology.is_replicated(target):
+    def resolve_target_instance(self, request_id: str, target: str) -> str:
+        if not self.replica_topology.is_replicated(target):
             return target
-        bindings = self._replica_bindings.get(request_id)
+        else:
+            pass
+        bindings = self.replica_bindings.get(request_id)
         replica_id = None if bindings is None else bindings.get(target)
         if replica_id is None:
             raise RuntimeError(
                 f"Stage {self.name}: no replica binding for target {target!r} "
                 f"(req={request_id})"
             )
-        return self._replica_topology.resolve(target, replica_id)
+        else:
+            pass
+        return self.replica_topology.resolve(target, replica_id)
 
     async def start(self) -> None:
-        if self._running:
+        if self.running:
             return
+        else:
+            pass
         await self.control_plane.start()
-        await self._comm.start()
-        self._loop = asyncio.get_running_loop()
-        self._running = True
+        await self.comm.start()
+        self.loop = asyncio.get_running_loop()
+        self.running = True
 
         # Start scheduler in dedicated thread
         if self.scheduler is not None:
@@ -229,28 +247,34 @@ class Stage:
                             current_platform.device_type,
                             self.gpu_id,
                         )
+                    else:
+                        pass
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
-                    self._running = False
-                    loop = self._loop
+                    self.running = False
+                    loop = self.loop
                     if loop is not None and not loop.is_closed():
                         asyncio.run_coroutine_threadsafe(
-                            self._handle_scheduler_crash(exc),
+                            self.handle_scheduler_crash(exc),
                             loop,
                         )
+                    else:
+                        pass
 
-            self._scheduler_thread = threading.Thread(
+            self.scheduler_thread = threading.Thread(
                 target=_run_scheduler,
                 name=f"scheduler-{self.name}",
                 daemon=True,
             )
-            self._scheduler_thread.start()
+            self.scheduler_thread.start()
+        else:
+            pass
 
         logger.info("Stage %s started", self.name)
 
     async def stop(self) -> None:
-        self._running = False
+        self.running = False
         cleanup_error: Exception | None = None
 
         def _record_cleanup_error(component: str, exc: Exception) -> None:
@@ -264,13 +288,15 @@ class Stage:
             )
             if cleanup_error is None:
                 cleanup_error = exc
+            else:
+                pass
 
-        receive_tasks = list(self._receive_tasks)
+        receive_tasks = list(self.receive_tasks)
         for task in receive_tasks:
             task.cancel()
         await asyncio.gather(*receive_tasks, return_exceptions=True)
-        self._receive_tasks.clear()
-        self._receive_lane_tails.clear()
+        self.receive_tasks.clear()
+        self.receive_lane_tails.clear()
         if self.scheduler is not None:
             try:
                 self.scheduler.stop()
@@ -282,7 +308,7 @@ class Stage:
             # the thread instead of letting a daemon thread be reclaimed at
             # process exit. A slow thread is logged, not fatal: shutdown
             # correctness must not start depending on this timeout.
-            scheduler_thread = self._scheduler_thread
+            scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
                     await asyncio.to_thread(
@@ -299,42 +325,50 @@ class Stage:
                             _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
                         )
                     else:
-                        self._scheduler_thread = None
+                        self.scheduler_thread = None
+            else:
+                pass
+        else:
+            pass
         try:
             self.control_plane.close()
         except Exception as exc:
             _record_cleanup_error("control plane", exc)
-        if self._tp_fanout is not None:
+        if self.tp_fanout is not None:
             try:
-                self._tp_fanout.close()
+                self.tp_fanout.close()
             except Exception as exc:
                 _record_cleanup_error("TP fanout", exc)
+        else:
+            pass
         try:
-            await self._comm.close()
+            await self.comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
+        else:
+            pass
 
     async def run(self) -> None:
         await self.start()
 
-        abort_task = asyncio.create_task(self._abort_listener())
-        outbox_task = asyncio.create_task(self._drain_outbox())
+        abort_task = asyncio.create_task(self.abort_listener())
+        outbox_task = asyncio.create_task(self.drain_outbox())
         abort_task.add_done_callback(
-            lambda task: self._on_background_task_done(task, "abort listener")
+            lambda task: self.on_background_task_done(task, "abort listener")
         )
         outbox_task.add_done_callback(
-            lambda task: self._on_background_task_done(task, "outbox drain")
+            lambda task: self.on_background_task_done(task, "outbox drain")
         )
 
         try:
-            while self._running:
+            while self.running:
                 msg = await self.control_plane.recv()
                 if (
                     self.role == "leader"
-                    and self._tp_fanout is not None
+                    and self.tp_fanout is not None
                     and isinstance(
                         msg,
                         (
@@ -345,18 +379,26 @@ class Stage:
                         ),
                     )
                 ):
-                    await self._tp_fanout.fanout_control(msg)
+                    await self.tp_fanout.fanout_control(msg)
+                else:
+                    pass
                 if isinstance(msg, ShutdownMessage):
                     break
+                else:
+                    pass
                 if isinstance(msg, TPWorkMessage):
-                    await self._execute(msg.data)
+                    await self.execute(msg.data)
                     continue
-                await self._handle_message(msg)
+                else:
+                    pass
+                await self.handle_message(msg)
         except asyncio.CancelledError:
             pass
         except Exception:
-            if self._scheduler_crash_error is None:
+            if self.scheduler_crash_error is None:
                 raise
+            else:
+                pass
         finally:
             await self.stop()
             abort_task.cancel()
@@ -365,59 +407,65 @@ class Stage:
                 await abort_task
             with suppress(asyncio.CancelledError):
                 await outbox_task
-            if self._background_task_error is not None:
-                raise self._background_task_error
-            if self._scheduler_crash_error is not None:
+            if self.background_task_error is not None:
+                raise self.background_task_error
+            else:
+                pass
+            if self.scheduler_crash_error is not None:
                 raise RuntimeError(
                     f"Scheduler thread for stage {self.name} crashed"
-                ) from self._scheduler_crash_error
+                ) from self.scheduler_crash_error
+            else:
+                pass
 
-    async def _handle_message(self, msg: Any) -> None:
+    async def handle_message(self, msg: Any) -> None:
         if isinstance(msg, SubmitMessage):
-            await self._on_submit(msg)
+            await self.on_submit(msg)
         elif isinstance(msg, DataAckMessage):
-            self._comm.ack_transfer(msg)
+            self.comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
-            self._schedule_receive_task(msg)
+            self.schedule_receive_task(msg)
         elif isinstance(msg, ProfilerStartMessage):
-            self._on_profiler_start(msg)
+            self.on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
-            self._on_profiler_stop(msg)
+            self.on_profiler_stop(msg)
         elif isinstance(msg, AdminMessage):
-            await self._on_admin(msg)
+            await self.on_admin(msg)
+        else:
+            pass
 
-    def _schedule_receive_task(
+    def schedule_receive_task(
         self,
         msg: DataReadyMessage,
     ) -> None:
-        self._record_replica_bindings(msg.request_id, msg.replica_bindings)
+        self.record_replica_bindings(msg.request_id, msg.replica_bindings)
         if msg.is_done or msg.error is not None:
-            handler = self._on_stream_signal
+            handler = self.on_stream_signal
             label = f"stream signal {msg.request_id}:{msg.from_stage}"
         elif msg.chunk_id is not None:
-            handler = self._on_stream_chunk
+            handler = self.on_stream_chunk
             label = f"stream chunk {msg.request_id}:{msg.from_stage}:{msg.chunk_id}"
         else:
-            handler = self._on_data_ready
+            handler = self.on_data_ready
             label = f"data {msg.request_id}:{msg.from_stage}"
 
         lane = (msg.request_id, msg.from_stage)
-        predecessor = self._receive_lane_tails.get(lane)
+        predecessor = self.receive_lane_tails.get(lane)
         completion = asyncio.get_running_loop().create_future()
-        self._receive_lane_tails[lane] = completion
+        self.receive_lane_tails[lane] = completion
         task = asyncio.create_task(
-            self._run_receive_task(
+            self.run_receive_task(
                 handler(msg, predecessor),
                 lane,
                 predecessor,
                 completion,
             )
         )
-        self._receive_tasks.add(task)
-        task.add_done_callback(self._receive_tasks.discard)
-        task.add_done_callback(lambda done: self._on_background_task_done(done, label))
+        self.receive_tasks.add(task)
+        task.add_done_callback(self.receive_tasks.discard)
+        task.add_done_callback(lambda done: self.on_background_task_done(done, label))
 
-    async def _run_receive_task(
+    async def run_receive_task(
         self,
         coro: Awaitable[None],
         lane: tuple[str, str],
@@ -429,26 +477,38 @@ class Stage:
         finally:
             if predecessor is not None:
                 await predecessor
+            else:
+                pass
             if not completion.done():
                 completion.set_result(None)
-            if self._receive_lane_tails.get(lane) is completion:
-                self._receive_lane_tails.pop(lane, None)
+            else:
+                pass
+            if self.receive_lane_tails.get(lane) is completion:
+                self.receive_lane_tails.pop(lane, None)
+            else:
+                pass
 
     @staticmethod
-    async def _wait_for_receive_predecessor(
+    async def wait_for_receive_predecessor(
         predecessor: asyncio.Future[None] | None,
     ) -> None:
         if predecessor is not None:
             await predecessor
+        else:
+            pass
 
-    async def _on_submit(self, msg: SubmitMessage) -> None:
+    async def on_submit(self, msg: SubmitMessage) -> None:
         request_id = msg.request_id
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
-        self._record_replica_bindings(request_id, msg.replica_bindings)
-        self._active_requests.add(request_id)
-        if self._stream_queue is not None and not self._stream_queue.has(request_id):
-            self._stream_queue.open(request_id)
+        else:
+            pass
+        self.record_replica_bindings(request_id, msg.replica_bindings)
+        self.active_requests.add(request_id)
+        if self.stream_queue is not None and not self.stream_queue.has(request_id):
+            self.stream_queue.open(request_id)
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -457,17 +517,19 @@ class Stage:
         )
 
         payload = msg.data  # StagePayload from coordinator
-        await self._execute(payload)
+        await self.execute(payload)
 
-    async def _on_data_ready(
+    async def on_data_ready(
         self,
         msg: DataReadyMessage,
         predecessor: asyncio.Future[None] | None = None,
     ) -> None:
         request_id = msg.request_id
-        if request_id in self._aborted:
-            await self._discard_data(msg)
+        if request_id in self.aborted:
+            await self.discard_data(msg)
             return
+        else:
+            pass
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
@@ -478,19 +540,21 @@ class Stage:
                     self.name,
                     request_id,
                 )
-                await self._wait_for_receive_predecessor(predecessor)
-                await self._send_failure(
+                await self.wait_for_receive_predecessor(predecessor)
+                await self.send_failure(
                     request_id, f"direct IPC payload deserialize failed: {exc}"
                 )
                 return
-            await self._wait_for_receive_predecessor(predecessor)
-            await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+            await self.wait_for_receive_predecessor(predecessor)
+            await self.receive_payload_from_stage(request_id, msg.from_stage, payload)
             return
+        else:
+            pass
 
-        data_ref = self._data_ref_from_message(msg)
-        relay = self._comm.relay(data_ref.transport)
+        data_ref = self.data_ref_from_message(msg)
+        relay = self.comm.relay(data_ref.transport)
         try:
-            payload = await self._comm.read_data(
+            payload = await self.comm.read_data(
                 relay=relay,
                 request_id=request_id,
                 data_ref=data_ref,
@@ -499,18 +563,20 @@ class Stage:
             logger.exception(
                 "Stage %s: relay read failed for %s", self.name, request_id
             )
-            await self._send_data_ack(
-                msg, data_ref, success=False, error=_error_text(exc)
+            await self.send_data_ack(
+                msg, data_ref, success=False, error=error_text(exc)
             )
-            self._comm.cleanup(request_id)
-            await self._wait_for_receive_predecessor(predecessor)
-            await self._send_failure(request_id, f"relay read failed: {exc}")
+            self.comm.cleanup(request_id)
+            await self.wait_for_receive_predecessor(predecessor)
+            await self.send_failure(request_id, f"relay read failed: {exc}")
             return
-        await self._send_data_ack(msg, data_ref, success=True)
+        await self.send_data_ack(msg, data_ref, success=True)
 
-        await self._wait_for_receive_predecessor(predecessor)
+        await self.wait_for_receive_predecessor(predecessor)
         if payload is not None:
-            await self._receive_payload_from_stage(request_id, msg.from_stage, payload)
+            await self.receive_payload_from_stage(request_id, msg.from_stage, payload)
+        else:
+            pass
 
     async def receive_local_payload(
         self,
@@ -519,8 +585,8 @@ class Stage:
         payload: Any,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        self._record_replica_bindings(request_id, replica_bindings)
-        await self._receive_payload_from_stage(request_id, from_stage, payload)
+        self.record_replica_bindings(request_id, replica_bindings)
+        await self.receive_payload_from_stage(request_id, from_stage, payload)
 
     async def receive_local_stream_chunk(
         self,
@@ -531,22 +597,24 @@ class Stage:
         metadata: dict[str, Any] | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
-        self._record_replica_bindings(request_id, replica_bindings)
-        self._active_requests.add(request_id)
+        else:
+            pass
+        self.record_replica_bindings(request_id, replica_bindings)
+        self.active_requests.add(request_id)
         item = StreamItem(
             chunk_id=chunk_id,
             data=data,
             from_stage=from_stage,
             metadata=metadata,
         )
-        self._emit_stream_chunk_received(
+        self.emit_stream_chunk_received(
             request_id=request_id,
             from_stage=from_stage,
             chunk_id=chunk_id,
         )
-        await self._route_stream_item_or_fail(request_id, item)
+        await self.route_stream_item_or_fail(request_id, item)
 
     async def receive_local_stream_signal(
         self,
@@ -557,25 +625,29 @@ class Stage:
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        self._record_replica_bindings(request_id, replica_bindings)
-        await self._receive_stream_signal(
+        self.record_replica_bindings(request_id, replica_bindings)
+        await self.receive_stream_signal(
             request_id,
             from_stage,
             is_done=is_done,
             error=error,
         )
 
-    async def _receive_payload_from_stage(
+    async def receive_payload_from_stage(
         self,
         request_id: str,
         from_stage: str,
         payload: Any,
     ) -> None:
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
-        self._active_requests.add(request_id)
-        if self._stream_queue is not None and not self._stream_queue.has(request_id):
-            self._stream_queue.open(request_id)
+        else:
+            pass
+        self.active_requests.add(request_id)
+        if self.stream_queue is not None and not self.stream_queue.has(request_id):
+            self.stream_queue.open(request_id)
+        else:
+            pass
 
         _emit_event(
             request_id=request_id,
@@ -584,7 +656,7 @@ class Stage:
             metadata={"from_stage": from_stage, "kind": "payload"},
         )
         merged = self.input_handler.receive(
-            request_id, self._logical_source(from_stage), payload
+            request_id, self.logical_source(from_stage), payload
         )
         if merged is not None:
             _emit_event(
@@ -593,18 +665,22 @@ class Stage:
                 event_name="stage_aggregate_ready",
                 metadata={"from_stage": from_stage},
             )
-            await self._execute(merged)
+            await self.execute(merged)
+        else:
+            pass
 
-    async def _on_stream_chunk(
+    async def on_stream_chunk(
         self,
         msg: DataReadyMessage,
         predecessor: asyncio.Future[None] | None = None,
     ) -> None:
         request_id = msg.request_id
-        if request_id in self._aborted:
-            await self._discard_stream_chunk_data(msg)
+        if request_id in self.aborted:
+            await self.discard_stream_chunk_data(msg)
             return
-        self._active_requests.add(request_id)
+        else:
+            pass
+        self.active_requests.add(request_id)
 
         if stage_io.is_direct_cuda_ipc_stream_chunk_ref(msg.data_ref):
             try:
@@ -618,19 +694,21 @@ class Stage:
                     request_id,
                     exc,
                 )
-                await self._wait_for_receive_predecessor(predecessor)
-                await self._queue_stream_error(request_id, msg.from_stage, exc)
+                await self.wait_for_receive_predecessor(predecessor)
+                await self.queue_stream_error(request_id, msg.from_stage, exc)
                 return
-            await self._wait_for_receive_predecessor(predecessor)
-            if request_id in self._aborted:
+            await self.wait_for_receive_predecessor(predecessor)
+            if request_id in self.aborted:
                 return
+            else:
+                pass
             item = StreamItem(
                 chunk_id=msg.chunk_id,
                 data=data,
                 from_stage=msg.from_stage,
                 metadata=metadata,
             )
-            self._emit_stream_chunk_received(
+            self.emit_stream_chunk_received(
                 request_id=msg.request_id,
                 from_stage=msg.from_stage,
                 chunk_id=msg.chunk_id,
@@ -647,8 +725,10 @@ class Stage:
                 transport="torch_cuda_ipc",
                 bytes=data.nbytes,
             )
-            await self._route_stream_item_or_fail(request_id, item)
+            await self.route_stream_item_or_fail(request_id, item)
             return
+        else:
+            pass
 
         if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
             try:
@@ -660,19 +740,21 @@ class Stage:
                     request_id,
                     exc,
                 )
-                await self._wait_for_receive_predecessor(predecessor)
-                await self._queue_stream_error(request_id, msg.from_stage, exc)
+                await self.wait_for_receive_predecessor(predecessor)
+                await self.queue_stream_error(request_id, msg.from_stage, exc)
                 return
-            await self._wait_for_receive_predecessor(predecessor)
-            if request_id in self._aborted:
+            await self.wait_for_receive_predecessor(predecessor)
+            if request_id in self.aborted:
                 return
+            else:
+                pass
             item = StreamItem(
                 chunk_id=msg.chunk_id,
                 data=data,
                 from_stage=msg.from_stage,
                 metadata=metadata,
             )
-            self._emit_stream_chunk_received(
+            self.emit_stream_chunk_received(
                 request_id=msg.request_id,
                 from_stage=msg.from_stage,
                 chunk_id=msg.chunk_id,
@@ -686,13 +768,15 @@ class Stage:
                 transport="inline",
                 bytes=data.nbytes,
             )
-            await self._route_stream_item_or_fail(request_id, item)
+            await self.route_stream_item_or_fail(request_id, item)
             return
+        else:
+            pass
 
-        data_ref = self._data_ref_from_message(msg)
-        relay = self._comm.relay(data_ref.transport)
+        data_ref = self.data_ref_from_message(msg)
+        relay = self.comm.relay(data_ref.transport)
         try:
-            data, metadata = await self._comm.read_stream_chunk(
+            data, metadata = await self.comm.read_stream_chunk(
                 relay=relay,
                 data_ref=data_ref,
             )
@@ -703,17 +787,19 @@ class Stage:
                 request_id,
                 exc,
             )
-            await self._send_data_ack(
-                msg, data_ref, success=False, error=_error_text(exc)
+            await self.send_data_ack(
+                msg, data_ref, success=False, error=error_text(exc)
             )
-            await self._wait_for_receive_predecessor(predecessor)
-            await self._queue_stream_error(request_id, msg.from_stage, exc)
+            await self.wait_for_receive_predecessor(predecessor)
+            await self.queue_stream_error(request_id, msg.from_stage, exc)
             return
-        await self._send_data_ack(msg, data_ref, success=True)
+        await self.send_data_ack(msg, data_ref, success=True)
 
-        await self._wait_for_receive_predecessor(predecessor)
-        if request_id in self._aborted:
+        await self.wait_for_receive_predecessor(predecessor)
+        if request_id in self.aborted:
             return
+        else:
+            pass
 
         item = StreamItem(
             chunk_id=msg.chunk_id,
@@ -721,14 +807,14 @@ class Stage:
             from_stage=msg.from_stage,
             metadata=metadata,
         )
-        self._emit_stream_chunk_received(
+        self.emit_stream_chunk_received(
             request_id=msg.request_id,
             from_stage=msg.from_stage,
             chunk_id=msg.chunk_id,
         )
-        await self._route_stream_item_or_fail(request_id, item)
+        await self.route_stream_item_or_fail(request_id, item)
 
-    def _emit_stream_chunk_received(
+    def emit_stream_chunk_received(
         self,
         *,
         request_id: str,
@@ -742,18 +828,22 @@ class Stage:
             metadata={"from_stage": from_stage, "chunk_id": chunk_id},
         )
 
-    async def _route_stream_item_or_fail(
+    async def route_stream_item_or_fail(
         self, request_id: str, item: StreamItem
     ) -> None:
-        logical_source = self._logical_source(item.from_stage)
+        logical_source = self.logical_source(item.from_stage)
         if logical_source != item.from_stage:
             item = replace(item, from_stage=logical_source)
-        if self._open_pre_payload_stream_if_allowed(request_id):
-            self._route_stream_item(request_id, item)
+        else:
+            pass
+        if self.open_pre_payload_stream_if_allowed(request_id):
+            self.route_stream_item(request_id, item)
             return
+        else:
+            pass
         with suppress(Exception):
             self.scheduler.abort(request_id)
-        await self._send_failure(
+        await self.send_failure(
             request_id,
             (
                 f"Stage {self.name}: stream chunk from {item.from_stage!r} arrived "
@@ -762,14 +852,16 @@ class Stage:
             ),
         )
 
-    async def _queue_stream_error(
+    async def queue_stream_error(
         self,
         request_id: str,
         from_stage: str | None,
         error: BaseException,
     ) -> None:
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
+        else:
+            pass
         logger.error(
             "Stage %s: stream error from %s for %s: %s",
             self.name,
@@ -779,14 +871,16 @@ class Stage:
         )
         with suppress(Exception):
             self.scheduler.abort(request_id)
-        await self._send_failure(request_id, str(error))
+        await self.send_failure(request_id, str(error))
 
-    def _data_ref_from_message(self, msg: DataReadyMessage) -> DataRef:
+    def data_ref_from_message(self, msg: DataReadyMessage) -> DataRef:
         if msg.data_ref is None:
             raise ValueError("data_ready message is missing transfer data_ref")
+        else:
+            pass
         return DataRef.from_dict(msg.data_ref)
 
-    async def _send_data_ack(
+    async def send_data_ack(
         self,
         msg: DataReadyMessage,
         data_ref: DataRef,
@@ -800,6 +894,8 @@ class Stage:
                 f"Stage {self.name}: no endpoint configured for ack target "
                 f"{msg.from_stage!r}"
             )
+        else:
+            pass
         await self.control_plane.send_to_stage(
             msg.from_stage,
             endpoint,
@@ -813,26 +909,30 @@ class Stage:
             ),
         )
 
-    async def _discard_data(self, msg: DataReadyMessage) -> None:
+    async def discard_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             imported = stage_io.deserialize_direct_cuda_ipc_payload(msg.data_ref)
             del imported
             return
+        else:
+            pass
         request_id = msg.request_id
-        data_ref = self._data_ref_from_message(msg)
+        data_ref = self.data_ref_from_message(msg)
         if data_ref.kind is DataKind.KV_PAGES:
             error = RuntimeError(f"request {request_id!r} was aborted")
-            self._comm.cleanup(request_id)
-            await self._send_data_ack(
+            self.comm.cleanup(request_id)
+            await self.send_data_ack(
                 msg,
                 data_ref,
                 success=False,
-                error=_error_text(error),
+                error=error_text(error),
             )
             return
-        relay = self._comm.relay(data_ref.transport)
+        else:
+            pass
+        relay = self.comm.relay(data_ref.transport)
         try:
-            await self._comm.read_data(
+            await self.comm.read_data(
                 relay=relay,
                 request_id=request_id,
                 data_ref=data_ref,
@@ -844,26 +944,32 @@ class Stage:
                 request_id,
                 exc_info=True,
             )
-            await self._send_data_ack(
-                msg, data_ref, success=False, error=_error_text(exc)
+            await self.send_data_ack(
+                msg, data_ref, success=False, error=error_text(exc)
             )
-            self._comm.cleanup(request_id)
+            self.comm.cleanup(request_id)
             return
-        await self._send_data_ack(msg, data_ref, success=True)
+        await self.send_data_ack(msg, data_ref, success=True)
 
-    async def _discard_stream_chunk_data(self, msg: DataReadyMessage) -> None:
+    async def discard_stream_chunk_data(self, msg: DataReadyMessage) -> None:
         if stage_io.is_direct_cuda_ipc_stream_chunk_ref(msg.data_ref):
             imported = stage_io.deserialize_direct_cuda_ipc_stream_chunk(msg.data_ref)
             del imported
             return
+        else:
+            pass
         if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
             return
+        else:
+            pass
         if msg.chunk_id is None:
             raise ValueError("stream chunk discard requires chunk_id")
-        data_ref = self._data_ref_from_message(msg)
-        relay = self._comm.relay(data_ref.transport)
+        else:
+            pass
+        data_ref = self.data_ref_from_message(msg)
+        relay = self.comm.relay(data_ref.transport)
         try:
-            await self._comm.read_stream_chunk(relay=relay, data_ref=data_ref)
+            await self.comm.read_stream_chunk(relay=relay, data_ref=data_ref)
         except Exception as exc:
             logger.debug(
                 "Stage %s: failed to drain aborted stream chunk for %s",
@@ -871,26 +977,26 @@ class Stage:
                 msg.request_id,
                 exc_info=True,
             )
-            await self._send_data_ack(
-                msg, data_ref, success=False, error=_error_text(exc)
+            await self.send_data_ack(
+                msg, data_ref, success=False, error=error_text(exc)
             )
             return
-        await self._send_data_ack(msg, data_ref, success=True)
+        await self.send_data_ack(msg, data_ref, success=True)
 
-    async def _on_stream_signal(
+    async def on_stream_signal(
         self,
         msg: DataReadyMessage,
         predecessor: asyncio.Future[None] | None = None,
     ) -> None:
-        await self._wait_for_receive_predecessor(predecessor)
-        await self._receive_stream_signal(
+        await self.wait_for_receive_predecessor(predecessor)
+        await self.receive_stream_signal(
             msg.request_id,
             msg.from_stage,
             is_done=msg.is_done,
             error=msg.error,
         )
 
-    async def _receive_stream_signal(
+    async def receive_stream_signal(
         self,
         request_id: str,
         from_stage: str,
@@ -898,22 +1004,26 @@ class Stage:
         is_done: bool = False,
         error: str | None = None,
     ) -> None:
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
-        self._active_requests.add(request_id)
+        else:
+            pass
+        self.active_requests.add(request_id)
         if error:
-            await self._queue_stream_error(
+            await self.queue_stream_error(
                 request_id,
                 from_stage,
                 RuntimeError(error),
             )
             return
+        else:
+            pass
 
         if is_done:
-            if not self._open_pre_payload_stream_if_allowed(request_id):
+            if not self.open_pre_payload_stream_if_allowed(request_id):
                 with suppress(Exception):
                     self.scheduler.abort(request_id)
-                await self._send_failure(
+                await self.send_failure(
                     request_id,
                     (
                         f"Stage {self.name}: stream_done from {from_stage!r} "
@@ -922,8 +1032,10 @@ class Stage:
                     ),
                 )
                 return
-            self._stream_queue.put_done(
-                request_id, from_stage=self._logical_source(from_stage)
+            else:
+                pass
+            self.stream_queue.put_done(
+                request_id, from_stage=self.logical_source(from_stage)
             )
             self.scheduler.inbox.put(
                 IncomingMessage(
@@ -931,27 +1043,37 @@ class Stage:
                     type="stream_done",
                 )
             )
+        else:
+            pass
 
-    def _open_pre_payload_stream_if_allowed(self, request_id: str) -> bool:
-        if self._stream_queue is None:
+    def open_pre_payload_stream_if_allowed(self, request_id: str) -> bool:
+        if self.stream_queue is None:
             return False
-        if self._stream_queue.has(request_id):
+        else:
+            pass
+        if self.stream_queue.has(request_id):
             return True
-        if not self._can_accept_stream_before_payload:
+        else:
+            pass
+        if not self.can_accept_stream_before_payload:
             return False
-        self._active_requests.add(request_id)
-        self._stream_queue.open(request_id)
+        else:
+            pass
+        self.active_requests.add(request_id)
+        self.stream_queue.open(request_id)
         return True
 
-    def _route_stream_item(self, request_id: str, item: StreamItem) -> None:
+    def route_stream_item(self, request_id: str, item: StreamItem) -> None:
         self.scheduler.inbox.put(
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    async def _execute(self, payload: Any) -> None:
+    async def execute(self, payload: Any) -> None:
         request_id = payload.request_id
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -959,10 +1081,12 @@ class Stage:
         )
         if (
             self.role == "leader"
-            and self._tp_fanout is not None
+            and self.tp_fanout is not None
             and getattr(self.scheduler, "requires_tp_work_fanout", False)
         ):
-            self._tp_fanout.fanout_work(payload)
+            self.tp_fanout.fanout_work(payload)
+        else:
+            pass
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
         enqueue = getattr(self.scheduler, "enqueue", None)
         if enqueue is not None:
@@ -970,12 +1094,12 @@ class Stage:
         else:
             self.scheduler.inbox.put(msg)
 
-    async def _on_admin(self, msg: AdminMessage) -> None:
+    async def on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
-        if self.role == "leader" and self._tp_fanout is not None:
-            local = await self._run_admin_operation(operation)
+        if self.role == "leader" and self.tp_fanout is not None:
+            local = await self.run_admin_operation(operation)
             try:
-                follower_msgs = await self._tp_fanout.collect_admin_results(
+                follower_msgs = await self.tp_fanout.collect_admin_results(
                     operation.op_id,
                     timeout_s=float(
                         60.0 if operation.timeout_s is None else operation.timeout_s
@@ -1008,63 +1132,75 @@ class Stage:
             )
             await self.control_plane.send_admin_result(AdminResultMessage(result))
             return
+        else:
+            pass
 
-        result = await self._run_admin_operation(operation)
+        result = await self.run_admin_operation(operation)
         await self.control_plane.send_admin_result(AdminResultMessage(result))
 
-    async def _run_admin_operation(self, operation: Any) -> AdminResult:
+    async def run_admin_operation(self, operation: Any) -> AdminResult:
         try:
             handler = getattr(self.scheduler, "admin", None)
             if handler is None:
-                return self._admin_result(
+                return self.admin_result(
                     operation,
                     success=True,
                     message="stage does not support admin operations",
                     data={"skipped": True, "unsupported": True},
                 )
+            else:
+                pass
             action = operation.action
             payload = dict(operation.payload)
             loop = asyncio.get_running_loop()
             outcome = await loop.run_in_executor(None, lambda: handler(action, payload))
             if inspect.isawaitable(outcome):
                 outcome = await outcome
-            return self._admin_result_from_outcome(operation, outcome)
+            else:
+                pass
+            return self.admin_result_from_outcome(operation, outcome)
         except Exception as exc:
             logger.exception(
                 "Stage %s admin operation failed: action=%s",
                 self.name,
                 getattr(operation, "action", None),
             )
-            return self._admin_result(
+            return self.admin_result(
                 operation,
                 success=False,
                 message=str(exc),
                 error=str(exc),
             )
 
-    def _admin_result_from_outcome(self, operation: Any, outcome: Any) -> AdminResult:
+    def admin_result_from_outcome(self, operation: Any, outcome: Any) -> AdminResult:
         if isinstance(outcome, AdminResult):
             return outcome
+        else:
+            pass
         if isinstance(outcome, dict):
             data = dict(outcome.get("data") or {})
             for key, value in outcome.items():
                 if key not in {"success", "message", "data", "error"}:
                     data.setdefault(key, value)
-            return self._admin_result(
+                else:
+                    pass
+            return self.admin_result(
                 operation,
                 success=bool(outcome.get("success", True)),
                 message=str(outcome.get("message") or "ok"),
                 data=data,
                 error=outcome.get("error"),
             )
-        return self._admin_result(
+        else:
+            pass
+        return self.admin_result(
             operation,
             success=True,
             message="ok",
             data={"result": outcome},
         )
 
-    def _admin_result(
+    def admin_result(
         self,
         operation: Any,
         *,
@@ -1089,69 +1225,88 @@ class Stage:
     # Outbox drain: scheduler results → route downstream
     # ------------------------------------------------------------------
 
-    async def _drain_outbox(self) -> None:
-        if self._owns_external_io:
-            await self._drain_outbox_external()
+    async def drain_outbox(self) -> None:
+        if self.owns_external_io:
+            await self.drain_outbox_external()
         else:
-            await self._drain_outbox_follower()
+            await self.drain_outbox_follower()
 
-    async def _drain_outbox_external(self) -> None:
+    async def drain_outbox_external(self) -> None:
         """Drain scheduler outbox and route results downstream."""
         loop = asyncio.get_running_loop()
         outbox = self.scheduler.outbox
-        while self._running or not outbox.empty():
+        while self.running or not outbox.empty():
             try:
                 out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
             except _queue_mod.Empty:
                 continue
 
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
-                if out.request_id in self._active_requests:
+                if out.type == "admitted":
+                    if out.request_id not in self.aborted:
+                        self.record_replica_bindings(
+                            out.request_id, (out.metadata or {}).get("replica_bindings")
+                        )
+                        self.active_requests.add(out.request_id)
+                    else:
+                        pass
+                elif out.type == "kv_transfer":
+                    if out.request_id in self.active_requests:
+                        self.launch_kv_transfer(out.data)
+                    else:
+                        self.discard_kv_transfer(out.data)
+                elif out.request_id in self.active_requests:
                     if out.type == "result":
-                        await self._route_result(out.request_id, out.data)
+                        await self.route_result(out.request_id, out.data)
                     elif out.type == "stream":
                         if out.target is None:
-                            if self._stream_targets:
+                            if self.stream_targets:
                                 await asyncio.gather(
                                     *(
-                                        self._send_stream_to_target(
+                                        self.send_stream_to_target(
                                             out.request_id,
                                             out.data,
                                             target,
                                             out.metadata,
                                         )
-                                        for target in self._stream_targets
+                                        for target in self.stream_targets
                                     )
                                 )
                             else:
-                                await self._send_stream_to_coordinator(
+                                await self.send_stream_to_coordinator(
                                     out.request_id,
                                     out.data,
                                     out.metadata,
                                 )
                         else:
-                            await self._send_stream_to_target(
+                            await self.send_stream_to_target(
                                 out.request_id,
                                 out.data,
                                 out.target,
                                 out.metadata,
                             )
                     elif out.type == "error":
-                        await self._send_failure(out.request_id, str(out.data))
+                        await self.send_failure(out.request_id, str(out.data))
+                    else:
+                        pass
+                else:
+                    pass
 
                 if batch_index + 1 >= _OUTBOX_DRAIN_BATCH_SIZE:
                     await asyncio.sleep(0)
                     break
+                else:
+                    pass
 
                 try:
                     out = outbox.get_nowait()
                 except _queue_mod.Empty:
                     break
 
-    async def _drain_outbox_follower(self) -> None:
+    async def drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
         loop = asyncio.get_running_loop()
-        while self._running or not self.scheduler.outbox.empty():
+        while self.running or not self.scheduler.outbox.empty():
             try:
                 out = await loop.run_in_executor(
                     None, lambda: self.scheduler.outbox.get(timeout=0.1)
@@ -1160,21 +1315,162 @@ class Stage:
                 continue
 
             if out.type == "result":
-                self._clear_request_state(out.request_id)
+                self.clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
+            elif out.type == "admitted":
+                self.active_requests.add(out.request_id)
+            elif out.type == "kv_transfer":
+                raise RuntimeError(
+                    f"TP follower stage {self.name} cannot publish a KV transfer"
+                )
             elif out.type == "error":
                 raise RuntimeError(
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
+            else:
+                pass
 
-    async def _route_result(self, request_id: str, result: Any) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
-        if not self._owns_external_io:
-            self._clear_request_state(request_id)
+    def launch_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        started = False
+
+        async def send():
+            nonlocal started
+            started = True
+            await self.send_kv_transfer(transfer)
+
+        def done(task):
+            if not started:
+                self.discard_kv_transfer(transfer)
+            else:
+                pass
+            self.receive_tasks.discard(task)
+            self.on_background_task_done(task, f"KV transfer {transfer.request_id}")
+
+        task = asyncio.create_task(send())
+        self.receive_tasks.add(task)
+        task.add_done_callback(done)
+
+    async def send_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        if not isinstance(transfer, KVPageTransfer):
+            raise TypeError(
+                "kv_transfer outbox messages require KVPageTransfer data, got "
+                f"{type(transfer).__name__}"
+            )
+        else:
+            pass
+        lease = transfer.lease
+        try:
+            if transfer.request_id in self.aborted:
+                return
+            else:
+                pass
+            to_stage = self.resolve_target_instance(
+                transfer.request_id, transfer.to_stage
+            )
+            target_pool_id = (
+                transfer.target_pool_id
+                if to_stage == transfer.to_stage
+                else f"{to_stage}:kv"
+            )
+            metadata = {
+                **transfer.metadata,
+                "replica_bindings": self.replica_bindings.get(transfer.request_id),
+            }
+            # From here CommEngine owns the lease, including cancellation and
+            # copies retained while their remote completion is uncertain.
+            lease = None
+            await self.comm.send_kv_pages(
+                request_id=transfer.request_id,
+                source_pool_id=transfer.source_pool_id,
+                source_page_indices=transfer.source_page_indices,
+                target_pool_id=target_pool_id,
+                to_stage=to_stage,
+                metadata=metadata,
+                transfer_id=transfer.transfer_id,
+                lease=transfer.lease,
+            )
+        except KVTransferCancelled:
+            # Request cleanup is terminal for this transfer, but not for the
+            # stage's long-lived outbox drain.
             return
+        except Exception as exc:
+            logger.exception(
+                "Stage %s KV transfer failed for %s",
+                self.name,
+                transfer.request_id,
+            )
+            await self.send_failure(transfer.request_id, error_text(exc))
+            return
+        finally:
+            if lease is not None:
+                lease.release()
+            else:
+                pass
+            self.clear_request_state(transfer.request_id)
+
+    @staticmethod
+    def discard_kv_transfer(transfer: Any) -> None:
+        if isinstance(transfer, KVPageTransfer) and transfer.lease is not None:
+            transfer.lease.release()
+        else:
+            pass
+
+    async def route_result(self, request_id: str, result: Any) -> None:
+        """Route a completed result to next stage(s) or complete at coordinator."""
+        if not self.owns_external_io:
+            self.clear_request_state(request_id)
+            return
+        else:
+            pass
+        session_operation = (
+            find_session_operation(result.request.metadata)
+            if isinstance(result, StagePayload)
+            else None
+        )
+        if session_operation is not None and session_operation.operation != "append":
+            await self.control_plane.send_complete(
+                CompleteMessage(
+                    request_id=request_id,
+                    from_stage=self.name,
+                    success=True,
+                    result=result.data,
+                )
+            )
+            self.clear_request_state(request_id)
+            return
+        else:
+            pass
+        if session_operation is not None:
+            owners = session_operation.stages
+            if self.name not in owners or self.stream_targets:
+                await self.send_failure(
+                    request_id, "session route must use fixed, linear payload edges"
+                )
+                return
+            else:
+                pass
+            index = owners.index(self.name)
+            if index + 1 < len(owners):
+                expected = self.logical_source(owners[index + 1])
+            else:
+                expected = None
+            actual = self.get_next(request_id, result)
+            if isinstance(actual, list) and len(actual) == 1:
+                actual_target = actual[0]
+            else:
+                actual_target = actual
+            if actual_target != expected:
+                await self.send_failure(
+                    request_id, "session route differs from the stage payload route"
+                )
+                return
+            else:
+                pass
+        else:
+            pass
         # Send stream done to the active stream targets for this request.
-        stream_targets = self._stream_targets
+        stream_targets = self.stream_targets
         if self.get_stream_done_targets is not None:
             resolved = self.get_stream_done_targets(request_id, result)
             if isinstance(resolved, str):
@@ -1183,15 +1479,21 @@ class Stage:
                 stream_targets = resolved
             elif resolved is None:
                 stream_targets = []
+            else:
+                pass
+        else:
+            pass
         stream_targets_for_request = set(stream_targets)
         for target in stream_targets:
-            await self._send_stream_signal_to_target(
+            await self.send_stream_signal_to_target(
                 request_id,
                 target,
                 is_done=True,
             )
 
-        next_stages = self.get_next(request_id, result)
+        next_stages = (
+            self.get_next(request_id, result) if session_operation is None else actual
+        )
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1211,6 +1513,8 @@ class Stage:
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
+            else:
+                pass
             is_single_target = len(next_stages) == 1
             _emit_event(
                 request_id=request_id,
@@ -1219,7 +1523,7 @@ class Stage:
                 metadata={"terminal": False, "next": list(next_stages)},
             )
             for target in next_stages:
-                await self._send_to_stage(
+                await self.send_to_stage(
                     request_id,
                     target,
                     result,
@@ -1228,9 +1532,9 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self._clear_request_state(request_id)
+        self.clear_request_state(request_id)
 
-    async def _send_to_stage(
+    async def send_to_stage(
         self,
         request_id: str,
         target: str,
@@ -1240,21 +1544,25 @@ class Stage:
         allow_projected_local_object: bool = False,
         stream_targets_for_request: set[str] | None = None,
     ) -> None:
-        if not self._owns_external_io:
+        if not self.owns_external_io:
             raise RuntimeError(
                 f"Follower stage {self.name} cannot send downstream data"
             )
-        target = self._resolve_target_instance(request_id, target)
+        else:
+            pass
+        target = self.resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
                 f"Stage {self.name}: no endpoint configured for target {target!r}"
             )
-        projector = self._project_payload.get(target)
+        else:
+            pass
+        projector = self.project_payload.get(target)
         projected_payload = projector(payload) if projector is not None else payload
         use_local_object = allow_local_object or (
             allow_projected_local_object
-            and self._is_isolated_projected_payload(
+            and self.is_isolated_projected_payload(
                 payload,
                 projected_payload,
                 projector_present=projector is not None,
@@ -1263,22 +1571,24 @@ class Stage:
 
         if (
             use_local_object
-            and target in self._same_process_targets
-            and self._can_send_full_payload_locally(
+            and target in self.same_process_targets
+            and self.can_send_full_payload_locally(
                 request_id,
                 target,
                 (
-                    set(self._stream_targets)
+                    set(self.stream_targets)
                     if stream_targets_for_request is None
                     else stream_targets_for_request
                 ),
             )
         ):
-            if self._local_dispatcher is None:
+            if self.local_dispatcher is None:
                 raise RuntimeError(
                     f"Stage {self.name}: same-process target {target!r} requires "
                     "a local dispatcher"
                 )
+            else:
+                pass
 
             _emit_event(
                 request_id=request_id,
@@ -1286,18 +1596,20 @@ class Stage:
                 event_name="stage_hop_sent",
                 metadata={"to_stage": target, "transport": "local_object"},
             )
-            await self._local_dispatcher.send_payload(
+            await self.local_dispatcher.send_payload(
                 from_stage=self.name,
                 to_stage=target,
                 request_id=request_id,
                 payload=projected_payload,
-                replica_bindings=self._replica_bindings.get(request_id),
+                replica_bindings=self.replica_bindings.get(request_id),
             )
             return
+        else:
+            pass
 
-        can_use_direct_cuda_ipc = self._comm.router.can_use_direct_cuda_ipc(target)
+        can_use_direct_cuda_ipc = self.comm.router.can_use_direct_cuda_ipc(target)
         if (
-            not self._disable_direct_cuda_ipc_payload
+            not self.disable_direct_cuda_ipc_payload
             and can_use_direct_cuda_ipc
             and stage_io.payload_has_cuda_tensor(projected_payload)
         ):
@@ -1308,6 +1620,8 @@ class Stage:
             except RuntimeError as exc:
                 if "received from another process" not in str(exc):
                     raise
+                else:
+                    pass
             else:
                 await self.control_plane.send_to_stage(
                     target,
@@ -1317,7 +1631,7 @@ class Stage:
                         from_stage=self.name,
                         to_stage=target,
                         data_ref=direct_ref,
-                        replica_bindings=self._replica_bindings.get(request_id),
+                        replica_bindings=self.replica_bindings.get(request_id),
                     ),
                 )
                 _emit_event(
@@ -1327,11 +1641,13 @@ class Stage:
                     metadata={"to_stage": target, "transport": "torch_cuda_ipc"},
                 )
                 return
+        else:
+            pass
 
-        transport_kind, relay = self._comm.router.relay_for_payload(
+        transport_kind, relay = self.comm.router.relay_for_payload(
             target, projected_payload
         )
-        await self._comm.send_payload(
+        await self.comm.send_payload(
             relay=relay,
             control_plane=self.control_plane,
             request_id=request_id,
@@ -1340,7 +1656,7 @@ class Stage:
             from_stage=self.name,
             to_stage=target,
             target_endpoint=endpoint,
-            replica_bindings=self._replica_bindings.get(request_id),
+            replica_bindings=self.replica_bindings.get(request_id),
         )
         _emit_event(
             request_id=request_id,
@@ -1350,7 +1666,7 @@ class Stage:
         )
 
     @staticmethod
-    def _is_isolated_projected_payload(
+    def is_isolated_projected_payload(
         original_payload: Any,
         projected_payload: Any,
         *,
@@ -1358,121 +1674,153 @@ class Stage:
     ) -> bool:
         if not projector_present or projected_payload is original_payload:
             return False
+        else:
+            pass
         if not isinstance(original_payload, StagePayload):
             raise TypeError(
                 "projected local-object dispatch requires the original payload "
                 f"to be StagePayload, got {type(original_payload).__name__}"
             )
+        else:
+            pass
         if not isinstance(projected_payload, StagePayload):
             raise TypeError(
                 "projected local-object dispatch requires projectors to return "
                 f"StagePayload, got {type(projected_payload).__name__}"
             )
+        else:
+            pass
         if projected_payload.data is original_payload.data:
             return False
-        return not Stage._shares_mutable_container(
+        else:
+            pass
+        return not Stage.shares_mutable_container(
             original_payload.data, projected_payload.data
         )
 
     @staticmethod
-    def _shares_mutable_container(original: Any, projected: Any) -> bool:
-        original_ids = Stage._collect_mutable_container_ids(original)
+    def shares_mutable_container(original: Any, projected: Any) -> bool:
+        original_ids = Stage.collect_mutable_container_ids(original)
         if not original_ids:
             return False
-        return Stage._contains_mutable_container_id(projected, original_ids)
+        else:
+            pass
+        return Stage.contains_mutable_container_id(projected, original_ids)
 
     @staticmethod
-    def _collect_mutable_container_ids(
+    def collect_mutable_container_ids(
         obj: Any, seen: set[int] | None = None
     ) -> set[int]:
         seen = set() if seen is None else seen
         obj_id = id(obj)
         if obj_id in seen:
             return set()
+        else:
+            pass
         seen.add(obj_id)
 
         ids: set[int] = set()
         if isinstance(obj, (dict, list, set, bytearray)):
             ids.add(obj_id)
+        else:
+            pass
 
-        for child in Stage._iter_container_children(obj):
-            ids.update(Stage._collect_mutable_container_ids(child, seen))
+        for child in Stage.iter_container_children(obj):
+            ids.update(Stage.collect_mutable_container_ids(child, seen))
         return ids
 
     @staticmethod
-    def _contains_mutable_container_id(
+    def contains_mutable_container_id(
         obj: Any, original_ids: set[int], seen: set[int] | None = None
     ) -> bool:
         seen = set() if seen is None else seen
         obj_id = id(obj)
         if obj_id in seen:
             return False
+        else:
+            pass
         seen.add(obj_id)
 
         if isinstance(obj, (dict, list, set, bytearray)) and obj_id in original_ids:
             return True
+        else:
+            pass
         return any(
-            Stage._contains_mutable_container_id(child, original_ids, seen)
-            for child in Stage._iter_container_children(obj)
+            Stage.contains_mutable_container_id(child, original_ids, seen)
+            for child in Stage.iter_container_children(obj)
         )
 
     @staticmethod
-    def _iter_container_children(obj: Any):
+    def iter_container_children(obj: Any):
         if isinstance(obj, dict):
             return obj.values()
+        else:
+            pass
         if isinstance(obj, (list, tuple, set, frozenset)):
             return obj
+        else:
+            pass
         return ()
 
-    def _can_send_full_payload_locally(
+    def can_send_full_payload_locally(
         self,
         request_id: str,
         target: str,
         stream_targets_for_request: set[str],
     ) -> bool:
-        if target in self._nonlocal_stream_targets.get(request_id, set()):
+        if target in self.nonlocal_stream_targets.get(request_id, set()):
             return False
+        else:
+            pass
         if target not in stream_targets_for_request:
             return True
-        return target in self._local_stream_targets.get(request_id, set())
+        else:
+            pass
+        return target in self.local_stream_targets.get(request_id, set())
 
-    def _record_local_stream_target(self, request_id: str, target: str) -> None:
-        self._local_stream_targets.setdefault(request_id, set()).add(target)
+    def record_local_stream_target(self, request_id: str, target: str) -> None:
+        self.local_stream_targets.setdefault(request_id, set()).add(target)
 
-    def _record_nonlocal_stream_target(self, request_id: str, target: str) -> None:
-        self._nonlocal_stream_targets.setdefault(request_id, set()).add(target)
+    def record_nonlocal_stream_target(self, request_id: str, target: str) -> None:
+        self.nonlocal_stream_targets.setdefault(request_id, set()).add(target)
 
-    async def _send_stream_to_target(
+    async def send_stream_to_target(
         self,
         request_id: str,
         data: Any,
         target: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        if not self._owns_external_io:
+        if not self.owns_external_io:
             return
-        target = self._resolve_target_instance(request_id, target)
+        else:
+            pass
+        target = self.resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
                 f"Stage {self.name}: no endpoint configured for stream target "
                 f"{target!r}"
             )
+        else:
+            pass
         key = (request_id, target)
-        chunk_id = self._stream_chunk_counters.get(key, 0)
-        self._stream_chunk_counters[key] = chunk_id + 1
+        chunk_id = self.stream_chunk_counters.get(key, 0)
+        self.stream_chunk_counters[key] = chunk_id + 1
         chunk_modality = (
             metadata.get("modality") if isinstance(metadata, dict) else None
         )
-        if request_id not in self._first_stream_chunk_seen:
-            self._first_stream_chunk_seen.add(request_id)
+        if request_id not in self.first_stream_chunk_seen:
+            self.first_stream_chunk_seen.add(request_id)
             _emit_event(
                 request_id=request_id,
                 stage=self.name,
                 event_name="stage_first_stream_chunk_sent",
                 metadata={"to_stage": target, "modality": chunk_modality},
             )
-        if target in self._same_process_targets:
+        else:
+            pass
+        if target in self.same_process_targets:
             _emit_event(
                 request_id=request_id,
                 stage=self.name,
@@ -1484,30 +1832,36 @@ class Stage:
                     "transport": "local_object",
                 },
             )
-            if self._local_dispatcher is None:
+            if self.local_dispatcher is None:
                 raise RuntimeError(
                     f"Stage {self.name}: same-process stream target {target!r} "
                     "requires a local dispatcher"
                 )
-            self._record_local_stream_target(request_id, target)
-            await self._local_dispatcher.send_stream_chunk(
+            else:
+                pass
+            self.record_local_stream_target(request_id, target)
+            await self.local_dispatcher.send_stream_chunk(
                 from_stage=self.name,
                 to_stage=target,
                 request_id=request_id,
                 chunk_id=chunk_id,
                 data=data,
                 metadata=metadata,
-                replica_bindings=self._replica_bindings.get(request_id),
+                replica_bindings=self.replica_bindings.get(request_id),
             )
             return
-        self._record_nonlocal_stream_target(request_id, target)
+        else:
+            pass
+        self.record_nonlocal_stream_target(request_id, target)
         metadata = stage_io.strip_process_local_metadata(metadata)
         if not isinstance(data, torch.Tensor):
             raise TypeError(
                 "relay-backed stream chunks must be torch.Tensor, got "
                 f"{type(data).__name__}"
             )
-        if data.is_cuda and self._comm.router.can_use_direct_cuda_ipc(target):
+        else:
+            pass
+        if data.is_cuda and self.comm.router.can_use_direct_cuda_ipc(target):
             direct_ref = stage_io.serialize_direct_cuda_ipc_stream_chunk(data, metadata)
             _emit_event(
                 request_id=request_id,
@@ -1522,7 +1876,7 @@ class Stage:
             )
             # This branch skips the stream send worker and router.outbound_stream,
             # so it records both the transport it chose and the bytes it sent.
-            self._comm.router.note_transport_choice("stream", target, "torch_cuda_ipc")
+            self.comm.router.note_transport_choice("stream", target, "torch_cuda_ipc")
             _comm_trace(
                 "comm_stream_send",
                 request_id=request_id,
@@ -1541,10 +1895,12 @@ class Stage:
                     to_stage=target,
                     data_ref=direct_ref,
                     chunk_id=chunk_id,
-                    replica_bindings=self._replica_bindings.get(request_id),
+                    replica_bindings=self.replica_bindings.get(request_id),
                 ),
             )
             return
+        else:
+            pass
         inline_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
         if inline_ref is not None:
             _emit_event(
@@ -1558,7 +1914,7 @@ class Stage:
                     "transport": "inline",
                 },
             )
-            self._comm.router.note_transport_choice("stream", target, "inline")
+            self.comm.router.note_transport_choice("stream", target, "inline")
             _comm_trace(
                 "comm_stream_send",
                 request_id=request_id,
@@ -1577,11 +1933,13 @@ class Stage:
                     to_stage=target,
                     data_ref=inline_ref,
                     chunk_id=chunk_id,
-                    replica_bindings=self._replica_bindings.get(request_id),
+                    replica_bindings=self.replica_bindings.get(request_id),
                 ),
             )
             return
-        transport_kind, relay = self._comm.router.relay_for_stream(target, data)
+        else:
+            pass
+        transport_kind, relay = self.comm.router.relay_for_stream(target, data)
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1593,7 +1951,7 @@ class Stage:
                 "transport": transport_kind.value,
             },
         )
-        await self._comm.send_stream_chunk(
+        await self.comm.send_stream_chunk(
             relay=relay,
             control_plane=self.control_plane,
             request_id=request_id,
@@ -1604,10 +1962,10 @@ class Stage:
             chunk_id=chunk_id,
             metadata=metadata,
             transport=transport_kind,
-            replica_bindings=self._replica_bindings.get(request_id),
+            replica_bindings=self.replica_bindings.get(request_id),
         )
 
-    async def _send_stream_signal_to_target(
+    async def send_stream_signal_to_target(
         self,
         request_id: str,
         target: str,
@@ -1615,32 +1973,40 @@ class Stage:
         is_done: bool = False,
         error: str | None = None,
     ) -> None:
-        if not self._owns_external_io:
+        if not self.owns_external_io:
             return
-        target = self._resolve_target_instance(request_id, target)
+        else:
+            pass
+        target = self.resolve_target_instance(request_id, target)
         endpoint = self.endpoints.get(target)
         if endpoint is None:
             raise RuntimeError(
                 f"Stage {self.name}: no endpoint configured for stream target "
                 f"{target!r}"
             )
-        if target in self._same_process_targets:
-            if self._local_dispatcher is None:
+        else:
+            pass
+        if target in self.same_process_targets:
+            if self.local_dispatcher is None:
                 raise RuntimeError(
                     f"Stage {self.name}: same-process stream target {target!r} "
                     "requires a local dispatcher"
                 )
-            self._record_local_stream_target(request_id, target)
-            await self._local_dispatcher.send_stream_signal(
+            else:
+                pass
+            self.record_local_stream_target(request_id, target)
+            await self.local_dispatcher.send_stream_signal(
                 from_stage=self.name,
                 to_stage=target,
                 request_id=request_id,
                 is_done=is_done,
                 error=error,
-                replica_bindings=self._replica_bindings.get(request_id),
+                replica_bindings=self.replica_bindings.get(request_id),
             )
             return
-        self._record_nonlocal_stream_target(request_id, target)
+        else:
+            pass
+        self.record_nonlocal_stream_target(request_id, target)
         await stage_io.send_stream_signal(
             self.control_plane,
             request_id=request_id,
@@ -1649,32 +2015,40 @@ class Stage:
             from_stage=self.name,
             is_done=is_done,
             error=error,
-            replica_bindings=self._replica_bindings.get(request_id),
+            replica_bindings=self.replica_bindings.get(request_id),
         )
 
-    async def _send_stream_to_coordinator(
+    async def send_stream_to_coordinator(
         self,
         request_id: str,
         data: Any,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Forward a terminal stage's stream chunk to the Coordinator."""
-        if not self._is_terminal:
+        if not self.is_terminal:
             raise RuntimeError(
                 f"Stage {self.name!r} emitted untargeted stream chunk but isn't "
                 "terminal. Set ``terminal=True``, or use ``target=...`` / "
                 "``stream_to=[...]``."
             )
-        if not self._owns_external_io:
+        else:
+            pass
+        if not self.owns_external_io:
             return
-        if request_id in self._aborted:
+        else:
+            pass
+        if request_id in self.aborted:
             return
+        else:
+            pass
         modality = metadata.get("modality") if isinstance(metadata, dict) else None
         if modality is None and isinstance(data, dict):
             modality = data.get("modality")
+        else:
+            pass
         key = (request_id, "coordinator")
-        chunk_id = self._stream_chunk_counters.get(key, 0)
-        self._stream_chunk_counters[key] = chunk_id + 1
+        chunk_id = self.stream_chunk_counters.get(key, 0)
+        self.stream_chunk_counters[key] = chunk_id + 1
         msg = StreamMessage(
             request_id=request_id,
             from_stage=self.name,
@@ -1683,8 +2057,8 @@ class Stage:
             modality=modality,
             chunk_id=chunk_id,
         )
-        if request_id not in self._first_stream_chunk_seen:
-            self._first_stream_chunk_seen.add(request_id)
+        if request_id not in self.first_stream_chunk_seen:
+            self.first_stream_chunk_seen.add(request_id)
             _emit_event(
                 request_id=request_id,
                 stage=self.name,
@@ -1695,6 +2069,8 @@ class Stage:
                     "modality": modality,
                 },
             )
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1707,11 +2083,13 @@ class Stage:
         )
         await self.control_plane.send_stream(msg)
 
-    async def _send_failure(self, request_id: str, error: str) -> None:
-        self._record_aborted_request_id(request_id)
-        if not self._owns_external_io:
-            self._clear_request_state(request_id)
+    async def send_failure(self, request_id: str, error: str) -> None:
+        self.record_aborted_request_id(request_id)
+        if not self.owns_external_io:
+            self.clear_request_state(request_id)
             raise RuntimeError(f"Follower stage {self.name} failed: {error}")
+        else:
+            pass
         await self.control_plane.send_complete(
             CompleteMessage(
                 request_id=request_id,
@@ -1720,76 +2098,86 @@ class Stage:
                 error=error,
             )
         )
-        self._clear_request_state(request_id)
+        self.clear_request_state(request_id)
 
-    def _clear_request_state(self, request_id: str) -> None:
-        self._active_requests.discard(request_id)
+    def clear_request_state(self, request_id: str) -> None:
+        self.active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
-        if self._stream_queue is not None:
-            self._stream_queue.close(request_id)
-        stale_keys = [
-            key for key in self._stream_chunk_counters if key[0] == request_id
-        ]
+        if self.stream_queue is not None:
+            self.stream_queue.close(request_id)
+        else:
+            pass
+        stale_keys = [key for key in self.stream_chunk_counters if key[0] == request_id]
         for key in stale_keys:
-            self._stream_chunk_counters.pop(key, None)
-        self._first_stream_chunk_seen.discard(request_id)
-        self._local_stream_targets.pop(request_id, None)
-        self._nonlocal_stream_targets.pop(request_id, None)
-        self._replica_bindings.pop(request_id, None)
+            self.stream_chunk_counters.pop(key, None)
+        self.first_stream_chunk_seen.discard(request_id)
+        self.local_stream_targets.pop(request_id, None)
+        self.nonlocal_stream_targets.pop(request_id, None)
+        self.replica_bindings.pop(request_id, None)
 
-    async def _handle_scheduler_crash(self, exc: BaseException) -> None:
-        if self._scheduler_crash_error is not None:
+    async def handle_scheduler_crash(self, exc: BaseException) -> None:
+        if self.scheduler_crash_error is not None:
             return
-        self._scheduler_crash_error = exc
-        if not self._owns_external_io:
+        else:
+            pass
+        self.scheduler_crash_error = exc
+        if not self.owns_external_io:
             self.control_plane.close()
             return
+        else:
+            pass
         error = f"scheduler crashed: {exc}"
         active_request_ids = [
             request_id
-            for request_id in list(self._active_requests)
-            if request_id not in self._aborted
+            for request_id in list(self.active_requests)
+            if request_id not in self.aborted
         ]
         for request_id in active_request_ids:
             with suppress(Exception):
                 self.scheduler.abort(request_id)
-            await self._send_failure(request_id, error)
+            await self.send_failure(request_id, error)
             with suppress(Exception):
-                self._comm.cleanup(request_id)
+                self.comm.cleanup(request_id)
         self.control_plane.close()
 
-    async def _abort_listener(self) -> None:
+    async def abort_listener(self) -> None:
         try:
-            while self._running:
+            while self.running:
                 abort_msg = await self.control_plane.recv_abort()
-                if self.role == "leader" and self._tp_fanout is not None:
-                    await self._tp_fanout.fanout_abort(abort_msg)
-                self._on_abort(abort_msg.request_id)
+                if self.role == "leader" and self.tp_fanout is not None:
+                    await self.tp_fanout.fanout_abort(abort_msg)
+                else:
+                    pass
+                self.on_abort(abort_msg.request_id)
         except asyncio.CancelledError:
             pass
         except Exception:
-            if self._scheduler_crash_error is None and self._running:
+            if self.scheduler_crash_error is None and self.running:
                 logger.exception("Stage %s abort listener crashed", self.name)
+            else:
+                pass
 
-    def _record_aborted_request_id(self, request_id: str) -> None:
-        self._record_bounded_request_id(self._aborted, request_id)
+    def record_aborted_request_id(self, request_id: str) -> None:
+        self.record_bounded_request_id(self.aborted, request_id)
 
     @staticmethod
-    def _record_bounded_request_id(ids: set[str], request_id: str) -> None:
+    def record_bounded_request_id(ids: set[str], request_id: str) -> None:
         ids.add(request_id)
         if len(ids) > 10000:
             excess = len(ids) - 5000
             it = iter(ids)
             to_remove = [next(it) for _ in range(excess)]
             ids -= set(to_remove)
+        else:
+            pass
 
-    def _on_abort(self, request_id: str) -> None:
-        self._record_aborted_request_id(request_id)
-        self._comm.cleanup(request_id)
-        self._clear_request_state(request_id)
+    def on_abort(self, request_id: str) -> None:
+        self.record_aborted_request_id(request_id)
+        self.comm.cleanup(request_id)
+        self.clear_request_state(request_id)
         self.scheduler.abort(request_id)
 
-    def _on_profiler_start(self, msg: ProfilerStartMessage) -> None:
+    def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
         if msg.enable_torch and not TorchProfiler.is_active():
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
@@ -1797,7 +2185,11 @@ class Stage:
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
             if prof_dir and not os.path.isabs(template):
                 template = os.path.join(prof_dir, template)
+            else:
+                pass
             TorchProfiler.start(template, run_id=run_id)
+        else:
+            pass
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
@@ -1809,34 +2201,52 @@ class Stage:
                     self.name,
                     exc_info=True,
                 )
+        else:
+            pass
 
-    def _on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
+    def on_profiler_stop(self, msg: ProfilerStopMessage) -> None:
         # run_id=None is a wildcard (stop whatever's active).
         if TorchProfiler.is_active() and (
             msg.run_id is None or TorchProfiler.get_active_run_id() == msg.run_id
         ):
             TorchProfiler.stop(run_id=msg.run_id)
+        else:
+            pass
         recorder = _get_recorder()
         if recorder.is_active() and (
             msg.run_id is None or recorder.active_run_id() == msg.run_id
         ):
             recorder.stop(run_id=msg.run_id)
+        else:
+            pass
 
-    def _on_background_task_done(self, task: asyncio.Task, label: str) -> None:
+    def on_background_task_done(self, task: asyncio.Task, label: str) -> None:
         if task.cancelled():
             return
+        else:
+            pass
         exc = task.exception()
         if exc is None:
             return
+        else:
+            pass
+        if isinstance(exc, KVTransferRejected):
+            # The ACK watcher also propagates this to _send_kv_transfer(), which
+            # reports the request failure even if the local abort arrives later.
+            return
+        else:
+            pass
         logger.exception(
             "Stage %s %s task crashed",
             self.name,
             label,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
-        if self._background_task_error is None:
-            self._background_task_error = exc
-        self._running = False
+        if self.background_task_error is None:
+            self.background_task_error = exc
+        else:
+            pass
+        self.running = False
         self.control_plane.close()
 
     def info(self) -> StageInfo:

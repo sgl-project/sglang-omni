@@ -35,7 +35,7 @@ PYPROJECT="${REPO_ROOT}/pyproject.toml"
 PYPROJECT_XPU="${REPO_ROOT}/pyproject_xpu.toml"
 BACKUP="${REPO_ROOT}/.pyproject.cuda.bak"
 
-SGLANG_VERIFIED_VERSION="v0.5.19"
+SGLANG_VERIFIED_VERSION="v0.5.20"
 
 [[ -f "${PYPROJECT_XPU}" ]] || { echo "ERROR: ${PYPROJECT_XPU} not found" >&2; exit 1; }
 
@@ -197,6 +197,7 @@ else
   echo "           git checkout ${SGLANG_VERIFIED_VERSION}"
   echo "           cd python && cp pyproject_xpu.toml pyproject.toml"
   echo "           pip install -e . --no-build-isolation --extra-index-url ${XPU_INDEX}"
+  echo "           pip install --no-deps xgrammar==0.1.33"
 fi
 
 if [[ "${VERIFY_RC}" -ne 0 ]]; then

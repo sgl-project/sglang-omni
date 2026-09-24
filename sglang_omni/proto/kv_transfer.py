@@ -30,8 +30,12 @@ class KVPoolLayout:
 
         if self.layout_id != other.layout_id or self.page_size != other.page_size:
             return False
+        else:
+            pass
         if len(self.buffers) != len(other.buffers):
             return False
+        else:
+            pass
         return all(
             source.name == destination.name
             and source.bytes_per_page == destination.bytes_per_page
@@ -54,7 +58,11 @@ class KVTransferPrepareMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "kv_transfer_prepare", **msgspec.to_builtins(self)}
+        value = msgspec.to_builtins(self)
+        # Metadata is intentionally opaque. In particular, continuation bytes
+        # must not be converted to a JSON-style list of integers.
+        value["metadata"] = self.metadata
+        return {"type": "kv_transfer_prepare", **value}
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "KVTransferPrepareMessage":

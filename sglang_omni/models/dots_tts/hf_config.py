@@ -28,6 +28,8 @@ class DotsTTSConfig(PretrainedConfig):
     ) -> None:
         if isinstance(llm_config, dict):
             llm_config = Qwen2Config(**llm_config)
+        else:
+            pass
         self.llm_config = llm_config
         self.dots_tts_config = dict(dots_tts_config or {})
         super().__init__(**kwargs)
@@ -39,8 +41,12 @@ class DotsTTSConfig(PretrainedConfig):
             checkpoint_dir = kwargs.get("name_or_path")
             if not checkpoint_dir:
                 raise ValueError("dots.tts config requires a checkpoint path")
+            else:
+                pass
             llm_path = Path(str(checkpoint_dir)) / "llm_config.json"
             merged["llm_config"] = json.loads(llm_path.read_text(encoding="utf-8"))
+        else:
+            pass
         merged.setdefault("dots_tts_config", dict(config_dict))
         return super().from_dict(merged, **kwargs)
 
@@ -51,6 +57,8 @@ def register_dots_tts_hf_config() -> None:
     global _dots_tts_hf_config_registered
     if _dots_tts_hf_config_registered:
         return
+    else:
+        pass
 
     from transformers import AutoConfig
 

@@ -145,14 +145,14 @@ class ContentionSampler:
         self._samples: list[float] = []
         self._errors = 0
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self) -> None:
-        self._thread.start()
+        self.thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        self._thread.join(timeout=5)
+        self.thread.join(timeout=5)
 
     def peak_foreign_cores(self) -> float:
         return max(self._samples, default=0.0)

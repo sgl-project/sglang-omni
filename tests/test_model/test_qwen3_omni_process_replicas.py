@@ -88,6 +88,8 @@ def _start_server(
         MODEL_PATH,
         "--port",
         str(port),
+        "--log-level",
+        "debug",
     ]
     proc = start_server_from_cmd(cmd, log_file, port, timeout=STARTUP_TIMEOUT, tee=True)
     proc.port = port  # type: ignore[attr-defined]

@@ -15,7 +15,7 @@ from sglang_omni.models.dots_tts.request_builders import DotsFlowResume
 
 
 @dataclass
-class _DotsFlowLaunchBuf:
+class DotsFlowLaunchBuf:
     """Acoustic-tail launch payload; finish is applied in _resolve_flow_finish."""
 
     data_rows: list[Any]
@@ -28,7 +28,7 @@ class DotsTTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any) -> None:
         super().__init__(tp_worker, output_processor)
-        self._request_data: dict[str, Any] = {}
+        self.request_data: dict[str, Any] = {}
 
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
@@ -36,7 +36,9 @@ class DotsTTSModelRunner(ModelRunner):
         del schedule_batch
         if not requests:
             return
-        self._release_retracted_flow_states()
+        else:
+            pass
+        self.release_retracted_flow_states()
         rows = []
         materialized = []
         try:
@@ -47,11 +49,15 @@ class DotsTTSModelRunner(ModelRunner):
                     raise RuntimeError(
                         "dots.tts request is missing its generation schedule"
                     )
+                else:
+                    pass
                 if data.flow_state is not None and not isinstance(
                     data.flow_state, DotsFlowResume
                 ):
-                    self._suspend_request_data(data)
-                self._request_data.pop(request.request_id, None)
+                    self.suspend_request_data(data)
+                else:
+                    pass
+                self.request_data.pop(request.request_id, None)
                 resume = data.flow_state
                 flow_state, prompt_embeddings = self.model.flow.new_request(
                     max_audio_patch_count=int(data.span_positions.numel()),
@@ -65,7 +71,7 @@ class DotsTTSModelRunner(ModelRunner):
                     ),
                 )
                 data.flow_state = flow_state
-                self._request_data[request.request_id] = data
+                self.request_data[request.request_id] = data
                 materialized.append((request.request_id, data))
                 device = forward_batch.input_ids.device
                 prefill_ids = schedule[:, : data.prefill_end].to(device=device)
@@ -76,9 +82,13 @@ class DotsTTSModelRunner(ModelRunner):
                         raise RuntimeError(
                             "dots.tts prompt spans require prompt embeddings"
                         )
+                    else:
+                        pass
                     embeddings[:, prompt_positions.to(device=device), :] = (
                         prompt_embeddings.to(device=device, dtype=embeddings.dtype)
                     )
+                else:
+                    pass
                 prefix_len = len(data.req.prefix_indices)
                 req_len = int(data.req.extend_range.length)
                 assert prefix_len == 0, "dots.tts radix prefix reuse is disabled"
@@ -97,12 +107,14 @@ class DotsTTSModelRunner(ModelRunner):
                             data.decoded_latent_patches,
                         ).to(device=device, dtype=embeddings.dtype)
                     )
+                else:
+                    pass
                 rows.append(torch.cat(request_rows, dim=0))
             forward_batch.input_embeds = torch.cat(rows, dim=0)
         except BaseException:
             for request_id, data in materialized:
-                self._request_data.pop(request_id, None)
-                self._clear_request_data(data)
+                self.request_data.pop(request_id, None)
+                self.clear_request_data(data)
             raise
 
     def before_decode(
@@ -116,14 +128,20 @@ class DotsTTSModelRunner(ModelRunner):
         del schedule_batch, is_lookahead
         if not requests:
             return
+        else:
+            pass
         rows = []
         for request in requests:
             queue = request.data.pending_feedback_queue
             if not queue:
                 raise RuntimeError("dots.tts decode is missing its latent feedback")
+            else:
+                pass
             feedback = queue.popleft()
             if feedback.ndim > 1:
                 feedback = feedback.reshape(-1, feedback.shape[-1])[-1]
+            else:
+                pass
             rows.append(feedback)
         buffer = self.model.graph_feedback_buffer
         if buffer is not None:
@@ -157,6 +175,8 @@ class DotsTTSModelRunner(ModelRunner):
         # more than the captured mode, so request FULL whenever the graph path is on.
         if self.model.graph_feedback_buffer is not None:
             return CaptureHiddenMode.FULL
+        else:
+            pass
         return CaptureHiddenMode.LAST
 
     def post_prefill(
@@ -165,15 +185,21 @@ class DotsTTSModelRunner(ModelRunner):
         del forward_batch
         if bool(getattr(schedule_batch, "is_prefill_only", False)):
             return
+        else:
+            pass
         if not requests:
             return
-        hidden = self._hidden_states(result)
+        else:
+            pass
+        hidden = self.hidden_states(result)
         if hidden.ndim == 3:
             hidden = hidden.reshape(-1, hidden.shape[-1])
         elif hidden.ndim != 2:
             raise RuntimeError(
                 f"dots.tts expected rank-2/3 prefill hidden, got {hidden.ndim}"
             )
+        else:
+            pass
         offset = 0
         last_hidden = []
         for request in requests:
@@ -182,6 +208,8 @@ class DotsTTSModelRunner(ModelRunner):
             request_hidden = hidden[offset : offset + length].unsqueeze(0)
             if request_hidden.size(1) != length:
                 raise RuntimeError("dots.tts prefill hidden rows are incomplete")
+            else:
+                pass
             self.model.flow.initialize_history(
                 data.flow_state,
                 hidden_states=request_hidden,
@@ -195,13 +223,15 @@ class DotsTTSModelRunner(ModelRunner):
             offset += length
         if offset != hidden.size(0):
             raise RuntimeError("dots.tts prefill hidden rows do not match requests")
-        launch_buf = self._launch_flow_batch(
+        else:
+            pass
+        launch_buf = self.launch_flow_batch(
             result,
             requests,
             torch.stack(last_hidden),
             append_hidden=False,
         )
-        self._resolve_flow_finish(launch_buf)
+        self.resolve_flow_finish(launch_buf)
 
     def post_decode(
         self, result: Any, forward_batch: Any, schedule_batch: Any, requests: list
@@ -213,38 +243,42 @@ class DotsTTSModelRunner(ModelRunner):
 
     def post_decode_launch(
         self, result: Any, forward_batch: Any, requests: list
-    ) -> _DotsFlowLaunchBuf | None:
+    ) -> DotsFlowLaunchBuf | None:
         del forward_batch
         if not requests:
             return None
-        hidden = self._hidden_states(result)
+        else:
+            pass
+        hidden = self.hidden_states(result)
         if hidden.ndim == 3:
             hidden = hidden[:, -1]
         elif hidden.ndim != 2:
             raise RuntimeError(
                 f"dots.tts expected rank-2/3 decode hidden, got {hidden.ndim}"
             )
-        return self._launch_flow_batch(result, requests, hidden, append_hidden=True)
+        else:
+            pass
+        return self.launch_flow_batch(result, requests, hidden, append_hidden=True)
 
     def post_decode_resolve(
         self,
-        launch_buf: _DotsFlowLaunchBuf | None,
+        launch_buf: DotsFlowLaunchBuf | None,
         result: Any,
         forward_batch: Any,
         schedule_batch: Any,
         requests: list,
     ) -> None:
         del result, forward_batch, schedule_batch, requests
-        self._resolve_flow_finish(launch_buf)
+        self.resolve_flow_finish(launch_buf)
 
-    def _launch_flow_batch(
+    def launch_flow_batch(
         self,
         result: Any,
         requests: list,
         hidden: torch.Tensor,
         *,
         append_hidden: bool,
-    ) -> _DotsFlowLaunchBuf:
+    ) -> DotsFlowLaunchBuf:
         data_rows = [request.data for request in requests]
         steps = self.model.flow.decode_batch(
             [data.flow_state for data in data_rows],
@@ -263,21 +297,25 @@ class DotsTTSModelRunner(ModelRunner):
             if step.emit:
                 data.latest_latent_patch = decoded_latent
                 data.latent_patches.append(decoded_latent)
+            else:
+                pass
             next_token_ids.append(data.control_token_id)
         result.next_token_ids = torch.tensor(
             next_token_ids,
             dtype=torch.long,
             device=hidden.device,
         )
-        return _DotsFlowLaunchBuf(
+        return DotsFlowLaunchBuf(
             data_rows=data_rows,
             steps=steps,
             batched=bool(self.model.flow.is_batched),
         )
 
-    def _resolve_flow_finish(self, launch_buf: _DotsFlowLaunchBuf | None) -> None:
+    def resolve_flow_finish(self, launch_buf: DotsFlowLaunchBuf | None) -> None:
         if launch_buf is None:
             return
+        else:
+            pass
         if launch_buf.batched:
             finished_flags = self.model.flow.resolve_batched_eos()
             if len(finished_flags) != len(launch_buf.data_rows):
@@ -285,41 +323,53 @@ class DotsTTSModelRunner(ModelRunner):
                     "dots.tts batched EOS resolve size mismatch: "
                     f"flags={len(finished_flags)} requests={len(launch_buf.data_rows)}"
                 )
+            else:
+                pass
         else:
             finished_flags = [bool(step.finished) for step in launch_buf.steps]
         for data, finished in zip(launch_buf.data_rows, finished_flags, strict=True):
             if finished:
                 data.req.finished_reason = FINISH_MATCHED_TOKEN(data.control_token_id)
+            else:
+                pass
 
     @staticmethod
-    def _hidden_states(result: Any) -> torch.Tensor:
+    def hidden_states(result: Any) -> torch.Tensor:
         logits_output = getattr(result, "logits_output", None)
         hidden = getattr(logits_output, "hidden_states", None)
         if hidden is None:
             hidden = getattr(result, "hidden_states", None)
+        else:
+            pass
         if not isinstance(hidden, torch.Tensor):
             raise RuntimeError("dots.tts SGLang forward did not return hidden states")
+        else:
+            pass
         return hidden
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
-        self._request_data.pop(request_id, None)
-        self._clear_request_data(req_data)
+        self.request_data.pop(request_id, None)
+        self.clear_request_data(req_data)
 
     def reset_request(self, request_id: str) -> None:
-        req_data = self._request_data.pop(request_id, None)
+        req_data = self.request_data.pop(request_id, None)
         if req_data is not None:
-            self._clear_request_data(req_data)
+            self.clear_request_data(req_data)
+        else:
+            pass
 
-    def _release_retracted_flow_states(self) -> None:
-        for req_data in self._request_data.values():
+    def release_retracted_flow_states(self) -> None:
+        for req_data in self.request_data.values():
             if (
                 req_data.flow_state is not None
                 and not isinstance(req_data.flow_state, DotsFlowResume)
                 and req_data.req.is_retracted
             ):
-                self._suspend_request_data(req_data)
+                self.suspend_request_data(req_data)
+            else:
+                pass
 
-    def _suspend_request_data(self, req_data: Any) -> None:
+    def suspend_request_data(self, req_data: Any) -> None:
         flow_state = req_data.flow_state
         assert flow_state is not None and not isinstance(flow_state, DotsFlowResume)
         req_data.flow_state = DotsFlowResume(
@@ -327,10 +377,12 @@ class DotsTTSModelRunner(ModelRunner):
         )
         req_data.pending_feedback_queue.clear()
 
-    def _clear_request_data(self, req_data: Any) -> None:
+    def clear_request_data(self, req_data: Any) -> None:
         flow_state = req_data.flow_state
         if flow_state is not None and not isinstance(flow_state, DotsFlowResume):
             self.model.flow.release_request(flow_state)
+        else:
+            pass
         req_data.pending_feedback_queue.clear()
         req_data.flow_state = None
 

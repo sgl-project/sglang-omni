@@ -21,8 +21,8 @@ from sglang.srt.managers.schedule_batch import (
 from sglang_omni.models.fun_asr import encoder_service
 from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
-    _expected_audio_tokens,
     build_cache_namespace,
+    expected_audio_tokens,
 )
 
 _HIDDEN_SIZE = 4
@@ -73,7 +73,7 @@ class _StubModel(torch.nn.Module):
             raise RuntimeError("multi-item boom")
         parts = []
         for item in items:
-            rows = _expected_audio_tokens(item) + self.row_offset
+            rows = expected_audio_tokens(item) + self.row_offset
             fill = float((getattr(item, "hash", None) or 0) % 97 + 1)
             parts.append(torch.full((rows, _HIDDEN_SIZE), fill, dtype=self.dtype))
         return torch.cat(parts, dim=0)
@@ -137,14 +137,14 @@ def test_close_stops_worker() -> None:
 
     service.close()
 
-    assert not service._thread.is_alive()
+    assert not service.thread.is_alive()
 
 
 def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
-    service._stream = object()
+    service.stream = object()
 
     def fail_stream(_stream):  # noqa: ANN001, ANN202
         raise RuntimeError("stream context failed")
@@ -153,7 +153,7 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
 
     assert not torch.is_inference_mode_enabled()
     with pytest.raises(RuntimeError, match="stream context failed"):
-        with service._batch_context():
+        with service.batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
 
@@ -184,7 +184,7 @@ def test_extended_audio_never_reuses_prefix_embedding() -> None:
 
     assert model.encode_calls == 2
     assert extended.precomputed_embeddings.shape == (5, _HIDDEN_SIZE)
-    assert len(service._cache) == 2
+    assert len(service.cache) == 2
     assert not torch.equal(
         short.precomputed_embeddings[0], extended.precomputed_embeddings[0]
     )
@@ -202,7 +202,7 @@ def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     service.encode_item(second)
 
     assert model.encode_calls == 2
-    assert len(service._cache) == 2
+    assert len(service.cache) == 2
 
 
 def test_concurrent_identical_requests_encode_once() -> None:
@@ -243,7 +243,7 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
     service = _make_service(model)
     stale_miss = threading.Event()
     release_stale_reader = threading.Event()
-    original_get = service._cache.get
+    original_get = service.cache.get
 
     def controlled_get(key: str | None):  # noqa: ANN202
         cached = original_get(key)
@@ -256,7 +256,7 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
             assert release_stale_reader.wait(timeout=10)
         return cached
 
-    monkeypatch.setattr(service._cache, "get", controlled_get)
+    monkeypatch.setattr(service.cache, "get", controlled_get)
     follower_item = _item(123, 3)
     errors: list[BaseException] = []
 
@@ -308,7 +308,7 @@ def test_concurrent_identical_requests_deduplicate_without_cache() -> None:
 
     assert not errors, errors
     assert model.encode_calls == 1
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
     assert torch.equal(items[0].precomputed_embeddings, items[1].precomputed_embeddings)
 
 
@@ -335,7 +335,7 @@ def test_encode_failure_propagates_without_poisoning_cache() -> None:
 
     assert len(errors) == 2
     assert all(isinstance(exc, RuntimeError) and "boom" in str(exc) for exc in errors)
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
     assert service.stats()["failed"] == 2
 
     model.fail = False
@@ -357,11 +357,11 @@ def test_execute_batch_commits_item_state_only_after_stream_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
-    service._model = _StubModel()
-    service._stream = _FailingStream()
-    service._hidden_size = _HIDDEN_SIZE
-    service._dtype = torch.float32
-    service._device = torch.device("cpu")
+    service.model = _StubModel()
+    service.stream = _FailingStream()
+    service.hidden_size = _HIDDEN_SIZE
+    service.dtype = torch.float32
+    service.device = torch.device("cpu")
     monkeypatch.setattr(
         encoder_service.torch.cuda,
         "stream",
@@ -371,7 +371,7 @@ def test_execute_batch_commits_item_state_only_after_stream_success(
     features = [item.feature for item in items]
 
     with pytest.raises(torch.OutOfMemoryError, match="test encoder sync OOM"):
-        service._execute_batch(items)
+        service.execute_batch(items)
 
     for item, feature in zip(items, features):
         assert item.feature is feature
@@ -408,10 +408,10 @@ def test_oom_recovery_synchronizes_and_clears_selected_encoder_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
-    service._device = torch.device("cuda:7")
+    service.device = torch.device("cuda:7")
     cleanup_steps: list[str] = []
     selected_devices: list[torch.device] = []
-    service._stream = SimpleNamespace(
+    service.stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
 
@@ -426,7 +426,7 @@ def test_oom_recovery_synchronizes_and_clears_selected_encoder_device(
         lambda: cleanup_steps.append("empty_cache"),
     )
 
-    service._recover_after_failure(torch.OutOfMemoryError("test encoder OOM"))
+    service.recover_after_failure(torch.OutOfMemoryError("test encoder OOM"))
 
     assert cleanup_steps == ["synchronize", "empty_cache"]
     assert selected_devices == [torch.device("cuda:7")]
@@ -445,7 +445,7 @@ def test_non_oom_failure_is_detached_before_future_and_logging(
         raise ValueError("unexpected encoder shape")
 
     monkeypatch.setattr(service, "encode_batch", raise_non_oom)
-    future = service._submit(object())
+    future = service.submit(object())
 
     failure = future.exception(timeout=2)
     assert isinstance(failure, ValueError)
@@ -479,7 +479,7 @@ def test_failure_arguments_do_not_retain_tensors_in_future(
         raise error_type("failed tensor", failed_tensor)
 
     monkeypatch.setattr(service, "encode_batch", raise_with_tensor)
-    future = service._submit(object())
+    future = service.submit(object())
 
     failure = future.exception(timeout=2)
     assert isinstance(failure, error_type)
@@ -492,7 +492,7 @@ def test_batched_oom_recovers_before_per_item_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _make_service()
-    service._max_batch_wait_s = 1.0
+    service.max_batch_wait_s = 1.0
     calls: list[list[SimpleNamespace]] = []
     cleanup_steps: list[str] = []
     poisoned = False
@@ -515,8 +515,8 @@ def test_batched_oom_recovers_before_per_item_fallback(
         poisoned = False
 
     monkeypatch.setattr(service, "encode_batch", encode_batch)
-    monkeypatch.setattr(service, "_recover_after_failure", recover)
-    futures = [service._submit(item) for item in items]
+    monkeypatch.setattr(service, "recover_after_failure", recover)
+    futures = [service.submit(item) for item in items]
     results = [future.result(timeout=5) for future in futures]
 
     assert all(torch.equal(result, torch.ones(1, _HIDDEN_SIZE)) for result in results)
@@ -547,9 +547,9 @@ def test_merged_follower_token_mismatch_raises_and_counts_failed() -> None:
     thread = threading.Thread(target=leader)
     thread.start()
     deadline = time.monotonic() + 5
-    while not service._inflight and time.monotonic() < deadline:
+    while not service.inflight and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert service._inflight, "leader never registered in-flight"
+    assert service.inflight, "leader never registered in-flight"
 
     with pytest.raises(RuntimeError, match="returned an invalid"):
         service.encode_item(follower_item)
@@ -584,9 +584,9 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     # Note (Akazaakane): Queue every leader before releasing the gate so the
     # next drain exercises the multi-item retry path.
     deadline = time.monotonic() + 5
-    while len(service._inflight) < 3 and time.monotonic() < deadline:
+    while len(service.inflight) < 3 and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert len(service._inflight) == 3, "items never queued"
+    assert len(service.inflight) == 3, "items never queued"
     gate.set()
     for thread in threads:
         thread.join(timeout=30)
@@ -602,7 +602,7 @@ def test_multi_item_batch_failure_retries_per_item_and_counts_stats() -> None:
     assert stats["items"] == 3
     assert stats["batches"] == 3
     assert model.encode_calls == 4
-    assert len(service._cache) == 3
+    assert len(service.cache) == 3
 
 
 def test_eviction_under_byte_budget_triggers_reencode() -> None:
@@ -612,8 +612,8 @@ def test_eviction_under_byte_budget_triggers_reencode() -> None:
     for audio_hash in (1, 2, 3):
         service.encode_item(_item(audio_hash, 3))
     assert model.encode_calls == 3
-    assert service._cache.eviction_count >= 1
-    assert len(service._cache) == 2
+    assert service.cache.eviction_count >= 1
+    assert len(service.cache) == 2
 
     service.encode_item(_item(1, 3))
     assert model.encode_calls == 4
@@ -625,14 +625,14 @@ def test_invalid_cache_entry_is_evicted_and_reencoded() -> None:
     probe = _item(42, 3)
     service.encode_item(probe)
     assert model.encode_calls == 1
-    key = service._cache_key(probe)
+    key = service.cache_key(probe)
 
     for poison in (
         torch.zeros(5, _HIDDEN_SIZE),
         torch.zeros(3, _HIDDEN_SIZE + 1),
         torch.zeros(3, _HIDDEN_SIZE, dtype=torch.float64),
     ):
-        service._cache.put(key, poison)
+        service.cache.put(key, poison)
         item = _item(42, 3)
         service.encode_item(item)
         assert model.encode_calls == 2
@@ -647,18 +647,18 @@ def test_invalid_cache_reader_preserves_a_valid_replacement(
     model = _StubModel()
     service = _make_service(model)
     item = _item(42, 3)
-    key = service._cache_key(item)
-    service._cache.put(key, torch.zeros(2, _HIDDEN_SIZE))
+    key = service.cache_key(item)
+    service.cache.put(key, torch.zeros(2, _HIDDEN_SIZE))
     stale_reader = threading.Event()
     release_reader = threading.Event()
-    original_remove = service._cache.remove_if_same
+    original_remove = service.cache.remove_if_same
 
     def controlled_remove(key, expected):  # noqa: ANN001, ANN202
         stale_reader.set()
         assert release_reader.wait(timeout=10)
         return original_remove(key, expected)
 
-    monkeypatch.setattr(service._cache, "remove_if_same", controlled_remove)
+    monkeypatch.setattr(service.cache, "remove_if_same", controlled_remove)
     errors: list[BaseException] = []
 
     def encode() -> None:
@@ -671,7 +671,7 @@ def test_invalid_cache_reader_preserves_a_valid_replacement(
     thread.start()
     assert stale_reader.wait(timeout=10)
     replacement = torch.full((3, _HIDDEN_SIZE), 7.0)
-    service._cache.put(key, replacement)
+    service.cache.put(key, replacement)
     release_reader.set()
     thread.join(timeout=10)
 
@@ -679,7 +679,7 @@ def test_invalid_cache_reader_preserves_a_valid_replacement(
     assert not errors, errors
     assert model.encode_calls == 0
     assert torch.equal(item.precomputed_embeddings, replacement)
-    assert torch.equal(service._cache.get(key), replacement)
+    assert torch.equal(service.cache.get(key), replacement)
 
 
 def test_token_count_mismatch_fails_loudly() -> None:
@@ -692,7 +692,7 @@ def test_token_count_mismatch_fails_loudly() -> None:
         service.encode_item(item)
 
     assert item.precomputed_embeddings is None
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_missing_token_count_raises() -> None:
@@ -717,7 +717,7 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
     assert model.encode_calls == 2
     assert first.feature is None
     assert first.precomputed_embeddings.shape == (2, _HIDDEN_SIZE)
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_expected_audio_tokens_uses_request_metadata() -> None:
@@ -726,8 +726,8 @@ def test_expected_audio_tokens_uses_request_metadata() -> None:
         feature=torch.zeros(1, 560, 17),
         model_specific_data={"num_audio_tokens": 5},
     )
-    assert _expected_audio_tokens(explicit) == 5
-    assert _expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
+    assert expected_audio_tokens(explicit) == 5
+    assert expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:
@@ -737,8 +737,8 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         sampling_rate=16000,
         frame_length=25,
         frame_shift=10,
-        lfr_m=7,
-        lfr_n=6,
+        num_frames_lfr=7,
+        stride_lfr=6,
         window="hamming",
     )
     base = dict(
@@ -756,10 +756,11 @@ def test_build_cache_namespace_is_stable_and_scoped() -> None:
         model, **{**base, "mm_attention_backend": "triton_attn"}
     )
     assert namespace != build_cache_namespace(_StubModel(dtype=torch.bfloat16), **base)
-    changed_frontend = SimpleNamespace(**{**vars(frontend), "lfr_m": 5})
-    assert namespace != build_cache_namespace(
-        model, **{**base, "feature_extractor": changed_frontend}
-    )
+    for field, value in (("num_frames_lfr", 5), ("stride_lfr", 3)):
+        changed_frontend = SimpleNamespace(**{**vars(frontend), field: value})
+        assert namespace != build_cache_namespace(
+            model, **{**base, "feature_extractor": changed_frontend}
+        )
     changed_config = _StubModel()
     changed_config.config = SimpleNamespace(
         text_config=SimpleNamespace(hidden_size=_HIDDEN_SIZE), marker="other"

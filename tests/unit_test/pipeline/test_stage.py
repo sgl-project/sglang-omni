@@ -18,7 +18,7 @@ from sglang_omni.pipeline.stage import runtime as stage_runtime_module
 from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
-from sglang_omni.pipeline.stage_workers import StageLaunchConfig, _construct_stage
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig, construct_stage
 from sglang_omni.proto import DataReadyMessage, SubmitMessage
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -142,11 +142,11 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
             scheduler=scheduler,
             control_plane=control_plane,
         )
-        stage_obj._active_requests.add("req-1")
+        stage_obj.active_requests.add("req-1")
         scheduler.outbox.put(make_stream_message("req-1", data=torch.tensor([7])))
         scheduler.outbox.put(make_result_message("req-1", data={"answer": 1}))
 
-        await stage_obj._drain_outbox()
+        await stage_obj.drain_outbox()
 
         decode_msg = next(
             msg for target, _, msg in control_plane.sent_to_stage if target == "decode"
@@ -162,14 +162,14 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         )
         assert stream_msg.chunk_id == 0
 
-        stage_obj._stream_queue = StreamQueue()
-        stage_obj._stream_queue.open("req-1")
-        stage_obj._on_abort("req-1")
+        stage_obj.stream_queue = StreamQueue()
+        stage_obj.stream_queue.open("req-1")
+        stage_obj.on_abort("req-1")
 
-        assert "req-1" in stage_obj._aborted
+        assert "req-1" in stage_obj.aborted
         assert relay.cleaned[-1] == "req-1"
         assert scheduler.aborted == ["req-1"]
-        assert not stage_obj._stream_queue.has("req-1")
+        assert not stage_obj.stream_queue.has("req-1")
 
     asyncio.run(_run())
 
@@ -191,7 +191,7 @@ def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None
         },
         comm_config={"slot_size_mb": 1},
     )
-    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+    stage_obj = construct_stage(spec, logging.getLogger(__name__))
     payload = make_stage_payload()
 
     with pytest.raises(ValueError, match="route_fn.*outside the static topology"):
@@ -217,7 +217,7 @@ def test_stage_process_rejects_dynamic_wait_sources_outside_static_fanin() -> No
         stage_endpoints={"decode": "inproc://decode"},
         comm_config={"slot_size_mb": 1},
     )
-    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+    stage_obj = construct_stage(spec, logging.getLogger(__name__))
 
     with pytest.raises(ValueError, match="outside static wait_for"):
         stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
@@ -237,7 +237,7 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
         stage_endpoints={"decode": "inproc://decode"},
         comm_config={"slot_size_mb": 1},
     )
-    stage_obj = _construct_stage(spec, logging.getLogger(__name__))
+    stage_obj = construct_stage(spec, logging.getLogger(__name__))
 
     assert (
         stage_obj.input_handler.receive("req-1", "preprocess", make_stage_payload())
@@ -282,19 +282,19 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
-        scheduler._prefill_start_done = {"req-active"}
-        scheduler._prefill_end_done = set()
-        scheduler._request_build_executor = None
-        scheduler._request_admission_lock = threading.RLock()
-        scheduler._pending_request_admissions = {}
-        scheduler._shutdown_lock = threading.Lock()
-        scheduler._shutdown_callback = None
+        scheduler.prefill_start_done = {"req-active"}
+        scheduler.prefill_end_done = set()
+        scheduler.request_build_executor = None
+        scheduler.request_admission_lock = threading.RLock()
+        scheduler.pending_request_admissions = {}
+        scheduler.shutdown_lock = threading.Lock()
+        scheduler.shutdown_callback = None
 
         def run_loop() -> None:
             entered.set()
             release.wait()
 
-        scheduler._event_loop_normal = run_loop
+        scheduler.event_loop_normal = run_loop
         stop_scheduler = scheduler.stop
 
         def stop() -> None:
@@ -315,8 +315,8 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         release.set()
         await asyncio.wait_for(stop_task, timeout=1.0)
 
-        assert stage_obj._scheduler_thread is None
-        assert scheduler._prefill_start_done == set()
+        assert stage_obj.scheduler_thread is None
+        assert scheduler.prefill_start_done == set()
         assert model_path_ends == [("req-active", "aborted")]
 
     asyncio.run(_run())
@@ -331,19 +331,19 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
-        scheduler._prefill_start_done = set()
-        scheduler._prefill_end_done = set()
-        scheduler._request_build_executor = None
-        scheduler._request_admission_lock = threading.RLock()
-        scheduler._pending_request_admissions = {}
-        scheduler._shutdown_lock = threading.Lock()
-        scheduler._shutdown_callback = None
+        scheduler.prefill_start_done = set()
+        scheduler.prefill_end_done = set()
+        scheduler.request_build_executor = None
+        scheduler.request_admission_lock = threading.RLock()
+        scheduler.pending_request_admissions = {}
+        scheduler.shutdown_lock = threading.Lock()
+        scheduler.shutdown_callback = None
 
         def run_loop() -> None:
             entered.set()
             release.wait()
 
-        scheduler._event_loop_normal = run_loop
+        scheduler.event_loop_normal = run_loop
         stage_obj = make_stage(scheduler=scheduler)
         monkeypatch.setattr(
             stage_runtime_module,
@@ -360,12 +360,12 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             with caplog.at_level(logging.WARNING):
                 await stage_obj.stop()
             assert "scheduler thread did not stop within" in caplog.text
-            assert stage_obj._scheduler_thread is not None
-            assert stage_obj._scheduler_thread.is_alive()
+            assert stage_obj.scheduler_thread is not None
+            assert stage_obj.scheduler_thread.is_alive()
         finally:
             release.set()
-            if stage_obj._scheduler_thread is not None:
-                await asyncio.to_thread(stage_obj._scheduler_thread.join, 1.0)
+            if stage_obj.scheduler_thread is not None:
+                await asyncio.to_thread(stage_obj.scheduler_thread.join, 1.0)
 
     asyncio.run(_run())
 
@@ -473,7 +473,7 @@ def test_stage_relay_read_failure_completes_with_error() -> None:
         )
         relay.fail_get = RuntimeError("read failed")
 
-        await stage_obj._on_data_ready(
+        await stage_obj.on_data_ready(
             DataReadyMessage("req-1", "upstream", "stage", data_ref.to_dict())
         )
 
@@ -499,9 +499,9 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
         payload = make_stage_payload(request_id="req-1")
         payload.request.metadata["next"] = "decode"
         payload.request.metadata["stream_targets"] = ["decode"]
-        stage_obj._active_requests.add("req-1")
+        stage_obj.active_requests.add("req-1")
 
-        await stage_obj._route_result("req-1", payload)
+        await stage_obj.route_result("req-1", payload)
 
         stream_done_target, _, stream_done_msg = control_plane.sent_to_stage[0]
         routed_target, _, routed_msg = control_plane.sent_to_stage[1]
@@ -541,7 +541,7 @@ def test_stage_sends_same_process_payload_as_local_object(monkeypatch) -> None:
         tensor = torch.arange(4)
         payload = make_stage_payload(request_id="req-local", data={"tensor": tensor})
 
-        await sender._send_to_stage(
+        await sender.send_to_stage(
             "req-local",
             "decode",
             payload,
@@ -582,7 +582,7 @@ def test_stage_applies_projector_before_local_object_send() -> None:
         )
         dispatcher.register_many([sender, receiver])
 
-        await sender._send_to_stage(
+        await sender.send_to_stage(
             "req-local",
             "decode",
             make_stage_payload(request_id="req-local", data={"answer": 7}),
@@ -632,7 +632,7 @@ def test_stage_local_object_preserves_fan_in_semantics() -> None:
         )
         dispatcher.register(receiver)
 
-        await preprocess._send_to_stage(
+        await preprocess.send_to_stage(
             "req-local",
             "aggregate",
             make_stage_payload(request_id="req-local", data={"p": 1}),
@@ -640,7 +640,7 @@ def test_stage_local_object_preserves_fan_in_semantics() -> None:
         )
         assert receiver_scheduler.inbox.empty()
 
-        await thinker._send_to_stage(
+        await thinker.send_to_stage(
             "req-local",
             "aggregate",
             make_stage_payload(request_id="req-local", data={"t": 2}),
@@ -674,7 +674,7 @@ def test_stage_fan_out_payloads_materialize_when_local_object_is_unsafe() -> Non
             same_process_targets={"decode", "archive"},
         )
 
-        await sender._route_result(
+        await sender.route_result(
             "req-fanout",
             make_stage_payload(request_id="req-fanout", data={"answer": 7}),
         )
@@ -727,7 +727,7 @@ def test_stage_projected_fan_out_payloads_use_local_object_when_isolated() -> No
         )
         dispatcher.register_many([sender, decode, archive])
 
-        await sender._route_result(
+        await sender.route_result(
             "req-fanout",
             make_stage_payload(request_id="req-fanout", data={"answer": 7}),
         )
@@ -777,7 +777,7 @@ def test_stage_projected_fan_out_requires_isolated_data_container() -> None:
             local_dispatcher=LocalStageDispatcher(),
         )
 
-        await sender._route_result(
+        await sender.route_result(
             "req-fanout",
             make_stage_payload(request_id="req-fanout", data={"answer": 7}),
         )
@@ -824,7 +824,7 @@ def test_stage_projected_fan_out_rejects_nested_mutable_aliases() -> None:
         )
         dispatcher.register_many([sender, decode, archive])
 
-        await sender._route_result(
+        await sender.route_result(
             "req-fanout",
             make_stage_payload(
                 request_id="req-fanout",
@@ -870,7 +870,7 @@ def test_stage_projected_fan_out_rejects_wrapped_original_data() -> None:
             local_dispatcher=LocalStageDispatcher(),
         )
 
-        await sender._route_result(
+        await sender.route_result(
             "req-fanout",
             make_stage_payload(request_id="req-fanout", data={"answer": 7}),
         )
@@ -912,7 +912,7 @@ def test_stage_projected_fan_out_allows_tensor_leaf_sharing() -> None:
         dispatcher.register_many([sender, decode])
         tensor = torch.arange(4)
 
-        await sender._route_result(
+        await sender.route_result(
             "req-tensor-leaf",
             make_stage_payload(
                 request_id="req-tensor-leaf",
@@ -953,7 +953,7 @@ def test_stage_projected_fan_out_requires_stage_payload_projection() -> None:
             TypeError,
             match="projectors to return StagePayload",
         ):
-            await sender._route_result(
+            await sender.route_result(
                 "req-fanout",
                 make_stage_payload(request_id="req-fanout", data={"answer": 7}),
             )
@@ -978,7 +978,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
             scheduler=receiver_scheduler,
             can_accept_stream_before_payload=True,
         )
-        receiver._stream_queue = StreamQueue()
+        receiver.stream_queue = StreamQueue()
         sender = make_stage(
             name="thinker",
             endpoints={"talker": "inproc://talker"},
@@ -992,7 +992,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
         chunk = torch.arange(4)
         metadata = {"modality": "audio"}
 
-        await sender._send_stream_to_target(
+        await sender.send_stream_to_target(
             "req-stream-local",
             chunk,
             "talker",
@@ -1055,7 +1055,7 @@ def test_stage_sends_same_gpu_stream_chunk_as_direct_cuda_ipc(monkeypatch) -> No
         )
 
         data = torch.arange(4, device="cuda:0")
-        await sender._send_stream_to_target(
+        await sender.send_stream_to_target(
             "req-same-gpu",
             data,
             "code2wav",
@@ -1102,7 +1102,7 @@ def test_stage_sends_same_gpu_cuda_payload_as_direct_cuda_ipc(monkeypatch) -> No
         )
 
         payload = make_stage_payload(request_id="req-same-gpu", data={"x": "cuda"})
-        await sender._send_to_stage("req-same-gpu", "mm_aggregate", payload)
+        await sender.send_to_stage("req-same-gpu", "mm_aggregate", payload)
 
         assert relay.storage == {}
         target, endpoint, msg = control_plane.sent_to_stage[0]
@@ -1144,7 +1144,7 @@ def test_stage_can_disable_same_gpu_direct_cuda_payload(monkeypatch) -> None:
         )
 
         payload = make_tensor_payload(request_id="req-direct-disabled")
-        await sender._send_to_stage("req-direct-disabled", "thinker", payload)
+        await sender.send_to_stage("req-direct-disabled", "thinker", payload)
 
         target, endpoint, msg = control_plane.sent_to_stage[0]
         assert target == "thinker"
@@ -1182,7 +1182,7 @@ def test_stage_uses_relay_when_direct_cuda_payload_is_reexported(monkeypatch) ->
         )
 
         payload = make_tensor_payload(request_id="req-reexport")
-        await sender._send_to_stage("req-reexport", "talker_ar", payload)
+        await sender.send_to_stage("req-reexport", "talker_ar", payload)
 
         target, endpoint, msg = control_plane.sent_to_stage[0]
         assert target == "talker_ar"
@@ -1210,7 +1210,7 @@ def test_stage_receives_same_gpu_direct_cuda_ipc_payload(monkeypatch) -> None:
             control_plane=control_plane,
         )
 
-        await receiver._on_data_ready(
+        await receiver.on_data_ready(
             DataReadyMessage(
                 request_id="req-direct",
                 from_stage="encoder",
@@ -1262,7 +1262,7 @@ def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> No
         "extract_cuda_tensors",
         lambda data: ({"gpu": {"_tensor_placeholder": "gpu"}}, {"gpu": tensor}),
     )
-    monkeypatch.setattr(stage_io, "_ipc_pickle", lambda value: b"cuda-handle")
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
 
     ref = stage_io.serialize_direct_cuda_ipc_payload(payload)
     header = pickle.loads(ref["header"])
@@ -1297,7 +1297,7 @@ def test_stage_sends_same_process_stream_done_and_final_payload_locally() -> Non
             scheduler=receiver_scheduler,
             can_accept_stream_before_payload=True,
         )
-        receiver._stream_queue = StreamQueue()
+        receiver.stream_queue = StreamQueue()
         sender = make_stage(
             name="thinker",
             get_next=lambda request_id, output: "decode",
@@ -1311,7 +1311,7 @@ def test_stage_sends_same_process_stream_done_and_final_payload_locally() -> Non
         dispatcher.register_many([sender, receiver])
 
         payload = make_stage_payload(request_id="req-stream-local", data={"answer": 7})
-        await sender._route_result("req-stream-local", payload)
+        await sender.route_result("req-stream-local", payload)
 
         assert relay.storage == {}
         assert control_plane.sent_to_stage == []
@@ -1345,7 +1345,7 @@ def test_stage_allows_local_payload_when_static_stream_target_is_inactive() -> N
         dispatcher.register_many([sender, receiver])
 
         payload = make_stage_payload(request_id="req-no-stream", data={"answer": 7})
-        await sender._route_result("req-no-stream", payload)
+        await sender.route_result("req-no-stream", payload)
 
         assert relay.storage == {}
         assert control_plane.sent_to_stage == []
@@ -1369,7 +1369,7 @@ def test_stage_preserves_relay_order_when_target_also_receives_stream() -> None:
             stream_targets=["decode"],
         )
 
-        await sender._route_result(
+        await sender.route_result(
             "req-streamed",
             make_stage_payload(request_id="req-streamed", data={"answer": 7}),
         )
@@ -1389,7 +1389,7 @@ def test_stage_payload_send_requires_endpoint() -> None:
         sender = make_stage(name="thinker", endpoints={})
 
         with pytest.raises(RuntimeError, match="no endpoint configured"):
-            await sender._send_to_stage(
+            await sender.send_to_stage(
                 "req-1",
                 "decode",
                 make_stage_payload(request_id="req-1"),
@@ -1408,7 +1408,7 @@ def test_stage_local_object_requires_registered_target() -> None:
         )
 
         with pytest.raises(RuntimeError, match="not registered"):
-            await sender._send_to_stage(
+            await sender.send_to_stage(
                 "req-local",
                 "decode",
                 make_stage_payload(request_id="req-local"),
@@ -1432,18 +1432,18 @@ def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:
             same_process_targets={"thinker"},
             local_dispatcher=dispatcher,
         )
-        sender._record_replica_bindings("req-local", {"decode": 1})
+        sender.record_replica_bindings("req-local", {"decode": 1})
         dispatcher.register_many([sender, receiver])
 
-        await sender._send_to_stage(
+        await sender.send_to_stage(
             "req-local",
             "thinker",
             make_stage_payload(request_id="req-local", data={"x": 1}),
             allow_local_object=True,
         )
 
-        assert receiver._replica_bindings["req-local"] == {"decode": 1}
-        assert receiver._resolve_target_instance("req-local", "decode") == "decode@r1"
+        assert receiver.replica_bindings["req-local"] == {"decode": 1}
+        assert receiver.resolve_target_instance("req-local", "decode") == "decode@r1"
 
     asyncio.run(_run())
 
@@ -1454,7 +1454,7 @@ def test_resolve_target_instance_without_binding_raises() -> None:
         replica_topology={"code2wav": ["code2wav@r0", "code2wav@r1"]},
     )
     with pytest.raises(RuntimeError, match="no replica binding"):
-        stage._resolve_target_instance("req-x", "code2wav")
+        stage.resolve_target_instance("req-x", "code2wav")
 
 
 def test_completed_request_id_can_record_new_replica_bindings() -> None:
@@ -1463,10 +1463,10 @@ def test_completed_request_id_can_record_new_replica_bindings() -> None:
             name="thinker",
             replica_topology={"decode": ["decode@r0", "decode@r1"]},
         )
-        stage._record_replica_bindings("req-1", {"decode": 0})
-        stage._clear_request_state("req-1")
+        stage.record_replica_bindings("req-1", {"decode": 0})
+        stage.clear_request_state("req-1")
 
-        await stage._on_submit(
+        await stage.on_submit(
             SubmitMessage(
                 request_id="req-1",
                 data=make_stage_payload(request_id="req-1"),
@@ -1474,8 +1474,8 @@ def test_completed_request_id_can_record_new_replica_bindings() -> None:
             )
         )
 
-        assert stage._replica_bindings["req-1"] == {"decode": 1}
-        assert stage._resolve_target_instance("req-1", "decode") == "decode@r1"
+        assert stage.replica_bindings["req-1"] == {"decode": 1}
+        assert stage.resolve_target_instance("req-1", "decode") == "decode@r1"
 
     asyncio.run(_run())
 
@@ -1485,9 +1485,9 @@ def test_replica_bindings_not_recorded_after_abort() -> None:
         name="thinker",
         replica_topology={"decode": ["decode@r0", "decode@r1"]},
     )
-    stage._record_aborted_request_id("req-1")
-    stage._record_replica_bindings("req-1", {"decode": 1})
-    assert "req-1" not in stage._replica_bindings
+    stage.record_aborted_request_id("req-1")
+    stage.record_replica_bindings("req-1", {"decode": 1})
+    assert "req-1" not in stage.replica_bindings
 
 
 @pytest.mark.accelerator
@@ -1521,7 +1521,7 @@ def test_stage_routes_audio_cuda_payload_over_relay_when_direct_is_disabled(
 
         tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
         payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
-        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
+        await sender.send_to_stage("req-small-hop", "mm_aggregate", payload)
 
         target, endpoint, msg = control_plane.sent_to_stage[0]
         assert target == "mm_aggregate"
@@ -1553,7 +1553,7 @@ def test_unrelated_stage_still_uses_direct_ipc_for_small_cuda_payload() -> None:
 
         tensor = torch.zeros(63, 2048, dtype=torch.bfloat16, device="cuda:0")
         payload = make_stage_payload(request_id="req-small-hop", data={"t": tensor})
-        await sender._send_to_stage("req-small-hop", "mm_aggregate", payload)
+        await sender.send_to_stage("req-small-hop", "mm_aggregate", payload)
 
         assert relay.storage == {}
         _, _, msg = control_plane.sent_to_stage[0]
@@ -1588,7 +1588,7 @@ def test_small_cuda_payload_survives_the_relay_route_bitwise() -> None:
         tensor = torch.randn(63, 2048, dtype=torch.bfloat16, device="cuda:0")
         original = tensor.clone()
         payload = make_stage_payload(request_id="req-bitwise", data={"t": tensor})
-        await sender._send_to_stage("req-bitwise", "mm_aggregate", payload)
+        await sender.send_to_stage("req-bitwise", "mm_aggregate", payload)
 
         _, _, msg = control_plane.sent_to_stage[0]
         assert msg.data_ref["_type"] == "DataRef"

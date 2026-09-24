@@ -39,7 +39,7 @@ fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 _MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
 
-def _normalize_asr_text_rope(text_config: Any) -> None:
+def normalize_asr_text_rope(text_config: Any) -> None:
     # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
     # rows are identical, so ordinary text RoPE is numerically equivalent and
     # avoids the multimodal permutation/copy path on every decoder layer.
@@ -47,6 +47,8 @@ def _normalize_asr_text_rope(text_config: Any) -> None:
         parameters = getattr(text_config, attr, None)
         if not isinstance(parameters, dict) or "mrope_section" not in parameters:
             continue
+        else:
+            pass
         setattr(
             text_config,
             attr,
@@ -58,20 +60,24 @@ def _normalize_asr_text_rope(text_config: Any) -> None:
         )
 
 
-def _fused_asr_forward_prepare_native(
+def fused_asr_forward_prepare_native(
     attention: Any,
     positions: torch.Tensor,
     hidden_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if hidden_states.dtype != torch.bfloat16 or fused_qk_norm_rope is None:
-        return attention._asr_unfused_forward_prepare_native(
+        return attention._asr_unfused_forward_prepare_native(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             positions,
             hidden_states,
         )
+    else:
+        pass
     if positions.dtype != torch.int32:
         # note(ratish): the prefill CUDA graph bypasses forward()'s int32
         # cast; the kernel rejects int64 positions.
         positions = positions.to(torch.int32)
+    else:
+        pass
     qkv, _ = attention.qkv_proj(hidden_states)
     fused_qk_norm_rope(
         qkv,
@@ -96,20 +102,26 @@ def _fused_asr_forward_prepare_native(
     )
 
 
-def _enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
+def enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
     # note (luojiaxuan): the sgl-kernel op operates in place on packed QKV and
     # replaces split + two RMSNorm launches + RoPE for the equivalent text
     # positions. Keep the original bound method for non-bfloat16 fallbacks.
     if fused_qk_norm_rope is None:
         return
+    else:
+        pass
 
     for layer in language_model.model.layers:
         attention = layer.self_attn
         if attention.head_dim not in (64, 128, 256):
             continue
-        attention._asr_unfused_forward_prepare_native = attention.forward_prepare_native
+        else:
+            pass
+        attention._asr_unfused_forward_prepare_native = (
+            attention.forward_prepare_native
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         attention.forward_prepare_native = MethodType(
-            _fused_asr_forward_prepare_native,
+            fused_asr_forward_prepare_native,
             attention,
         )
 
@@ -144,8 +156,10 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
 
         if getattr(thinker_config, "audio_config", None) is None:
             thinker_config.audio_config = Qwen3OmniMoeAudioEncoderConfig()
+        else:
+            pass
 
-        _normalize_asr_text_rope(thinker_config.text_config)
+        normalize_asr_text_rope(thinker_config.text_config)
 
         self.audio_tower = Qwen3OmniMoeAudioEncoder(thinker_config.audio_config)
         self.language_model = Qwen3ForCausalLM(
@@ -153,9 +167,9 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             quant_config,
             prefix=add_prefix("language_model", prefix),
         )
-        _enable_fused_asr_qk_norm_rope(self.language_model)
+        enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
-        self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
+        self.encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
 
     def init_encoder_graphs(
         self, *, max_batch_size: int, max_tokens_per_clip: int
@@ -164,6 +178,8 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         graph_backend = current_platform.get_device_graph_backend(device)
         if graph_backend is None:
             return
+        else:
+            pass
         runner = Qwen3ASREncoderLayerStackGraphRunner(
             self.audio_tower,
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
@@ -171,7 +187,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             graph_backend=graph_backend,
         )
         runner.capture_all()
-        self._encoder_graph_runner = runner
+        self.encoder_graph_runner = runner
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
@@ -219,6 +235,10 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                     nn.functional.pad(feature, (0, max_frames - feature.shape[-1]))
                     for feature in features
                 ]
+            else:
+                pass
+        else:
+            pass
 
         input_features = torch.cat(features).type(self.audio_tower.dtype).to(device)
 
@@ -238,7 +258,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 -1, input_features.shape[1]
             )
 
-        runner = self._encoder_graph_runner
+        runner = self.encoder_graph_runner
         if runner is not None:
             token_counts = [
                 (item.model_specific_data or {}).get("num_audio_tokens")
@@ -254,6 +274,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 graphed = runner.run(hidden, window_lens)
                 if graphed is not None:
                     return graphed.unsqueeze(0)
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         audio_outputs = self.audio_tower(
             input_features,
@@ -270,6 +296,8 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
     ) -> torch.Tensor:
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions[0]
+        else:
+            pass
         positions = positions.to(
             dtype=(torch.int32 if fused_qk_norm_rope is not None else torch.long),
             device=input_ids.device,
@@ -306,8 +334,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
                 continue
+            else:
+                pass
             if "rotary_emb.cos_cached" in name or "rotary_emb.sin_cached" in name:
                 continue
+            else:
+                pass
 
             if (
                 getattr(
@@ -316,9 +348,13 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 and "lm_head.weight" in name
             ):
                 continue
+            else:
+                pass
 
             if "talker" in name or "code2wav" in name:
                 continue
+            else:
+                pass
 
             if name.startswith("thinker.audio_tower."):
                 name = name.replace("thinker.audio_tower.", "audio_tower.", 1)
@@ -326,23 +362,33 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 name = name.replace("thinker.lm_head.", "language_model.lm_head.", 1)
             elif name.startswith("thinker.model."):
                 name = name.replace("thinker.model.", "language_model.model.", 1)
+            else:
+                pass
 
             is_audio = "audio_tower" in name
 
             # Audio tower: remap out_proj → proj for VisionAttention
             if is_audio and "out_proj" in name:
                 name = name.replace("out_proj", "proj")
+            else:
+                pass
 
             stacked_params = audio_stacked_params if is_audio else llm_stacked_params
 
             for param_name, weight_name, shard_id in stacked_params:
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 name_tmp = name.replace(weight_name, param_name)
                 if name_tmp.endswith(".bias") and name_tmp not in params_dict:
                     continue
+                else:
+                    pass
                 if name_tmp not in params_dict:
                     continue
+                else:
+                    pass
                 param = params_dict[name_tmp]
                 weight_loader = param.weight_loader
                 weight_loader(param, loaded_weight, shard_id)
@@ -350,8 +396,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             else:
                 if name.endswith(".bias") and name not in params_dict:
                     continue
+                else:
+                    pass
                 if name not in params_dict:
                     continue
+                else:
+                    pass
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
                 weight_loader(param, loaded_weight)

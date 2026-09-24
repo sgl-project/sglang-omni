@@ -244,7 +244,7 @@ jobs:
         run: |
           set -euxo pipefail
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
-            bash -c "cp pyproject_xpu.toml pyproject.toml && pip install --no-cache-dir --no-deps --no-build-isolation -e ."
+            bash -c "git config --global --add safe.directory /workspace/sglang-omni-pr && cp pyproject_xpu.toml pyproject.toml && pip install --no-cache-dir --no-deps --no-build-isolation -e ."
 
       - name: Verify XPU state
         shell: bash

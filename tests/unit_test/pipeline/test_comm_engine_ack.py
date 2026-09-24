@@ -134,7 +134,8 @@ async def _send_stream_for_ack_test(
     return DataRef.from_dict(control_plane.sent_to_stage[-1][2].data_ref)
 
 
-def test_comm_engine_releases_sender_op_after_data_ack() -> None:
+@pytest.mark.parametrize("ack_success", [True, False])
+def test_comm_engine_releases_sender_op_after_data_ack(ack_success: bool) -> None:
     async def _run() -> None:
         relay = _AckedRelay()
         control_plane = RecordingStageControlPlane()
@@ -174,10 +175,15 @@ def test_comm_engine_releases_sender_op_after_data_ack() -> None:
                 from_stage="receiver",
                 to_stage="sender",
                 object_id=data_ref.object_id,
+                success=ack_success,
+                error=None if ack_success else "payload read failed",
             )
         )
         await _wait_until(lambda: op.waited)
-        assert op.acked
+        assert op.acked == ack_success
+        if not ack_success:
+            assert type(op.failed) is RuntimeError
+            assert str(op.failed) == "payload read failed"
 
     asyncio.run(_run())
 
@@ -220,7 +226,7 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
         assert metadata_a != metadata_b
         assert metadata_a.startswith(f"{data_ref_a.object_id}:meta:0")
         assert metadata_b.startswith(f"{data_ref_b.object_id}:meta:0")
-        assert set(engine._pending) == {
+        assert set(engine.pending) == {
             data_ref_a.object_id,
             data_ref_b.object_id,
         }
@@ -231,18 +237,18 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
             _stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
         await _wait_until(
-            lambda: data_ref_a.object_id not in engine._pending
+            lambda: data_ref_a.object_id not in engine.pending
             and all(op.waited for op in ops_a)
         )
         assert all(op.acked for op in ops_a)
-        assert data_ref_b.object_id in engine._pending
+        assert data_ref_b.object_id in engine.pending
         assert not any(op.acked or op.waited for op in ops_b)
 
         engine.ack_transfer(
             _stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
         )
         await _wait_until(
-            lambda: data_ref_b.object_id not in engine._pending
+            lambda: data_ref_b.object_id not in engine.pending
             and all(op.waited for op in ops_b)
         )
         assert all(op.acked for op in ops_b)
@@ -272,11 +278,11 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
             control_plane,
             request_id="req-reused",
         )
-        pending_a = engine._pending[data_ref_a.object_id]
+        pending_a = engine.pending[data_ref_a.object_id]
         assert pending_a.task is not None
 
         await _wait_until(
-            lambda: data_ref_a.object_id not in engine._pending
+            lambda: data_ref_a.object_id not in engine.pending
             and pending_a.task.done(),
             timeout=5.0,
         )
@@ -284,21 +290,21 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
             await pending_a.task
         assert relay.ops[0].failed is not None
 
-        engine._ack_timeout_s = 1.0
+        engine.ack_timeout_s = 1.0
         data_ref_b = await _send_stream_for_ack_test(
             engine,
             relay,
             control_plane,
             request_id="req-reused",
         )
-        assert data_ref_b.object_id in engine._pending
-        pending_b = engine._pending[data_ref_b.object_id]
+        assert data_ref_b.object_id in engine.pending
+        pending_b = engine.pending[data_ref_b.object_id]
         op_b = relay.ops[1]
 
         engine.ack_transfer(
             _stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
-        assert data_ref_b.object_id in engine._pending
+        assert data_ref_b.object_id in engine.pending
         assert not pending_b.ack.done()
         assert not op_b.acked
         assert not op_b.waited
@@ -308,7 +314,7 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
             _stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
         )
         await _wait_until(
-            lambda: data_ref_b.object_id not in engine._pending and op_b.waited
+            lambda: data_ref_b.object_id not in engine.pending and op_b.waited
         )
         assert op_b.acked
 

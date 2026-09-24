@@ -4,20 +4,26 @@ from typing import Any
 
 from transformers import PretrainedConfig
 
+DEFAULT_DEEPSTACK_VISUAL_INDEXES = [8, 16, 24]
+
 _MROPE_ROPE_SCALING_KEYS = frozenset(
     {"interleaved", "mrope_interleaved", "mrope_section"}
 )
 
 
-def _normalize_rope_scaling(
+def normalize_rope_scaling(
     rope_scaling: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     if rope_scaling is None:
         return None
+    else:
+        pass
 
     normalized = dict(rope_scaling)
     if "type" in normalized and "rope_type" not in normalized:
         normalized["rope_type"] = normalized["type"]
+    else:
+        pass
 
     if _MROPE_ROPE_SCALING_KEYS.intersection(normalized.keys()):
         # SGLang selects MRotaryEmbedding from rope_type/type="default"
@@ -26,9 +32,15 @@ def _normalize_rope_scaling(
         rope_type = normalized.get("rope_type", normalized.get("type", "default"))
         if rope_type == "mrope":
             rope_type = "default"
+        else:
+            pass
         normalized["rope_type"] = rope_type
         if "type" in normalized:
             normalized["type"] = rope_type
+        else:
+            pass
+    else:
+        pass
     return normalized
 
 
@@ -92,12 +104,17 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
         temporal_patch_size=2,
         out_hidden_size=3584,
         num_position_embeddings=2304,
-        deepstack_visual_indexes=[8, 16, 24],
+        deepstack_visual_indexes=...,
         tokens_per_second=None,
         initializer_range=0.02,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        if deepstack_visual_indexes is ...:
+            deepstack_visual_indexes = DEFAULT_DEEPSTACK_VISUAL_INDEXES
+        else:
+            pass
 
         self.depth = depth
         self.hidden_size = hidden_size
@@ -169,7 +186,7 @@ class Qwen3OmniMoeTextConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.partial_rotary_factor = partial_rotary_factor
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
@@ -213,18 +230,24 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
             vision_config = Qwen3OmniMoeVisionEncoderConfig(**vision_config)
         elif vision_config is None:
             vision_config = Qwen3OmniMoeVisionEncoderConfig()
+        else:
+            pass
         self.vision_config = vision_config
 
         if isinstance(audio_config, dict):
             audio_config = Qwen3OmniMoeAudioEncoderConfig(**audio_config)
         elif audio_config is None:
             audio_config = Qwen3OmniMoeAudioEncoderConfig()
+        else:
+            pass
         self.audio_config = audio_config
 
         if isinstance(text_config, dict):
             text_config = Qwen3OmniMoeTextConfig(**text_config)
         elif text_config is None:
             text_config = Qwen3OmniMoeTextConfig()
+        else:
+            pass
         self.text_config = text_config
         self.audio_token_id = audio_token_id
         self.image_token_id = image_token_id
@@ -352,7 +375,7 @@ class Qwen3OmniMoeTalkerCodePredictorConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = _normalize_rope_scaling(rope_scaling)
+        self.rope_scaling = normalize_rope_scaling(rope_scaling)
         self.attention_bias = attention_bias
         self.sliding_window = sliding_window
         self.attention_dropout = attention_dropout

@@ -16,11 +16,11 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerVocoder,
     MossAudioTokenizerVocoderDecoder,
     MossAudioVocoder,
-    _normalize_moss_audio_tokenizer_v1_transformer_state_dict,
-    _PatchedPretransform,
-    _ResidualLFQ,
+    PatchedPretransform,
+    ResidualLFQ,
     load_moss_audio_encoder,
     load_moss_audio_vocoder,
+    normalize_moss_audio_tokenizer_v1_transformer_state_dict,
     resolve_moss_audio_attention_backend,
     resolve_moss_audio_dtype,
     resolve_moss_audio_sample_rate,
@@ -401,7 +401,7 @@ def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
     ).model
 
     assert isinstance(loaded.decoder, MossAudioTokenizerVocoderDecoder)
-    assert loaded.quantizer._decode_cache is not None
+    assert loaded.quantizer.decode_cache is not None
     _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
     assert all(
         not is_parametrized(module, "weight") for module in loaded.quantizer.modules()
@@ -430,7 +430,7 @@ def test_vocoder_streaming_rope_budget_tracks_decoder_stage_rates() -> None:
     # note (Zhang Yiyang): Thirty minutes at 12.5, 25 and 50 frames/second.
     for decoder in (model.decoder, decoder_view):
         budgets = [
-            stage.transformer._packed_rope_cache.streaming_max_positions
+            stage.transformer.packed_rope_cache.streaming_max_positions
             for stage in decoder
             if stage.module_type == "Transformer"
         ]
@@ -534,7 +534,7 @@ def test_repository_vocoder_constructs_decoder_frame_rate_and_upsampling() -> No
 
     assert isinstance(transformer, MossAudioTokenizerProjectedTransformer)
     assert transformer.transformer.layers[0].self_attn.context == 4
-    assert isinstance(patch, _PatchedPretransform)
+    assert isinstance(patch, PatchedPretransform)
     assert not patch.is_downsample
     values = torch.arange(8, dtype=torch.float32).reshape(1, 4, 2)
     output, lengths = patch(values, torch.tensor([2]))
@@ -572,7 +572,7 @@ def test_repository_vocoder_materialized_bfloat16_does_not_use_autocast(
 
 def test_repository_quantizer_decode_matches_codebook_sum() -> None:
     torch.manual_seed(0)
-    quantizer = _ResidualLFQ(_tiny_config()["quantizer_kwargs"], device="cpu")
+    quantizer = ResidualLFQ(_tiny_config()["quantizer_kwargs"], device="cpu")
     codes = torch.randint(0, 4, (2, 3, 5))
 
     expected = quantizer.output_proj(
@@ -639,7 +639,7 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
     stage = model.encoder[1]
     state_dict = stage.state_dict()
 
-    assert model._uses_moss_audio_tokenizer_v1_weights
+    assert model.uses_moss_audio_tokenizer_v1_weights
     assert model.compute_dtype is torch.bfloat16
     assert list(state_dict) == [
         "input_proj.weight",
@@ -664,7 +664,7 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
         .replace(".self_attn.out_proj.", ".self_attn.out_projs.0."): tensor
         for name, tensor in state_dict.items()
     }
-    normalized = _normalize_moss_audio_tokenizer_v1_transformer_state_dict(
+    normalized = normalize_moss_audio_tokenizer_v1_transformer_state_dict(
         moss_audio_tokenizer_v1_state_dict
     )
 

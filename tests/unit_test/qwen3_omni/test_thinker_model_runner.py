@@ -13,12 +13,12 @@ from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 
 def _probe_runner(monkeypatch, method: str):
     runner = object.__new__(ThinkerModelRunner)
-    runner._text_model = SimpleNamespace(layers_to_capture=[0, 24])
+    runner.text_model = SimpleNamespace(layers_to_capture=[0, 24])
     seen: list[list[int]] = []
     monkeypatch.setattr(
         ModelRunner,
         method,
-        lambda self, _sched: seen.append(list(self._text_model.layers_to_capture)),
+        lambda self, _sched: seen.append(list(self.text_model.layers_to_capture)),
     )
     return runner, seen
 
@@ -29,7 +29,7 @@ def test_execute_keeps_layers_to_capture_stable(monkeypatch) -> None:
     runner.execute(SimpleNamespace(requests=[object()]))
 
     assert seen == [[0, 24]]
-    assert runner._text_model.layers_to_capture == [0, 24]
+    assert runner.text_model.layers_to_capture == [0, 24]
 
 
 def test_execute_launch_keeps_layers_to_capture_stable(monkeypatch) -> None:
@@ -38,13 +38,13 @@ def test_execute_launch_keeps_layers_to_capture_stable(monkeypatch) -> None:
     runner.execute_launch(SimpleNamespace(requests=[object()]))
 
     assert seen == [[0, 24]]
-    assert runner._text_model.layers_to_capture == [0, 24]
+    assert runner.text_model.layers_to_capture == [0, 24]
 
 
 def test_audio_prefill_publishes_embeds_to_sglang_runner() -> None:
     runner = ThinkerModelRunner.__new__(ThinkerModelRunner)
     input_embeds = torch.ones(3, 4)
-    runner._inject_multimodal_embeds = lambda *_args: (input_embeds, None, None)
+    runner.inject_multimodal_embeds = lambda *_args: (input_embeds, None, None)
     forward_batch = SimpleNamespace(input_embeds=None)
 
     result = runner.custom_prefill_forward(
@@ -62,13 +62,13 @@ def test_visual_deepstack_prefill_keeps_model_specific_forward() -> None:
     input_embeds = torch.ones(3, 4)
     deepstack_embeds = [torch.ones(1, 4)]
     visual_mask = torch.tensor([False, True, False])
-    runner._inject_multimodal_embeds = lambda *_args: (
+    runner.inject_multimodal_embeds = lambda *_args: (
         input_embeds,
         deepstack_embeds,
         visual_mask,
     )
     seen = []
-    runner._forward_with_omni_embeds = lambda *args: seen.append(args) or "result"
+    runner.forward_with_omni_embeds = lambda *args: seen.append(args) or "result"
     forward_batch = SimpleNamespace(input_embeds=None)
 
     result = runner.custom_prefill_forward(
@@ -104,7 +104,7 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
         assert lm_head == "lm_head"
         return "logits"
 
-    runner._outer_model = SimpleNamespace(
+    runner.outer_model = SimpleNamespace(
         model=model,
         logits_processor=logits_processor,
         lm_head="lm_head",
@@ -116,7 +116,7 @@ def test_custom_omni_forward_publishes_sglang_forward_context():
     )
 
     assert not has_forward_context()
-    result = runner._forward_with_omni_embeds(
+    result = runner.forward_with_omni_embeds(
         forward_batch,
         torch.ones(1, 2),
     )

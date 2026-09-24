@@ -86,15 +86,17 @@ def _solver_inputs(
     )
 
 
-def _packed_tokens(length: int = 17) -> SimpleNamespace:
-    return SimpleNamespace(
-        token=torch.ones(1, length, dtype=torch.int32),
-        token_mask=torch.ones(1, length, 1, dtype=torch.bool),
-        combined_token_lengths=(length,),
-        prompt_mel_lengths=(0,),
-        total_mel_lengths_tensor=torch.tensor([length]),
-        prompt_feat=torch.zeros(1, 0, 4),
-        embedding=torch.ones(1, 3),
+def _packed_tokens(flow: SimpleNamespace, length: int = 17) -> stages.PackedFlowBatch:
+    return stages.pack_flow_inputs(
+        flow,
+        [
+            stages.FlowBatchInput(
+                token=torch.ones(1, length, dtype=torch.int32),
+                prompt_token=torch.zeros(1, 0, dtype=torch.int32),
+                prompt_feat=torch.zeros(1, 0, 4),
+                embedding=torch.ones(1, 3),
+            )
+        ],
     )
 
 
@@ -144,7 +146,7 @@ def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) ->
     flow = _flow(max_frames=64)
     flow.cuda_graph_runner = _FailingRunner()
     with pytest.raises(RuntimeError, match="replay failed"):
-        stages.generate_flow(flow, _packed_tokens())
+        stages.generate_flow(flow, _packed_tokens(flow))
     assert eager_calls == []
 
 

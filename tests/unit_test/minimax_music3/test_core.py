@@ -13,7 +13,7 @@ from torch.nn import functional as F
 
 from sglang_omni.models.minimax_music3.acoustic import (
     MiniMaxMusic3AcousticScheduler,
-    _resolve_acoustic_dtype,
+    resolve_acoustic_dtype,
 )
 from sglang_omni.models.minimax_music3.chunking import chunk_windows
 from sglang_omni.models.minimax_music3.config import (
@@ -26,10 +26,10 @@ from sglang_omni.models.minimax_music3.dit import (
     Attention,
     MiniMaxMusic3DIT,
     RotaryEmbedding,
-    _apply_rope,
-    _resolve_attention_backend,
+    apply_rope,
+    resolve_attention_backend,
 )
-from sglang_omni.models.minimax_music3.model_runner import _HiddenFrameBuffer
+from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
@@ -62,7 +62,7 @@ def test_chunk_windows_cover_boundaries(
 
 
 def test_hidden_frame_buffer_uses_absolute_indexes_after_discard() -> None:
-    buffer = _HiddenFrameBuffer()
+    buffer = HiddenFrameBuffer()
     for frame in range(201):
         buffer.append(torch.full((2,), frame, dtype=torch.float32))
 
@@ -130,13 +130,13 @@ def test_sample_topk_seeded_advances_with_the_draw_position() -> None:
 def test_resolve_acoustic_dtype(
     value: str | torch.dtype, expected: torch.dtype
 ) -> None:
-    assert _resolve_acoustic_dtype(value) is expected
+    assert resolve_acoustic_dtype(value) is expected
 
 
 @pytest.mark.parametrize("value", ["float16", "int8", None])
 def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> None:
     with pytest.raises(ValueError, match="float32.*bfloat16|bfloat16.*float32"):
-        _resolve_acoustic_dtype(value)  # type: ignore[arg-type]
+        resolve_acoustic_dtype(value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -151,12 +151,12 @@ def test_resolve_acoustic_dtype_rejects_unsupported_values(value: object) -> Non
 def test_resolve_attention_backend(
     value: str, expected: AttentionBackendEnum | None
 ) -> None:
-    assert _resolve_attention_backend(value) is expected
+    assert resolve_attention_backend(value) is expected
 
 
 def test_resolve_attention_backend_rejects_unknown_value() -> None:
     with pytest.raises(ValueError, match="attention_backend"):
-        _resolve_attention_backend("flashinfer")
+        resolve_attention_backend("flashinfer")
 
 
 def test_minimax_music3_explicit_placements_ignore_the_machine(
@@ -290,8 +290,8 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
 
     q, k, v = module.to_qkv(x).chunk(3, dim=-1)
     rope_cos, rope_sin = freqs.cos(), freqs.sin()
-    q = _apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
-    k = _apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    q = apply_rope(q.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
+    k = apply_rope(k.view(2, 19, 2, 64).transpose(1, 2), rope_cos, rope_sin)
     v = v.view(2, 19, 2, 64).transpose(1, 2)
     expected = F.scaled_dot_product_attention(q, k, v, is_causal=False)
     expected = module.to_out(expected.transpose(1, 2).contiguous().view(2, 19, 128))
@@ -448,7 +448,7 @@ def _tiny_dit() -> MiniMaxMusic3DIT:
     dit = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(dit)
     dit.diffusion_transformer = _ZeroDiffusionTransformer()
-    dit._bcg_runner = None
+    dit.bcg_runner = None
     return dit
 
 
@@ -562,7 +562,7 @@ def test_backbone_config_rewrite_does_not_write_through_a_symlink(
     config_path = snapshot / "config.json"
     config_path.symlink_to(blob)
 
-    MiniMaxMusic3EngineBuilder._normalize_backbone_config(config_path)
+    MiniMaxMusic3EngineBuilder.normalize_backbone_config(config_path)
 
     assert json.loads(blob.read_text())["model_type"] == "mixtral"
     assert not config_path.is_symlink()

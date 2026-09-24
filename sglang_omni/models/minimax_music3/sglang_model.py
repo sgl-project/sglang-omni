@@ -41,6 +41,8 @@ def attach_minimax_modules(model: Any, checkpoint_root: str) -> None:
             f"MiniMax Music 3 audio embedding mismatch: expected {expected}, "
             f"got {None if weight is None else tuple(weight.shape)}"
         )
+    else:
+        pass
     audio_embeddings = nn.Embedding(*expected).to(device=device, dtype=dtype)
     audio_embeddings.weight.data.copy_(weight.to(device=device, dtype=dtype))
 
@@ -69,11 +71,11 @@ def attach_minimax_modules(model: Any, checkpoint_root: str) -> None:
         torch.arange(num_codebooks - 1, device=device) * audio_vocab_size
     ).unsqueeze(0)
     model.frame_embedding_scale = num_codebooks**-0.5
-    model.c0_logit_ids = _build_c0_logit_ids(model.stop_mel_token, device)
+    model.c0_logit_ids = build_c0_logit_ids(model.stop_mel_token, device)
     model.graph_feedback_buffer = None
 
-    _use_unfused_qk_norm(model)
-    _route_forward_batch_input_embeds(model)
+    use_unfused_qk_norm(model)
+    route_forward_batch_input_embeds(model)
     logger.info(
         f"MiniMax Music 3 audio modules attached device={device} dtype={dtype} codebooks={num_codebooks} audio_vocab_size={audio_vocab_size} rvq_parameters={sum((p.numel() for p in rvq_decoder.parameters()))}"
     )
@@ -131,7 +133,7 @@ def enable_rvq_depth_cuda_graph(model: Any, buckets: list[int]) -> None:
     parameter = next(model.parameters())
     model.rvq_depth_graph = RVQDepthCudaGraphRunner(
         forward=lambda hidden, c0, seeds, positions, forced, replay: (
-            _depth_decode_eager(model, hidden, c0, seeds, positions, forced, replay)
+            depth_decode_eager(model, hidden, c0, seeds, positions, forced, replay)
         ),
         device=parameter.device,
         dtype=parameter.dtype,
@@ -161,12 +163,16 @@ def depth_decode(
         replayed = graph(hidden, c0, seeds, frame_positions, forced_codes, replay)
         if replayed is not None:
             return replayed
-    return _depth_decode_eager(
+        else:
+            pass
+    else:
+        pass
+    return depth_decode_eager(
         model, hidden, c0, seeds, frame_positions, forced_codes, replay
     )
 
 
-def _depth_decode_eager(
+def depth_decode_eager(
     model: Any,
     hidden: torch.Tensor,
     c0: torch.Tensor,
@@ -210,6 +216,8 @@ def _depth_decode_eager(
                 paired + (index - 1) * model.audio_vocab_size
             )
             seq.append(decoder.projection(embedding).unsqueeze(1))
+        else:
+            pass
     return (
         torch.stack(codes, dim=1),
         torch.cat(hidden_parts, dim=-1),
@@ -217,7 +225,7 @@ def _depth_decode_eager(
     )
 
 
-def _build_c0_logit_ids(stop_token: int, device: torch.device) -> torch.Tensor:
+def build_c0_logit_ids(stop_token: int, device: torch.device) -> torch.Tensor:
     """Return the legal c0 token ids in vocabulary order, stop token first."""
     assert stop_token < AUDIO_CODE_OFFSET, "stop token must precede the code range"
     codes = torch.arange(
@@ -226,7 +234,7 @@ def _build_c0_logit_ids(stop_token: int, device: torch.device) -> torch.Tensor:
     return torch.cat((torch.tensor([stop_token], device=device), codes))
 
 
-def _forward_prepare_unfused_qk_norm(self, positions, hidden_states):
+def forward_prepare_unfused_qk_norm(self, positions, hidden_states):
     from sglang.srt.models.utils import apply_qk_norm
 
     qkv, _ = self.qkv_proj(hidden_states)
@@ -244,18 +252,22 @@ def _forward_prepare_unfused_qk_norm(self, positions, hidden_states):
     return q, k, v
 
 
-def _use_unfused_qk_norm(model: Any) -> None:
+def use_unfused_qk_norm(model: Any) -> None:
     """Keep QK norm, but off flashinfer's fused in-place kernel."""
     for layer in model.model.layers:
         attention = getattr(layer, "self_attn", None)
         if attention is None:
             continue
+        else:
+            pass
         if attention.q_norm is None or attention.k_norm is None:
             raise RuntimeError(
                 "MiniMax Music 3 expects Qwen3 QK norm layers to be present and loaded"
             )
+        else:
+            pass
         attention.forward_prepare_native = MethodType(
-            _forward_prepare_unfused_qk_norm, attention
+            forward_prepare_unfused_qk_norm, attention
         )
 
 
@@ -263,6 +275,8 @@ def enable_graph_feedback(model: Any, max_batch_size: int) -> None:
     """Route decode conditioning through a fixed-address buffer."""
     if max_batch_size <= 0:
         raise ValueError("MiniMax Music 3 graph feedback buffer needs a positive size")
+    else:
+        pass
     parameter = next(model.parameters())
     model.graph_feedback_buffer = torch.zeros(
         (int(max_batch_size), int(model.config.hidden_size)),
@@ -271,7 +285,7 @@ def enable_graph_feedback(model: Any, max_batch_size: int) -> None:
     )
 
 
-def _route_forward_batch_input_embeds(model: Any) -> None:
+def route_forward_batch_input_embeds(model: Any) -> None:
     """Feed decode conditioning that SGLang would otherwise drop."""
     backbone_forward = model.forward
 
@@ -282,6 +296,8 @@ def _route_forward_batch_input_embeds(model: Any) -> None:
             input_embeds = buffer[: input_ids.shape[0]]
         elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
         return backbone_forward(
             input_ids, positions, forward_batch, input_embeds=input_embeds, **kwargs
         )

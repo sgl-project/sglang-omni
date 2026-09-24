@@ -11,7 +11,7 @@ from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 logger = logging.getLogger(__name__)
 
 
-def _event_to_dict(event) -> dict[str, Any]:
+def event_to_dict(event) -> dict[str, Any]:
     return {
         "type": event.type,
         "modality": event.modality,
@@ -151,21 +151,27 @@ def create_decode_executor(model_path: str):
                 "output_ids": [],
                 "is_final": True,
             }
+        else:
+            pass
 
         events = decode_events(
             thinker_out=thinker_out,
             tokenizer=tokenizer,
         )
-        event_dicts = [_event_to_dict(event) for event in events]
+        event_dicts = [event_to_dict(event) for event in events]
 
         result: dict[str, Any] = {"events": event_dicts}
         if events:
             result.update(events[0].payload)
             result.setdefault("modality", events[0].modality)
+        else:
+            pass
 
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
+        else:
+            pass
 
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None

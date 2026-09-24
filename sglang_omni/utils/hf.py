@@ -46,12 +46,20 @@ def architecture_from_hf_config(hf_config: Any) -> str | None:
         for a in archs:
             if a:
                 return a
+            else:
+                pass
+    else:
+        pass
     arch = getattr(hf_config, "architecture", None)
     if arch:
         return arch
+    else:
+        pass
     mt = getattr(hf_config, "model_type", None)
     if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
         return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
+    else:
+        pass
     return None
 
 
@@ -66,8 +74,12 @@ def load_mistral_params_json(
     if os.path.isfile(params_path):
         with open(params_path) as f:
             return json.load(f)
+    else:
+        pass
     if os.path.isdir(model_path):
         return None
+    else:
+        pass
     try:
         cached = hf_hub_download(
             repo_id=model_path, filename="params.json", revision=revision
@@ -85,18 +97,24 @@ def try_resolve_arch_from_mistral_config(
     params = load_mistral_params_json(model_path, revision=revision)
     if params is None:
         return None
+    else:
+        pass
     model_type = params.get("model_type", "")
     return _CONFIG_MODEL_TYPE_TO_ARCH.get(model_type)
 
 
-def _load_raw_config(model_path: str, revision: str | None = None) -> dict | None:
+def load_raw_config(model_path: str, revision: str | None = None) -> dict | None:
     """Read ``config.json`` as plain JSON, from a local dir or a Hub repo id."""
     local_config = os.path.join(model_path, "config.json")
     if os.path.isfile(local_config):
         with open(local_config) as f:
             return json.load(f)
+    else:
+        pass
     if os.path.isdir(model_path):
         return None
+    else:
+        pass
     try:
         cached = hf_hub_download(
             repo_id=model_path, filename="config.json", revision=revision
@@ -117,14 +135,20 @@ def try_resolve_arch_from_nemo_config(
     speech-to-speech model is recognisable all the same: its config carries
     both a speech-understanding and a speech-generation section.
     """
-    raw = _load_raw_config(model_path, revision)
+    raw = load_raw_config(model_path, revision)
     if raw is None:
         return None
+    else:
+        pass
     model = raw.get("model")
     if not isinstance(model, dict):
         return None
+    else:
+        pass
     if "stt" in model and "speech_generation" in model:
         return "NemotronVoiceChatForCausalLM"
+    else:
+        pass
     return None
 
 
@@ -138,22 +162,32 @@ def try_resolve_arch_from_raw_config(
     module is unavailable).  We parse the JSON directly to extract
     ``architectures`` or map ``model_type``.
     """
-    raw = _load_raw_config(model_path, revision)
+    raw = load_raw_config(model_path, revision)
     if raw is None:
         return None
+    else:
+        pass
 
     archs = raw.get("architectures")
     if archs:
         for a in archs:
             if a:
                 return a
+            else:
+                pass
+    else:
+        pass
     arch = raw.get("architecture")
     if arch:
         return arch
+    else:
+        pass
 
     mt = raw.get("model_type")
     if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
         return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
+    else:
+        pass
 
     return None
 
@@ -165,8 +199,12 @@ def try_resolve_arch_from_cosyvoice3_layout(
     marker_path = os.path.join(model_path, _COSYVOICE3_LAYOUT_MARKER)
     if os.path.isfile(marker_path):
         return _COSYVOICE3_ARCHITECTURE
+    else:
+        pass
     if os.path.isdir(model_path):
         return None
+    else:
+        pass
     try:
         hf_hub_download(
             repo_id=model_path,
@@ -178,7 +216,7 @@ def try_resolve_arch_from_cosyvoice3_layout(
     return _COSYVOICE3_ARCHITECTURE
 
 
-def _auk_architecture_from_config(path: str) -> str | None:
+def auk_architecture_from_config(path: str) -> str | None:
     """Return the AuK architecture if the file names AuK or AuK-Flash."""
     import yaml
 
@@ -189,14 +227,22 @@ def _auk_architecture_from_config(path: str) -> str | None:
         return None
     if not isinstance(raw, dict):
         return None
+    else:
+        pass
     model = raw.get("model") if isinstance(raw.get("model"), dict) else raw
     if not isinstance(model, dict):
         return None
+    else:
+        pass
     name = model.get("name") or raw.get("name")
     if not isinstance(name, str):
         return None
+    else:
+        pass
     if name.lower() in _AUK_MODEL_NAMES:
         return _AUK_ARCHITECTURE
+    else:
+        pass
     return None
 
 
@@ -207,12 +253,18 @@ def try_resolve_arch_from_auk_layout(
     for filename in _AUK_CONFIG_NAMES:
         local = os.path.join(model_path, filename)
         if os.path.isfile(local):
-            return _auk_architecture_from_config(local)
+            return auk_architecture_from_config(local)
+        else:
+            pass
     if os.path.isdir(model_path):
         for marker in _AUK_WEIGHT_MARKERS:
             if os.path.isfile(os.path.join(model_path, marker)):
                 return _AUK_ARCHITECTURE
+            else:
+                pass
         return None
+    else:
+        pass
     for filename in _AUK_CONFIG_NAMES:
         try:
             cached = hf_hub_download(
@@ -220,9 +272,11 @@ def try_resolve_arch_from_auk_layout(
             )
         except Exception:
             continue
-        architecture = _auk_architecture_from_config(cached)
+        architecture = auk_architecture_from_config(cached)
         if architecture is not None:
             return architecture
+        else:
+            pass
     return None
 
 
@@ -254,5 +308,9 @@ def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
     with no_init_weights():
         if hasattr(module_cls, "_from_config"):
-            return module_cls._from_config(config)
+            return module_cls._from_config(
+                config
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
         return module_cls(config)

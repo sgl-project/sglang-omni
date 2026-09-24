@@ -59,13 +59,13 @@ QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
 
 @dataclass(frozen=True)
-class _ArMemoryContract:
+class ArMemoryContract:
     mem_fraction_static_pinned: bool
     effective_total_gpu_memory_fraction: float | None
     applied_encoder_mem_reserve: float
 
 
-def _apply_qwen_thinker_encoder_reserve(
+def apply_qwen_thinker_encoder_reserve(
     server_args: Any,
     *,
     has_explicit_mem_fraction_static: bool,
@@ -73,25 +73,29 @@ def _apply_qwen_thinker_encoder_reserve(
 ) -> bool:
     if has_explicit_mem_fraction_static:
         return False
+    else:
+        pass
     apply_encoder_mem_reserve(server_args, encoder_mem_reserve)
     return True
 
 
-def _apply_colocated_ar_memory_contract(
+def apply_colocated_ar_memory_contract(
     overrides: dict[str, Any],
     *,
     stage_name: str,
     total_gpu_memory_fraction: float | None,
     encoder_mem_reserve: float = 0.0,
-) -> _ArMemoryContract:
+) -> ArMemoryContract:
     """Derive or validate SGLang AR memory args for a colocated stage."""
 
     if total_gpu_memory_fraction is None:
-        return _ArMemoryContract(
+        return ArMemoryContract(
             mem_fraction_static_pinned=overrides.get("mem_fraction_static") is not None,
             effective_total_gpu_memory_fraction=None,
             applied_encoder_mem_reserve=0.0,
         )
+    else:
+        pass
 
     explicit_mem_fraction = overrides.get("mem_fraction_static")
     if explicit_mem_fraction is not None:
@@ -100,6 +104,8 @@ def _apply_colocated_ar_memory_contract(
                 f"Stage {stage_name} cannot apply encoder_mem_reserve when "
                 "engine.mem_fraction_static is explicitly set."
             )
+        else:
+            pass
         if abs(float(explicit_mem_fraction) - total_gpu_memory_fraction) > 1e-3:
             raise ValueError(
                 f"Stage {stage_name} sets conflicting colocated memory "
@@ -109,13 +115,17 @@ def _apply_colocated_ar_memory_contract(
                 f"{float(explicit_mem_fraction):.3f}. Use one value or make "
                 "the explicit SGLang override match the stage total budget."
             )
-        return _ArMemoryContract(
+        else:
+            pass
+        return ArMemoryContract(
             mem_fraction_static_pinned=True,
             effective_total_gpu_memory_fraction=total_gpu_memory_fraction,
             applied_encoder_mem_reserve=0.0,
         )
+    else:
+        pass
 
-    effective_total_gpu_memory_fraction = _apply_colocated_encoder_mem_reserve(
+    effective_total_gpu_memory_fraction = apply_colocated_encoder_mem_reserve(
         total_gpu_memory_fraction,
         encoder_mem_reserve,
     )
@@ -125,21 +135,25 @@ def _apply_colocated_ar_memory_contract(
         if effective_total_gpu_memory_fraction != total_gpu_memory_fraction
         else 0.0
     )
-    return _ArMemoryContract(
+    return ArMemoryContract(
         mem_fraction_static_pinned=True,
         effective_total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
         applied_encoder_mem_reserve=applied_encoder_mem_reserve,
     )
 
 
-def _apply_colocated_encoder_mem_reserve(
+def apply_colocated_encoder_mem_reserve(
     total_gpu_memory_fraction: float,
     encoder_mem_reserve: float,
 ) -> float:
     if not 0.0 <= encoder_mem_reserve < 1.0:
         raise ValueError("encoder_mem_reserve must be in [0, 1)")
+    else:
+        pass
     if encoder_mem_reserve == 0:
         return total_gpu_memory_fraction
+    else:
+        pass
 
     effective_total_gpu_memory_fraction = (
         total_gpu_memory_fraction - encoder_mem_reserve
@@ -151,6 +165,8 @@ def _apply_colocated_encoder_mem_reserve(
             f"{effective_total_gpu_memory_fraction:.3f} is below the safe floor "
             "0.1; lower encoder_mem_reserve or increase the thinker stage budget."
         )
+    else:
+        pass
     return round(effective_total_gpu_memory_fraction, 3)
 
 
@@ -163,7 +179,7 @@ def store_state(payload: StagePayload, state: Qwen3OmniPipelineState) -> StagePa
     return payload
 
 
-def _run_single_encoder_payload(
+def run_single_encoder_payload(
     payload: StagePayload,
     *,
     stage_name: str,
@@ -175,7 +191,7 @@ def _run_single_encoder_payload(
     if request.skip_result is not None:
         result = request.skip_result
     else:
-        result = _lookup_cached_encoder_output(
+        result = lookup_cached_encoder_output(
             request=request,
             request_id=payload.request_id,
             stage_name=stage_name,
@@ -184,20 +200,24 @@ def _run_single_encoder_payload(
         if result is None:
             with torch.no_grad():
                 result = model(**request.model_inputs)
-            _store_cached_encoder_output(
+            store_cached_encoder_output(
                 request=request,
                 request_id=payload.request_id,
                 stage_name=stage_name,
                 cache=cache,
                 result=result,
             )
+        else:
+            pass
     apply_encoder_result(state, stage_name=stage_name, result=result)
     return store_state(payload, state)
 
 
-def _image_request_is_batchable(request: Any) -> bool:
+def image_request_is_batchable(request: Any) -> bool:
     if request.skip_result is not None:
         return False
+    else:
+        pass
     input_dict = request.model_inputs
     for key in (
         "pixel_values",
@@ -208,10 +228,12 @@ def _image_request_is_batchable(request: Any) -> bool:
         value = input_dict.get(key)
         if value is not None and not isinstance(value, torch.Tensor):
             return False
+        else:
+            pass
     return True
 
 
-def _split_visual_features(
+def split_visual_features(
     tensor: torch.Tensor | None,
     *,
     start: int,
@@ -219,10 +241,12 @@ def _split_visual_features(
 ) -> torch.Tensor | None:
     if tensor is None:
         return None
+    else:
+        pass
     return tensor[start:end]
 
 
-def _split_visual_multiscale(
+def split_visual_multiscale(
     tensors: list[torch.Tensor] | None,
     *,
     start: int,
@@ -230,10 +254,12 @@ def _split_visual_multiscale(
 ) -> list[torch.Tensor] | None:
     if tensors is None:
         return None
+    else:
+        pass
     return [tensor[start:end] for tensor in tensors]
 
 
-def _create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
+def create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
     merge = int(model.spatial_merge_size) ** 2
     hidden = int(model.out_hidden_size)
     output_layers = 1 + int(model.deepstack_layers)
@@ -244,11 +270,13 @@ def _create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
         request = build_encoder_request(state, stage_name=IMAGE_STAGE)
         if request.skip_result is not None:
             return 0
+        else:
+            pass
         model_inputs = request.model_inputs
-        raw_bytes = _tensor_bytes(model_inputs.get("pixel_values"))
-        raw_bytes += _tensor_bytes(model_inputs.get("pixel_values_videos"))
-        visual_tokens = _grid_visual_tokens(model_inputs.get("image_grid_thw"), merge)
-        visual_tokens += _grid_visual_tokens(
+        raw_bytes = tensor_bytes(model_inputs.get("pixel_values"))
+        raw_bytes += tensor_bytes(model_inputs.get("pixel_values_videos"))
+        visual_tokens = grid_visual_tokens(model_inputs.get("image_grid_thw"), merge)
+        visual_tokens += grid_visual_tokens(
             model_inputs.get("video_grid_thw"),
             merge,
         )
@@ -258,26 +286,36 @@ def _create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
     return _cost
 
 
-def _tensor_bytes(value: Any) -> int:
+def tensor_bytes(value: Any) -> int:
     if not isinstance(value, torch.Tensor):
         return 0
+    else:
+        pass
     return int(value.numel() * value.element_size())
 
 
-def _nested_tensor_bytes(value: Any) -> int:
+def nested_tensor_bytes(value: Any) -> int:
     if isinstance(value, torch.Tensor):
-        return _tensor_bytes(value)
+        return tensor_bytes(value)
+    else:
+        pass
     if isinstance(value, dict):
-        return sum(_nested_tensor_bytes(item) for item in value.values())
+        return sum(nested_tensor_bytes(item) for item in value.values())
+    else:
+        pass
     if isinstance(value, (list, tuple)):
-        return sum(_nested_tensor_bytes(item) for item in value)
+        return sum(nested_tensor_bytes(item) for item in value)
+    else:
+        pass
     return 0
 
 
-def _encoder_batch_wait_ms() -> int:
+def encoder_batch_wait_ms() -> int:
     raw = os.getenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", "")
     if not raw:
         return 0
+    else:
+        pass
     try:
         value = int(raw)
     except ValueError:
@@ -292,23 +330,29 @@ def _encoder_batch_wait_ms() -> int:
             value,
         )
         return 0
+    else:
+        pass
     return value
 
 
-def _encoder_cache_trace_enabled() -> bool:
+def encoder_cache_trace_enabled() -> bool:
     value = os.getenv("SGLANG_OMNI_TRACE_ENCODER_CACHE", "")
     return value.lower() not in ("", "0", "false", "no")
 
 
-def _short_cache_key(cache_key: str | None) -> str:
+def short_cache_key(cache_key: str | None) -> str:
     if not cache_key:
         return "-"
+    else:
+        pass
     if len(cache_key) <= 32:
         return cache_key
+    else:
+        pass
     return f"{cache_key[:16]}...{cache_key[-8:]}"
 
 
-def _trace_encoder_cache(
+def trace_encoder_cache(
     stage_name: str,
     action: str,
     *,
@@ -318,24 +362,32 @@ def _trace_encoder_cache(
     output_bytes: int | None = None,
     detail: str | None = None,
 ) -> None:
-    if not _encoder_cache_trace_enabled():
+    if not encoder_cache_trace_enabled():
         return
+    else:
+        pass
     parts = [
         f"stage={stage_name}",
         f"action={action}",
         f"req={request_id}",
-        f"key={_short_cache_key(cache_key)}",
+        f"key={short_cache_key(cache_key)}",
     ]
     if input_bytes is not None:
         parts.append(f"input_bytes={input_bytes}")
+    else:
+        pass
     if output_bytes is not None:
         parts.append(f"output_bytes={output_bytes}")
+    else:
+        pass
     if detail:
         parts.append(detail)
+    else:
+        pass
     logger.info("encoder_cache %s", " ".join(parts))
 
 
-def _lookup_cached_encoder_output(
+def lookup_cached_encoder_output(
     *,
     request: Any,
     request_id: str,
@@ -344,28 +396,32 @@ def _lookup_cached_encoder_output(
 ) -> Any | None:
     if cache is None or request.cache_key is None:
         return None
+    else:
+        pass
     cached = cache.get(request.cache_key)
     if cached is None:
-        _trace_encoder_cache(
+        trace_encoder_cache(
             stage_name,
             "miss",
             request_id=request_id,
             cache_key=request.cache_key,
-            input_bytes=_nested_tensor_bytes(request.model_inputs),
+            input_bytes=nested_tensor_bytes(request.model_inputs),
         )
         return None
-    _trace_encoder_cache(
+    else:
+        pass
+    trace_encoder_cache(
         stage_name,
         "hit",
         request_id=request_id,
         cache_key=request.cache_key,
-        input_bytes=_nested_tensor_bytes(request.model_inputs),
-        output_bytes=_nested_tensor_bytes(cached),
+        input_bytes=nested_tensor_bytes(request.model_inputs),
+        output_bytes=nested_tensor_bytes(cached),
     )
     return cached
 
 
-def _store_cached_encoder_output(
+def store_cached_encoder_output(
     *,
     request: Any,
     request_id: str,
@@ -375,24 +431,28 @@ def _store_cached_encoder_output(
 ) -> None:
     if cache is None or request.cache_key is None:
         return
+    else:
+        pass
     cache.put(request.cache_key, result)
-    _trace_encoder_cache(
+    trace_encoder_cache(
         stage_name,
         "store",
         request_id=request_id,
         cache_key=request.cache_key,
-        input_bytes=_nested_tensor_bytes(request.model_inputs),
-        output_bytes=_nested_tensor_bytes(result),
+        input_bytes=nested_tensor_bytes(request.model_inputs),
+        output_bytes=nested_tensor_bytes(result),
     )
 
 
-def _grid_visual_tokens(grid: Any, merge: int) -> int:
+def grid_visual_tokens(grid: Any, merge: int) -> int:
     if not isinstance(grid, torch.Tensor) or grid.numel() == 0:
         return 0
+    else:
+        pass
     return int((grid.to(dtype=torch.long).prod(dim=-1) // merge).sum().item())
 
 
-def _batch_image_encoder_payloads(
+def batch_image_encoder_payloads(
     payloads: list[StagePayload],
     *,
     model: Any,
@@ -408,15 +468,17 @@ def _batch_image_encoder_payloads(
         state = load_state(payload)
         request = build_encoder_request(state, stage_name=IMAGE_STAGE)
         if request.skip_result is not None:
-            results[idx] = _run_single_encoder_payload(
+            results[idx] = run_single_encoder_payload(
                 payload,
                 stage_name=IMAGE_STAGE,
                 model=model,
                 cache=cache,
             )
             continue
+        else:
+            pass
 
-        cached = _lookup_cached_encoder_output(
+        cached = lookup_cached_encoder_output(
             request=request,
             request_id=payload.request_id,
             stage_name=IMAGE_STAGE,
@@ -426,36 +488,46 @@ def _batch_image_encoder_payloads(
             apply_encoder_result(state, stage_name=IMAGE_STAGE, result=cached)
             results[idx] = store_state(payload, state)
             continue
+        else:
+            pass
 
-        if not _image_request_is_batchable(request):
-            results[idx] = _run_single_encoder_payload(
+        if not image_request_is_batchable(request):
+            results[idx] = run_single_encoder_payload(
                 payload,
                 stage_name=IMAGE_STAGE,
                 model=model,
                 cache=cache,
             )
             continue
+        else:
+            pass
 
         cache_key = request.cache_key
         if cache_key is not None and cache_key in active_cache_keys:
             duplicate_waiters.setdefault(cache_key, []).append((idx, payload, state))
-            _trace_encoder_cache(
+            trace_encoder_cache(
                 IMAGE_STAGE,
                 "dedup_same_batch",
                 request_id=payload.request_id,
                 cache_key=cache_key,
-                input_bytes=_nested_tensor_bytes(request.model_inputs),
+                input_bytes=nested_tensor_bytes(request.model_inputs),
                 detail=f"leader={active_cache_leaders[cache_key]}",
             )
             continue
+        else:
+            pass
 
         active.append((idx, payload, state, request))
         if cache_key is not None:
             active_cache_keys.add(cache_key)
             active_cache_leaders[cache_key] = payload.request_id
+        else:
+            pass
 
     if not active:
         return [result for result in results if result is not None]
+    else:
+        pass
 
     image_pixels: list[torch.Tensor] = []
     image_grids: list[torch.Tensor] = []
@@ -497,9 +569,13 @@ def _batch_image_encoder_payloads(
         if isinstance(input_dict.get("pixel_values"), torch.Tensor):
             image_pixels.append(input_dict["pixel_values"])
             image_grids.append(image_grid)
+        else:
+            pass
         if isinstance(input_dict.get("pixel_values_videos"), torch.Tensor):
             video_pixels.append(input_dict["pixel_values_videos"])
             video_grids.append(video_grid)
+        else:
+            pass
         metas.append(
             {
                 "idx": idx,
@@ -517,9 +593,13 @@ def _batch_image_encoder_payloads(
     if image_pixels:
         batched_inputs["pixel_values"] = torch.cat(image_pixels, dim=0)
         batched_inputs["image_grid_thw"] = torch.cat(image_grids, dim=0)
+    else:
+        pass
     if video_pixels:
         batched_inputs["pixel_values_videos"] = torch.cat(video_pixels, dim=0)
         batched_inputs["video_grid_thw"] = torch.cat(video_grids, dim=0)
+    else:
+        pass
 
     with torch.no_grad():
         combined = model(**batched_inputs)
@@ -543,39 +623,43 @@ def _batch_image_encoder_payloads(
         if meta["image_rows"] > 0:
             row_end = image_row_cursor + meta["image_rows"]
             token_end = image_token_cursor + meta["image_token_total"]
-            stage_result["image_embeds"] = _split_visual_features(
+            stage_result["image_embeds"] = split_visual_features(
                 image_embeds_all, start=image_token_cursor, end=token_end
             )
             stage_result["image_grid_thw"] = image_grid_all[image_row_cursor:row_end]
             stage_result["image_token_counts"] = image_counts_all[
                 image_row_cursor:row_end
             ]
-            stage_result["deepstack_visual_embeds_image"] = _split_visual_multiscale(
+            stage_result["deepstack_visual_embeds_image"] = split_visual_multiscale(
                 image_multiscale_all,
                 start=image_token_cursor,
                 end=token_end,
             )
             image_row_cursor = row_end
             image_token_cursor = token_end
+        else:
+            pass
         if meta["video_rows"] > 0:
             row_end = video_row_cursor + meta["video_rows"]
             token_end = video_token_cursor + meta["video_token_total"]
-            stage_result["video_embeds"] = _split_visual_features(
+            stage_result["video_embeds"] = split_visual_features(
                 video_embeds_all, start=video_token_cursor, end=token_end
             )
             stage_result["video_grid_thw"] = video_grid_all[video_row_cursor:row_end]
             stage_result["video_token_counts"] = video_counts_all[
                 video_row_cursor:row_end
             ]
-            stage_result["deepstack_visual_embeds_video"] = _split_visual_multiscale(
+            stage_result["deepstack_visual_embeds_video"] = split_visual_multiscale(
                 video_multiscale_all,
                 start=video_token_cursor,
                 end=token_end,
             )
             video_row_cursor = row_end
             video_token_cursor = token_end
+        else:
+            pass
         request = meta["request"]
-        _store_cached_encoder_output(
+        store_cached_encoder_output(
             request=request,
             request_id=meta["payload"].request_id,
             stage_name=IMAGE_STAGE,
@@ -584,6 +668,8 @@ def _batch_image_encoder_payloads(
         )
         if request.cache_key is not None:
             computed_by_cache_key[request.cache_key] = stage_result
+        else:
+            pass
         apply_encoder_result(meta["state"], stage_name=IMAGE_STAGE, result=stage_result)
         results[meta["idx"]] = store_state(meta["payload"], meta["state"])
 
@@ -591,6 +677,8 @@ def _batch_image_encoder_payloads(
         stage_result = computed_by_cache_key.get(cache_key)
         if stage_result is None:
             continue
+        else:
+            pass
         for idx, payload, state in waiters:
             apply_encoder_result(state, stage_name=IMAGE_STAGE, result=stage_result)
             results[idx] = store_state(payload, state)
@@ -598,13 +686,17 @@ def _batch_image_encoder_payloads(
     return [result for result in results if result is not None]
 
 
-def _audio_request_is_batchable(request: Any) -> bool:
+def audio_request_is_batchable(request: Any) -> bool:
     if request.skip_result is not None:
         return False
+    else:
+        pass
     input_dict = request.model_inputs
     features = input_dict.get("input_features")
     if not isinstance(features, torch.Tensor):
         return False
+    else:
+        pass
     lengths = input_dict.get("audio_feature_lengths")
     mask = input_dict.get("feature_attention_mask")
     return (lengths is None or isinstance(lengths, torch.Tensor)) and (
@@ -612,13 +704,15 @@ def _audio_request_is_batchable(request: Any) -> bool:
     )
 
 
-def _normalize_audio_request_tensors(
+def normalize_audio_request_tensors(
     request: Any,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     input_dict = request.model_inputs
     features = input_dict["input_features"]
     if features.ndim == 2:
         features = features.unsqueeze(0)
+    else:
+        pass
 
     lengths = input_dict.get("audio_feature_lengths")
     mask = input_dict.get("feature_attention_mask")
@@ -633,6 +727,8 @@ def _normalize_audio_request_tensors(
     if isinstance(mask, torch.Tensor):
         if mask.ndim == 1:
             mask = mask.unsqueeze(0)
+        else:
+            pass
         mask = mask.to(dtype=torch.bool)
     else:
         steps = torch.arange(time_dim, dtype=torch.long).unsqueeze(0)
@@ -641,21 +737,25 @@ def _normalize_audio_request_tensors(
     return features, mask, lengths
 
 
-def _pad_audio_features(features: torch.Tensor, target_time: int) -> torch.Tensor:
+def pad_audio_features(features: torch.Tensor, target_time: int) -> torch.Tensor:
     pad = target_time - int(features.shape[-1])
     if pad <= 0:
         return features
+    else:
+        pass
     return F.pad(features, (0, pad))
 
 
-def _pad_audio_mask(mask: torch.Tensor, target_time: int) -> torch.Tensor:
+def pad_audio_mask(mask: torch.Tensor, target_time: int) -> torch.Tensor:
     pad = target_time - int(mask.shape[-1])
     if pad <= 0:
         return mask
+    else:
+        pass
     return F.pad(mask, (0, pad), value=False)
 
 
-def _batch_audio_encoder_payloads(
+def batch_audio_encoder_payloads(
     payloads: list[StagePayload],
     *,
     model: Any,
@@ -671,15 +771,17 @@ def _batch_audio_encoder_payloads(
         state = load_state(payload)
         request = build_encoder_request(state, stage_name=AUDIO_STAGE)
         if request.skip_result is not None:
-            results[idx] = _run_single_encoder_payload(
+            results[idx] = run_single_encoder_payload(
                 payload,
                 stage_name=AUDIO_STAGE,
                 model=model,
                 cache=cache,
             )
             continue
+        else:
+            pass
 
-        cached = _lookup_cached_encoder_output(
+        cached = lookup_cached_encoder_output(
             request=request,
             request_id=payload.request_id,
             stage_name=AUDIO_STAGE,
@@ -689,41 +791,51 @@ def _batch_audio_encoder_payloads(
             apply_encoder_result(state, stage_name=AUDIO_STAGE, result=cached)
             results[idx] = store_state(payload, state)
             continue
+        else:
+            pass
 
-        if not _audio_request_is_batchable(request):
-            results[idx] = _run_single_encoder_payload(
+        if not audio_request_is_batchable(request):
+            results[idx] = run_single_encoder_payload(
                 payload,
                 stage_name=AUDIO_STAGE,
                 model=model,
                 cache=cache,
             )
             continue
+        else:
+            pass
 
         cache_key = request.cache_key
         if cache_key is not None and cache_key in active_cache_keys:
             duplicate_waiters.setdefault(cache_key, []).append((idx, payload, state))
-            _trace_encoder_cache(
+            trace_encoder_cache(
                 AUDIO_STAGE,
                 "dedup_same_batch",
                 request_id=payload.request_id,
                 cache_key=cache_key,
-                input_bytes=_nested_tensor_bytes(request.model_inputs),
+                input_bytes=nested_tensor_bytes(request.model_inputs),
                 detail=f"leader={active_cache_leaders[cache_key]}",
             )
             continue
+        else:
+            pass
 
         active.append((idx, payload, state, request))
         if cache_key is not None:
             active_cache_keys.add(cache_key)
             active_cache_leaders[cache_key] = payload.request_id
+        else:
+            pass
 
     if not active:
         return [result for result in results if result is not None]
+    else:
+        pass
 
     normalized = []
     max_time = 0
     for idx, payload, state, request in active:
-        features, mask, lengths = _normalize_audio_request_tensors(request)
+        features, mask, lengths = normalize_audio_request_tensors(request)
         max_time = max(max_time, int(features.shape[-1]))
         normalized.append(
             {
@@ -739,10 +851,10 @@ def _batch_audio_encoder_payloads(
         )
 
     batched_features = torch.cat(
-        [_pad_audio_features(item["features"], max_time) for item in normalized], dim=0
+        [pad_audio_features(item["features"], max_time) for item in normalized], dim=0
     )
     batched_mask = torch.cat(
-        [_pad_audio_mask(item["mask"], max_time) for item in normalized], dim=0
+        [pad_audio_mask(item["mask"], max_time) for item in normalized], dim=0
     )
     batched_lengths = torch.cat([item["lengths"] for item in normalized], dim=0)
 
@@ -769,7 +881,7 @@ def _batch_audio_encoder_payloads(
             ],
             "audio_output_lengths": req_output_lengths,
         }
-        _store_cached_encoder_output(
+        store_cached_encoder_output(
             request=item["request"],
             request_id=item["payload"].request_id,
             stage_name=AUDIO_STAGE,
@@ -778,6 +890,8 @@ def _batch_audio_encoder_payloads(
         )
         if item["request"].cache_key is not None:
             computed_by_cache_key[item["request"].cache_key] = stage_result
+        else:
+            pass
         apply_encoder_result(item["state"], stage_name=AUDIO_STAGE, result=stage_result)
         results[item["idx"]] = store_state(item["payload"], item["state"])
         row_cursor = row_end
@@ -787,6 +901,8 @@ def _batch_audio_encoder_payloads(
         stage_result = computed_by_cache_key.get(cache_key)
         if stage_result is None:
             continue
+        else:
+            pass
         for idx, payload, state in waiters:
             apply_encoder_result(state, stage_name=AUDIO_STAGE, result=stage_result)
             results[idx] = store_state(payload, state)
@@ -829,6 +945,8 @@ def create_preprocessing_executor(
         from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
         return SimpleScheduler(_preprocess)
+    else:
+        pass
 
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
@@ -877,7 +995,7 @@ def create_image_encoder_executor(
             metadata={"modality": "image", "batch_size": 1},
         )
         try:
-            return _run_single_encoder_payload(
+            return run_single_encoder_payload(
                 payload,
                 stage_name=IMAGE_STAGE,
                 model=model,
@@ -900,7 +1018,7 @@ def create_image_encoder_executor(
                 metadata={"modality": "image", "batch_size": len(payloads)},
             )
         try:
-            return _batch_image_encoder_payloads(
+            return batch_image_encoder_payloads(
                 payloads,
                 model=model,
                 cache=cache,
@@ -920,8 +1038,8 @@ def create_image_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=_encoder_batch_wait_ms(),
-        request_cost_fn=_create_image_encoder_request_cost_fn(model),
+        max_batch_wait_ms=encoder_batch_wait_ms(),
+        request_cost_fn=create_image_encoder_request_cost_fn(model),
         max_batch_cost=QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES,
     )
 
@@ -958,7 +1076,7 @@ def create_audio_encoder_executor(
             metadata={"modality": "audio", "batch_size": 1},
         )
         try:
-            return _run_single_encoder_payload(
+            return run_single_encoder_payload(
                 payload,
                 stage_name=AUDIO_STAGE,
                 model=model,
@@ -981,7 +1099,7 @@ def create_audio_encoder_executor(
                 metadata={"modality": "audio", "batch_size": len(payloads)},
             )
         try:
-            return _batch_audio_encoder_payloads(
+            return batch_audio_encoder_payloads(
                 payloads,
                 model=model,
                 cache=cache,
@@ -999,7 +1117,7 @@ def create_audio_encoder_executor(
         _encode,
         batch_compute_fn=_encode_batch,
         max_batch_size=32,
-        max_batch_wait_ms=_encoder_batch_wait_ms(),
+        max_batch_wait_ms=encoder_batch_wait_ms(),
         batch_wait_when_idle=False,
     )
 
@@ -1063,6 +1181,8 @@ def create_sglang_thinker_executor_from_config(
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
+    else:
+        pass
     has_explicit_colocated_mem_fraction = (
         total_gpu_memory_fraction is not None
         and overrides.get("mem_fraction_static") is not None
@@ -1073,7 +1193,7 @@ def create_sglang_thinker_executor_from_config(
         and not has_explicit_colocated_mem_fraction
         else 0.0
     )
-    memory_contract = _apply_colocated_ar_memory_contract(
+    memory_contract = apply_colocated_ar_memory_contract(
         overrides,
         stage_name="thinker",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
@@ -1101,7 +1221,7 @@ def create_sglang_thinker_executor_from_config(
             )
             encoder_reserve_applied = False
         else:
-            encoder_reserve_applied = _apply_qwen_thinker_encoder_reserve(
+            encoder_reserve_applied = apply_qwen_thinker_encoder_reserve(
                 server_args,
                 has_explicit_mem_fraction_static=(
                     memory_contract.mem_fraction_static_pinned
@@ -1184,6 +1304,10 @@ def create_talker_ar_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
+    enable_talker_start_topology: bool = False,
+    codec_coalesce_frames: int = 0,
+    codec_coalesce_first_frames: int = 0,
+    codec_coalesce_early_frames: int = 0,
 ):
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
@@ -1213,8 +1337,10 @@ def create_talker_ar_executor_from_config(
     stated_disable = "disable_cuda_graph" in (server_args_overrides or {})
     if not stated_disable and not current_platform.enable_talker_graph():
         overrides["disable_cuda_graph"] = True
+    else:
+        pass
     overrides["tp_size"] = tp_size
-    _apply_colocated_ar_memory_contract(
+    apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",
         total_gpu_memory_fraction=total_gpu_memory_fraction,
@@ -1254,6 +1380,10 @@ def create_talker_ar_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
+        enable_talker_start_topology=enable_talker_start_topology,
+        codec_coalesce_frames=codec_coalesce_frames,
+        codec_coalesce_first_frames=codec_coalesce_first_frames,
+        codec_coalesce_early_frames=codec_coalesce_early_frames,
     )
     from sglang.srt.runtime_context import get_schedule
 

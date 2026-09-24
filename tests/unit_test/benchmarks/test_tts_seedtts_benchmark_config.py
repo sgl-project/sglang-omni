@@ -79,6 +79,42 @@ def test_seedtts_benchmark_quantization_defaults_to_none() -> None:
     assert results_config["quantization"] is None
 
 
+def test_results_config_records_sampling_and_omits_fingerprint() -> None:
+    config = _config_from_cli(
+        "--temperature",
+        "0.2",
+        "--top-p",
+        "0.9",
+        "--top-k",
+        "10",
+        "--repetition-penalty",
+        "1.1",
+        "--seed",
+        "3",
+    )
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["temperature"] == 0.2
+    assert results_config["top_p"] == 0.9
+    assert results_config["top_k"] == 10
+    assert results_config["repetition_penalty"] == 1.1
+    assert results_config["seed"] == 3
+    assert "environment_fingerprint" not in results_config
+
+    unset = _build_results_config(_config_from_cli(), base_url="http://localhost:8000")
+    assert unset["temperature"] is None
+    assert unset["top_p"] is None
+    assert unset["top_k"] is None
+    assert unset["repetition_penalty"] is None
+    assert unset["seed"] is None
+
+
+def test_results_config_includes_fingerprint_when_set() -> None:
+    config = _config_from_cli()
+    config.environment_fingerprint = {"client": {"git": {}}, "server": {"url": "u"}}
+    results_config = _build_results_config(config, base_url="http://localhost:8000")
+    assert results_config["environment_fingerprint"]["server"]["url"] == "u"
+
+
 def test_parse_concurrencies() -> None:
     assert _parse_concurrencies("16,32,48,64") == [16, 32, 48, 64]
 
@@ -148,6 +184,8 @@ def _stub_seedtts_benchmark(monkeypatch, run_fn, *, samples=None) -> None:
             ],
             "cannot be combined",
         ),
+        (["--repeats", "3"], "require --generate-only"),
+        (["--generate-only", "--repeats", "0"], "must be positive"),
     ],
 )
 def test_cli_rejects_invalid_overshoot(
@@ -188,9 +226,54 @@ async def test_concurrency_sweep_writes_per_point_output_dirs(
     payload = await run_tts_concurrency_sweep(config, [16, 32])
     expected = [str(tmp_path / "c16"), str(tmp_path / "c32")]
     assert seen_output_dirs == expected
-    assert [row["output_dir"] for row in payload["rows"]] == expected
+    assert [row["per_repeat"][0]["output_dir"] for row in payload["rows"]] == expected
+    assert [row["repeats"] for row in payload["rows"]] == [1, 1]
+    assert payload["rows"][0]["latency_p95_s"] == {
+        "mean": 0.1,
+        "min": 0.1,
+        "max": 0.1,
+        "n": 1,
+    }
     assert (tmp_path / "c16" / "speed_results.json").is_file()
     assert (tmp_path / "c32" / "speed_results.json").is_file()
+    assert payload["repeats"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrency_sweep_repeats_aggregate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+        Path(config.output_dir).mkdir(parents=True, exist_ok=True)
+        latency = 3.0 if config.output_dir.endswith("_r2") else 1.0
+        return {
+            "summary": {
+                "completed_requests": 1,
+                "failed_requests": 0,
+                "latency_p95_s": latency,
+                "throughput_qps": 4.0,
+            }
+        }
+
+    _stub_seedtts_benchmark(monkeypatch, _fake_run)
+    config = _config_from_cli("--output-dir", str(tmp_path), "--generate-only")
+    payload = await run_tts_concurrency_sweep(config, [16], repeats=2)
+    row = payload["rows"][0]
+    assert [item["output_dir"] for item in row["per_repeat"]] == [
+        str(tmp_path / "c16_r1"),
+        str(tmp_path / "c16_r2"),
+    ]
+    assert row["latency_p95_s"] == {"mean": 2.0, "min": 1.0, "max": 3.0, "n": 2}
+    assert row["throughput_qps"] == {"mean": 4.0, "min": 4.0, "max": 4.0, "n": 2}
+    assert row["latency_mean_s"]["n"] == 0
+    assert [item["repeat"] for item in row["per_repeat"]] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_concurrency_sweep_rejects_non_positive_repeats(tmp_path: Path) -> None:
+    config = _config_from_cli("--output-dir", str(tmp_path))
+    with pytest.raises(ValueError, match="repeats must be positive"):
+        await run_tts_concurrency_sweep(config, [1], repeats=0)
 
 
 @pytest.mark.asyncio

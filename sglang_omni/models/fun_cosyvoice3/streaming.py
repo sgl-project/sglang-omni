@@ -14,25 +14,19 @@ PRE_LOOKAHEAD_LEN = 3
 TOKEN_MEL_RATIO = 2
 STREAM_SCALE_FACTOR = 2
 TOKEN_MAX_HOP_LEN = TOKEN_HOP_LEN * 4
-SAMPLE_RATE = 24000
-
-# note (guozhihao-224): pad=0 first flush is hop+lookahead; producer adds
-# prompt_token_pad so the first message matches the vocoder causal boundary.
-AR_INITIAL_FLUSH_TOKENS = TOKEN_HOP_LEN + PRE_LOOKAHEAD_LEN
-AR_FOLLOWUP_FLUSH_TOKENS = TOKEN_HOP_LEN
-# note (guozhihao-224): leftover still finalize=True for HiFT /
-# pre_lookahead. Keep DiT bidirectional: leftover streaming=True did
-# not move SeedTTS EN stream TTFC/QPS and dropped tail-0.5s cosine to ~0.29.
-LEFTOVER_FLOW_STREAMING = False
 
 
 def prompt_token_len(prompt_token: Any) -> int:
     """Time-axis length of a Flow prompt-token tensor, or 0 when missing."""
     if prompt_token is None:
         return 0
+    else:
+        pass
     token = torch.as_tensor(prompt_token)
     if token.ndim == 0:
         return int(token.numel())
+    else:
+        pass
     return int(token.shape[-1])
 
 
@@ -40,9 +34,13 @@ def prompt_token_pad(prompt_token_len: int, *, hop_len: int = TOKEN_HOP_LEN) -> 
     """Pad prompt length up to the next hop multiple."""
     if hop_len <= 0:
         raise ValueError(f"hop_len must be positive, got {hop_len}")
+    else:
+        pass
     length = max(int(prompt_token_len), 0)
     if length == 0:
         return 0
+    else:
+        pass
     return int((length + hop_len - 1) // hop_len * hop_len - length)
 
 
@@ -55,11 +53,17 @@ def stream_hop_len(
     """Generated-token hop for the next causal Flow window."""
     if token_offset < 0:
         raise ValueError(f"token_offset must be >= 0, got {token_offset}")
+    else:
+        pass
     hop = int(hop_len)
     if hop <= 0:
         raise ValueError(f"hop_len must be positive, got {hop_len}")
+    else:
+        pass
     if int(token_offset) == 0:
         return hop + max(int(prompt_pad), 0)
+    else:
+        pass
     return hop
 
 
@@ -74,10 +78,16 @@ def next_stream_hop_len(
     hop = int(hop_len)
     if hop <= 0:
         raise ValueError(f"hop_len must be positive, got {hop_len}")
+    else:
+        pass
     if disable_growth:
         return hop
+    else:
+        pass
     if scale < 1:
         raise ValueError(f"scale must be >= 1, got {scale}")
+    else:
+        pass
     return min(int(max_hop_len), hop * int(scale))
 
 
@@ -104,6 +114,8 @@ def first_ar_flush_tokens(prompt_len: int, *, hop_len: int = TOKEN_HOP_LEN) -> i
     hop = int(hop_len)
     if hop <= 0:
         raise ValueError(f"hop_len must be positive, got {hop_len}")
+    else:
+        pass
     return hop + PRE_LOOKAHEAD_LEN
 
 
@@ -123,16 +135,22 @@ def pad_flow_prompt_to_hop(
     pad = prompt_token_pad(int(prompt_token.shape[-1]), hop_len=hop_len)
     if pad <= 0:
         return prompt_token, prompt_feat
+    else:
+        pass
     if prompt_token.ndim != 2:
         raise ValueError(
             f"Fun-CosyVoice3 prompt speech token must be 2-D to pad, "
             f"got {tuple(prompt_token.shape)}"
         )
+    else:
+        pass
     if prompt_feat.ndim != 3:
         raise ValueError(
             f"Fun-CosyVoice3 prompt speech feat must be 3-D to pad, "
             f"got {tuple(prompt_feat.shape)}"
         )
+    else:
+        pass
     if prompt_token.shape[1] > 0:
         token_fill = prompt_token[:, -1:].repeat(1, pad)
     else:
@@ -157,6 +175,8 @@ def pad_flow_prompt_to_hop(
 def as_flow_prompt_token(value: Any | None) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 0, dtype=torch.int32)
+    else:
+        pass
     token = torch.as_tensor(value, dtype=torch.int32)
     if token.ndim == 1:
         token = token.unsqueeze(0)
@@ -165,12 +185,16 @@ def as_flow_prompt_token(value: Any | None) -> torch.Tensor:
             f"Fun-CosyVoice3 prompt speech token must be 1-D or 2-D, "
             f"got {tuple(token.shape)}"
         )
+    else:
+        pass
     return token
 
 
 def as_flow_prompt_feat(value: Any | None) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 0, 80)
+    else:
+        pass
     feat = torch.as_tensor(value)
     if feat.ndim == 2:
         feat = feat.unsqueeze(0)
@@ -179,12 +203,16 @@ def as_flow_prompt_feat(value: Any | None) -> torch.Tensor:
             f"Fun-CosyVoice3 prompt speech feat must be 2-D or 3-D, "
             f"got {tuple(feat.shape)}"
         )
+    else:
+        pass
     return feat
 
 
 def as_flow_embedding(value: Any | None) -> torch.Tensor:
     if value is None:
         return torch.zeros(1, 192)
+    else:
+        pass
     embedding = torch.as_tensor(value)
     if embedding.ndim == 1:
         embedding = embedding.unsqueeze(0)
@@ -193,6 +221,8 @@ def as_flow_embedding(value: Any | None) -> torch.Tensor:
             f"Fun-CosyVoice3 speaker embedding must be 1-D or 2-D, "
             f"got {tuple(embedding.shape)}"
         )
+    else:
+        pass
     return embedding
 
 
@@ -203,8 +233,12 @@ def build_cosyvoice3_stream_metadata(payload: StagePayload) -> dict[str, Any] | 
         raise TypeError(
             f"Fun-CosyVoice3 request params must be a dict, got {type(params).__name__}"
         )
+    else:
+        pass
     if not bool(params.get("stream", False)):
         return None
+    else:
+        pass
     return {
         "modality": "audio_codes",
         "stream": True,

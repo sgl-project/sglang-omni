@@ -10,7 +10,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMo
 from sglang_omni.models.qwen3_asr import mrope_fast_path
 
 _RUNNER = SimpleNamespace(device="cpu")
-_FAST = mrope_fast_path._fast_compute_mrope_positions
+_FAST = mrope_fast_path.fast_compute_mrope_positions
 _ORIG = ForwardBatch._compute_mrope_positions
 
 
@@ -81,7 +81,11 @@ def test_non_degenerate_falls_back():
 
 def test_extend_falls_back():
     mm = [_mm_input(20)]
-    fields = {"extend_lens": [4], "prefix_lens": [16]}
+    fields = {
+        "extend_lens": [4],
+        "prefix_lens": [16],
+        "reqs": [SimpleNamespace(session=None)],
+    }
 
     fast = _run(_FAST, ForwardMode.EXTEND, [20], mm, **fields)
 

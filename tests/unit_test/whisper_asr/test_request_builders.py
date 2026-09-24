@@ -14,8 +14,8 @@ import torch
 import sglang_omni.preprocessing.transcription as transcription
 from sglang_omni.models.whisper_asr import request_builders as whisper_request_builders
 from sglang_omni.models.whisper_asr.request_builders import (
-    _build_prev_context_tokens,
-    _decoder_token_budgets,
+    build_prev_context_tokens,
+    decoder_token_budgets,
     make_whisper_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -211,14 +211,14 @@ def test_decoder_budget_invariant_exhaustive() -> None:
     tokenizer = _FakeTokenizer()
     prefix_len = len(_PREFIX)
     for requested_max_new in range(1, 601):
-        max_new, max_prev = _decoder_token_budgets(
+        max_new, max_prev = decoder_token_budgets(
             decoder_context_len=448,
             prefix_len=prefix_len,
             requested_max_new_tokens=requested_max_new,
         )
         assert 1 <= max_new <= 448 - prefix_len
         for prompt_len in range(0, 301):
-            prev_block = _build_prev_context_tokens(
+            prev_block = build_prev_context_tokens(
                 tokenizer,
                 "x" * prompt_len if prompt_len else None,
                 max_prev_tokens=max_prev,
@@ -237,7 +237,7 @@ def test_request_builder_guard_trips_on_over_budget_prev_context(
     an out-of-range decoder position can reach the GPU."""
     monkeypatch.setattr(
         whisper_request_builders,
-        "_build_prev_context_tokens",
+        "build_prev_context_tokens",
         lambda tokenizer, prompt, *, max_prev_tokens: [_SOT_PREV] + [1] * 500,
     )
 
@@ -250,7 +250,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
 ) -> None:
     class _ConcurrentTokenizer(_FakeTokenizer):
         def __init__(self) -> None:
-            self._state_lock = threading.Lock()
+            self.state_lock = threading.Lock()
             self.active_calls = 0
             self.max_active_calls = 0
             self.prefix_language = ""
@@ -258,7 +258,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
         def set_prefix_tokens(
             self, *, language: str, task: str, predict_timestamps: bool
         ) -> None:
-            with self._state_lock:
+            with self.state_lock:
                 self.active_calls += 1
                 self.max_active_calls = max(self.max_active_calls, self.active_calls)
             time.sleep(0.02)
@@ -267,7 +267,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
                 task=task,
                 predict_timestamps=predict_timestamps,
             )
-            with self._state_lock:
+            with self.state_lock:
                 self.active_calls -= 1
 
         @property
@@ -330,7 +330,7 @@ def test_request_builder_keeps_timestamp_off_prefix_by_default(monkeypatch) -> N
 def test_timestamped_text_renders_markers_from_token_ids() -> None:
     tokenizer = _FakeTokenizer()
 
-    text = whisper_request_builders._render_timestamped_text(
+    text = whisper_request_builders.render_timestamped_text(
         tokenizer, [50364, 7, 8, 50414, 50439, 9, 50464], timestamp_begin_id=50364
     )
 

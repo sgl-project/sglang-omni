@@ -50,7 +50,7 @@ def test_codec_suppress_tokens_matches_reference(share_rows):
     for _ in range(3):  # repeated calls exercise the tensor cache
         logits_orig = torch.randn(batch, vocab, dtype=torch.float32, device=device)
         logits_output = types.SimpleNamespace(next_token_logits=logits_orig.clone())
-        ModelRunner._apply_codec_suppress_tokens(runner, logits_output, requests)
+        ModelRunner.apply_codec_suppress_tokens(runner, logits_output, requests)
         expected = _suppress_reference(logits_orig, requests)
         assert torch.equal(logits_output.next_token_logits, expected)
 
@@ -67,9 +67,9 @@ def test_suppress_cache_holds_one_entry_across_requests():
         requests = _make_suppress_requests([list(shared), list(shared)])
         logits = torch.randn(2, vocab, device=device)
         logits_output = types.SimpleNamespace(next_token_logits=logits.clone())
-        ModelRunner._apply_codec_suppress_tokens(runner, logits_output, requests)
+        ModelRunner.apply_codec_suppress_tokens(runner, logits_output, requests)
         assert torch.equal(
             logits_output.next_token_logits, _suppress_reference(logits, requests)
         ), step
 
-    assert len(runner._suppress_tensor_cache) == 1
+    assert len(runner.suppress_tensor_cache) == 1

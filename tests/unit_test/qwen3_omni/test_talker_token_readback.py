@@ -60,8 +60,8 @@ def test_process_prefers_staged_host_copy_and_skips_device_readback():
 
 def _bare_runner() -> ModelRunner:
     runner = ModelRunner.__new__(ModelRunner)
-    runner._token_id_host_bufs = None
-    runner._token_id_host_slot = 0
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
     return runner
 
 
@@ -70,18 +70,18 @@ def test_stage_token_ids_cpu_passthrough_no_event():
     ref = torch.tensor([7, 8, 9])
     result = SimpleNamespace()
 
-    runner._stage_token_ids(result, ref)
+    runner.stage_token_ids(result, ref)
 
     assert result._host_token_ids is ref
     assert result._host_token_ids_event is None
-    assert runner._resolve_host_token_ids(result).tolist() == ref.tolist()
+    assert runner.resolve_host_token_ids(result).tolist() == ref.tolist()
 
 
 def test_resolve_host_token_ids_absent_returns_none():
     runner = _bare_runner()
     result = SimpleNamespace()
 
-    assert runner._resolve_host_token_ids(result) is None
+    assert runner.resolve_host_token_ids(result) is None
 
 
 def _finalize_scheduler_output(n: int) -> SimpleNamespace:
@@ -112,7 +112,7 @@ def test_finalize_populates_host_token_ids_when_staged():
     )
     schedule_batch = SimpleNamespace(is_prefill_only=False)
 
-    out = runner._finalize(
+    out = runner.finalize(
         batch_result,
         forward_batch=None,
         schedule_batch=schedule_batch,
@@ -131,7 +131,7 @@ def test_finalize_host_token_ids_none_without_stage():
     )
     schedule_batch = SimpleNamespace(is_prefill_only=False)
 
-    out = runner._finalize(
+    out = runner.finalize(
         batch_result,
         forward_batch=None,
         schedule_batch=schedule_batch,
@@ -152,9 +152,9 @@ def test_pingpong_alternates_slots_and_reuses_backing_buffer(monkeypatch):
     runner = _bare_runner()
     like = torch.zeros(3, dtype=torch.long)
 
-    first = runner._next_token_id_host_buf(like, 3)
-    second = runner._next_token_id_host_buf(like, 3)
-    third = runner._next_token_id_host_buf(like, 3)
+    first = runner.next_token_id_host_buf(like, 3)
+    second = runner.next_token_id_host_buf(like, 3)
+    third = runner.next_token_id_host_buf(like, 3)
 
     assert first is not second
     assert third is first
@@ -167,8 +167,8 @@ def test_stage_token_ids_cuda_matches_reference():
     ref = torch.tensor([3, 5, 7, 9], device="cuda")
     result = SimpleNamespace()
 
-    runner._stage_token_ids(result, ref)
-    host = runner._resolve_host_token_ids(result)
+    runner.stage_token_ids(result, ref)
+    host = runner.resolve_host_token_ids(result)
 
     assert not host.is_cuda
     assert host.tolist() == ref.cpu().tolist()

@@ -22,15 +22,15 @@ def _adjust_overrides(key: str, value: Any) -> dict[str, Any]:
 
 def test_ming_tts_abort_callback_resets_runner_state() -> None:
     runner = object.__new__(MingTTSModelRunner)
-    runner._request_states = {"req-ming-tts": object()}
+    runner.request_states = {"req-ming-tts": object()}
     builder = object.__new__(MingTtsEngineBuilder)
-    builder._model_runner = runner
+    builder.model_runner = runner
 
     abort_callback = builder.make_abort_callback()
     abort_callback("req-ming-tts")
     abort_callback("req-ming-tts")
 
-    assert runner._request_states == {}
+    assert runner.request_states == {}
 
 
 @pytest.mark.parametrize(

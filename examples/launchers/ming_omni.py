@@ -294,11 +294,11 @@ def launch_ming_speech_server(args: argparse.Namespace) -> None:
     if args.enable_streaming_tts:
         config = MingOmniStreamingSpeechPipelineConfig(model_path=args.model_path)
         talker_stage = "talker_stream"
-        validate_gpus = config._validate_talker_stream_gpu_not_in_thinker_tp_range
+        validate_gpus = config.validate_talker_stream_gpu_not_in_thinker_tp_range
     else:
         config = MingOmniSpeechPipelineConfig(model_path=args.model_path)
         talker_stage = "talker"
-        validate_gpus = config._validate_talker_gpu_not_in_thinker_tp_range
+        validate_gpus = config.validate_talker_gpu_not_in_thinker_tp_range
 
     set_stage_tp_size(config, "thinker", tp_size)
     thinker_gpus: int | list[int] = int(args.gpu_thinker)
@@ -407,7 +407,7 @@ async def run_ming_speech(args: argparse.Namespace) -> None:
         thinker_gpus = list(range(args.gpu_thinker, args.gpu_thinker + tp_size))
     set_stage_gpu(config, "thinker", thinker_gpus)
     set_stage_gpu(config, "talker", args.gpu_talker)
-    config._validate_talker_gpu_not_in_thinker_tp_range()
+    config.validate_talker_gpu_not_in_thinker_tp_range()
 
     overrides: dict[str, object] = {}
     if tp_size > 1:

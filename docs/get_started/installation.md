@@ -1,12 +1,14 @@
 # 🚀 Installation
 
-Current stable release: **v0.1.5** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.1.6** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 Choose the path for your platform. Docker is recommended for NVIDIA CUDA —
 UCX, flash-attn, SGLang, and CUDA are prebuilt. Apple Silicon has a dedicated
 source installer below.
 
 > **Intel GPU (XPU)?** For Intel Arc GPUs, see [Installation — Intel XPU](./installation_xpu.md), which uses [`pyproject_xpu.toml`](../../pyproject_xpu.toml) + the PyTorch XPU wheel index instead of the CUDA-only pins below.
+
+> **Moore Threads GPU (MUSA):** For MUSA, see [Installation — MUSA](./installation_musa.md), which uses [`pyproject_musa.toml`](../../pyproject_musa.toml) on top of a SGLang MUSA environment.
 
 > **Intel CPU?** Also not this page. See [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index.
 
@@ -48,7 +50,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.5"
+uv pip install --prerelease=allow "sglang-omni==0.1.6"
 ```
 
 <a id="macos-apple-silicon"></a>
@@ -63,7 +65,7 @@ source .venv-apple/bin/activate
 
 The script is idempotent and creates (or reuses) `.venv-apple`, installs the
 Homebrew formulae `ffmpeg@7` and `uv` (and `git` only when a working git is not
-already available), installs SGLang `v0.5.19` from source with its `all_mps`
+already available), installs SGLang `v0.5.20` from source with its `all_mps`
 extra, and installs this checkout with `uv pip`. SGLang's optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
 `ffmpeg@7` is intentional: `torchcodec==0.15.0` ships loaders for FFmpeg 4 through 8
@@ -80,7 +82,7 @@ Homebrew's bootstrapper. Use `--non-interactive` (or `NONINTERACTIVE=1`) to
 disable Homebrew auto-update in CI, `SGLANG_OMNI_VENV=/path/to/venv` to choose a virtualenv, and
 `SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3` to enable optional extras.
 The persistent SGLang source checkout defaults to
-`~/.cache/sglang-omni/sglang-v0.5.19` and can be changed with
+`~/.cache/sglang-omni/sglang-v0.5.20` and can be changed with
 `SGLANG_SOURCE_DIR`. Slow or proxied networks can override the installer's uv
 defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 
@@ -125,7 +127,7 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 Build prerequisites first:
 
 - **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
-- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.13.0` and SGLang 0.5.19's `nvidia-cutlass-dsl` 4.6.2 pin.
+- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.13.0` and SGLang 0.5.20's `nvidia-cutlass-dsl` 4.6.2 pin.
 
 Then:
 
@@ -136,7 +138,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.5"
+uv pip install --prerelease=allow "sglang-omni==0.1.6"
 ```
 
 Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.

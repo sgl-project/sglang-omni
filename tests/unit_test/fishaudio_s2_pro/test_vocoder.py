@@ -7,7 +7,7 @@ import torch
 
 from sglang_omni.models.fishaudio_s2_pro import stages
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fixtures.fish_fakes import FakeFishCodec, make_s2pro_payload
 from tests.unit_test.pipeline.helpers import run_scheduler
 
@@ -18,15 +18,15 @@ def test_fish_vocoder_batches_and_trims_audio_by_code_length(
     """Preserves batched vocoder decode and per-request trim by code length."""
     codec = FakeFishCodec(frame_length=4)
     monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
-    monkeypatch.setattr(stages, "_load_codec", lambda checkpoint, device: codec)
+    monkeypatch.setattr(stages, "load_codec", lambda checkpoint, device: codec)
     scheduler = stages.create_vocoder_executor(
         "unused",
         device="cpu",
         max_batch_size=4,
         max_batch_wait_ms=50,
     )
-    assert scheduler._stream_stride == 40
-    assert scheduler._stream_followup_stride == 45
+    assert scheduler.stream_stride == 40
+    assert scheduler.stream_followup_stride == 45
 
     def payload(request_id: str, code_len: int) -> object:
         return make_s2pro_payload(

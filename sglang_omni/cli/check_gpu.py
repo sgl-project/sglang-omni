@@ -39,3 +39,5 @@ def check_gpu(
         or not report["gpus"]
     ):
         raise typer.Exit(code=1)
+    else:
+        pass

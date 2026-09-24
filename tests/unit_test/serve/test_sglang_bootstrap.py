@@ -7,10 +7,8 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.runtime_context import get_context
 
-from sglang_omni.model_runner import _hidden_capture as hidden_capture_module
 from sglang_omni.model_runner import model_worker as model_worker_module
 from sglang_omni.scheduling import bootstrap, sglang_backend
 
@@ -39,7 +37,7 @@ def test_runtime_configuration_reports_global_backend_for_each_phase(
         sampling_backend="pytorch",
     )
 
-    description = bootstrap._describe_sglang_runtime_configuration(
+    description = bootstrap.describe_sglang_runtime_configuration(
         server_args,
         gpu_id=0,
     )
@@ -67,7 +65,7 @@ def test_runtime_configuration_reports_explicit_phase_backends(
         sampling_backend="pytorch",
     )
 
-    description = bootstrap._describe_sglang_runtime_configuration(
+    description = bootstrap.describe_sglang_runtime_configuration(
         server_args,
         gpu_id=1,
     )
@@ -85,7 +83,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     events: list[str] = []
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: events.append("runtime_configuration")
         or "runtime configuration",
     )
@@ -150,7 +148,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
     events: list[object] = []
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda *_args: "runtime configuration",
     )
 
@@ -224,7 +222,7 @@ def test_an_engine_is_refused_in_a_process_with_a_published_context(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
     monkeypatch.setattr(model_worker_module, "ModelWorker", constructed)
@@ -253,7 +251,7 @@ def test_a_construction_that_failed_after_publishing_is_not_retried(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
     monkeypatch.setattr(model_worker_module, "ModelWorker", publish_then_fail)
@@ -288,174 +286,6 @@ def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
 
     assert capture_values == [True]
     assert model_config.is_multimodal is False
-
-
-@pytest.mark.parametrize(
-    ("fields", "expected"),
-    [
-        (
-            dict(
-                chunked_prefill_size=8192,
-                max_prefill_tokens=16384,
-                context_length=32768,
-                max_running_requests=64,
-                cuda_graph_config=CudaGraphConfig(
-                    decode=PhaseConfig(max_bs=128, bs=[1, 128]),
-                    prefill=PhaseConfig(max_bs=256, bs=[4, 256]),
-                ),
-            ),
-            8192,
-        ),
-        (
-            dict(
-                chunked_prefill_size=-1,
-                max_prefill_tokens=16384,
-                context_length=8192,
-                max_running_requests=64,
-                cuda_graph_config=CudaGraphConfig(
-                    decode=PhaseConfig(max_bs=None),
-                    prefill=PhaseConfig(max_bs=None),
-                ),
-            ),
-            16384,
-        ),
-        (
-            dict(
-                chunked_prefill_size=512,
-                max_prefill_tokens=16384,
-                context_length=8192,
-                max_running_requests=64,
-                cuda_graph_config=CudaGraphConfig(
-                    decode=PhaseConfig(max_bs=128, bs=[1, 128]),
-                    prefill=PhaseConfig(max_bs=1024, bs=[4, 1024]),
-                ),
-            ),
-            1024,
-        ),
-    ],
-)
-def test_hidden_capture_max_tokens_covers_eager_and_graph_forwards(
-    fields: dict,
-    expected: int,
-) -> None:
-    with get_context().override_server_args(**fields):
-        assert bootstrap._hidden_capture_max_tokens() == expected
-
-
-def test_hidden_capture_max_tokens_covers_non_chunked_context_length() -> None:
-    with get_context().override_server_args(
-        chunked_prefill_size=-1,
-        max_prefill_tokens=8192,
-        context_length=32768,
-        max_running_requests=64,
-        cuda_graph_config=CudaGraphConfig(
-            decode=PhaseConfig(max_bs=None),
-            prefill=PhaseConfig(max_bs=None),
-        ),
-    ):
-        assert bootstrap._hidden_capture_max_tokens() == 32768
-
-
-def test_hidden_capture_max_tokens_rejects_missing_capacity_sources() -> None:
-    with get_context().override_server_args(
-        chunked_prefill_size=-1,
-        max_prefill_tokens=None,
-        context_length=None,
-        max_running_requests=0,
-        cuda_graph_config=CudaGraphConfig(
-            decode=PhaseConfig(max_bs=None),
-            prefill=PhaseConfig(max_bs=None),
-        ),
-    ):
-        with pytest.raises(ValueError, match="hidden capture capacity"):
-            bootstrap._hidden_capture_max_tokens()
-
-
-def test_hidden_capture_is_installed_before_graph_initialization(
-    monkeypatch, published
-) -> None:
-    events: list[object] = []
-
-    class FakeRunner:
-        model = object()
-
-        def alloc_memory_pool(self) -> None:
-            events.append("alloc_memory_pool")
-
-        def init_attention_backends(self) -> None:
-            events.append("init_attention_backends")
-
-        def init_cuda_graphs(self) -> None:
-            events.append("init_cuda_graphs")
-
-    class FakeWorker:
-        model_config = SimpleNamespace(is_multimodal=False)
-        enable_prefill_input_embeds = False
-
-        def __init__(self, **kwargs) -> None:
-            del kwargs
-            self.model_runner = FakeRunner()
-            events.append("model_worker")
-            published.append(
-                get_context().override_server_args(
-                    page_size=1,
-                    chunked_prefill_size=8192,
-                    max_prefill_tokens=16384,
-                    context_length=32768,
-                    max_running_requests=64,
-                    cuda_graph_config=CudaGraphConfig(
-                        decode=PhaseConfig(max_bs=128, bs=[1, 128]),
-                        prefill=PhaseConfig(max_bs=256, bs=[4, 256]),
-                    ),
-                )
-            )
-            published[-1].install()
-
-        def get_memory_pool(self):
-            events.append("get_memory_pool")
-            return "req_pool", "kv_pool"
-
-    def fake_install(model, layers, *, max_tokens) -> None:
-        events.append(("install_hidden_capture", model, layers, max_tokens))
-
-    monkeypatch.setattr(
-        bootstrap,
-        "_describe_sglang_runtime_configuration",
-        lambda *_args: "runtime configuration",
-    )
-    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
-    monkeypatch.setattr(
-        hidden_capture_module,
-        "install_hidden_capture_hooks",
-        fake_install,
-    )
-    monkeypatch.setattr(
-        sglang_backend,
-        "create_tree_cache",
-        lambda *args: ("tree_cache", args),
-    )
-    server_args = SimpleNamespace(
-        attention_backend=None,
-        decode_attention_backend=None,
-        prefill_attention_backend=None,
-        sampling_backend=None,
-        disable_overlap_schedule=False,
-    )
-
-    bootstrap.create_sglang_infrastructure(
-        server_args,
-        0,
-        capture_hidden_layers=[0, 24],
-    )
-
-    assert events == [
-        "model_worker",
-        ("install_hidden_capture", FakeRunner.model, [0, 24], 8192),
-        "alloc_memory_pool",
-        "init_attention_backends",
-        "init_cuda_graphs",
-        "get_memory_pool",
-    ]
 
 
 def test_defer_cuda_graph_requests_deferred_capture_without_touching_args(
@@ -531,7 +361,7 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
 
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda _server_args, _gpu_id: "runtime configuration",
     )
 

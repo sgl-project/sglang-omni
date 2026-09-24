@@ -159,7 +159,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
     assert prep_b.runtime_dir is not None
 
     try:
-        groups_a = mp_runner._build_stage_groups(
+        groups_a = mp_runner.build_stage_groups(
             config,
             FakeMpContext(),
             stages_cfg=prep_a.stages_cfg,
@@ -167,7 +167,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
             placement_plan=prep_a.placement_plan,
             process_plan=prep_a.process_plan,
         )
-        groups_b = mp_runner._build_stage_groups(
+        groups_b = mp_runner.build_stage_groups(
             config,
             FakeMpContext(),
             stages_cfg=prep_b.stages_cfg,
@@ -271,7 +271,7 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
     monkeypatch.setattr(mp_runner, "Coordinator", _FakeCoordinator)
     monkeypatch.setattr(
         mp_runner,
-        "_build_stage_groups",
+        "build_stage_groups",
         lambda *a, **k: [first_group, second_group],
     )
 
@@ -391,7 +391,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
 
     group = FakeGroup()
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
-    monkeypatch.setattr(mp_runner, "_build_stage_groups", lambda *a, **k: [group])
+    monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: [group])
 
     runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
     await runner.start()
@@ -458,7 +458,7 @@ async def _run_launcher_with_fake_runner(
         async def broadcast_stop(self, **kwargs) -> None:
             profiler_calls.stops.append(kwargs)
 
-    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "find_available_port", lambda host, port: port)
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
     monkeypatch.setattr(launcher, "ProfilerControlClient", FakeProfilerControl)
 
@@ -471,7 +471,7 @@ async def _run_launcher_with_fake_runner(
     if serve_mock is not None:
         monkeypatch.setattr(launcher.uvicorn.Server, "serve", serve_mock)
 
-    await launcher._run_server(config, port=8000)
+    await launcher.run_server(config, port=8000)
     assert runner_ref is not None
     return runner_ref, app, profiler_calls
 
@@ -571,7 +571,7 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
 
     app = FastAPI()
     ctl = FakeProfilerControl()
-    launcher._mount_profiler_routes(app, ctl, profiler_dir=None)
+    launcher.mount_profiler_routes(app, ctl, profiler_dir=None)
     event_dir = str(tmp_path / "events")
 
     try:
@@ -603,7 +603,7 @@ def test_start_profile_torch_mode_still_requires_trace_template() -> None:
             raise AssertionError("start_profile should fail before broadcasting")
 
     app = FastAPI()
-    launcher._mount_profiler_routes(app, FakeProfilerControl(), profiler_dir=None)
+    launcher.mount_profiler_routes(app, FakeProfilerControl(), profiler_dir=None)
 
     with TestClient(app) as client:
         resp = client.post("/start_profile", json={"enable_torch": True})
@@ -667,7 +667,7 @@ async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
     finally:
         signal.signal(signal.SIGTERM, original_handler)
 
-    assert isinstance(server_ref, launcher._PipelineUvicornServer)
+    assert isinstance(server_ref, launcher.PipelineUvicornServer)
     assert runner.started
     assert runner.stopped
     assert replayed_signals == []
@@ -694,8 +694,8 @@ async def test_launcher_preserves_runner_start_error(
         async def stop(self) -> None:
             raise AssertionError("launcher should not stop a runner that failed start")
 
-    monkeypatch.setattr(launcher, "_find_available_port", lambda host, port: port)
+    monkeypatch.setattr(launcher, "find_available_port", lambda host, port: port)
     monkeypatch.setattr(launcher, "MultiProcessPipelineRunner", FakeRunner)
 
     with pytest.raises(RuntimeError, match="start failed"):
-        await launcher._run_server(config, port=8000)
+        await launcher.run_server(config, port=8000)

@@ -12,9 +12,9 @@ import pytest
 from sglang_omni.profiler.event_recorder import (
     RequestEvent,
     RequestEventRecorder,
-    _json_default,
     emit,
     get_recorder,
+    json_default,
     reset_active_stage,
     set_active_stage,
 )
@@ -227,7 +227,7 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
     by_event = {e["event_name"]: e["stage"] for e in events}
     assert (
         by_event["from_main"] == "preprocessing"
-    ), "main thread had no active stage; should fall back to recorder._stage"
+    ), "main thread had no active stage; should fall back to recorder.stage"
     assert (
         by_event["from_thinker"] == "thinker"
     ), "worker thread's set_active_stage('thinker') was ignored"
@@ -304,7 +304,7 @@ def test_json_default_summarizes_tensor_without_materializing() -> None:
         def item(self):  # pragma: no cover
             raise AssertionError("item() called on multi-dim tensor")
 
-    out = _json_default(FakeTensor())
+    out = json_default(FakeTensor())
     assert isinstance(out, dict)
     assert out["__tensor_summary__"] is True
     assert out["type"] == "FakeTensor"
@@ -323,7 +323,7 @@ def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
         def item(self):
             return 3.14
 
-    assert _json_default(FakeScalar()) == 3.14
+    assert json_default(FakeScalar()) == 3.14
 
 
 def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:

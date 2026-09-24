@@ -51,7 +51,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
         self.process_total_gpu_memory_fraction = process_total_gpu_memory_fraction
         self.codec_mem_reserve = codec_mem_reserve
-        self.memory_budget = moss_local_stages._ArMemoryBudget(
+        self.memory_budget = moss_local_stages.ArMemoryBudget(
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
@@ -77,10 +77,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             defaults["mem_fraction_static"] = (
                 0.6 if moss_local_stages.torch.cuda.device_count() > 1 else 0.5
             )
+        else:
+            pass
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        self.memory_budget = moss_local_stages._apply_colocated_ar_memory_budget(
+        self.memory_budget = moss_local_stages.apply_colocated_ar_memory_budget(
             overrides,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
             codec_mem_reserve=self.codec_mem_reserve,
@@ -93,8 +95,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
             self.profile_total_gpu_memory_fraction = (
                 self.memory_budget.effective_total_gpu_memory_fraction
             )
+        else:
+            pass
         if self.profile_total_gpu_memory_fraction is None:
             return
+        else:
+            pass
 
         from sglang_omni.utils.gpu_memory import get_process_gpu_memory_bytes
 
@@ -106,6 +112,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
                 f"{self.profile_total_gpu_memory_fraction}"
             )
             self.profile_total_gpu_memory_fraction = None
+        else:
+            pass
 
     def customize_server_args(self, server_args: Any) -> None:
         from sglang.srt.arg_groups.model_override_base import resolved_view

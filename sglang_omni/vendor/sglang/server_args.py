@@ -5,18 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 
-def get_global_server_args():
-    """Return SGLang's process-global server args through a lazy import."""
-    from sglang.srt.server_args import get_global_server_args as _get_global_server_args
-
-    return _get_global_server_args()
-
-
 def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
     """Apply an audited ServerArgs mutation at the right lifecycle stage.
 
-    A record that is not published yet takes the change as a late declaration
-    through declare_late_resolution: the field keeps the caller's input, and the
+    A record that is not published yet takes the change as a declaration
+    through declare_resolution: the field keeps the caller's input, and the
     declaration is what resolution_result, the resolved view and the bags
     projected at publish answer with. The published record is read-only and its
     values live on the config bags, so the mutation goes to get_context().override.
@@ -33,9 +26,9 @@ def override_server_args(server_args: Any, source: str, **fields: Any) -> None:
         context.override(source, **fields)
         return
 
-    from sglang.srt.arg_groups.overrides import declare_late_resolution
+    from sglang.srt.arg_groups.overrides import declare_resolution
 
-    declare_late_resolution(server_args, source, **fields)
+    declare_resolution(server_args, source, **fields)
 
 
-__all__ = ["get_global_server_args", "override_server_args"]
+__all__ = ["override_server_args"]

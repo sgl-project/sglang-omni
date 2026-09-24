@@ -23,7 +23,8 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
+from tests.unit_test.fun_cosyvoice3.test_flow_batch import _FakeFlow as _PackedFlow
 
 
 class _FakeHiFT(torch.nn.Module):
@@ -49,6 +50,12 @@ class _FakeEstimator(torch.nn.Module):
         raise AssertionError("batch adapter should be mocked in vocoder unit tests")
 
 
+class _RunnableFakeFlow(_PackedFlow):
+    def __init__(self):
+        super().__init__(channels=80, max_frames=8192)
+        self.spk_embed_affine_layer = torch.nn.Linear(192, 80)
+
+
 def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
     class _FakeMlxVocoder:
         sample_rate = 24000
@@ -64,7 +71,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
             assert token.tolist() == [[11, 12]]
             return torch.ones(1, 16)
 
-    scheduler = stages._FunCosyVoice3MlxStreamingVocoderScheduler(
+    scheduler = stages.FunCosyVoice3MlxStreamingVocoderScheduler(
         _FakeMlxVocoder(), max_batch_wait_ms=0
     )
     state = FunCosyVoice3State(
@@ -74,7 +81,7 @@ def test_mlx_stream_scheduler_consumes_chunks_before_final_decode() -> None:
         flow_embedding=torch.ones(1, 192),
     )
     payload = _payload(state)
-    scheduler._stream_payloads["req"] = payload
+    scheduler.stream_payloads["req"] = payload
     scheduler.on_streaming_new_request("req", payload)
     scheduler.on_stream_chunk(
         "req",
@@ -101,7 +108,7 @@ def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
 
     hift = SimpleNamespace(f0_predictor=_Predictor())
 
-    stages._MpsHiFTAdapter(hift, "mps")
+    stages.MpsHiFTAdapter(hift, "mps")
 
     assert calls == [
         ((), {"device": "cpu"}),
@@ -133,6 +140,7 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
             return self
 
     flow = _Model()
+    flow.decoder = SimpleNamespace(estimator=torch.nn.Module())
     hift = _Model()
 
     def fake_load_hyperpyyaml(handle, overrides):
@@ -159,12 +167,13 @@ def test_lightweight_loader_skips_llm_and_loads_flow_hift(
 
     monkeypatch.setattr(torch, "load", fake_torch_load)
 
-    loaded_flow, loaded_hift = stages._load_cosyvoice3_flow_hift_lightweight(
+    loaded_flow, loaded_hift = stages.load_cosyvoice3_flow_hift_lightweight(
         str(tmp_path),
         device="cpu",
     )
 
     assert isinstance(loaded_flow, stages.FunCosyVoice3Flow)
+    assert loaded_flow.packed_estimator.dit is flow.decoder.estimator
     assert loaded_hift is hift
     assert observed["overrides"] == {
         "qwen_pretrain_path": str(tmp_path / "CosyVoice-BlankEN"),
@@ -353,9 +362,9 @@ def test_mlx_vocoder_audio_payload_survives_state_storage() -> None:
     )
     waveform = np.array([[0.1, -0.2]], dtype=np.float32)
 
-    mlx_vocoder = object.__new__(stages._CosyVoice3MlxVocoderAdapter)
+    mlx_vocoder = object.__new__(stages.CosyVoice3MlxVocoderAdapter)
     stored = mlx_vocoder.store_result(_payload(state), state, waveform, 24000)
-    result = Client._default_result_builder(stored.request_id, stored.data)
+    result = Client.default_result_builder(stored.request_id, stored.data)
 
     np.testing.assert_array_equal(result.audio_data, waveform.reshape(-1))
     assert result.sample_rate == 24000
@@ -717,11 +726,12 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **kwargs: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
@@ -739,9 +749,9 @@ def test_flow_admission_defers_request_after_long_singleton(monkeypatch) -> None
     second = IncomingMessage("short", "new_request", _payload(short_state))
     scheduler.inbox.put(second)
 
-    assert scheduler._max_batch_cost == 2000
-    assert scheduler._collect_new_request_batch(first) == [first]
-    assert scheduler._next_message() == second
+    assert scheduler.max_batch_cost == 2000
+    assert scheduler.collect_new_request_batch(first) == [first]
+    assert scheduler.next_message() == second
 
 
 def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) -> None:
@@ -749,35 +759,37 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **kwargs: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
     scheduler = stages.create_vocoder_executor("model", device="cpu")
 
-    assert scheduler._max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
+    assert scheduler.max_batch_cost == stages.DEFAULT_FLOW_BATCH_ADMISSION_FRAMES
     assert (
-        scheduler._max_batch_cost // 713 >= 8
+        scheduler.max_batch_cost // 713 >= 8
     ), "default admission budget no longer holds a useful batch"
-    assert scheduler._max_batch_size == 16
-    assert scheduler._max_batch_wait_s == pytest.approx(0.03)
-    assert scheduler._vocoder.flow_merge_max_gap_frames == 384
-    assert scheduler._vocoder.flow_merge_pad_budget_percent == 25.0
+    assert scheduler.max_batch_size == 16
+    assert scheduler.max_batch_wait_s == pytest.approx(0.03)
+    assert scheduler.vocoder.flow_merge_max_gap_frames == 384
+    assert scheduler.vocoder.flow_merge_pad_budget_percent == 25.0
 
 
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    fake_flow = _BatchCapableFakeFlow()
+    fake_flow = _RunnableFakeFlow()
     fake_hift = _FakeHiFT()
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -806,15 +818,15 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
-    assert scheduler._max_batch_size == 6
-    assert scheduler._max_batch_wait_s == pytest.approx(0.007)
-    assert scheduler._max_batch_cost == 200
-    assert callable(scheduler._request_cost_fn)
-    assert scheduler._vocoder.flow_merge_max_gap_frames == 0
-    assert scheduler._vocoder.flow_merge_pad_budget_percent == 0
+    assert scheduler.max_batch_size == 6
+    assert scheduler.max_batch_wait_s == pytest.approx(0.007)
+    assert scheduler.max_batch_cost == 200
+    assert callable(scheduler.request_cost_fn)
+    assert scheduler.vocoder.flow_merge_max_gap_frames == 0
+    assert scheduler.vocoder.flow_merge_pad_budget_percent == 0
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
-    assert scheduler._request_cost_fn(_payload(state)) == 6
+    assert scheduler.request_cost_fn(_payload(state)) == 6
     assert captured == {
         "checkpoint_dir": "/checkpoint",
         "device": "cpu",
@@ -829,6 +841,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
 
     def fake_load(checkpoint_dir, device, fp16, **kwargs):
         captured.update(
@@ -836,7 +849,7 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
                 "enable_flow_estimator_trt": kwargs.get("enable_flow_estimator_trt"),
             }
         )
-        return _BatchCapableFakeFlow(), _FakeHiFT()
+        return _RunnableFakeFlow(), _FakeHiFT()
 
     monkeypatch.setattr(stages, "load_cosyvoice3_flow_hift", fake_load)
 
@@ -857,11 +870,12 @@ def _executor_compiles(monkeypatch, **kwargs) -> bool:
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
     )
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
     monkeypatch.setattr(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, **_: (
-            _BatchCapableFakeFlow(),
+            _RunnableFakeFlow(),
             _FakeHiFT(),
         ),
     )
@@ -960,12 +974,12 @@ def test_attach_flow_estimator_trt_wraps_module_with_fallback(monkeypatch) -> No
     assert captured["wrap_module"] is True
     assert captured["fallback"] is fallback
     assert isinstance(flow.decoder.estimator, FlowEstimatorTRTModule)
-    assert flow.decoder.estimator._fallback is fallback
+    assert flow.decoder.estimator.fallback is fallback
 
 
 def test_preprocessing_executor_threads_max_concurrency() -> None:
     scheduler = stages.create_preprocessing_executor("model", max_concurrency=11)
-    assert scheduler._max_concurrency == 11
+    assert scheduler.max_concurrency == 11
 
 
 def test_preprocessing_executor_rejects_non_positive_concurrency() -> None:
@@ -999,8 +1013,8 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
     )
 
     builder = engine_builder.FunCosyVoice3EngineBuilder(onnx_intra_op_threads=6)
-    builder._checkpoint_root = "/tmp"
-    builder.setup_model(
+    builder.checkpoint_root = "/tmp"
+    builder.before_memory_pool(
         model_worker=SimpleNamespace(
             model_runner=SimpleNamespace(
                 model=_StubModel(),

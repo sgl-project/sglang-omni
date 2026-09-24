@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_VOICE = "DB30"
 
 
-def _build_talker_usage(payload: StagePayload) -> dict[str, int]:
+def build_talker_usage(payload: StagePayload) -> dict[str, int]:
     data = payload.data if isinstance(payload.data, dict) else {}
     return build_text_usage(data)
 
@@ -46,24 +46,24 @@ class MingTalkerExecutor:
         device: str = "cuda",
         voice: str = DEFAULT_VOICE,
     ):
-        self._model_path = model_path
-        self._talker_model_path = talker_model_path or str(Path(model_path) / "talker")
-        self._device = device
-        self._voice = voice
-        self._results: asyncio.Queue[StagePayload] = asyncio.Queue()
-        self._aborted: set[str] = set()
+        self.model_path = model_path
+        self.talker_model_path = talker_model_path or str(Path(model_path) / "talker")
+        self.device = device
+        self.voice = voice
+        self.results: asyncio.Queue[StagePayload] = asyncio.Queue()
+        self.aborted: set[str] = set()
 
-        self._talker = None
-        self._vae = None
-        self._thinker_tokenizer = None
+        self.talker = None
+        self.vae = None
+        self.thinker_tokenizer = None
 
     async def start(self) -> None:
         """Initialize the talker model and AudioVAE."""
-        logger.info("Loading Ming talker from %s", self._talker_model_path)
-        await asyncio.to_thread(self._load_models)
+        logger.info("Loading Ming talker from %s", self.talker_model_path)
+        await asyncio.to_thread(self.load_models)
         logger.info("Ming talker loaded and initialized")
 
-    def _load_models(self) -> None:
+    def load_models(self) -> None:
         """Load talker model and VAE (runs in thread pool)."""
         from transformers import AutoTokenizer
 
@@ -79,47 +79,49 @@ class MingTalkerExecutor:
 
         logger.info(
             "[TALKER] Loading MingOmniTalker from %s (device=%s)",
-            self._talker_model_path,
-            self._device,
+            self.talker_model_path,
+            self.device,
         )
 
         # 1. Load config from checkpoint
         t0 = time.time()
-        config = MingOmniTalkerConfig.from_pretrained_dir(self._talker_model_path)
-        if torch.device(self._device).type == "npu":
+        config = MingOmniTalkerConfig.from_pretrained_dir(self.talker_model_path)
+        if torch.device(self.device).type == "npu":
             config.use_torch_attention()
+        else:
+            pass
 
         # 2. Create model (no weights yet)
-        self._talker = MingOmniTalker(config)
-        self._talker.eval()
+        self.talker = MingOmniTalker(config)
+        self.talker.eval()
 
         # 3. Stream weights, then move to device with bf16
-        weights = load_weights_by_prefix(self._talker_model_path, prefix="")
-        self._talker.load_weights(weights.items())
-        self._talker.to(device=self._device, dtype=torch.bfloat16)
+        weights = load_weights_by_prefix(self.talker_model_path, prefix="")
+        self.talker.load_weights(weights.items())
+        self.talker.to(device=self.device, dtype=torch.bfloat16)
         logger.info("[TALKER] MingOmniTalker loaded in %.1fs", time.time() - t0)
 
         # 4. Load tokenizer externally
         tokenizer = AutoTokenizer.from_pretrained(
-            str(Path(self._talker_model_path) / "llm")
+            str(Path(self.talker_model_path) / "llm")
         )
-        self._talker.set_tokenizer(tokenizer)
+        self.talker.set_tokenizer(tokenizer)
 
         # 5. Load voice presets
         voice_json_path = os.path.join(
-            self._talker_model_path, "data", "voice_name.json"
+            self.talker_model_path, "data", "voice_name.json"
         )
         if os.path.exists(voice_json_path):
             with open(voice_json_path, "r") as f:
                 voice_dict = json.load(f)
-            self._validate_voice_presets(
-                voice_dict, voice_json_path, self._talker_model_path
+            self.validate_voice_presets(
+                voice_dict, voice_json_path, self.talker_model_path
             )
-            self._talker.set_voice_presets(voice_dict)
-        elif self._voice is not None:
+            self.talker.set_voice_presets(voice_dict)
+        elif self.voice is not None:
             raise FileNotFoundError(
                 f"[TALKER] voice_name.json not found at {voice_json_path}; "
-                f"default voice {self._voice!r} cannot be resolved"
+                f"default voice {self.voice!r} cannot be resolved"
             )
         else:
             logger.info(
@@ -127,10 +129,10 @@ class MingTalkerExecutor:
             )
 
         # 6. Load speaker embedding extractor (optional)
-        campplus_path = os.path.join(self._talker_model_path, "campplus.onnx")
+        campplus_path = os.path.join(self.talker_model_path, "campplus.onnx")
         try:
             extractor = SpkembExtractor(campplus_path)
-            self._talker.set_spkemb_extractor(extractor)
+            self.talker.set_spkemb_extractor(extractor)
         except (ImportError, Exception) as e:
             logger.warning("[TALKER] SpkembExtractor not available: %s", e)
 
@@ -138,19 +140,19 @@ class MingTalkerExecutor:
         try:
             from talker_tn.talker_tn import TalkerTN
 
-            self._talker.set_normalizer(TalkerTN())
+            self.talker.set_normalizer(TalkerTN())
         except ImportError:
             logger.warning(
                 "[TALKER] TalkerTN (pynini) not available — using identity normalizer"
             )
 
         # 8. Load AudioVAE
-        vae_path = str(Path(self._talker_model_path) / "vae")
+        vae_path = str(Path(self.talker_model_path) / "vae")
         if Path(vae_path).exists():
             t0v = time.time()
-            self._vae = AudioVAE.from_pretrained(vae_path, dtype=torch.bfloat16)
-            self._vae.to(self._device)
-            self._vae.eval()
+            self.vae = AudioVAE.from_pretrained(vae_path, dtype=torch.bfloat16)
+            self.vae.to(self.device)
+            self.vae.eval()
             logger.info("[TALKER] AudioVAE loaded in %.1fs", time.time() - t0v)
         else:
             logger.warning("[TALKER] AudioVAE not found at %s", vae_path)
@@ -161,10 +163,10 @@ class MingTalkerExecutor:
                 load_ming_tokenizer,
             )
 
-            self._thinker_tokenizer = load_ming_tokenizer(self._model_path)
+            self.thinker_tokenizer = load_ming_tokenizer(self.model_path)
             logger.info(
                 "[TALKER] Thinker tokenizer loaded: %s",
-                type(self._thinker_tokenizer).__name__,
+                type(self.thinker_tokenizer).__name__,
             )
         except Exception as e:
             logger.warning("[TALKER] Could not load thinker tokenizer: %s", e)
@@ -172,24 +174,28 @@ class MingTalkerExecutor:
         # 10. Initialize device graphs
         logger.info("[TALKER] Initializing device graphs...")
         t0g = time.time()
-        self._talker.initial_graph()
+        self.talker.initial_graph()
         logger.info("[TALKER] Device graphs initialized in %.1fs", time.time() - t0g)
 
     async def add_request(self, payload: StagePayload) -> None:
         """Process a TTS request."""
         request_id = payload.request_id
-        if request_id in self._aborted:
+        if request_id in self.aborted:
             return
+        else:
+            pass
         if not self.should_generate_audio(payload):
             logger.info(
                 "[TALKER] Skipping TTS for request %s; output_modalities=%s",
                 request_id,
-                self._output_modalities(payload),
+                self.output_modalities(payload),
             )
-            await self._results.put(self.build_empty_audio_result(payload))
+            await self.results.put(self.build_empty_audio_result(payload))
             return
+        else:
+            pass
 
-        text = self._extract_text(payload)
+        text = self.extract_text(payload)
         logger.info(
             "[TALKER] Extracted text (len=%d): %r",
             len(text) if text else 0,
@@ -204,16 +210,18 @@ class MingTalkerExecutor:
                     "sample_rate": 44100,
                     "duration": 0.0,
                     "modality": "audio",
-                    "usage": _build_talker_usage(payload),
+                    "usage": build_talker_usage(payload),
                 },
             )
-            await self._results.put(result)
+            await self.results.put(result)
             return
+        else:
+            pass
 
         t0 = time.time()
         logger.info("[TALKER] Starting TTS generation for %d chars...", len(text))
         waveform, sample_rate, duration = await asyncio.to_thread(
-            self._generate_speech, text
+            self.generate_speech, text
         )
         logger.info(
             "[TALKER] TTS done in %.1fs, audio=%.2fs", time.time() - t0, duration
@@ -240,37 +248,47 @@ class MingTalkerExecutor:
                 "sample_rate": sample_rate,
                 "duration": duration,
                 "modality": "audio",
-                "usage": _build_talker_usage(payload),
+                "usage": build_talker_usage(payload),
             },
         )
-        await self._results.put(result)
+        await self.results.put(result)
 
     async def get_result(self) -> StagePayload:
         while True:
-            result = await self._results.get()
-            if result.request_id in self._aborted:
+            result = await self.results.get()
+            if result.request_id in self.aborted:
                 continue
+            else:
+                pass
             return result
 
     async def abort(self, request_id: str) -> None:
-        self._aborted.add(request_id)
+        self.aborted.add(request_id)
 
     def should_generate_audio(self, payload: StagePayload) -> bool:
-        modalities = self._output_modalities(payload)
+        modalities = self.output_modalities(payload)
         return modalities is None or "audio" in modalities
 
     @staticmethod
-    def _output_modalities(payload: StagePayload) -> set[str] | None:
+    def output_modalities(payload: StagePayload) -> set[str] | None:
         metadata = payload.request.metadata
         if not isinstance(metadata, dict):
             return None
+        else:
+            pass
         modalities = metadata.get("output_modalities")
         if modalities is None:
             return None
+        else:
+            pass
         if isinstance(modalities, str):
             return {modalities}
+        else:
+            pass
         if isinstance(modalities, (list, tuple, set)):
             return {str(modality) for modality in modalities}
+        else:
+            pass
         return None
 
     @staticmethod
@@ -283,11 +301,11 @@ class MingTalkerExecutor:
                 "sample_rate": 44100,
                 "duration": 0.0,
                 "skipped": True,
-                "usage": _build_talker_usage(payload),
+                "usage": build_talker_usage(payload),
             },
         )
 
-    def _validate_voice_presets(
+    def validate_voice_presets(
         self, voice_dict: dict, manifest_path: str, talker_dir: str
     ) -> None:
         """Resolve relative prompt-wav paths and validate the manifest.
@@ -295,12 +313,14 @@ class MingTalkerExecutor:
         Mutates ``voice_dict`` in place so each entry's ``prompt_wav_path``
         becomes an absolute path on disk.
         """
-        if self._voice is not None and self._voice not in voice_dict:
+        if self.voice is not None and self.voice not in voice_dict:
             raise ValueError(
-                f"[TALKER] default voice {self._voice!r} not found in "
+                f"[TALKER] default voice {self.voice!r} not found in "
                 f"{manifest_path}; available presets: "
                 f"{sorted(voice_dict.keys())}"
             )
+        else:
+            pass
         for name, entry in voice_dict.items():
             rel_path = entry.get("prompt_wav_path")
             if rel_path is None:
@@ -308,81 +328,107 @@ class MingTalkerExecutor:
                     f"[TALKER] voice preset {name!r} in {manifest_path} is "
                     f"missing prompt_wav_path"
                 )
+            else:
+                pass
             resolved = os.path.join(talker_dir, rel_path)
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(
                     f"[TALKER] voice preset {name!r} references missing "
                     f"prompt wav {resolved}"
                 )
+            else:
+                pass
             entry["prompt_wav_path"] = resolved
 
-    def _extract_text(self, payload: StagePayload) -> str:
+    def extract_text(self, payload: StagePayload) -> str:
         """Extract generated text from the thinker output in the payload."""
         data = payload.data
         if not isinstance(data, dict):
             return ""
+        else:
+            pass
 
         # Check thinker_out field
         thinker_out = data.get("thinker_out", {})
         if isinstance(thinker_out, dict):
             output_ids = thinker_out.get("output_ids", [])
             if output_ids:
-                tokenizer = self._thinker_tokenizer
-                if tokenizer is None and hasattr(self._talker, "tokenizer"):
-                    tokenizer = self._talker.tokenizer
+                tokenizer = self.thinker_tokenizer
+                if tokenizer is None and hasattr(self.talker, "tokenizer"):
+                    tokenizer = self.talker.tokenizer
+                else:
+                    pass
                 if tokenizer is not None:
                     return tokenizer.decode(output_ids, skip_special_tokens=True)
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         # Fallback: pre-decoded text
         text = data.get("generated_text", "")
         if text:
             return text
+        else:
+            pass
 
         # Check stream_state
         stream_state = data.get("stream_state", {})
         return stream_state.get("accumulated_text", "")
 
     @torch.no_grad()
-    def _generate_speech(self, text: str) -> tuple[torch.Tensor, int, float]:
+    def generate_speech(self, text: str) -> tuple[torch.Tensor, int, float]:
         """Generate speech from text using MingOmniTalker.
 
         Returns:
             Tuple of (waveform tensor, sample_rate, duration in seconds).
         """
-        if self._talker is None:
+        if self.talker is None:
             raise RuntimeError("Talker model not loaded")
+        else:
+            pass
 
         all_wavs = []
 
-        if hasattr(self._talker, "omni_audio_generation"):
-            for tts_speech, _, _, _ in self._talker.omni_audio_generation(
+        if hasattr(self.talker, "omni_audio_generation"):
+            for tts_speech, _, _, _ in self.talker.omni_audio_generation(
                 tts_text=text,
-                voice_name=self._voice,
-                audio_detokenizer=self._vae,
+                voice_name=self.voice,
+                audio_detokenizer=self.vae,
                 stream=False,
             ):
                 if tts_speech is not None:
                     all_wavs.append(tts_speech)
-        elif hasattr(self._talker, "instruct_audio_generation"):
+                else:
+                    pass
+        elif hasattr(self.talker, "instruct_audio_generation"):
             prompt = "Please generate speech based on the following description.\n"
-            for tts_speech, _, _, _ in self._talker.instruct_audio_generation(
+            for tts_speech, _, _, _ in self.talker.instruct_audio_generation(
                 prompt=prompt,
                 text=text,
-                audio_detokenizer=self._vae,
+                audio_detokenizer=self.vae,
                 stream=False,
             ):
                 if tts_speech is not None:
                     all_wavs.append(tts_speech)
+                else:
+                    pass
         else:
             raise RuntimeError("Talker has no supported generation method")
 
         if not all_wavs:
             raise RuntimeError("Talker produced no audio")
+        else:
+            pass
 
         waveform = torch.cat(all_wavs, dim=-1)
         sample_rate = 44100
-        if self._vae is not None and hasattr(self._vae, "config"):
-            sample_rate = getattr(self._vae.config, "sample_rate", 44100)
+        if self.vae is not None and hasattr(self.vae, "config"):
+            sample_rate = getattr(self.vae.config, "sample_rate", 44100)
+        else:
+            pass
         duration = waveform.shape[-1] / sample_rate
 
         return waveform, sample_rate, duration

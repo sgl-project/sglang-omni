@@ -50,27 +50,27 @@ def _build_runner(
     """
     n = len(codes_BN)
     runner = object.__new__(HiggsTTSModelRunner)
-    runner._outbox = None
-    runner._vocoder_target = "vocoder"
+    runner.outbox = None
+    runner.vocoder_target = "vocoder"
     # async-decode base-runner state (normally set in BaseModelRunner.__init__)
-    runner._async_enabled = async_enabled
-    runner._staging_slot = 0
-    runner._host_staging_buffers = []
-    runner._logprob_host_buffers = None
-    runner._logprob_slot = 0
-    runner._async_query_hit = 0
-    runner._async_query_miss = 0
+    runner.async_enabled = async_enabled
+    runner.staging_slot = 0
+    runner.host_staging_buffers = []
+    runner.logprob_host_buffers = None
+    runner.logprob_slot = 0
+    runner.async_query_hit = 0
+    runner.async_query_miss = 0
     runner.model = SimpleNamespace(
-        _cg_row_indices=torch.arange(n),
-        _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
-        _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
-        _cg_active_generation_done=torch.tensor(active_generation_done),
-        _cg_active_last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
-        _cg_active_step_count=torch.zeros(n, dtype=torch.long),
-        _cg_was_done=torch.tensor(was_done),
-        _cg_codes_BN=torch.tensor(codes_BN),
-        _cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
-        _sampler_pool=SimpleNamespace(
+        cg_row_indices=torch.arange(n),
+        cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
+        cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32),
+        cg_active_generation_done=torch.tensor(active_generation_done),
+        cg_active_last_codes=torch.zeros((n, n_codebooks), dtype=torch.long),
+        cg_active_step_count=torch.zeros(n, dtype=torch.long),
+        cg_was_done=torch.tensor(was_done),
+        cg_codes_BN=torch.tensor(codes_BN),
+        cg_collect_staging=torch.zeros((n, n_codebooks + 2), dtype=torch.long),
+        sampler_pool=SimpleNamespace(
             delay_count=torch.zeros(n, dtype=torch.int32),
             eoc_countdown=torch.zeros(n, dtype=torch.int32),
             generation_done=torch.zeros(n, dtype=torch.bool),
@@ -136,14 +136,14 @@ def _patch_cpu_host_staging(monkeypatch):
     """
     monkeypatch.setattr(
         HiggsTTSModelRunner,
-        "_next_host_staging",
+        "next_host_staging",
         lambda self, shape, dtype: torch.empty(tuple(shape), dtype=dtype, device="cpu"),
     )
 
 
 def _run_sync(**kw):
     runner, sched, result, fb, reqs, datas = _build_runner(async_enabled=False, **kw)
-    runner._collect_step_outputs_cg(result, fb, sched)
+    runner.collect_step_outputs_cg(result, fb, sched)
     return _snapshot(reqs, datas, result)
 
 
@@ -280,12 +280,12 @@ def test_rollout_logprob_host_staging_grows_with_async_batch(
 
     monkeypatch.setattr(torch, "empty", cpu_empty)
     runner = object.__new__(HiggsTTSModelRunner)
-    runner._logprob_host_buffers = None
-    runner._logprob_slot = 0
+    runner.logprob_host_buffers = None
+    runner.logprob_slot = 0
 
-    first = runner._next_logprob_host_staging(torch.empty((1, 8)))
-    grown = runner._next_logprob_host_staging(torch.empty((2, 8)))
-    smaller = runner._next_logprob_host_staging(torch.empty((1, 8)))
+    first = runner.next_logprob_host_staging(torch.empty((1, 8)))
+    grown = runner.next_logprob_host_staging(torch.empty((2, 8)))
+    smaller = runner.next_logprob_host_staging(torch.empty((1, 8)))
 
     assert first.shape == (1, 8)
     assert grown.shape == (2, 8)
@@ -310,30 +310,30 @@ def test_async_real_pinned_path_matches_sync():
     def build(async_enabled):
         n = 4
         runner = object.__new__(HiggsTTSModelRunner)
-        runner._outbox = None
-        runner._vocoder_target = "vocoder"
-        runner._async_enabled = async_enabled
-        runner._staging_slot = 0
-        runner._host_staging_buffers = []
-        runner._logprob_host_buffers = None
-        runner._logprob_slot = 0
-        runner._async_query_hit = 0
-        runner._async_query_miss = 0
+        runner.outbox = None
+        runner.vocoder_target = "vocoder"
+        runner.async_enabled = async_enabled
+        runner.staging_slot = 0
+        runner.host_staging_buffers = []
+        runner.logprob_host_buffers = None
+        runner.logprob_slot = 0
+        runner.async_query_hit = 0
+        runner.async_query_miss = 0
         runner.model = SimpleNamespace(
-            _cg_row_indices=torch.arange(n, device=dev),
-            _cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
-            _cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
-            _cg_active_generation_done=torch.tensor(
+            cg_row_indices=torch.arange(n, device=dev),
+            cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
+            cg_active_eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
+            cg_active_generation_done=torch.tensor(
                 [False, True, False, True], device=dev
             ),
-            _cg_active_last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
-            _cg_active_step_count=torch.zeros(n, dtype=torch.long, device=dev),
-            _cg_was_done=torch.tensor([False, True, False, False], device=dev),
-            _cg_codes_BN=torch.tensor(
+            cg_active_last_codes=torch.zeros((n, 3), dtype=torch.long, device=dev),
+            cg_active_step_count=torch.zeros(n, dtype=torch.long, device=dev),
+            cg_was_done=torch.tensor([False, True, False, False], device=dev),
+            cg_codes_BN=torch.tensor(
                 [[1, 1, 1], [7, 8, 9], [20, 1, 2], [EOC_ID, 3, 4]], device=dev
             ),
-            _cg_collect_staging=torch.zeros((n, 3 + 2), dtype=torch.long, device=dev),
-            _sampler_pool=SimpleNamespace(
+            cg_collect_staging=torch.zeros((n, 3 + 2), dtype=torch.long, device=dev),
+            sampler_pool=SimpleNamespace(
                 delay_count=torch.zeros(n, dtype=torch.int32, device=dev),
                 eoc_countdown=torch.zeros(n, dtype=torch.int32, device=dev),
                 generation_done=torch.zeros(n, dtype=torch.bool, device=dev),
@@ -368,7 +368,7 @@ def test_async_real_pinned_path_matches_sync():
         return runner, sched, result, fb, reqs, datas
 
     r_s, sc_s, res_s, fb_s, rq_s, dt_s = build(False)
-    r_s._collect_step_outputs_cg(res_s, fb_s, sc_s)
+    r_s.collect_step_outputs_cg(res_s, fb_s, sc_s)
     sync = _snapshot(rq_s, dt_s, res_s)
 
     r_a, sc_a, res_a, fb_a, rq_a, dt_a = build(True)

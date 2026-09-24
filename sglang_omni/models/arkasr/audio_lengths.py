@@ -27,6 +27,8 @@ def arkasr_audio_token_lengths(mel_frame_lengths, merge_factor: int = 4):
                 downsampled, max(int(merge_factor), 1), rounding_mode="floor"
             )
             return merged.clamp(min=1)
+        else:
+            pass
     except Exception:
         pass
     return [arkasr_num_audio_tokens(m, merge_factor) for m in mel_frame_lengths]

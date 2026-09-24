@@ -21,6 +21,8 @@ def build_cfm_timesteps(
 ) -> torch.Tensor:
     if use_epss:
         return get_epss_timesteps(int(steps), device=device, dtype=dtype)
+    else:
+        pass
     return torch.linspace(0, 1, int(steps) + 1, device=device, dtype=dtype)
 
 
@@ -40,7 +42,7 @@ def build_cfm_sde_random(
     )
 
 
-def _expand_batch_param(
+def expand_batch_param(
     value: float | torch.Tensor,
     *,
     batch_size: int,
@@ -54,6 +56,8 @@ def _expand_batch_param(
 
     if tensor.ndim == 0 or int(tensor.numel()) == 1:
         return tensor.reshape(1, 1, 1).expand(int(batch_size), 1, 1)
+    else:
+        pass
     return tensor.reshape(int(batch_size), 1, 1)
 
 
@@ -90,6 +94,8 @@ class Solver:
                 noise = sde_random[step]
                 shift = self.sigma * (self.temperature**0.5) * (abs(dt) ** 0.5) * noise
                 y0 = y1 + shift
+            else:
+                pass
 
         return sampled
 
@@ -144,7 +150,7 @@ class CFM(nn.Module):
         sigma: float | torch.Tensor = 0.25,
         temperature: float | torch.Tensor = 1.5,
     ) -> torch.Tensor:
-        fn, y0, t, sigma_tensor, temperature_tensor = self._prepare_sampling(
+        fn, y0, t, sigma_tensor, temperature_tensor = self.prepare_sampling(
             noise=noise,
             c=c,
             latent_history=latent_history,
@@ -157,7 +163,7 @@ class CFM(nn.Module):
         solver = Solver(fn, y0, sigma=sigma_tensor, temperature=temperature_tensor)
         return solver.integrate(t, sde_random=sde_random)
 
-    def _prepare_sampling(
+    def prepare_sampling(
         self,
         *,
         noise: torch.Tensor,
@@ -170,19 +176,19 @@ class CFM(nn.Module):
         temperature: float | torch.Tensor,
     ):
         batch_size = int(noise.shape[0])
-        cfg_tensor = _expand_batch_param(
+        cfg_tensor = expand_batch_param(
             cfg_scale,
             batch_size=batch_size,
             device=noise.device,
             dtype=noise.dtype,
         )
-        sigma_tensor = _expand_batch_param(
+        sigma_tensor = expand_batch_param(
             sigma,
             batch_size=batch_size,
             device=noise.device,
             dtype=noise.dtype,
         )
-        temperature_tensor = _expand_batch_param(
+        temperature_tensor = expand_batch_param(
             temperature,
             batch_size=batch_size,
             device=noise.device,
@@ -203,6 +209,8 @@ class CFM(nn.Module):
         t = timesteps
         if sway_sampling_coef is not None:
             t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
+        else:
+            pass
 
         return fn, y0, t, sigma_tensor, temperature_tensor
 

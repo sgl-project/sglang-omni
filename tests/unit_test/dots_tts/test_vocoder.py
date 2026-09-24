@@ -15,7 +15,7 @@ from sglang_omni.models.dots_tts.vocoder import (
     DotsTTSStreamingVocoder,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class _FakeInference:
@@ -76,7 +76,7 @@ def test_equal_length_inputs_use_one_audiovae_forward() -> None:
         [_latents(16, 1), _latents(16, 2), _latents(16, 3)],
     )
 
-    assert vocoder._logged_batch
+    assert vocoder.logged_batch
     assert len(codec.inference.inputs) == 1
     assert codec.inference.inputs[0].shape == (3, 16, 3)
     assert [waveform.shape for waveform, _ in outputs] == [(1, 1, 32)] * 3
@@ -114,7 +114,7 @@ def test_single_input_preserves_batch_and_waveform_shapes() -> None:
     latents = _latents(12, 5)
     [output] = _decode(vocoder, [latents])
 
-    assert not vocoder._logged_batch
+    assert not vocoder.logged_batch
     assert codec.inference.input_data_ptrs == [latents.data_ptr()]
     assert codec.inference.inputs[0].shape == (1, 12, 3)
     assert output[0].shape == (1, 1, 24)
@@ -142,13 +142,13 @@ def test_streaming_vocoder_enables_payload_and_chunk_batching() -> None:
         optimize=False,
     )
 
-    assert scheduler._batch_fn is not None
-    assert scheduler._max_batch_size == 4
-    assert scheduler._stream_chunk_batch_max == 4
-    assert scheduler._max_batch_wait_s == 0.002
-    assert scheduler._can_batch_stream_chunks
+    assert scheduler.batch_fn is not None
+    assert scheduler.max_batch_size == 4
+    assert scheduler.stream_chunk_batch_max == 4
+    assert scheduler.max_batch_wait_s == 0.002
+    assert scheduler.can_batch_stream_chunks
     results = asyncio.run(
-        scheduler._batch_fn([_payload("a", 16, 1), _payload("b", 16, 2)])
+        scheduler.batch_fn([_payload("a", 16, 1), _payload("b", 16, 2)])
     )
     assert len(codec.inference.inputs) == 1
     assert [result.request_id for result in results] == ["a", "b"]
@@ -161,7 +161,7 @@ def test_non_streaming_batch_isolates_invalid_payload() -> None:
     invalid = _payload("bad", 16, 2)
     invalid.data["generated_latents"] = torch.zeros(2, 4, 3)
 
-    scheduler._handle_new_request_batch(
+    scheduler.handle_new_request_batch(
         [
             IncomingMessage("good-a", "new_request", _payload("good-a", 16, 1)),
             IncomingMessage("bad", "new_request", invalid),

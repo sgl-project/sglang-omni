@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
+def rotate_half_interleaved(x: torch.Tensor) -> torch.Tensor:
     """Interleaved-pair rotation: [x0, x1, x2, x3, ...] -> [-x1, x0, -x3, x2, ...]."""
     even = x[..., ::2]
     odd = x[..., 1::2]
@@ -32,6 +32,8 @@ class MossTTSLocalAttention(nn.Module):
             raise ValueError(
                 f"hidden_size={hidden_size} not divisible by num_heads={num_heads}"
             )
+        else:
+            pass
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
         self.c_attn = nn.Linear(hidden_size, 3 * hidden_size)
@@ -98,41 +100,45 @@ class MossTTSLocalTransformer(nn.Module):
             "rope_sin", freqs.sin().repeat_interleave(2, dim=-1), persistent=False
         )
 
-        self._kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
-        self._kv_capacity = 0
-        self._kv_frozen = False
+        self.kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.kv_capacity = 0
+        self.kv_frozen = False
 
     def freeze_kv_cache(self) -> None:
         """Forbid KV reallocation; captured CUDA graphs hold raw pointers
         into the current buffers, so growing them would leave the graphs
         reading freed memory."""
-        self._kv_frozen = True
+        self.kv_frozen = True
 
-    def _ensure_kv_cache(
+    def ensure_kv_cache(
         self, batch_size: int, device: torch.device, dtype: torch.dtype
     ) -> None:
         if (
-            self._kv_capacity >= batch_size
-            and self._kv_cache
-            and self._kv_cache[0][0].device == device
-            and self._kv_cache[0][0].dtype == dtype
+            self.kv_capacity >= batch_size
+            and self.kv_cache
+            and self.kv_cache[0][0].device == device
+            and self.kv_cache[0][0].dtype == dtype
         ):
             return
-        if self._kv_frozen:
+        else:
+            pass
+        if self.kv_frozen:
             raise RuntimeError(
                 "local-transformer KV cache is frozen after CUDA graph capture "
-                f"(capacity {self._kv_capacity}, requested {batch_size})"
+                f"(capacity {self.kv_capacity}, requested {batch_size})"
             )
-        capacity = max(batch_size, self._kv_capacity, 1)
+        else:
+            pass
+        capacity = max(batch_size, self.kv_capacity, 1)
         shape = (capacity, self.num_heads, self.max_positions, self.head_dim)
-        self._kv_cache = [
+        self.kv_cache = [
             (
                 torch.empty(shape, device=device, dtype=dtype),
                 torch.empty(shape, device=device, dtype=dtype),
             )
             for _ in self.h
         ]
-        self._kv_capacity = capacity
+        self.kv_capacity = capacity
 
     def step(self, hidden_states: torch.Tensor, position: int) -> torch.Tensor:
         """One micro-step for the whole batch."""
@@ -140,8 +146,10 @@ class MossTTSLocalTransformer(nn.Module):
             raise ValueError(
                 f"local position {position} out of range [0, {self.max_positions})"
             )
+        else:
+            pass
         batch_size = hidden_states.shape[0]
-        self._ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
+        self.ensure_kv_cache(batch_size, hidden_states.device, hidden_states.dtype)
         cos = self.rope_cos[position].to(dtype=hidden_states.dtype)
         sin = self.rope_sin[position].to(dtype=hidden_states.dtype)
 
@@ -153,10 +161,10 @@ class MossTTSLocalTransformer(nn.Module):
             query = query.view(batch_size, self.num_heads, self.head_dim)
             key = key.view(batch_size, self.num_heads, self.head_dim)
             value = value.view(batch_size, self.num_heads, self.head_dim)
-            query = query * cos + _rotate_half_interleaved(query) * sin
-            key = key * cos + _rotate_half_interleaved(key) * sin
+            query = query * cos + rotate_half_interleaved(query) * sin
+            key = key * cos + rotate_half_interleaved(key) * sin
 
-            key_cache, value_cache = self._kv_cache[layer_idx]
+            key_cache, value_cache = self.kv_cache[layer_idx]
             key_cache[:batch_size, :, position] = key
             value_cache[:batch_size, :, position] = value
 

@@ -111,7 +111,7 @@ def test_batch_of_one_is_identical_to_the_unbatched_path(
     _install_waveforms(monkeypatch, {"a.wav": waveform})
 
     single = codec.encode_reference("a.wav")
-    batched = codec._encode_waveforms([waveform])[0]
+    batched = codec.encode_waveforms([waveform])[0]
 
     assert torch.equal(single["speaker_embedding"], batched["speaker_embedding"])
     assert torch.equal(single["latent_distribution"], batched["latent_distribution"])
@@ -173,8 +173,8 @@ def test_stub_actually_detects_padding_so_parity_tests_are_not_vacuous() -> None
     padded = torch.zeros(1, 11 * SAMPLES_PER_PATCH)
     padded[0, : short.shape[-1]] = short.reshape(-1)
 
-    alone = codec._encode_waveforms([short])[0]
-    in_padded_row = codec._encode_waveforms([padded])[0]
+    alone = codec.encode_waveforms([short])[0]
+    in_padded_row = codec.encode_waveforms([padded])[0]
     frames = short.shape[-1] // HOP_SIZE
 
     assert not torch.equal(
@@ -189,7 +189,7 @@ def test_stub_actually_detects_padding_so_parity_tests_are_not_vacuous() -> None
 def test_unequal_lengths_are_rejected_by_the_batched_forward() -> None:
     codec = _make_codec()
     with pytest.raises(ValueError, match="equal-length"):
-        codec._encode_waveforms([_waveform(3, seed=11), _waveform(4, seed=12)])
+        codec.encode_waveforms([_waveform(3, seed=11), _waveform(4, seed=12)])
 
 
 def test_latents_have_each_items_true_frame_count(
@@ -240,7 +240,7 @@ def test_length_groups_are_exact_not_bucketed() -> None:
         torch.zeros(1, 100),
         torch.zeros(1, 120),
     ]
-    groups = DotsAudioCodec._length_groups(waveforms)
+    groups = DotsAudioCodec.length_groups(waveforms)
 
     assert groups == {100: [0, 2], 110: [1], 120: [3]}
     for length, indices in groups.items():
@@ -249,14 +249,14 @@ def test_length_groups_are_exact_not_bucketed() -> None:
 
 def test_length_groups_preserve_every_index() -> None:
     waveforms = [torch.zeros(1, n) for n in (30, 10, 30, 20, 10, 10)]
-    groups = DotsAudioCodec._length_groups(waveforms)
+    groups = DotsAudioCodec.length_groups(waveforms)
     assert sorted(i for indices in groups.values() for i in indices) == list(range(6))
 
 
 def test_empty_batch_returns_empty() -> None:
     codec = _make_codec()
     assert codec.encode_reference_batch([]) == []
-    assert codec._encode_waveforms([]) == []
+    assert codec.encode_waveforms([]) == []
 
 
 def test_batch_preserves_input_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,7 +288,7 @@ def test_hop_misaligned_latents_are_rejected() -> None:
 
     codec.inference = _WrongRate()
     with pytest.raises(RuntimeError, match="hop-aligned"):
-        codec._encode_waveforms([_waveform(3, seed=21)])
+        codec.encode_waveforms([_waveform(3, seed=21)])
 
 
 def test_encoder_coalesces_equal_length_references_into_one_forward(
@@ -307,13 +307,13 @@ def test_encoder_coalesces_equal_length_references_into_one_forward(
     _install_waveforms(monkeypatch, waveforms)
 
     calls: list[int] = []
-    original = codec._encode_waveforms
+    original = codec.encode_waveforms
 
     def _counting(batch):
         calls.append(len(batch))
         return original(batch)
 
-    codec._encode_waveforms = _counting  # type: ignore[method-assign]
+    codec.encode_waveforms = _counting  # type: ignore[method-assign]
 
     encoder = DotsReferenceEncoder(
         codec,
@@ -405,7 +405,7 @@ def test_reference_executor_defaults_to_per_request(
 
     scheduler = stages.create_reference_encode_executor("stub", device="cpu")
     try:
-        encoder = scheduler._fn.__self__
+        encoder = scheduler.fn.__self__
         assert encoder.service.batching_enabled is False
     finally:
         scheduler.stop()
@@ -424,13 +424,13 @@ def test_reference_executor_stop_closes_batch_worker(
     scheduler = stages.create_reference_encode_executor(
         "stub", device="cpu", max_batch_size=2
     )
-    encoder = scheduler._fn.__self__
-    assert encoder.service._batch_thread is not None
-    assert encoder.service._batch_thread.is_alive()
+    encoder = scheduler.fn.__self__
+    assert encoder.service.batch_thread is not None
+    assert encoder.service.batch_thread.is_alive()
 
     scheduler.stop()
 
-    assert not encoder.service._batch_thread.is_alive()
+    assert not encoder.service.batch_thread.is_alive()
 
 
 # --------------------------------------------------------------------------
@@ -501,13 +501,13 @@ def test_long_reference_is_unaffected_by_global_random_state(
 def test_speaker_sees_the_leading_window_only() -> None:
     """Pre-crop must be the leading window, matching upstream's start=0 draw."""
     codec = _cropping_codec()
-    limit = codec._speaker_sample_limit()
+    limit = codec.speaker_sample_limit()
     assert limit == codec.sample_rate
 
     long_ref = _waveform(_seconds_to_patches(codec, 3.0), seed=53)
     batch = long_ref.reshape(1, 1, -1)
     lengths = torch.tensor([batch.shape[-1]])
-    cropped, cropped_lengths = codec._speaker_input(batch, lengths)
+    cropped, cropped_lengths = codec.speaker_input(batch, lengths)
 
     assert cropped.shape[-1] == limit
     assert torch.equal(cropped[0, 0], batch[0, 0, :limit])
@@ -521,7 +521,7 @@ def test_short_references_are_passed_through_untouched() -> None:
     batch = short.reshape(1, 1, -1)
     lengths = torch.tensor([batch.shape[-1]])
 
-    cropped, cropped_lengths = codec._speaker_input(batch, lengths)
+    cropped, cropped_lengths = codec.speaker_input(batch, lengths)
     assert cropped is batch
     assert cropped_lengths is lengths
 
@@ -542,11 +542,11 @@ def test_audiovae_still_receives_the_full_length_audio(
 
 def test_no_cropping_when_encoder_has_no_duration_cap() -> None:
     codec = _make_codec()  # max_audio_seconds = 0.0
-    assert codec._speaker_sample_limit() is None
+    assert codec.speaker_sample_limit() is None
 
     audio = _waveform(8, seed=56).reshape(1, 1, -1)
     lengths = torch.tensor([audio.shape[-1]])
-    cropped, cropped_lengths = codec._speaker_input(audio, lengths)
+    cropped, cropped_lengths = codec.speaker_input(audio, lengths)
     assert cropped is audio
     assert cropped_lengths is lengths
 
@@ -556,7 +556,7 @@ def test_cropping_limit_uses_the_encoders_own_sample_rate() -> None:
     codec = _cropping_codec()
     codec.speaker.sample_rate = 16000
     codec.speaker.max_audio_seconds = 10.0
-    assert codec._speaker_sample_limit() == 160000
+    assert codec.speaker_sample_limit() == 160000
     assert codec.sample_rate == 48000
 
 

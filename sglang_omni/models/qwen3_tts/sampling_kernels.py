@@ -5,26 +5,37 @@ from __future__ import annotations
 
 import torch
 
-try:
-    import triton
-    import triton.language as tl
+from sglang_omni.platforms import current_platform
 
-    _TRITON_GATHER_SUPPORTED = hasattr(tl, "gather")
-except ImportError:  # pragma: no cover - depends on runtime image
+if not current_platform.is_npu():
+    try:
+        import triton
+        import triton.language as tl
+
+        _TRITON_GATHER_SUPPORTED = hasattr(tl, "gather")
+    except ImportError:  # pragma: no cover - depends on runtime image
+        triton = None
+        tl = None
+        _TRITON_GATHER_SUPPORTED = False
+else:
     triton = None
     tl = None
     _TRITON_GATHER_SUPPORTED = False
 
 
-if triton is not None:
+def has_triton_runtime() -> bool:
+    return triton is not None and not current_platform.is_npu()
+
+
+if has_triton_runtime():
 
     @triton.jit
-    def _rotl32(x, r: tl.constexpr) -> tl.uint32:
+    def rotl32(x, r: tl.constexpr) -> tl.uint32:
         x = x.to(tl.uint64)
         return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
 
     @triton.jit
-    def _fmix32(h: tl.uint32) -> tl.uint32:
+    def fmix32(h: tl.uint32) -> tl.uint32:
         h ^= h >> 16
         h = (h * 0x85EBCA6B) & 0xFFFFFFFF
         h ^= h >> 13
@@ -33,17 +44,17 @@ if triton is not None:
         return h
 
     @triton.jit
-    def _murmur3_mix(h: tl.uint32, k: tl.uint32) -> tl.uint32:
+    def murmur3_mix(h: tl.uint32, k: tl.uint32) -> tl.uint32:
         k = (k * 0xCC9E2D51) & 0xFFFFFFFF
-        k = _rotl32(k, 15)
+        k = rotl32(k, 15)
         k = (k * 0x1B873593) & 0xFFFFFFFF
         h ^= k
-        h = _rotl32(h, 13)
+        h = rotl32(h, 13)
         h = (h * 5 + 0xE6546B64) & 0xFFFFFFFF
         return h
 
     @triton.jit
-    def _gumbel_from_hash(h: tl.uint32):
+    def gumbel_from_hash(h: tl.uint32):
         """Match SGLang multinomial_with_seed float64 endpoint handling.
 
         SGLang does ``x.log_().clamp_(min=finfo.min, max=-(2**-32)).neg_().log_().neg_()``.
@@ -56,7 +67,7 @@ if triton is not None:
         return -tl.log(-log_u)
 
     @triton.jit
-    def _seeded_gumbel_sample_sorted_kernel(
+    def seeded_gumbel_sample_sorted_kernel(
         logprobs,
         sorted_idx,
         seeds,
@@ -78,14 +89,14 @@ if triton is not None:
         col = offsets.to(tl.uint32)
 
         h: tl.uint32 = 0
-        h = _murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, pos)
-        h = _murmur3_mix(h, col)
+        h = murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, pos)
+        h = murmur3_mix(h, col)
         h ^= 16
-        h = _fmix32(h)
+        h = fmix32(h)
 
-        gumbel = _gumbel_from_hash(h)
+        gumbel = gumbel_from_hash(h)
         weights = tl.load(
             logprobs + row * logprobs_stride_b + offsets * logprobs_stride_k,
             mask=mask,
@@ -99,7 +110,7 @@ if triton is not None:
         tl.store(out + row, token)
 
     @triton.jit
-    def _bitonic_compare_selected_32_desc(
+    def bitonic_compare_selected_32_desc(
         scores,
         token_ids,
         valid,
@@ -147,12 +158,12 @@ if triton is not None:
         )
 
     @triton.jit
-    def _bitonic_sort_selected_32_desc(scores, token_ids, max_top_k: tl.constexpr):
+    def bitonic_sort_selected_32_desc(scores, token_ids, max_top_k: tl.constexpr):
         """Match the CUDA ``SmallBitonicSort`` network used by torch.topk."""
         offsets = tl.arange(0, 32)
         valid = offsets < max_top_k
 
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -161,7 +172,7 @@ if triton is not None:
             network_size=2,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -170,7 +181,7 @@ if triton is not None:
             network_size=4,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -179,7 +190,7 @@ if triton is not None:
             network_size=4,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -188,7 +199,7 @@ if triton is not None:
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -197,7 +208,7 @@ if triton is not None:
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -206,7 +217,7 @@ if triton is not None:
             network_size=8,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -215,7 +226,7 @@ if triton is not None:
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -224,7 +235,7 @@ if triton is not None:
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -233,7 +244,7 @@ if triton is not None:
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -242,7 +253,7 @@ if triton is not None:
             network_size=16,
             final_round=False,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -251,7 +262,7 @@ if triton is not None:
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -260,7 +271,7 @@ if triton is not None:
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -269,7 +280,7 @@ if triton is not None:
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -278,7 +289,7 @@ if triton is not None:
             network_size=32,
             final_round=True,
         )
-        scores, token_ids, valid = _bitonic_compare_selected_32_desc(
+        scores, token_ids, valid = bitonic_compare_selected_32_desc(
             scores,
             token_ids,
             valid,
@@ -290,7 +301,7 @@ if triton is not None:
         return scores, token_ids
 
     @triton.jit
-    def _seeded_top_k_top_p_sample_kernel(
+    def seeded_top_k_top_p_sample_kernel(
         logits,
         temperatures,
         top_ks,
@@ -389,9 +400,11 @@ if triton is not None:
                 axis=0,
             )
             sorted_token_ids = gather_source_ids.to(tl.uint32)
-            sorted_scores, sorted_token_ids = _bitonic_sort_selected_32_desc(
+            sorted_scores, sorted_token_ids = bitonic_sort_selected_32_desc(
                 sorted_scores, sorted_token_ids, max_top_k
             )
+        else:
+            pass
 
         keep_top_k = ranks < tl.load(top_ks + row)
         masked_scores = tl.where(keep_top_k, sorted_scores, -float("inf"))
@@ -406,6 +419,8 @@ if triton is not None:
             remove = (cdf - probs >= top_p) & active_top_p
             remove = remove & (ranks != 0)
             keep_top_k = keep_top_k & ~remove
+        else:
+            pass
 
         logprobs = tl.where(keep_top_k, tl.log(probs), -float("inf"))
 
@@ -414,14 +429,14 @@ if triton is not None:
         col = ranks.to(tl.uint32)
 
         h: tl.uint32 = 0
-        h = _murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
-        h = _murmur3_mix(h, pos)
-        h = _murmur3_mix(h, col)
+        h = murmur3_mix(h, (seed & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, ((seed >> 32) & 0xFFFFFFFF).to(tl.uint32))
+        h = murmur3_mix(h, pos)
+        h = murmur3_mix(h, col)
         h ^= 16
-        h = _fmix32(h)
+        h = fmix32(h)
 
-        gumbel = _gumbel_from_hash(h)
+        gumbel = gumbel_from_hash(h)
         sampled_scores = logprobs.to(tl.float64) + gumbel
         max_sampled_score = tl.max(sampled_scores, axis=0)
         candidates = tl.where(sampled_scores == max_sampled_score, ranks, block_k)
@@ -437,14 +452,126 @@ if triton is not None:
         tl.store(out + row, token)
 
 else:
-    _seeded_gumbel_sample_sorted_kernel = None
-    _bitonic_compare_selected_32_desc = None
-    _bitonic_sort_selected_32_desc = None
-    _seeded_top_k_top_p_sample_kernel = None
+    seeded_gumbel_sample_sorted_kernel = None
+    bitonic_compare_selected_32_desc = None
+    bitonic_sort_selected_32_desc = None
+    seeded_top_k_top_p_sample_kernel = None
 
 
-def _next_power_of_2(value: int) -> int:
+def next_power_of_2(value: int) -> int:
     return 1 << (int(value) - 1).bit_length()
+
+
+_UINT32_MASK = 0xFFFFFFFF
+
+
+def rotl32_pytorch(value: torch.Tensor, shift: int) -> torch.Tensor:
+    value = value & _UINT32_MASK
+    return ((value << shift) | (value >> (32 - shift))) & _UINT32_MASK
+
+
+def murmur3_mix_pytorch(hash_value: torch.Tensor, key: torch.Tensor) -> torch.Tensor:
+    key = (key * 0xCC9E2D51) & _UINT32_MASK
+    key = rotl32_pytorch(key, 15)
+    key = (key * 0x1B873593) & _UINT32_MASK
+    hash_value = hash_value ^ key
+    hash_value = rotl32_pytorch(hash_value, 13)
+    return (hash_value * 5 + 0xE6546B64) & _UINT32_MASK
+
+
+def fmix32_pytorch(hash_value: torch.Tensor) -> torch.Tensor:
+    hash_value = hash_value ^ (hash_value >> 16)
+    hash_value = (hash_value * 0x85EBCA6B) & _UINT32_MASK
+    hash_value = hash_value ^ (hash_value >> 13)
+    hash_value = (hash_value * 0xC2B2AE35) & _UINT32_MASK
+    return (hash_value ^ (hash_value >> 16)) & _UINT32_MASK
+
+
+def murmur_hash32_pytorch(
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+    num_cols: int,
+) -> torch.Tensor:
+    """Vectorized MurmurHash32 with an Ascend-safe CPU integer fallback."""
+    if seeds.device.type == "npu":
+        # Ascend can fault in the int64 rotate expression under sustained
+        # concurrent sampling. The hash inputs are tiny; compute only this
+        # integer-only portion on CPU and return the exact uint32 values.
+        return murmur_hash32_pytorch(seeds.cpu(), positions.cpu(), num_cols).to(
+            seeds.device
+        )
+    else:
+        pass
+
+    seeds = seeds.to(dtype=torch.int64).view(-1, 1)
+    positions = positions.to(dtype=torch.int64).view(-1, 1)
+    columns = torch.arange(num_cols, device=seeds.device, dtype=torch.int64).view(1, -1)
+
+    hash_value = torch.zeros(
+        (seeds.shape[0], num_cols), device=seeds.device, dtype=torch.int64
+    )
+    hash_value = murmur3_mix_pytorch(hash_value, seeds & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, (seeds >> 32) & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, positions & _UINT32_MASK)
+    hash_value = murmur3_mix_pytorch(hash_value, columns)
+    return fmix32_pytorch(hash_value ^ 16)
+
+
+def seeded_gumbel_argmax_float32(
+    logprobs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor:
+    """Seeded categorical sampling without float64 or CUDA-only kernels."""
+    if logprobs.ndim != 2:
+        raise ValueError("logprobs must be a 2D tensor")
+    else:
+        pass
+    batch_size, num_cols = logprobs.shape
+    if seeds.shape != (batch_size,) or positions.shape != (batch_size,):
+        raise ValueError("seeds and positions must contain one value per row")
+    else:
+        pass
+    if num_cols == 0:
+        raise ValueError("logprobs must contain at least one column")
+    else:
+        pass
+
+    hashes = murmur_hash32_pytorch(seeds, positions, num_cols)
+    uniform = hashes.to(dtype=torch.float32) / float(_UINT32_MASK)
+    # 0 and UINT32_MAX are valid hashes. Keep both away from log boundaries;
+    # UINT32_MAX rounds to 1.0 after conversion to float32.
+    uniform.clamp_(
+        min=torch.finfo(torch.float32).tiny,
+        max=1.0 - 2.0**-24,
+    )
+    gumbel = -torch.log(-torch.log(uniform))
+    return torch.argmax(logprobs.to(dtype=torch.float32) + gumbel, dim=1)
+
+
+def sample_from_logprobs_with_seed_npu(
+    logprobs: torch.Tensor,
+    seeds: torch.Tensor,
+    positions: torch.Tensor,
+) -> torch.Tensor | None:
+    """Use the float32 seeded sampler on NPU and leave other backends unchanged."""
+    if logprobs.device.type != "npu":
+        return None
+    else:
+        pass
+    if seeds.device != logprobs.device or positions.device != logprobs.device:
+        raise ValueError("logprobs, seeds, and positions must be on the same device")
+    else:
+        pass
+    if logprobs.shape[0] == 0:
+        return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    else:
+        pass
+    return seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+
+
+def all_tensors_on_npu(*tensors: torch.Tensor) -> bool:
+    return all(tensor.device.type == "npu" for tensor in tensors)
 
 
 def sample_from_sorted_logprobs_with_seed_small_k(
@@ -453,29 +580,69 @@ def sample_from_sorted_logprobs_with_seed_small_k(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor | None:
+    if all_tensors_on_npu(logprobs, sorted_idx, seeds, positions):
+        if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
+            return None
+        else:
+            pass
+        if seeds.ndim != 1 or positions.ndim != 1:
+            return None
+        else:
+            pass
+        batch_size, num_cols = logprobs.shape
+        if batch_size == 0:
+            return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+        else:
+            pass
+        if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
+            return None
+        else:
+            pass
+        if num_cols <= 0:
+            return None
+        else:
+            pass
+
+        sampled_rank = seeded_gumbel_argmax_float32(logprobs, seeds, positions)
+        return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1)
+    else:
+        pass
+
     if (
-        _seeded_gumbel_sample_sorted_kernel is None
+        seeded_gumbel_sample_sorted_kernel is None
         or not logprobs.is_cuda
         or not sorted_idx.is_cuda
         or not seeds.is_cuda
         or not positions.is_cuda
     ):
         return None
+    else:
+        pass
     if logprobs.ndim != 2 or sorted_idx.shape != logprobs.shape:
         return None
+    else:
+        pass
     if seeds.ndim != 1 or positions.ndim != 1:
         return None
+    else:
+        pass
     batch_size, num_cols = logprobs.shape
     if batch_size == 0:
         return torch.empty((0,), device=logprobs.device, dtype=torch.long)
+    else:
+        pass
     if seeds.shape[0] != batch_size or positions.shape[0] != batch_size:
         return None
+    else:
+        pass
     if num_cols <= 0 or num_cols > 1024:
         return None
+    else:
+        pass
 
-    block_size = _next_power_of_2(num_cols)
+    block_size = next_power_of_2(num_cols)
     out = torch.empty((batch_size,), device=logprobs.device, dtype=torch.long)
-    _seeded_gumbel_sample_sorted_kernel[(batch_size,)](
+    seeded_gumbel_sample_sorted_kernel[(batch_size,)](
         logprobs,
         sorted_idx,
         seeds,
@@ -494,15 +661,19 @@ def sample_from_sorted_logprobs_with_seed_small_k(
 _FUSED_RAW_LOGIT_TOP_KS = frozenset((4, 8, 16, 32, 50, 64, 128, 256, 512, 1024))
 
 
-def _fused_raw_logit_block_k(max_top_k: int) -> int | None:
+def fused_raw_logit_block_k(max_top_k: int) -> int | None:
     """Return the power-of-two Triton selection width for a graph signature."""
     if max_top_k not in _FUSED_RAW_LOGIT_TOP_KS:
         return None
+    else:
+        pass
     if max_top_k <= 32:
         # Note (Jun Liu): PyTorch uses a fixed 32-entry bitonic network for all
         # these widths.
         return 32
-    return _next_power_of_2(max_top_k)
+    else:
+        pass
+    return next_power_of_2(max_top_k)
 
 
 def sample_from_logits_with_seed_top_k_top_p(
@@ -523,9 +694,9 @@ def sample_from_logits_with_seed_top_k_top_p(
     remains the fallback. It does not inspect device values because that would
     introduce a host synchronization during CUDA graph replay.
     """
-    block_k = _fused_raw_logit_block_k(int(max_top_k))
+    block_k = fused_raw_logit_block_k(int(max_top_k))
     if (
-        _seeded_top_k_top_p_sample_kernel is None
+        seeded_top_k_top_p_sample_kernel is None
         or not _TRITON_GATHER_SUPPORTED
         or block_k is None
         or not logits.is_cuda
@@ -535,10 +706,14 @@ def sample_from_logits_with_seed_top_k_top_p(
         or not logits.is_contiguous()
     ):
         return None
+    else:
+        pass
 
     batch_size = int(logits.shape[0])
     if batch_size == 0:
         return torch.empty((0,), device=logits.device, dtype=torch.long)
+    else:
+        pass
 
     row_tensors = (temperatures, top_ks, top_ps, seeds, positions)
     if any(
@@ -549,6 +724,8 @@ def sample_from_logits_with_seed_top_k_top_p(
         for tensor in row_tensors
     ):
         return None
+    else:
+        pass
     if (
         temperatures.dtype is not torch.float32
         or top_ks.dtype is not torch.long
@@ -557,9 +734,11 @@ def sample_from_logits_with_seed_top_k_top_p(
         or positions.dtype is not torch.long
     ):
         return None
+    else:
+        pass
 
     out = torch.empty((batch_size,), device=logits.device, dtype=torch.long)
-    _seeded_top_k_top_p_sample_kernel[(batch_size,)](
+    seeded_top_k_top_p_sample_kernel[(batch_size,)](
         logits,
         temperatures,
         top_ks,

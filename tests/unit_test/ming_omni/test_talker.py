@@ -44,12 +44,12 @@ def test_ming_talker_add_request_propagates_generation_errors(
         )
         injected = RuntimeError("talker failed")
 
-        monkeypatch.setattr(executor, "_extract_text", lambda _payload: "hello")
+        monkeypatch.setattr(executor, "extract_text", lambda _payload: "hello")
 
         def raise_error(_text):
             raise injected
 
-        monkeypatch.setattr(executor, "_generate_speech", raise_error)
+        monkeypatch.setattr(executor, "generate_speech", raise_error)
 
         with pytest.raises(RuntimeError, match="talker failed"):
             asyncio.run(executor.add_request(payload))
@@ -82,18 +82,18 @@ def test_ming_talker_generation_failures_are_not_empty_successes(monkeypatch) ->
         module = importlib.import_module(module_name)
 
         executor = module.MingTalkerExecutor(model_path="/fake/model/path")
-        executor._talker = object()
+        executor.talker = object()
         with pytest.raises(RuntimeError, match="no supported generation method"):
-            executor._generate_speech("hello")
+            executor.generate_speech("hello")
 
         class EmptyTalker:
             def omni_audio_generation(self, **_kwargs):
                 yield None, None, None, None
 
-        executor._talker = EmptyTalker()
-        executor._vae = object()
+        executor.talker = EmptyTalker()
+        executor.vae = object()
         with pytest.raises(RuntimeError, match="produced no audio"):
-            executor._generate_speech("hello")
+            executor.generate_speech("hello")
     finally:
         sys.modules.pop(module_name, None)
         parent = sys.modules.get(parent_name)
@@ -134,12 +134,12 @@ def test_ming_talker_skips_text_only_requests(monkeypatch) -> None:
         )
         monkeypatch.setattr(
             executor,
-            "_extract_text",
+            "extract_text",
             lambda _payload: pytest.fail("text-only request should not decode text"),
         )
         monkeypatch.setattr(
             executor,
-            "_generate_speech",
+            "generate_speech",
             lambda _text: pytest.fail("text-only request should not generate speech"),
         )
 
@@ -173,7 +173,7 @@ def test_default_result_builder_merges_decode_and_talker_audio() -> None:
 
     waveform = np.array([0.1, -0.2, 0.3], dtype=np.float32)
 
-    chunk = Client._default_result_builder(
+    chunk = Client.default_result_builder(
         "req-1",
         {
             "decode": {
@@ -199,7 +199,7 @@ def test_default_result_builder_merges_decode_and_talker_audio() -> None:
 def test_default_result_builder_keeps_text_modality_for_skipped_talker() -> None:
     from sglang_omni.client.client import Client
 
-    chunk = Client._default_result_builder(
+    chunk = Client.default_result_builder(
         "req-text",
         {
             "decode": {"text": "hello"},
@@ -222,7 +222,7 @@ def test_default_result_builder_still_merges_decode_and_code2wav_audio() -> None
 
     waveform = np.array([1.0, 0.5], dtype=np.float32)
 
-    chunk = Client._default_result_builder(
+    chunk = Client.default_result_builder(
         "req-2",
         {
             "decode": {"text": "hello"},
@@ -287,10 +287,10 @@ def test_ming_talker_audio_result_includes_modality_and_text_usage(monkeypatch) 
                 "thinker_out": {"output_ids": [1, 2, 3]},
             },
         )
-        monkeypatch.setattr(executor, "_extract_text", lambda _payload: "hello")
+        monkeypatch.setattr(executor, "extract_text", lambda _payload: "hello")
         monkeypatch.setattr(
             executor,
-            "_generate_speech",
+            "generate_speech",
             lambda _text: (FakeWaveform(), 44100, 0.2),
         )
 

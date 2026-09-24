@@ -18,7 +18,7 @@ import logging
 import mmap
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from typing import cast
 
 import httpx
@@ -35,13 +35,13 @@ from sglang_omni_router.python.admission_shm import (
     admission_file_size,
 )
 from sglang_omni_router.python.app import (
-    _error_response,
-    _find_worker,
-    _pool_summary,
-    _worker_pool_status_response,
+    error_response,
+    find_worker,
+    pool_summary,
     recover_worker_pool_from_journal,
     register_admin_routes,
     register_public_metadata_routes,
+    worker_pool_status_response,
 )
 from sglang_omni_router.python.config import RouterConfig, WorkerConfig
 from sglang_omni_router.python.health import HealthChecker
@@ -168,15 +168,18 @@ def create_control_plane_app(
     admission_view: AdmissionAggregateView | None = None
     admission_shm_file = None
     if admission_shm_path and expected_data_planes:
-        admission_shm_file = open(admission_shm_path, "rb")
-        admission_view = AdmissionAggregateView(
-            mmap.mmap(
-                admission_shm_file.fileno(),
-                admission_file_size(expected_data_planes),
-                access=mmap.ACCESS_READ,
-            ),
-            expected_data_planes,
-        )
+        # Keep the existing file lifetime: the app's lifespan closes it.
+        with ExitStack() as stack:
+            admission_shm_file = stack.enter_context(open(admission_shm_path, "rb"))
+            admission_view = AdmissionAggregateView(
+                mmap.mmap(
+                    admission_shm_file.fileno(),
+                    admission_file_size(expected_data_planes),
+                    access=mmap.ACCESS_READ,
+                ),
+                expected_data_planes,
+            )
+            stack.pop_all()
 
     # Note (Jiaxin Deng): the CP never relays data traffic, so its pool is
     # sized to the worker count, not to the admission bound.
@@ -290,7 +293,7 @@ def create_control_plane_app(
 
     @app.get("/ready")
     async def ready() -> JSONResponse:
-        return _worker_pool_status_response(
+        return worker_pool_status_response(
             workers,
             available_status="ready",
             unavailable_status="not_ready",
@@ -386,7 +389,7 @@ def create_control_plane_app(
             status = "degraded"
         else:
             status = "healthy"
-        payload = _pool_summary(workers, status=status, overlay=ledger.overlay)
+        payload = pool_summary(workers, status=status, overlay=ledger.overlay)
         payload["data_planes"] = [
             record.model_dump()
             for _, record in sorted(internal_state.data_planes.items())
@@ -439,7 +442,7 @@ def create_control_plane_app(
         # 409ing it would make that valid process treat itself as fenced and exit.
         current = internal_state.data_planes.get(dp_index)
         if current is not None and generation < current.generation:
-            return _error_response(
+            return error_response(
                 409,
                 f"stale generation {generation}, current is {current.generation}",
             )
@@ -449,9 +452,9 @@ def create_control_plane_app(
     async def worker_failure(report: WorkerFailureReport) -> JSONResponse:
         if error := _stale_generation(report.dp_index, report.generation):
             return error
-        worker = _find_worker(workers, report.worker_id)
+        worker = find_worker(workers, report.worker_id)
         if worker is None:
-            return _error_response(404, "worker not found")
+            return error_response(404, "worker not found")
         if report.incarnation and worker.incarnation != report.incarnation:
             return JSONResponse({"status": "ok", "stale_incarnation": True})
         if _failure_already_applied(report):
@@ -483,7 +486,7 @@ def create_control_plane_app(
         try:
             applied = ledger.apply(report)
         except StaleCounterGenerationError as exc:
-            return _error_response(409, str(exc))
+            return error_response(409, str(exc))
         return JSONResponse({"status": "ok", "applied": applied})
 
     return app

@@ -86,7 +86,7 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
 
         from sglang_omni.models.moss_transcribe_diarize import stages
 
-        with stages._missing_additional_chat_templates_compat():
+        with stages.missing_additional_chat_templates_compat():
             self.processor = AutoProcessor.from_pretrained(
                 checkpoint_dir, trust_remote_code=True
             )
@@ -94,12 +94,12 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         self.max_new_tokens = (
             int(self.requested_max_new_tokens)
             if self.requested_max_new_tokens is not None
-            else stages._default_max_new_tokens(checkpoint_dir)
+            else stages.default_max_new_tokens(checkpoint_dir)
         )
         self.context_length = (
             int(self.requested_context_length)
             if self.requested_context_length is not None
-            else stages._default_context_length(checkpoint_dir)
+            else stages.default_context_length(checkpoint_dir)
         )
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
@@ -132,6 +132,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
         # expands overrides.
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
+        else:
+            pass
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Dayuxiaoshui): adapters must use the context length finalized by
@@ -151,6 +153,8 @@ class MossTranscribeDiarizeEngineBuilder(AsrEngineBuilder):
             model.compile_encoder(self.encoder_chunk_buckets, input_feature_len)
         elif generation_cuda_graph_enabled:
             model.init_encoder_graphs(self.encoder_chunk_buckets, input_feature_len)
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         model.init_encoder_cache(self.encoder_cache_size_bytes)
 
