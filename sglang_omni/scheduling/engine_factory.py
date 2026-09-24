@@ -287,10 +287,12 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         del server_args
 
-    def validate_after_model_setup(self, model: Any, server_args: ServerArgs) -> None:
+    def validate_after_model_setup(
+        self, model: object, server_args: ServerArgs
+    ) -> None:
         del model, server_args
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         del overrides
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
@@ -363,7 +365,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         self,
         *,
         model_worker: ModelWorker | MlxTpModelWorker,
-        model: Any,
+        model: object,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
@@ -499,7 +501,9 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         del server_args
 
-    def validate_after_model_setup(self, model: Any, server_args: ServerArgs) -> None:
+    def validate_after_model_setup(
+        self, model: object, server_args: ServerArgs
+    ) -> None:
         validate_generation_batch_policy(
             model_name=self.model_name,
             server_args=server_args,
@@ -538,7 +542,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
         self,
         *,
         model_worker: ModelWorker | MlxTpModelWorker,
-        model: Any,
+        model: object,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
