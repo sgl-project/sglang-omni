@@ -36,8 +36,12 @@ def load_language_model(checkpoint: Path) -> Qwen3ForCausalLM:
                     )
                 elif name == "lm_head.weight":
                     weights[name] = reader.get_tensor(name)
+                else:
+                    pass
     if config.tie_word_embeddings and "model.embed_tokens.weight" in weights:
         weights["lm_head.weight"] = weights["model.embed_tokens.weight"]
+    else:
+        pass
     model.load_state_dict(weights, strict=True, assign=True)
     model.tie_weights()
     return model.eval()
@@ -49,6 +53,8 @@ def install_torch_mps_language_model(model: Any, model_path: str) -> None:
     checkpoint = Path(model_path).expanduser()
     if not checkpoint.is_dir():
         checkpoint = Path(snapshot_download(model_path))
+    else:
+        pass
     parameter = next(model.language_model.parameters())
     device, dtype = parameter.device, parameter.dtype
     del parameter

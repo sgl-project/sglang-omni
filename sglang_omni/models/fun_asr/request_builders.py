@@ -210,6 +210,8 @@ def make_fun_asr_scheduler_adapters(
             raise ValueError(
                 "Fun-ASR Apple currently requires temperature=0 (greedy decoding)"
             )
+        else:
+            pass
         prepared = prepare_audio(
             payload,
             source_name="Fun-ASR",

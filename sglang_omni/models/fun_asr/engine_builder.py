@@ -91,7 +91,7 @@ class FunASREngineBuilder(AsrEngineBuilder):
         self.feature_extractor: Any = None
         self.audio_encoder_service: FunASRPreLMEncoderService | None = None
         self.device: str | None = None
-        self._torch_mps_model_runner: Any = None
+        self.torch_mps_model_runner: Any = None
         self.context_length = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -123,15 +123,21 @@ class FunASREngineBuilder(AsrEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if self.uses_torch_mps():
             overrides["enable_torch_compile"] = False
+        else:
+            pass
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
         if self.uses_torch_mps():
             if not current_platform.is_mps():
                 raise ValueError("Fun-ASR Torch/MPS requires the Apple Metal platform")
+            else:
+                pass
             if server_args.max_running_requests != 1:
                 raise ValueError(
                     "Fun-ASR Apple currently requires max_running_requests=1"
                 )
+            else:
+                pass
             if (
                 not server_args.disable_radix_cache
                 or server_args.chunked_prefill_size != -1
@@ -139,24 +145,34 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 raise ValueError(
                     "Fun-ASR Apple requires disabled radix cache and chunked prefill"
                 )
+            else:
+                pass
             if getattr(server_args, "mlx_enable_sampling", False):
                 raise ValueError(
                     "Fun-ASR Apple currently requires mlx_enable_sampling=False"
                 )
+            else:
+                pass
             if server_args.quantization is not None:
                 raise ValueError(
                     "Fun-ASR Apple currently requires unquantized HF weights"
                 )
+            else:
+                pass
+        else:
+            pass
         super().validate_before_infrastructure(server_args)
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         if self.uses_torch_mps():
             from .torch_mps_runner import FunASRTorchMpsModelRunner
 
-            self._torch_mps_model_runner = FunASRTorchMpsModelRunner(
+            self.torch_mps_model_runner = FunASRTorchMpsModelRunner(
                 model_worker, output_proc
             )
-            return self._torch_mps_model_runner
+            return self.torch_mps_model_runner
+        else:
+            pass
         return super().make_model_runner(model_worker, output_proc)
 
     def setup_model(
@@ -174,11 +190,13 @@ class FunASREngineBuilder(AsrEngineBuilder):
             install_torch_mps_language_model(
                 model_worker.model_runner.model, checkpoint_dir
             )
+        else:
+            pass
 
     def make_abort_callback(self) -> Any | None:
         return (
-            self._torch_mps_model_runner.abort_request
-            if self._torch_mps_model_runner is not None
+            self.torch_mps_model_runner.abort_request
+            if self.torch_mps_model_runner is not None
             else None
         )
 
@@ -190,6 +208,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 "Fun-ASR MLX support is not available yet; set SGLANG_USE_MLX=0 "
                 "for Torch/MPS"
             )
+        else:
+            pass
         if self.uses_torch_mps():
             # Audio embeddings are inserted only at first prefill. Token-only
             # prefix reuse and split prefill cannot reconstruct that sidecar.
@@ -208,6 +228,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
                 "mem_fraction_static": self.mem_fraction_static,
                 "dtype": dtype,
             }
+        else:
+            pass
         defaults: dict[str, Any] = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
@@ -241,6 +263,8 @@ class FunASREngineBuilder(AsrEngineBuilder):
     ) -> None:
         if self.uses_torch_mps():
             return
+        else:
+            pass
         del generation_cuda_graph_enabled
         if self.enable_encoder_cuda_graph:
             # Capture needs the eager forwards; a dynamo-compiled callable

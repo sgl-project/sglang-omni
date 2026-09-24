@@ -34,7 +34,7 @@ def test_torch_runner_cache_lifecycle_and_flat_audio_features(device):
     )
     runner = object.__new__(FunASRTorchMpsModelRunner)
     runner.device = torch.device(device)
-    runner._past_key_values = {}
+    runner.past_key_values = {}
     features = torch.randn(2, 8, device=device)
     runner.model = SimpleNamespace(
         language_model=model, get_audio_feature=lambda items: features
@@ -48,7 +48,7 @@ def test_torch_runner_cache_lifecycle_and_flat_audio_features(device):
     first = runner.custom_prefill_forward(
         None, SimpleNamespace(input_ids=torch.tensor([1, 999, 999, 2])), requests
     )
-    assert "one" in runner._past_key_values
+    assert "one" in runner.past_key_values
     second = runner.custom_decode_forward(
         None, SimpleNamespace(input_ids=first), requests
     )
@@ -61,11 +61,11 @@ def test_torch_runner_cache_lifecycle_and_flat_audio_features(device):
         expected = model(inputs_embeds=embeds).logits[:, -1].argmax(dim=-1)
     assert torch.equal(second, expected)
     runner.on_request_finished("one", None)
-    assert not runner._past_key_values
-    runner._past_key_values["one"] = object()
+    assert not runner.past_key_values
+    runner.past_key_values["one"] = object()
     runner.abort_request("one")
     runner.abort_request("one")
-    assert not runner._past_key_values
+    assert not runner.past_key_values
     with pytest.raises(RuntimeError, match="no cache"):
         runner.custom_decode_forward(None, SimpleNamespace(input_ids=first), requests)
 
