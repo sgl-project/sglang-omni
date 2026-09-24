@@ -6,12 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypedDict, TypeVar
+from typing import TypedDict, TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -157,7 +157,7 @@ class MossAudioTokenizerTransformerLayer(nn.Module):
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         *,
         context: int | None = None,
         rope: nn.Module | None = None,
@@ -334,7 +334,7 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         *,
         context: int | None = None,
         moss_audio_tokenizer_v1_weights: bool = False,
@@ -478,7 +478,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         *,
         context: int | None = None,
         moss_audio_tokenizer_v1_weights: bool = False,
@@ -698,7 +698,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: Mapping[str, object] | None = None,
         *,
         moss_audio_tokenizer_v1_weights: bool = False,
         device: str | torch.device | None = None,
@@ -1173,7 +1173,7 @@ class _LFQ(nn.Module):
 class _ResidualLFQ(nn.Module):
     def __init__(
         self,
-        config: dict[str, Any],
+        config: Mapping[str, object],
         *,
         device: str | torch.device | None,
     ) -> None:
@@ -1305,7 +1305,7 @@ class MossAudioTokenizerEncoder(nn.Module):
 
     def __init__(
         self,
-        config: dict[str, Any],
+        config: Mapping[str, object],
         *,
         parameter_device: str | torch.device | None = None,
         compute_dtype: torch.dtype | None = None,
@@ -1837,7 +1837,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
 
     def __init__(
         self,
-        config: dict[str, Any],
+        config: Mapping[str, object],
         *,
         parameter_device: str | torch.device | None = None,
         decoder_dtype: torch.dtype = torch.bfloat16,

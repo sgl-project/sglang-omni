@@ -10,7 +10,6 @@ import logging
 import math
 import os
 from collections.abc import Mapping
-from typing import Any
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -182,7 +181,7 @@ def _resample_with_scipy(
 def _try_fast_wav_decode(
     data: bytes,
     target_sample_rate: int,
-    resample_kwargs: Mapping[str, Any] | None = None,
+    resample_kwargs: Mapping[str, object] | None = None,
 ) -> NDArray[np.float32] | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
@@ -215,7 +214,7 @@ def _resample_kernel(
     orig_freq: int,
     new_freq: int,
     gcd: int,
-    kwargs_items: tuple[tuple[str, Any], ...],
+    kwargs_items: tuple[tuple[str, object], ...],
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, int]:
@@ -235,7 +234,7 @@ def _cached_resample(
     waveform: torch.Tensor,
     orig_freq: int,
     new_freq: int,
-    resample_kwargs: Mapping[str, Any] | None,
+    resample_kwargs: Mapping[str, object] | None,
 ) -> torch.Tensor:
     kwargs = dict(resample_kwargs or {})
     orig_freq, new_freq = int(orig_freq), int(new_freq)
@@ -274,7 +273,7 @@ def load_audio(
     target_sample_rate: int = 16000,
     mono: bool = True,
     trim_top_db: float | None = None,
-    resample_kwargs: Mapping[str, Any] | None = None,
+    resample_kwargs: Mapping[str, object] | None = None,
 ) -> NDArray[np.float32]:
     if isinstance(source, memoryview):
         source = source.tobytes()

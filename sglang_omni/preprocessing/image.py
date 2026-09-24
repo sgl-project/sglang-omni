@@ -8,7 +8,7 @@ import base64
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from PIL import Image, UnidentifiedImageError
 
@@ -77,7 +77,7 @@ async def ensure_image_list_async(
     *,
     image_mode: str = "RGB",
     media_connector: MultiModalResourceConnector | None = None,
-) -> list[Any]:
+) -> list[object]:
     """Asynchronously normalize image inputs into a list.
 
     Args:

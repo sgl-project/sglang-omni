@@ -11,7 +11,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import count
-from typing import TYPE_CHECKING, Any, Literal, Mapping, TypeVar, overload
+from typing import TYPE_CHECKING, Literal, Mapping, TypeVar, overload
 
 import torch
 
@@ -1161,7 +1161,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self,
         request_id: str,
         state: _Qwen3TTSStreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:
@@ -1175,7 +1175,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             return
 
-        metadata: Mapping[str, Any] = source
+        metadata: Mapping[str, object] = source
         # note (luojiaxuan): absent for chunks that crossed a process boundary,
         # ingest records the readiness those chunks need.
         state.pending_codes_ready = metadata.get("codes_ready_event")
@@ -1687,7 +1687,7 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def _launch_decode_plans(
         self,
-        plans: list[Any],
+        plans: Sequence[DecodePlanT],
         *,
         stream: torch.cuda.Stream | None,
         incremental: _IncrementalDecodeBatch | None = None,
@@ -1874,7 +1874,7 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def _launch_async(
         self,
-        plans: list[Any],
+        plans: Sequence[DecodePlanT],
         decoder_input: torch.Tensor,
         bad_rows: torch.Tensor,
         stream: torch.cuda.Stream,

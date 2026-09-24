@@ -9,7 +9,7 @@ import logging
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import av
 import librosa
@@ -148,7 +148,9 @@ async def ensure_video_list_async(
     resource_connector: MultiModalResourceConnector | None = None,
     extract_audio: bool = False,
     audio_target_sr: int = 16000,
-) -> tuple[list[Any], list[float] | None, list[npt.NDArray[np.float32] | None] | None]:
+) -> tuple[
+    list[object], list[float] | None, list[npt.NDArray[np.float32] | None] | None
+]:
     """Asynchronously normalize video inputs into a list.
 
     Args:
@@ -326,7 +328,7 @@ def load_video_path(
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
     path = Path(path)
-    ele: dict[str, Any] = {"video": str(path)}
+    ele: dict[str, str | float | int] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
     if max_frames is not None:
