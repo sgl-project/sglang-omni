@@ -7,6 +7,11 @@ import torch
 
 from sglang_omni.platforms import current_platform
 
+if current_platform.is_npu():
+    from sglang_omni.models.qwen3_tts.npu_sampling import seeded_gumbel_argmax_npu
+else:
+    pass
+
 if not current_platform.is_npu():
     try:
         import triton
@@ -534,6 +539,11 @@ def seeded_gumbel_argmax_float32(
         pass
     if num_cols == 0:
         raise ValueError("logprobs must contain at least one column")
+    else:
+        pass
+
+    if logprobs.device.type == "npu":
+        return seeded_gumbel_argmax_npu(logprobs, seeds, positions)
     else:
         pass
 
