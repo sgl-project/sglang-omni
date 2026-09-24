@@ -111,3 +111,38 @@ def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
         thread.join(timeout=2.0)
     assert len(results) == 3
     assert max(seen_batches) >= 3, f"straggler did not join: {seen_batches}"
+
+
+def test_batch_key_keeps_incompatible_requests_in_separate_batches() -> None:
+    seen_batches: list[list[tuple[str, int]]] = []
+
+    def batch_fn(payloads: list[tuple[str, int]]) -> list[tuple[str, int]]:
+        seen_batches.append(payloads)
+        return payloads
+
+    scheduler = SimpleScheduler(
+        lambda payload: payload,
+        batch_compute_fn=batch_fn,
+        batch_key_fn=lambda payload: payload[0],
+        max_batch_size=3,
+        max_batch_wait_ms=0,
+    )
+    messages = [
+        IncomingMessage("a-1", "new_request", ("a", 1)),
+        IncomingMessage("a-2", "new_request", ("a", 2)),
+        IncomingMessage("b-1", "new_request", ("b", 1)),
+        IncomingMessage("b-2", "new_request", ("b", 2)),
+    ]
+
+    results, _ = _run(scheduler, messages, output_count=4)
+
+    assert [output.data for output in results] == [
+        ("a", 1),
+        ("a", 2),
+        ("b", 1),
+        ("b", 2),
+    ]
+    assert seen_batches == [
+        [("a", 1), ("a", 2)],
+        [("b", 1), ("b", 2)],
+    ]

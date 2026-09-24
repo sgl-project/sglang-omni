@@ -2,10 +2,12 @@
 """SimpleScheduler — lightweight scheduler for non-AR stages.
 
 For stages that just run a function (preprocessing, encoders, decode, code2wav).
-No KV cache, no batching. Just: inbox.get() → run function → outbox.put().
+No KV cache. The default is one-at-a-time execution, with optional explicit
+batching through ``batch_compute_fn``.
 
 Same inbox/outbox interface as OmniScheduler so Stage doesn't need branching.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +17,8 @@ import logging
 import queue as _queue_mod
 import threading
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
 
@@ -26,6 +29,7 @@ class SimpleScheduler:
     """Process requests one at a time via a callable.
 
     Supports sync and async callables for ``new_request`` messages only.
+    A ``batch_key_fn`` can keep incompatible requests in separate batches.
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
@@ -38,6 +42,7 @@ class SimpleScheduler:
         max_batch_size: int = 1,
         max_batch_wait_ms: int = 0,
         batch_wait_when_idle: bool = True,
+        batch_key_fn: Callable[[Any], Any] | None = None,
         request_cost_fn: Callable[[Any], int] | None = None,
         max_batch_cost: int | None = None,
         max_concurrency: int = 1,
@@ -52,6 +57,7 @@ class SimpleScheduler:
         self._max_batch_size = max(int(max_batch_size), 1)
         self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
         self._batch_wait_when_idle = bool(batch_wait_when_idle)
+        self._batch_key_fn = batch_key_fn
         self._request_cost_fn = request_cost_fn
         self._max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
@@ -108,6 +114,11 @@ class SimpleScheduler:
         if self._batch_fn is None or self._max_batch_size <= 1:
             return batch
 
+        batch_key = (
+            self._batch_key_fn(first_msg.data)
+            if self._batch_key_fn is not None
+            else None
+        )
         batch_cost = self._message_cost(first_msg)
         deadline: float | None = (
             time.monotonic() + self._max_batch_wait_s
@@ -129,6 +140,15 @@ class SimpleScheduler:
                     break
 
             if msg.type == "new_request":
+                if self._batch_key_fn is not None:
+                    try:
+                        msg_key = self._batch_key_fn(msg.data)
+                    except (TypeError, ValueError):
+                        self._pending_messages.appendleft(msg)
+                        break
+                    if msg_key != batch_key:
+                        self._pending_messages.appendleft(msg)
+                        break
                 if self._max_batch_cost is not None:
                     msg_cost = self._message_cost(msg)
                     if batch and batch_cost + msg_cost > self._max_batch_cost:

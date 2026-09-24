@@ -6,6 +6,7 @@ from typing import Callable, Optional, Union
 import torch
 import torch._dynamo
 import torch.nn.functional as F
+from sglang.srt.layers.layernorm import RMSNorm
 from torch import nn
 from transformers import Qwen3Config
 from transformers.activations import ACT2FN
@@ -30,7 +31,6 @@ from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
 from sglang_omni.platforms import current_platform
-from sglang.srt.layers.layernorm import RMSNorm
 
 from .transformers_compat import (
     causal_mask_kwargs,
@@ -60,6 +60,10 @@ _ATTN_BACKEND: str = "auto"
 
 def npu_fia_available() -> bool:
     return hasattr(torch.ops.npu, "npu_fused_infer_attention_score")
+
+
+def npu_swiglu_available() -> bool:
+    return hasattr(torch.ops.npu, "npu_swiglu")
 
 
 def set_attn_backend(backend: str) -> str:
@@ -394,7 +398,7 @@ class Qwen3MLP(nn.Module):
             or self.config.hidden_act != "silu"
         ):
             return False
-        return hasattr(torch.ops.npu, "npu_swiglu")
+        return npu_swiglu_available()
 
     def forward(self, x):
         if self._use_npu_fused_mlp(x):

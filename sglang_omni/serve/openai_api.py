@@ -3,6 +3,8 @@
 
 Provides the following endpoints:
 - POST /v1/chat/completions  — Text (+ audio) chat completions
+- POST /v1/images/generations — SenseNova text-to-image generation
+- POST /v1/images/edits     — SenseNova single-image editing
 - POST /v1/audio/speech      — Text-to-speech synthesis
 - POST /v1/audio/translations — Translate audio speech to English
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
@@ -21,6 +23,8 @@ Provides the following endpoints:
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import logging
 import time
@@ -134,6 +138,9 @@ from sglang_omni.serve.translations import register_translations
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
+MAX_IMAGE_EDIT_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_EDIT_PIXELS = 4096 * 4096
+SUPPORTED_IMAGE_EDIT_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 
 
 class _RequestBodyTooLarge(Exception):
@@ -300,6 +307,7 @@ def create_app(
     _register_generate(app)
     if "NEOChatModel" in app.state.architectures:
         _register_image_generations(app)
+        _register_image_edits(app)
     _register_speech(app)
     _register_speech_batch(app)
     _register_speech_ws(app)
@@ -1058,7 +1066,9 @@ def _register_image_generations(app: FastAPI) -> None:
         )
         request_id = str(uuid.uuid4())
         try:
-            async for chunk in app.state.client.generate(request, request_id=request_id):
+            async for chunk in app.state.client.generate(
+                request, request_id=request_id
+            ):
                 if chunk.image_b64 is None:
                     raise RuntimeError("SenseNova-U1 generated no image")
                 return ImageGenerationResponse(
@@ -1069,6 +1079,145 @@ def _register_image_generations(app: FastAPI) -> None:
             logger.exception("Image generation failed for request %s", request_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail="SenseNova-U1 returned no result")
+
+
+def _register_image_edits(app: FastAPI) -> None:
+    """Expose SenseNova's native I2I path."""
+    from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1ImageEditSampling
+
+    @app.post("/v1/images/edits", response_model=ImageGenerationResponse)
+    async def image_edits(
+        image: list[UploadFile] | None = File(default=None),  # noqa: B008
+        image_array: list[UploadFile] | None = File(  # noqa: B008
+            default=None, alias="image[]"
+        ),
+        prompt: str = Form(...),
+        mask: UploadFile | None = File(default=None),  # noqa: B008
+        model: str | None = Form(default=None),
+        n: int = Form(default=1),
+        response_format: str | None = Form(default=None),
+        size: str | None = Form(default=None),
+        seed: int | None = Form(default=None),
+        num_inference_steps: int | None = Form(default=None),
+        guidance_scale: float | None = Form(default=None),
+        img_cfg_scale: float | None = Form(default=None),
+    ) -> ImageGenerationResponse:
+        if model is not None and model != app.state.model_name:
+            raise HTTPException(status_code=400, detail="Unknown image model")
+        uploads = image or image_array
+        if not uploads:
+            raise HTTPException(
+                status_code=422,
+                detail="Field 'image' is required",
+            )
+        if mask is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="SenseNova-U1 image edits do not support masks yet",
+            )
+        resolved_response_format = (response_format or "b64_json").lower()
+        if resolved_response_format != "b64_json":
+            raise HTTPException(
+                status_code=400,
+                detail="SenseNova-U1 image edits only support response_format=b64_json",
+            )
+        try:
+            num_outputs = max(1, min(int(n or 1), 10))
+            params = {"n": 1, "size_explicit": size is not None}
+            if size is not None:
+                width_str, height_str = size.split("x")
+                params.update(width=int(width_str), height=int(height_str))
+            for name, value in (
+                ("num_inference_steps", num_inference_steps),
+                ("guidance_scale", guidance_scale),
+                ("img_cfg_scale", img_cfg_scale),
+                ("seed", seed),
+            ):
+                if value is not None:
+                    params[name] = value
+            options = SenseNovaU1ImageEditSampling.from_params(params)
+            params.update(
+                width=options.width,
+                height=options.height,
+                num_inference_steps=options.num_inference_steps,
+                guidance_scale=options.guidance_scale,
+                img_cfg_scale=options.img_cfg_scale,
+                seed=options.seed,
+            )
+            if not prompt.strip():
+                raise ValueError("SenseNova-U1 requires a non-empty image edit prompt")
+            image_bytes = [await _read_image_edit_upload(upload) for upload in uploads]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        encoded_images = [
+            base64.b64encode(item).decode("ascii") for item in image_bytes
+        ]
+        data = []
+        parent_request_id = str(uuid.uuid4())
+        try:
+            for output_index in range(num_outputs):
+                output_params = dict(params)
+                output_params["seed"] = options.seed + output_index
+                request = GenerateRequest(
+                    model=app.state.model_name,
+                    prompt={
+                        "task": "image_edit",
+                        "prompt": prompt,
+                        "image_b64": encoded_images,
+                    },
+                    extra_params=output_params,
+                    output_modalities=["image"],
+                    stream=False,
+                )
+                request_id = f"{parent_request_id}:{output_index}"
+                async for chunk in app.state.client.generate(
+                    request, request_id=request_id
+                ):
+                    if chunk.image_b64 is None:
+                        raise RuntimeError("SenseNova-U1 generated no image")
+                    data.append(ImageGenerationData(b64_json=chunk.image_b64))
+                    break
+        except Exception as exc:
+            logger.exception("Image edit failed for request %s", parent_request_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if len(data) != num_outputs:
+            raise HTTPException(
+                status_code=500, detail="SenseNova-U1 returned no result"
+            )
+        return ImageGenerationResponse(created=int(time.time()), data=data)
+
+
+async def _read_image_edit_upload(image: UploadFile) -> bytes:
+    """Read and validate one bounded reference-image upload."""
+    from PIL import Image
+
+    try:
+        image_bytes = await image.read(MAX_IMAGE_EDIT_UPLOAD_BYTES + 1)
+    finally:
+        await image.close()
+    if not image_bytes:
+        raise ValueError("reference image must not be empty")
+    if len(image_bytes) > MAX_IMAGE_EDIT_UPLOAD_BYTES:
+        raise ValueError(
+            f"reference image must be at most {MAX_IMAGE_EDIT_UPLOAD_BYTES} bytes"
+        )
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as decoded:
+            image_format = decoded.format
+            width, height = decoded.size
+            if image_format not in SUPPORTED_IMAGE_EDIT_FORMATS:
+                supported = ", ".join(sorted(SUPPORTED_IMAGE_EDIT_FORMATS))
+                raise ValueError(f"reference image format must be one of: {supported}")
+            if width < 1 or height < 1 or width * height > MAX_IMAGE_EDIT_PIXELS:
+                raise ValueError(
+                    "reference image must contain at most "
+                    f"{MAX_IMAGE_EDIT_PIXELS} pixels"
+                )
+            decoded.verify()
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("reference image is not a valid image") from exc
+    return image_bytes
 
 
 def _register_generate(app: FastAPI) -> None:
