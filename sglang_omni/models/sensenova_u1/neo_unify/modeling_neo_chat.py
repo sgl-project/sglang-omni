@@ -20,11 +20,7 @@ from transformers.utils import logging
 
 from .configuration_neo_chat import NEOChatConfig, NEOMoELLMConfig
 from .conversation import get_conv_template
-from .modeling_fm_modules import (
-    ConvDecoder,
-    FlowMatchingHead,
-    TimestepEmbedder,
-)
+from .modeling_fm_modules import ConvDecoder, FlowMatchingHead, TimestepEmbedder
 from .modeling_neo_vit import NEOVisionModel
 from .modeling_qwen3 import (
     Qwen3ForCausalLM,
@@ -39,6 +35,7 @@ logger = logging.get_logger(__name__)
 
 class BatchedSRTThinkingFallbackRequired(RuntimeError):
     """Retained for optional SRT paths; the first Omni pipeline uses native T2I."""
+
 
 _KV_DIAGNOSTIC_DIR = "SGLANG_SENSENOVA_KV_DIAGNOSTIC_DIR"
 _KV_TRANSFER_DIR = "SGLANG_SENSENOVA_KV_TRANSFER_DIR"

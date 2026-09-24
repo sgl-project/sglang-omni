@@ -1083,9 +1083,7 @@ def _register_image_generations(app: FastAPI) -> None:
 
 def _register_image_edits(app: FastAPI) -> None:
     """Expose SenseNova's native I2I path."""
-    from sglang_omni.models.sensenova_u1.sampling import (
-        SenseNovaU1ImageEditSampling,
-    )
+    from sglang_omni.models.sensenova_u1.sampling import SenseNovaU1ImageEditSampling
 
     @app.post("/v1/images/edits", response_model=ImageGenerationResponse)
     async def image_edits(

@@ -55,17 +55,17 @@ def _run(
 def test_idle_stage_does_not_wait_out_the_coalescing_window() -> None:
     scheduler = _batching_scheduler(batch_wait_when_idle=False)
     _, elapsed_ms = _run(scheduler, [_msg("r1")], output_count=1)
-    assert elapsed_ms < WINDOW_MS / 2, (
-        f"lone request waited {elapsed_ms:.1f}ms of the {WINDOW_MS}ms window"
-    )
+    assert (
+        elapsed_ms < WINDOW_MS / 2
+    ), f"lone request waited {elapsed_ms:.1f}ms of the {WINDOW_MS}ms window"
 
 
 def test_idle_batch_wait_remains_the_default_contract() -> None:
     scheduler = _batching_scheduler()
     _, elapsed_ms = _run(scheduler, [_msg("r1")], output_count=1)
-    assert elapsed_ms >= WINDOW_MS / 2, (
-        f"default batch wait dispatched after only {elapsed_ms:.1f}ms"
-    )
+    assert (
+        elapsed_ms >= WINDOW_MS / 2
+    ), f"default batch wait dispatched after only {elapsed_ms:.1f}ms"
 
 
 def test_backlog_still_coalesces_into_one_batch() -> None:

@@ -23,13 +23,15 @@ from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
     _flash_or_sdpa,
     _sdpa_attn_func,
     create_block_causal_mask,
+)
+from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
+    current_platform as model_platform,
+)
+from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
     make_qwen3_rms_norm,
     npu_fia_available,
     npu_swiglu_available,
     position_ids_from_indexes,
-)
-from sglang_omni.models.sensenova_u1.neo_unify.modeling_qwen3 import (
-    current_platform as model_platform,
 )
 
 

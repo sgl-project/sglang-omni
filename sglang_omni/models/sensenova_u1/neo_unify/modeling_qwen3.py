@@ -6,6 +6,7 @@ from typing import Callable, Optional, Union
 import torch
 import torch._dynamo
 import torch.nn.functional as F
+from sglang.srt.layers.layernorm import RMSNorm
 from torch import nn
 from transformers import Qwen3Config
 from transformers.activations import ACT2FN
@@ -30,7 +31,6 @@ from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 
 from sglang_omni.platforms import current_platform
-from sglang.srt.layers.layernorm import RMSNorm
 
 from .transformers_compat import (
     causal_mask_kwargs,
