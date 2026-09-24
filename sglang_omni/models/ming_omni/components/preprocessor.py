@@ -591,7 +591,7 @@ class MingPreprocessor:
         # --- Prepare encoder inputs ---
         # Always include keys so that the aggregated input handler
         # (which waits for ALL configured sources) receives data from every source.
-        encoder_inputs: dict[str, dict[str, Any]] = {
+        encoder_inputs: dict[str, dict[str, object]] = {
             AUDIO_STAGE: {"_skip": True, "_result": {}},
             IMAGE_STAGE: {"_skip": True, "_result": {}},
         }
@@ -619,7 +619,7 @@ class MingPreprocessor:
         has_image = pixel_values is not None and image_grid_thw is not None
         has_video = pixel_values_videos is not None and video_grid_thw is not None
         if has_image or has_video:
-            stage_inputs: dict[str, torch.Tensor | str | None] = {}
+            stage_inputs: dict[str, object] = {}
             if has_image:
                 stage_inputs["pixel_values"] = pixel_values
                 stage_inputs["image_grid_thw"] = image_grid_thw

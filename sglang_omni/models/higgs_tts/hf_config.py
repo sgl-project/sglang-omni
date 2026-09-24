@@ -7,6 +7,7 @@ the discrete-audio-encoder branch and ignores the Whisper side.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import transformers
@@ -50,7 +51,7 @@ class HiggsMultimodalQwen3Config(transformers.PretrainedConfig):
     def __init__(
         self,
         audio_encoder_config: dict[str, Any] | None = None,
-        text_config: dict[str, Any] | transformers.PretrainedConfig | None = None,
+        text_config: Mapping[str, object] | transformers.PretrainedConfig | None = None,
         audio_token_id: int = -100,
         mel_per_sample: int = 8,
         **kwargs,

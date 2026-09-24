@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
+from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, TypeAlias, TypeVar
 
 import torch
 
@@ -51,7 +51,9 @@ class SGLangOutputProcessor:
             ids = model_output.next_token_ids
         token_list = ids.tolist() if ids is not None else []
 
-        hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
+        hidden_extras_by_request: Mapping[
+            int, AuxHiddenExtra | dict[str, dict[object, torch.Tensor]] | None
+        ] = {}
         if self._capture_hidden:
             should_emit_hidden_by_request = [
                 self._should_emit_hidden_for_request(request)
@@ -86,7 +88,7 @@ class SGLangOutputProcessor:
         *,
         scheduler_output: SchedulerOutput,
         should_emit_hidden_by_request: list[bool],
-    ) -> dict[int, dict[str, Any] | None]:
+    ) -> Mapping[int, AuxHiddenExtra | dict[str, dict[object, torch.Tensor]] | None]:
         request_indexes = [
             i
             for i, should_emit in enumerate(should_emit_hidden_by_request)
