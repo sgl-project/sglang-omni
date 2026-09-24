@@ -381,6 +381,30 @@ def prepare_flash_kv_cache(
         layer.flash_v_cache = v_cache
 
 
+def _prepare_i2i_flash_kv_cache(
+    past_key_values,
+    current_len: int,
+    batch_size: int,
+):
+    """Prepare one unpadded I2I CFG branch for NPU FIA or SDPA fallback."""
+    if past_key_values is None:
+        return
+
+    prefix = past_key_values.layers[0].keys
+    prefix_lengths = torch.full(
+        (batch_size,),
+        prefix.shape[2],
+        dtype=torch.long,
+        device=prefix.device,
+    )
+    prepare_flash_kv_cache(
+        past_key_values,
+        current_len=current_len,
+        batch_size=batch_size,
+        prefix_lengths=prefix_lengths,
+    )
+
+
 def clear_flash_kv_cache(past_key_values):
     if past_key_values is None:
         return
@@ -2740,23 +2764,38 @@ class NEOChatModel(PreTrainedModel):
                     *past_key_values_uncondition.layers[layer_idx].values.shape[1:],
                 )
 
-        prepare_flash_kv_cache(
+        _prepare_i2i_flash_kv_cache(
             past_key_values_condition,
             current_len=token_h * token_w,
             batch_size=batch_size,
         )
         if past_key_values_img_condition is not None:
-            prepare_flash_kv_cache(
+            _prepare_i2i_flash_kv_cache(
                 past_key_values_img_condition,
                 current_len=token_h * token_w,
                 batch_size=batch_size,
             )
         if past_key_values_uncondition is not None:
-            prepare_flash_kv_cache(
+            _prepare_i2i_flash_kv_cache(
                 past_key_values_uncondition,
                 current_len=token_h * token_w,
                 batch_size=batch_size,
             )
+        logger.info(
+            "SenseNova-U1 I2I attention caches: condition=%s, "
+            "image_condition=%s, uncondition=%s",
+            past_key_values_condition.layers[0].flash_cache_layout,
+            (
+                past_key_values_img_condition.layers[0].flash_cache_layout
+                if past_key_values_img_condition is not None
+                else "disabled"
+            ),
+            (
+                past_key_values_uncondition.layers[0].flash_cache_layout
+                if past_key_values_uncondition is not None
+                else "disabled"
+            ),
+        )
 
         grid_h = image_size[1] // self.patch_size
         grid_w = image_size[0] // self.patch_size
