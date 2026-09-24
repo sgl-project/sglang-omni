@@ -6,19 +6,23 @@ speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, 
 
 ## Prerequisites
 
-Install `sglang-omni` for your platform:
+Install `sglang-omni` from source as in [Installation](../get_started/installation.md).
 
-- **NVIDIA CUDA / general** — [Installation](../get_started/installation.md)
-- **Apple Silicon** — [Installation — Apple Silicon](../get_started/installation_apple_silicon.md)
-
-Fun-CosyVoice3 needs `sox` and a few extra Python packages. From the repository root, install the extra against **this checkout**:
+On Linux/CUDA, install `sox` and the extra against **this checkout**:
 
 ```bash
 apt-get update && apt-get install -y sox
 uv pip install -e ".[fun-cosyvoice3]"
 ```
 
-Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
+On Apple Silicon, use the
+[Apple Silicon installation guide](../get_started/installation_apple_silicon.md)
+to create and activate the shared runtime. The installer provisions the
+CosyVoice Python/runtime dependencies; model weights and the optional MLX
+conversion remain separate.
+
+If you are installing manually, clone the CosyVoice repository with its
+Matcha-TTS submodule and add both to `PYTHONPATH`:
 
 ```bash
 COSYVOICE_PATH=/path/to/CosyVoice
@@ -50,11 +54,17 @@ sgl-omni serve \
   --port 8000
 ```
 
-## 🍎 Apple Silicon (MLX/MPS)
+## Apple Silicon
+
+Follow the [Apple Silicon installation guide](../get_started/installation_apple_silicon.md)
+and activate the environment it creates. There is no separate `brew install sox`
+or `DYLD_LIBRARY_PATH` step.
+
+Keep the official checkpoint as `--model-path`; it supplies the ONNX
+preprocessing assets. The MLX path additionally needs the converted speech
+model artifact, which contains the Qwen2, Flow, and HiFT weights.
 
 ### MLX
-
-Starts a CosyVoice3 TTS service with MLX backend
 
 ```bash
 SGLANG_USE_MLX=1 sgl-omni serve \

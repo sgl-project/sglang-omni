@@ -20,68 +20,19 @@ MODEL_PATH="$(
 )"
 ```
 
-### 🍎 Apple Silicon (MLX/MLP)
+<a id="apple-silicon-mlx"></a>
 
-### 🍎 Apple Silicon (MLX/MLP)
+### Apple Silicon (MLX/Torch MPS)
 
-#### MLX
-
-The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
-
-```bash
-brew install ffmpeg@7
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-```
-
-Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
-supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
-directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
-
-macOS may remove `DYLD_*` variables when a SIP-protected system executable
-launches the server. Set `DYLD_LIBRARY_PATH` on the final `sgl-omni` process;
-for example, place `/usr/bin/env DYLD_LIBRARY_PATH=...` after wrappers such as
-`/usr/bin/time`. Test a compressed input such as M4A or MP3, since WAV decoding
-can succeed without loading FFmpeg.
-
-Create one virtual environment for both repositories, then install the pinned
-SGLang tag from source with its `all_mps` dependencies before installing
-SGLang-Omni:
-
-```bash
-git clone --branch v0.5.20 https://github.com/sgl-project/sglang.git
-git clone https://github.com/sgl-project/sglang-omni.git
-
-uv venv -p 3.12 sglang-omni/.venv-apple
-source sglang-omni/.venv-apple/bin/activate
-
-cd sglang
-cp python/pyproject_other.toml python/pyproject.toml
-uv pip install -e "python[all_mps]"
-
-cd ../sglang-omni
-uv pip install -e .
-```
-
-This installs MLX through SGLang. It does not install or use the `mlx-audio`
-package. Before downloading a model, verify both Metal and FFmpeg loading:
-
-```bash
-SGLANG_USE_MLX=1 python - <<'PY'
-import mlx.core as mx
-from torchcodec.decoders import AudioDecoder
-
-assert mx.metal.is_available()
-print("MLX Metal and TorchCodec FFmpeg loading are available")
-PY
-```
+Follow the [Apple Silicon installation guide](../get_started/installation_apple_silicon.md)
+to create and activate the shared runtime. The installer does not download
+model weights or MLX-converted artifacts; choose one of the two checkpoints
+below.
 
 Use an MLX-converted Qwen3-ASR checkpoint and opt into the MLX runner:
 
 ```bash
 export SGLANG_USE_MLX=1
-export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 sgl-omni serve \
   --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
@@ -98,11 +49,9 @@ The Apple paths do not provide sampling penalties or token logprobs yet. MLX
 can batch multiple requests, but `max_running_requests=1` is recommended when
 single-request latency matters; increase it only when throughput is preferred.
 
-#### Torch/MPS
-
 To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
 and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
-greedy decoding, and the eager `torch_native`/`sdpa` profile:
+greedy decoding, and eager `torch_native`/`sdpa` execution:
 
 ```bash
 unset SGLANG_USE_MLX
@@ -113,7 +62,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
+The Torch MPS path is bounded to a 2,048-token KV budget, uses
 `audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
 default), and caps native/whole-upload requests at 60 seconds. Values above
 that qualified limit are rejected. Use the MLX path for long audio and the
