@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             context_length = ming_stages._resolve_context_length(self.config)
         self.context_length = int(context_length)
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "max_running_requests": 8,
             "dtype": dtype,

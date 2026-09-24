@@ -17,7 +17,7 @@ from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
 )
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -117,8 +117,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder["Qwen3TTSSGLangRequestData"]):
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float | list[int]]:
-        defaults: dict[str, str | int | float | list[int]] = {
+    ) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
             "cuda_graph_max_bs": 32,

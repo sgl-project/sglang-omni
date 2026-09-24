@@ -19,7 +19,7 @@ from sglang_omni.models.fun_asr.encoder_service import (
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder, GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -125,10 +125,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             encoder_token_count + self.max_new_tokens + prompt_overhead
         )
 
-    def generation_defaults(
-        self, *, dtype: str
-    ) -> dict[str, str | int | float | list[int] | None]:
-        defaults: dict[str, str | int | float | list[int] | None] = {
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

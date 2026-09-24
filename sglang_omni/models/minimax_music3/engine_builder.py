@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
         self._normalize_backbone_config(Path(checkpoint_dir) / "config.json")
         self._filter_audio_weights()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

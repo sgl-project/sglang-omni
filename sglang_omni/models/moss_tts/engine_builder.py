@@ -12,7 +12,7 @@ from sglang_omni.models.moss_tts.hf_loading import (
     MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
     resolve_moss_tts_context_length,
 )
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -65,7 +65,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int]:
+    ) -> GenerationDefaults:
         return {
             "max_running_requests": 16,
             "dtype": dtype,

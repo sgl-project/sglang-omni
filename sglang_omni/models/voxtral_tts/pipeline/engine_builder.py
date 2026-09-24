@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from sglang_omni.models.voxtral_tts import request_builders
 from sglang_omni.models.voxtral_tts.pipeline import stages as voxtral_stages
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -43,7 +43,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder["VoxtralSGLangRequestData"]):
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float | None]:
+    ) -> GenerationDefaults:
         del dtype
         return {
             "max_running_requests": 16,

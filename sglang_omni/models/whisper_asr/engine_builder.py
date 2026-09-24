@@ -12,7 +12,7 @@ from sglang_omni.models.whisper_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.models.whisper_asr.request_builders import MAX_PREV_CONTEXT_TOKENS
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder, GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -343,7 +343,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder["WhisperASRRequestData"]):
             return
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,

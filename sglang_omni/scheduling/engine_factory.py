@@ -10,6 +10,7 @@ from numbers import Integral
 from typing import TYPE_CHECKING, Any, ClassVar, Generic
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from typing_extensions import NotRequired, TypedDict
 
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -52,6 +53,18 @@ def _normalize_context_length(value: object, *, model_name: str) -> int:
             f"{model_name} resolved an invalid context length: {context_length}"
         )
     return context_length
+
+
+GenerationDefaults = TypedDict(
+    "GenerationDefaults",
+    {
+        "max_running_requests": int,
+        "cuda_graph_max_bs": NotRequired[int | None],
+        "torch_compile_max_bs": NotRequired[int | None],
+        "cuda_graph_bs_prefill": NotRequired[list[int]],
+    },
+    extra_items=object,
+)
 
 
 class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
@@ -270,7 +283,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         self,
         *,
         dtype: str,
-    ) -> dict[str, Any]:
+    ) -> GenerationDefaults:
         raise NotImplementedError
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:

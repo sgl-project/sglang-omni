@@ -15,7 +15,7 @@ from sglang_omni.models.higgs_tts.vocoder_scheduler import (
     DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_HIGGS_STREAM_STRIDE,
 )
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -83,7 +83,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float | list[int]]:
+    ) -> GenerationDefaults:
         del dtype
         # note (luojiaxuan): Radix cache is namespaced per ref-audio via
         # Req.extra_key (set in build_sglang_higgs_request); shared -100

@@ -19,7 +19,7 @@ from sglang_omni.models.fun_cosyvoice3.utils import (
     SpeechTokenizerV3,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 if TYPE_CHECKING:
@@ -96,7 +96,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder["CosyVoice3SGLangRequestData"]
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float]:
+    ) -> GenerationDefaults:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():

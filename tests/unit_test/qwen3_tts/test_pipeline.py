@@ -602,8 +602,9 @@ def test_qwen3_tts_breakable_prefill_is_scoped_to_the_measured_checkpoint(
 ) -> None:
     """Only CustomVoice was measured, and the signal is the config not the path."""
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import GenerationDefaults
 
-    def _defaults(model_type: str | None) -> dict:
+    def _defaults(model_type: str | None) -> GenerationDefaults:
         builder = Qwen3TtsEngineBuilder()
         builder.checkpoint_dir = _qwen3_tts_checkpoint(tmp_path, model_type)
         return builder.generation_defaults(dtype="bfloat16")

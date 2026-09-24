@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
     build_cache_namespace,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder, GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_decode_cuda_graph_bs,
@@ -162,7 +162,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder["Qwen3ASRRequestData"]):
             and torch.device(self.device).type == "mps"
         )
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | None]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if use_mlx():
@@ -201,7 +201,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder["Qwen3ASRRequestData"]):
                 "dtype": dtype,
             }
 
-        defaults: dict[str, str | int | float | None] = {
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

@@ -19,7 +19,7 @@ from sglang_omni.models.zonos2.hf_config import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -169,8 +169,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
         _register_zonos2_autoconfig()
         _install_tuned_moe_configs()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
-        defaults: dict[str, str | int | float] = {
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,
             "disable_cuda_graph": False,

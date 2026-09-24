@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -72,7 +72,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
 
             _configure_optimized_kernels()
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
             "disable_cuda_graph": True,
             "disable_overlap_schedule": True,

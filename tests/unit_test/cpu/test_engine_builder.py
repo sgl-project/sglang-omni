@@ -17,7 +17,10 @@ from sglang_omni import platforms
 def _build_on(monkeypatch, device: str) -> dict[str, Any]:
     """Run the shared builder against fakes and return the server-args kwargs."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     monkeypatch.setattr(platforms.current_platform, "is_cpu", lambda: True)
 
@@ -86,7 +89,7 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             # A stage default that wants graphs: the CPU decision must beat it.
             return {
                 "max_running_requests": 4,

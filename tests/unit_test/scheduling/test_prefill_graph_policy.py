@@ -540,7 +540,10 @@ def test_disable_overrides_win_over_default_prefill_backend() -> None:
 
 def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
     from sglang_omni.scheduling import bootstrap, sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
     from sglang_omni.utils import cuda_graph_batch_validator
 
     infra_kwargs_seen: list[dict[str, Any]] = []
@@ -605,7 +608,7 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 
@@ -643,7 +646,10 @@ def test_builder_wires_payload_slot_and_attestation(monkeypatch) -> None:
 
 def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     from sglang_omni.scheduling import sglang_backend
-    from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+    from sglang_omni.scheduling.engine_factory import (
+        GenerationDefaults,
+        TtsEngineBuilder,
+    )
 
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
@@ -664,7 +670,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
         def resolve_checkpoint(self, model_path: str) -> str:
             return model_path
 
-        def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
             del dtype
             return {"max_running_requests": 4}
 

@@ -16,7 +16,7 @@ from sglang_omni.models.arkasr.encoder_service import (
     ArkasrPreLMEncoderService,
     build_cache_namespace,
 )
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder, GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
@@ -122,8 +122,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder["ArkASRRequestData"]):
         encoder_token_count = self.feature_extractor.nb_max_frames // 2
         self.context_length = encoder_token_count + self.max_new_tokens + 8
 
-    def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | None]:
-        defaults: dict[str, str | int | float | None] = {
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

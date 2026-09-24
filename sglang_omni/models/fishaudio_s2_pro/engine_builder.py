@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
 from sglang_omni.platforms import current_platform
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.vendor.sglang.server_args import override_server_args
 from sglang_omni.vendor.sglang.utils import is_flashinfer_available
@@ -92,7 +92,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float]:
+    ) -> GenerationDefaults:
         del dtype
         if current_platform.is_npu():
             # NPU graph decode avoids the ascend backend's eager concurrent-

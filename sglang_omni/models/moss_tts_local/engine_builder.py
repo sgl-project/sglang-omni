@@ -13,7 +13,7 @@ from sglang_omni.models.moss_tts.hf_loading import (
 )
 from sglang_omni.models.moss_tts_local import request_builders
 from sglang_omni.models.moss_tts_local import stages as moss_local_stages
-from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
+from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 
 if TYPE_CHECKING:
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
@@ -79,8 +79,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder["MossTTSLocalSGLangRequestData"
         self,
         *,
         dtype: str,
-    ) -> dict[str, str | int | float]:
-        defaults: dict[str, str | int | float] = {
+    ) -> GenerationDefaults:
+        defaults: GenerationDefaults = {
             "max_running_requests": 16,
             "dtype": dtype,
             "disable_cuda_graph": False,

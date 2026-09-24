@@ -12,7 +12,7 @@ from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_bui
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
-from sglang_omni.scheduling.engine_factory import AsrEngineBuilder
+from sglang_omni.scheduling.engine_factory import AsrEngineBuilder, GenerationDefaults
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
@@ -120,9 +120,7 @@ class MossTranscribeDiarizeEngineBuilder(
             else stages._default_context_length(checkpoint_dir)
         )
 
-    def generation_defaults(
-        self, *, dtype: str
-    ) -> dict[str, str | int | float | list[int] | None]:
+    def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         # note (Xinyu): cached-prefix extends commonly contain one or two new
         # tokens, so keep exact graph buckets below the shared ladder's 4-token
         # floor instead of failing the prefill padding-factor replay guard.
