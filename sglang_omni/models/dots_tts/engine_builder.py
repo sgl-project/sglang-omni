@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 
@@ -85,7 +85,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
             "trust_remote_code": False,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("dots.tts base support does not implement TP")
         requested = int(

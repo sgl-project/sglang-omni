@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from array import array
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -107,7 +108,7 @@ def merge_image_tokens_for_thinker(state: LLaDA2UniPipelineState) -> None:
 def build_dllm_thinker_request(
     state: LLaDA2UniPipelineState,
     *,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     tokenizer: "PreTrainedTokenizerBase",
     vocab_size: int,
     dllm_config: "DllmConfig",

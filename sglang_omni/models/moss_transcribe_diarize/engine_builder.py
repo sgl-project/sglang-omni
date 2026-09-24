@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 
@@ -93,7 +93,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
         self.stream_emit_interval_s = stream_emit_interval_s
-        self.processor: Any = None
+        self.processor: object = None
         self.tokenizer: "PreTrainedTokenizerBase | None" = None
         self.audio_encoder_service: BatchedAudioEncoderService | None = None
         self.max_new_tokens = 0
@@ -144,7 +144,7 @@ class MossTranscribeDiarizeEngineBuilder(
             "dtype": dtype,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
         # expands overrides.

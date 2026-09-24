@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
@@ -330,7 +330,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder["Qwen3ASRRequestData"]):
         del model, server_args
         self._log_memory_checkpoint("post_static_allocation")
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if "context_length" in overrides:

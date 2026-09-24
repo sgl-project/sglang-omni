@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import Any, SupportsFloat, SupportsIndex, SupportsInt
+from typing import SupportsFloat, SupportsIndex, SupportsInt
 from urllib.parse import unquote, urlparse
 
 import numpy as np
@@ -47,7 +47,7 @@ def _get_context() -> AuKPreprocessingContext:
 
 def _normalize_inputs(
     inputs: object,
-) -> tuple[str, list[dict[str, Any]], object | None]:
+) -> tuple[str, list[dict[str, object]], object | None]:
     """Accept flat text, a dict payload, or a structured references list."""
     if isinstance(inputs, str):
         return inputs, [], None
@@ -109,7 +109,7 @@ def _resolve_seed(raw: str | Buffer | SupportsInt | SupportsIndex | None) -> int
         raise ValueError(f"AuK seed must be an integer, got {raw!r}") from exc
 
 
-def _load_reference(source: Any, sample_rate: int) -> tuple[
+def _load_reference(source: object, sample_rate: int) -> tuple[
     np.ndarray[tuple[int, ...], np.dtype[np.float32]],
     np.ndarray[tuple[int, ...], np.dtype[np.float32]],
 ]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
@@ -132,7 +132,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             "trust_remote_code": False,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.pop("context_length", None)
         overrides["tp_size"] = self.tp_size
 

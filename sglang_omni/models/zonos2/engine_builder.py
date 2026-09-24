@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.zonos2.hf_config import (
     Zonos2Config,
@@ -189,7 +189,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
             defaults["quantization"] = "fp8"
         return defaults
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         self._cuda_graph_bs = _cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
         overrides["cuda_graph_bs"] = self._cuda_graph_bs
 
@@ -264,6 +264,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
         return {"enable_async_decode": self.async_decode}
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler[Zonos2SGLangRequestData], model_runner: Any
+        self,
+        scheduler: OmniScheduler[Zonos2SGLangRequestData],
+        model_runner: Zonos2ModelRunner,
     ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

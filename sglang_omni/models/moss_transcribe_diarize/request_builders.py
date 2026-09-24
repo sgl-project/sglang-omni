@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 import numpy as np
 import torch
@@ -225,7 +225,7 @@ def _prompt_from_payload(
             add_generation_prompt=True,
         )
 
-    input_text: Any = params.get("prompt")
+    input_text: object = params.get("prompt")
     if isinstance(inputs, dict):
         input_text = inputs.get("prompt", inputs.get("text", input_text))
     elif isinstance(inputs, str) and _has_metadata_audio_source(payload):
@@ -280,7 +280,7 @@ def _prompt_token_parts(
 
 
 def _audio_feature_lengths_from_waveform(
-    processor: Any,
+    processor: object,
     num_samples: int,
 ) -> torch.Tensor:
     """Derive the processor's per-chunk token lengths without extracting mel."""
@@ -303,7 +303,7 @@ def _audio_feature_lengths_from_waveform(
 
 
 def _extract_audio_features(
-    processor: Any,
+    processor: object,
     audio: np.ndarray,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     feature_extractor = processor.feature_extractor
@@ -335,7 +335,7 @@ def _extract_audio_features(
 
 
 def make_moss_transcribe_diarize_scheduler_adapters(
-    processor: Any,
+    processor: object,
     tokenizer: "PreTrainedTokenizerBase",
     max_new_tokens: int,
     context_length: int,

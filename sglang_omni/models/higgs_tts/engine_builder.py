@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.higgs_tts import request_builders
 from sglang_omni.models.higgs_tts import utils as higgs_utils
@@ -105,7 +105,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
             "dtype": "bfloat16",
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: Mapping[str, object]) -> None:
         # Note: (Jiaxin Deng) an explicit mem_fraction_static override (e.g.
         # --tts_engine.engine.mem_fraction_static) wins, but never silently.
         expected = self.total_gpu_memory_fraction
@@ -184,6 +184,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
         }
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler[HiggsSGLangRequestData], model_runner: Any
+        self,
+        scheduler: OmniScheduler[HiggsSGLangRequestData],
+        model_runner: HiggsTTSModelRunner,
     ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

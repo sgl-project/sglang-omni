@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.moss_tts.hf_loading import (
     MOSS_TTS_DEFAULT_CONTEXT_LENGTH,
@@ -96,7 +96,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder["MossTTSLocalSGLangRequestData"
             )
         return defaults
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         self.memory_budget = moss_local_stages._apply_colocated_ar_memory_budget(
             overrides,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
@@ -210,6 +210,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder["MossTTSLocalSGLangRequestData"
         }
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler[MossTTSLocalSGLangRequestData], model_runner: Any
+        self,
+        scheduler: OmniScheduler[MossTTSLocalSGLangRequestData],
+        model_runner: MossTTSLocalModelRunner,
     ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

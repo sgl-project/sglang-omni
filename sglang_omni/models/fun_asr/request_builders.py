@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Sized
+from collections.abc import Mapping, Sized
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
+from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import (
@@ -82,7 +82,7 @@ def _default_token_budget(audio_duration_s: float, max_new_tokens: int) -> int:
 
 
 def _request_token_budget(
-    params: dict[str, Any], audio_duration_s: float, max_new_tokens: int
+    params: Mapping[str, object], audio_duration_s: float, max_new_tokens: int
 ) -> int:
     explicit = params.get("max_new_tokens")
     if explicit is None:

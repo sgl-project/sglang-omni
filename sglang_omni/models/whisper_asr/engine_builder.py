@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
@@ -72,7 +72,7 @@ def _max_reachable_decoder_prefill_tokens(
 
 
 def _reachable_prefill_cuda_graph_max_bs(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     encoder_token_count: int,
     max_running_requests: int | None,
@@ -318,7 +318,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder["WhisperASRRequestData"]):
             service.pin_host_memory,
         )
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("chunked_prefill_size") or 0) > 0:
             raise ValueError(
                 "Whisper ASR requires chunked_prefill_size=0 because its encoder "

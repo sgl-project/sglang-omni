@@ -7,7 +7,7 @@ import importlib
 import logging
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -297,6 +297,8 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder["CosyVoice3SGLangRequestData"]
         return request_builders.cleanup_prepared_cosyvoice3_request
 
     def post_scheduler_setup(
-        self, scheduler: OmniScheduler[CosyVoice3SGLangRequestData], model_runner: Any
+        self,
+        scheduler: OmniScheduler[CosyVoice3SGLangRequestData],
+        model_runner: FunCosyVoice3ModelRunner | FunCosyVoice3MlxSchedulerModelRunner,
     ) -> None:
         model_runner.set_stream_outbox(scheduler.outbox)

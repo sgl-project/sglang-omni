@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.engine_factory import GenerationDefaults, TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
@@ -25,7 +25,9 @@ if TYPE_CHECKING:
         MiniMaxMusic3SGLangRequestData,
     )
     from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+    from sglang_omni.scheduling.types import RequestOutput
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             "trust_remote_code": False,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("MiniMax Music 3 does not support TP")
         requested = int(
@@ -142,7 +144,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             model, _rvq_graph_buckets(self.max_running_requests)
         )
 
-    def make_scheduler(self, **kwargs: Any) -> MiniMaxMusic3Scheduler:
+    def make_scheduler(self, **kwargs: object) -> MiniMaxMusic3Scheduler:
         from .scheduler import MiniMaxMusic3Scheduler
 
         return MiniMaxMusic3Scheduler(
@@ -193,7 +195,16 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
         assert self._model_runner is not None
         return self._model_runner.reset_request
 
-    def extra_scheduler_kwargs(self) -> dict[str, Any]:
+    def extra_scheduler_kwargs(
+        self,
+    ) -> dict[
+        str,
+        Callable[
+            [str, MiniMaxMusic3SGLangRequestData, RequestOutput],
+            Iterator[OutgoingMessage],
+        ]
+        | bool,
+    ]:
         from .sglang_request_builder import build_stream_output
 
         return {
