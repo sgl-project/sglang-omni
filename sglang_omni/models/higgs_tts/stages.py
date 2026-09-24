@@ -190,7 +190,9 @@ class ReferenceAudioCodec(Protocol):
     ) -> torch.Tensor: ...
 
 
-class _HiggsReferenceEncodeHook(TensorReferenceEncodeHook[_HiggsReferenceInput]):
+class _HiggsReferenceEncodeHook(
+    TensorReferenceEncodeHook[_HiggsReferenceInput, _HiggsReferenceInput]
+):
     """Encode delayed 24 kHz reference codes keyed by waveform content."""
 
     model_revision = ""

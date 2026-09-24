@@ -126,9 +126,11 @@ def test_qwen3_tts_replica_launch_specs_keep_deterministic_factory_kwargs(
     for replica_id in range(2):
         suffix = f"@r{replica_id}"
         assert specs[f"preprocessing{suffix}"].factory_kwargs["max_concurrency"] == 1
-        assert specs[f"tts_engine{suffix}"].factory_kwargs["server_args_overrides"][
-            "enable_deterministic_inference"
+        server_args_overrides = specs[f"tts_engine{suffix}"].factory_kwargs[
+            "server_args_overrides"
         ]
+        assert isinstance(server_args_overrides, dict)
+        assert server_args_overrides["enable_deterministic_inference"]
         vocoder_kwargs = specs[f"vocoder{suffix}"].factory_kwargs
         assert vocoder_kwargs["enable_deterministic_inference"]
         assert vocoder_kwargs["initial_cuda_graph"] is False

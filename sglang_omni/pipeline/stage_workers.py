@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from multiprocessing.queues import Queue
 from multiprocessing.synchronize import Event
-from typing import Any, Literal, Sequence
+from typing import Literal, Sequence
 
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -73,7 +73,7 @@ class StageLaunchConfig:
     # Constructor kwargs from PipelineConfig.stage_factory_kwargs (plus TP
     # wiring). Typed group kwargs are overlaid against the factory's
     # signature in the child, which imports the factory anyway.
-    factory_kwargs: dict[str, Any] = field(default_factory=dict)
+    factory_kwargs: dict[str, object] = field(default_factory=dict)
     typed_kwargs: dict[str, object] = field(default_factory=dict)
     factory_arg_defaults: dict[str, str | int | float | None] = field(
         default_factory=dict

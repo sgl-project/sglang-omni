@@ -69,7 +69,7 @@ def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, Any]:
     ``server_args_overrides`` mapping.
     """
 
-    out: dict[str, Any] = {}
+    out: dict[str, object] = {}
     group = stage_cfg.factory
     for name in type(group).model_fields:
         value = getattr(group, name)

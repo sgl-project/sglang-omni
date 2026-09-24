@@ -339,7 +339,12 @@ def _load_reference_waveform(
     )
 
 
-class _MossTTSReferenceEncodeHook(TensorReferenceEncodeHook[_LoadedReferenceWaveform]):
+class _MossTTSReferenceEncodeHook(
+    TensorReferenceEncodeHook[
+        _LoadedReferenceWaveform,
+        _LoadedReferenceWaveform | str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ]
+):
     model_id = "moss_tts_delay"
     encoder_id = "moss_audio_encoder"
     artifact_kind = "moss_tts_reference_codes"

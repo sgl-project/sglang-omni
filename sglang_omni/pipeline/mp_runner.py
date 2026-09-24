@@ -12,7 +12,8 @@ import asyncio
 import logging
 import multiprocessing
 import socket
-from typing import Any, TypedDict, TypeVar
+from collections.abc import Mapping
+from typing import Any, TypedDict
 
 from sglang_omni.config.placement import (
     StagePlacementPlan,
@@ -46,10 +47,6 @@ from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
 from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
-
-
-FactoryKwargValueT = TypeVar("FactoryKwargValueT")
-TypedKwargValueT = TypeVar("TypedKwargValueT")
 
 
 class StageByteBudgets(TypedDict):
@@ -324,8 +321,8 @@ def _build_single_stage_spec(
     config: PipelineConfig,
     gpu_id: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, FactoryKwargValueT],
-    typed_kwargs: dict[str, TypedKwargValueT],
+    base_factory_kwargs: Mapping[str, object],
+    typed_kwargs: Mapping[str, object],
     stage_kwargs: dict[str, Any],
 ) -> StageLaunchConfig:
     comm_config = _resolve_comm_config(stage_cfg, gpu_id=gpu_id)
@@ -356,8 +353,8 @@ def _build_tp_stage_specs(
     gpu_ids: list[int | None],
     nccl_port: int | None,
     recv_endpoint: str,
-    base_factory_kwargs: dict[str, FactoryKwargValueT],
-    typed_kwargs: dict[str, TypedKwargValueT],
+    base_factory_kwargs: Mapping[str, object],
+    typed_kwargs: Mapping[str, object],
     stage_kwargs: dict[str, Any],
 ) -> list[StageLaunchConfig]:
     follower_work_queues = [ctx.Queue() for _ in range(stage_cfg.tp_size - 1)]
@@ -369,9 +366,7 @@ def _build_tp_stage_specs(
         gpu_id = gpu_ids[tp_rank] if tp_rank < len(gpu_ids) else gpu_ids[0]
         if gpu_id is None:
             raise ValueError(f"TP stage {stage_cfg.name!r} requires GPU placement")
-        factory_kwargs: dict[str, FactoryKwargValueT | int | None] = dict(
-            base_factory_kwargs
-        )
+        factory_kwargs: dict[str, object] = dict(base_factory_kwargs)
         factory_kwargs["tp_rank"] = tp_rank
         factory_kwargs["tp_size"] = stage_cfg.tp_size
         factory_kwargs["nccl_port"] = nccl_port
