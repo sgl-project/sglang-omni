@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Generic, TypeVar
 
 import numpy as np
 import torch
@@ -46,20 +46,25 @@ class Connection:
         return self._remote_agents[remote_engine_id]
 
 
-class NixlOperation(RelayOperation):
+NixlMetadataT = TypeVar("NixlMetadataT")
+
+
+class NixlOperation(RelayOperation, Generic[NixlMetadataT]):
     """Base class for async operations."""
 
-    def __init__(self, connection: Connection, metadata: dict[str, Any] | None = None):
+    def __init__(
+        self, connection: Connection, metadata: NixlMetadataT | None = None
+    ) -> None:
         self._conn = connection
         self._metadata = metadata
         self._completed = False
 
     @property
-    def metadata(self) -> dict[str, Any] | None:
+    def metadata(self) -> NixlMetadataT | None:
         return self._metadata
 
 
-class PutOperation(NixlOperation):
+class PutOperation(NixlOperation[NixlMetadataT]):
     """
     Handle for a Put operation.
     Waits for a notification from the receiver indicating they have finished reading.
@@ -69,10 +74,10 @@ class PutOperation(NixlOperation):
     def __init__(
         self,
         connection: Connection,
-        metadata: dict[str, Any],
+        metadata: NixlMetadataT,
         expected_notification: bytes,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata)
         self._expected_notification = expected_notification
         self._on_completion_cb = on_completion_cb
@@ -109,7 +114,7 @@ class PutOperation(NixlOperation):
             self._on_completion_cb()
 
 
-class GetOperation(NixlOperation):
+class GetOperation(NixlOperation[None]):
     """
     Handle for a Get operation.
     Waits for the RDMA transfer handle to complete.
@@ -124,7 +129,7 @@ class GetOperation(NixlOperation):
         dest_tensor: torch.Tensor,
         copy_size: int,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(
             connection, metadata=None
         )  # Get usually doesn't return metadata
@@ -222,7 +227,7 @@ class NixlRelay(Relay):
         request_id: str | None = None,
         dst_rank: int | None = None,
         receiver_id: str | None = None,
-    ) -> PutOperation:
+    ) -> PutOperation[dict[str, object]]:
         """
         Asynchronously put tensor. Returns a PutOperation.
         """
@@ -241,7 +246,7 @@ class NixlRelay(Relay):
 
             # 3. Prepare Metadata
             mem_type = "VRAM" if "cuda" in self.device else "DRAM"
-            payload = {
+            payload: dict[str, object] = {
                 "engine_id": self.engine_id,
                 "agent_meta": self.connection.get_agent_metadata(),
                 "mem_type": mem_type,

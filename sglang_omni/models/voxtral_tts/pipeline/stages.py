@@ -10,7 +10,7 @@ import re
 import tempfile
 import time
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -51,8 +51,8 @@ def _import_mistral_common_for_voxtral():
 def _validate_voxtral_speech_params(
     *,
     inputs: object,
-    params: dict[str, Any],
-    tts_params: dict[str, Any],
+    params: Mapping[str, object],
+    tts_params: Mapping[str, object],
 ) -> None:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):

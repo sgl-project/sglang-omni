@@ -5,7 +5,7 @@ import asyncio
 import logging
 import socket
 import uuid
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Generic, TypeVar
 
 import torch
 
@@ -261,23 +261,27 @@ class MooncakeConnection:
 # Operations Hierarchy
 # ==========================================
 
+MooncakeMetadataT = TypeVar("MooncakeMetadataT")
 
-class MooncakeOperation(RelayOperation):
+
+class MooncakeOperation(RelayOperation, Generic[MooncakeMetadataT]):
     """Base class for Mooncake async operations."""
 
     def __init__(
-        self, connection: MooncakeConnection, metadata: dict[str, Any] | None = None
-    ):
+        self,
+        connection: MooncakeConnection,
+        metadata: MooncakeMetadataT | None = None,
+    ) -> None:
         self._conn = connection
         self._metadata = metadata
         self._completed = False
 
     @property
-    def metadata(self) -> dict[str, Any] | None:
+    def metadata(self) -> MooncakeMetadataT | None:
         return self._metadata
 
 
-class PutOperation(MooncakeOperation):
+class PutOperation(MooncakeOperation[MooncakeMetadataT]):
     """
     Handle for a Put operation.
     In P2P mode, data is prepared in buffer and receiver pulls it.
@@ -287,11 +291,11 @@ class PutOperation(MooncakeOperation):
     def __init__(
         self,
         connection: MooncakeConnection,
-        metadata: dict[str, Any],
+        metadata: MooncakeMetadataT,
         transfer_id: str,
         tensor_ref: torch.Tensor,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata)
         self._transfer_id = transfer_id
         self._tensor_ref = tensor_ref
@@ -317,7 +321,7 @@ class PutOperation(MooncakeOperation):
                 self._on_completion_cb()
 
 
-class GetOperation(MooncakeOperation):
+class GetOperation(MooncakeOperation[None]):
     """
     Handle for a Get operation using memory pool.
     Transfers data from remote peer to memory pool, then copies to dest_tensor.
@@ -333,7 +337,7 @@ class GetOperation(MooncakeOperation):
         size: int,
         transfer_id: str,
         on_completion_cb: Callable[[], None],
-    ):
+    ) -> None:
         super().__init__(connection, metadata=None)
         self._remote_session_id = remote_session_id
         self._local_ptr = local_ptr
@@ -490,7 +494,7 @@ class MooncakeRelay(Relay):
         request_id: str | None = None,
         dst_rank: int | None = None,
         receiver_id: str | None = None,
-    ) -> PutOperation:
+    ) -> PutOperation[dict[str, object]]:
         """
         Asynchronously send tensor via Mooncake using memory pool.
         Copies tensor data to pre-registered memory pool to avoid RDMA registration overhead.
@@ -535,7 +539,7 @@ class MooncakeRelay(Relay):
             buffer_ptr = self.pool_ptr + credit_id
 
             # Prepare metadata for receiver (includes session_id for P2P)
-            metadata = {
+            metadata: dict[str, object] = {
                 "engine_id": self.engine_id,
                 "session_id": self.connection.session_id,  # For P2P handshake
                 "protocol": self.connection.protocol,
