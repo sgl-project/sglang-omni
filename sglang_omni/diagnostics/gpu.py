@@ -10,7 +10,7 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from types import ModuleType
-from typing import Any, TypedDict, TypeVar
+from typing import TypedDict
 
 from sglang_omni.utils.gpu_memory import (
     _decode_nvml_string,
@@ -19,10 +19,6 @@ from sglang_omni.utils.gpu_memory import (
     format_bytes_gib,
     parse_cuda_visible_devices,
 )
-
-IndexDevice = TypeVar("IndexDevice", bound=Mapping[str, object])
-UuidDevice = TypeVar("UuidDevice", bound=Mapping[str, object])
-InventoryDevice = TypeVar("InventoryDevice", bound=Mapping[str, object])
 
 
 class BackendInfo(TypedDict):
@@ -34,6 +30,50 @@ class BackendInfo(TypedDict):
     installed: bool
     importable: bool
     reason: str | None
+
+
+class NvmlSystemInfo(TypedDict):
+    driver_version: str | None
+    cuda_driver_api_version: str | None
+
+
+class NvmlDeviceInfo(TypedDict):
+    physical_index: int
+    uuid: str | None
+    pci_bus_id: str | None
+    name: str | None
+    compute_capability: str | None
+    total_memory_bytes: int | None
+    free_memory_bytes: int | None
+
+
+class LogicalGpuInfo(TypedDict):
+    logical_index: int
+    visible_device: int | str
+    physical_index: int | None
+    uuid: str | None
+    pci_bus_id: str | None
+    name: str | None
+    compute_capability: str | None
+    total_memory_bytes: int | None
+    free_memory_bytes: int | None
+
+
+class GpuEnvironmentInfo(NvmlSystemInfo):
+    cuda_visible_devices: str | None
+    cuda_runtime_version: str | None
+    pytorch_version: str | None
+    pytorch_cuda_build: str | None
+    cuda_available: bool
+    logical_device_count: int
+
+
+class GpuDiagnosticsReport(TypedDict):
+    schema_version: int
+    environment: GpuEnvironmentInfo
+    gpus: list[LogicalGpuInfo]
+    backends: list[BackendInfo]
+    warnings: list[str]
 
 
 _BACKENDS = (
@@ -166,12 +206,12 @@ def _cuda_runtime_version() -> str | None:
 
 def _nvml_inventory(
     pynvml: ModuleType | None,
-) -> tuple[list[dict[str, int | str | None]], dict[str, str | None], list[str]]:
-    system: dict[str, str | None] = {
+) -> tuple[list[NvmlDeviceInfo], NvmlSystemInfo, list[str]]:
+    system: NvmlSystemInfo = {
         "driver_version": None,
         "cuda_driver_api_version": None,
     }
-    inventory: list[dict[str, int | str | None]] = []
+    inventory: list[NvmlDeviceInfo] = []
     warnings: list[str] = []
     if pynvml is None:
         return inventory, system, warnings
@@ -210,7 +250,7 @@ def _nvml_inventory(
             )
             continue
 
-        device: dict[str, int | str | None] = {
+        device: NvmlDeviceInfo = {
             "physical_index": physical_index,
             "uuid": None,
             "pci_bus_id": None,
@@ -262,9 +302,9 @@ def _physical_device(
     logical_index: int,
     properties: object,
     visible_devices: list[int | str],
-    by_index: dict[int, IndexDevice],
-    by_uuid: dict[str, UuidDevice],
-) -> IndexDevice | UuidDevice | dict[str, None]:
+    by_index: dict[int, NvmlDeviceInfo],
+    by_uuid: dict[str, NvmlDeviceInfo],
+) -> NvmlDeviceInfo | dict[str, None]:
     torch_uuid = _normalize_uuid(getattr(properties, "uuid", None))
     if torch_uuid in by_uuid:
         return by_uuid[torch_uuid]
@@ -281,9 +321,9 @@ def _physical_device(
 def _logical_devices(
     torch: ModuleType,
     visible_devices: list[int | str],
-    inventory: list[InventoryDevice],
+    inventory: list[NvmlDeviceInfo],
     warnings: list[str],
-) -> list[dict[str, Any]]:
+) -> list[LogicalGpuInfo]:
     if not torch.cuda.is_available():
         return []
 
@@ -293,7 +333,7 @@ def _logical_devices(
         for device in inventory
         if (uuid := _normalize_uuid(device.get("uuid"))) is not None
     }
-    devices = []
+    devices: list[LogicalGpuInfo] = []
     for logical_index in range(int(torch.cuda.device_count())):
         try:
             properties = torch.cuda.get_device_properties(logical_index)
@@ -344,7 +384,7 @@ def collect_gpu_diagnostics(
     env: Mapping[str, str] | None = None,
     torch_module: ModuleType | None = None,
     pynvml_module: ModuleType | None = None,
-) -> dict[str, Any]:
+) -> GpuDiagnosticsReport:
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
@@ -385,7 +425,7 @@ def collect_gpu_diagnostics(
     }
 
 
-def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
+def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
     """Render a compact diagnostic summary for terminal output."""
 
     environment = report["environment"]
