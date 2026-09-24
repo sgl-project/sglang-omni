@@ -14,6 +14,7 @@ from sglang_omni.models.sensenova_u1.neo_unify.configuration_neo_chat import (
 from sglang_omni.models.sensenova_u1.neo_unify.modeling_neo_chat import (
     NEOChatModel,
     _copy_right_aligned_prefix_bnsd,
+    _prepare_i2i_flash_kv_cache,
     _randn_with_seed,
     prepare_flash_kv_cache,
 )
@@ -51,6 +52,25 @@ def test_right_aligns_bnsd_prefix_for_npu_fia():
         [3, 4, 5, 6, 7],
     ]
     assert destination[:, :, 5:].eq(0).all()
+
+
+@pytest.mark.parametrize("prefix_length", [2, 5, 9])
+def test_prepares_each_i2i_prefix_length_for_attention(prefix_length):
+    batch_size = 2
+    cache = DynamicCache()
+    cache.update(
+        torch.zeros(batch_size, 2, prefix_length, 4),
+        torch.zeros(batch_size, 2, prefix_length, 4),
+        layer_idx=0,
+    )
+
+    _prepare_i2i_flash_kv_cache(cache, current_len=3, batch_size=batch_size)
+
+    layer = cache.layers[0]
+    assert layer.flash_cache_layout == "BSND"
+    assert layer.flash_actual_seq_lengths_kv == [prefix_length + 3] * batch_size
+    assert layer.flash_k_cache.shape == (batch_size, prefix_length + 3, 2, 4)
+    assert layer.flash_v_cache.shape == (batch_size, prefix_length + 3, 2, 4)
 
 
 def _force_generator_fallback(monkeypatch, device_type):
@@ -323,7 +343,8 @@ def test_batched_gqa_matches_unpadded_singletons():
 
 
 @torch.no_grad()
-def test_prefix_and_denoise_attention_match_singletons():
+def test_prefix_and_denoise_attention_match_singletons(monkeypatch):
+    monkeypatch.setattr(model_platform, "is_npu", lambda: False)
     config = NEOLLMConfig(
         hidden_size=64,
         intermediate_size=128,
