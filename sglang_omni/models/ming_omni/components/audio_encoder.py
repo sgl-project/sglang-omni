@@ -26,7 +26,7 @@ def autocast_context(tensor: torch.Tensor):
     return torch.autocast(
         device_type=device_type,
         dtype=torch.bfloat16,
-        enabled=device_type in {"cuda", "npu"},
+        enabled=device_type in {"cuda", "npu", "xpu"},
     )
 
 

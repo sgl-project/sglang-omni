@@ -32,11 +32,22 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
         def sample(self, _hidden, _history, noise, *_args, **_kwargs):
             return noise + 1
 
+    @contextmanager
+    def _fake_attention_pin():
+        events.append(("pin_enter",))
+        try:
+            yield
+        finally:
+            events.append(("pin_exit",))
+
     get_backend = Mock(return_value=_FakeGraphBackend())
     monkeypatch.setattr(
         talker_model,
         "current_platform",
-        SimpleNamespace(get_device_graph_backend=get_backend),
+        SimpleNamespace(
+            get_device_graph_backend=get_backend,
+            graph_capture_attention=_fake_attention_pin,
+        ),
     )
     executor = talker_model.CFMGraphExecutor(
         SimpleNamespace(steps=2, patch_size=2),
@@ -54,7 +65,7 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
     assert executor.initialized is True
     assert executor.graph is graph
     get_backend.assert_called_once_with(input_tensor.device)
-    assert events == [("capture", True)]
+    assert events == [("pin_enter",), ("capture", True), ("pin_exit",)]
 
 
 def test_use_torch_attention_overrides_both_talker_backends() -> None:

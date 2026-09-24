@@ -134,9 +134,11 @@ class BailingMoeV2Attention(nn.Module):
         else:
             pass
 
-        # RoPE - using partial rotary factor
+        # RoPE - using partial rotary factor. Given the true head size and a
+        # smaller rotary_dim, the rope rotates each head's leading rotary_dim
+        # channels and passes the rest through, so the whole head goes in.
         self.rotary_emb = get_rope(
-            self.rotary_dim,
+            self.head_dim,
             rotary_dim=self.rotary_dim,
             max_position=config.max_position_embeddings,
             base=config.rope_theta,
@@ -172,16 +174,7 @@ class BailingMoeV2Attention(nn.Module):
         else:
             pass
 
-        # Partial RoPE: only apply to first rotary_dim dimensions
-        q_rot = q[..., : self.rotary_dim]
-        q_pass = q[..., self.rotary_dim :]
-        k_rot = k[..., : self.rotary_dim]
-        k_pass = k[..., self.rotary_dim :]
-
-        q_rot, k_rot = self.rotary_emb(forward_batch.positions, q_rot, k_rot)
-
-        q = torch.cat([q_rot, q_pass], dim=-1)
-        k = torch.cat([k_rot, k_pass], dim=-1)
+        q, k = self.rotary_emb(forward_batch.positions, q, k)
 
         return q, k, v
 
@@ -194,7 +187,9 @@ class BailingMoeV2Attention(nn.Module):
     ) -> torch.Tensor:
         """Attention computation with paged KV cache."""
         attn_output = self.attn(q, k, v, forward_batch)
-        return attn_output
+        # SGLang sizes the attention output like q, so per-head q comes back
+        # per-head; o_proj needs one row per token.
+        return attn_output.reshape(-1, self.num_heads_per_tp * self.head_dim)
 
     def forward(
         self,

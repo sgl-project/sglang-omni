@@ -97,6 +97,75 @@ def test_ming_image_encoder_tp_init_requires_parallel_state() -> None:
     assert 'if getattr(dp, "_ATTN_TP_SIZE", None) is not None' not in init_fn
 
 
+def test_ming_thinker_builds_its_rope_over_the_whole_head() -> None:
+    source = _read(MING_THINKER_PATH)
+    attention_init = source.split("self.rotary_emb = get_rope(", 1)[1].split(")", 1)[0]
+
+    assert "self.head_dim," in attention_init
+    assert "rotary_dim=self.rotary_dim," in attention_init
+
+
+def test_ming_thinker_attention_returns_the_ropes_own_heads() -> None:
+    import torch
+
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2Attention
+
+    head_dim, num_heads, num_kv_heads, num_tokens = 8, 2, 1, 3
+    attention = BailingMoeV2Attention.__new__(BailingMoeV2Attention)
+    attention.head_dim = head_dim
+    attention.rotary_dim = head_dim // 2
+    attention.num_heads_per_tp = num_heads
+    attention.num_kv_heads_per_tp = num_kv_heads
+    attention.q_size = num_heads * head_dim
+    attention.kv_size = num_kv_heads * head_dim
+    attention.use_qk_norm = False
+
+    widths: list[int] = []
+
+    def fake_rope(positions, query, key):
+        widths.append(query.shape[-1])
+        widths.append(key.shape[-1])
+        return query + 1, key + 2
+
+    attention.qkv_proj = lambda hidden_states: (hidden_states, None)
+    attention.rotary_emb = fake_rope
+
+    hidden_states = torch.arange(
+        num_tokens * (attention.q_size + 2 * attention.kv_size), dtype=torch.float32
+    ).reshape(num_tokens, -1)
+    forward_batch = SimpleNamespace(positions=torch.arange(num_tokens))
+
+    q, k, v = attention.forward_prepare(hidden_states, forward_batch)
+
+    assert widths == [head_dim, head_dim]
+    assert q.shape == (num_tokens, num_heads, head_dim)
+    assert k.shape == (num_tokens, num_kv_heads, head_dim)
+    assert v.shape == (num_tokens, num_kv_heads, head_dim)
+    expected = hidden_states.split(
+        [attention.q_size, attention.kv_size, attention.kv_size], dim=-1
+    )
+    assert torch.equal(q, expected[0].view(num_tokens, num_heads, head_dim) + 1)
+    assert torch.equal(k, expected[1].view(num_tokens, num_kv_heads, head_dim) + 2)
+    assert torch.equal(v, expected[2].view(num_tokens, num_kv_heads, head_dim))
+
+
+def test_ming_thinker_attention_feeds_o_proj_one_row_per_token() -> None:
+    import torch
+
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2Attention
+
+    head_dim, num_heads, num_tokens = 8, 2, 3
+    attention = BailingMoeV2Attention.__new__(BailingMoeV2Attention)
+    attention.head_dim = head_dim
+    attention.num_heads_per_tp = num_heads
+    attention.attn = lambda q, k, v, forward_batch: torch.empty_like(q)
+
+    q = torch.zeros(num_tokens, num_heads, head_dim)
+    out = attention.forward_core(q, q, q, SimpleNamespace())
+
+    assert out.shape == (num_tokens, num_heads * head_dim)
+
+
 def test_vendored_sglang_layers_do_not_import_removed_sampling_symbol() -> None:
     source = _read(VENDOR_SGLANG_LAYERS_PATH)
 
