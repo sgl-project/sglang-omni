@@ -10,16 +10,24 @@ from sglang_omni.models.dots_tts.engine_builder import DotsTTSEngineBuilder
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 
-def test_dots_engine_uses_shared_tts_builder() -> None:
-    builder = DotsTTSEngineBuilder(optimize=True)
+@pytest.mark.parametrize("padding", [None, False, True])
+def test_dots_engine_uses_shared_tts_builder(padding: bool | None) -> None:
+    options = {} if padding is None else {"enable_acoustic_tail_batch_padding": padding}
+    builder = DotsTTSEngineBuilder(optimize=True, **options)
 
     assert isinstance(builder, TtsEngineBuilder)
     assert builder.optimize is True
+    assert builder.enable_acoustic_tail_batch_padding is (padding is not False)
     assert builder.generation_defaults(dtype="bfloat16")["max_running_requests"] == 16
 
 
 def test_dots_engine_accepts_continuous_batching() -> None:
     DotsTTSEngineBuilder().adjust_overrides({"tp_size": 1, "max_running_requests": 16})
+
+
+def test_dots_engine_rejects_string_batch_padding_flag() -> None:
+    with pytest.raises(TypeError, match="must be a boolean"):
+        DotsTTSEngineBuilder(enable_acoustic_tail_batch_padding="false")
 
 
 @pytest.mark.parametrize(
