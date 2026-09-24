@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Lint and optionally fill if statements that have no else.
+"""Lint if statements that have no else. Checking does not rewrite files.
 
 Every Python file under sglang_omni/ is in scope, including files added later.
 Vendor copies are ignored. An if/elif chain is legal only when it ends in else.
 A bare if, including one that returns or raises, is a violation. There is no
 noqa exemption.
 
---fix appends an else: pass suite after each violating if. The else lines use
-the if/elif indent, and pass uses the suite indent.
+The default run only reports violations. Prefer a real else branch. At least
+write else: pass. --fix is the same insertion, kept for when that is the
+branch you want. Pre-commit does not pass --fix.
 """
 
 from __future__ import annotations
@@ -163,7 +164,7 @@ def format_violation(violation: Violation) -> str:
     rel = repo_relative(violation.path)
     return (
         f"{rel}:{violation.lineno}:{violation.col}: "
-        "if without else; add an else suite, or run with --fix"
+        "if without else. At least use `else: pass` to fix this lint"
     )
 
 
@@ -175,7 +176,9 @@ def report_violations(violations: list[Violation]) -> int:
     for violation in violations:
         print(format_violation(violation), file=sys.stderr)
     print(
-        f"{len(violations)} if statement(s) without else in sglang_omni/",
+        f"{len(violations)} if statement(s) without else in sglang_omni/. "
+        "At least use `else: pass` to fix this lint, "
+        "or run `python scripts/check_if_else.py --fix`.",
         file=sys.stderr,
     )
     return 1
@@ -230,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--fix",
         action="store_true",
-        help="Insert else: pass after every if that has no else",
+        help="Last resort: insert else: pass after every if that has no else",
     )
     args = parser.parse_args(argv)
     targets = resolve_targets(args.paths)

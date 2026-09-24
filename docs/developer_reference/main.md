@@ -101,15 +101,15 @@ python scripts/check_leading_underscore.py
 
 Every `if` under `sglang_omni/` must have an `else`, or belong to an `if`/`elif`
 chain that ends in `else`. Returning, raising, or a one-line body does not
-exempt it. There is no `# noqa` exemption. When the other branch does nothing,
-write `else: pass`.
+exempt it. There is no `# noqa` exemption. Prefer an `else` branch that does
+real work. At least write `else: pass`.
 
-The pre-commit hook runs `scripts/check_if_else.py` and fails on any missing
-`else`. To insert `else: pass` after each violating `if`:
+The pre-commit hook runs `scripts/check_if_else.py` and only reports
+violations. It does not rewrite files. When the other branch truly does
+nothing, insert `else: pass` yourself, or run the fixer:
 
 ```bash
 python scripts/check_if_else.py --fix
-python scripts/check_if_else.py
 ```
 
 Run `pre-commit run --all-files` before submitting a change.

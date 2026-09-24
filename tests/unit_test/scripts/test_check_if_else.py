@@ -67,7 +67,8 @@ def test_noqa_comment_does_not_exempt_a_bare_if() -> None:
     with probe_model_file(source) as probe:
         result = run_checker(str(probe))
         assert result.returncode == 1
-        assert "if without else" in result.stderr
+        assert "At least use `else: pass` to fix this lint" in result.stderr
+        assert "python scripts/check_if_else.py --fix" in result.stderr
 
 
 def test_fix_fills_nested_one_line_and_elif() -> None:
