@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
@@ -32,7 +33,7 @@ class Qwen3TTSState(DeclarativeStateBase):
     non_streaming_mode: bool = wire(False, codec="bool")
     stream_codec_output: bool = wire(True, codec="bool")
     suppress_bootstrap_silence: bool = wire(False, codec="bool")
-    generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
+    generation_kwargs: Mapping[str, object] = wire(default_factory=dict, codec="dict")
     seed: int | None = None
     audio_codes: torch.Tensor | list[list[int]] | None = wire(None, codec="tensor_list")
     finish_reason: str | None = None

@@ -203,7 +203,7 @@ class CosyVoice3PreparedRequest:
     flow_prompt_speech_token: torch.Tensor
     flow_prompt_speech_feat: torch.Tensor
     flow_embedding: torch.Tensor
-    gen_kwargs: dict[str, Any]
+    gen_kwargs: Mapping[str, object]
     # Target text token count, captured before the reference prompt (ref_text
     # / instructions / cross-lingual prefix) is concatenated. CosyVoice3's
     # upstream generation-length contract is defined in terms of this count,

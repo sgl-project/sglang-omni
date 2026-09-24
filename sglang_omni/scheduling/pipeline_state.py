@@ -263,7 +263,7 @@ class DeclarativeStateBase(PipelineStateBase):
     def from_dict(cls: type[StateT], data: object) -> StateT:
         if not isinstance(data, dict):
             data = {}
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, object] = {}
         for f in dataclasses.fields(cls):
             spec = _spec_of(f)
             if spec.codec == "typed_tensor":

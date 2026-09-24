@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from numpy.typing import ArrayLike
 
@@ -28,7 +29,7 @@ class FunCosyVoice3State(DeclarativeStateBase):
     stream: bool = wire(False, codec="bool")
     speed: float = wire(1.0, codec="float")
     seed: int | None = None
-    generation_kwargs: dict[str, Any] = wire(default_factory=dict, codec="dict")
+    generation_kwargs: Mapping[str, object] = wire(default_factory=dict, codec="dict")
     flow_embedding: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
     flow_prompt_speech_token: ArrayLike | torch.Tensor | None = wire(
         None, codec="tensor_list"

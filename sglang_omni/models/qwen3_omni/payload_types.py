@@ -4,14 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 
 
 class PromptInputs(TypedDict):
     """Tokenized prompt inputs for the thinker."""
 
-    input_ids: Any
-    attention_mask: Any
+    input_ids: object
+    attention_mask: object
     prompt_text: str
 
 
@@ -37,13 +37,13 @@ class Qwen3OmniPipelineState:
 
     raw_inputs: object | None = None
     prompt: PromptInputs | None = None
-    mm_inputs: dict[str, Any] = field(default_factory=dict)
-    encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mm_inputs: dict[str, dict[str, object]] = field(default_factory=dict)
+    encoder_inputs: dict[str, dict[str, object]] = field(default_factory=dict)
     encoder_outs: dict[str, object] = field(default_factory=dict)
-    thinker_inputs: dict[str, Any] = field(default_factory=dict)
+    thinker_inputs: dict[str, object] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, object] = field(default_factory=dict)
-    stream_state: dict[str, Any] = field(default_factory=dict)
+    stream_state: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: object) -> "Qwen3OmniPipelineState":

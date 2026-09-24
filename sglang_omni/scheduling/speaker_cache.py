@@ -6,7 +6,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any
 
 import numpy as np
 
@@ -42,7 +41,7 @@ class SpeakerArtifactCache:
         self._delete_invalidation_counter = 0
         self._lock = RLock()
 
-    def get(self, key: SpeakerCacheKey) -> Any | None:
+    def get(self, key: SpeakerCacheKey) -> object | None:
         with self._lock:
             value = self._cache.get(_encode_key(key))
             if value is None:

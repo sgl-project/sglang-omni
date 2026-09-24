@@ -6,7 +6,6 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 
@@ -99,7 +98,7 @@ class StageOutputCache:
         self._size_fn = size_fn or _value_size_bytes
         self._lock = threading.Lock()
 
-    def get(self, key: str | None) -> Any | None:
+    def get(self, key: str | None) -> object | None:
         if key is None:
             return None
         key = str(key)
