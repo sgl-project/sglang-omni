@@ -623,6 +623,16 @@ and update any affected cross-file callers explicitly. To check without editing:
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/check_leading_underscore.py
 </pre></div>
 </div>
+<p>Every <code class="docutils literal notranslate"><span class="pre">if</span></code> under <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code> must have an <code class="docutils literal notranslate"><span class="pre">else</span></code>, or belong to an <code class="docutils literal notranslate"><span class="pre">if</span></code>/<code class="docutils literal notranslate"><span class="pre">elif</span></code>
+chain that ends in <code class="docutils literal notranslate"><span class="pre">else</span></code>. Returning, raising, or a one-line body does not
+exempt it. There is no <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">noqa</span></code> exemption. Prefer an <code class="docutils literal notranslate"><span class="pre">else</span></code> branch that does
+real work. At least write <code class="docutils literal notranslate"><span class="pre">else:</span> <span class="pre">pass</span></code>.</p>
+<p>The pre-commit hook runs <code class="docutils literal notranslate"><span class="pre">scripts/check_if_else.py</span></code> and only reports
+violations. It does not rewrite files. When the other branch truly does
+nothing, insert <code class="docutils literal notranslate"><span class="pre">else:</span> <span class="pre">pass</span></code> yourself, or run the fixer:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/check_if_else.py<span class="w"> </span>--fix
+</pre></div>
+</div>
 <p>Run <code class="docutils literal notranslate"><span class="pre">pre-commit</span> <span class="pre">run</span> <span class="pre">--all-files</span></code> before submitting a change.</p>
 </section>
 </section>
