@@ -31,7 +31,7 @@ class ThinkerOutput(TypedDict, total=False):
     output_ids: list[int]
     step: int
     is_final: bool
-    extra_model_outputs: dict[str, Any]
+    extra_model_outputs: dict[str, object]
 
 
 @dataclass
@@ -46,10 +46,10 @@ class MingOmniPipelineState:
     prompt: PromptInputs | None = None
     mm_inputs: dict[str, Any] = field(default_factory=dict)
     encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
-    encoder_outs: dict[str, Any] = field(default_factory=dict)
+    encoder_outs: dict[str, object] = field(default_factory=dict)
     thinker_inputs: dict[str, Any] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
-    engine_outputs: dict[str, Any] = field(default_factory=dict)
+    engine_outputs: dict[str, object] = field(default_factory=dict)
     stream_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -114,5 +114,5 @@ class MingOmniEvent:
 
     type: MingOmniEventType
     modality: str
-    payload: dict[str, Any]
+    payload: dict[str, object]
     is_final: bool = False

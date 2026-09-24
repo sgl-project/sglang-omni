@@ -72,7 +72,11 @@ def test_audio_encoder_batch_dedups_same_cache_key() -> None:
     assert model.calls == [2]
     assert len(out) == 3
     states = [Qwen3OmniPipelineState.from_dict(p.data) for p in out]
-    embeds = [s.encoder_outs["audio_encoder"]["audio_embeds"] for s in states]
+    embeds = []
+    for s in states:
+        encoder_out = s.encoder_outs["audio_encoder"]
+        assert isinstance(encoder_out, dict)
+        embeds.append(encoder_out["audio_embeds"])
     assert all(e.shape[0] == n for e, n in zip(embeds, [3, 5, 3]))
     assert torch.equal(embeds[0], embeds[2])
 
@@ -112,6 +116,8 @@ def test_audio_encoder_cache_preserves_hits_in_mixed_batch():
         new_state = Qwen3OmniPipelineState.from_dict(new.data).encoder_outs[
             "audio_encoder"
         ]
+        assert isinstance(old_state, dict)
+        assert isinstance(new_state, dict)
         assert old_state.keys() == new_state.keys()
         for key in old_state:
             assert torch.equal(old_state[key], new_state[key])
@@ -146,12 +152,11 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
     first = _batch_audio_encoder_payloads(
         [_payload("a1", "a", 3)], model=model, cache=cache
     )
-    expected = {
-        key: value.cpu().clone()
-        for key, value in Qwen3OmniPipelineState.from_dict(first[0].data)
-        .encoder_outs["audio_encoder"]
-        .items()
-    }
+    first_encoder_out = Qwen3OmniPipelineState.from_dict(first[0].data).encoder_outs[
+        "audio_encoder"
+    ]
+    assert isinstance(first_encoder_out, dict)
+    expected = {key: value.cpu().clone() for key, value in first_encoder_out.items()}
     _batch_audio_encoder_payloads([_payload("b", "b", 5)], model=model, cache=cache)
     again = _batch_audio_encoder_payloads(
         [_payload("a2", "a", 3)], model=model, cache=cache
@@ -160,6 +165,7 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
     actual = Qwen3OmniPipelineState.from_dict(again[0].data).encoder_outs[
         "audio_encoder"
     ]
+    assert isinstance(actual, dict)
     for key, value in expected.items():
         assert actual[key].device.type == "cpu"
         assert torch.equal(actual[key], value)

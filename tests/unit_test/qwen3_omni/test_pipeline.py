@@ -242,6 +242,7 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
     assert state.thinker_inputs == {}
     assert state.thinker_out["output_ids"] == [3]
     assert state.thinker_out["extra_model_outputs"] == {}
+    assert isinstance(state.engine_outputs["thinker"], dict)
     assert state.engine_outputs["thinker"]["output_ids"] == [3]
     assert state.engine_outputs["thinker"]["extra_model_outputs"] == {}
 
@@ -279,6 +280,7 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
 
     assert thinker_out["output_token_logprobs"] == []
     assert state.thinker_out["output_token_logprobs"] == []
+    assert isinstance(state.engine_outputs["thinker"], dict)
     assert state.engine_outputs["thinker"]["output_token_logprobs"] == []
 
 

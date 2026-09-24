@@ -64,6 +64,7 @@ def test_encoder_to_talker_projection_strips_deepstack_encoder_outs() -> None:
         make_stage_payload(data=state.to_dict(), request_id="req-1")
     )
     out = Qwen3OmniPipelineState.from_dict(projected.data).encoder_outs["image_encoder"]
+    assert isinstance(out, dict)
     for dropped in (
         "deepstack_visual_embeds_image",
         "deepstack_visual_embeds_video",
