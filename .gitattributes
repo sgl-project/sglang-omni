@@ -1,0 +1,4 @@
+# Shell scripts must use LF even on Windows checkouts, otherwise bash cannot
+# parse them (CRLF makes `() {` tokens break).
+*.sh text eol=lf
+*.bash text eol=lf
