@@ -436,7 +436,7 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
     def forward(
         self,
         x: torch.Tensor,
-        **kwargs: Any,
+        **kwargs: Unpack[AttentionKwargs],
     ) -> torch.Tensor:
         execution_context = kwargs.pop("execution_context", None)
         state = self._streaming_state
@@ -1105,13 +1105,6 @@ class _PatchedPretransform(nn.Module):
         return x, input_lengths * self.patch_size
 
 
-def _weight_normalized_conv1d(
-    *args: Any,
-    **kwargs: Any,
-) -> nn.Module:
-    return nn.utils.parametrizations.weight_norm(nn.Conv1d(*args, **kwargs))
-
-
 class _LFQ(nn.Module):
     def __init__(
         self,
@@ -1123,23 +1116,27 @@ class _LFQ(nn.Module):
     ) -> None:
         super().__init__()
         self.in_proj = (
-            _weight_normalized_conv1d(
-                input_dim,
-                codebook_dim,
-                kernel_size=1,
-                device=device,
-                dtype=torch.float32,
+            nn.utils.parametrizations.weight_norm(
+                nn.Conv1d(
+                    input_dim,
+                    codebook_dim,
+                    kernel_size=1,
+                    device=device,
+                    dtype=torch.float32,
+                )
             )
             if input_dim != codebook_dim
             else nn.Identity()
         )
         self.out_proj = (
-            _weight_normalized_conv1d(
-                codebook_dim,
-                input_dim,
-                kernel_size=1,
-                device=device,
-                dtype=torch.float32,
+            nn.utils.parametrizations.weight_norm(
+                nn.Conv1d(
+                    codebook_dim,
+                    input_dim,
+                    kernel_size=1,
+                    device=device,
+                    dtype=torch.float32,
+                )
             )
             if input_dim != codebook_dim
             else nn.Identity()
@@ -1189,23 +1186,27 @@ class _ResidualLFQ(nn.Module):
         codebook_size = int(config.get("codebook_size", 1024))
         codebook_dim = int(config.get("codebook_dim", 8))
         self.input_proj = (
-            _weight_normalized_conv1d(
-                input_dim,
-                rvq_dim,
-                kernel_size=1,
-                device=device,
-                dtype=torch.float32,
+            nn.utils.parametrizations.weight_norm(
+                nn.Conv1d(
+                    input_dim,
+                    rvq_dim,
+                    kernel_size=1,
+                    device=device,
+                    dtype=torch.float32,
+                )
             )
             if input_dim != rvq_dim
             else nn.Identity()
         )
         self.output_proj = (
-            _weight_normalized_conv1d(
-                rvq_dim,
-                output_dim,
-                kernel_size=1,
-                device=device,
-                dtype=torch.float32,
+            nn.utils.parametrizations.weight_norm(
+                nn.Conv1d(
+                    rvq_dim,
+                    output_dim,
+                    kernel_size=1,
+                    device=device,
+                    dtype=torch.float32,
+                )
             )
             if rvq_dim != output_dim
             else nn.Identity()
