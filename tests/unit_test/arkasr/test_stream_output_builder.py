@@ -55,7 +55,7 @@ def _make_req_data(
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 
-def _make_req_output(token_id: int | None) -> Any:
+def _make_req_output(token_id: int | None) -> SimpleNamespace:
     return SimpleNamespace(data=token_id)
 
 

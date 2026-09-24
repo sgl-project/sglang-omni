@@ -72,7 +72,7 @@ def _make_req_data(
     )
 
 
-def _make_req_output(token_id: int | None) -> Any:
+def _make_req_output(token_id: int | None) -> SimpleNamespace:
     return SimpleNamespace(data=token_id)
 
 

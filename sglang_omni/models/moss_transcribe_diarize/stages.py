@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from types import ModuleType
-from typing import Any
 
 from transformers import AutoConfig, GenerationConfig
 
@@ -28,7 +27,7 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
     import transformers.utils.hub as hub_utils
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    patched: list[tuple[Any, Callable[..., list[str]]]] = []
+    patched: list[tuple[ModuleType, Callable[..., list[str]]]] = []
 
     def patch_list_repo_templates(
         module: ModuleType,
