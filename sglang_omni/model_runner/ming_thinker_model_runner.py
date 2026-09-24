@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, SupportsIndex, SupportsInt
 
 import torch
@@ -178,7 +179,9 @@ class MingThinkerModelRunner(ModelRunner):
 
     @staticmethod
     def _resolve_match_id(
-        pad_values: dict[str, Any], modality: str, token_id: int | None
+        pad_values: Mapping[str, str | Buffer | SupportsInt | SupportsIndex],
+        modality: str,
+        token_id: int | None,
     ) -> int | None:
         if modality in pad_values:
             return int(pad_values[modality])

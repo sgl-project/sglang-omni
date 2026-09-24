@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -25,7 +25,7 @@ _S2PRO_GRAPH_TOP_K = 30
 class S2ProSGLangRequestData(SGLangARRequestData):
     """S2-Pro per-request state."""
 
-    vq_mask_tokens: Any = None
+    vq_mask_tokens: torch.Tensor | None = None
     vq_parts: list[torch.Tensor] | None = None
     num_codebooks: int = 10
     codebook_size: int = 4096

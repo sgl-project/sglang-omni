@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -23,7 +24,9 @@ class S2ProState(DeclarativeStateBase):
     vq_mask_tokens: torch.Tensor | list[bool] | None = wire(
         None, codec="tensor_list"
     )  # [seq_len] bool
-    vq_parts: Any | None = wire(None, codec="tensor_items")  # [num_codebooks, T_i]
+    vq_parts: Sequence[torch.Tensor | list[list[int]]] | None = wire(
+        None, codec="tensor_items"
+    )  # [num_codebooks, T_i]
     num_codebooks: int = 10
     codebook_size: int = 4096
 

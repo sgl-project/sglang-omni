@@ -102,6 +102,8 @@ def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     )
     restored = S2ProState.from_dict(state.to_dict())
     assert restored.input_ids == [1, 2, 3]
+    assert restored.vq_parts is not None
+    assert isinstance(restored.vq_parts[0], torch.Tensor)
     assert torch.equal(restored.vq_parts[0], torch.tensor([[10, 11], [20, 21]]))
     assert torch.equal(
         restored.output_codes, torch.tensor([[100, 101], [1, 2], [3, 4]])
@@ -428,6 +430,7 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
 
     req_data = build_sglang_tts_request(state, tokenizer, request_id="req-1")
     assert torch.equal(req_data.input_ids, torch.tensor([10, 11, 12]))
+    assert isinstance(req_data.vq_mask_tokens, torch.Tensor)
     assert req_data.vq_mask_tokens.dtype == torch.bool
     assert torch.equal(req_data.vq_parts[0], torch.tensor([[1, 2], [3, 4]]))
     assert req_data.req.eos_token_ids == {99}

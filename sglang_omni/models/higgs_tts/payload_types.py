@@ -14,6 +14,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 if TYPE_CHECKING:
     import torch
 
+    from sglang_omni.models.higgs_tts.rollout_trace import HiggsRolloutTrace
+
 
 @dataclass
 class HiggsTtsState(DeclarativeStateBase):
@@ -49,7 +51,7 @@ class HiggsTtsState(DeclarativeStateBase):
 
     # tts_engine
     output_codes_delayed: list[list[int]] | None = None
-    omni_rollout: dict[str, Any] | None = None
+    omni_rollout: HiggsRolloutTrace | dict[str, Any] | None = None
 
     # vocoder
     audio_samples: Any | None = None
