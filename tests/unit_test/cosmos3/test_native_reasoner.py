@@ -1,0 +1,512 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+import asyncio
+import json
+import queue
+import threading
+import time
+from contextlib import contextmanager
+from types import SimpleNamespace
+
+import pytest
+
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateRequest
+from sglang_omni.models.cosmos3.config import Cosmos3ReasonerPipelineConfig, Variants
+from sglang_omni.models.cosmos3.reasoner import (
+    NativeReasonerScheduler,
+    build_chat_fields,
+    create_reasoner_scheduler,
+    native_reasoner_kwargs,
+)
+from sglang_omni.proto import OmniRequest, StagePayload, StreamMessage
+from sglang_omni.scheduling.message import IncomingMessage
+
+
+class NativeRequest(SimpleNamespace):
+    model_fields = {
+        "model",
+        "messages",
+        "rid",
+        "n",
+        "temperature",
+        "seed",
+        "max_tokens",
+        "stream",
+        "logprobs",
+        "return_meta_info",
+        "return_token_ids",
+    }
+
+
+def payload(request_id="r1", inputs="Describe the scene", **params):
+    return StagePayload(request_id, OmniRequest(inputs, params), None)
+
+
+class Engine:
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.server_args = SimpleNamespace(served_model_name=None)
+        self.shutdown_count = 0
+        self.aborts = []
+        self.tokenizer_manager = SimpleNamespace(
+            abort_request=self.abort_request, served_model_name="cosmos3"
+        )
+
+    def abort_request(self, rid="", abort_all=False):
+        assert asyncio.get_running_loop() is self.loop
+        self.aborts.append((rid, abort_all))
+
+    def shutdown(self):
+        self.shutdown_count += 1
+
+
+class Chat:
+    def __init__(self, engine):
+        self.engine = engine
+        self.calls = []
+        self.started = threading.Event()
+        self.active = 0
+        self.peak = 0
+        self.closed_streams = 0
+        self.background_count = 0
+        self.release = None
+
+    async def handle_request(self, request, raw_request):
+        assert asyncio.get_running_loop() is self.engine.loop
+        assert raw_request is None
+        self.calls.append(request)
+        self.started.set()
+        message = request.messages[0]
+        content = message["content"] if isinstance(message, dict) else message.content
+        if content == "hang":
+            await asyncio.Event().wait()
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            if content == "wait for release":
+                if self.release is None:
+                    self.release = asyncio.Event()
+                await self.release.wait()
+            else:
+                await asyncio.sleep(0.02)
+        finally:
+            self.active -= 1
+        if getattr(request, "stream", False):
+
+            async def frames():
+                try:
+                    for text in ["你", "好", " 👩🏽‍🚀", " e\u0301"]:
+                        yield "data: " + json.dumps(
+                            {
+                                "choices": [
+                                    {"delta": {"content": text}, "finish_reason": None}
+                                ]
+                            }
+                        ) + "\n\n"
+                        if content == "fail after first delta":
+                            yield 'data: {"error": {"message": "native failure"}}\n\n'
+                    yield 'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}\n\n'
+                    yield 'data: {"choices": [], "usage": {"completion_tokens": 4}}\n\n'
+                    yield "data: [DONE]\n\n"
+                finally:
+                    self.closed_streams += 1
+
+            async def background():
+                # The native disconnect abort sleeps before it inspects the
+                # request. Awaiting it on the completion path adds that
+                # sleep to every streamed completion.
+                self.background_count += 1
+                await asyncio.sleep(2)
+
+            return SimpleNamespace(body_iterator=frames(), background=background)
+        return {
+            "choices": [
+                {
+                    "message": {"content": "你好"},
+                    "finish_reason": "length",
+                    "response_token_ids": [1, 2],
+                    "meta_info": {
+                        "output_token_logprobs": [[-0.1, 1, "你"], [-0.2, 2, "好"]]
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+        }
+
+
+@contextmanager
+def running(*, request_type=NativeRequest):
+    engine = Engine()
+    chat = Chat(engine)
+    scheduler = NativeReasonerScheduler(engine, chat, request_type)
+    thread = threading.Thread(target=scheduler.start)
+    thread.start()
+    try:
+        yield scheduler, engine, chat
+    finally:
+        scheduler.stop()
+        scheduler.stop()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+        assert not scheduler.loop_thread.is_alive()
+        assert engine.loop.is_closed()
+        assert engine.shutdown_count == 1
+
+
+def test_native_loop_thread_selects_the_serving_device(monkeypatch):
+    from sglang_omni.platforms import current_platform
+
+    selected: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        current_platform,
+        "set_device",
+        lambda device: selected.append((threading.current_thread().name, device)),
+    )
+    engine = Engine()
+    scheduler = NativeReasonerScheduler(engine, Chat(engine), NativeRequest, device=5)
+    thread = threading.Thread(target=scheduler.start)
+    thread.start()
+    try:
+        assert selected == [("cosmos3-native-tokenizer", 5)]
+    finally:
+        scheduler.stop()
+        thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
+def enqueue(scheduler, item):
+    scheduler.enqueue(IncomingMessage(item.request_id, "new_request", item))
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "resolved_name"),
+    [(None, "/models/Cosmos3/transformer"), ("cosmos-alias", "cosmos-alias")],
+)
+def test_native_chat_request_uses_resolved_serving_model_name(raw_name, resolved_name):
+    from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
+
+    with running(request_type=ChatCompletionRequest) as (scheduler, engine, chat):
+        engine.server_args.served_model_name = raw_name
+        engine.tokenizer_manager.served_model_name = resolved_name
+        enqueue(scheduler, payload(response_format={"type": "json_object"}))
+        result = scheduler.outbox.get(timeout=3)
+        assert result.type == "result"
+        request = chat.calls[0]
+        assert isinstance(request, ChatCompletionRequest)
+        assert request.model == resolved_name
+        assert request.response_format.type == "json_object"
+        assert engine.server_args.served_model_name == raw_name
+
+
+def test_native_chat_request_tracks_manager_name_changes():
+    from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
+
+    with running(request_type=ChatCompletionRequest) as (scheduler, engine, chat):
+        engine.server_args.served_model_name = "initial-alias"
+        engine.tokenizer_manager.served_model_name = "initial-alias"
+        enqueue(scheduler, payload("before"))
+        assert scheduler.outbox.get(timeout=3).type == "result"
+        engine.tokenizer_manager.served_model_name = "/models/reloaded-Cosmos3"
+        enqueue(scheduler, payload("after"))
+        assert scheduler.outbox.get(timeout=3).type == "result"
+        assert [request.model for request in chat.calls] == [
+            "initial-alias",
+            "/models/reloaded-Cosmos3",
+        ]
+        assert engine.server_args.served_model_name == "initial-alias"
+
+
+def test_native_text_and_vision_parameters_preserved():
+    original = {
+        "messages": [{"role": "user", "content": "What is here?"}],
+        "images": ["data:image/png;base64,AAAA"],
+    }
+    fields = build_chat_fields(
+        payload(
+            inputs=original,
+            temperature=0.0,
+            seed=0,
+            max_new_tokens=7,
+            return_logprob=True,
+        ),
+        "cosmos3",
+        NativeRequest.model_fields,
+    )
+    assert (
+        fields["messages"][0]["content"][1]["image_url"]["url"] == original["images"][0]
+    )
+    assert original["messages"][0]["content"] == "What is here?"
+    assert (fields["temperature"], fields["seed"], fields["max_tokens"]) == (0.0, 0, 7)
+    assert fields["return_meta_info"] and fields["return_token_ids"]
+    assert fields["rid"] == "r1"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        payload(inputs=[]),
+        payload(inputs=[1, 2]),
+        payload(inputs={"messages": [1]}),
+        payload(inputs={"messages": [None], "images": ["image.png"]}),
+        payload(inputs={"messages": ["bad"], "videos": ["video.mp4"]}),
+        payload(inputs={"messages": [{"role": "user", "content": "x"}, 1]}),
+        payload(inputs={"messages": [], "images": ["image.png"]}),
+        payload(stage_params=[]),
+        payload(stage_sampling=[]),
+        payload(stage_params={"reasoner": ["bad"]}),
+        payload(n=2),
+        payload(stream=True, return_logprob=True),
+        payload(tools=[{"function": {"name": "search"}}]),
+    ],
+)
+def test_unsupported_contracts_reject_before_dispatch(item):
+    with pytest.raises(ValueError):
+        build_chat_fields(item, "cosmos3", NativeRequest.model_fields)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tp_size": 2},
+        {"dp_size": 2},
+        {"pp_size": 2},
+        {"nnodes": 2},
+        {"base_gpu_id": 4},
+        {"model_path": "other"},
+        {"tool_call_parser": "qwen"},
+    ],
+)
+def test_native_engine_cannot_escape_declared_placement(overrides):
+    with pytest.raises(ValueError):
+        native_reasoner_kwargs("checkpoint", 0, overrides)
+
+
+def test_native_scheduler_receives_concurrent_requests_on_one_loop():
+    with running() as (scheduler, _, chat):
+        for rid in ("r1", "r2", "r3"):
+            enqueue(scheduler, payload(rid))
+        messages = [scheduler.outbox.get(timeout=3) for _ in range(3)]
+        assert {m.request_id for m in messages} == {"r1", "r2", "r3"}
+        assert all(m.type == "result" for m in messages)
+        assert chat.peak > 1
+        chunk = Client.default_result_builder("r1", messages[0].data.data)
+        assert chunk.text == "你好"
+        assert chunk.output_token_logprobs == [[-0.1, 1, "你"], [-0.2, 2, "好"]]
+        assert chunk.usage.completion_tokens == 2
+
+
+def test_stream_preserves_unicode_without_duplicate_terminal_text():
+    with running() as (scheduler, engine, chat):
+        enqueue(scheduler, payload(stream=True))
+        chunks = []
+        while True:
+            msg = scheduler.outbox.get(timeout=3)
+            if msg.type == "result":
+                chunks.append(Client.default_result_builder("r1", msg.data.data))
+                break
+            assert msg.type == "stream"
+            chunks.append(
+                Client.default_stream_builder(
+                    "r1",
+                    StreamMessage(
+                        request_id="r1",
+                        from_stage="reasoner",
+                        chunk=msg.data,
+                    ),
+                )
+            )
+
+        assert engine.aborts == []
+        assert sum(chunk.finish_reason is not None for chunk in chunks) == 1
+        assert chunks[-1].finish_reason == "stop"
+        assert all(chunk.text for chunk in chunks[:-1])
+
+        class StreamClient(Client):
+            async def generate(self, request, request_id=None):
+                for chunk in chunks:
+                    yield chunk
+
+        async def consume():
+            return [
+                part
+                async for part in StreamClient(None).completion_stream(
+                    GenerateRequest(prompt="Describe the scene", stream=True),
+                    request_id="r1",
+                )
+            ]
+
+        parts = asyncio.run(consume())
+        assert "".join(part.text or "" for part in parts) == "你好 👩🏽‍🚀 e\u0301"
+        assert parts[-1].usage.completion_tokens == 4
+        assert chat.closed_streams == 1
+        assert chat.background_count == 0
+
+
+def test_interrupted_stream_aborts_the_native_request_at_once():
+    with running() as (scheduler, engine, chat):
+        enqueue(scheduler, payload(inputs="fail after first delta", stream=True))
+        messages = []
+        while True:
+            msg = scheduler.outbox.get(timeout=3)
+            messages.append(msg)
+            if msg.type != "stream":
+                break
+        assert messages[-1].type == "error"
+        assert "native failure" in str(messages[-1].data)
+        assert chat.closed_streams == 1
+        assert chat.background_count == 0
+        assert engine.aborts == [("r1", False)]
+
+
+def test_abort_reaches_native_loop_and_suppresses_terminal_result():
+    with running() as (scheduler, engine, chat):
+        enqueue(scheduler, payload(inputs="hang"))
+        assert chat.started.wait(2)
+        scheduler.abort("r1")
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.15)
+        assert ("r1", False) in engine.aborts
+
+
+def test_abort_before_native_loop_runs_does_not_start_native_request():
+    with running() as (scheduler, engine, chat):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def hold_loop():
+            entered.set()
+            assert release.wait(2)
+
+        engine.loop.call_soon_threadsafe(hold_loop)
+        assert entered.wait(2)
+        enqueue(scheduler, payload())
+        deadline = time.monotonic() + 2
+        while "r1" not in scheduler.pending and time.monotonic() < deadline:
+            time.sleep(0.005)
+        scheduler.abort("r1")
+        release.set()
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.15)
+        assert not chat.calls
+
+
+def test_admission_is_not_capped_by_the_adapter():
+    with running() as (scheduler, engine, chat):
+        count = 12
+        for index in range(count):
+            enqueue(scheduler, payload(f"r{index}", inputs="wait for release"))
+        deadline = time.monotonic() + 3
+        while chat.active < count and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert chat.active == count
+        assert chat.peak == count
+        engine.loop.call_soon_threadsafe(chat.release.set)
+        messages = [scheduler.outbox.get(timeout=3) for _ in range(count)]
+        assert {m.request_id for m in messages} == {f"r{i}" for i in range(count)}
+        assert all(m.type == "result" for m in messages)
+
+
+def test_queued_abort_never_dispatches():
+    with running() as (scheduler, _, chat):
+        scheduler.abort("r1")
+        enqueue(scheduler, payload())
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.15)
+        assert not chat.calls
+
+
+def test_shutdown_cancels_active_native_work_and_joins_threads():
+    with running() as (scheduler, engine, chat):
+        enqueue(scheduler, payload(inputs="hang"))
+        assert chat.started.wait(2)
+        scheduler.stop()
+        assert ("", True) in engine.aborts
+        assert not scheduler.loop_thread.is_alive()
+
+
+def test_reasoner_variant_uses_native_child_process_ownership():
+    config = Cosmos3ReasonerPipelineConfig(model_path="checkpoint")
+    assert config.native_media_stage is None
+    assert config.stages[0].allow_child_processes
+    assert config.stages[0].name == "reasoner"
+    assert Variants["text"] is Cosmos3ReasonerPipelineConfig
+
+
+def test_stage_sampling_is_preserved_and_stage_params_take_precedence():
+    fields = build_chat_fields(
+        payload(
+            temperature=1.0,
+            stage_sampling={"reasoner": {"temperature": 0.2}},
+            stage_params={"reasoner": {"max_new_tokens": 9}},
+        ),
+        "cosmos3",
+        NativeRequest.model_fields,
+    )
+    assert fields["temperature"] == 0.2
+    assert fields["max_tokens"] == 9
+
+
+@pytest.mark.parametrize("devices", [None, [3, 5]])
+def test_reasoner_factory_passes_resolved_device_to_native(monkeypatch, devices):
+    import sglang
+
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.utils import device as device_utils
+
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_concrete_device",
+        lambda device, index: SimpleNamespace(index=3),
+    )
+    monkeypatch.setattr(current_platform, "set_device", lambda device: None)
+
+    def startup(**kwargs):
+        assert kwargs["base_gpu_id"] == 3
+        if devices is not None:
+            assert kwargs["gpu_id_step"] == 2
+            assert kwargs["tp_size"] == 2
+        raise RuntimeError("native startup reached")
+
+    monkeypatch.setattr(sglang, "Engine", startup)
+    with pytest.raises(RuntimeError, match="native startup reached"):
+        create_reasoner_scheduler(
+            "checkpoint", device=None, gpu_id=None, runtime_gpu_ids=devices
+        )
+
+
+def test_reasoner_factory_pins_the_host_to_the_serving_device(monkeypatch):
+    import sglang
+
+    from sglang_omni.platforms import current_platform
+    from sglang_omni.utils import device as device_utils
+
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_concrete_device",
+        lambda device, index: SimpleNamespace(index=6),
+    )
+    pinned: list[int] = []
+    monkeypatch.setattr(current_platform, "set_device", pinned.append)
+
+    def startup(**kwargs):
+        assert pinned == [6]
+        raise RuntimeError("native startup reached")
+
+    monkeypatch.setattr(sglang, "Engine", startup)
+    with pytest.raises(RuntimeError, match="native startup reached"):
+        create_reasoner_scheduler("checkpoint", gpu_id=6)
+    assert pinned == [6]
+
+
+def test_reasoner_factory_rejects_cpu_before_native_startup(monkeypatch):
+    from sglang_omni.utils import device as device_utils
+
+    monkeypatch.setattr(
+        device_utils,
+        "resolve_concrete_device",
+        lambda device, index: SimpleNamespace(index=None),
+    )
+    with pytest.raises(ValueError, match="indexed accelerator"):
+        create_reasoner_scheduler("checkpoint", device="cpu")

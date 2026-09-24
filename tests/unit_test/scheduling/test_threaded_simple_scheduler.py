@@ -338,3 +338,42 @@ def test_running_abort_survives_speculative_eviction() -> None:
                 scheduler.outbox.get(timeout=0.2)
         finally:
             release.set()
+
+
+def test_dispatch_fn_owns_admission_and_cancellation() -> None:
+    futures: dict[str, Future] = {}
+
+    def dispatch(payload):
+        future: Future = Future()
+        futures[payload] = future
+        return future
+
+    scheduler = ThreadedSimpleScheduler(
+        None, max_concurrency=None, dispatch_fn=dispatch
+    )
+    for index in range(20):
+        scheduler.inbox.put(_request(f"r{index}", f"r{index}"))
+
+    with _running(scheduler):
+        _wait_until(lambda: len(futures) == 20)
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+        futures["r3"].set_result("done")
+        result = scheduler.outbox.get(timeout=2.0)
+        assert (result.type, result.request_id, result.data) == ("result", "r3", "done")
+        scheduler.abort("r5")
+        assert futures["r5"].cancelled()
+        futures["r7"].set_exception(RuntimeError("engine failure"))
+        error = scheduler.outbox.get(timeout=2.0)
+        assert (error.type, error.request_id) == ("error", "r7")
+        assert "engine failure" in str(error.data)
+        with pytest.raises(queue.Empty):
+            scheduler.outbox.get(timeout=0.1)
+    assert not scheduler.has_tombstone("r5")
+
+
+def test_threaded_compute_still_requires_a_worker_count() -> None:
+    with pytest.raises(ValueError):
+        ThreadedSimpleScheduler(lambda payload: payload, max_concurrency=None)
+    with pytest.raises(ValueError):
+        ThreadedSimpleScheduler(None, max_concurrency=2)

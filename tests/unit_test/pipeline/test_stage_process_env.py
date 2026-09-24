@@ -465,6 +465,46 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     assert seen_gpu_ids == [0, 0]
 
 
+def test_construct_stage_skips_device_pinning_for_child_process_engines(
+    monkeypatch,
+) -> None:
+    """A host that only owns a native engine's subprocesses pins no device."""
+
+    class _FakeStage:
+        def __init__(self, **kwargs):
+            self.scheduler = kwargs["scheduler"]
+            self.allow_child_processes = kwargs["allow_child_processes"]
+
+    set_device_calls: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        yield Path("/tmp/test.lock")
+
+    monkeypatch.setattr(
+        torch.get_device_module(platforms.current_platform.device_type),
+        "set_device",
+        lambda gpu_id: set_device_calls.append(int(gpu_id)),
+    )
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    monkeypatch.setattr(stage_workers, "Stage", _FakeStage)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+
+    spec = StageLaunchConfig(
+        stage_name="native_stage",
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 1},
+        gpu_id=1,
+        allow_child_processes=True,
+    )
+
+    stage = stage_workers.construct_stage(spec, _RecordingLog())
+
+    assert stage.scheduler.gpu_id == 1
+    assert stage.allow_child_processes is True
+    assert set_device_calls == []
+
+
 def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
     """A TP child narrowed to one card locks through its local gpu_id.
 

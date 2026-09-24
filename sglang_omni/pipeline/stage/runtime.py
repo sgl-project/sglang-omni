@@ -115,11 +115,15 @@ class Stage:
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
+        allow_child_processes: bool = False,
     ):
         self.name = name
         self.role = role
         self.get_next = get_next
         self.gpu_id = gpu_id
+        # The host of a native engine that owns subprocesses never computes on
+        # the device itself, so its threads do not pin a CUDA device either.
+        self.allow_child_processes = allow_child_processes
         self.endpoints = endpoints
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
@@ -235,7 +239,7 @@ class Stage:
                 # scheduler-thread descendants resolves to this stage.
                 _set_active_stage(self.name)
                 try:
-                    if self.gpu_id is not None:
+                    if self.gpu_id is not None and not self.allow_child_processes:
                         from sglang_omni.platforms import current_platform
 
                         current_platform.set_device(
@@ -1289,6 +1293,8 @@ class Stage:
                         await self.send_failure(out.request_id, str(out.data))
                     else:
                         pass
+                elif out.type == "result":
+                    self.release_scheduler_result(out.data, delivered=False)
                 else:
                     pass
 
@@ -1315,6 +1321,7 @@ class Stage:
                 continue
 
             if out.type == "result":
+                self.release_scheduler_result(out.data, delivered=False)
                 self.clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
@@ -1416,8 +1423,38 @@ class Stage:
         else:
             pass
 
+    def release_scheduler_result(self, result: Any, *, delivered: bool) -> None:
+        """Settle optional scheduler-owned resources after routing or dropping."""
+        release = getattr(self.scheduler, "release_result", None)
+        if release is not None:
+            release(result, delivered=delivered)
+        else:
+            pass
+
     async def route_result(self, request_id: str, result: Any) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
+        """Route a result and settle its resources even when routing fails."""
+        delivered = False
+
+        def on_submitted() -> None:
+            nonlocal delivered
+            delivered = True
+
+        try:
+            await self.route_scheduler_result(request_id, result, on_submitted)
+        except BaseException:
+            try:
+                self.release_scheduler_result(result, delivered=delivered)
+            except Exception:
+                logger.exception(
+                    "Stage %s failed to release result for %s", self.name, request_id
+                )
+            raise
+        self.release_scheduler_result(result, delivered=delivered)
+
+    async def route_scheduler_result(
+        self, request_id: str, result: Any, on_submitted: Callable[[], None]
+    ) -> None:
+        """Route while recording transport acceptance before local cleanup."""
         if not self.owns_external_io:
             self.clear_request_state(request_id)
             return
@@ -1469,6 +1506,16 @@ class Stage:
                 pass
         else:
             pass
+        next_stages = (
+            self.get_next(request_id, result) if session_operation is None else actual
+        )
+        claim_result = getattr(self.scheduler, "claim_result", None)
+        if claim_result is not None and not claim_result(
+            result, terminal=next_stages is None
+        ):
+            return
+        else:
+            pass
         # Send stream done to the active stream targets for this request.
         stream_targets = self.stream_targets
         if self.get_stream_done_targets is not None:
@@ -1491,9 +1538,6 @@ class Stage:
                 is_done=True,
             )
 
-        next_stages = (
-            self.get_next(request_id, result) if session_operation is None else actual
-        )
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1502,14 +1546,19 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data if isinstance(result, StagePayload) else result,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data if isinstance(result, StagePayload) else result,
             )
+            if getattr(self.scheduler, "release_result", None) is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+            on_submitted()
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
@@ -1531,6 +1580,7 @@ class Stage:
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
+                on_submitted()
 
         self.clear_request_state(request_id)
 

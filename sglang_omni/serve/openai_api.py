@@ -72,6 +72,9 @@ from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
 from sglang_omni.serve.openai_errors import (
+    http_status_from_error as _http_status_from_error,
+)
+from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
 from sglang_omni.serve.protocol import (
@@ -452,10 +455,23 @@ def register_health(app: FastAPI) -> None:
         client: Client = app.state.client
         info = client.health()
         is_running = info.get("running", False)
-        status_code = 200 if is_running else 503
+        # A mounted native media app may still be running its server warmup.
+        # Readiness means steady latency, so report 503 until it finishes.
+        native_app = getattr(app.state, "native_media_app", None)
+        warmup_done = getattr(
+            getattr(native_app, "state", None), "server_warmup_done", None
+        )
+        warming = warmup_done is not None and not warmup_done.is_set()
+        if is_running and warming:
+            status = "warming"
+        elif is_running:
+            status = "healthy"
+        else:
+            status = "unhealthy"
+        status_code = 200 if is_running and not warming else 503
         return JSONResponse(
             content={
-                "status": "healthy" if is_running else "unhealthy",
+                "status": status,
                 **info,
             },
             status_code=status_code,
@@ -734,15 +750,17 @@ def register_chat_completions(app: FastAPI) -> None:
 
         if req.stream:
             return _ClosableStreamingResponse(
-                chat_stream(
-                    client,
-                    gen_req,
-                    request_id,
-                    response_id,
-                    created,
-                    model,
-                    req,
-                    audio_format,
+                chat_stream_errors(
+                    chat_stream(
+                        client,
+                        gen_req,
+                        request_id,
+                        response_id,
+                        created,
+                        model,
+                        req,
+                        audio_format,
+                    )
                 ),
                 media_type="text/event-stream",
             )
@@ -842,6 +860,31 @@ async def chat_non_stream(
     )
 
     return JSONResponse(content=response.model_dump())
+
+
+async def chat_stream_errors(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Report errors after streaming headers while closing the owned iterator."""
+    async with aclosing(stream):
+        try:
+            async for frame in stream:
+                yield frame
+        except Exception as exc:
+            status = _http_status_from_error(exc)
+            # Like the speech routes, log a traceback only for unexpected
+            # errors, not for admission refusals under load.
+            if status == 500:
+                logger.exception("Error generating chat stream")
+            else:
+                pass
+            error = {
+                "error": {
+                    "message": str(exc),
+                    "type": "invalid_request_error" if status < 500 else "server_error",
+                    "code": status,
+                }
+            }
+            yield f"data: {json.dumps(error)}\n\n"
+            yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 async def chat_stream(
@@ -1094,7 +1137,7 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         explicit_generation_params(req),
     )
 
-    extra_params: dict[str, Any] = {}
+    extra_params: dict[str, Any] = dict(req.model_extra or {})
     for field_name, value in (
         ("talker_temperature", req.talker_temperature),
         ("talker_top_p", req.talker_top_p),
@@ -1327,7 +1370,9 @@ def build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text, audio=audio, media=result.media, meta_info=meta_info
+    )
 
 
 def register_realtime(app: FastAPI) -> None:
