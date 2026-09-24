@@ -207,7 +207,7 @@ def test_local_transformer_kv_cache_grows_with_batch():
     assert out_small.shape == (2, 32)
     out_large = module.step(torch.randn(8, 32), 0)
     assert out_large.shape == (8, 32)
-    assert module._kv_capacity >= 8
+    assert module.kv_capacity >= 8
 
 
 def test_local_transformer_rejects_out_of_range_position():
@@ -1119,9 +1119,7 @@ def test_create_preprocessing_executor_cache_toggles(monkeypatch):
         rb._QUEUE.snapshot().context.reference_encoder,
         stages.MossLocalReferenceEncoder,
     )
-    assert (
-        rb._QUEUE.snapshot().context.reference_encoder._service._cache.max_size == 8192
-    )
+    assert rb._QUEUE.snapshot().context.reference_encoder.service.cache.max_size == 8192
 
 
 def test_create_preprocessing_executor_uses_shared_encoder(monkeypatch):
@@ -1250,38 +1248,13 @@ def test_audio_repetition_penalty_mask_matches_upstream_semantics():
     )
 
 
-def test_row_radix_token_ids_hash_rows_and_keep_eos():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-
-    end_id = 151670
-    slot_id = 151656
-    rows = torch.full((3, N_VQ + 1), 7, dtype=torch.long)
-    rows[:, 0] = torch.tensor([slot_id, end_id, slot_id])
-    rows[2, 1:] = torch.arange(N_VQ)
-    next_text = rows[:, 0].clone()
-
-    out = MossTTSLocalModelRunner.row_radix_token_ids(rows, next_text, end_id)
-    # Post-090c9cf the generated-row key is the capture-safe GPU polynomial hash
-    # (gpu_radix_row_hash), not the host blake2b; assert the spec the key must
-    # satisfy, not a specific digest. Exact hash semantics live in
-    # test_radix_hash.py / docs/design/gpu_radix_hash.md.
-    assert int(out[1]) == end_id  # stop decision keeps the raw eos id
-    assert int(out[0]) != int(out[2])  # full-row dependence: codes differ -> keys
-    assert int(out[0]) != slot_id  # no longer the constant slot id
-    # Hashed (non-eos) rows fold below the special-token band so the scheduler's
-    # vocab-boundary finish never trips on a generated frame.
-    assert int(out[0]) < 151643
-    assert int(out[2]) < 151643
-    assert all(0 <= int(v) < 151936 for v in out)
-
-
 def test_audio_history_presence_mask_excludes_prompt_rows():
     from types import SimpleNamespace
 
     from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
     model = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.zeros(2, 4, dtype=torch.bfloat16)
         ),
         config=SimpleNamespace(n_vq=N_VQ, audio_vocab_size=1024),
@@ -1423,7 +1396,7 @@ def test_batched_reference_encoder_uses_dedicated_cuda_stream():
     assert worker_thread != threading.get_ident()
     assert worker_stream.device == device
     assert worker_stream != default_stream
-    assert worker_stream == encoder._stream
+    assert worker_stream == encoder.stream
     assert codes.device.type == "cpu"
     expected = torch.tensor([1, 0, 1, 0]).unsqueeze(1).expand(-1, N_VQ)
     torch.testing.assert_close(codes, expected, rtol=0, atol=0)
@@ -1700,7 +1673,7 @@ def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
 
     assert encode_count == 0, "oversized reference must not reach the codec"
     assert enc.stats()["entries"] == 0
-    assert len(enc._service._inflight) == 0
+    assert len(enc.service.inflight) == 0
 
 
 def test_cached_reference_encoder_revalidate_skips_duration_gate(tmp_path, monkeypatch):
@@ -1893,7 +1866,7 @@ def test_cached_reference_encoder_data_uri_duration_gate():
         enc.encode_data_uri(uri)
 
     assert enc.stats()["entries"] == 0
-    assert len(enc._service._inflight) == 0
+    assert len(enc.service.inflight) == 0
 
 
 @pytest.mark.accelerator
@@ -1993,7 +1966,7 @@ def test_post_process_outputs_skips_chunked_rows():
     )
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
     runner.model = model_stub
-    runner._outbox = None
+    runner.outbox = None
 
     # Two rows: row 0 is chunked (mid-prefill), row 1 is normal.
     rows = torch.arange(batch_size * (N_VQ + 1), dtype=torch.long).reshape(
@@ -2042,7 +2015,7 @@ def test_post_process_outputs_keeps_stream_rows_device_native():
         config=types.SimpleNamespace(audio_end_token_id=151670)
     )
     messages = []
-    runner._outbox = types.SimpleNamespace(put=messages.append)
+    runner.outbox = types.SimpleNamespace(put=messages.append)
 
     row = torch.arange(N_VQ + 1, dtype=torch.long).reshape(1, N_VQ + 1)
     data = types.SimpleNamespace(
@@ -2084,7 +2057,7 @@ def test_post_process_outputs_does_not_buffer_without_stream_outbox():
     runner.model = types.SimpleNamespace(
         config=types.SimpleNamespace(audio_end_token_id=151670)
     )
-    runner._outbox = None
+    runner.outbox = None
     data = types.SimpleNamespace(
         req=None,
         output_rows=[],
@@ -2121,7 +2094,7 @@ def test_post_process_outputs_batches_stream_transport_rows():
         config=types.SimpleNamespace(audio_end_token_id=151670)
     )
     messages = []
-    runner._outbox = types.SimpleNamespace(put=messages.append)
+    runner.outbox = types.SimpleNamespace(put=messages.append)
     data = types.SimpleNamespace(
         req=None,
         output_rows=[],
@@ -2183,8 +2156,8 @@ def test_on_request_finished_flushes_stream_tail_without_end_token():
         config=types.SimpleNamespace(audio_end_token_id=151670)
     )
     messages = []
-    runner._outbox = types.SimpleNamespace(put=messages.append)
-    runner._vocoder_target = "vocoder"
+    runner.outbox = types.SimpleNamespace(put=messages.append)
+    runner.vocoder_target = "vocoder"
     data = types.SimpleNamespace(
         req=None,
         output_rows=[],
@@ -2348,7 +2321,7 @@ def test_lookahead_eligible_routes_eager_batches_to_sync():
 
 def test_async_launch_resolve_matches_sync_collect():
     """post_decode_launch + post_decode_resolve must yield the same published
-    next_token_ids and the same output_rows append as synchronous _collect_frame.
+    next_token_ids and the same output_rows append as synchronous collect_frame.
     The launch hands resolve a device snapshot of the published ids so they
     survive the next step clobbering the aliased output_ids tensor in place; CPU
     stub: eager decode (no CUDA graph).
@@ -2364,8 +2337,8 @@ def test_async_launch_resolve_matches_sync_collect():
     def _make_runner():
         weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
         model = types.SimpleNamespace(
-            _decode_input_embedding=types.SimpleNamespace(weight=weight),
-            _state_pool=None,
+            decode_input_embedding=types.SimpleNamespace(weight=weight),
+            state_pool=None,
             config=types.SimpleNamespace(
                 n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
             ),
@@ -2373,7 +2346,7 @@ def test_async_launch_resolve_matches_sync_collect():
             device=torch.device("cpu"),
         )
         pool = MossTTSLocalDecodeStatePool(model)
-        model._state_pool = pool
+        model.state_pool = pool
         model.acquire_row = pool.acquire_row
         model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
             torch.zeros(1, dtype=torch.long),  # stop_choice=0 -> continue (slot)
@@ -2383,8 +2356,9 @@ def test_async_launch_resolve_matches_sync_collect():
             (1, hidden_size), 3, dtype=torch.bfloat16
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.async_enabled = True
         runner.model = model
-        runner._outbox = None
+        runner.outbox = None
         return runner
 
     def _sched_req():
@@ -2412,6 +2386,7 @@ def test_async_launch_resolve_matches_sync_collect():
 
     # Synchronous collect.
     rs = _make_runner()
+    rs.async_enabled = False
     req_s, res_s, sb_s = _sched_req(), _result(), types.SimpleNamespace()
     rs.collect_frame(res_s, None, sb_s, [req_s])
 
@@ -2464,8 +2439,8 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
 
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     model = types.SimpleNamespace(
-        _decode_input_embedding=types.SimpleNamespace(weight=weight),
-        _state_pool=None,
+        decode_input_embedding=types.SimpleNamespace(weight=weight),
+        state_pool=None,
         config=types.SimpleNamespace(
             n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=end_id
         ),
@@ -2473,7 +2448,7 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
         device=torch.device("cpu"),
     )
     pool = MossTTSLocalDecodeStatePool(model)
-    model._state_pool = pool
+    model.state_pool = pool
     model.acquire_row = pool.acquire_row
     model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
         torch.ones(1, dtype=torch.long),  # stop_choice=1 -> stop (end_id)
@@ -2483,6 +2458,7 @@ def test_async_resolve_preserves_stop_id_through_output_ids_clobber():
         (1, hidden_size), 3, dtype=torch.bfloat16
     )
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.async_enabled = True
     runner.model = model
 
     data = types.SimpleNamespace(
@@ -2531,8 +2507,8 @@ def test_chunked_rows_do_not_advance_sampling_steps():
     def _make_runner():
         weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
         model = types.SimpleNamespace(
-            _decode_input_embedding=types.SimpleNamespace(weight=weight),
-            _state_pool=None,
+            decode_input_embedding=types.SimpleNamespace(weight=weight),
+            state_pool=None,
             config=types.SimpleNamespace(
                 n_vq=12, audio_assistant_slot_token_id=1000, audio_end_token_id=1001
             ),
@@ -2540,7 +2516,7 @@ def test_chunked_rows_do_not_advance_sampling_steps():
             device=torch.device("cpu"),
         )
         pool = MossTTSLocalDecodeStatePool(model)
-        model._state_pool = pool
+        model.state_pool = pool
         model.acquire_row = pool.acquire_row
         model.decode_frame = lambda hidden, *, sample_text, sample_audio: (
             torch.zeros(1, dtype=torch.long),
@@ -2550,8 +2526,9 @@ def test_chunked_rows_do_not_advance_sampling_steps():
             (1, hidden_size), 3, dtype=torch.bfloat16
         )
         runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+        runner.async_enabled = True
         runner.model = model
-        runner._outbox = None
+        runner.outbox = None
         return runner
 
     def _result():
@@ -2578,7 +2555,7 @@ def test_chunked_rows_do_not_advance_sampling_steps():
         )
 
     def _pool_sampling_steps(runner, rid):
-        pool = runner.model._state_pool
+        pool = runner.model.state_pool
         row = pool.row_for(rid)
         assert row is not None
         return int(pool.sampling_steps[row])

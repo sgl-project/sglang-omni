@@ -35,7 +35,7 @@ class _ModelHarness:
     reset_request = Zonos2SGLangModel.reset_request
 
     def __init__(self, pool: Zonos2DecodeStatePool) -> None:
-        self._decode_state_pool = pool
+        self.decode_state_pool = pool
 
 
 class _FakeCopyStream:
@@ -48,7 +48,7 @@ class _FakeCopyStream:
 
 def _model_and_pool() -> tuple[_ModelHarness, Zonos2DecodeStatePool]:
     pool_owner = SimpleNamespace(
-        _decode_input_embedding=SimpleNamespace(
+        decode_input_embedding=SimpleNamespace(
             weight=torch.zeros((2, 3), dtype=torch.float32)
         ),
         n_codebooks=N_CODEBOOKS,
@@ -120,18 +120,18 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path(
     assert req.finished_reason.to_json()["type"] == "length"
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._request_admission_lock = threading.RLock()
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.outbox = Queue()
-    scheduler._aborted_request_ids = set()
-    scheduler._completed_request_ids = {}
-    scheduler._pending_stream_ingress = {}
-    scheduler._request_finished_callback = None
-    scheduler._first_emit_done = {request_id}
-    scheduler._prefill_start_done = {request_id}
-    scheduler._prefill_end_done = set()
-    scheduler._result_adapter = result_adapter
-    scheduler._model_runner = None
-    scheduler._stream_output_builder = None
+    scheduler.aborted_request_ids = set()
+    scheduler.completed_request_ids = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.request_finished_callback = None
+    scheduler.first_emit_done = {request_id}
+    scheduler.prefill_start_done = {request_id}
+    scheduler.prefill_end_done = set()
+    scheduler.result_adapter = result_adapter
+    scheduler.model_runner = None
+    scheduler.stream_output_builder = None
     monkeypatch.setattr(
         omni_scheduler_module,
         "get_serving",
@@ -144,8 +144,8 @@ def test_length_terminal_releases_pool_row_through_scheduler_result_path(
     assert result.type == "result"
     assert data.finish_reason == "length"
     assert result.data.data["completion_tokens"] == 1
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -164,8 +164,8 @@ def test_result_adapter_releases_state_when_serialization_fails(monkeypatch) -> 
     with pytest.raises(RuntimeError, match="serialization failed"):
         result_adapter(_terminal_data(request_id))
 
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -177,18 +177,18 @@ def test_engine_builder_abort_callback_is_safe_before_and_after_allocation() -> 
     abort_callback = builder.make_abort_callback()
     builder.model = None
 
-    free_rows = list(pool._free_rows)
+    free_rows = list(pool.free_rows)
     abort_callback(request_id)
-    assert pool._free_rows == free_rows
+    assert pool.free_rows == free_rows
 
     row = pool.acquire_row(request_id)
     _poison_row(pool, row)
     abort_callback(request_id)
     abort_callback(request_id)
 
-    assert request_id not in pool._rid_to_row
-    assert len(pool._free_rows) == pool.padding_row
-    assert len(set(pool._free_rows)) == pool.padding_row
+    assert request_id not in pool.rid_to_row
+    assert len(pool.free_rows) == pool.padding_row
+    assert len(set(pool.free_rows)) == pool.padding_row
     _assert_row_reset(pool, row)
 
 
@@ -203,13 +203,13 @@ def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> No
     _poison_row(pool, live_row, value=11)
 
     model.reset_request(done.request_id)
-    free_rows_after_release = len(pool._free_rows)
+    free_rows_after_release = len(pool.free_rows)
     model.reset_request(done.request_id)
 
-    assert done.request_id not in pool._rid_to_row
+    assert done.request_id not in pool.rid_to_row
     assert pool.row_for(live.request_id) == live_row
-    assert pool._active_ids is None
-    assert pool._active_rows is None
+    assert pool.active_ids is None
+    assert pool.active_rows is None
     _assert_row_reset(pool, done_row)
     assert torch.all(pool.feedback_embeds[live_row] == 11)
     assert bool(pool.eos_frame_set[live_row])
@@ -218,17 +218,17 @@ def test_release_resets_reused_row_without_touching_mixed_batch_survivor() -> No
     assert int(pool.generation_step[live_row]) == 11
     assert torch.all(pool.rep_hist[live_row] == 11)
     assert int(pool.rep_len[live_row]) == 11
-    assert len(pool._free_rows) == free_rows_after_release
-    assert len(set(pool._free_rows)) == len(pool._free_rows)
+    assert len(pool.free_rows) == free_rows_after_release
+    assert len(set(pool.free_rows)) == len(pool.free_rows)
 
     active_rows = pool.prepare_active_rows([live, done])
 
     assert active_rows.tolist() == [live_row, done_row]
     _assert_row_reset(pool, done_row)
-    owned_rows = set(pool._rid_to_row.values())
-    free_rows = set(pool._free_rows)
-    assert len(owned_rows) == len(pool._rid_to_row)
-    assert len(free_rows) == len(pool._free_rows)
+    owned_rows = set(pool.rid_to_row.values())
+    free_rows = set(pool.free_rows)
+    assert len(owned_rows) == len(pool.rid_to_row)
+    assert len(free_rows) == len(pool.free_rows)
     assert owned_rows.isdisjoint(free_rows)
     assert len(owned_rows) + len(free_rows) == pool.padding_row
 
@@ -240,7 +240,7 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
 
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model = model
-    runner._copy_stream = _FakeCopyStream()
+    runner.copy_stream = _FakeCopyStream()
     data = SimpleNamespace(output_codes=[], eos_frame=None)
     request = SimpleNamespace(request_id=request_id, data=data)
     codes = list(range(N_CODEBOOKS))
@@ -256,4 +256,4 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
     assert data.eos_frame == 5
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
-    assert row not in pool._free_rows
+    assert row not in pool.free_rows

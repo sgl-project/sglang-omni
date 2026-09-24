@@ -36,13 +36,19 @@ class Qwen3OmniPlacementPolicy:
             raise ValueError(
                 "Qwen code predictor is part of talker_ar and must not be a stage"
             )
+        else:
+            pass
 
         has_speech_stage = "talker_ar" in stage_map or "code2wav" in stage_map
         if has_speech_stage:
             self.validate_speech_topology(stage_map)
+        else:
+            pass
 
         if not has_speech_stage:
             return
+        else:
+            pass
 
         if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
             self.validate_colocated_qwen_replicas(plan)
@@ -50,6 +56,8 @@ class Qwen3OmniPlacementPolicy:
             self.validate_colocated_qwen_topology(plan)
             self.validate_colocated_qwen_runtime(stage_map)
             return
+        else:
+            pass
 
         thinkers = plan.instances_of("thinker")
         talkers = plan.instances_of("talker_ar")
@@ -60,8 +68,12 @@ class Qwen3OmniPlacementPolicy:
                     thinker.tp_size != 1 or talker.tp_size != 1
                 ):
                     continue
+                else:
+                    pass
                 if not set(thinker.gpu_ids).intersection(talker.gpu_ids):
                     continue
+                else:
+                    pass
                 raise ValueError(
                     f"Qwen thinker and talker_ar ({talker.stage_name!r}) may "
                     f"share a GPU only with {_COLOCATED_CONFIG_CLASS}"
@@ -80,6 +92,8 @@ class Qwen3OmniPlacementPolicy:
                 "Qwen colocated speech does not support process replicas; "
                 f"got replicated stage(s) {replicated}"
             )
+        else:
+            pass
 
     def validate_colocated_qwen_parallelism(self, stage_map) -> None:
         for stage_name in _AR_STAGES:
@@ -88,6 +102,8 @@ class Qwen3OmniPlacementPolicy:
                 raise ValueError(
                     f"Qwen Phase 1 colocation does not support {stage_name} TP"
                 )
+            else:
+                pass
 
     def validate_speech_topology(self, stage_map) -> None:
         names = set(stage_map)
@@ -98,6 +114,8 @@ class Qwen3OmniPlacementPolicy:
                 "Qwen speech must use the seven configured stages; "
                 f"missing={missing}, extra={extra}"
             )
+        else:
+            pass
 
     def validate_colocated_qwen_topology(self, plan: StagePlacementPlan) -> None:
         gpu_ids: set[int] = set()
@@ -107,17 +125,23 @@ class Qwen3OmniPlacementPolicy:
             if placement is None or len(placement.gpu_ids) != 1:
                 invalid.append(stage_name)
                 continue
+            else:
+                pass
             gpu_ids.add(placement.gpu_ids[0])
 
         if invalid:
             raise ValueError(
                 "Qwen colocated speech requires exactly one GPU id for " f"{invalid}"
             )
+        else:
+            pass
         if len(gpu_ids) != 1:
             raise ValueError(
                 "Qwen colocated speech requires image_encoder, audio_encoder, "
                 "thinker, talker_ar, and code2wav to share one GPU"
             )
+        else:
+            pass
 
     def validate_colocated_qwen_runtime(self, stage_map) -> None:
         # Note (Jiaxin Deng): the schema forbids fraction next to kv_cache_bytes,
@@ -138,6 +162,8 @@ class Qwen3OmniPlacementPolicy:
                 "Qwen colocated speech requires gpu_memory_fraction or "
                 f"engine.kv_cache_bytes for {missing_budgets}"
             )
+        else:
+            pass
 
         for stage_name in _AR_STAGES:
             stage = stage_map[stage_name]
@@ -147,9 +173,13 @@ class Qwen3OmniPlacementPolicy:
             )
             if mem_fraction is None:
                 continue
+            else:
+                pass
             if abs(mem_fraction - total_fraction) > 1e-3:
                 raise ValueError(
                     f"Qwen colocated speech stage {stage_name} sets conflicting "
                     "memory fractions: gpu_memory_fraction="
                     f"{total_fraction:.3f}, mem_fraction_static={mem_fraction:.3f}"
                 )
+            else:
+                pass

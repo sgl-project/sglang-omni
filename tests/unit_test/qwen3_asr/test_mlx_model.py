@@ -208,8 +208,8 @@ def test_runner_chains_native_single_request_decode() -> None:
     runner_class = make_qwen3_asr_mlx_runner_class()
     runner = object.__new__(runner_class)
     runner.model = _tiny_model()
-    runner._req_token_ids = {"req": [1]}
-    runner._req_caches = {"req": runner.model.make_cache()}
+    runner.req_token_ids = {"req": [1]}
+    runner.req_caches = {"req": runner.model.make_cache()}
     runner._decode_step_ct = 0
     runner._clear_steps = 0
 
@@ -221,8 +221,8 @@ def test_runner_chains_native_single_request_decode() -> None:
 
     assert first.lazy_tokens.shape == (1,)
     assert second.lazy_tokens.shape == (1,)
-    assert runner._req_caches["req"][0].offset == 2
-    assert len(runner._req_token_ids["req"]) == 3
+    assert runner.req_caches["req"][0].offset == 2
+    assert len(runner.req_token_ids["req"]) == 3
 
 
 def test_hf_weight_sanitize_is_local_and_transposes_conv2d() -> None:

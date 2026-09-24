@@ -266,9 +266,7 @@ def test_projected_transformer_shares_attention_caches_across_layers() -> None:
     source.transformer.layers.append(_FakeLayer(6))
 
     wrapper = MossAudioTokenizerProjectedTransformer.from_module(source)
-    caches = [
-        layer.self_attn._packed_rope_cache for layer in wrapper.transformer.layers
-    ]
+    caches = [layer.self_attn.packed_rope_cache for layer in wrapper.transformer.layers]
 
     assert len(caches) == 2
     assert caches[0] is caches[1]
@@ -300,7 +298,7 @@ def test_projected_transformer_uses_sglang_packed_flash_path() -> None:
         calls.append((cu_q.clone(), cu_k.clone(), max_q, max_k, window_size))
         return q
 
-    attn._flash_attn_varlen = fake_flash_attn
+    attn.flash_attn_varlen = fake_flash_attn
     x = torch.randn(2, 3, 4)
     lengths = torch.tensor([4, 3])
 
@@ -393,7 +391,7 @@ def test_projected_transformer_chunks_local_packed_flash_queries() -> None:
         )
         return q
 
-    attention._flash_attn_varlen = fake_flash_attn
+    attention.flash_attn_varlen = fake_flash_attn
     x = torch.randn(2, 3, 320)
     lengths = torch.tensor([320, 257])
 
@@ -446,7 +444,7 @@ def test_projected_transformer_skips_local_plan_for_direct_sm(
         calls.append((cu_q.clone(), cu_k.clone(), max_q, max_k, causal, window_size))
         return q
 
-    attention._flash_attn_varlen = fake_flash_attn
+    attention.flash_attn_varlen = fake_flash_attn
     out, out_lengths = wrapper(
         torch.randn(2, 3, 320),
         torch.tensor([320, 257]),
@@ -489,7 +487,7 @@ def test_projected_transformer_reuses_local_flash_plan_across_layers() -> None:
 
     for layer in wrapper.transformer.layers:
         layer.self_attn.packed_flash_unavailable_reason = lambda *args: None
-        layer.self_attn._flash_attn_varlen = fake_flash_attn
+        layer.self_attn.flash_attn_varlen = fake_flash_attn
 
     _, out_lengths = wrapper(
         torch.randn(2, 3, 320),
@@ -512,7 +510,7 @@ def test_projected_transformer_uses_host_lengths_without_tensor_max(
     wrapper = MossAudioTokenizerProjectedTransformer.from_module(source)
     attention = wrapper.transformer.layers[0].self_attn
     attention.packed_flash_unavailable_reason = lambda *args: None
-    attention._flash_attn_varlen = lambda q, *_, **__: q
+    attention.flash_attn_varlen = lambda q, *_, **__: q
 
     def fail_max(*_: object, **__: object) -> None:
         raise AssertionError("host lengths must avoid reading the length tensor")
@@ -683,7 +681,7 @@ def test_attention_backend_auto_falls_back_for_cuda_float32(
     source = _FakeAttention(hidden_size=6)
     source.attention_implementation = "flash_attention_2"
     attention = MossAudioTokenizerAttention.from_module(source)
-    attention._flash_attn_varlen = lambda *args, **kwargs: None
+    attention.flash_attn_varlen = lambda *args, **kwargs: None
 
     resolution = attention.resolve_attention_backend(
         torch.device("cuda"),
@@ -831,7 +829,7 @@ def test_local_causal_attention_keeps_packed_flash_cuda() -> None:
         source,
         attention_backend="packed_flash_attention",
     )
-    attn._flash_attn_varlen = lambda *_, **__: torch.empty(0, device="cuda")
+    attn.flash_attn_varlen = lambda *_, **__: torch.empty(0, device="cuda")
     x = torch.empty(1, 6, device="cuda", dtype=torch.bfloat16)
 
     assert (
@@ -856,7 +854,7 @@ def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) ->
     def fail_pack(*_: object) -> None:
         raise AssertionError("zero-length input must not pack padded frames")
 
-    attn._flash_attn_varlen = fail_flash
+    attn.flash_attn_varlen = fail_flash
     monkeypatch.setattr(attention_impl, "pack_padded_sequence", fail_pack)
     x = torch.randn(2, 3, 4)
     lengths = torch.tensor([0, 0])
@@ -943,7 +941,7 @@ def test_projected_transformer_uses_single_unpadded_pack_fast_path(
         return q
 
     monkeypatch.setattr(attention_impl, "pack_padded_sequence", fail_masked_pack)
-    attn._flash_attn_varlen = fake_flash_attn
+    attn.flash_attn_varlen = fake_flash_attn
     x = torch.randn(1, 3, 4)
     lengths = torch.tensor([4])
 
@@ -1049,7 +1047,7 @@ def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
         )
         return q
 
-    attn._flash_attn_varlen = fake_flash_attn
+    attn.flash_attn_varlen = fake_flash_attn
     x = torch.randn(1, 3, 4)
     lengths = torch.tensor([2])
 
@@ -1185,10 +1183,10 @@ def test_cached_packed_rope_matches_moss_interleaved_reference() -> None:
 
     assert torch.equal(out_q, ref_q)
     assert torch.equal(out_k, ref_k)
-    assert cache._cos is not None
-    cos_ptr = cache._cos.data_ptr()
+    assert cache.cos is not None
+    cos_ptr = cache.cos.data_ptr()
     _ = cache.get(device=q.device, head_dim=q.shape[-1], max_positions=3)
-    assert cache._cos.data_ptr() == cos_ptr
+    assert cache.cos.data_ptr() == cos_ptr
 
 
 @pytest.mark.accelerator
@@ -1284,17 +1282,17 @@ def test_residual_lfq_decode_cache_is_bit_identical(
 
     reference = quantizer.decode_codes(codes)
     quantizer.build_decode_cache()
-    cache = quantizer._decode_cache
+    cache = quantizer.decode_cache
     assert cache is not None
     decode_cached = Mock(wraps=cache.decode_codes)
     monkeypatch.setattr(cache, "decode_codes", decode_cached)
     cached = quantizer.decode_codes(codes)
 
     decode_cached.assert_called_once_with(codes)
-    assert quantizer._decode_cache is cache
+    assert quantizer.decode_cache is cache
     assert torch.equal(cached, reference)
     quantizer.clear_decode_cache()
-    assert quantizer._decode_cache is None
+    assert quantizer.decode_cache is None
     assert torch.equal(quantizer.decode_codes(codes), reference)
     decode_cached.assert_called_once_with(codes)
 
@@ -1348,7 +1346,7 @@ def test_indexed_attention_preserves_inactive_slots(context: int | None) -> None
         ([2, 3], [True, False], 2),
     ]
     with attention.streaming(4), torch.no_grad():
-        state = attention._streaming_state
+        state = attention.streaming_state
         for step, (slots, valid, length) in enumerate(steps):
             if step == len(steps) - 1:
                 state.reset_slots(torch.tensor([2]))
@@ -1456,7 +1454,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
     moss_audio_tokenizer_v1_attention = (
         moss_audio_tokenizer_v1_decoder[0].transformer.layers[0].self_attn
     )
-    moss_audio_tokenizer_v1_attention._flash_attn_varlen = lambda *args, **kwargs: None
+    moss_audio_tokenizer_v1_attention.flash_attn_varlen = lambda *args, **kwargs: None
 
     assert moss_audio_tokenizer_v1_decoder.supports_packed_attention(
         "cuda", torch.bfloat16
@@ -1475,7 +1473,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
     )
     local = MossAudioTokenizerVocoderDecoder.from_module(nn.ModuleList([local_source]))
     local_attention = local[0].transformer.layers[0].self_attn
-    local_attention._flash_attn_varlen = lambda *args, **kwargs: None
+    local_attention.flash_attn_varlen = lambda *args, **kwargs: None
 
     assert local.supports_packed_attention("cuda", torch.bfloat16)
     assert not local.supports_packed_attention("cuda", torch.float16)

@@ -52,11 +52,15 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         # Note (yexiaodong): The MLX stub has no Torch graph lifecycle because
         # native MLX lazy evaluation owns graph execution.
         return
+    else:
+        pass
     if not model_worker.enable_prefill_input_embeds:
         # Required even when graphs are disabled: SGLang installs its eager
         # phase runner from init_cuda_graphs().
         model_worker.model_runner.init_cuda_graphs()
         return
+    else:
+        pass
 
     model_config = model_worker.model_config
     original_is_multimodal = model_config.is_multimodal
@@ -70,38 +74,6 @@ def init_sglang_cuda_graphs(model_worker: Any) -> None:
         model_config.is_multimodal = original_is_multimodal
 
 
-def hidden_capture_max_tokens() -> int:
-    """Largest token-row count a single thinker forward can produce.
-
-    Covers chunked prefill, non-chunked prefill, decode batches, and every
-    configured CUDA graph bucket maximum, so the capture buffers are large
-    enough for both eager forwards and graph replay.
-    """
-    from sglang.srt.runtime_context import get_exec, get_model, get_schedule
-
-    chunked_prefill_size = get_schedule().chunked_prefill_size
-    candidates: list[Any] = []
-    if chunked_prefill_size is not None and chunked_prefill_size > 0:
-        candidates.append(chunked_prefill_size)
-    else:
-        candidates.append(get_schedule().max_prefill_tokens)
-        # Note(wenyao): Without chunking, SGLang always admits the first prefill request even
-        # when it exceeds the batch token budget, up to the model context bound.
-        candidates.append(get_model().context_length)
-    candidates.append(get_schedule().max_running_requests)
-    candidates.append(get_exec().graph.cuda_graph_config.decode.max_bs)
-    candidates.append(get_exec().graph.cuda_graph_config.prefill.max_bs)
-
-    positive = [int(value) for value in candidates if value is not None and value > 0]
-    if not positive:
-        raise ValueError(
-            "Cannot derive hidden capture capacity: none of chunked_prefill_size, "
-            "max_prefill_tokens, context_length, max_running_requests, or the "
-            "CUDA graph batch maxima is positive"
-        )
-    return max(positive)
-
-
 def create_sglang_infrastructure(
     server_args: Any,
     gpu_id: int,
@@ -110,7 +82,6 @@ def create_sglang_infrastructure(
     nccl_port: int | None = None,
     model_arch_override: str | None = None,
     weight_prefix: str | None = None,
-    capture_hidden_layers: list[int] | None = None,
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
@@ -141,6 +112,8 @@ def create_sglang_infrastructure(
             "an SGLang AR engine must own its OS process. Place SGLang AR "
             "stages in separate processes."
         )
+    else:
+        pass
 
     logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
 
@@ -165,6 +138,8 @@ def create_sglang_infrastructure(
                 "engine.kv_cache_bytes is not supported on the MLX path; "
                 "remove it or run this stage on CUDA"
             )
+        else:
+            pass
         from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
 
         model_worker = create_mlx_model_worker(
@@ -181,22 +156,12 @@ def create_sglang_infrastructure(
             tp_rank=tp_rank,
         )
 
-    if capture_hidden_layers:
-        from sglang_omni.model_runner._hidden_capture import (
-            install_hidden_capture_hooks,
-        )
-
-        model = model_worker.model_runner.model
-        install_hidden_capture_hooks(
-            model,
-            capture_hidden_layers,
-            max_tokens=hidden_capture_max_tokens(),
-        )
-
     if before_memory_pool is not None:
         # note(ratish): sglang sizes the pool from free memory at this point, so
         # whatever the stage keeps resident has to exist before the reading.
         before_memory_pool(model_worker)
+    else:
+        pass
 
     # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner
@@ -205,6 +170,8 @@ def create_sglang_infrastructure(
 
     if not defer_cuda_graph_capture:
         init_sglang_cuda_graphs(model_worker)
+    else:
+        pass
 
     req_to_token_pool, token_to_kv_pool_allocator = model_worker.get_memory_pool()
 

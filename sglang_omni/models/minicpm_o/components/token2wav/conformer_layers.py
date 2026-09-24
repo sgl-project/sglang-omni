@@ -168,6 +168,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
         if matrix_ac.shape != matrix_bd.shape:
             matrix_bd = self.rel_shift(matrix_bd)
+        else:
+            pass
         scores = (matrix_ac + matrix_bd) / math.sqrt(self.d_k)
         return self.forward_attention(v, scores, mask)
 
@@ -187,7 +189,13 @@ class EspnetRelPositionalEncoding(torch.nn.Module):
             if self.pe.size(1) >= x.size(1) * 2 - 1:
                 if self.pe.dtype != x.dtype or self.pe.device != x.device:
                     self.pe = self.pe.to(dtype=x.dtype, device=x.device)
+                else:
+                    pass
                 return
+            else:
+                pass
+        else:
+            pass
         pe_positive = torch.zeros(x.size(1), self.d_model)
         pe_negative = torch.zeros(x.size(1), self.d_model)
         position = torch.arange(0, x.size(1), dtype=torch.float32).unsqueeze(1)
@@ -283,14 +291,22 @@ class ConformerEncoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.norm_mha(x)
+        else:
+            pass
         x_att = self.self_attn(x, x, x, mask, pos_emb)
         x = residual + self.dropout(x_att)
         if not self.normalize_before:
             x = self.norm_mha(x)
+        else:
+            pass
         residual = x
         if self.normalize_before:
             x = self.norm_ff(x)
+        else:
+            pass
         x = residual + self.dropout(self.feed_forward(x))
         if not self.normalize_before:
             x = self.norm_ff(x)
+        else:
+            pass
         return x

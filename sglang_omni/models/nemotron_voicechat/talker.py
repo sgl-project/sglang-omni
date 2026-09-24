@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from sglang.srt.models.gemma3_causal import Gemma3ForCausalLM
-from sglang.srt.server_args import get_global_server_args
+from sglang.srt.runtime_context import get_schedule
 from torch import nn
 from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
@@ -88,6 +88,8 @@ class TalkerEmbedding(nn.Module):
         embeds_TD = self.proj_embedding(pooled_TD)
         if pooled_mask_T is not None:
             embeds_TD = embeds_TD * pooled_mask_T[:, None]
+        else:
+            pass
         embeds_TD = self.subword_flag_emb(embeds_TD, token_ids_T)
         return self.bos_eos_emb(embeds_TD, token_ids_T)
 
@@ -153,6 +155,8 @@ class EarTtsTalker(nn.Module):
     ):
         if guidance_scale > 0:
             hidden_TD, uncond_TD = hidden_TD.chunk(2)
+        else:
+            pass
         frames = hidden_TD.shape[0]
         codes_TQ = torch.zeros(
             frames, self.num_quantizers, dtype=torch.long, device=hidden_TD.device
@@ -166,10 +170,14 @@ class EarTtsTalker(nn.Module):
         for count in counts.tolist():
             if count == 0:
                 continue
+            else:
+                pass
             depth_TD = self.embed_code(self.depth_sum(codes_TQ, assigned))
             fed_TD = depth_TD + hidden_TD
             if guidance_scale > 0:
                 fed_TD = torch.cat([fed_TD, depth_TD + uncond_TD])
+            else:
+                pass
             mean_TD, log_std_T1 = mog_head.infer(
                 fed_TD, guidance_scale=guidance_scale, top_p=top_p
             )
@@ -189,6 +197,8 @@ class EarTtsTalker(nn.Module):
                 device=codes_TQ.device,
                 dtype=self.embed_code.weight.dtype,
             )
+        else:
+            pass
         padded_QCD = functional.pad(self.rvq_embs, (0, 0, 0, 1))
         return torch.stack([padded_QCD[q][codes_TQ[:, q]] for q in range(levels)]).sum(
             0
@@ -237,14 +247,14 @@ class NemotronVoiceChatTalker(nn.Module):
             torch.zeros(speech["prompt_frames"], talker_config["hidden_size"]),
         )
         hidden_size = talker_config["hidden_size"]
-        max_batch = get_global_server_args().max_running_requests
+        max_batch = get_schedule().max_running_requests
         embed_dtype = torch.get_default_dtype()
         device = "cuda"
-        self._fusion_buffer = torch.zeros(
+        self.fusion_buffer = torch.zeros(
             max_batch, hidden_size, dtype=embed_dtype, device=device
         )
-        self._fusion_mask = torch.zeros(max_batch, dtype=torch.bool, device=device)
-        self._hidden_out = torch.zeros(
+        self.fusion_mask = torch.zeros(max_batch, dtype=torch.bool, device=device)
+        self.hidden_out = torch.zeros(
             max_batch, hidden_size, dtype=embed_dtype, device=device
         )
 
@@ -255,16 +265,18 @@ class NemotronVoiceChatTalker(nn.Module):
         if input_embeds is None:
             batch = input_ids.shape[0]
             assert bool(
-                self._fusion_mask[:batch].all()
+                self.fusion_mask[:batch].all()
             ), "talker decode step reached the model without fused inputs"
-            input_embeds = self._fusion_buffer[:batch]
-            self._fusion_mask[:batch] = False
+            input_embeds = self.fusion_buffer[:batch]
+            self.fusion_mask[:batch] = False
+        else:
+            pass
         hidden = self.llm.model(input_ids, positions, forward_batch, input_embeds)
         if forward_batch.forward_mode.is_decode():
-            self._hidden_out[: hidden.shape[0]] = hidden
+            self.hidden_out[: hidden.shape[0]] = hidden
         else:
             last_rows = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
-            self._hidden_out[: last_rows.shape[0]] = hidden[last_rows]
+            self.hidden_out[: last_rows.shape[0]] = hidden[last_rows]
         return self.llm.logits_processor(
             input_ids, hidden, self.llm.model.embed_tokens, forward_batch
         )
@@ -297,6 +309,8 @@ class NemotronVoiceChatTalker(nn.Module):
                     mog_state[local[len("mog_head.") :]] = tensor
                 else:
                     talker_state[local] = tensor
+            else:
+                pass
         self.llm.load_weights(backbone_weights)
         self.talker.load_state_dict(talker_state, strict=True)
         self.mog_head.load_state_dict(mog_state, strict=True)

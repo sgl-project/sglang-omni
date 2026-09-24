@@ -9,6 +9,7 @@ from typing import Any, Iterable, Optional, Tuple
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.runtime_context import get_model, get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
 
@@ -174,10 +175,7 @@ class VoxtralSGLangTTSModel(nn.Module):
     def __init__(self, config: Any, quant_config: Any = None, prefix: str = "") -> None:
         del config, quant_config, prefix
         super().__init__()
-        server_args = __import__(
-            "sglang.srt.server_args", fromlist=["get_global_server_args"]
-        ).get_global_server_args()
-        self.model_path = server_args.model_path
+        self.model_path = get_model().model_path
         self.voxtral_config = VoxtralModelConfig.from_model_path(self.model_path)
         text_cfg = self.voxtral_config.text_config
         self.language_model = VoxtralSGLangTextModel(text_cfg)
@@ -189,9 +187,9 @@ class VoxtralSGLangTTSModel(nn.Module):
         )
         self.audio_token_id = self.voxtral_config.audio_model_args.audio_token_id
         self.hidden_size = text_cfg.dim
-        max_batch_size = server_args.max_running_requests
+        max_batch_size = get_schedule().max_running_requests
         embed_weight = next(self.language_model.embed_tokens.parameters())
-        self._decode_input_embed_buffer = torch.zeros(
+        self.decode_input_embed_buffer = torch.zeros(
             max_batch_size,
             text_cfg.dim,
             device=embed_weight.device,
@@ -210,7 +208,9 @@ class VoxtralSGLangTTSModel(nn.Module):
         input_embeds: torch.Tensor | None = None,
     ) -> LogitsProcessorOutput:
         if input_embeds is None and forward_batch.forward_mode.is_decode():
-            input_embeds = self._decode_input_embed_buffer[: input_ids.shape[0]]
+            input_embeds = self.decode_input_embed_buffer[: input_ids.shape[0]]
+        else:
+            pass
         hidden_states = self.language_model(
             input_ids=input_ids,
             positions=positions,
@@ -220,6 +220,8 @@ class VoxtralSGLangTTSModel(nn.Module):
         if forward_batch.forward_mode.is_extend():
             last_index = self.extend_last_index(forward_batch, hidden_states.device)
             hidden_states = hidden_states[last_index]
+        else:
+            pass
         # Voxtral samples acoustic codes from hidden_states in the model runner,
         # but SGLang's CUDA graph replay expects this field to be sliceable.
         next_token_logits = hidden_states.new_empty((hidden_states.shape[0], 1))
@@ -236,6 +238,8 @@ class VoxtralSGLangTTSModel(nn.Module):
         extend_seq_lens = forward_batch.extend_seq_lens
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
+        else:
+            pass
         return torch.cumsum(extend_seq_lens.to(device=device), dim=0) - 1
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
@@ -243,16 +247,22 @@ class VoxtralSGLangTTSModel(nn.Module):
         for name, loaded_weight in weights:
             if self.load_text_weight(name, loaded_weight, params):
                 continue
+            else:
+                pass
             if name.startswith("acoustic_transformer."):
                 self.acoustic_transformer.load_weight(
                     (name[len("acoustic_transformer.") :], loaded_weight)
                 )
                 continue
+            else:
+                pass
             if (
                 name
                 == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
             ):
                 self.audio_token_embedding.embeddings.weight.data.copy_(loaded_weight)
+            else:
+                pass
 
     def load_text_weight(
         self,
@@ -262,24 +272,36 @@ class VoxtralSGLangTTSModel(nn.Module):
     ) -> bool:
         if name == "norm.weight":
             return self.copy_weight("language_model.norm.weight", loaded_weight, params)
+        else:
+            pass
         if name == "mm_audio_embeddings.tok_embeddings.weight":
             return self.copy_weight(
                 "language_model.embed_tokens.weight", loaded_weight, params
             )
+        else:
+            pass
 
         import re
 
         match = re.match(r"^layers\.(\d+)\.(.+)$", name)
         if match is None:
             return False
+        else:
+            pass
         layer_idx, suffix = match.group(1), match.group(2)
         prefix = f"language_model.layers.{layer_idx}"
         if suffix == "attention.wq.weight":
             return self.load_qkv(prefix, "q", loaded_weight, params)
+        else:
+            pass
         if suffix == "attention.wk.weight":
             return self.load_qkv(prefix, "k", loaded_weight, params)
+        else:
+            pass
         if suffix == "attention.wv.weight":
             return self.load_qkv(prefix, "v", loaded_weight, params)
+        else:
+            pass
         mapping = {
             "attention.wo.weight": "self_attn.o_proj.weight",
             "attention_norm.weight": "attention_norm.weight",
@@ -291,11 +313,15 @@ class VoxtralSGLangTTSModel(nn.Module):
         target = mapping.get(suffix)
         if target is None:
             return False
+        else:
+            pass
         if isinstance(target, tuple):
             target_name, shard_id = target
             param = params[f"{prefix}.{target_name}"]
             param.weight_loader(param, loaded_weight, shard_id)
             return True
+        else:
+            pass
         return self.copy_weight(f"{prefix}.{target}", loaded_weight, params)
 
     def load_qkv(
@@ -319,6 +345,8 @@ class VoxtralSGLangTTSModel(nn.Module):
                 layer.self_attn.num_kv_heads,
                 layer.self_attn.head_dim,
             )
+        else:
+            pass
         param.weight_loader(param, loaded_weight, shard_id)
         return True
 
@@ -331,6 +359,8 @@ class VoxtralSGLangTTSModel(nn.Module):
         param = params.get(target)
         if param is None:
             return False
+        else:
+            pass
         weight_loader = getattr(param, "weight_loader", default_weight_loader)
         weight_loader(param, loaded_weight)
         return True

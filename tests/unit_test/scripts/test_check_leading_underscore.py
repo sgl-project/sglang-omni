@@ -79,6 +79,32 @@ def _kept() -> None:  # noqa: leading-underscore
     assert _violations(source, tmp_path) == set()
 
 
+def test_self_attribute_assignment_and_getattr_are_reported(tmp_path: Path) -> None:
+    source = """
+class Session:
+    def attach(self, request):
+        self._cache_key = request._cache_key
+        request._cache_key = self._cache_key
+        key = getattr(request, "_cache_key", None)
+        return key
+"""
+    assert _violations(source, tmp_path) == {"_cache_key"}
+
+
+def test_noqa_on_a_wrapped_statement_covers_the_attribute(tmp_path: Path) -> None:
+    source = """
+value = (
+    request._omni_prompt_cache_key
+)  # noqa: leading-underscore
+"""
+    assert _violations(source, tmp_path) == set()
+
+
+def test_upstream_attribute_read_is_reported(tmp_path: Path) -> None:
+    source = "value = hf_modeling._get_feat_extract_output_lengths(lengths)\n"
+    assert _violations(source, tmp_path) == {"_get_feat_extract_output_lengths"}
+
+
 def test_top_level_underscore_class_and_method_are_reported(tmp_path: Path) -> None:
     source = "class _Hidden:\n    def _method(self) -> None:\n        return None\n"
     assert _violations(source, tmp_path) == {"_Hidden", "_method"}
@@ -129,3 +155,53 @@ def test_fix_skips_same_scope_public_name_collision() -> None:
         assert result.returncode == 1
         assert "_load_checkpoint" in result.stderr
         assert "def _load_checkpoint" in probe.read_text(encoding="utf-8")
+
+
+def test_fix_preserves_third_party_attribute_with_same_name() -> None:
+    source = """
+from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
+
+def _get_feat_extract_output_lengths(lengths):
+    return hf_modeling._get_feat_extract_output_lengths(lengths)
+
+lengths = _get_feat_extract_output_lengths([100, 200])
+"""
+    with _probe_model_file(source) as (_checker, probe):
+        result = _run_checker(str(probe))
+        assert result.returncode == 1
+        assert "_get_feat_extract_output_lengths" in result.stderr
+
+        result = _run_checker("--fix", str(probe))
+        assert result.returncode == 1
+        rewritten = probe.read_text(encoding="utf-8")
+        assert "def get_feat_extract_output_lengths(" in rewritten
+        assert "hf_modeling._get_feat_extract_output_lengths" in rewritten
+        assert "lengths = get_feat_extract_output_lengths(" in rewritten
+
+
+def test_fix_preserves_noqa_definitions_and_references() -> None:
+    kept = """
+def _required_external_hook():  # noqa: leading-underscore
+    return None
+
+class _ExternalAdapter:  # noqa: leading-underscore
+    def _required_external_hook(self):  # noqa: leading-underscore
+        return _required_external_hook()
+
+    def run(self):
+        return self._required_external_hook()
+
+adapter = _ExternalAdapter()
+hook = _ExternalAdapter._required_external_hook
+"""
+    local = "\ndef _local_helper():\n    return None\n\n_local_helper()\n"
+    with _probe_model_file(kept) as (_checker, probe):
+        result = _run_checker(str(probe))
+        assert result.returncode == 0, result.stderr
+
+        probe.write_text(kept + local, encoding="utf-8")
+        result = _run_checker("--fix", str(probe))
+        assert result.returncode == 0, result.stderr
+        assert probe.read_text(encoding="utf-8") == kept + local.replace(
+            "_local_helper", "local_helper"
+        )

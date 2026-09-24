@@ -448,7 +448,7 @@ def _tiny_dit() -> MiniMaxMusic3DIT:
     dit = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(dit)
     dit.diffusion_transformer = _ZeroDiffusionTransformer()
-    dit._bcg_runner = None
+    dit.bcg_runner = None
     return dit
 
 

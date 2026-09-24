@@ -64,6 +64,8 @@ class ProvenanceEntry:
             # The model's own validation rewrote the value after this patch
             # won; showing only what the source said would claim it stuck.
             line += f" (resolved to {resolved!r})"
+        else:
+            pass
         return line
 
 
@@ -112,6 +114,8 @@ class ProvenanceMap:
         for entry in reversed(self.entries.get(path, [])):
             if entry.winning:
                 return entry
+            else:
+                pass
         return None
 
     def touched(self, path: str) -> bool:
@@ -142,5 +146,7 @@ class ProvenanceMap:
         lines = [headline]
         if path in self.baseline:
             lines.append(f"  {self.baseline[path]!r}  <- {BASELINE_SOURCE.describe()}")
+        else:
+            pass
         lines.extend(f"  {entry.render(resolved)}" for entry in history)
         return "\n".join(lines)

@@ -17,11 +17,15 @@ class AudioMlxModelRunner:
         mm_inputs = req.multimodal_inputs
         if mm_inputs is None:
             raise ValueError(f"{cls.model_name} MLX prefill requires multimodal inputs")
+        else:
+            pass
         if len(mm_inputs.mm_items) != 1:
             raise ValueError(
                 f"{cls.model_name} MLX prefill requires exactly one audio item, got "
                 f"{len(mm_inputs.mm_items)}"
             )
+        else:
+            pass
         return mm_inputs.mm_items[0]
 
     @staticmethod
@@ -29,6 +33,8 @@ class AudioMlxModelRunner:
         tensor = tensor.detach().cpu()
         if tensor.dtype == torch.bfloat16:
             tensor = tensor.float()
+        else:
+            pass
         return tensor.numpy()
 
     @classmethod
@@ -39,6 +45,8 @@ class AudioMlxModelRunner:
             raise ValueError(
                 f"{cls.model_name} MLX prefill has incomplete audio token metadata"
             )
+        else:
+            pass
         audio_token_id = int(mm_inputs.audio_token_id)
         pad_value = int(item.pad_value)
         return [
@@ -54,6 +62,8 @@ class AudioMlxModelRunner:
             raise ValueError(
                 f"{self.model_name} MLX prefill requires audio features and mask"
             )
+        else:
+            pass
 
         normalized_ids = self.normalize_audio_token_ids(req, token_ids)
         audio_token_id = int(req.multimodal_inputs.audio_token_id)
@@ -64,12 +74,16 @@ class AudioMlxModelRunner:
         ]
         if not audio_positions:
             raise ValueError(f"{self.model_name} MLX prefill has no audio placeholders")
+        else:
+            pass
         audio_start = audio_positions[0]
         num_audio_tokens = len(audio_positions)
         if audio_positions != list(range(audio_start, audio_start + num_audio_tokens)):
             raise ValueError(
                 f"{self.model_name} MLX audio placeholders must be contiguous"
             )
+        else:
+            pass
         input_ids = mx.array([normalized_ids], dtype=mx.int32)
         input_features = mx.array(self.to_numpy(item.feature))
         feature_attention_mask = mx.array(self.to_numpy(item.feature_attention_mask))
@@ -103,21 +117,29 @@ class AudioMlxModelRunner:
             raise ValueError(
                 f"{self.model_name} MLX prefill requires its scheduler request"
             )
+        else:
+            pass
         if prefix_slot_ids:
             raise NotImplementedError(
                 f"{self.model_name} MLX audio prefill does not support a radix prefix yet"
             )
+        else:
+            pass
         if not self.disable_radix_cache:
             raise RuntimeError(
                 f"{self.model_name} MLX audio prefill requires disable_radix_cache=True"
             )
+        else:
+            pass
         if logit_edit_row is not None or logprob_spec is not None:
             raise NotImplementedError(
                 f"{self.model_name} MLX audio prefill supports greedy decoding only"
             )
+        else:
+            pass
 
         _input_ids, input_embeddings = self.audio_prefill_inputs(req, new_token_ids)
-        cache = self._acquire_cache()
+        cache = self._acquire_cache()  # noqa: leading-underscore
         logits = self.model.forward_last_logits(input_embeddings, cache=cache)
         # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
         # needs_logits is always true; retain the argument for the SGLang API.
@@ -154,16 +176,20 @@ class AudioMlxModelRunner:
                 logprob_spec=logprob_spec,
                 logits_hook=logits_hook,
             )
+        else:
+            pass
 
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
         req_id = req_ids[0]
-        cache = self._req_caches[req_id]
+        cache = self.req_caches[req_id]
         input_ids = mx.array(
-            [[self._req_token_ids[req_id][-1]]],
+            [[self.req_token_ids[req_id][-1]]],
             dtype=mx.int32,
         )
-        lazy_logits = self._decode_with_native_cache([cache], [input_ids])
+        lazy_logits = self._decode_with_native_cache(
+            [cache], [input_ids]
+        )  # noqa: leading-underscore
         lazy_tokens = mx.argmax(lazy_logits, axis=-1)
         return MlxPendingDecode(
             lazy_tokens=lazy_tokens,
@@ -181,10 +207,12 @@ class AudioMlxModelRunner:
             or prev.logprob_spec is not None
         ):
             return super().decode_batch_start_chained(prev)
+        else:
+            pass
 
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
-        lazy_logits = self._decode_with_native_cache(
+        lazy_logits = self._decode_with_native_cache(  # noqa: leading-underscore
             prev.caches,
             [prev.lazy_tokens[:, None]],
         )

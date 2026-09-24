@@ -17,7 +17,7 @@ from sglang_omni.models.ming_tts.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 _WAIT_TIMEOUT_S = 5.0
 
@@ -435,7 +435,7 @@ def test_mk_mixed_wave_preserves_request_slot_and_output_mapping() -> None:
             ("step", _stream_item(1, 11, is_last=False)),
         ]
     )
-    step_slot = scheduler._slot_bindings.slot_for("step")
+    step_slot = scheduler.slot_bindings.slot_for("step")
     first_messages = _drain(scheduler)
 
     scheduler.on_stream_chunk_batch(
@@ -463,10 +463,10 @@ def test_mk_mixed_wave_preserves_request_slot_and_output_mapping() -> None:
     )
     assert mixed_call.terminal_flags == (False, True, True)
     assert mixed_call.slot_ids[0] == step_slot
-    assert scheduler._slot_bindings.slot_for("step") == step_slot
-    assert scheduler._slot_bindings.slot_for("open-terminal") is None
-    assert scheduler._slot_bindings.slot_for("short-terminal") is None
-    assert scheduler._slot_bindings.slot_for("waiting") is None
+    assert scheduler.slot_bindings.slot_for("step") == step_slot
+    assert scheduler.slot_bindings.slot_for("open-terminal") is None
+    assert scheduler.slot_bindings.slot_for("short-terminal") is None
+    assert scheduler.slot_bindings.slot_for("waiting") is None
 
     expected_payloads = {
         "step": (12.0, 13.0, 14.0, 15.0),
@@ -495,8 +495,8 @@ def test_mk_mixed_wave_preserves_request_slot_and_output_mapping() -> None:
     assert waiting_call.patch_values == ((40.0, 41.0),)
     assert waiting_call.terminal_flags == (True,)
     assert waiting_call.slot_ids[0] in terminal_slots
-    assert scheduler._slot_bindings.slot_for("step") == step_slot
-    assert scheduler._slot_bindings.slot_for("waiting") is None
+    assert scheduler.slot_bindings.slot_for("step") == step_slot
+    assert scheduler.slot_bindings.slot_for("waiting") is None
     assert [message.request_id for message in waiting_messages] == ["waiting"]
     assert (
         waiting_messages[0].data["audio_waveform"]
@@ -546,7 +546,7 @@ def test_one_pass_admission_keeps_holder_and_uses_registry_order() -> None:
             ("releasing", _stream_item(0, 20, is_last=False)),
         ]
     )
-    holder_slot = scheduler._slot_bindings.slot_for("holder")
+    holder_slot = scheduler.slot_bindings.slot_for("holder")
     assert holder_slot is not None
     scheduler.on_stream_chunk_batch(
         [
@@ -563,9 +563,9 @@ def test_one_pass_admission_keeps_holder_and_uses_registry_order() -> None:
         ((30.0,),),
         ((40.0,),),
     ]
-    assert scheduler._slot_bindings.slot_for("holder") == holder_slot
-    assert scheduler._slot_bindings.slot_for("waiter-first") is None
-    assert scheduler._slot_bindings.slot_for("waiter-second") is None
+    assert scheduler.slot_bindings.slot_for("holder") == holder_slot
+    assert scheduler.slot_bindings.slot_for("waiter-first") is None
+    assert scheduler.slot_bindings.slot_for("waiter-second") is None
 
 
 def test_successful_mixed_wave_commits_terminal_before_releasing_slot(
@@ -579,12 +579,12 @@ def test_successful_mixed_wave_commits_terminal_before_releasing_slot(
             ("terminal", _stream_item(0, 20, is_last=False)),
         ]
     )
-    live_slot = scheduler._slot_bindings.slot_for("live")
-    terminal_slot = scheduler._slot_bindings.slot_for("terminal")
+    live_slot = scheduler.slot_bindings.slot_for("live")
+    terminal_slot = scheduler.slot_bindings.slot_for("terminal")
     _drain(scheduler)
 
     release_observations = []
-    release_clean = scheduler._slot_bindings.release_clean
+    release_clean = scheduler.slot_bindings.release_clean
 
     def observe_release(request_ids) -> None:
         release_observations.append(
@@ -594,14 +594,14 @@ def test_successful_mixed_wave_commits_terminal_before_releasing_slot(
                     scheduler.stream_states[request_id].terminal_committed,
                     len(scheduler.stream_states[request_id].pending_patches),
                     scheduler.stream_states[request_id].emitted_samples,
-                    scheduler._slot_bindings.slot_for(request_id),
+                    scheduler.slot_bindings.slot_for(request_id),
                 )
                 for request_id in request_ids
             )
         )
         release_clean(request_ids)
 
-    monkeypatch.setattr(scheduler._slot_bindings, "release_clean", observe_release)
+    monkeypatch.setattr(scheduler.slot_bindings, "release_clean", observe_release)
 
     scheduler.on_stream_chunk_batch([("waiter", _stream_item(0, 30, is_last=True))])
     assert len(decoder.stream_calls) == 1
@@ -622,16 +622,16 @@ def test_successful_mixed_wave_commits_terminal_before_releasing_slot(
         (("terminal", True, 0, 2, terminal_slot),),
         (("waiter", True, 0, 1, terminal_slot),),
     ]
-    assert scheduler._slot_bindings.slot_for("live") == live_slot
-    assert scheduler._slot_bindings.slot_for("terminal") is None
-    assert scheduler._slot_bindings.slot_for("waiter") is None
+    assert scheduler.slot_bindings.slot_for("live") == live_slot
+    assert scheduler.slot_bindings.slot_for("terminal") is None
+    assert scheduler.slot_bindings.slot_for("waiter") is None
 
 
 def test_step_error_resets_participant_before_next_wave() -> None:
     decoder = _ScriptedAudioDecoder(capacity=2)
     scheduler = _scheduler(decoder, initial=1, steady=1)
     scheduler.on_stream_chunk_batch([("holder", _stream_item(0, 10, is_last=False))])
-    holder_slot = scheduler._slot_bindings.slot_for("holder")
+    holder_slot = scheduler.slot_bindings.slot_for("holder")
     _drain(scheduler)
     decoder.stream_actions.append(ValueError("invalid staged input"))
 
@@ -640,7 +640,7 @@ def test_step_error_resets_participant_before_next_wave() -> None:
     assert len(decoder.stream_calls) == 3
     errors = [message for message in _drain(scheduler) if message.type == "error"]
     assert [message.request_id for message in errors] == ["offender"]
-    assert scheduler._slot_bindings.slot_for("holder") == holder_slot
+    assert scheduler.slot_bindings.slot_for("holder") == holder_slot
     assert len(decoder.reset_rows_calls) == 1
     reset_index = next(
         index for index, entry in enumerate(decoder.trace) if entry[0] == "reset_rows"
@@ -652,7 +652,7 @@ def test_step_error_resets_participant_before_next_wave() -> None:
     )
     assert reset_index < waiter_index
     assert decoder.stream_calls[-1].patch_values == ((30.0,),)
-    assert scheduler._slot_bindings.slot_for("holder") == holder_slot
+    assert scheduler.slot_bindings.slot_for("holder") == holder_slot
 
 
 def test_wave_failure_aborts_only_participants_and_future_wave_succeeds() -> None:
@@ -661,7 +661,7 @@ def test_wave_failure_aborts_only_participants_and_future_wave_succeeds() -> Non
     scheduler.on_stream_chunk_batch(
         [("inactive-holder", _stream_item(0, 10, is_last=False))]
     )
-    holder_slot = scheduler._slot_bindings.slot_for("inactive-holder")
+    holder_slot = scheduler.slot_bindings.slot_for("inactive-holder")
     _drain(scheduler)
     decoder.stream_actions.append(RuntimeError("wave materialization failed"))
 
@@ -677,7 +677,7 @@ def test_wave_failure_aborts_only_participants_and_future_wave_succeeds() -> Non
         ("failed-a", "error"),
         ("failed-b", "error"),
     }
-    assert scheduler._slot_bindings.slot_for("inactive-holder") == holder_slot
+    assert scheduler.slot_bindings.slot_for("inactive-holder") == holder_slot
     assert scheduler.is_aborted("failed-a")
     assert scheduler.is_aborted("failed-b")
     assert len(decoder.reset_rows_calls) == 1
@@ -760,8 +760,8 @@ def test_slotless_terminal_full_stacks_stream_patches_exactly_once() -> None:
     assert all(message.request_id == "slotless-full" for message in messages)
     result = MingTTSState.from_dict(messages[1].data.data)
     assert result.duration_s == pytest.approx(2 / decoder.sample_rate)
-    assert scheduler._slot_bindings.slot_for("holder") == 0
-    assert scheduler._slot_bindings.slot_for("slotless-full") is None
+    assert scheduler.slot_bindings.slot_for("holder") == 0
+    assert scheduler.slot_bindings.slot_for("slotless-full") is None
     _stop(scheduler, thread)
 
 
@@ -874,7 +874,7 @@ def test_external_abort_is_lazy_and_next_streaming_turn_resets_before_reuse() ->
 
     assert decoder.reset_rows_calls == []
     assert scheduler.inbox.empty()
-    assert scheduler._slot_bindings.slot_for("holder") == 0
+    assert scheduler.slot_bindings.slot_for("holder") == 0
 
     scheduler.inbox.put(IncomingMessage("waiter", "stream_done"))
     scheduler.inbox.put(
@@ -914,8 +914,8 @@ def test_external_abort_is_lazy_and_next_streaming_turn_resets_before_reuse() ->
     assert reset_entry[2] == thread.ident
     assert reset_entry[2] != caller_thread_id
     assert future_message[0].request_id == "future"
-    assert scheduler._slot_bindings.slot_for("holder") is None
-    assert scheduler._slot_bindings.slot_for("future") is None
+    assert scheduler.slot_bindings.slot_for("holder") is None
+    assert scheduler.slot_bindings.slot_for("future") is None
     _stop(scheduler, thread)
 
 
@@ -1014,7 +1014,7 @@ def test_external_abort_during_slotless_full_suppresses_output(
     assert decoder.trace[-1][2] == scheduler_thread.ident
     assert decoder.reset_rows_calls == []
     assert "aborted-full" not in scheduler.stream_states
-    assert scheduler._slot_bindings.slot_for("holder") == 0
+    assert scheduler.slot_bindings.slot_for("holder") == 0
     _stop(scheduler, scheduler_thread)
 
 
@@ -1031,7 +1031,7 @@ def test_reset_failure_unbinds_request_and_keeps_slot_unavailable() -> None:
         ("dirty-row", "error")
     ]
     assert len(decoder.reset_rows_calls) == 1
-    assert scheduler._slot_bindings.slot_for("dirty-row") is None
+    assert scheduler.slot_bindings.slot_for("dirty-row") is None
 
     thread = _start(scheduler)
     scheduler.inbox.put(
@@ -1051,8 +1051,8 @@ def test_reset_failure_unbinds_request_and_keeps_slot_unavailable() -> None:
     assert _drain(scheduler) == []
     assert len(decoder.reset_rows_calls) == 1
     assert len(decoder.stream_calls) == 1
-    assert scheduler._slot_bindings.slot_for("dirty-row") is None
-    assert scheduler._slot_bindings.slot_for("future") is None
+    assert scheduler.slot_bindings.slot_for("dirty-row") is None
+    assert scheduler.slot_bindings.slot_for("future") is None
     _stop(scheduler, thread)
 
 
@@ -1113,7 +1113,7 @@ def test_full_failure_does_not_affect_live_or_future_streaming() -> None:
     }
     assert len(decoder.full_calls) == 2
     assert len(decoder.stream_calls) == 2
-    assert scheduler._slot_bindings.slot_for("holder") == 0
+    assert scheduler.slot_bindings.slot_for("holder") == 0
     assert thread.is_alive()
     _stop(scheduler, thread)
     assert decoder.reset_all_calls == 1
@@ -1170,12 +1170,12 @@ def test_healthy_stop_resets_full_bank_once_with_live_bound_state() -> None:
     scheduler.on_stream_chunk_batch(
         [("live-holder", _stream_item(0, 1, is_last=False))]
     )
-    assert scheduler._slot_bindings.slot_for("live-holder") == 0
+    assert scheduler.slot_bindings.slot_for("live-holder") == 0
 
     scheduler.stop()
 
     assert scheduler.stream_states == {}
-    assert scheduler._slot_bindings.slot_for("live-holder") is None
+    assert scheduler.slot_bindings.slot_for("live-holder") is None
     assert decoder.reset_rows_calls == []
     assert decoder.reset_all_calls == 1
     assert decoder.close_calls == 1

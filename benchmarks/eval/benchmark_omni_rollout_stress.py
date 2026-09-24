@@ -36,11 +36,19 @@ from typing import Any
 
 import aiohttp
 
+from benchmarks.benchmarker.conditions import (
+    add_fingerprint_argument,
+    add_talker_sampling_arguments,
+    fingerprint_fields,
+    sampling_seed_field,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.mmmu import MMMUSample, load_mmmu_samples
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
+from benchmarks.tasks.tts import TalkerSamplingParams, talker_sampling_params
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +62,14 @@ def _parse_counts(raw: str) -> list[int]:
     if not counts or any(count <= 0 for count in counts):
         raise argparse.ArgumentTypeError("rollout counts must be positive integers")
     return counts
+
+
+def rollout_request_seeds(
+    base_seed: int | None, sample_ids: list[str]
+) -> dict[str, int]:
+    if base_seed is None:
+        return {}
+    return {sample_id: base_seed + index for index, sample_id in enumerate(sample_ids)}
 
 
 def _duplicate_prompt(sample: MMMUSample, count: int) -> list[MMMUSample]:
@@ -75,6 +91,8 @@ def _make_rollout_send_fn(
     temperature: float,
     enable_audio: bool,
     talker_max_new_tokens: int | None,
+    seeds_by_sample_id: dict[str, int],
+    talker_params: TalkerSamplingParams,
 ) -> Any:
     modalities = ["text", "audio"] if enable_audio else ["text"]
 
@@ -96,6 +114,8 @@ def _make_rollout_send_fn(
             "temperature": temperature,
             "stream": False,
             "user": rollout_group_id,
+            **sampling_seed_field(seeds_by_sample_id.get(sample.sample_id)),
+            **talker_params,
         }
         if enable_audio:
             payload["audio"] = {"format": "wav"}
@@ -202,6 +222,12 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
     run_id = args.profile_run_id or f"rollout-stress-{int(time.time())}"
     event_dir = str(Path(args.profile_event_dir or (output_dir / "events")).resolve())
 
+    talker_params = talker_sampling_params(
+        talker_temperature=args.talker_temperature,
+        talker_top_p=args.talker_top_p,
+        talker_top_k=args.talker_top_k,
+        talker_repetition_penalty=args.talker_repetition_penalty,
+    )
     timeout = aiohttp.ClientTimeout(total=args.timeout_s)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         health_before = await _get_json(session, f"{base_url}/health")
@@ -218,6 +244,7 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
         try:
             for count in args.rollout_counts:
                 duplicated = _duplicate_prompt(base_sample, count)
+                warn_if_tail_percentile_is_thin(len(duplicated))
                 send_fn = _make_rollout_send_fn(
                     model_name=args.model,
                     api_url=api_url,
@@ -226,6 +253,11 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
                     temperature=args.temperature,
                     enable_audio=args.enable_audio,
                     talker_max_new_tokens=args.talker_max_new_tokens,
+                    seeds_by_sample_id=rollout_request_seeds(
+                        args.seed,
+                        [sample.sample_id for sample in duplicated],
+                    ),
+                    talker_params=talker_params,
                 )
                 runner = BenchmarkRunner(
                     RunConfig(
@@ -275,8 +307,14 @@ async def run_rollout_stress(args: argparse.Namespace) -> dict[str, Any]:
             "rollout_counts": args.rollout_counts,
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,
+            "seed": args.seed,
+            "talker_temperature": args.talker_temperature,
+            "talker_top_p": args.talker_top_p,
+            "talker_top_k": args.talker_top_k,
+            "talker_repetition_penalty": args.talker_repetition_penalty,
             "enable_audio": args.enable_audio,
             "talker_max_new_tokens": args.talker_max_new_tokens,
+            **fingerprint_fields(args.fingerprint, base_url),
             "profile_run_id": run_id,
             "profile_event_dir": event_dir if not args.no_profile else None,
         },
@@ -313,6 +351,17 @@ def main() -> None:
     parser.add_argument("--rollout-group-id", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Base sampler seed. Request i uses seed + i so rollouts differ "
+            "but stay reproducible. Omit to leave sampling unseeded."
+        ),
+    )
+    add_talker_sampling_arguments(parser)
+    add_fingerprint_argument(parser)
     parser.add_argument("--text-only", dest="enable_audio", action="store_false")
     parser.set_defaults(enable_audio=True)
     parser.add_argument("--talker-max-new-tokens", type=int, default=None)

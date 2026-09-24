@@ -36,6 +36,13 @@ final class WorkerClient: ObservableObject {
     private var timeoutTask: Task<Void, Never>?
     private var exitTask: Task<Void, Never>?
     private let maximumLineBytes = 1_048_576
+    // Note (Yucheng Hu): Long enough for the worker to stop its model server. Injectable so a test
+    // can exercise the escalation to SIGKILL without waiting the production period out.
+    private let gracePeriod: UInt64
+
+    init(gracePeriod: UInt64 = 5_000_000_000) {
+        self.gracePeriod = gracePeriod
+    }
 
     func request(_ payload: [String: Any], python: String) async throws -> [String: Any] {
         let requestID = UUID().uuidString
@@ -150,11 +157,15 @@ final class WorkerClient: ObservableObject {
         }
         child.terminationHandler = { [weak self] child in
             let code = child.terminationStatus
+            let pid = child.processIdentifier
+            let reason = child.terminationReason == .exit ? "exit" : "signal"
             DispatchQueue.main.async {
                 guard let self, self.generation == workerGeneration else { return }
                 self.exitStatus = code
                 self.isRunning = false
-                Diagnostics.record("worker.exited", ["status": String(code)])
+                Diagnostics.record("worker.exited", [
+                    "pid": String(pid), "reason": reason, "status": String(code),
+                ])
                 if self.stdoutEnded { self.handleExit() }
                 else {
                     // Note (Codex): Process exit can arrive before the pipe's final response.
@@ -178,7 +189,7 @@ final class WorkerClient: ObservableObject {
         errors = stderr.fileHandleForReading
         pythonPath = executable.path
         isRunning = true
-        Diagnostics.record("worker.started")
+        Diagnostics.record("worker.started", ["pid": String(child.processIdentifier)])
     }
 
     private func receive(_ data: Data) {
@@ -258,9 +269,9 @@ final class WorkerClient: ObservableObject {
         timeoutTask = nil
         exitTask?.cancel()
         exitTask = nil
-        output?.readabilityHandler = nil
-        errors?.readabilityHandler = nil
-        try? input?.close()
+        let childInput = input
+        let childOutput = output
+        let childErrors = errors
         input = nil
         output = nil
         errors = nil
@@ -274,13 +285,30 @@ final class WorkerClient: ObservableObject {
         child.terminationHandler = nil
         if child.isRunning {
             child.terminate()
-            // Note (Codex): Allow the worker to stop its model server before killing this child.
-            Task {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+        // Note (Codex): Keep stdin open and drain output so EOF cannot race SIGTERM during cleanup.
+        Task { [gracePeriod] in
+            let killTask = Task {
+                do { try await Task.sleep(nanoseconds: gracePeriod) }
+                catch { return }
                 if child.isRunning { Darwin.kill(child.processIdentifier, SIGKILL) }
             }
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    child.waitUntilExit()
+                    continuation.resume()
+                }
+            }
+            killTask.cancel()
+            childOutput?.readabilityHandler = nil
+            childErrors?.readabilityHandler = nil
+            try? childInput?.close()
+            Diagnostics.record("worker.stopped", [
+                "pid": String(child.processIdentifier),
+                "reason": child.terminationReason == .exit ? "exit" : "signal",
+                "status": String(child.terminationStatus),
+            ])
         }
-        Diagnostics.record("worker.stopped")
     }
 
     private func resolvePython(_ supplied: String) throws -> URL {

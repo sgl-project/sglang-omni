@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 class SchedulerStatus(Enum):
@@ -101,6 +103,8 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
 
     if next_token_logprobs is None:
         return None
+    else:
+        pass
     if hasattr(next_token_logprobs, "detach"):
         values = next_token_logprobs.detach().float().cpu().tolist()
     elif hasattr(next_token_logprobs, "tolist"):
@@ -109,14 +113,22 @@ def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
         values = next_token_logprobs
     if isinstance(values, (int, float)):
         return [float(values)]
+    else:
+        pass
     if not isinstance(values, (list, tuple)):
         return None
+    else:
+        pass
 
     out: list[float] = []
     for value in values:
         if isinstance(value, (list, tuple)):
             if len(value) != 1:
                 return None
+            else:
+                pass
             value = value[0]
+        else:
+            pass
         out.append(float(value))
     return out

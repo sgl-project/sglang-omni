@@ -20,4 +20,6 @@ class QueueFullError(RuntimeError):
     def from_message(cls, message: str | None) -> Exception:
         if cls.matches(message):
             return cls()
+        else:
+            pass
         return RuntimeError(message or "Unknown error")

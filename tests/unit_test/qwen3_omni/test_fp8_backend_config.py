@@ -461,7 +461,7 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     assert effective_quantization == "fp8"
     assert resolution_result(server_args, "moe_runner_backend") == "cutlass"
     assert resolution_result(server_args, "fp8_gemm_runner_backend") == "triton"
-    assert server_args._runtime_mutations == [
+    assert server_args._resolved_overrides == [
         (
             "sglang-omni-qwen3-backend-policy",
             {"moe_runner_backend": "cutlass"},

@@ -200,7 +200,7 @@ def test_flow_noise_is_cast_to_model_dtype():
     )
 
     mx.eval(output)
-    assert flow_matching._rand_noise.dtype == mx.float32
+    assert flow_matching.rand_noise.dtype == mx.float32
     assert output.dtype == mx.float16
 
 

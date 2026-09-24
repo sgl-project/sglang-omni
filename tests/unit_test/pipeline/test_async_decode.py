@@ -37,12 +37,12 @@ class _StubRunner(ModelRunner):
 
     def __init__(self):
         self.device = _STUB_DEVICE
-        self._async_enabled = True
-        self._execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
-        self._staging_slot = 0
-        self._host_staging_buffers = []
-        self._async_query_hit = 0
-        self._async_query_miss = 0
+        self.async_enabled = True
+        self.execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
+        self.staging_slot = 0
+        self.host_staging_buffers = []
+        self.async_query_hit = 0
+        self.async_query_miss = 0
         self.launch_calls = 0
         self.resolve_calls = 0
         self.finalize_calls = 0
@@ -126,7 +126,7 @@ def test_launch_event_comes_from_the_runners_device_module():
     accel = torch.device(current_platform.device_type)
     runner = _StubRunner()
     runner.device = accel
-    runner._execution_bridge = FakeExecutionBridge(accel)
+    runner.execution_bridge = FakeExecutionBridge(accel)
 
     seen = []
     real_event = torch.get_device_module(accel).Event
@@ -168,10 +168,10 @@ def test_launch_returns_handle_resolve_consumes_it():
         out = r.execute_resolve(step)
     assert out is not None
     assert (r.launch_calls, r.resolve_calls, r.finalize_calls) == (1, 1, 1)
-    assert (r._async_query_hit, r._async_query_miss) == (1, 0)
+    assert (r.async_query_hit, r.async_query_miss) == (1, 0)
     assert r.last_prepare_is_lookahead is True
-    assert len(r._execution_bridge.published) == 1
-    published_batch, published_ids = r._execution_bridge.published[0]
+    assert len(r.execution_bridge.published) == 1
+    published_batch, published_ids = r.execution_bridge.published[0]
     assert published_batch is r.last_schedule_batch
     assert torch.equal(published_ids, torch.tensor([17]))
     # resolve must NOT re-publish the token rail: under launch-first it runs
@@ -208,7 +208,7 @@ def test_query_miss_falls_back_to_synchronize():
         step = r.execute_launch(_sched_output(1))
         r.execute_resolve(step)
     assert step.event.synced is True
-    assert (r._async_query_hit, r._async_query_miss) == (0, 1)
+    assert (r.async_query_hit, r.async_query_miss) == (0, 1)
 
 
 def test_resolve_recomputes_finished_overrun_skip_rids():
@@ -411,7 +411,7 @@ def test_host_staging_pingpong():
     b0 = r.next_host_staging((8, 18), torch.float32)
     b1 = r.next_host_staging((8, 18), torch.float32)
     b2 = r.next_host_staging((8, 18), torch.float32)
-    assert len(r._host_staging_buffers) == 2
+    assert len(r.host_staging_buffers) == 2
     assert b0 is b2 and b0 is not b1  # ping-pong between exactly 2 buffers
     assert b0.is_pinned() and tuple(b0.shape) == (8, 18) and b0.dtype == torch.float32
 
@@ -426,8 +426,8 @@ def test_default_launch_resolve_pinned_snapshot_pingpong():
     launch(N+2) may reuse it only after resolve(N) consumed it.
     """
     r = ModelRunner.__new__(ModelRunner)
-    r._staging_slot = 0
-    r._host_staging_buffers = []
+    r.staging_slot = 0
+    r.host_staging_buffers = []
     reqs = [object(), object()]
 
     def _result(vals):
@@ -455,8 +455,8 @@ def test_default_launch_resolve_pinned_snapshot_pingpong():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_default_launch_staging_grows_then_slices_to_smaller_batch():
     r = ModelRunner.__new__(ModelRunner)
-    r._staging_slot = 0
-    r._host_staging_buffers = []
+    r.staging_slot = 0
+    r.host_staging_buffers = []
     big = types.SimpleNamespace(
         next_token_ids=torch.tensor([1, 2, 3, 4], device="cuda"), logits_output=None
     )
@@ -671,9 +671,9 @@ def test_batch_is_decode():
 
 def test_async_pending_batch_uses_initialized_state():
     s = OmniScheduler.__new__(OmniScheduler)
-    s._async_pending = None
+    s.async_pending = None
     assert s.async_pending_batch() is None
-    s._async_pending = ("batchX", "sched_out", "pending_step")
+    s.async_pending = ("batchX", "sched_out", "pending_step")
     assert s.async_pending_batch() == "batchX"
 
 
@@ -716,12 +716,12 @@ class _FakeBatch:
 def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
     s.sleep_during_idle = lambda: None
-    s._admin_lock = threading.Lock()
-    s._admin_queue = queue.Queue()
-    s._request_admission_lock = threading.RLock()
-    s._pending_request_builds = {}
-    s._pending_request_admissions = {}
-    s._model_runner = None
+    s.admin_lock = threading.Lock()
+    s.admin_queue = queue.Queue()
+    s.request_admission_lock = threading.RLock()
+    s.pending_request_builds = {}
+    s.pending_request_admissions = {}
+    s.model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False
     s.page_size = 1
@@ -737,9 +737,9 @@ def _drive_loop(seq, min_bs=2):
     and return the ordered list of path events taken."""
     events = []
     s = _new_scheduler_for_async_loop()
-    s._running = True
-    s._engine_paused = False
-    s._async_pending = None
+    s.running = True
+    s.engine_paused = False
+    s.async_pending = None
     s.async_decode_min_batch_size = min_bs
     s.cur_batch = None
     s.last_batch = None
@@ -773,7 +773,7 @@ def _drive_loop(seq, min_bs=2):
         i = state["i"]
         state["i"] += 1
         if i >= len(batches) - 1:
-            s._running = False  # stop after the final scripted item
+            s.running = False  # stop after the final scripted item
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
@@ -795,7 +795,7 @@ def test_fast_path_bs1_bypasses_lookahead_and_drains_on_transition():
         "idle",  # empty
     ]
     # the in-flight step was drained -> no pending left stranded
-    assert s._async_pending is None
+    assert s.async_pending is None
 
 
 def test_fast_path_threshold_one_keeps_all_decode_on_lookahead():
@@ -815,7 +815,7 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
 def test_custom_logit_processor_transitions_async_sync_async():
     events = []
     s = _scaffold_async_loop()
-    s._model_runner = _StubRunner()
+    s.model_runner = _StubRunner()
     launch_events = iter(("launch async N", "launch async N+2"))
 
     def launch_async(batch):
@@ -836,7 +836,7 @@ def test_custom_logit_processor_transitions_async_sync_async():
         i = state["i"]
         state["i"] += 1
         if i == len(batches) - 1:
-            s._running = False
+            s.running = False
         return batches[i]
 
     s.get_next_batch_to_run = get_next_batch_to_run
@@ -890,8 +890,8 @@ def test_pending_decode_drain_order_for_prefill(
 
     def get_next_batch_to_run():
         events.append("schedule")
-        pending_during_schedule.append(s._async_pending)
-        s._running = False
+        pending_during_schedule.append(s.async_pending)
+        s.running = False
         return _FakeBatch(1)
 
     s.get_next_batch_to_run = get_next_batch_to_run
@@ -924,8 +924,8 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s.run_batch_launch = launch
 
     def get_next_batch_to_run():
-        events.append(("schedule", s._async_pending is pending))
-        s._running = False
+        events.append(("schedule", s.async_pending is pending))
+        s.running = False
         return _FakeBatch(2)
 
     s.get_next_batch_to_run = get_next_batch_to_run
@@ -948,11 +948,11 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
 class _DFReq:
     def __init__(self, name):
         self.name = name
-        self._done = False
+        self.done = False
         self.is_retracted = False
 
     def finished(self):
-        return self._done
+        return self.done
 
 
 class _DFBatch:
@@ -994,9 +994,9 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
         freed.add(req.name)
 
     s = _new_scheduler_for_async_loop()
-    s._running = True
-    s._engine_paused = False
-    s._async_pending = None
+    s.running = True
+    s.engine_paused = False
+    s.async_pending = None
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
@@ -1018,7 +1018,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     def resolve_and_process(pb, ps, pstep):
         if finish_order:
             r = finish_order.pop(0)
-            r._done = True
+            r.done = True
             release_kv(r)
             if r in running:
                 running.remove(r)
@@ -1042,7 +1042,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     def gnb():
         state["i"] += 1
         if not running:
-            s._running = False
+            s.running = False
             return None
         return _DFBatch(list(running))
 
@@ -1054,9 +1054,9 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
 
 def _scaffold_async_loop(*, async_pending=None):
     s = _new_scheduler_for_async_loop()
-    s._running = True
-    s._engine_paused = False
-    s._async_pending = async_pending
+    s.running = True
+    s.engine_paused = False
+    s.async_pending = async_pending
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
@@ -1089,7 +1089,7 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
         i = state["i"]
         state["i"] += 1
         if i >= 0:
-            s._running = False
+            s.running = False
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
@@ -1097,7 +1097,7 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
 
     assert failures == [(batch, RuntimeError, "launch boom")]
     # launch failed before _async_pending was set; prev state preserved.
-    assert s._async_pending is None
+    assert s.async_pending is None
 
 
 def test_async_path_resolve_failure_calls_handle_batch_failure():
@@ -1123,7 +1123,7 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
         i = state["i"]
         state["i"] += 1
         if i >= 0:
-            s._running = False
+            s.running = False
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
@@ -1131,15 +1131,15 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
 
     assert failures == [(prev_batch, RuntimeError, "resolve boom")]
     # launch succeeded; _async_pending was rotated to the new batch.
-    assert s._async_pending is not None
-    assert s._async_pending[0] is new_batch
+    assert s.async_pending is not None
+    assert s.async_pending[0] is new_batch
 
 
 def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = _FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
-    s._async_pending = (stranded_batch, "sched", "step")
+    s.async_pending = (stranded_batch, "sched", "step")
 
     def resolve(pb, ps, pstep):
         raise RuntimeError("drain boom")
@@ -1150,7 +1150,7 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
     OmniScheduler.resolve_pending_async(s)
 
     assert failures == [(stranded_batch, RuntimeError, "drain boom")]
-    assert s._async_pending is None
+    assert s.async_pending is None
 
 
 class _MixedBatch:

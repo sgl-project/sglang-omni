@@ -250,7 +250,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
 ) -> None:
     class _ConcurrentTokenizer(_FakeTokenizer):
         def __init__(self) -> None:
-            self._state_lock = threading.Lock()
+            self.state_lock = threading.Lock()
             self.active_calls = 0
             self.max_active_calls = 0
             self.prefix_language = ""
@@ -258,7 +258,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
         def set_prefix_tokens(
             self, *, language: str, task: str, predict_timestamps: bool
         ) -> None:
-            with self._state_lock:
+            with self.state_lock:
                 self.active_calls += 1
                 self.max_active_calls = max(self.max_active_calls, self.active_calls)
             time.sleep(0.02)
@@ -267,7 +267,7 @@ def test_concurrent_request_builds_serialize_mutable_tokenizer_state(
                 task=task,
                 predict_timestamps=predict_timestamps,
             )
-            with self._state_lock:
+            with self.state_lock:
                 self.active_calls -= 1
 
         @property

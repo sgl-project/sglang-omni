@@ -32,6 +32,8 @@ def build_turn_detector(
         eagerness = str(config.get("eagerness") or "medium")
         if eagerness == "auto":
             eagerness = "medium"
+        else:
+            pass
         semantic_config = replace(
             SemanticVADConfig.from_eagerness(eagerness),
             speech_threshold=optional_float(
@@ -55,6 +57,8 @@ def build_turn_detector(
         effective["eagerness"] = eagerness
         effective.pop("silence_duration_ms", None)
         return TurnDetectorBuild(detector, effective)
+    else:
+        pass
 
     server_config = VADConfig(
         threshold=optional_float(
@@ -84,20 +88,32 @@ def optional_float(
 ) -> float:
     if value is None:
         return default
+    else:
+        pass
     result = float(value)
     if not math.isfinite(result):
         raise ValueError(f"Value must be finite, got {value!r}")
+    else:
+        pass
     if minimum is not None and result < minimum:
         raise ValueError(f"Value must be >= {minimum}, got {result}")
+    else:
+        pass
     if maximum is not None and result > maximum:
         raise ValueError(f"Value must be <= {maximum}, got {result}")
+    else:
+        pass
     return result
 
 
 def optional_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     if value is None:
         return default
+    else:
+        pass
     result = int(value)
     if minimum is not None and result < minimum:
         raise ValueError(f"Value must be >= {minimum}, got {result}")
+    else:
+        pass
     return result

@@ -29,7 +29,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.utils import cuda_staging
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
 from tests.unit_test.fixtures.accelerator import require_cuda
@@ -69,7 +69,7 @@ class _FakeEvent:
 def _slot_event(slot: PinnedTransferSlot) -> _FakeEvent:
     """Return the slot's lazily created completion event (a _FakeEvent after
     _force_pipeline); tests drive completion and failures through it."""
-    return slot._event
+    return slot.event
 
 
 class _DeviceFakeModel(FakeCode2WavModel):
@@ -158,14 +158,14 @@ def _make_gpu_scheduler(
         left_context_size=1,
         enable_output_overlap=overlap,
         enable_cuda_graph=cuda_graph,
-        _cuda_graph_runner=runner,
+        cuda_graph_runner=runner,
     )
-    assert scheduler._pipeline_active is overlap
+    assert scheduler.pipeline_active is overlap
     if overlap:
         # Note (jiannan-17): cudaHostAlloc may synchronize the device, so no
         # pinned allocation may sit between queued device work and the fenced
         # copy the probe tests observe.
-        scheduler.release_slot(scheduler.acquire_slot(scheduler._default_slot_samples))
+        scheduler.release_slot(scheduler.acquire_slot(scheduler.default_slot_samples))
     return scheduler
 
 
@@ -214,7 +214,7 @@ def _make_scheduler(
         left_context_size=left_context_size,
         enable_output_overlap=overlap,
         enable_cuda_graph=cuda_graph_runner is not None,
-        _cuda_graph_runner=cuda_graph_runner,
+        cuda_graph_runner=cuda_graph_runner,
     )
 
 
@@ -224,7 +224,7 @@ def _force_pipeline(scheduler: Code2WavScheduler, monkeypatch) -> list:
     Returns the list of devices the launch asked ``torch.cuda.current_stream``
     for, one entry per pipelined window.
     """
-    scheduler._pipeline_active = True
+    scheduler.pipeline_active = True
     monkeypatch.setattr(
         cuda_staging,
         "allocate_pinned",
@@ -357,11 +357,11 @@ def test_overlap_first_window_sync_second_deferred(monkeypatch) -> None:
     assert scheduler.outbox.qsize() == 1  # second window launched, deferred
     # Note (jiannan-17): the fence is recorded on the scheduler device's
     # stream, not the thread-current device's.
-    assert stream_devices == [scheduler._device]
+    assert stream_devices == [scheduler.device]
 
     _feed(scheduler, "req-1", range(20, 30))
     assert scheduler.outbox.qsize() == 2  # third launch flushed window 2
-    assert stream_devices == [scheduler._device] * 2
+    assert stream_devices == [scheduler.device] * 2
 
     scheduler.handle_stream_done("req-1")
     snapshot = _drain_snapshot(scheduler)
@@ -397,13 +397,13 @@ def test_overlap_flush_failure_keeps_pending_owned_until_abort(monkeypatch) -> N
         scheduler.flush_pending("req-1", state)
 
     assert state.pending is pending
-    assert pending.slot not in scheduler._pinned_free
+    assert pending.slot not in scheduler.pinned_free
 
     scheduler.abort("req-1")
 
     assert state.pending is None
-    assert pending.slot in scheduler._pinned_retired
-    assert pending.slot not in scheduler._pinned_free
+    assert pending.slot in scheduler.pinned_retired
+    assert pending.slot not in scheduler.pinned_free
 
 
 def test_overlap_abort_retires_inflight_slot_without_synchronizing(monkeypatch) -> None:
@@ -422,8 +422,8 @@ def test_overlap_abort_retires_inflight_slot_without_synchronizing(monkeypatch) 
     scheduler.abort("req-1")
 
     assert event.synchronize_calls == 0
-    assert pending.slot in scheduler._pinned_retired
-    assert pending.slot not in scheduler._pinned_free
+    assert pending.slot in scheduler.pinned_retired
+    assert pending.slot not in scheduler.pinned_free
 
 
 def test_overlap_acquire_reaps_completed_retired_slot(monkeypatch) -> None:
@@ -442,8 +442,8 @@ def test_overlap_acquire_reaps_completed_retired_slot(monkeypatch) -> None:
     acquired = scheduler.acquire_slot(slot.capacity)
 
     assert acquired is slot
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_created == 1
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_created == 1
 
 
 def test_overlap_query_failure_quarantines_slot(monkeypatch, caplog) -> None:
@@ -460,10 +460,10 @@ def test_overlap_query_failure_quarantines_slot(monkeypatch, caplog) -> None:
 
     scheduler.reap_retired_slots()
 
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_quarantined == [slot]
-    assert slot not in scheduler._pinned_free
-    assert scheduler._pipeline_active is False
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_quarantined == [slot]
+    assert slot not in scheduler.pinned_free
+    assert scheduler.pipeline_active is False
     assert "failed to query a retired D2H copy" in caplog.text
 
 
@@ -483,14 +483,14 @@ def test_overlap_previous_flush_failure_keeps_both_slots_owned(monkeypatch) -> N
         _feed(scheduler, "req-1", range(20, 30))
 
     assert state.pending is previous
-    assert len(scheduler._pinned_retired) == 1
-    current_slot = scheduler._pinned_retired[0]
+    assert len(scheduler.pinned_retired) == 1
+    current_slot = scheduler.pinned_retired[0]
     assert current_slot is not previous.slot
     assert _slot_event(current_slot).record_calls == 1
 
     scheduler.abort("req-1")
-    assert previous.slot in scheduler._pinned_retired
-    assert current_slot in scheduler._pinned_retired
+    assert previous.slot in scheduler.pinned_retired
+    assert current_slot in scheduler.pinned_retired
 
 
 def test_overlap_record_failure_quarantines_current_slot(monkeypatch) -> None:
@@ -507,16 +507,16 @@ def test_overlap_record_failure_quarantines_current_slot(monkeypatch) -> None:
         _feed(scheduler, "req-1", range(10, 20))
 
     assert event.record_calls == 1
-    assert scheduler._pinned_created == 1
-    assert len(scheduler._pinned_quarantined) == 1
-    assert _slot_event(scheduler._pinned_quarantined[0]) is event
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_free == []
-    assert scheduler._pipeline_active is False
+    assert scheduler.pinned_created == 1
+    assert len(scheduler.pinned_quarantined) == 1
+    assert _slot_event(scheduler.pinned_quarantined[0]) is event
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_free == []
+    assert scheduler.pipeline_active is False
     assert scheduler.stream_states["req-1"].pending is None
     # The slot must not treat the failed transfer as complete.
     with pytest.raises(RuntimeError, match="not recorded"):
-        scheduler._pinned_quarantined[0].query()
+        scheduler.pinned_quarantined[0].query()
 
 
 def test_overlap_rerecord_failure_on_reused_slot_quarantines_it(monkeypatch) -> None:
@@ -540,8 +540,8 @@ def test_overlap_rerecord_failure_on_reused_slot_quarantines_it(monkeypatch) -> 
     assert second is not None and second.slot is not slot_a
     slot_b = second.slot
     _slot_event(slot_b).complete = False
-    assert scheduler._pinned_free == [slot_a]
-    assert scheduler._pinned_created == 2
+    assert scheduler.pinned_free == [slot_a]
+    assert scheduler.pinned_created == 2
     assert _slot_event(slot_a).record_calls == 1
     assert _slot_event(slot_a).synchronize_calls == 1
 
@@ -550,11 +550,11 @@ def test_overlap_rerecord_failure_on_reused_slot_quarantines_it(monkeypatch) -> 
         _feed(scheduler, "req-1", range(30, 40))  # window 4 pops A again
 
     assert _slot_event(slot_a).record_calls == 2
-    assert scheduler._pinned_quarantined == [slot_a]
-    assert scheduler._pinned_free == []
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_created == 2
-    assert scheduler._pipeline_active is False
+    assert scheduler.pinned_quarantined == [slot_a]
+    assert scheduler.pinned_free == []
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_created == 2
+    assert scheduler.pipeline_active is False
     assert state_lookup["req-1"].pending is second, "window 3 is still owned"
     # The slot must not treat the failed transfer as complete.
     assert _slot_event(slot_a).complete is True
@@ -564,7 +564,7 @@ def test_overlap_rerecord_failure_on_reused_slot_quarantines_it(monkeypatch) -> 
         slot_a.synchronize()
 
     scheduler.handle_stream_done("req-1")
-    assert scheduler._pinned_free == [slot_b]
+    assert scheduler.pinned_free == [slot_b]
     snapshot = _drain_snapshot(scheduler)
     assert [item[1] for item in snapshot] == ["stream"] * 4 + ["result"]
     assert snapshot == control
@@ -585,8 +585,8 @@ def test_overlap_slot_growth_failure_returns_original_free_slot(monkeypatch) -> 
     with pytest.raises(RuntimeError, match="cannot grow"):
         scheduler.acquire_slot(slot.capacity + 1)
 
-    assert scheduler._pinned_free == [slot]
-    assert scheduler._pinned_created == 1
+    assert scheduler.pinned_free == [slot]
+    assert scheduler.pinned_created == 1
 
 
 def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
@@ -610,7 +610,7 @@ def test_overlap_flush_synchronizes_before_releasing_slot(monkeypatch) -> None:
     scheduler.handle_stream_done("req-1")
 
     assert event.synchronize_calls == 1
-    assert pending.slot in scheduler._pinned_free
+    assert pending.slot in scheduler.pinned_free
 
 
 def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) -> None:
@@ -659,7 +659,7 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
         # still running — stopping first lets the shutdown drain synchronize
         # instead, which would hide a missing reap.
         deadline = time.monotonic() + 2.0
-        while not scheduler._pinned_free and time.monotonic() < deadline:
+        while not scheduler.pinned_free and time.monotonic() < deadline:
             time.sleep(0.01)
     finally:
         scheduler.stop()
@@ -675,9 +675,9 @@ def test_overlap_replay_failure_with_pending_aborts_and_releases(monkeypatch) ->
     # replay failed, so its audio reaches the client instead of dying with the
     # aborted request.
     assert [message.type for message in messages] == ["stream", "stream", "error"]
-    assert scheduler._pinned_retired == []
-    assert len(scheduler._pinned_free) == 1
-    assert _slot_event(scheduler._pinned_free[0]).query_calls >= 1
+    assert scheduler.pinned_retired == []
+    assert len(scheduler.pinned_free) == 1
+    assert _slot_event(scheduler.pinned_free[0]).query_calls >= 1
 
 
 def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None:
@@ -687,7 +687,7 @@ def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None
 
     scheduler = _make_scheduler(overlap=True)
     _force_pipeline(scheduler, monkeypatch)
-    scheduler._max_pinned_slots = 1
+    scheduler.max_pinned_slots = 1
     _seed(scheduler, "req-a")
     _seed(scheduler, "req-b")
 
@@ -709,7 +709,7 @@ def test_overlap_pool_exhaustion_falls_back_sync_per_window(monkeypatch) -> None
     assert _by_request(_drain_snapshot(scheduler)) == _by_request(
         _drain_snapshot(control)
     )
-    assert scheduler._pinned_created == 1
+    assert scheduler.pinned_created == 1
 
 
 def test_eos_lazy_scan_one_scan_per_window_and_tail_stays_stream_done(
@@ -926,7 +926,7 @@ def test_overlap_gpu_real_pinned_event_bitwise(
         _feed(scheduler, "req-1", range(n_chunks))
         scheduler.handle_stream_done("req-1")
         if cuda_graph:
-            runtime = scheduler._cuda_graph_runner.stats()["runtime"]
+            runtime = scheduler.cuda_graph_runner.stats()["runtime"]
             assert runtime["graph_replays"] == n_chunks // 10
             assert runtime["replay_failures"] == 0
             assert runtime["fallback_counts"] == (
@@ -981,8 +981,8 @@ def test_overlap_gpu_query_is_false_until_inflight_copy_drains() -> None:
     assert state.pending is None
     second_window = _drain_snapshot(scheduler)
     assert [item[1] for item in second_window] == ["stream"]
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_free == [pending.slot]
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_free == [pending.slot]
 
     scheduler.handle_stream_done("req-1")
     tail = _drain_snapshot(scheduler)
@@ -1025,8 +1025,8 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
     assert slot.query() is False
     assert state.pending is None
     assert "req-1" not in scheduler.stream_states
-    assert scheduler._pinned_retired == [slot]
-    assert scheduler._pinned_free == []
+    assert scheduler.pinned_retired == [slot]
+    assert scheduler.pinned_free == []
 
     # Note (jiannan-17): a same-key replay rewrites the retired copy's source;
     # same-stream ordering means the copy still lands with the old bytes. This
@@ -1040,8 +1040,8 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
     # synchronizes.
     other = scheduler.acquire_slot(pending.samples)
     assert other is not None and other is not slot
-    assert scheduler._pinned_created == 2
-    assert scheduler._pinned_retired == [slot]
+    assert scheduler.pinned_created == 2
+    assert scheduler.pinned_retired == [slot]
     scheduler.release_slot(other)
 
     slot.synchronize()
@@ -1052,11 +1052,11 @@ def test_overlap_gpu_abort_midstream_neither_blocks_nor_reuses_inflight_slot(
 
     reaped = scheduler.acquire_slot(pending.samples)
     assert reaped is slot
-    assert scheduler._pinned_retired == []
-    assert scheduler._pinned_quarantined == []
-    assert scheduler._pinned_created == 2
+    assert scheduler.pinned_retired == []
+    assert scheduler.pinned_quarantined == []
+    assert scheduler.pinned_created == 2
     scheduler.release_slot(reaped)
-    assert sorted(map(id, scheduler._pinned_free)) == sorted(map(id, [other, slot]))
+    assert sorted(map(id, scheduler.pinned_free)) == sorted(map(id, [other, slot]))
 
 
 @pytest.mark.accelerator
@@ -1111,7 +1111,7 @@ def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
         assert state.pending is None
         second_window = _drain_snapshot(scheduler)
         assert [item[1] for item in second_window] == ["stream"]
-        assert scheduler._pinned_free == [pending.slot]
+        assert scheduler.pinned_free == [pending.slot]
 
         scheduler.handle_stream_done("req-1")
         tail = _drain_snapshot(scheduler)
@@ -1126,15 +1126,15 @@ def test_overlap_gpu_slot_on_other_device_than_process_current() -> None:
         assert retired is not None
         torch.cuda.set_device(0)
         scheduler.abort("req-2")
-        assert scheduler._pinned_retired == [retired.slot]
+        assert scheduler.pinned_retired == [retired.slot]
         scheduler.reap_retired_slots()
         assert torch.cuda.current_device() == 0
-        assert scheduler._pinned_retired == [retired.slot], "still in flight"
+        assert scheduler.pinned_retired == [retired.slot], "still in flight"
         scheduler.on_serving_stop()
         assert torch.cuda.current_device() == 0
-        assert scheduler._pinned_retired == []
-        assert scheduler._pinned_quarantined == []
-        assert retired.slot in scheduler._pinned_free
+        assert scheduler.pinned_retired == []
+        assert scheduler.pinned_quarantined == []
+        assert retired.slot in scheduler.pinned_free
         assert retired.slot.query() is True
     finally:
         torch.cuda.set_device(previous_device)

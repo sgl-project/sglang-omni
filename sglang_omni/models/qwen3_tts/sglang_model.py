@@ -21,7 +21,7 @@ from sglang.srt.layers.quantization.unquant import (
     get_bf16_gemm_backend,
 )
 from sglang.srt.layers.sampler import multinomial_with_seed
-from sglang.srt.runtime_context import get_exec, get_parallel
+from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import is_pin_memory_available
 from torch import nn
@@ -49,7 +49,6 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
-from sglang_omni.vendor.sglang.server_args import get_global_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +66,8 @@ def predictor_graph_env_override() -> bool | None:
     value = os.environ.get(QTTS_PREDICTOR_GRAPH_ENV)
     if value is None:
         return None
+    else:
+        pass
     return value.strip().lower() not in ("0", "false", "off", "no")
 
 
@@ -77,9 +78,10 @@ def predictor_gqa_attention(
     *,
     num_heads: int,
     num_key_value_heads: int,
+    is_causal: bool,
 ) -> torch.Tensor:
-    """Run Predictor GQA, preferring Ascend's inference kernel on NPU."""
-    if q.device.type == "npu":
+    """Run Predictor GQA, preferring Ascend's inference kernel on NPU for one query."""
+    if q.device.type == "npu" and not is_causal:
         fused_attention = getattr(
             getattr(torch.ops, "npu", None),
             "npu_fused_infer_attention_score",
@@ -96,12 +98,16 @@ def predictor_gqa_attention(
                 scale=1.0 / math.sqrt(q.shape[-1]),
             )
             return output.transpose(1, 2)
+        else:
+            pass
+    else:
+        pass
 
     return torch.nn.functional.scaled_dot_product_attention(
         q,
         key,
         value,
-        is_causal=False,
+        is_causal=is_causal,
         enable_gqa=True,
     )
 
@@ -111,6 +117,8 @@ def quantize_predictor_top_k(max_top_k: int, vocab_size: int) -> int | None:
     for step in _PREDICTOR_TOP_K_LADDER:
         if step >= max_top_k:
             return step if step < vocab_size else None
+        else:
+            pass
     return None
 
 
@@ -135,6 +143,8 @@ def predictor_signature_terms(
             has_unbounded_top_k = True
         else:
             max_top_k = quantized
+    else:
+        pass
     return max_top_k, has_top_p, has_unbounded_top_k
 
 
@@ -145,6 +155,8 @@ def sample_seeded_categorical(
 ) -> torch.Tensor:
     if logprobs.device.type == "npu":
         return sample_from_logprobs_with_seed_npu(logprobs, seeds, positions)
+    else:
+        pass
     return multinomial_with_seed(logprobs, seeds, positions).view(-1)
 
 
@@ -197,6 +209,8 @@ class PredictorDecodeGraph:
                 "Qwen3-TTS predictor graph bucket is too small: "
                 f"bucket={self.batch_size}, live={live}"
             )
+        else:
+            pass
         with self.device_module.device(self.device):
             self.layer0_codes[:live].copy_(layer0_codes)
             self.talker_hidden[:live].copy_(talker_hidden)
@@ -209,6 +223,10 @@ class PredictorDecodeGraph:
                 self.talker_hidden[live:].zero_()
                 if semantic_positions is not None:
                     self.semantic_positions[live:].zero_()
+                else:
+                    pass
+            else:
+                pass
             self.graph.replay()
         assert self.result_codes is not None
         assert self.summed_embeddings is not None
@@ -289,25 +307,25 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        max_batch_size = get_global_server_args().max_running_requests
-        self._feedback_buffer = torch.zeros(
+        max_batch_size = get_schedule().max_running_requests
+        self.feedback_buffer = torch.zeros(
             max_batch_size,
             config.hidden_size,
             device=self.codec_embedding.weight.device,
             dtype=self.codec_embedding.weight.dtype,
         )
-        self._feedback_mask = torch.zeros(
+        self.feedback_mask = torch.zeros(
             max_batch_size,
             dtype=torch.bool,
             device=self.codec_embedding.weight.device,
         )
-        self._decode_feedback_embedding = nn.Embedding(
+        self.decode_feedback_embedding = nn.Embedding(
             max_batch_size,
             config.hidden_size,
             device=self.codec_embedding.weight.device,
             dtype=self.codec_embedding.weight.dtype,
         )
-        self._decode_feedback_embedding.weight.requires_grad_(False)
+        self.decode_feedback_embedding.weight.requires_grad_(False)
 
     def get_input_embeddings(self):
         return self.codec_embedding
@@ -321,10 +339,10 @@ class Qwen3TTSTalkerTextModel(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.codec_embedding(input_ids)
         bs = hidden_states.shape[0]
-        feedback_mask = self._feedback_mask[:bs]
+        feedback_mask = self.feedback_mask[:bs]
         return torch.where(
             feedback_mask.unsqueeze(-1),
-            self._feedback_buffer[:bs].to(hidden_states.dtype),
+            self.feedback_buffer[:bs].to(hidden_states.dtype),
             hidden_states,
         )
 
@@ -339,7 +357,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         is_decode = forward_mode is not None and forward_mode.is_decode()
         if input_embeds is None:
             if is_decode:
-                hidden_states = self._decode_feedback_embedding(input_ids)
+                hidden_states = self.decode_feedback_embedding(input_ids)
             else:
                 hidden_states = self.build_input_hidden_states(input_ids)
         else:
@@ -356,6 +374,8 @@ class Qwen3TTSTalkerTextModel(nn.Module):
             )
         if residual is None:
             return self.norm(hidden_states)
+        else:
+            pass
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
 
@@ -404,6 +424,8 @@ class Qwen3TTSCodePredictor(nn.Module):
     def project_input(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if self.small_to_mtp_projection is None:
             return hidden_states
+        else:
+            pass
         return self.small_to_mtp_projection(hidden_states)
 
 
@@ -447,8 +469,12 @@ class Qwen3TTSPromptBuilderMixin:
             raise ValueError(
                 f"Expected {self.speaker_encoder_sample_rate}Hz reference audio"
             )
+        else:
+            pass
         if self.speaker_encoder is None:
             raise RuntimeError("Qwen3-TTS speaker encoder is not loaded")
+        else:
+            pass
         mels = mel_spectrogram(
             torch.from_numpy(audio).unsqueeze(0),
             n_fft=1024,
@@ -474,6 +500,8 @@ class Qwen3TTSPromptBuilderMixin:
     ) -> torch.Tensor | None:
         if instruct_id is None:
             return None
+        else:
+            pass
         return self.text_projection(self.get_text_embeddings()(instruct_id))
 
     def build_tts_special_embeds(
@@ -505,12 +533,18 @@ class Qwen3TTSPromptBuilderMixin:
         # Chinese requests do not switch to a dialect when using Eric or Dylan.
         if language.lower() != "auto":
             return self.config.codec_language_id[language.lower()]
+        else:
+            pass
         if voice is None:
             return None
+        else:
+            pass
         spk_is_dialect = getattr(self.config, "spk_is_dialect", None) or {}
         dialect = spk_is_dialect.get(voice.lower())
         if isinstance(dialect, str) and dialect:
             return self.config.codec_language_id.get(dialect)
+        else:
+            pass
         return None
 
     def build_codec_prefill(
@@ -575,6 +609,8 @@ class Qwen3TTSPromptBuilderMixin:
                 dim=1,
             )
             return talker_input_embed, tts_pad_embed
+        else:
+            pass
 
         first_text = (
             self.text_projection(self.get_text_embeddings()(input_id[:, 3:4]))
@@ -598,6 +634,8 @@ class Qwen3TTSPromptBuilderMixin:
         instruct_embed = self.build_instruct_embed(instruct_id)
         if instruct_embed is None:
             return talker_input_embed
+        else:
+            pass
         return torch.cat([instruct_embed, talker_input_embed], dim=1)
 
     def build_conditioned_prompt_prefix(
@@ -659,10 +697,14 @@ class Qwen3TTSPromptBuilderMixin:
         ref_codes = voice_clone_prompt.get("ref_code")
         if ref_codes is not None:
             ref_code = ref_codes[0]
+        else:
+            pass
 
         if ref_code is not None and voice_clone_prompt["icl_mode"][0]:
             if ref_id is None:
                 raise ValueError("Qwen3-TTS ICL mode requires ref_text tokens")
+            else:
+                pass
             icl_embed, trailing_text_hidden = self.generate_icl_prompt(
                 text_id=input_id[:, 3:-5],
                 ref_id=ref_id[:, 3:-2],
@@ -705,6 +747,8 @@ class Qwen3TTSPromptBuilderMixin:
             raise ValueError(
                 "Qwen3-TTS CustomVoice requires a checkpoint with configured spk_id"
             )
+        else:
+            pass
         speaker_key = voice.lower()
         spk_id_map = {str(key).lower(): value for key, value in spk_id.items()}
         if speaker_key not in spk_id_map:
@@ -713,6 +757,8 @@ class Qwen3TTSPromptBuilderMixin:
                 f"Unsupported Qwen3-TTS CustomVoice speaker {voice!r}. "
                 f"Supported speakers: {supported}"
             )
+        else:
+            pass
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
             dtype=input_id.dtype
@@ -768,6 +814,8 @@ class Qwen3TTSPromptBuilderMixin:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         if instruct_id is None:
             raise ValueError("Qwen3-TTS VoiceDesign requires instructions")
+        else:
+            pass
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.build_tts_special_embeds(
             dtype=input_id.dtype
@@ -858,8 +906,12 @@ class Qwen3TTSPromptBuilderMixin:
                 [icl_input_embed, codec_embed + tts_pad_embed], dim=1
             )
             return icl_input_embed, tts_pad_embed
+        else:
+            pass
         if text_lens > codec_lens:
             return text_embed[:, :codec_lens] + codec_embed, text_embed[:, codec_lens:]
+        else:
+            pass
         text_embed = torch.cat(
             [text_embed] + [tts_pad_embed] * (codec_lens - text_lens), dim=1
         )
@@ -923,30 +975,30 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             self.speaker_encoder = None
         self.speech_tokenizer = None
 
-        server_args = get_global_server_args()
-        max_batch_size = server_args.max_running_requests
+        server_args = get_context().server_args
+        max_batch_size = get_schedule().max_running_requests
         hidden_size = config.hidden_size
         predictor_len = config.num_code_groups + 1
         device = self.model.codec_embedding.weight.device
         dtype = self.model.codec_embedding.weight.dtype
-        self._feedback_buffer = self.model._feedback_buffer
-        self._feedback_mask = self.model._feedback_mask
-        self._decode_feedback_embedding = self.model._decode_feedback_embedding
+        self.feedback_buffer = self.model.feedback_buffer
+        self.feedback_mask = self.model.feedback_mask
+        self.decode_feedback_embedding = self.model.decode_feedback_embedding
         cp_layers = self.code_predictor.model.layers
         cp_attn = cp_layers[0].self_attn
-        self._predictor_positions = torch.arange(
+        self.predictor_positions = torch.arange(
             predictor_len, device=device, dtype=torch.long
         )
-        self._predictor_position_rows = (
-            self._predictor_positions[:, None]
+        self.predictor_position_rows = (
+            self.predictor_positions[:, None]
             .expand(predictor_len, max_batch_size)
             .contiguous()
         )
-        self._predictor_device = device
-        self._predictor_device_module = torch.get_device_module(device)
+        self.predictor_device = device
+        self.predictor_device_module = torch.get_device_module(device)
         # note(ratish): slot major, so the rope kernel stores k and v as one
         # row per (batch row, slot) and the attention reads a transposed view.
-        self._predictor_k_cache = torch.zeros(
+        self.predictor_k_cache = torch.zeros(
             len(cp_layers),
             max_batch_size,
             predictor_len,
@@ -955,90 +1007,98 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             device=device,
             dtype=dtype,
         )
-        self._predictor_v_cache = torch.zeros_like(self._predictor_k_cache)
-        self._predictor_k_rows = [
+        self.predictor_v_cache = torch.zeros_like(self.predictor_k_cache)
+        self.predictor_k_rows = [
             layer_cache.view(max_batch_size * predictor_len, -1)
-            for layer_cache in self._predictor_k_cache
+            for layer_cache in self.predictor_k_cache
         ]
-        self._predictor_v_rows = [
+        self.predictor_v_rows = [
             layer_cache.view(max_batch_size * predictor_len, -1)
-            for layer_cache in self._predictor_v_cache
+            for layer_cache in self.predictor_v_cache
         ]
-        self._predictor_cache_slots = (
+        self.predictor_cache_slots = (
             torch.arange(max_batch_size, device=device, dtype=torch.long)[None, :]
             * predictor_len
-            + self._predictor_positions[:, None]
+            + self.predictor_positions[:, None]
         ).contiguous()
-        self._predictor_rope_stores_kv = self.resolve_predictor_rope_store(
+        # note(ratish): the first pass carries two tokens per request, request by
+        # request, so a batch's positions and cache slots are a prefix of these.
+        self.predictor_pair_positions = self.predictor_positions[:2].repeat(
+            max_batch_size
+        )
+        self.predictor_pair_cache_slots = self.predictor_cache_slots[:2].t().reshape(-1)
+        self.predictor_rope_stores_kv = self.resolve_predictor_rope_store(
             cp_attn, device=device
         )
-        self._sampled_token_ids = torch.zeros(
+        self.sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
-        self._output_codes = torch.zeros(
+        self.output_codes = torch.zeros(
             max_batch_size,
             config.num_code_groups,
             dtype=torch.long,
             device=device,
         )
-        self._output_embeds = torch.zeros(
+        self.output_embeds = torch.zeros(
             max_batch_size, hidden_size, device=device, dtype=dtype
         )
-        self._predictor_embedding_buffer = torch.empty(
+        self.predictor_embedding_buffer = torch.empty(
             max_batch_size, hidden_size, device=device, dtype=dtype
         )
-        self._sub_batch_size = 0
-        self._sub_temperature_tensor = torch.full(
+        self.sub_batch_size = 0
+        self.sub_temperature_tensor = torch.full(
             (max_batch_size,), 0.9, device=device, dtype=torch.float32
         )
-        self._sub_top_p_tensor = torch.ones(
+        self.sub_top_p_tensor = torch.ones(
             max_batch_size, device=device, dtype=torch.float32
         )
-        self._sub_top_k_tensor = torch.full(
+        self.sub_top_k_tensor = torch.full(
             (max_batch_size,), 50, device=device, dtype=torch.long
         )
-        self._semantic_sampling_seed_tensor = torch.zeros(
+        self.semantic_sampling_seed_tensor = torch.zeros(
             max_batch_size, device=device, dtype=torch.long
         )
-        self._sub_sampling_seed_tensor = torch.zeros(
+        self.sub_sampling_seed_tensor = torch.zeros(
             max_batch_size, device=device, dtype=torch.long
         )
-        self._sub_do_sample_tensor = torch.zeros(
+        self.sub_do_sample_tensor = torch.zeros(
             max_batch_size, device=device, dtype=torch.bool
         )
-        self._sub_seed_offsets = torch.arange(
+        self.sub_seed_offsets = torch.arange(
             1, config.num_code_groups, device=device, dtype=torch.long
         )
-        self._sub_has_sampled_rows = False
-        self._sub_has_argmax_rows = False
-        self._sub_sampled_has_top_p = False
-        self._sub_sampled_max_top_k = 0
-        self._sub_sampled_has_unbounded_top_k = False
-        self._decode_prep_rids: list | None = None
-        self._predictor_graph_batch_sizes = self.normalize_predictor_graph_batch_sizes(
+        self.sub_has_sampled_rows = False
+        self.sub_has_argmax_rows = False
+        self.sub_sampled_has_top_p = False
+        self.sub_sampled_max_top_k = 0
+        self.sub_sampled_has_unbounded_top_k = False
+        self.decode_prep_rids: list | None = None
+        self.predictor_graph_batch_sizes = self.normalize_predictor_graph_batch_sizes(
             server_args,
             max_batch_size=max_batch_size,
         )
-        self._predictor_graphs: dict[tuple, PredictorDecodeGraph] = {}
-        self._predictor_graph_disabled: set[tuple] = set()
+        self.predictor_graphs: dict[tuple, PredictorDecodeGraph] = {}
+        self.predictor_graph_disabled: set[tuple] = set()
         # note(ratish): None until the startup capture, which runs before the
         # KV pool is sized, or the first decode resolves it.
-        self._predictor_graph_enabled: bool | None = None
-        self._predictor_graph_failure_count = 0
-        self._predictor_graph_capacity_fallback_count = 0
-        self._predictor_graph_capacity_warned = False
-        self._predictor_graph_capture_count = 0
-        self._predictor_graph_startup_count = 0
-        self._predictor_graph_pool = None
-        self._predictor_capture_stream: torch.Stream | None = None
+        self.predictor_graph_enabled: bool | None = None
+        self.predictor_graph_failure_count = 0
+        self.predictor_graph_capacity_fallback_count = 0
+        self.predictor_graph_capacity_warned = False
+        self.predictor_graph_capture_count = 0
+        self.predictor_graph_startup_count = 0
+        self.predictor_graph_pool = None
+        self.predictor_capture_stream: torch.Stream | None = None
         bind_default_weight_loaders(self)
-        self._cached_params_dict = dict(self.named_parameters())
-        self._sampler = None
+        self.cached_params_dict = dict(self.named_parameters())
+        self.sampler = None
 
     def prepare_decode_buffers(self, requests: list[Any]) -> None:
         batch_size = len(requests)
-        if batch_size > self._sub_temperature_tensor.shape[0]:
+        if batch_size > self.sub_temperature_tensor.shape[0]:
             raise RuntimeError("Qwen3-TTS sampling buffers are too small")
+        else:
+            pass
 
         # Note: (Jiaxin Deng) every staged value here is static per request, so
         # an unchanged batch composition can reuse the previous staging wholesale.
@@ -1050,17 +1110,25 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             if rid is None:
                 rids = None
                 break
+            else:
+                pass
             data = sched_req.data
-            epoch = getattr(data, "_qwen3_tts_prep_epoch", None)
+            epoch = getattr(
+                data, "_qwen3_tts_prep_epoch", None
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if epoch is None:
-                epoch = self._decode_prep_epoch = (
-                    getattr(self, "_decode_prep_epoch", 0) + 1
+                epoch = self.decode_prep_epoch = (
+                    getattr(self, "decode_prep_epoch", 0) + 1
                 )
-                data._qwen3_tts_prep_epoch = epoch
+                data._qwen3_tts_prep_epoch = epoch  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else:
+                pass
             rids.append((rid, epoch))
-        if rids is not None and rids == getattr(self, "_decode_prep_rids", None):
+        if rids is not None and rids == getattr(self, "decode_prep_rids", None):
             return
-        self._decode_prep_rids = None
+        else:
+            pass
+        self.decode_prep_rids = None
 
         semantic_seeds: list[int] = []
         sub_temperatures: list[float] = []
@@ -1102,6 +1170,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             sub_seeds.append(subtalker_seed)
             if do_sample:
                 sample_rows.append(row_idx)
+            else:
+                pass
 
         predictor_vocab_size = int(self.config.code_predictor_config.vocab_size)
         max_top_k, has_top_p, has_unbounded_top_k = predictor_signature_terms(
@@ -1109,32 +1179,34 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             [sub_top_ps[row_idx] for row_idx in sample_rows],
             predictor_vocab_size,
         )
-        self._sub_batch_size = batch_size
-        self._sub_has_sampled_rows = bool(sample_rows)
-        self._sub_has_argmax_rows = len(sample_rows) < batch_size
-        self._sub_sampled_has_top_p = has_top_p
-        self._sub_sampled_max_top_k = max_top_k
-        self._sub_sampled_has_unbounded_top_k = has_unbounded_top_k
+        self.sub_batch_size = batch_size
+        self.sub_has_sampled_rows = bool(sample_rows)
+        self.sub_has_argmax_rows = len(sample_rows) < batch_size
+        self.sub_sampled_has_top_p = has_top_p
+        self.sub_sampled_max_top_k = max_top_k
+        self.sub_sampled_has_unbounded_top_k = has_unbounded_top_k
 
         if batch_size == 0:
-            self._decode_prep_rids = rids
+            self.decode_prep_rids = rids
             return
+        else:
+            pass
 
         # note(ratish): a pageable source waits for the last step's predictor.
-        pin_memory = is_pin_memory_available(self._sub_temperature_tensor.device)
+        pin_memory = is_pin_memory_available(self.sub_temperature_tensor.device)
         for buffer, values in (
-            (self._semantic_sampling_seed_tensor, semantic_seeds),
-            (self._sub_temperature_tensor, sub_temperatures),
-            (self._sub_top_p_tensor, sub_top_ps),
-            (self._sub_top_k_tensor, sub_top_ks),
-            (self._sub_sampling_seed_tensor, sub_seeds),
-            (self._sub_do_sample_tensor, sub_do_samples),
+            (self.semantic_sampling_seed_tensor, semantic_seeds),
+            (self.sub_temperature_tensor, sub_temperatures),
+            (self.sub_top_p_tensor, sub_top_ps),
+            (self.sub_top_k_tensor, sub_top_ks),
+            (self.sub_sampling_seed_tensor, sub_seeds),
+            (self.sub_do_sample_tensor, sub_do_samples),
         ):
             buffer[:batch_size].copy_(
                 torch.tensor(values, dtype=buffer.dtype, pin_memory=pin_memory),
                 non_blocking=True,
             )
-        self._decode_prep_rids = rids
+        self.decode_prep_rids = rids
 
     @torch.no_grad()
     def forward(
@@ -1149,6 +1221,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         del input_embeds_are_projected, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
+        else:
+            pass
 
         hidden_states = self.model(
             input_ids=input_ids,
@@ -1159,6 +1233,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         if forward_batch.forward_mode.is_extend():
             last_index = self.extend_last_index(forward_batch, hidden_states.device)
             hidden_states = hidden_states[last_index]
+        else:
+            pass
         logits, _ = self.codec_head(hidden_states)
         logits_output = LogitsProcessorOutput(
             next_token_logits=logits,
@@ -1174,6 +1250,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         extend_seq_lens = forward_batch.extend_seq_lens
         if extend_seq_lens is None:
             return torch.tensor([forward_batch.input_ids.shape[0] - 1], device=device)
+        else:
+            pass
         return torch.cumsum(extend_seq_lens.to(device=device), dim=0) - 1
 
     @torch.no_grad()
@@ -1185,8 +1263,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        else:
+            pass
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
+        else:
+            pass
         graph_result = self.predictor_forward_graphed(
             layer0_codes,
             talker_hidden,
@@ -1194,6 +1276,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         if graph_result is not None:
             return graph_result
+        else:
+            pass
         result_codes, summed_embeddings = self.code_predictor_forward_incremental(
             layer0_codes=layer0_codes,
             talker_hidden=talker_hidden,
@@ -1216,6 +1300,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             # Note: (Jiaxin Deng) mirrors the backbone's default capture list
             # ([1, 2, 4, 8, 12, 16] at max_running_requests=16).
             raw_batch_sizes = (1, 2, 4, *range(8, int(max_batch_size) + 1, 4))
+        else:
+            pass
         normalized = sorted(
             {
                 int(batch_size)
@@ -1225,12 +1311,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         if not normalized or normalized[-1] < int(max_batch_size):
             normalized.append(int(max_batch_size))
+        else:
+            pass
         return tuple(normalized)
 
     def predictor_graph_bucket_size(self, batch_size: int) -> int | None:
-        for bucket_size in self._predictor_graph_batch_sizes:
+        for bucket_size in self.predictor_graph_batch_sizes:
             if bucket_size >= batch_size:
                 return bucket_size
+            else:
+                pass
         return None
 
     def predictor_graph_signature(
@@ -1239,75 +1329,91 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         semantic_positions: torch.Tensor | None,
     ) -> tuple | None:
         if semantic_positions is not None:
-            if semantic_positions.device != self._predictor_device:
+            if semantic_positions.device != self.predictor_device:
                 return None
+            else:
+                pass
             if (
                 semantic_positions.ndim not in (1, 2)
                 or semantic_positions.shape[0] != batch_size
             ):
                 return None
+            else:
+                pass
             if semantic_positions.ndim == 2 and semantic_positions.shape[1] != 1:
                 return None
-        if not self._sub_has_sampled_rows:
+            else:
+                pass
+        else:
+            pass
+        if not self.sub_has_sampled_rows:
             return ("argmax", 0, False, False, False)
+        else:
+            pass
         if semantic_positions is None:
             return None
+        else:
+            pass
         return (
             "sampled",
-            int(self._sub_sampled_max_top_k),
-            bool(self._sub_sampled_has_top_p),
-            bool(self._sub_sampled_has_unbounded_top_k),
-            bool(self._sub_has_argmax_rows),
+            int(self.sub_sampled_max_top_k),
+            bool(self.sub_sampled_has_top_p),
+            bool(self.sub_sampled_has_unbounded_top_k),
+            bool(self.sub_has_argmax_rows),
         )
 
     @contextmanager
     def predictor_graph_capture_state(self, bucket_size: int, signature: tuple):
         saved = (
-            self._sub_batch_size,
-            self._sub_has_sampled_rows,
-            self._sub_sampled_max_top_k,
-            self._sub_sampled_has_top_p,
-            self._sub_sampled_has_unbounded_top_k,
-            self._sub_has_argmax_rows,
+            self.sub_batch_size,
+            self.sub_has_sampled_rows,
+            self.sub_sampled_max_top_k,
+            self.sub_sampled_has_top_p,
+            self.sub_sampled_has_unbounded_top_k,
+            self.sub_has_argmax_rows,
         )
         try:
-            self._sub_batch_size = bucket_size
-            self._sub_has_sampled_rows = signature[0] == "sampled"
+            self.sub_batch_size = bucket_size
+            self.sub_has_sampled_rows = signature[0] == "sampled"
             (
                 _,
-                self._sub_sampled_max_top_k,
-                self._sub_sampled_has_top_p,
-                self._sub_sampled_has_unbounded_top_k,
-                self._sub_has_argmax_rows,
+                self.sub_sampled_max_top_k,
+                self.sub_sampled_has_top_p,
+                self.sub_sampled_has_unbounded_top_k,
+                self.sub_has_argmax_rows,
             ) = signature
             yield
         finally:
             (
-                self._sub_batch_size,
-                self._sub_has_sampled_rows,
-                self._sub_sampled_max_top_k,
-                self._sub_sampled_has_top_p,
-                self._sub_sampled_has_unbounded_top_k,
-                self._sub_has_argmax_rows,
+                self.sub_batch_size,
+                self.sub_has_sampled_rows,
+                self.sub_sampled_max_top_k,
+                self.sub_sampled_has_top_p,
+                self.sub_sampled_has_unbounded_top_k,
+                self.sub_has_argmax_rows,
             ) = saved
 
     def predictor_graph_memory_pool(self):
         # Note: (Jiaxin Deng) one shared pool across keys; private per-graph
         # pools would retain intermediates per key and scale with diversity.
-        if self._predictor_graph_pool is None:
-            self._predictor_graph_pool = (
-                self._predictor_device_module.graph_pool_handle()
-            )
-        return self._predictor_graph_pool
+        if self.predictor_graph_pool is None:
+            self.predictor_graph_pool = self.predictor_device_module.graph_pool_handle()
+        else:
+            pass
+        return self.predictor_graph_pool
 
     def resolve_predictor_graph_enabled(self) -> bool:
         # Device first: a device that cannot record answers without published config.
-        if current_platform.get_device_graph_backend(self._predictor_device) is None:
+        if current_platform.get_device_graph_backend(self.predictor_device) is None:
             return False
+        else:
+            pass
         # Note: (Jiaxin Deng) capture under TP would record collectives; the
         # graphed chain is only validated single-rank, so TP stays eager.
         if int(get_parallel().tp_size) != 1:
             return False
+        else:
+            pass
         override = predictor_graph_env_override()
         if override is None:
             should_capture = current_platform.enable_tts_predictor_graph()
@@ -1315,6 +1421,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             should_capture = override
         if not should_capture:
             return False
+        else:
+            pass
         return not bool(get_exec().graph.disable_cuda_graph)
 
     def capture_predictor_graphs(
@@ -1330,10 +1438,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         ones. The set is captured whole and the lazy capture budget counts only
         keys beyond it. The mixed signature skips bucket 1: a mixed batch holds
         a sampled row and an argmax row."""
-        if self._predictor_graph_enabled is None:
-            self._predictor_graph_enabled = self.resolve_predictor_graph_enabled()
-        if not self._predictor_graph_enabled:
+        if self.predictor_graph_enabled is None:
+            self.predictor_graph_enabled = self.resolve_predictor_graph_enabled()
+        else:
+            pass
+        if not self.predictor_graph_enabled:
             return 0
+        else:
+            pass
         if do_sample:
             max_top_k, has_top_p, has_unbounded_top_k = predictor_signature_terms(
                 [int(top_k)],
@@ -1347,20 +1459,24 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         else:
             signatures = [("argmax", 0, False, False, False)]
         started = time.perf_counter()
-        captured_before = len(self._predictor_graphs)
+        captured_before = len(self.predictor_graphs)
         for signature in signatures:
-            for bucket_size in reversed(self._predictor_graph_batch_sizes):
+            for bucket_size in reversed(self.predictor_graph_batch_sizes):
                 if signature[4] and bucket_size < 2:
                     continue
+                else:
+                    pass
                 key = (bucket_size, *signature)
-                if key in self._predictor_graphs:
+                if key in self.predictor_graphs:
                     continue
-                self._predictor_graphs[key] = self.capture_predictor_graph(
+                else:
+                    pass
+                self.predictor_graphs[key] = self.capture_predictor_graph(
                     bucket_size, signature
                 )
-                self._predictor_graph_capture_count += 1
-                self._predictor_graph_startup_count += 1
-        captured = len(self._predictor_graphs) - captured_before
+                self.predictor_graph_capture_count += 1
+                self.predictor_graph_startup_count += 1
+        captured = len(self.predictor_graphs) - captured_before
         elapsed_s = time.perf_counter() - started
         logger.info(
             f"Captured {captured} Qwen3-TTS predictor graphs for "
@@ -1379,19 +1495,21 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         is off for the capture because a graph finalizer reached by the
         cyclic collector while a stream is capturing destroys its pool inside
         the capture."""
-        device = self._predictor_device
-        module = self._predictor_device_module
+        device = self.predictor_device
+        module = self.predictor_device_module
         backend = current_platform.get_device_graph_backend(device)
-        if self._predictor_capture_stream is None:
-            self._predictor_capture_stream = module.Stream(device=device)
-        capture_stream = self._predictor_capture_stream
+        if self.predictor_capture_stream is None:
+            self.predictor_capture_stream = module.Stream(device=device)
+        else:
+            pass
+        capture_stream = self.predictor_capture_stream
         current_stream = module.current_stream(device)
         graph = PredictorDecodeGraph(
             bucket_size,
             signature,
             device=device,
-            hidden_size=int(self._output_embeds.shape[-1]),
-            hidden_dtype=self._output_embeds.dtype,
+            hidden_size=int(self.output_embeds.shape[-1]),
+            hidden_dtype=self.output_embeds.dtype,
         )
         # note(ratish): the buffers are zero filled on the current stream and
         # layer0_codes is an embedding index, so the capture stream waits here.
@@ -1433,14 +1551,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     captured.reset()
                 except Exception:
                     pass
+            else:
+                pass
             raise
         finally:
             current_stream.wait_stream(capture_stream)
             if gc_was_enabled:
                 gc.enable()
+            else:
+                pass
         graph.graph = captured
         if graph.result_codes is None or graph.summed_embeddings is None:
             raise RuntimeError("Qwen3-TTS predictor graph captured no outputs")
+        else:
+            pass
         return graph
 
     def predictor_forward_graphed(
@@ -1449,40 +1573,58 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         talker_hidden: torch.Tensor,
         semantic_positions: torch.Tensor | None,
     ) -> Tuple[torch.Tensor, torch.Tensor] | None:
-        if self._predictor_graph_enabled is None:
-            self._predictor_graph_enabled = self.resolve_predictor_graph_enabled()
-        if not self._predictor_graph_enabled:
+        if self.predictor_graph_enabled is None:
+            self.predictor_graph_enabled = self.resolve_predictor_graph_enabled()
+        else:
+            pass
+        if not self.predictor_graph_enabled:
             return None
+        else:
+            pass
         batch_size, seq_len = layer0_codes.shape
         if seq_len != 1 or batch_size == 0:
             return None
+        else:
+            pass
         if layer0_codes.dtype not in (torch.int, torch.long):
             return None
-        graph_device = self._predictor_device
+        else:
+            pass
+        graph_device = self.predictor_device
         if layer0_codes.device != graph_device or talker_hidden.device != graph_device:
             return None
-        if batch_size != self._sub_batch_size:
+        else:
+            pass
+        if batch_size != self.sub_batch_size:
             return None
-        if self._predictor_device_module.is_current_stream_capturing():
+        else:
+            pass
+        if self.predictor_device_module.is_current_stream_capturing():
             return None
+        else:
+            pass
         signature = self.predictor_graph_signature(batch_size, semantic_positions)
         if signature is None:
             return None
+        else:
+            pass
         bucket_size = self.predictor_graph_bucket_size(batch_size)
         if bucket_size is None:
             return None
+        else:
+            pass
         key = (bucket_size, *signature)
-        if key in self._predictor_graph_disabled:
+        if key in self.predictor_graph_disabled:
             return None
-        graph = self._predictor_graphs.get(key)
+        else:
+            pass
+        graph = self.predictor_graphs.get(key)
         if graph is None:
-            lazy_keys = (
-                len(self._predictor_graphs) - self._predictor_graph_startup_count
-            )
+            lazy_keys = len(self.predictor_graphs) - self.predictor_graph_startup_count
             if lazy_keys >= _PREDICTOR_GRAPH_MAX_LAZY_KEYS:
-                self._predictor_graph_capacity_fallback_count += 1
-                if not self._predictor_graph_capacity_warned:
-                    self._predictor_graph_capacity_warned = True
+                self.predictor_graph_capacity_fallback_count += 1
+                if not self.predictor_graph_capacity_warned:
+                    self.predictor_graph_capacity_warned = True
                     logger.warning(
                         "Qwen3-TTS predictor graph cache holds %d keys beyond "
                         "the startup set; falling back to eager execution for "
@@ -1490,28 +1632,36 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         lazy_keys,
                         key,
                     )
+                else:
+                    pass
                 return None
+            else:
+                pass
             try:
                 graph = self.capture_predictor_graph(bucket_size, signature)
             except Exception:
-                self._predictor_graph_disabled.add(key)
-                self._predictor_graph_failure_count += 1
+                self.predictor_graph_disabled.add(key)
+                self.predictor_graph_failure_count += 1
                 logger.warning(
                     "Disabling Qwen3-TTS predictor graph for key=%s",
                     key,
                     exc_info=True,
                 )
-                if self._predictor_graph_failure_count >= _PREDICTOR_GRAPH_MAX_FAILURES:
-                    self._predictor_graph_enabled = False
+                if self.predictor_graph_failure_count >= _PREDICTOR_GRAPH_MAX_FAILURES:
+                    self.predictor_graph_enabled = False
                     logger.warning(
                         "Disabling Qwen3-TTS predictor graphs entirely "
                         "after %d capture failures",
-                        self._predictor_graph_failure_count,
+                        self.predictor_graph_failure_count,
                     )
+                else:
+                    pass
                 return None
-            self._predictor_graphs[key] = graph
-            self._predictor_graph_capture_count += 1
+            self.predictor_graphs[key] = graph
+            self.predictor_graph_capture_count += 1
             logger.info("Captured Qwen3-TTS predictor graph for key=%s", key)
+        else:
+            pass
         result = graph.replay(layer0_codes, talker_hidden, semantic_positions)
         return result
 
@@ -1523,8 +1673,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if layer0_codes.ndim == 1:
             layer0_codes = layer0_codes.unsqueeze(1)
+        else:
+            pass
         if talker_hidden.ndim == 2:
             talker_hidden = talker_hidden.unsqueeze(1)
+        else:
+            pass
 
         batch_size, seq_len = layer0_codes.shape
         semantic_positions = self.normalize_semantic_positions(
@@ -1533,15 +1687,17 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             seq_len=seq_len,
             device=layer0_codes.device,
         )
-        predictor_dtype = self._predictor_k_cache.dtype
+        predictor_dtype = self.predictor_k_cache.dtype
         num_groups = self.config.num_code_groups
-        result_codes = self._output_codes[:batch_size].unsqueeze(-1)
-        summed_embeddings = self._output_embeds[:batch_size].unsqueeze(1)
+        result_codes = self.output_codes[:batch_size].unsqueeze(-1)
+        summed_embeddings = self.output_embeds[:batch_size].unsqueeze(1)
         result_codes.zero_()
         summed_embeddings.zero_()
-        embedding_buffer = getattr(self, "_predictor_embedding_buffer", None)
+        embedding_buffer = getattr(self, "predictor_embedding_buffer", None)
         if embedding_buffer is not None:
             embedding_buffer = embedding_buffer[:batch_size]
+        else:
+            pass
         use_fused_embedding = embedding_buffer is not None and layer0_codes.is_cuda
 
         for pos in range(seq_len):
@@ -1549,38 +1705,35 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             layer0_embed = self.get_input_embeddings()(layer0_code).to(
                 dtype=predictor_dtype
             )
-            layer0_predictor_embed = self.code_predictor.project_input(layer0_embed)
             pos_codes = result_codes[:, :, pos]
             pos_summed = summed_embeddings[:, pos, :]
             pos_summed.zero_()
-            talker_slice = talker_hidden[:, pos : pos + 1, :]
-            talker_predictor_embed = self.code_predictor.project_input(talker_slice).to(
-                dtype=predictor_dtype
-            )
-            if talker_predictor_embed is talker_slice:
-                # note(ratish): the fused o_proj epilogue overwrites its residual,
-                # which on the first layer is this tensor.
-                talker_predictor_embed = talker_slice.clone()
             pos_codes[:, 0].copy_(layer0_code[:, 0])
             pos_summed.add_(layer0_embed[:, 0, :])
 
-            cache_len = 0
-            self.predictor_forward_one_token(
-                token_embeds=talker_predictor_embed,
-                batch_size=batch_size,
-                cache_len=cache_len,
+            # note(ratish): the talker hidden and the layer 0 embedding are the
+            # first two tokens; one causal pass reads the predictor weights once.
+            pair_embeds = self.code_predictor.project_input(
+                torch.cat(
+                    (
+                        talker_hidden[:, pos : pos + 1, :].to(dtype=predictor_dtype),
+                        layer0_embed,
+                    ),
+                    dim=1,
+                )
             )
-            cache_len += 1
-            last_hidden = self.predictor_forward_one_token(
-                token_embeds=layer0_predictor_embed,
+            # note(ratish): dense rows, the gemv and cutedsl lm_head GEMMs view
+            # their input as 2D and read it with a fixed row stride.
+            last_hidden = self.predictor_forward_tokens(
+                token_embeds=pair_embeds,
                 batch_size=batch_size,
-                cache_len=cache_len,
-            )
-            cache_len += 1
+                cache_len=0,
+            )[:, 1:, :].contiguous()
+            cache_len = pair_embeds.shape[1]
 
             sub_positions = (
                 self.sub_seed_positions(semantic_positions[:, pos])
-                if self._sub_has_sampled_rows
+                if self.sub_has_sampled_rows
                 else None
             )
             for layer_idx in range(num_groups - 1):
@@ -1612,12 +1765,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     pos_summed.add_(new_embed[:, 0, :])
                 new_predictor_embed = self.code_predictor.project_input(new_embed)
                 if layer_idx < num_groups - 2:
-                    last_hidden = self.predictor_forward_one_token(
+                    last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
                         cache_len=cache_len,
                     )
                     cache_len += 1
+                else:
+                    pass
         return result_codes, summed_embeddings
 
     def normalize_semantic_positions(
@@ -1635,9 +1790,15 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             if base.ndim == 2:
                 if base.shape != (batch_size, seq_len):
                     raise ValueError("Qwen3-TTS subtalker positions shape mismatch")
+                else:
+                    pass
                 return base
+            else:
+                pass
             if base.ndim != 1 or base.shape[0] != batch_size:
                 raise ValueError("Qwen3-TTS subtalker positions shape mismatch")
+            else:
+                pass
         offsets = torch.arange(seq_len, device=device, dtype=torch.long)
         return base.unsqueeze(1) + offsets.unsqueeze(0)
 
@@ -1646,7 +1807,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         first, so each sub-step reads its row without a kernel."""
         group_stride = max(int(self.config.num_code_groups) - 1, 1)
         return torch.add(
-            self._sub_seed_offsets.unsqueeze(1),
+            self.sub_seed_offsets.unsqueeze(1),
             semantic_positions.unsqueeze(0),
             alpha=group_stride,
         )
@@ -1659,22 +1820,30 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> torch.Tensor:
         if logits.shape[0] == 0:
             return torch.empty((0,), device=logits.device, dtype=torch.long)
+        else:
+            pass
         batch_size = int(logits.shape[0])
-        if batch_size > self._sub_batch_size:
+        if batch_size > self.sub_batch_size:
             raise RuntimeError("Qwen3-TTS subtalker sampling buffers are too small")
+        else:
+            pass
 
-        if not self._sub_has_sampled_rows:
+        if not self.sub_has_sampled_rows:
             return torch.argmax(logits, dim=-1).to(dtype=torch.long)
+        else:
+            pass
 
         sampled_tokens = self.sample_subtalker_token_seeded(
             logits,
             sub_positions=sub_positions,
         )
-        if not self._sub_has_argmax_rows:
+        if not self.sub_has_argmax_rows:
             return sampled_tokens
+        else:
+            pass
         argmax_tokens = torch.argmax(logits, dim=-1).to(dtype=torch.long)
         return torch.where(
-            self._sub_do_sample_tensor[:batch_size],
+            self.sub_do_sample_tensor[:batch_size],
             sampled_tokens,
             argmax_tokens,
         )
@@ -1687,12 +1856,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> torch.Tensor:
         batch_size = int(logits.shape[0])
         vocab_size = int(logits.shape[-1])
-        temperatures = self._sub_temperature_tensor[:batch_size]
-        top_ks = self._sub_top_k_tensor[:batch_size]
-        top_ps = self._sub_top_p_tensor[:batch_size]
-        seeds = self._sub_sampling_seed_tensor[:batch_size]
-        max_top_k = int(self._sub_sampled_max_top_k)
-        has_unbounded_top_k = bool(self._sub_sampled_has_unbounded_top_k)
+        temperatures = self.sub_temperature_tensor[:batch_size]
+        top_ks = self.sub_top_k_tensor[:batch_size]
+        top_ps = self.sub_top_p_tensor[:batch_size]
+        seeds = self.sub_sampling_seed_tensor[:batch_size]
+        max_top_k = int(self.sub_sampled_max_top_k)
+        has_unbounded_top_k = bool(self.sub_sampled_has_unbounded_top_k)
 
         if logits.is_cuda:
             fused_sampled = sample_from_logits_with_seed_top_k_top_p(
@@ -1703,10 +1872,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 seeds,
                 sub_positions,
                 max_top_k=max_top_k,
-                has_top_p=bool(self._sub_sampled_has_top_p),
+                has_top_p=bool(self.sub_sampled_has_top_p),
             )
             if fused_sampled is not None:
                 return fused_sampled.to(torch.long)
+            else:
+                pass
+        else:
+            pass
 
         scores = logits.float() / temperatures.unsqueeze(1)
         if max_top_k > 0 and max_top_k < vocab_size and not has_unbounded_top_k:
@@ -1722,7 +1895,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
 
         sorted_probs = torch.softmax(sorted_scores, dim=-1)
-        if self._sub_sampled_has_top_p:
+        if self.sub_sampled_has_top_p:
             active_top_p = (top_ps > 0.0) & (top_ps < 1.0)
             cdf = torch.cumsum(sorted_probs, dim=-1)
             remove = (
@@ -1730,6 +1903,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             ) & active_top_p.unsqueeze(1)
             remove[:, 0] = False
             sorted_probs = sorted_probs.masked_fill(remove, -float("inf"))
+        else:
+            pass
         sorted_probs = sorted_probs.masked_fill(~keep_top_k, -float("inf"))
         sorted_logprobs = torch.where(
             sorted_probs > 0,
@@ -1745,6 +1920,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         if sampled is not None:
             return sampled.to(torch.long)
+        else:
+            pass
 
         sampled_rank = sample_seeded_categorical(
             sorted_logprobs,
@@ -1753,18 +1930,27 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         ).to(device=logits.device, dtype=torch.long)
         return sorted_idx.gather(1, sampled_rank.unsqueeze(1)).view(-1).to(torch.long)
 
-    def predictor_forward_one_token(
+    def predictor_forward_tokens(
         self,
         *,
         token_embeds: torch.Tensor,
         batch_size: int,
         cache_len: int,
     ) -> torch.Tensor:
-        hidden_size = token_embeds.shape[-1]
-        positions = self._predictor_position_rows[cache_len, :batch_size]
+        """Run the predictor stack on token_embeds [batch, tokens, hidden] at slots
+        cache_len onward: one token at any slot, or the pair at slots 0 and 1."""
+        num_tokens, hidden_size = token_embeds.shape[1:]
+        if num_tokens == 1:
+            positions = self.predictor_position_rows[cache_len, :batch_size]
+            cache_slots = self.predictor_cache_slots[cache_len, :batch_size]
+        else:
+            assert (num_tokens, cache_len) == (2, 0), "pair tables hold slots 0 and 1"
+            positions = self.predictor_pair_positions[: 2 * batch_size]
+            cache_slots = self.predictor_pair_cache_slots[: 2 * batch_size]
+        num_rows = batch_size * num_tokens
         # note(ratish): 2D rows for the fused add and norm, which every
         # backend's kernel expects and which writes both operands in place.
-        residual = token_embeds
+        residual = token_embeds.reshape(num_rows, 1, hidden_size)
         mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
             if mlp_out is None:
@@ -1773,13 +1959,13 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 normed, residual = layer.input_layernorm(
                     mlp_out, residual.reshape(-1, hidden_size)
                 )
-                residual = residual.reshape(batch_size, 1, hidden_size)
+                residual = residual.reshape(num_rows, 1, hidden_size)
             attn_input = self.predictor_cached_self_attention(
                 layer_idx=layer_idx,
                 attn=layer.self_attn,
-                hidden_states=normed.reshape(batch_size, 1, hidden_size),
+                hidden_states=normed.reshape(batch_size, num_tokens, hidden_size),
                 positions=positions,
-                batch_size=batch_size,
+                cache_slots=cache_slots,
                 cache_len=cache_len,
             )
             residual = self.predictor_o_proj_add_residual(
@@ -1792,7 +1978,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         normed, _ = self.code_predictor.model.norm(
             mlp_out, residual.reshape(-1, hidden_size)
         )
-        return normed.reshape(batch_size, 1, hidden_size)
+        return normed.reshape(batch_size, num_tokens, hidden_size)
 
     @staticmethod
     def predictor_o_proj_add_residual(
@@ -1844,6 +2030,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 out=residual_2d,
             )
             return residual
+        else:
+            pass
 
         attn_output, _ = o_proj(attn_input)
         return residual + attn_output.reshape(
@@ -1869,12 +2057,10 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         attn: Qwen3OmniMoeThinkerTextAttention,
         hidden_states: torch.Tensor,
         positions: torch.Tensor,
-        batch_size: int,
+        cache_slots: torch.Tensor,
         cache_len: int,
     ) -> torch.Tensor:
-        _, seq_len, hidden_size = hidden_states.shape
-        if seq_len != 1:
-            raise ValueError("Qwen3-TTS predictor cache expects one token")
+        batch_size, num_tokens, hidden_size = hidden_states.shape
         flat_hidden = hidden_states.reshape(-1, hidden_size)
         qkv, _ = attn.qkv_proj(flat_hidden)
         q_linear, k_linear, v = qkv.split(
@@ -1888,12 +2074,12 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             head_dim=attn.head_dim,
             alt_stream=attn.alt_stream,
         )
-        if self._predictor_rope_stores_kv:
+        if self.predictor_rope_stores_kv:
             store = FusedSetKVBufferArg(
                 value=v,
-                k_buffer=self._predictor_k_rows[layer_idx],
-                v_buffer=self._predictor_v_rows[layer_idx],
-                cache_loc=self._predictor_cache_slots[cache_len, :batch_size],
+                k_buffer=self.predictor_k_rows[layer_idx],
+                v_buffer=self.predictor_v_rows[layer_idx],
+                cache_loc=cache_slots,
             )
         else:
             store = None
@@ -1903,34 +2089,36 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             k,
             fused_set_kv_buffer_arg=store,
         )
+        end = cache_len + num_tokens
         if store is None:
-            self._predictor_k_cache[layer_idx, :batch_size, cache_len].copy_(
-                k.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            self.predictor_k_cache[layer_idx, :batch_size, cache_len:end].copy_(
+                k.view(batch_size, num_tokens, attn.num_kv_heads, attn.head_dim)
             )
-            self._predictor_v_cache[layer_idx, :batch_size, cache_len].copy_(
-                v.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            self.predictor_v_cache[layer_idx, :batch_size, cache_len:end].copy_(
+                v.view(batch_size, num_tokens, attn.num_kv_heads, attn.head_dim)
             )
-        q = q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
-        cached_k = self._predictor_k_cache[
-            layer_idx, :batch_size, : cache_len + 1
-        ].transpose(1, 2)
-        cached_v = self._predictor_v_cache[
-            layer_idx, :batch_size, : cache_len + 1
-        ].transpose(1, 2)
+        else:
+            pass
+        q = q.reshape(batch_size, num_tokens, attn.num_heads, attn.head_dim).transpose(
+            1, 2
+        )
+        cached_k = self.predictor_k_cache[layer_idx, :batch_size, :end].transpose(1, 2)
+        cached_v = self.predictor_v_cache[layer_idx, :batch_size, :end].transpose(1, 2)
         attn_output = predictor_gqa_attention(
             q,
             cached_k,
             cached_v,
             num_heads=attn.num_heads,
             num_key_value_heads=attn.num_kv_heads,
+            is_causal=num_tokens > 1,
         )
         attn_output = attn_output.transpose(1, 2).reshape(
-            batch_size, attn.num_heads * attn.head_dim
+            batch_size * num_tokens, attn.num_heads * attn.head_dim
         )
         return attn_output
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
-        params_dict = self._cached_params_dict
+        params_dict = self.cached_params_dict
         stacked_params = [
             (".qkv_proj", ".q_proj", "q"),
             (".qkv_proj", ".k_proj", "k"),
@@ -1954,8 +2142,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                         param.weight_loader(param, loaded_weight, shard_id)
                         handled = True
                         break
+                    else:
+                        pass
+                else:
+                    pass
             if handled:
                 continue
+            else:
+                pass
             param = params_dict.get(target)
             if param is not None:
                 weight_loader = getattr(param, "weight_loader", None)
@@ -1963,6 +2157,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     param.data.copy_(loaded_weight)
                 else:
                     weight_loader(param, loaded_weight)
+            else:
+                pass
 
 
 EntryClass = Qwen3TTSTalker

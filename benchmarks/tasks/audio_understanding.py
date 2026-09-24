@@ -14,6 +14,7 @@ from typing import Any
 
 import aiohttp
 
+from benchmarks.benchmarker.conditions import sampling_seed_field
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.benchmarker.utils import get_wav_duration, save_json_results
@@ -71,6 +72,7 @@ def _build_request_payload(
     modalities: list[str],
     max_tokens: int,
     temperature: float,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model_name,
@@ -85,6 +87,7 @@ def _build_request_payload(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": False,
+        **sampling_seed_field(seed),
     }
     if "audio" in modalities:
         payload["audio"] = {"format": "wav"}
@@ -170,6 +173,7 @@ def make_mmsu_send_fn(
     prompt: str = DEFAULT_PROMPT,
     max_tokens: int = 32,
     temperature: float = 0.0,
+    seed: int | None = None,
     save_audio_dir: str | None = None,
 ) -> SendFn:
     if modalities is None:
@@ -189,6 +193,7 @@ def make_mmsu_send_fn(
             modalities=modalities,
             max_tokens=max_tokens,
             temperature=temperature,
+            seed=seed,
         )
 
         start_time = time.perf_counter()

@@ -27,6 +27,8 @@ def visible_gpu_count() -> int:
     if visible is not None:
         entries = [entry.strip() for entry in visible.split(",")]
         return len([entry for entry in entries if entry and entry != "-1"])
+    else:
+        pass
     import torch
 
     return torch.cuda.device_count()

@@ -41,6 +41,8 @@ def attach_minimax_modules(model: Any, checkpoint_root: str) -> None:
             f"MiniMax Music 3 audio embedding mismatch: expected {expected}, "
             f"got {None if weight is None else tuple(weight.shape)}"
         )
+    else:
+        pass
     audio_embeddings = nn.Embedding(*expected).to(device=device, dtype=dtype)
     audio_embeddings.weight.data.copy_(weight.to(device=device, dtype=dtype))
 
@@ -161,6 +163,10 @@ def depth_decode(
         replayed = graph(hidden, c0, seeds, frame_positions, forced_codes, replay)
         if replayed is not None:
             return replayed
+        else:
+            pass
+    else:
+        pass
     return depth_decode_eager(
         model, hidden, c0, seeds, frame_positions, forced_codes, replay
     )
@@ -210,6 +216,8 @@ def depth_decode_eager(
                 paired + (index - 1) * model.audio_vocab_size
             )
             seq.append(decoder.projection(embedding).unsqueeze(1))
+        else:
+            pass
     return (
         torch.stack(codes, dim=1),
         torch.cat(hidden_parts, dim=-1),
@@ -250,10 +258,14 @@ def use_unfused_qk_norm(model: Any) -> None:
         attention = getattr(layer, "self_attn", None)
         if attention is None:
             continue
+        else:
+            pass
         if attention.q_norm is None or attention.k_norm is None:
             raise RuntimeError(
                 "MiniMax Music 3 expects Qwen3 QK norm layers to be present and loaded"
             )
+        else:
+            pass
         attention.forward_prepare_native = MethodType(
             forward_prepare_unfused_qk_norm, attention
         )
@@ -263,6 +275,8 @@ def enable_graph_feedback(model: Any, max_batch_size: int) -> None:
     """Route decode conditioning through a fixed-address buffer."""
     if max_batch_size <= 0:
         raise ValueError("MiniMax Music 3 graph feedback buffer needs a positive size")
+    else:
+        pass
     parameter = next(model.parameters())
     model.graph_feedback_buffer = torch.zeros(
         (int(max_batch_size), int(model.config.hidden_size)),
@@ -282,6 +296,8 @@ def route_forward_batch_input_embeds(model: Any) -> None:
             input_embeds = buffer[: input_ids.shape[0]]
         elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
         return backbone_forward(
             input_ids, positions, forward_batch, input_embeds=input_embeds, **kwargs
         )

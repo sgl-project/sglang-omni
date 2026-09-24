@@ -45,6 +45,8 @@ if TYPE_CHECKING:
         AudioVAE,
     )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
+else:
+    pass
 
 
 def resolve_audio_vae_dtype(dtype: str | torch.dtype) -> torch.dtype:
@@ -52,14 +54,22 @@ def resolve_audio_vae_dtype(dtype: str | torch.dtype) -> torch.dtype:
 
     if isinstance(dtype, torch.dtype):
         return dtype
+    else:
+        pass
     if dtype == "auto":
         return torch.bfloat16
+    else:
+        pass
     if isinstance(dtype, str):
         value = dtype.removeprefix("torch.")
         torch_dtype = getattr(torch, value, None)
         if isinstance(torch_dtype, torch.dtype):
             return torch_dtype
+        else:
+            pass
         raise ValueError(f"Unsupported Ming-Omni-TTS AudioVAE dtype: {dtype!r}")
+    else:
+        pass
     raise TypeError(f"Unsupported Ming-Omni-TTS AudioVAE dtype: {dtype!r}")
 
 
@@ -81,6 +91,8 @@ def load_ming_tts_audio_vae(
             "Ming-Omni-TTS serving currently uses the talker AudioVAE "
             "encode/decode path and does not support semantic_module_kwargs"
         )
+    else:
+        pass
 
     audio_vae = AudioVAE(audio_config).eval()
     audio_vae.to(
@@ -139,6 +151,8 @@ def create_sglang_tts_engine_executor(
             "Ming-Omni-TTS tts_engine tp_size conflicts with "
             f"server_args_overrides.tp_size={user_overrides['tp_size']!r}"
         )
+    else:
+        pass
     context_length = int(user_overrides.pop("context_length", context_length or 0) or 0)
 
     return MingTtsEngineBuilder(
@@ -244,6 +258,8 @@ def create_audio_decode_executor(
     validate_ming_tts_audio_decode_stream_slots(stream_slots)
     if not isinstance(streaming_cuda_graph, bool):
         raise ValueError("Ming-Omni-TTS streaming_cuda_graph must be a boolean")
+    else:
+        pass
 
     import torch
 
@@ -260,11 +276,17 @@ def create_audio_decode_executor(
     ):
         if value is None:
             continue
+        else:
+            pass
         if isinstance(value, bool) or not isinstance(value, Real):
             raise TypeError(f"Ming-Omni-TTS {name} must be a real number")
+        else:
+            pass
         value = float(value)
         if not math.isfinite(value) or not 0.0 < value <= 1.0:
             raise ValueError(f"Ming-Omni-TTS {name} must be finite and in (0, 1]")
+        else:
+            pass
         if name == "total_gpu_memory_fraction":
             component_fraction = value
         else:
@@ -274,6 +296,8 @@ def create_audio_decode_executor(
             "Ming-Omni-TTS streaming AudioVAE CUDA graph requires "
             "process_total_gpu_memory_fraction"
         )
+    else:
+        pass
     if (
         component_fraction is not None
         and process_fraction is not None
@@ -283,12 +307,20 @@ def create_audio_decode_executor(
             "Ming-Omni-TTS process_total_gpu_memory_fraction must be greater "
             "than or equal to total_gpu_memory_fraction"
         )
+    else:
+        pass
 
     if gpu_id is not None:
         if isinstance(gpu_id, bool) or not isinstance(gpu_id, int):
             raise TypeError("Ming-Omni-TTS gpu_id must be an integer")
+        else:
+            pass
         if gpu_id < 0:
             raise ValueError("Ming-Omni-TTS gpu_id must be non-negative")
+        else:
+            pass
+    else:
+        pass
     from sglang_omni.utils.device import resolve_concrete_device
 
     resolved_device = resolve_concrete_device(device, gpu_id)
@@ -296,11 +328,15 @@ def create_audio_decode_executor(
         raise ValueError(
             "Ming-Omni-TTS fixed AudioVAE serving requires an available CUDA device"
         )
+    else:
+        pass
     logical_gpu_id = resolved_device.index
     if logical_gpu_id >= torch.cuda.device_count():
         raise ValueError(
             f"Ming-Omni-TTS audio decode GPU {logical_gpu_id} is not visible"
         )
+    else:
+        pass
 
     resolved_dtype = resolve_audio_vae_dtype(dtype)
     if resolved_dtype != torch.bfloat16:
@@ -308,6 +344,8 @@ def create_audio_decode_executor(
             "Ming-Omni-TTS fixed AudioVAE serving requires bfloat16, "
             f"got {resolved_dtype}"
         )
+    else:
+        pass
 
     device_info = get_gpu_device_info(logical_gpu_id)
     pre_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
@@ -325,9 +363,13 @@ def create_audio_decode_executor(
         raise ValueError(
             "Ming-Omni-TTS audio patch size and latent dimension must be positive"
         )
+    else:
+        pass
     decoder_latent_dim = audio_config.dec_kwargs.get("latent_dim")
     if decoder_latent_dim is None:
         raise ValueError("Ming-Omni-TTS AudioVAE decoder config is missing latent_dim")
+    else:
+        pass
     try:
         decoder_latent_dim = int(decoder_latent_dim)
     except (TypeError, ValueError) as exc:
@@ -339,6 +381,8 @@ def create_audio_decode_executor(
             "Ming-Omni-TTS upstream and AudioVAE decoder latent dimensions "
             f"must match, got {latent_dim} and {decoder_latent_dim}"
         )
+    else:
+        pass
     max_step_latents = max(initial_chunk_patches, steady_chunk_patches) * patch_size
 
     audio_vae = load_ming_tts_audio_vae(
@@ -403,6 +447,8 @@ def create_audio_decode_executor(
                     f"budget={format_bytes_gib(process_budget_bytes)}, "
                     f"process_fraction={process_fraction}"
                 )
+            else:
+                pass
             memory_verification = "verified"
 
         logger.info(
@@ -455,6 +501,8 @@ def resolve_context_length(config: Any) -> int:
     value = getattr(llm_config, "max_position_embeddings", None)
     if value is None:
         raise ValueError("Ming-Omni-TTS llm_config is missing max_position_embeddings")
+    else:
+        pass
     return int(value)
 
 

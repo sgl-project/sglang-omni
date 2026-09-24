@@ -85,6 +85,8 @@ class Zonos2PipelineConfig(PipelineConfig):
                 "async_decode": True,
                 "stream_emit_chunk_frames": 32,
             }
+        else:
+            pass
         if stage_name == "vocoder":
             # note (Yue Yin): keep dac_batch OFF -- verified numerically unsafe.
             # Batched DAC right-pads shorter items and the padding contaminates
@@ -93,6 +95,8 @@ class Zonos2PipelineConfig(PipelineConfig):
             # The DAC has no variable-length batching, so it is not croppable.
             # Do not enable without fixing the DAC itself.
             return {"dac_batch": False}
+        else:
+            pass
         return {}
 
 

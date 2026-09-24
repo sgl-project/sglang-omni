@@ -45,6 +45,10 @@ import asyncio
 import json
 import os
 
+from benchmarks.benchmarker.fingerprint import (
+    collect_environment_fingerprint,
+    collect_server_identity,
+)
 from benchmarks.dataset.prepare import (
     STT_BENCHMARK_DATASET_ID,
     STT_BENCHMARK_DATASET_REVISION,
@@ -53,10 +57,6 @@ from benchmarks.dataset.stt_benchmark import (
     STT_BENCHMARK_LANG,
     STT_BENCHMARK_SPLIT,
     load_stt_benchmark_samples,
-)
-from benchmarks.eval.asr_profiling import (
-    collect_environment_fingerprint,
-    collect_server_identity,
 )
 from benchmarks.eval.benchmark_asr_seedtts import (
     _evaluation_input_sha256,

@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     from torch import nn
 
     from sglang_omni.platforms.interface import JointRopeInplaceKernel
+else:
+    pass
 
 
 @dataclass(frozen=True)

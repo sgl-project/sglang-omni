@@ -26,8 +26,14 @@ def render_router_config(
     worker_urls: list[str],
     model_name: str,
     generation_streaming: bool = True,
+    named_voice: bool = False,
 ) -> str:
-    """Render one current-schema router config for a homogeneous CI worker pool."""
+    """Render one current-schema router config for a homogeneous CI worker pool.
+
+    ``named_voice`` describes a TTS pool whose checkpoint serves preset voices
+    from the text alone; the speech profiles then advertise ``text_to_speech``
+    without a reference instead of ``voice_clone``.
+    """
     preamble = _router_preamble(topology, router_port)
     worker_blocks = [
         _worker_block(
@@ -36,6 +42,7 @@ def render_router_config(
             worker_url=worker_url,
             model_name=model_name,
             generation_streaming=generation_streaming,
+            named_voice=named_voice,
         )
         for ordinal, worker_url in enumerate(worker_urls, start=1)
     ]
@@ -129,6 +136,7 @@ def _worker_block(
     worker_url: str,
     model_name: str,
     generation_streaming: bool,
+    named_voice: bool,
 ) -> str:
     prefix = {
         CiRouterTopology.ASR: "asr",
@@ -157,7 +165,10 @@ def _worker_block(
         [
             "",
             _service_profiles(
-                topology, model_name, generation_streaming=generation_streaming
+                topology,
+                model_name,
+                named_voice,
+                generation_streaming=generation_streaming,
             ),
         ]
     )
@@ -165,7 +176,11 @@ def _worker_block(
 
 
 def _service_profiles(
-    topology: CiRouterTopology, model_name: str, *, generation_streaming: bool
+    topology: CiRouterTopology,
+    model_name: str,
+    named_voice: bool,
+    *,
+    generation_streaming: bool,
 ) -> str:
     model_ids = _toml_array([model_name])
     if topology is CiRouterTopology.ASR:
@@ -175,6 +190,14 @@ def _service_profiles(
             formats=["json", "verbose_json", "sse"],
         )
     if topology is CiRouterTopology.TTS:
+        if named_voice:
+            tasks = ["text_to_speech"]
+            reference_forms = ["none"]
+            voice_name_policy = "preset"
+        else:
+            tasks = ["voice_clone"]
+            reference_forms = ["direct", "list"]
+            voice_name_policy = "uploaded"
         return "\n\n".join(
             [
                 _speech_profile(
@@ -182,18 +205,18 @@ def _service_profiles(
                     model_ids=model_ids,
                     response_formats=["wav"],
                     stream_modes=["non_streaming"],
-                    tasks=["voice_clone"],
-                    reference_forms=["direct", "list"],
-                    voice_name_policy="uploaded",
+                    tasks=tasks,
+                    reference_forms=reference_forms,
+                    voice_name_policy=voice_name_policy,
                 ),
                 _speech_profile(
                     service="speech_http",
                     model_ids=model_ids,
                     response_formats=["pcm"],
                     stream_modes=["non_streaming", "streaming"],
-                    tasks=["voice_clone"],
-                    reference_forms=["direct", "list"],
-                    voice_name_policy="uploaded",
+                    tasks=tasks,
+                    reference_forms=reference_forms,
+                    voice_name_policy=voice_name_policy,
                 ),
             ]
         )

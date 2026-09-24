@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
+from sglang.srt.runtime_context import get_schedule
 from torch import nn
 
 from sglang_omni.models.higgs_tts.hf_config import HiggsMultimodalQwen3Config
@@ -26,8 +26,6 @@ from sglang_omni.models.higgs_tts.sampler import (
 )
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 from sglang_omni.sampling.seed import resolve_row_seed
-
-logger = logging.getLogger(__name__)
 
 # Higgs ckpt prefixes → sglang Qwen3ForCausalLM parameter tree (under ``backbone.``).
 _BACKBONE_PREFIX_MAP: dict[str, str] = {
@@ -47,20 +45,6 @@ class HiggsGenParams:
     top_k: int | None = None
 
 
-def resolve_max_running_requests() -> int:
-    try:
-        from sglang.srt.server_args import get_global_server_args
-
-        return int(get_global_server_args().max_running_requests)
-    except (ImportError, AttributeError, TypeError, ValueError) as exc:
-        fallback = 64
-        logger.warning(
-            f"Falling back to Higgs max_running_requests={fallback} because "
-            f"SGLang global server args are unavailable: {exc}"
-        )
-        return fallback
-
-
 def flat_sampling_attr(sampling_info, attr: str) -> list | None:
     """Return ``sampling_info.<attr>`` as a flat Python list, or ``None``.
 
@@ -69,8 +53,12 @@ def flat_sampling_attr(sampling_info, attr: str) -> list | None:
     val = getattr(sampling_info, attr, None)
     if val is None:
         return None
+    else:
+        pass
     if hasattr(val, "cpu"):
         return val.detach().cpu().flatten().tolist()
+    else:
+        pass
     return list(val)
 
 
@@ -129,13 +117,15 @@ class HiggsTTSModel(nn.Module):
                 f"TTS path; got encoder_type={encoder_type!r}. Whisper/Qwen3-AUT "
                 f"(ASR) encoders are planned for a future PR."
             )
+        else:
+            pass
 
         num_codebooks: int = int(enc_cfg["num_codebooks"])
         vocab_size: int = int(enc_cfg["vocab_size"])
         hidden_size: int = int(enc_cfg.get("out_dim", text_config.hidden_size))
-        self._num_codebooks = num_codebooks
-        self._codebook_vocab_size = vocab_size
-        self._tie_modality = bool(enc_cfg.get("tie_word_embeddings", True))
+        self._num_codebooks = num_codebooks  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self._codebook_vocab_size = vocab_size  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.tie_modality = bool(enc_cfg.get("tie_word_embeddings", True))
 
         self.multimodal_embedding = HiggsMultimodalEmbedding(
             num_codebooks=num_codebooks,
@@ -151,63 +141,71 @@ class HiggsTTSModel(nn.Module):
         backbone_dtype = self.backbone.model.embed_tokens.weight.dtype
         self.multimodal_embedding.to(dtype=backbone_dtype)
         self.modality_head.to(dtype=backbone_dtype)
-        if self._tie_modality:
+        if self.tie_modality:
             self.modality_head.weight = (
                 self.multimodal_embedding.modality_embedding_0.weight
             )
+        else:
+            pass
 
-        self._sampler_pool_max_running_requests = resolve_max_running_requests()
-        pool_size = self._sampler_pool_max_running_requests + 1
-        self._sampler_pool = HiggsBatchedSamplerState(
+        self._sampler_pool_max_running_requests = (
+            get_schedule().max_running_requests
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        pool_size = (
+            self._sampler_pool_max_running_requests + 1
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.sampler_pool = HiggsBatchedSamplerState(
             max_batch_size=pool_size,
             num_codebooks=num_codebooks,
             device=self.backbone.model.embed_tokens.weight.device,
         )
-        self._padding_row = self._sampler_pool_max_running_requests
-        self._rid_to_row: dict[str, int] = {}
-        self._free_rows: list[int] = list(
-            range(self._sampler_pool_max_running_requests)
+        self.padding_row = (
+            self._sampler_pool_max_running_requests
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.rid_to_row: dict[str, int] = {}
+        self.free_rows: list[int] = list(
+            range(
+                self._sampler_pool_max_running_requests
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-        self._output_codes: dict[str, list[torch.Tensor]] = {}
+        self.output_codes: dict[str, list[torch.Tensor]] = {}
         cg_device = self.backbone.model.embed_tokens.weight.device
-        self._cg_row_indices = torch.zeros(
-            pool_size, dtype=torch.long, device=cg_device
-        )
-        self._cg_temperature = torch.ones(
+        self.cg_row_indices = torch.zeros(pool_size, dtype=torch.long, device=cg_device)
+        self.cg_temperature = torch.ones(
             pool_size, dtype=torch.float32, device=cg_device
         )
-        self._cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
-        self._cg_top_k_buf = torch.full(
+        self.cg_top_p = torch.ones(pool_size, dtype=torch.float32, device=cg_device)
+        self.cg_top_k_buf = torch.full(
             (pool_size,),
             K_MAX,
             dtype=torch.long,
             device=cg_device,
         )
-        self._cg_codes_BN = torch.zeros(
+        self.cg_codes_BN = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
         # Note(Jiaxin): Packs codes_BN | was_done | active_generation_done into one buffer.
-        self._cg_collect_staging = torch.zeros(
+        self.cg_collect_staging = torch.zeros(
             pool_size, num_codebooks + 2, dtype=torch.long, device=cg_device
         )
-        self._cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
+        self.cg_was_done = torch.zeros(pool_size, dtype=torch.bool, device=cg_device)
 
-        self._cg_active_delay_count = torch.zeros(
+        self.cg_active_delay_count = torch.zeros(
             pool_size, dtype=torch.int32, device=cg_device
         )
-        self._cg_active_eoc_countdown = torch.full(
+        self.cg_active_eoc_countdown = torch.full(
             (pool_size,), -1, dtype=torch.int32, device=cg_device
         )
-        self._cg_active_generation_done = torch.zeros(
+        self.cg_active_generation_done = torch.zeros(
             pool_size, dtype=torch.bool, device=cg_device
         )
-        self._cg_active_last_codes = torch.zeros(
+        self.cg_active_last_codes = torch.zeros(
             pool_size, num_codebooks, dtype=torch.long, device=cg_device
         )
-        self._cg_active_seeds = torch.full(
+        self.cg_active_seeds = torch.full(
             (pool_size,), NO_SEED, dtype=torch.long, device=cg_device
         )
-        self._cg_active_step_count = torch.zeros(
+        self.cg_active_step_count = torch.zeros(
             pool_size, dtype=torch.long, device=cg_device
         )
 
@@ -228,31 +226,43 @@ class HiggsTTSModel(nn.Module):
 
     @property
     def num_codebooks(self) -> int:
-        return self._num_codebooks
+        return (
+            self._num_codebooks
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def codebook_vocab_size(self) -> int:
-        return self._codebook_vocab_size
+        return (
+            self._codebook_vocab_size
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def sampler_pool_max_running_requests(self) -> int:
-        return self._sampler_pool_max_running_requests
+        return (
+            self._sampler_pool_max_running_requests
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def acquire_row(self, req_id: str) -> int:
         """Allocate or look up the sampler-pool row for ``req_id``. Idempotent."""
-        row = self._rid_to_row.get(req_id)
+        row = self.rid_to_row.get(req_id)
         if row is not None:
             return row
-        if not self._free_rows:
-            max_running_requests = self._sampler_pool_max_running_requests
+        else:
+            pass
+        if not self.free_rows:
+            max_running_requests = (
+                self._sampler_pool_max_running_requests
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise RuntimeError(
                 f"HiggsTTSModel sampler pool exhausted "
                 f"(max_running_requests={max_running_requests}); raise "
                 f"``max_running_requests`` or limit concurrent requests."
             )
-        row = self._free_rows.pop()
-        self._rid_to_row[req_id] = row
-        self._sampler_pool.reset_row(row)
+        else:
+            pass
+        row = self.free_rows.pop()
+        self.rid_to_row[req_id] = row
+        self.sampler_pool.reset_row(row)
         return row
 
     def set_request_seed(self, req_id: str, seed: int | None) -> None:
@@ -262,28 +272,35 @@ class HiggsTTSModel(nn.Module):
         multinomial_with_seed for seeded rows.
         """
         row = self.acquire_row(req_id)
-        self._sampler_pool.seeds[row] = (
+        self.sampler_pool.seeds[row] = (
             NO_SEED if seed is None else resolve_row_seed(seed)
         )
 
     def release_row(self, req_id: str) -> None:
         """Return ``req_id``'s row to the free pool and drop its output codes."""
-        row = self._rid_to_row.pop(req_id, None)
+        row = self.rid_to_row.pop(req_id, None)
         if row is not None:
-            self._free_rows.append(row)
-        self._output_codes.pop(req_id, None)
+            self.free_rows.append(row)
+        else:
+            pass
+        self.output_codes.pop(req_id, None)
 
     def reset_request(self, req_id: str) -> None:
         self.release_row(req_id)
 
     def get_output_codes(self, req_id: str) -> torch.Tensor:
-        codes = self._output_codes.get(req_id)
+        codes = self.output_codes.get(req_id)
         if not codes:
             return torch.empty(
-                (0, self._num_codebooks),
+                (
+                    0,
+                    self._num_codebooks,
+                ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 dtype=torch.long,
                 device=self.multimodal_embedding.modality_embedding_0.weight.device,
             )
+        else:
+            pass
         return torch.stack(codes, dim=0).to(torch.long)
 
     @torch.no_grad()
@@ -300,6 +317,8 @@ class HiggsTTSModel(nn.Module):
                 f"batch size mismatch: hidden={batch_size}, "
                 f"req_ids={len(req_ids)}, gen_params={len(gen_params)}"
             )
+        else:
+            pass
 
         # fp32 for softmax numerical stability.
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
@@ -335,11 +354,11 @@ class HiggsTTSModel(nn.Module):
             device=device,
         )
 
-        was_done = self._sampler_pool.generation_done[row_indices].clone()
+        was_done = self.sampler_pool.generation_done[row_indices].clone()
 
         codes_BN = batched_step(
             logits_BNV,
-            self._sampler_pool,
+            self.sampler_pool,
             row_indices,
             temperature=temperature,
             top_p=top_p,
@@ -352,7 +371,9 @@ class HiggsTTSModel(nn.Module):
         for b in range(batch_size):
             if was_done_cpu[b]:
                 continue
-            self._output_codes.setdefault(req_ids[b], []).append(codes_BN[b])
+            else:
+                pass
+            self.output_codes.setdefault(req_ids[b], []).append(codes_BN[b])
 
         text_vocab_size = self.backbone.config.vocab_size
         return torch.zeros(
@@ -372,18 +393,18 @@ class HiggsTTSModel(nn.Module):
 
         logits_BNV = self.modality_head.generate(hidden_states_BD).to(torch.float32)
 
-        temperature = self._cg_temperature[:batch_size]
-        top_p = self._cg_top_p[:batch_size]
-        top_k_buf = self._cg_top_k_buf[:batch_size]
+        temperature = self.cg_temperature[:batch_size]
+        top_p = self.cg_top_p[:batch_size]
+        top_k_buf = self.cg_top_k_buf[:batch_size]
 
-        delay_count_B = self._cg_active_delay_count[:batch_size].to(torch.long)
-        eoc_countdown_B = self._cg_active_eoc_countdown[:batch_size].to(torch.long)
-        generation_done_B = self._cg_active_generation_done[:batch_size]
-        last_codes_BN_in = self._cg_active_last_codes[:batch_size]
-        seeds_B = self._cg_active_seeds[:batch_size]
-        step_count_B = self._cg_active_step_count[:batch_size]
+        delay_count_B = self.cg_active_delay_count[:batch_size].to(torch.long)
+        eoc_countdown_B = self.cg_active_eoc_countdown[:batch_size].to(torch.long)
+        generation_done_B = self.cg_active_generation_done[:batch_size]
+        last_codes_BN_in = self.cg_active_last_codes[:batch_size]
+        seeds_B = self.cg_active_seeds[:batch_size]
+        step_count_B = self.cg_active_step_count[:batch_size]
 
-        self._cg_was_done[:batch_size] = generation_done_B
+        self.cg_was_done[:batch_size] = generation_done_B
 
         (
             codes_BN,
@@ -404,16 +425,16 @@ class HiggsTTSModel(nn.Module):
             seeds=seeds_B,
             step_count=step_count_B,
         )
-        self._cg_active_step_count[:batch_size] = new_step_count_B
-        self._cg_active_delay_count[:batch_size] = new_delay_count_B.to(
-            self._cg_active_delay_count.dtype
+        self.cg_active_step_count[:batch_size] = new_step_count_B
+        self.cg_active_delay_count[:batch_size] = new_delay_count_B.to(
+            self.cg_active_delay_count.dtype
         )
-        self._cg_active_eoc_countdown[:batch_size] = new_eoc_countdown_B.to(
-            self._cg_active_eoc_countdown.dtype
+        self.cg_active_eoc_countdown[:batch_size] = new_eoc_countdown_B.to(
+            self.cg_active_eoc_countdown.dtype
         )
-        self._cg_active_generation_done[:batch_size] = new_generation_done_B
-        self._cg_active_last_codes[:batch_size] = new_last_codes_BN
-        self._cg_codes_BN[:batch_size] = codes_BN
+        self.cg_active_generation_done[:batch_size] = new_generation_done_B
+        self.cg_active_last_codes[:batch_size] = new_last_codes_BN
+        self.cg_codes_BN[:batch_size] = codes_BN
 
         text_vocab_size = self.backbone.config.vocab_size
         return torch.zeros(
@@ -448,10 +469,14 @@ class HiggsTTSModel(nn.Module):
                 raise RuntimeError(
                     "Higgs prefill requires runner-composed input_embeds"
                 )
+            else:
+                pass
             if omni_prefill_rids is None:
                 raise RuntimeError(
                     "Higgs prefill requires omni_prefill_rids from ForwardBatch.rids"
                 )
+            else:
+                pass
             req_ids, gen_params = self.extract_batch_metadata(
                 forward_batch, omni_prefill_rids
             )
@@ -475,6 +500,8 @@ class HiggsTTSModel(nn.Module):
             hidden_states_last = hidden_states
             if hidden_states_last.ndim == 3:
                 hidden_states_last = hidden_states_last[:, -1, :]
+            else:
+                pass
 
         if is_decode:
             text_logits_BV = self.decode_codebooks_batch_cg(hidden_states_last)
@@ -496,15 +523,17 @@ class HiggsTTSModel(nn.Module):
         """Graph-capture-friendly decode-step embedding lookup; reads from
         shadow `_cg_active_*[:bs]` populated by ``before_decode``.
         """
-        delay_counts = self._cg_active_delay_count[:batch_size].to(torch.long)
+        delay_counts = self.cg_active_delay_count[:batch_size].to(torch.long)
         has_codes = (delay_counts > 0).unsqueeze(-1)
 
-        last_codes_BN = self._cg_active_last_codes[:batch_size].to(torch.long)
+        last_codes_BN = self.cg_active_last_codes[:batch_size].to(torch.long)
         fused_embeds = self.multimodal_embedding.modality_embedding_0(last_codes_BN)
 
         text_embeds = self.backbone.model.embed_tokens(input_ids)
         if text_embeds.ndim == 3:
             text_embeds = text_embeds[:, -1, :]
+        else:
+            pass
 
         return torch.where(has_codes, fused_embeds.to(text_embeds.dtype), text_embeds)
 
@@ -513,6 +542,8 @@ class HiggsTTSModel(nn.Module):
         mode = getattr(forward_batch, "forward_mode", None)
         if mode is None:
             return False
+        else:
+            pass
         is_decode = getattr(mode, "is_decode", None)
         return bool(is_decode()) if callable(is_decode) else False
 
@@ -530,6 +561,8 @@ class HiggsTTSModel(nn.Module):
         """Pull per-row sampling params off ``sampling_info``."""
         if sampling_info is None:
             return [HiggsGenParams() for _ in range(batch_size)]
+        else:
+            pass
 
         temps = flat_sampling_attr(sampling_info, "temperatures")
         top_ps = flat_sampling_attr(sampling_info, "top_ps")
@@ -554,6 +587,8 @@ class HiggsTTSModel(nn.Module):
         seq_lens = getattr(forward_batch, "seq_lens", None)
         if seq_lens is not None and hasattr(seq_lens, "shape"):
             return int(seq_lens.shape[0])
+        else:
+            pass
         return int(getattr(forward_batch, "batch_size", 1))
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> set[str]:
@@ -566,7 +601,7 @@ class HiggsTTSModel(nn.Module):
         """
         mapper = DiscreteWeightMapper(
             text_prefix_map=_BACKBONE_PREFIX_MAP,
-            tie_modality=self._tie_modality,
+            tie_modality=self.tie_modality,
         )
 
         backbone_weights: list[Tuple[str, torch.Tensor]] = []
@@ -578,10 +613,14 @@ class HiggsTTSModel(nn.Module):
             mapped = mapper.map(name)
             if mapped is None:
                 continue
+            else:
+                pass
             if mapped.startswith("backbone."):
                 backbone_weights.append((mapped[len("backbone.") :], tensor))
             elif mapped in own_names:
                 self_weights.append((mapped, tensor))
+            else:
+                pass
 
         self.backbone.load_weights(iter(backbone_weights))
 
@@ -590,11 +629,15 @@ class HiggsTTSModel(nn.Module):
             param = own_params.get(name)
             if param is None:
                 continue
+            else:
+                pass
             if param.shape != tensor.shape:
                 raise ValueError(
                     f"Shape mismatch for {name}: expected {tuple(param.shape)}, "
                     f"got {tuple(tensor.shape)}"
                 )
+            else:
+                pass
             param.data.copy_(tensor.to(param.dtype))
             loaded.add(name)
 
@@ -605,6 +648,8 @@ class HiggsTTSModel(nn.Module):
         for name, _ in self.named_parameters(remove_duplicate=False):
             if not name.startswith("backbone."):
                 names.add(name)
+            else:
+                pass
         return names
 
 

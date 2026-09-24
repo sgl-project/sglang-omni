@@ -170,6 +170,8 @@ def _run_benchmark(
         stream=stream,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
+        voice=_PRESET.voice,
+        voice_clone=_PRESET.voice_clone,
     )
     speed_results = asyncio.run(run_tts_seedtts_benchmark(benchmark_config))
     _validate_speed_results_keys(speed_results)
@@ -208,6 +210,8 @@ def _run_wer_transcribe(
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,
         ref_format=_PRESET.ref_format,
         token_count=_PRESET.token_count,
+        voice=_PRESET.voice,
+        voice_clone=_PRESET.voice_clone,
     )
     run_tts_seedtts_transcribe(
         config,
@@ -482,12 +486,15 @@ def _store_consistency_inputs(
             f"TTS {mode} c{concurrency}: expected positive output_tokens_mean, "
             f"got {output_tokens_mean}",
         )
-        prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
-        checks.check(
-            prompt_tokens_mean > 0,
-            f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
-            f"got {prompt_tokens_mean}",
-        )
+        # note (luojiaxuan): prompt_tokens counts the reference codes, so a
+        # named-voice request has none to report.
+        if _PRESET.voice_clone:
+            prompt_tokens_mean = summary.get("prompt_tokens_mean", 0)
+            checks.check(
+                prompt_tokens_mean > 0,
+                f"TTS {mode} c{concurrency}: expected positive prompt_tokens_mean, "
+                f"got {prompt_tokens_mean}",
+            )
         for request in per_request:
             request_id = request.get("id", "<missing id>")
             if request.get("is_success") is not True:
@@ -495,7 +502,8 @@ def _store_consistency_inputs(
             prompt_tokens = request.get("prompt_tokens")
             completion_tokens = request.get("completion_tokens")
             checks.check(
-                prompt_tokens is not None and prompt_tokens > 0,
+                not _PRESET.voice_clone
+                or (prompt_tokens is not None and prompt_tokens > 0),
                 f"TTS {mode} c{concurrency}: request {request_id} "
                 f"prompt_tokens={prompt_tokens}, expected > 0",
             )
@@ -726,6 +734,7 @@ def router_server(tmp_path_factory: pytest.TempPathFactory):
         num_gpus_per_worker=_PRESET.num_gpus_per_worker,
         wait_timeout=STARTUP_TIMEOUT,
         log_prefix="tts_router_logs",
+        named_voice=not _PRESET.voice_clone,
     ) as router:
         yield router
 
@@ -948,6 +957,11 @@ def test_voice_cloning_similarity(
     similarity_checkpoint: str | None,
     selected_tts_concurrencies: tuple[int, ...],
 ) -> None:
+    if not _PRESET.voice_clone:
+        pytest.skip(
+            "speaker similarity scores generated audio against the request's "
+            "reference clip, and this preset serves a named voice instead"
+        )
     checks = MetricCheckCollector("TTS non-streaming speaker similarity")
     for concurrency in selected_tts_concurrencies:
         _print_stage(

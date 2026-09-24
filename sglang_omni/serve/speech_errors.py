@@ -85,8 +85,12 @@ def speech_websocket_error_payload(error: SpeechAPIError) -> dict[str, Any]:
     }
     if error.param is not None:
         payload["param"] = error.param
+    else:
+        pass
     if error.code is not None:
         payload["code"] = error.code
+    else:
+        pass
     return payload
 
 
@@ -124,8 +128,14 @@ def speech_generation_error(exc: BaseException) -> SpeechAPIError:
     """Map pipeline failures to the shared speech API error contract."""
     if isinstance(exc, SpeechAPIError):
         return exc
+    else:
+        pass
     if QueueFullError.matches(exc):
         return service_unavailable(QueueFullError.MESSAGE)
+    else:
+        pass
     if is_bad_request_error(exc):
         return bad_request(str(exc))
+    else:
+        pass
     return internal_error(str(exc))

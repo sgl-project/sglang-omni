@@ -85,6 +85,8 @@ class CondEmbedder(nn.Module):
         use_dropout = self.dropout_prob > 0
         if train and use_dropout:
             llm_cond = self.cond_drop(llm_cond)
+        else:
+            pass
 
         llm_cond = self.cond_embedder(llm_cond)
 
@@ -121,6 +123,8 @@ class DiT(nn.Module):
         )
         if execution_config.attn_backend is not None:
             kwargs["attn_backend"] = execution_config.attn_backend
+        else:
+            pass
         norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
@@ -170,6 +174,10 @@ class DiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(_basic_init)
 
@@ -231,7 +239,11 @@ class DiT(nn.Module):
         c = torch.cat([c, fake_latent], dim=0)
         if t.ndim == 0:
             t = t.repeat(x.shape[0])
+        else:
+            pass
         if spk_emb is not None:
             spk_emb = torch.cat([spk_emb, spk_emb], dim=0)
+        else:
+            pass
         model_out = self.forward(x, t, c, latent_history, spk_emb)
         return model_out[:, -x.shape[1] :, :]

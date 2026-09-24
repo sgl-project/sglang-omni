@@ -60,6 +60,8 @@ def get_vocoder(device: str) -> Zonos2DACVocoder:
     global _vocoder_cache
     if _vocoder_cache is None or _vocoder_cache[0] != device:
         _vocoder_cache = (device, Zonos2DACVocoder(device=device))
+    else:
+        pass
     return _vocoder_cache[1]
 
 
@@ -118,7 +120,7 @@ class Zonos2OLADecoder:
         # note (Yue Yin): the cross-fade window is fixed for the decoder's life
         # (overlap*hop), so build the raised-cosine ramps once instead of per chunk.
         hold = self.overlap * self.hop
-        self._ramp_up, self._ramp_down = self.ramps(hold) if hold > 0 else (None, None)
+        self.ramp_up, self.ramp_down = self.ramps(hold) if hold > 0 else (None, None)
 
     def add(self, rows: list[torch.Tensor]) -> None:
         self.rows.extend(rows)
@@ -149,32 +151,50 @@ class Zonos2OLADecoder:
         max_frame = len(self.rows) - trail
         if eos_frame is not None:
             max_frame = min(max_frame, int(eos_frame))
+        else:
+            pass
         if max_frame <= 0:
             return chunks
+        else:
+            pass
         while True:
             hi = max_frame if flush else self.decoded_to + chunk_frames
             if not flush and hi > max_frame:
                 break
+            else:
+                pass
             lo = self.emitted
             if hi <= lo:
                 break
+            else:
+                pass
             block = torch.stack(self.rows[lo : hi + _STREAM_WITHHOLD_TAIL], dim=0)
             pcm = vocoder.decode(block)  # aligned PCM for frames [lo, hi)
             if pcm.numel() == 0:
                 break
+            else:
+                pass
             if self.tail is not None and hold > 0 and pcm.numel() >= hold:
-                up, down = self._ramp_up, self._ramp_down
+                up, down = self.ramp_up, self.ramp_down
                 pcm = pcm.clone()
                 pcm[:hold] = self.tail * down + pcm[:hold] * up
+            else:
+                pass
             if flush:
                 self.tail = None
                 self.emitted = hi
                 self.decoded_to = hi
                 if pcm.numel() > 0:
                     chunks.append(pcm.contiguous())
+                else:
+                    pass
                 break
+            else:
+                pass
             if pcm.numel() > hold:
                 chunks.append(pcm[: pcm.numel() - hold].contiguous())
+            else:
+                pass
             # note (Yue Yin): the decoder owns pcm's lifetime; the tail is only
             # read (cross-faded) next chunk, never mutated, so a view is safe.
             self.tail = pcm[pcm.numel() - hold :] if hold > 0 else None
@@ -218,12 +238,14 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
             raise ValueError(
                 f"steady_chunk_frames must be positive, got {steady_chunk_frames}"
             )
-        self._device = device
-        self._steady_chunk_frames = int(steady_chunk_frames)
-        self._default_initial_chunk_frames = max(
+        else:
+            pass
+        self.device = device
+        self.steady_chunk_frames = int(steady_chunk_frames)
+        self.default_initial_chunk_frames = max(
             0, min(int(initial_chunk_frames), int(steady_chunk_frames))
         )
-        self._overlap_frames = int(overlap_frames)
+        self.overlap_frames = int(overlap_frames)
         super().__init__(
             compute_fn,
             sample_rate=ZONOS2_SAMPLE_RATE,
@@ -252,19 +274,25 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         del request_id
         if state.latched:
             return
+        else:
+            pass
         if origin == "payload":
             params = source.request.params
         else:
             params = source
         if not isinstance(params, dict):
             return
+        else:
+            pass
         n_vq = params.get("n_codebooks")
         if n_vq is not None:
             state.n_codebooks = int(n_vq)
+        else:
+            pass
         state.initial_chunk_frames = resolve_initial_codec_chunk_frames(
             params,
-            steady_chunk_frames=self._steady_chunk_frames,
-            default_frames=self._default_initial_chunk_frames,
+            steady_chunk_frames=self.steady_chunk_frames,
+            default_frames=self.default_initial_chunk_frames,
         )
         state.latched = True
 
@@ -277,6 +305,8 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         rows_t = codes.to(dtype=torch.long)
         if rows_t.ndim == 1:
             rows_t = rows_t.reshape(1, -1)
+        else:
+            pass
         return rows_t[:, : state.n_codebooks]
 
     def ingest(
@@ -285,8 +315,10 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         del request_id
         if state.decoder is None:
             state.decoder = Zonos2OLADecoder(
-                self._device, self._overlap_frames, DAC_HOP_LENGTH
+                self.device, self.overlap_frames, DAC_HOP_LENGTH
             )
+        else:
+            pass
         state.decoder.add([codes[i] for i in range(codes.shape[0])])
 
     def decode_delta(
@@ -294,28 +326,34 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
     ) -> torch.Tensor | None:
         if is_final:
             return self.flush(request_id, state)
+        else:
+            pass
         if state.decoder is None:
             return None
+        else:
+            pass
         chunk_frames = (
             state.initial_chunk_frames
             if (
                 not self.stream_has_emitted(request_id)
                 and state.initial_chunk_frames > 0
             )
-            else self._steady_chunk_frames
+            else self.steady_chunk_frames
         )
         # note (Yue Yin): a request-supplied chunk size <= overlap would drive the
         # OLA cursor negative; keep at least one non-overlap frame per window.
-        chunk_frames = max(chunk_frames, self._overlap_frames + 1)
+        chunk_frames = max(chunk_frames, self.overlap_frames + 1)
         pcms = [
             pcm
             for pcm in state.decoder.pull(
-                get_vocoder(self._device), chunk_frames=chunk_frames, flush=False
+                get_vocoder(self.device), chunk_frames=chunk_frames, flush=False
             )
             if pcm.numel() > 0
         ]
         if not pcms:
             return None
+        else:
+            pass
         return torch.cat(pcms) if len(pcms) > 1 else pcms[0]
 
     def flush(self, request_id: str, state: Zonos2StreamState) -> torch.Tensor | None:
@@ -332,18 +370,28 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
             if full.shape[0] > 0:
                 if state.decoder is None:
                     state.decoder = Zonos2OLADecoder(
-                        self._device, self._overlap_frames, DAC_HOP_LENGTH
+                        self.device, self.overlap_frames, DAC_HOP_LENGTH
                     )
+                else:
+                    pass
                 have = len(state.decoder.rows)
                 if full.shape[0] > have:
                     state.decoder.add([full[i] for i in range(have, full.shape[0])])
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
         if state.decoder is None or not state.decoder.rows:
             return None
+        else:
+            pass
         pcms = [
             pcm
             for pcm in state.decoder.pull(
-                get_vocoder(self._device),
-                chunk_frames=self._steady_chunk_frames,
+                get_vocoder(self.device),
+                chunk_frames=self.steady_chunk_frames,
                 flush=True,
                 eos_frame=zstate.eos_frame,
             )
@@ -351,6 +399,8 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         ]
         if not pcms:
             return None
+        else:
+            pass
         return torch.cat(pcms) if len(pcms) > 1 else pcms[0]
 
     def fallback_full_decode(
@@ -362,10 +412,14 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         zstate = Zonos2State.from_dict(payload.data)
         if zstate.audio_codes is None:
             return None
+        else:
+            pass
         codes = torch.as_tensor(zstate.audio_codes, dtype=torch.long)
         if codes.numel() == 0:
             return None
-        pcm = decode_to_pcm(codes, zstate.eos_frame, device=self._device)
+        else:
+            pass
+        pcm = decode_to_pcm(codes, zstate.eos_frame, device=self.device)
         return pcm if pcm.numel() > 0 else None
 
     def stream_payload(self, request_id: str, waveform: torch.Tensor) -> dict[str, Any]:
@@ -389,6 +443,8 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[Zonos2StreamState, No
         usage = build_usage(zstate)
         if usage is not None:
             final_data["usage"] = usage
+        else:
+            pass
         return final_data
 
 

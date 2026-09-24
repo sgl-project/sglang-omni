@@ -19,7 +19,7 @@ from sglang_omni.models.ming_omni.components.streaming_detokenizer import (
     MingStreamingDetokenizeScheduler,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -299,7 +299,7 @@ def test_failure_isolation():
         err = sched.outbox.get(timeout=2.0)
         assert err.type == "error"
         assert err.request_id == rid_bad
-        assert rid_bad not in sched._state
+        assert rid_bad not in sched.state
         assert t.is_alive()
 
         # Good request: should still be processed after the bad one
@@ -396,7 +396,7 @@ def test_finalize_flushes_held_utf8_leftover():
     result_msgs = [m for m in out if m.type == "result"]
     assert [m.data["text"] for m in stream_msgs] == [leftover]
     assert len(result_msgs) == 1
-    assert rid not in sched._state
+    assert rid not in sched.state
 
 
 def test_interleaved_requests_attribute_deltas_correctly():
@@ -425,11 +425,11 @@ def test_late_stream_done_after_finalize_does_not_recreate_state():
     sched.on_stream_done(rid)
     sched.on_new_request(rid, _make_payload(rid, stream=True, output_ids=[1]))
     _drain_outbox(sched)
-    assert rid not in sched._state
-    assert rid not in sched._done_seen
+    assert rid not in sched.state
+    assert rid not in sched.done_seen
 
     sched.on_stream_done(rid)  # duplicate / late
-    assert rid not in sched._state, "late done must not re-create state"
+    assert rid not in sched.state, "late done must not re-create state"
 
 
 def test_abort_clears_state_and_done_seen():
@@ -438,14 +438,14 @@ def test_abort_clears_state_and_done_seen():
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
     sched.on_stream_chunk("r1", _StreamItem(data=1))
-    assert "r1" in sched._state
+    assert "r1" in sched.state
     sched.abort("r1")
-    assert "r1" not in sched._state
+    assert "r1" not in sched.state
 
     sched.on_stream_done("r2")
-    assert "r2" in sched._done_seen
+    assert "r2" in sched.done_seen
     sched.abort("r2")
-    assert "r2" not in sched._done_seen
+    assert "r2" not in sched.done_seen
 
 
 def test_eviction_spares_live_and_done_entries():
@@ -457,18 +457,18 @@ def test_eviction_spares_live_and_done_entries():
     now = time.monotonic()
     # r0..r4999: idle orphans (evictable). r5000..r5099: idle but done (kept).
     for i in range(5000):
-        sched._state[f"r{i}"].last_seen = now - 1000.0
+        sched.state[f"r{i}"].last_seen = now - 1000.0
     for i in range(5000, 5100):
-        sched._state[f"r{i}"].last_seen = now - 1000.0
-        sched._state[f"r{i}"].done = True
+        sched.state[f"r{i}"].last_seen = now - 1000.0
+        sched.state[f"r{i}"].done = True
 
     sched.ensure_state("trigger")  # crosses _STATE_MAX → eviction
 
-    assert all(f"r{i}" not in sched._state for i in range(0, 5000, 499))
-    assert all(f"r{i}" in sched._state for i in range(5000, 5100))
-    assert "r9999" in sched._state  # fresh entries are never evicted
-    assert "trigger" in sched._state
-    assert len(sched._state) == _STATE_MAX + 1 - 5000
+    assert all(f"r{i}" not in sched.state for i in range(0, 5000, 499))
+    assert all(f"r{i}" in sched.state for i in range(5000, 5100))
+    assert "r9999" in sched.state  # fresh entries are never evicted
+    assert "trigger" in sched.state
+    assert len(sched.state) == _STATE_MAX + 1 - 5000
 
 
 def test_streaming_audio_only_request_keeps_text_in_final():
@@ -507,7 +507,7 @@ def test_create_decode_executor_returns_streaming_scheduler(monkeypatch):
     assert isinstance(sched, MingStreamingDetokenizeScheduler)
     for attr in ("inbox", "outbox", "start", "stop", "abort"):
         assert hasattr(sched, attr)
-    assert sched._eos_token_id == 0
+    assert sched.eos_token_id == 0
 
 
 def test_select_stream_output_builder_branches():

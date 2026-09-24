@@ -28,15 +28,20 @@ def create_tree_cache(
         page_size=page_size,
         chunked_prefill_size=get_schedule().chunked_prefill_size,
         eviction_policy=get_memory().radix_eviction_policy,
+        eviction_policy_config=get_memory().radix_eviction_policy_config,
     )
 
     if get_memory().disable_radix_cache:
         from sglang.srt.mem_cache.chunk_cache import ChunkCache
 
         return ChunkCache(params)
+    else:
+        pass
 
     if params.eviction_policy.lower() == "lru":
         return EvictHeapRadixCache(params)
+    else:
+        pass
 
     from sglang.srt.mem_cache.radix_cache import RadixCache
 

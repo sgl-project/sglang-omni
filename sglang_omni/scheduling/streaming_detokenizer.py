@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,8 @@ class RequestState:
 def stream_token_id(data: int | HasItem) -> int:
     if isinstance(data, int):
         return data
+    else:
+        pass
     return int(data.item())
 
 
@@ -87,6 +89,8 @@ class StreamingDetokenizeScheduler:
                     self.on_stream_chunk(msg.request_id, msg.data)
                 elif msg.type == "stream_done":
                     self.on_stream_done(msg.request_id)
+                else:
+                    pass
             except Exception as exc:
                 # note (Chenyang): isolate one request; escaping start() crashes the stage.
                 logger.exception(
@@ -113,6 +117,8 @@ class StreamingDetokenizeScheduler:
         if request_state is None:
             request_state = RequestState()
             self.request_states[request_id] = request_state
+        else:
+            pass
         return request_state
 
     def emit_text_delta(self, request_id: str, text: str) -> None:
@@ -138,9 +144,13 @@ class StreamingDetokenizeScheduler:
         )
         if "\ufffd" in candidate:
             return
+        else:
+            pass
         request_state.pending_tokens.clear()
         if candidate:
             self.emit_text_delta(request_id, candidate)
+        else:
+            pass
 
     def on_stream_done(self, request_id: str) -> None:
         request_state = self.request_states.get(request_id)
@@ -150,10 +160,16 @@ class StreamingDetokenizeScheduler:
             if overflow > 0:
                 for _ in range(len(self.done_seen) - DONE_SEEN_EVICT_TO):
                     self.done_seen.popitem(last=False)
+            else:
+                pass
             return
+        else:
+            pass
         request_state.done = True
         if request_state.payload is not None:
             self.finalize(request_id)
+        else:
+            pass
 
     def on_new_request(self, request_id: str, payload: StagePayload) -> None:
         request_state = self.ensure_request_state(request_id)
@@ -161,21 +177,31 @@ class StreamingDetokenizeScheduler:
         if request_id in self.done_seen:
             request_state.done = True
             self.done_seen.pop(request_id, None)
+        else:
+            pass
         is_streaming = bool((payload.request.params or {}).get("stream", False))
         if request_state.done or not is_streaming:
             self.finalize(request_id)
+        else:
+            pass
 
     def finalize(self, request_id: str) -> None:
         request_state = self.request_states.pop(request_id, None)
         self.done_seen.pop(request_id, None)
         if request_state is None or request_state.payload is None:
             return
+        else:
+            pass
         if request_state.pending_tokens:
             leftover = self.tokenizer.decode(
                 request_state.pending_tokens, skip_special_tokens=True
             )
             if leftover:
                 self.emit_text_delta(request_id, leftover)
+            else:
+                pass
+        else:
+            pass
         is_streaming = bool(
             (request_state.payload.request.params or {}).get("stream", False)
         )

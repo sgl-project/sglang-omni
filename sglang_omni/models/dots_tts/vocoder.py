@@ -25,12 +25,14 @@ logger = logging.getLogger(__name__)
 class DotsTTSBatchVocoder(BatchVocoderBase):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
-        self._logged_batch = False
+        self.logged_batch = False
 
     def prepare_item(self, payload: StagePayload) -> tuple[DotsTTSState, torch.Tensor]:
         state = load_dots_tts_state(payload)
         if state.generated_latents is None:
             raise RuntimeError("dots.tts vocoder received no generated latents")
+        else:
+            pass
         return state, state.generated_latents
 
     async def decode_batch(
@@ -45,14 +47,16 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
             buckets.setdefault(bucket, []).append((index, latents))
 
         bucket_sizes = [len(bucket_items) for bucket_items in buckets.values()]
-        if not self._logged_batch and max(bucket_sizes, default=0) > 1:
+        if not self.logged_batch and max(bucket_sizes, default=0) > 1:
             logger.info(
                 "dots.tts AudioVAE batched decode is active: requests=%d "
                 "bucket_sizes=%s",
                 len(items),
                 bucket_sizes,
             )
-            self._logged_batch = True
+            self.logged_batch = True
+        else:
+            pass
 
         with self.codec.lock:
             for bucket_items in buckets.values():
@@ -82,6 +86,8 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
                         "dots.tts AudioVAE returned an unexpected batch size: "
                         f"expected {len(bucket_items)}, got {waveform_batch.shape[0]}"
                     )
+                else:
+                    pass
                 for row, (index, latents) in enumerate(bucket_items):
                     valid_samples = int(latents.shape[1]) * self.codec.hop_size
                     outputs[index] = (
@@ -91,6 +97,8 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
 
         if any(output is None for output in outputs):
             raise RuntimeError("dots.tts AudioVAE did not produce every batch result")
+        else:
+            pass
         return [output for output in outputs if output is not None]
 
     def validate_latents(self, latents: torch.Tensor) -> None:
@@ -99,13 +107,19 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
                 "dots.tts latents must have shape [1, frames, latent_dim], "
                 f"got {tuple(latents.shape)}"
             )
+        else:
+            pass
         if latents.shape[1] == 0:
             raise ValueError("dots.tts latents must contain at least one frame")
+        else:
+            pass
         if latents.shape[2] != self.codec.latent_dim:
             raise ValueError(
                 f"dots.tts latent_dim must be {self.codec.latent_dim}, "
                 f"got {latents.shape[2]}"
             )
+        else:
+            pass
 
     def store_result(
         self,
@@ -123,6 +137,8 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
         usage = build_usage(state)
         if usage is not None:
             payload.data["usage"] = usage
+        else:
+            pass
         return payload
 
     async def decode_payload(self, payload: StagePayload) -> StagePayload:
@@ -165,24 +181,32 @@ class DotsTTSStreamingVocoder(
     ) -> None:
         if merge_steps < 1:
             raise ValueError("dots.tts vocoder merge_steps must be positive")
+        else:
+            pass
         if max_batch_size < 1:
             raise ValueError("dots.tts vocoder max_batch_size must be positive")
+        else:
+            pass
         if max_batch_wait_ms < 0:
             raise ValueError("dots.tts vocoder max_batch_wait_ms must be non-negative")
+        else:
+            pass
         if stream_slots < 1:
             raise ValueError("dots.tts vocoder stream_slots must be positive")
+        else:
+            pass
         self.codec = codec
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
         self.stream_slots = int(stream_slots)
-        self._batch_vocoder = DotsTTSBatchVocoder(codec)
-        self._slot_pool = slot_pool
+        self.batch_vocoder = DotsTTSBatchVocoder(codec)
+        self.slot_pool = slot_pool
         # note (guozhihao-224): coalesce width follows max_batch_size only;
         # stream_slots is admission capacity and must not redefine the batch cap.
         self.stream_chunk_batch_max = int(max_batch_size)
         super().__init__(
-            self._batch_vocoder.decode_payload,
-            batch_compute_fn=self._batch_vocoder.decode_payloads,
+            self.batch_vocoder.decode_payload,
+            batch_compute_fn=self.batch_vocoder.decode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
             sample_rate=codec.sample_rate,
@@ -196,8 +220,8 @@ class DotsTTSStreamingVocoder(
             return self.get_or_create_pool_locked()
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
-        _state, latents = self._batch_vocoder.prepare_item(payload)
-        self._batch_vocoder.validate_latents(latents)
+        _state, latents = self.batch_vocoder.prepare_item(payload)
+        self.batch_vocoder.validate_latents(latents)
 
     def create_stream_state(self, request_id: str) -> DotsStreamState:
         del request_id
@@ -214,11 +238,15 @@ class DotsTTSStreamingVocoder(
             raise ValueError(
                 "dots.tts latent chunks must have shape [1, frames, latent_dim]"
             )
+        else:
+            pass
         if codes.shape[-1] != self.codec.latent_dim:
             raise ValueError(
                 f"dots.tts latent_dim must be {self.codec.latent_dim}, "
                 f"got {codes.shape[-1]}"
             )
+        else:
+            pass
         return codes.to(self.codec.device)
 
     def ingest(
@@ -234,6 +262,8 @@ class DotsTTSStreamingVocoder(
         # this gate remains for direct decode_delta / stream-done callers.
         if is_final:
             return bool(state.pending)
+        else:
+            pass
         return self.pending_ready(state)
 
     def decode_delta(
@@ -246,11 +276,15 @@ class DotsTTSStreamingVocoder(
         del request_id
         if not is_final:
             return None
+        else:
+            pass
         chunks: list[torch.Tensor] = []
         with self.codec.lock:
             pool = self.get_or_create_pool_locked()
             if state.slot is None and state.pending:
                 state.slot = pool.acquire()
+            else:
+                pass
             if state.slot is not None and state.pending:
                 take = len(state.pending)
                 patches, state.pending = state.pending[:take], state.pending[take:]
@@ -260,14 +294,24 @@ class DotsTTSStreamingVocoder(
                 chunk = pool.step({state.slot: torch.cat(patches, dim=1)})[state.slot]
                 if chunk.numel():
                     chunks.append(chunk)
+                else:
+                    pass
+            else:
+                pass
             if state.slot is not None:
                 tail = pool.flush(state.slot)
                 pool.release(state.slot)
                 state.slot = None
                 if tail.numel():
                     chunks.append(tail)
+                else:
+                    pass
+            else:
+                pass
         if not chunks:
             return None
+        else:
+            pass
         return torch.cat(chunks, dim=-1)
 
     def final_result_data(
@@ -282,6 +326,8 @@ class DotsTTSStreamingVocoder(
         usage = build_usage(tts_state)
         if usage is not None:
             result["usage"] = usage
+        else:
+            pass
         return result
 
     def fallback_full_decode(
@@ -291,6 +337,8 @@ class DotsTTSStreamingVocoder(
         tts_state = load_dots_tts_state(payload)
         if tts_state.generated_latents is None:
             return None
+        else:
+            pass
         with self.codec.lock:
             return self.codec.inference.decode_latents(
                 tts_state.generated_latents.to(self.codec.device)
@@ -300,6 +348,8 @@ class DotsTTSStreamingVocoder(
         del request_id
         if state.slot is None:
             return
+        else:
+            pass
         with self.codec.lock:
             self.get_or_create_pool_locked().release(state.slot)
         state.slot = None
@@ -312,6 +362,8 @@ class DotsTTSStreamingVocoder(
         ]
         if not slotted:
             return []
+        else:
+            pass
         # note (guozhihao-224): exact-T groups only; padding would change AudioVAE
         # convolution boundaries. Cap with max_batch_size so one pool.step does
         # not grow to stream_slots under high concurrency.
@@ -329,8 +381,12 @@ class DotsTTSStreamingVocoder(
         for _, state in participants:
             if state.slot is None:
                 raise RuntimeError("dots.tts coalesced step is missing a vocoder slot")
+            else:
+                pass
             if self.take_patches(state) != take_patches:
                 raise RuntimeError("dots.tts coalesced step mixed unequal patch counts")
+            else:
+                pass
             patches = state.pending[:take_patches]
             latents = torch.cat(patches, dim=1)
             if int(latents.shape[1]) != take_patches * self.codec.patch_size:
@@ -339,6 +395,8 @@ class DotsTTSStreamingVocoder(
                     f"{int(latents.shape[1])} != "
                     f"{take_patches * self.codec.patch_size}"
                 )
+            else:
+                pass
             slot_latents[state.slot] = latents
         return DotsCoalescedStepPlan(
             take_patches=take_patches,
@@ -357,15 +415,19 @@ class DotsTTSStreamingVocoder(
             del state.pending[: plan.take_patches]
             if state.slot is None:
                 continue
+            else:
+                pass
             waveform = decoded[state.slot]
             if waveform.numel():
                 out[request_id] = waveform
+            else:
+                pass
         return out
 
     def get_or_create_pool_locked(self) -> DotsVocoderSlotPool:
         # Caller must hold self.codec.lock (RLock).
-        if self._slot_pool is None:
-            self._slot_pool = DotsVocoderSlotPool(
+        if self.slot_pool is None:
+            self.slot_pool = DotsVocoderSlotPool(
                 self.codec.inference,
                 num_slots=self.stream_slots,
                 chunk_size=self.codec.patch_size * self.merge_steps,
@@ -377,25 +439,37 @@ class DotsTTSStreamingVocoder(
                 self.merge_steps,
                 self.codec.patch_size * self.merge_steps,
             )
-        return self._slot_pool
+        else:
+            pass
+        return self.slot_pool
 
     def ensure_slot(self, state: DotsStreamState) -> None:
         if state.slot is not None:
             return
+        else:
+            pass
         with self.codec.lock:
             if state.slot is None:
                 state.slot = self.get_or_create_pool_locked().acquire()
+            else:
+                pass
 
     def pending_ready(self, state: DotsStreamState) -> bool:
         if not state.pending:
             return False
+        else:
+            pass
         if state.received_patches <= 2:
             return True
+        else:
+            pass
         return len(state.pending) >= self.merge_steps
 
     def take_patches(self, state: DotsStreamState) -> int:
         if state.received_patches <= 2:
             return 1
+        else:
+            pass
         return min(self.merge_steps, len(state.pending))
 
     def step_frames(self, state: DotsStreamState) -> int:
