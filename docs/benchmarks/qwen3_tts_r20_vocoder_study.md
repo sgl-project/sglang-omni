@@ -1586,3 +1586,19 @@ lane 的核上没有外来负载(`[cpuset-contention]` 均值 0.06 核),但同�
 59.6 高一点,正是"第六次超过前五次最大值"的情形,余量把它接住了。中间一次 CI(`36bcafe2`)ASR stage 1 失败,原因在 main:
 合并基点 `6307e2fa` 里 #2338 把读取处改成 `_pending_chunked_abort_req` 而初始化仍是 `pending_chunked_abort_req`,MOSS-TD 的调度线程启动即崩;
 main 的 `d290c100` 已修,推一个空提交让 CI 以新 main 重建合并引用后通过。#2293 等 review(已请 yxs、FrankLeeeee、JiaxinD、zhaochenyang20、Hayden727)。
+
+**更正:这次校准没按校准手册走(2026-09-24 02:40 PT)**。luojiaxuan 问"你看了 calibration 那个文档没",我之前只读了 SKILL.md
+和 runbook 的一部分。对照完整手册,违反的硬性要求有:必须用原生 `tune.py`、禁止手写 pytest 循环(eval-h100 与 CI 重跑都是手写);
+预留 GPU 前先跑 `check_ci_coverage.py`,遇到新测试或新 preset 先更新工具(跳过了);校准要在配置写定的 CI 主机 lane 上借道进行,
+driver 作为容器初始命令(用了另一台机器、`sleep infinity` 加 exec);破坏性轮次要剔除并补跑(Base 第 5 次按规则应剔除却保留了);
+没有产出 handoff、stage-scope、原生 report 与 apply-plan。另外手册的主机配置(`novita-h100`,`sglang-omni` 账号)已过期,
+现在的 CI 主机 `host-85-234-79-221` 属于 yxs 的 Radix 整机租约,且 Radix 连接自 09-23 00:39 PT 起断开,按手册应报告阻塞而不是换机器。
+
+**补救**:
+- 覆盖检查在 #2293 上不通过(68 个 schema 过期、CustomVoice preset 未注册、cosyvoice3 无 stage),且延迟阶段会被静默漏掉。
+- `tune.py` 按"测试文件 + 环境变量"为执行单元整文件跑,延迟阶段若留在 `test_tts_ci.py` 里,会和 module 级的双 worker 服务同时占卡。
+  所以 #2293 把它搬到独立模块 `tests/test_model/test_tts_latency_ci.py`(`bf8b2390`),参照改成 `QWEN3_TTS_LATENCY_*` 顶层常量。
+- 校准工具 PR:zhaochenyang20/sglang-omni-calibration#1(`tune.py` 加 `ttfp_median_s`/`ttfp_p95_s`,注册新模块与两个 preset,
+  补 CustomVoice preset,按 main + #2293 重生成 TTS/ASR schema;覆盖检查只剩 Omni 的 23 个旧错误,原因是 #2252 把 Omni 阈值
+  挪进 `omni_ci_config.py` 改了名,工具的 Omni 配置没跟上,不在本次范围)。
+- 现在 #2293 里的数字仍是手动重跑 CI job 得到的,等能借到 CI lane 时用原生 `tune.py` 正式校准替换。
