@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
     from sglang_omni.model_runner.base import ModelRunner
     from sglang_omni.model_runner.model_worker import ModelWorker
+    from sglang_omni.scheduling.bootstrap import InfrastructureOptions
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -165,7 +166,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             )
         self.validate_before_infrastructure(server_args)
 
-        infra_kwargs = dict(self.infra_kwargs())
+        infra_kwargs: InfrastructureOptions = {**self.infra_kwargs()}
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
 
@@ -298,7 +299,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def customize_server_args(self, server_args: ServerArgs) -> None:
         del server_args
 
-    def infra_kwargs(self) -> Mapping[str, object]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         return {}
 
     def before_memory_pool(

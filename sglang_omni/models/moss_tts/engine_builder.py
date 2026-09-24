@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.request_builders import MossTTSSGLangRequestData
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
     from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.bootstrap import InfrastructureOptions
     from sglang_omni.scheduling.messages import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -40,7 +41,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
         super().__init__()
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
 
-    def infra_kwargs(self) -> dict[str, float]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         # Note (Jiaxin Deng): without this the declared stage budget stops at the
         # placement validator and KV sizing profiles against whatever the card happens
         # to have free, so capacity would depend on which process loaded first. Emitted

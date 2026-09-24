@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         CosyVoice3SGLangRequestData,
     )
     from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.bootstrap import InfrastructureOptions
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -279,7 +280,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder["CosyVoice3SGLangRequestData"]
             "async_decode_min_batch_size": 1,
         }
 
-    def infra_kwargs(self) -> dict[str, str | None]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         if not use_mlx():

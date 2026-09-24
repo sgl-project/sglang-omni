@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from sglang_omni.models.ming_tts.sglang_model import MingTTSSGLangModel
     from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
     from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.bootstrap import InfrastructureOptions
     from sglang_omni.scheduling.messages import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -162,7 +163,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Ming-Omni-TTS torch.compile is not currently supported")
 
-    def infra_kwargs(self) -> dict[str, int | float | None]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         return {
             "tp_rank": self.tp_rank,
             "nccl_port": self.nccl_port,

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     )
     from sglang_omni.models.moss_tts_local.sglang_model import MossTTSLocalSGLangModel
     from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.bootstrap import InfrastructureOptions
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
@@ -140,7 +141,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder["MossTTSLocalSGLangRequestData"
             f"{self.profile_total_gpu_memory_fraction}"
         )
 
-    def infra_kwargs(self) -> dict[str, float | None]:
+    def infra_kwargs(self) -> InfrastructureOptions:
         return {
             "total_gpu_memory_fraction": self.profile_total_gpu_memory_fraction,
         }
