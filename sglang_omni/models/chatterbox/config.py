@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Pipeline configuration for Chatterbox-Turbo TTS."""
+
+from __future__ import annotations
+
+from typing import ClassVar
+
+from sglang_omni.config import (
+    EngineStageConfig,
+    FactoryArgs,
+    PipelineConfig,
+    StageConfig,
+)
+
+_PKG = "sglang_omni.models.chatterbox"
+
+
+class ChatterboxPipelineConfig(PipelineConfig):
+    """3-stage TTS pipeline: preprocessing -> tts_engine -> vocoder."""
+
+    architecture: ClassVar[str] = "ChatterboxT3"
+    architecture_aliases: ClassVar[tuple[str, ...]] = ("ChatterboxTurbo",)
+    requires_model_capabilities: ClassVar[bool] = True
+
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "tts_engine": EngineStageConfig,
+    }
+
+    model_path: str
+    stages: list[StageConfig] = [
+        StageConfig(
+            name="preprocessing",
+            process="preprocessing",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            next="tts_engine",
+        ),
+        # Stages are built in list order; the vocoder precedes the engine so
+        # its weights are resident before the engine's KV pool is sized.
+        StageConfig(
+            name="vocoder",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_vocoder_executor",
+            gpu=0,
+            terminal=True,
+            can_accept_stream_before_payload=True,
+        ),
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(max_new_tokens=1024),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
+    ]
+
+    def supports_uploaded_voice_references(self) -> bool:
+        return True
+
+
+EntryClass = ChatterboxPipelineConfig

@@ -203,6 +203,12 @@ def create_mlx_model_worker(
         )
 
         make_runner_class = make_fun_cosyvoice3_mlx_runner_class
+    elif model_arch == "ChatterboxT3SGLangModel":
+        from sglang_omni.models.chatterbox.mlx.runner import (
+            make_chatterbox_t3_mlx_runner_class,
+        )
+
+        make_runner_class = make_chatterbox_t3_mlx_runner_class
     else:
         raise NotImplementedError(
             "Omni's MLX worker does not support model architecture " f"{model_arch!r}"
@@ -234,6 +240,10 @@ def create_mlx_model_worker(
                 # Note (yexiaodong): The bookkeeping stub must use CosyVoice's
                 # 6,761-codec-token vocabulary rather than Qwen2 text tokens.
                 self.model_config.vocab_size = 6561 + 200
+            elif model_arch == "ChatterboxT3SGLangModel":
+                # The bookkeeping stub must use the speech-token vocabulary
+                # rather than the GPT-2 text vocabulary.
+                self.model_config.vocab_size = 6563
             runner_class = make_runner_class()
             mlx_model_path = (
                 config.mlx_model_path

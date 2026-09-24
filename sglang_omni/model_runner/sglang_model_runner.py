@@ -578,6 +578,7 @@ class SGLModelRunner(ModelRunner):
             "MingTTSSGLangModel": "sglang_omni.models.ming_tts.sglang_model:MingTTSSGLangModel",
             "MossTTSDelaySGLangModel": "sglang_omni.models.moss_tts.sglang_model:MossTTSDelaySGLangModel",
             "MossTTSLocalSGLangModel": "sglang_omni.models.moss_tts_local.sglang_model:MossTTSLocalSGLangModel",
+            "ChatterboxT3SGLangModel": "sglang_omni.models.chatterbox.sglang_model:ChatterboxT3SGLangModel",
             "MossTranscribeDiarizeForConditionalGeneration": "sglang_omni.models.moss_transcribe_diarize.sglang_model:MossTranscribeDiarizeForConditionalGeneration",
             "VoxtralSGLangTTSModel": "sglang_omni.models.voxtral_tts.sglang_model:VoxtralSGLangTTSModel",
             "Zonos2SGLangModel": "sglang_omni.models.zonos2.sglang_model:Zonos2SGLangModel",

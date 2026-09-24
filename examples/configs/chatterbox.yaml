@@ -1,0 +1,2 @@
+config_cls: ChatterboxPipelineConfig
+model_path: ResembleAI/chatterbox-turbo
