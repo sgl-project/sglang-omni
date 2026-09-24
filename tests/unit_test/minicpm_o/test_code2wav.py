@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -30,6 +32,54 @@ from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("frequency_size", [255, 256])
+def test_timestep_embedding_matches_reference(
+    dtype: torch.dtype, frequency_size: int
+) -> None:
+    model = TimestepEmbedder(16, frequency_size).to(dtype).eval()
+    t = torch.linspace(0, 1, 11, dtype=dtype)
+    half = frequency_size // 2
+    frequencies = torch.exp(-math.log(10000) * torch.arange(half) / half).to(t)
+    angles = (t * 1000)[:, None] * frequencies[None]
+    embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
+    if frequency_size % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    torch.testing.assert_close(model(t), model.mlp(embedding), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_timestep_embedding_autocast_preserves_frequencies(dtype: torch.dtype) -> None:
+    model = TimestepEmbedder(16).to(device="cuda", dtype=dtype).eval()
+    t = torch.linspace(0, 1, 11, device="cuda", dtype=torch.float32)
+    frequencies = torch.exp(-math.log(10000) * torch.arange(128) / 128).to(t)
+    angles = (t * 1000)[:, None] * frequencies[None]
+    embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
+    with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
+        torch.testing.assert_close(model(t), model.mlp(embedding), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_timestep_embedding_cuda_graph_replays_new_inputs() -> None:
+    model = TimestepEmbedder(16).cuda().eval()
+    t = torch.zeros(2, device="cuda")
+    with torch.inference_mode():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                model(t)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = model(t)
+        t.fill_(0.25)
+        expected = model(t)
+        graph.replay()
+        torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
 
 def test_native_vocoder_import_does_not_require_legacy_packages() -> None:

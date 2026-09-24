@@ -12,6 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
 
+TIMESTEP_MAX_PERIOD = 10000
+
 
 class MLP(torch.nn.Module):
 
@@ -118,29 +120,32 @@ class TimestepEmbedder(nn.Module):
         )
         self.frequency_embedding_size = frequency_embedding_size
         self.scale = 1000
+        half = frequency_embedding_size // 2
+        # note (MayDomine): autocast timesteps can remain FP32 with FP16 weights.
+        self.frequencies = torch.exp(
+            -math.log(TIMESTEP_MAX_PERIOD) * torch.arange(half) / half
+        )
+        self.frequency_cache: torch.Tensor | None = None
 
-    @staticmethod
-    def timestep_embedding(
-        t: torch.Tensor, dim: int, max_period: int = 10000
-    ) -> torch.Tensor:
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
-        ).to(t)
-        args = t[:, None] * freqs[None]
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        if (
+            self.frequency_cache is None
+            or self.frequency_cache.device != t.device
+            or self.frequency_cache.dtype != t.dtype
+        ):
+            frequencies = self.frequencies.to(t)
+            self.frequency_cache = frequencies
+        else:
+            frequencies = self.frequency_cache
+        args = (t * self.scale)[:, None] * frequencies[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
+        if self.frequency_embedding_size % 2:
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
         else:
             pass
-        return embedding
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        t_freq = self.timestep_embedding(t * self.scale, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq)
-        return t_emb
+        return self.mlp(embedding)
 
 
 class Transpose(torch.nn.Module):
