@@ -151,9 +151,9 @@ class Coordinator(CoordinatorSessions):
         logger.info("Coordinator started")
 
     async def stop(self) -> None:
-        """Stop the coordinator."""
+        """Close sessions while owners can answer, then settle pending clients."""
         await self.stop_sessions()
-        self.running = False
+        await self.fail_pending_requests(self.fatal_error or "Coordinator stopped")
         self.control_plane.close()
         logger.info("Coordinator stopped")
 
@@ -374,8 +374,14 @@ class Coordinator(CoordinatorSessions):
         try:
             result = await future
             return result
+        except asyncio.CancelledError:
+            await self.abort(request_id)
+            raise
         finally:
-            self.completion_futures.pop(request_id, None)
+            if self.completion_futures.get(request_id) is future:
+                self.completion_futures.pop(request_id, None)
+            else:
+                pass
 
     async def stream(
         self, request_id: str, request: OmniRequest | Any
@@ -490,7 +496,7 @@ class Coordinator(CoordinatorSessions):
         entry_info = self.stages[entry_instance]
 
         # Track request
-        self.requests[request_id] = RequestInfo(
+        info = RequestInfo(
             request_id=request_id,
             state=RequestState.PENDING,
             current_stage=self.entry_stage,
@@ -500,6 +506,7 @@ class Coordinator(CoordinatorSessions):
                 else terminal_stages
             ),
         )
+        self.requests[request_id] = info
 
         # Create future for completion
         loop = asyncio.get_running_loop()
@@ -510,32 +517,69 @@ class Coordinator(CoordinatorSessions):
         else:
             pass
 
-        payload = StagePayload(
-            request_id=request_id,
-            request=request,
-            data={"raw_inputs": request.inputs},
-        )
-
-        _emit_event(
-            request_id=request_id,
-            stage="coordinator",
-            event_name="request_admission",
-            metadata={"entry_stage": self.entry_stage},
-        )
-
-        await self.control_plane.submit_to_stage(
-            entry_instance,
-            entry_info.control_endpoint,
-            SubmitMessage(
+        try:
+            payload = StagePayload(
                 request_id=request_id,
-                data=payload,
-                replica_bindings=replica_bindings,
-            ),
-        )
+                request=request,
+                data={"raw_inputs": request.inputs},
+            )
+
+            _emit_event(
+                request_id=request_id,
+                stage="coordinator",
+                event_name="request_admission",
+                metadata={"entry_stage": self.entry_stage},
+            )
+
+            await self.control_plane.submit_to_stage(
+                entry_instance,
+                entry_info.control_endpoint,
+                SubmitMessage(
+                    request_id=request_id,
+                    data=payload,
+                    replica_bindings=replica_bindings,
+                ),
+            )
+        except BaseException:
+            # The transport may have delivered the request before failing.
+            # Retain its reservation until the owned abort has been dispatched.
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()
+            else:
+                pass
+            try:
+                if self.requests.get(request_id) is info:
+                    try:
+                        await self.abort(request_id)
+                    except (Exception, asyncio.CancelledError):
+                        # The owned abort task logs failures. Preserve the
+                        # original submission error or caller cancellation.
+                        pass
+                else:
+                    pass
+            finally:
+                if self.requests.get(request_id) is info:
+                    self.requests.pop(request_id, None)
+                    self.partial_results.pop(request_id, None)
+                else:
+                    pass
+                if self.completion_futures.get(request_id) is future:
+                    self.completion_futures.pop(request_id, None)
+                else:
+                    pass
+                if (
+                    stream_queue is not None
+                    and self.stream_queues.get(request_id) is stream_queue
+                ):
+                    self.stream_queues.pop(request_id, None)
+                else:
+                    pass
+            raise
 
         # Update state
-        info = self.requests.get(request_id)
-        if info is not None:
+        if self.requests.get(request_id) is info:
             info.state = RequestState.RUNNING
         else:
             pass

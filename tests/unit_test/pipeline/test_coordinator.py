@@ -12,7 +12,8 @@ from sglang_omni.config import PipelineConfig, ProcessConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.replicas import ReplicaTopology, expand_replica_stages
-from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage, SubmitMessage
+from sglang_omni.proto.session import find_session_operation
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 from tests.unit_test.pipeline.helpers import stage
 
@@ -1077,3 +1078,142 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
         assert control_plane.submitted[0][2].replica_bindings is None
 
     asyncio.run(_run())
+
+
+def test_coordinator_stop_releases_completion_waiter() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        task = asyncio.create_task(coordinator.submit("pending", "hello"))
+        for _ in range(100):
+            if "pending" in coordinator.completion_futures:
+                break
+            await asyncio.sleep(0)
+        assert "pending" in coordinator.completion_futures
+
+        await coordinator.stop()
+
+        with pytest.raises(RuntimeError, match="Coordinator stopped"):
+            await asyncio.wait_for(task, timeout=1)
+        assert coordinator.requests == {}
+        assert coordinator.completion_futures == {}
+        with pytest.raises(RuntimeError, match="Coordinator stopped"):
+            await coordinator.submit("after-stop", "hello")
+        await coordinator.stop()
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stop_releases_stream_waiter() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.start()
+        contexts = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: contexts.append(context)
+        )
+        task, errors, future = await _drive_stream_until_registered(
+            coordinator, "stream-pending"
+        )
+
+        await coordinator.stop()
+        await asyncio.wait_for(task, timeout=1)
+
+        assert errors == ["Coordinator stopped"]
+        assert future.cancelled()
+        assert coordinator.stream_queues == {}
+        assert coordinator.completion_futures == {}
+        del future
+        gc.collect()
+        assert not any(
+            "never retrieved" in str(context.get("message", "")) for context in contexts
+        )
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stop_preserves_completed_result_and_prior_failure() -> None:
+    async def _run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="preprocess",
+            terminal_stages=["decode"],
+        )
+        coordinator.control_plane = RecordingCoordinatorControlPlane()
+        coordinator.register_stage("preprocess", "inproc://preprocess")
+        await coordinator.submit_request("completed", "hello")
+        await coordinator.handle_completion(
+            CompleteMessage("completed", "decode", True, result={"text": "done"})
+        )
+        future = coordinator.completion_futures["completed"]
+        await coordinator.fail_pending_requests("original worker failure")
+
+        await coordinator.stop()
+
+        assert future.result() == {"text": "done"}
+        assert coordinator.fatal_error == "original worker failure"
+
+    asyncio.run(_run())
+
+
+def test_coordinator_stop_closes_sessions_before_failing_pending_requests() -> None:
+    class SessionAckingControlPlane(RecordingCoordinatorControlPlane):
+        async def submit_to_stage(
+            self, stage_name: str, stage_endpoint: str, message: SubmitMessage
+        ) -> None:
+            await super().submit_to_stage(stage_name, stage_endpoint, message)
+            if find_session_operation(message.data.request.metadata) is not None:
+                await self.events.put(
+                    CompleteMessage(message.request_id, stage_name, True, {})
+                )
+
+    async def run() -> None:
+        coordinator = Coordinator(
+            "inproc://complete",
+            "inproc://abort",
+            entry_stage="source",
+            terminal_stages=["sink"],
+        )
+        control_plane = SessionAckingControlPlane()
+        coordinator.control_plane = control_plane
+        coordinator.register_stage("source", "inproc://source")
+        coordinator.register_stage("sink", "inproc://sink")
+        await coordinator.start()
+        completion_loop = asyncio.create_task(coordinator.run_completion_loop())
+        await coordinator.open_session(
+            OmniRequest(inputs=None), stages=["source", "sink"]
+        )
+        await coordinator.submit_request("pending", "hello")
+        pending = coordinator.completion_futures["pending"]
+
+        await coordinator.stop()
+
+        closed_stages = []
+        for stage_name, _, message in control_plane.submitted:
+            session_operation = find_session_operation(message.data.request.metadata)
+            if session_operation is not None and session_operation.operation == "close":
+                closed_stages.append(stage_name)
+        assert closed_stages == ["sink", "source"]
+        assert not coordinator.sessions
+        assert not coordinator.session_unavailable_stages
+        with pytest.raises(RuntimeError, match="Coordinator stopped"):
+            pending.result()
+        completion_loop.cancel()
+        await asyncio.gather(completion_loop, return_exceptions=True)
+
+    asyncio.run(run())
