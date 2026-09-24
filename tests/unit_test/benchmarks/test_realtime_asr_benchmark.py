@@ -240,7 +240,7 @@ def _trace(
     *,
     sent_packet_s: float = 0.2,
     audio_s: float = 3.0,
-    turn_detection: dict | None = {"type": "server_vad"},
+    turn_detection: dict[str, str] | None,
 ) -> SessionTrace:
     trace = SessionTrace(
         url="ws://fake",
@@ -309,7 +309,8 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 6,
                 },
             ),
-        ]
+        ],
+        turn_detection={"type": "server_vad"},
     )
     metrics = latency_metrics(trace)
     assert metrics["first_partial_latency_s"] == [pytest.approx(1.5 - 1.2)]
@@ -387,7 +388,8 @@ def test_invariants_flag_each_protocol_violation():
                 {"type": "error", "error": {"code": "boom"}, "event_index": 2},
             ),  # index goes back
             # no committed for segment 0, no completed
-        ]
+        ],
+        turn_detection={"type": "server_vad"},
     )
     violations = check_invariants(trace)
     joined = "\n".join(violations)

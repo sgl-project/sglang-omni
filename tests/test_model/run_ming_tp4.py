@@ -242,7 +242,7 @@ def _start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
     print("[server] " + " ".join(command), flush=True)
     print(f"[server] CUDA_VISIBLE_DEVICES={args.cuda_visible_devices}", flush=True)
     print(f"[server] log: {log_path}", flush=True)
-    log_file = open(log_path, "w", buffering=1)
+    log_file = open(log_path, "w", buffering=1)  # noqa: SIM115 - closed in _stop_server
     process = subprocess.Popen(
         command,
         stdout=log_file,
@@ -609,7 +609,9 @@ def main() -> None:
     if not args.no_run_log:
         run_log_path = Path(args.run_log) if args.run_log else output_dir / "run.log"
         run_log_path.parent.mkdir(parents=True, exist_ok=True)
-        run_log_file = open(run_log_path, "w", buffering=1)
+        run_log_file = open(  # noqa: SIM115 - closed in finally
+            run_log_path, "w", buffering=1
+        )
         sys.stdout = _TeeStream(original_stdout, run_log_file)  # type: ignore[assignment]
         sys.stderr = _TeeStream(original_stderr, run_log_file)  # type: ignore[assignment]
         print(f"[runner] log: {run_log_path}", flush=True)

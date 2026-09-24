@@ -39,7 +39,7 @@ def _wait_for_process_line(
             line_queue.put(None)
 
         threading.Thread(target=_read_stdout, daemon=True).start()
-        setattr(proc, "_omni_stdout_line_queue", line_queue)
+        proc._omni_stdout_line_queue = line_queue
 
     deadline = time.time() + timeout
     output: list[str] = []
