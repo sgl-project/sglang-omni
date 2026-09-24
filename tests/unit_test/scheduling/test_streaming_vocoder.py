@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import queue
 from dataclasses import dataclass, field
-from types import SimpleNamespace
+from types import EllipsisType, SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -185,7 +185,9 @@ def _payload(
     )
 
 
-def _item(values: list[int], metadata: Any = ...) -> StreamItem:
+def _item(
+    values: list[int], metadata: dict[str, object] | None | EllipsisType = ...
+) -> StreamItem:
     if metadata is ...:
         metadata = {"stream": True}
     return StreamItem(

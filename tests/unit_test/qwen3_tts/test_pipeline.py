@@ -3342,7 +3342,7 @@ def _qwen3_tts_stream_item(
     chunk_id: int,
     ref_code_len: int | None = None,
 ) -> StreamItem:
-    metadata = {
+    metadata: dict[str, object] = {
         "modality": "audio_codes",
         "stream": True,
         "num_quantizers": int(codes.shape[-1]),

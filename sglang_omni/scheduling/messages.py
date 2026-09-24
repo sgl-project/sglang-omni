@@ -5,23 +5,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Queue
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 
 @dataclass
 class IncomingMessage:
     request_id: str
     type: Literal["new_request", "stream_chunk", "stream_done"]
-    data: Any = None
+    data: object = None
 
 
 @dataclass
 class OutgoingMessage:
     request_id: str
     type: Literal["result", "stream", "error", "kv_transfer", "admitted"]
-    data: Any = None
+    data: object = None
     target: str | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
 
 class StageScheduler(Protocol):

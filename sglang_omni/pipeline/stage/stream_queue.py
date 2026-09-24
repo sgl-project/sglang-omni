@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,9 @@ class StreamItem:
     """A single item of streaming data between stages."""
 
     chunk_id: int
-    data: Any
+    data: object
     from_stage: str
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, object] | None = None
 
 
 @dataclass
@@ -45,7 +44,7 @@ class StreamQueue:
 
     def __init__(self, max_pending: int = 16):
         self._max_pending = max_pending
-        self._queues: dict[str, asyncio.Queue] = {}
+        self._queues: dict[str, asyncio.Queue[StreamItem | StreamSignal]] = {}
         self._closed: set[str] = set()  # track closed request IDs for abort race
 
     def open(self, request_id: str) -> None:

@@ -1294,7 +1294,7 @@ class Stage:
     async def _route_result(
         self,
         request_id: str,
-        result: Any,
+        result: object,
     ) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
         if not self._owns_external_io:
@@ -1783,7 +1783,7 @@ class Stage:
         self,
         request_id: str,
         data: object,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> None:
         """Forward a terminal stage's stream chunk to the Coordinator."""
         if not self._is_terminal:

@@ -2,7 +2,7 @@
 """Control plane messages."""
 
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, TypedDict, TypeVar
+from typing import Literal, TypeAlias, TypedDict, TypeVar
 
 import msgspec
 
@@ -282,7 +282,7 @@ class SubmitMessage:
     """Submit a new request to the entry stage."""
 
     request_id: str
-    data: Any
+    data: object
     replica_bindings: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, object]:
