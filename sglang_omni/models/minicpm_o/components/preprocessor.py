@@ -3,14 +3,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import TYPE_CHECKING, Any
 
 import torch
 from PIL import Image
 from transformers import AutoProcessor, AutoTokenizer
 
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-from sglang_omni.models.minicpm_o.routing import should_generate_audio_output
+from sglang_omni.models.minicpm_o.payload_types import (
+    MiniCPMOPipelineState,
+    SpeakerPromptInputs,
+)
+from sglang_omni.models.minicpm_o.routing import (
+    should_generate_audio_output,
+    speaker_reference_audio,
+)
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import (
     AudioMediaIO,
@@ -26,6 +34,7 @@ from sglang_omni.preprocessing.video import (
     ensure_video_list_async,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 if TYPE_CHECKING:
     from transformers import ProcessorMixin
@@ -97,6 +106,12 @@ class MiniCPMOPreprocessor:
         model_path: str,
         *,
         speech_enabled: bool = False,
+        reference_service: (
+            ReferenceEncodeService[
+                bytes | None, SpeakerPromptInputs, SpeakerPromptInputs
+            ]
+            | None
+        ) = None,
     ) -> None:
         local_dir = str(resolve_model_path(model_path))
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -106,6 +121,9 @@ class MiniCPMOPreprocessor:
         self.model_dir = local_dir
         self._processor = None  # noqa: leading-underscore
         self.speech_enabled = speech_enabled
+        self.reference_service = reference_service
+        # note (liuqihao): only speaker conditioning runs concurrently across requests.
+        self.prompt_lock = threading.Lock()
 
     def speech_to_text_inputs(
         self, payload: StagePayload, inputs: dict[str, Any]
@@ -131,6 +149,28 @@ class MiniCPMOPreprocessor:
         return self._processor  # noqa: leading-underscore
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
+        """Preprocess the prompt while extracting the Code2Wav speaker conditioning."""
+        if self.reference_service is not None and self.should_use_tts_template(payload):
+            speaker_prompt = asyncio.create_task(
+                asyncio.to_thread(
+                    self.reference_service.get_or_encode,
+                    speaker_reference_audio(payload),
+                    desc="MiniCPM-o speaker conditioning",
+                )
+            )
+        else:
+            speaker_prompt = None
+        with self.prompt_lock:
+            payload = await self.preprocess(payload)
+        if speaker_prompt is not None:
+            state = MiniCPMOPipelineState.from_dict(payload.data)
+            state.speaker_prompt = await speaker_prompt
+            payload.data = state.to_dict()
+        else:
+            pass
+        return payload
+
+    async def preprocess(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         raw_images = None
         raw_audios = None

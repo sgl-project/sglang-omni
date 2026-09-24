@@ -34,9 +34,11 @@ features. Audio supplied in chat messages remains understanding input and is not
 automatically used as the speaker reference. Without an explicit reference,
 Token2wav uses the checkpoint's `assets/HT_ref_audio.wav` when available.
 
-The vocoder keeps an LRU cache of up to 32 speaker references, so switching back
-to a cached reference reuses its conditioning. Inline references are keyed by
-audio content; file references account for file metadata. Flow inference batches
+The preprocessing stage extracts this conditioning alongside prompt rendering,
+for up to 8 concurrent requests, through the shared reference-encode cache: up
+to 256 references (128 MiB), keyed by audio content for inline references and by
+file metadata for the default one, with concurrent requests for the same
+reference sharing one extraction. The vocoder only runs Flow and HiFT. Flow inference batches
 different references and token lengths together. HiFT pads rows of different
 generated lengths into one batch while the padded frames stay within
 `hift_max_padding_waste` (default 1.5) times the real frames, and masks the

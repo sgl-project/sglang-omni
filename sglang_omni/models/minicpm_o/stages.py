@@ -20,17 +20,25 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioE
 from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
 from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreprocessor
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    MiniCPMOReferenceEncodeHook,
+    resolve_token2wav_assets,
+)
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
 from sglang_omni.models.minicpm_o.merge import build_decode_result
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.payload_types import (
+    MiniCPMOPipelineState,
+    SpeakerPromptInputs,
+)
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
-from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
+from sglang_omni.models.minicpm_o.routing import TALKER_STAGE
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
 )
@@ -48,10 +56,32 @@ def create_preprocessing_executor(
     model_path: str,
     *,
     speech_enabled: bool = False,
+    max_concurrency: int,
+    reference_cache_max_items: int,
+    reference_cache_max_bytes: int,
+    onnx_intra_op_threads: int,
+    device: str | None = None,
+    gpu_id: int | None = None,
 ) -> SimpleScheduler:
-    preprocessor = MiniCPMOPreprocessor(model_path, speech_enabled=speech_enabled)
-
-    return SimpleScheduler(preprocessor)
+    if speech_enabled:
+        asset_dir, default_reference = resolve_token2wav_assets(model_path)
+        reference_service = ReferenceEncodeService(
+            MiniCPMOReferenceEncodeHook(
+                asset_dir,
+                device=resolve_concrete_device(device, gpu_id),
+                default_reference=default_reference,
+                onnx_intra_op_threads=onnx_intra_op_threads,
+            ),
+            max_items=reference_cache_max_items,
+            max_bytes=reference_cache_max_bytes,
+            log_prefix="MiniCPM-o",
+        )
+    else:
+        reference_service = None
+    preprocessor = MiniCPMOPreprocessor(
+        model_path, speech_enabled=speech_enabled, reference_service=reference_service
+    )
+    return SimpleScheduler(preprocessor, max_concurrency=max_concurrency)
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64
@@ -172,20 +202,27 @@ def create_sglang_talker_executor_from_config(
 def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
-    """Vocode talker payloads, one reference per row."""
+    """Vocode talker payloads with the speaker conditioning from preprocessing."""
     codec_tokens: list[list[int]] = []
-    references: list[str | bytes] = []
+    speaker_prompts: list[SpeakerPromptInputs] = []
     for payload in payloads:
         state = MiniCPMOPipelineState.from_dict(payload.data)
+        if state.speaker_prompt is None:
+            raise RuntimeError(
+                f"MiniCPM-o request {payload.request_id} reached Code2Wav without "
+                "speaker conditioning from preprocessing"
+            )
+        else:
+            pass
         tokens = state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
         codec_tokens.append(tokens)
-        references.append(model.resolve_prompt_wav(code2wav_reference_audio(payload)))
+        speaker_prompts.append(state.speaker_prompt)
 
     logger.info(
         f"minicpm_code2wav_batch size={len(payloads)} "
         f"max_codec_tokens={max(len(tokens) for tokens in codec_tokens)}"
     )
-    waveforms = model.vocode(codec_tokens, references)
+    waveforms = model.vocode(codec_tokens, speaker_prompts)
 
     outputs: list[StagePayload] = []
     for payload, waveform in zip(payloads, waveforms, strict=True):

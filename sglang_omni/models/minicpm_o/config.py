@@ -19,11 +19,20 @@ PKG = "sglang_omni.models.minicpm_o"
 THINKER_STAGE = "thinker"
 
 
-def preprocessing_stage(*, process: str) -> StageConfig:
+def preprocessing_stage(
+    *, process: str, gpu: int | None = None, max_concurrency: int
+) -> StageConfig:
     return StageConfig(
         name="preprocessing",
         process=process,
         factory_path=f"{PKG}.stages.create_preprocessing_executor",
+        factory=FactoryArgs(
+            max_concurrency=max_concurrency,
+            reference_cache_max_items=256,
+            reference_cache_max_bytes=128 * 1024 * 1024,
+            onnx_intra_op_threads=16,
+        ),
+        gpu=gpu,
         next=["image_encoder", "audio_encoder", "thinker"],
         route_fn=f"{PKG}.routing.resolve_preprocessing_next_stages",
         project_payload={
@@ -133,7 +142,7 @@ def code2wav_stage(*, gpu: int, process: str) -> StageConfig:
 
 def text_stages() -> list[StageConfig]:
     return [
-        preprocessing_stage(process="pipeline"),
+        preprocessing_stage(process="pipeline", max_concurrency=1),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline"),
         image_encoder_stage(process="pipeline", gpu=0),
@@ -144,7 +153,8 @@ def text_stages() -> list[StageConfig]:
 
 def speech_stages() -> list[StageConfig]:
     return [
-        preprocessing_stage(process="pipeline"),
+        # note (liuqihao): speaker conditioning overlaps across concurrent requests.
+        preprocessing_stage(process="pipeline", gpu=0, max_concurrency=8),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         image_encoder_stage(process="pipeline", gpu=0),

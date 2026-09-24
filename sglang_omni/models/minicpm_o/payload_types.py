@@ -20,6 +20,15 @@ class PromptInputs(TypedDict):
     prompt_text: str
 
 
+class SpeakerPromptInputs(TypedDict):
+    """Token2wav speaker conditioning extracted from the reference clip."""
+
+    speech_tokens: torch.Tensor
+    speech_token_len: torch.Tensor
+    speaker_embedding: torch.Tensor
+    prompt_mel: torch.Tensor
+
+
 class ThinkerOutput(TypedDict, total=False):
     """Normalized thinker output used for decoding and streaming."""
 
@@ -41,6 +50,7 @@ class MiniCPMOPipelineState:
     thinker_out: ThinkerOutput | None = None
     engine_outputs: dict[str, Any] = field(default_factory=dict)
     stream_state: dict[str, Any] = field(default_factory=dict)
+    speaker_prompt: SpeakerPromptInputs | None = None
 
     @classmethod
     def from_dict(cls, data: Any) -> "MiniCPMOPipelineState":
@@ -54,6 +64,7 @@ class MiniCPMOPipelineState:
             return value if isinstance(value, dict) else {}
 
         thinker_out = data.get("thinker_out")
+        speaker_prompt = data.get("speaker_prompt")
         return cls(
             prompt=data.get("prompt"),
             mm_inputs=_dict("mm_inputs"),
@@ -63,6 +74,9 @@ class MiniCPMOPipelineState:
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=_dict("engine_outputs"),
             stream_state=_dict("stream_state"),
+            speaker_prompt=(
+                speaker_prompt if isinstance(speaker_prompt, dict) else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,6 +111,10 @@ class MiniCPMOPipelineState:
             pass
         if self.stream_state:
             data["stream_state"] = self.stream_state
+        else:
+            pass
+        if self.speaker_prompt is not None:
+            data["speaker_prompt"] = self.speaker_prompt
         else:
             pass
         return data

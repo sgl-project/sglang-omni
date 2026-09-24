@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import io
+import json
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,8 +31,14 @@ from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
     S3TokenizerV2,
 )
+from sglang_omni.models.minicpm_o.payload_types import SpeakerPromptInputs
+from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.scheduling.reference_encoder import KeyedReferenceEncodeHook
 
-SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+PROMPT_AUDIO_SAMPLE_RATE = 16000
+FLOW_AUDIO_SAMPLE_RATE = 24000
+
 FLOW_TYPES = {
     "!new:cosyvoice2.flow.flow.CausalMaskedDiffWithXvec": CausalMaskedDiffWithXvec,
     "!new:cosyvoice2.transformer.upsample_encoder_v2.UpsampleConformerEncoderV2": UpsampleConformerEncoderV2,
@@ -95,6 +103,159 @@ def prompt_mel_spectrogram(audio: torch.Tensor) -> torch.Tensor:
     )
 
 
+def resolve_token2wav_assets(model_path: str) -> tuple[Path, Path | None]:
+    """Locate the Token2wav asset directory and the default speaker reference."""
+    model_dir = Path(resolve_model_path(model_path))
+    asset_dir = model_dir / "assets" / "token2wav"
+    if not asset_dir.is_dir():
+        raise FileNotFoundError(
+            f"token2wav assets not found at {asset_dir}; copy the "
+            "checkpoint's assets/token2wav directory next to the weights"
+        )
+    else:
+        pass
+    default_reference = model_dir / "assets" / "HT_ref_audio.wav"
+    return asset_dir, default_reference if default_reference.is_file() else None
+
+
+class MiniCPMOReferenceEncodeHook(
+    KeyedReferenceEncodeHook[bytes | None, SpeakerPromptInputs, SpeakerPromptInputs]
+):
+    """Extract Token2wav speaker conditioning from a reference clip."""
+
+    model_id = "minicpm_o"
+    encoder_id = "s3tokenizer_v2_25hz+campplus+prompt_mel_24k"
+    artifact_kind = "token2wav_speaker_conditioning"
+
+    def __init__(
+        self,
+        model_path: Path,
+        *,
+        device: torch.device,
+        default_reference: Path | None,
+        onnx_intra_op_threads: int,
+    ) -> None:
+        self.device = device
+        self.default_reference = default_reference
+        self.model_revision = str(model_path.resolve())
+        self.encoder_config_hash = hash_bytes(
+            json.dumps(
+                {
+                    "tokenizer_audio_sr": PROMPT_AUDIO_SAMPLE_RATE,
+                    "tokenizer_mels": 128,
+                    "fbank_mels": 80,
+                    "prompt_mel": {
+                        "sr": FLOW_AUDIO_SAMPLE_RATE,
+                        "n_fft": 1920,
+                        "hop": 480,
+                        "mels": 80,
+                    },
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        # note (liuqihao): a private stream keeps the token copy from waiting on
+        # the thinker's work queued on the default stream of the same process.
+        self.stream = torch.cuda.Stream(device) if device.type == "cuda" else None
+        self.audio_tokenizer = (
+            S3TokenizerV2(model_path / "speech_tokenizer_v2_25hz.onnx")
+            .to(device)
+            .eval()
+        )
+        options = onnxruntime.SessionOptions()
+        options.graph_optimization_level = (
+            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+        )
+        options.intra_op_num_threads = max(
+            1, min(onnx_intra_op_threads, os.cpu_count() or 1)
+        )
+        self.spk_model = onnxruntime.InferenceSession(
+            str(model_path / "campplus.onnx"),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+
+    def input_key(self, item: bytes | None) -> str | None:
+        if item is not None:
+            key = f"bytes:{hash_bytes(item)}"
+        elif self.default_reference is None:
+            raise ValueError("No speaker-reference audio supplied or default available")
+        else:
+            key = reference_path_cache_key(str(self.default_reference))
+        return key
+
+    def encode_one(self, item: bytes | None) -> SpeakerPromptInputs:
+        # In-memory sources avoid spilling HTTP-supplied references to disk.
+        if item is not None:
+            source: str | io.BytesIO = io.BytesIO(item)
+        elif self.default_reference is None:
+            raise ValueError("No speaker-reference audio supplied or default available")
+        else:
+            source = str(self.default_reference)
+        return self.extract(source)
+
+    def store_artifact(self, artifact: SpeakerPromptInputs) -> SpeakerPromptInputs:
+        return clone_speaker_prompt(artifact)
+
+    def load_artifact(self, stored: SpeakerPromptInputs) -> SpeakerPromptInputs:
+        return clone_speaker_prompt(stored)
+
+    @torch.inference_mode()
+    def extract(self, source: str | io.BytesIO) -> SpeakerPromptInputs:
+        audio, sample_rate = torchaudio.load(source)
+        if sample_rate != PROMPT_AUDIO_SAMPLE_RATE:
+            speech = torchaudio.transforms.Resample(
+                sample_rate, PROMPT_AUDIO_SAMPLE_RATE
+            )(audio)
+        else:
+            speech = audio
+        # note (MayDomine): tokenizer/voice embedding use channel zero; mel uses mono.
+        speech = speech[0]
+        mel = whisper.log_mel_spectrogram(speech, n_mels=128).unsqueeze(0)
+        with torch.cuda.stream(self.stream):
+            lengths = torch.tensor(
+                [mel.shape[2]], dtype=torch.int32, device=self.device
+            )
+            tokens, token_lengths = self.audio_tokenizer(mel.to(self.device), lengths)
+            tokens, token_lengths = tokens.cpu(), token_lengths.cpu()
+        features = kaldi.fbank(
+            speech.unsqueeze(0),
+            num_mel_bins=80,
+            dither=0,
+            sample_frequency=PROMPT_AUDIO_SAMPLE_RATE,
+        )
+        features = features - features.mean(dim=0, keepdim=True)
+        embedding = torch.from_numpy(
+            self.spk_model.run(
+                None,
+                {self.spk_model.get_inputs()[0].name: features.unsqueeze(0).numpy()},
+            )[0]
+        )
+        audio = audio.mean(dim=0, keepdim=True)
+        if sample_rate != FLOW_AUDIO_SAMPLE_RATE:
+            audio = torchaudio.transforms.Resample(sample_rate, FLOW_AUDIO_SAMPLE_RATE)(
+                audio
+            )
+        else:
+            pass
+        # note (liuqihao): CPU tensors so the conditioning crosses stage processes.
+        return {
+            "speech_tokens": tokens,
+            "speech_token_len": token_lengths,
+            "speaker_embedding": embedding,
+            "prompt_mel": prompt_mel_spectrogram(audio).transpose(1, 2),
+        }
+
+
+def clone_speaker_prompt(prompt: SpeakerPromptInputs) -> SpeakerPromptInputs:
+    return {
+        "speech_tokens": prompt["speech_tokens"].detach().cpu().clone(),
+        "speech_token_len": prompt["speech_token_len"].detach().cpu().clone(),
+        "speaker_embedding": prompt["speaker_embedding"].detach().cpu().clone(),
+        "prompt_mel": prompt["prompt_mel"].detach().cpu().clone(),
+    }
+
+
 class Token2Wav(torch.nn.Module):
     def __init__(
         self,
@@ -112,21 +273,6 @@ class Token2Wav(torch.nn.Module):
         self.device = device
         self.dtype = dtype
         self.n_timesteps = n_timesteps
-        self.audio_tokenizer = (
-            S3TokenizerV2(model_path / "speech_tokenizer_v2_25hz.onnx")
-            .to(device)
-            .eval()
-        )
-        options = onnxruntime.SessionOptions()
-        options.graph_optimization_level = (
-            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
-        options.intra_op_num_threads = 1
-        self.spk_model = onnxruntime.InferenceSession(
-            str(model_path / "campplus.onnx"),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
         self.flow = load_flow(model_path / "flow.yaml")
         if dtype != torch.float32:
             self.flow.to(dtype)
@@ -146,40 +292,3 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.hift.to(device).eval()
-
-    @torch.inference_mode()
-    def prepare_prompt(self, source: str | bytes | io.BytesIO) -> SpeakerPrompt:
-        # In-memory sources avoid spilling HTTP-supplied references to disk.
-        audio, sample_rate = torchaudio.load(source)
-        if sample_rate != 16000:
-            speech = torchaudio.transforms.Resample(sample_rate, 16000)(audio)
-        else:
-            speech = audio
-        # note (MayDomine): tokenizer/voice embedding use channel zero; mel uses mono.
-        speech = speech[0]
-        mel = whisper.log_mel_spectrogram(speech, n_mels=128).unsqueeze(0)
-        lengths = torch.tensor([mel.shape[2]], dtype=torch.int32, device=self.device)
-        tokens, token_lengths = self.audio_tokenizer(mel.to(self.device), lengths)
-        features = kaldi.fbank(
-            speech.unsqueeze(0), num_mel_bins=80, dither=0, sample_frequency=16000
-        )
-        features = features - features.mean(dim=0, keepdim=True)
-        embedding = torch.tensor(
-            self.spk_model.run(
-                None,
-                {self.spk_model.get_inputs()[0].name: features.unsqueeze(0).numpy()},
-            )[0],
-            device=self.device,
-        )
-        audio = audio.mean(dim=0, keepdim=True)
-        if sample_rate != 24000:
-            audio = torchaudio.transforms.Resample(sample_rate, 24000)(audio)
-        else:
-            pass
-        prompt_mel = prompt_mel_spectrogram(audio).transpose(1, 2).to(self.device)
-        prompt_mel = torch.nn.functional.pad(
-            prompt_mel,
-            (0, 0, 0, tokens.shape[1] * self.flow.up_rate - prompt_mel.shape[1]),
-            mode="replicate",
-        )
-        return tokens, token_lengths, embedding, prompt_mel
