@@ -61,6 +61,7 @@ def _direct_ipc_consumer_factory(data_queue: Any, done: Any) -> None:
     torch.cuda.set_device(0)
     ref = data_queue.get(timeout=60)
     tensor, metadata = stage_io.deserialize_direct_cuda_ipc_stream_chunk(ref)
+    assert isinstance(tensor, torch.Tensor)
     assert torch.equal(tensor, torch.arange(8, dtype=torch.float32, device="cuda"))
     assert metadata is None
     done.set()

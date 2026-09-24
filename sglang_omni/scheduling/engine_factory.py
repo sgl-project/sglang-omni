@@ -410,7 +410,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def make_request_finished_callback(self) -> Callable[[str], None] | None:
         return None
 
-    def extra_scheduler_callbacks(self) -> dict[str, Any]:
+    def extra_scheduler_callbacks(self) -> Mapping[str, Callable[[], None] | None]:
         return {}
 
     def cleanup_build_failure(self) -> None:

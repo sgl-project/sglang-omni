@@ -8,7 +8,7 @@ import io
 import pickle
 from dataclasses import fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
-from typing import Any, Protocol, TypeVar, overload
+from typing import Protocol, TypeVar, overload
 
 import torch
 
@@ -76,7 +76,21 @@ def relay_device(relay: Relay) -> str:
     return device
 
 
-def extract_tensors(obj: object, path: str = "") -> tuple[Any, dict[str, torch.Tensor]]:
+@overload
+def extract_tensors(
+    obj: dict[MetadataKeyT, MetadataValueT], path: str = ""
+) -> tuple[dict[MetadataKeyT, object], dict[str, torch.Tensor]]: ...
+
+
+@overload
+def extract_tensors(
+    obj: object, path: str = ""
+) -> tuple[object, dict[str, torch.Tensor]]: ...
+
+
+def extract_tensors(
+    obj: object, path: str = ""
+) -> tuple[object, dict[str, torch.Tensor]]:
     if isinstance(obj, torch.Tensor):
         return {
             "_tensor_placeholder": path,
@@ -130,7 +144,7 @@ def extract_cuda_tensors(
     return obj, {}
 
 
-def restore_tensors(obj: object, tensors: dict[str, torch.Tensor]) -> Any:
+def restore_tensors(obj: object, tensors: dict[str, torch.Tensor]) -> object:
     if isinstance(obj, dict):
         if "_tensor_placeholder" in obj:
             path = obj["_tensor_placeholder"]
@@ -367,7 +381,7 @@ def is_direct_cuda_ipc_stream_chunk_ref(value: object) -> bool:
 
 def deserialize_direct_cuda_ipc_stream_chunk(
     data_ref: dict[str, RefValueT] | StageDataRef,
-) -> tuple[Any, dict[str, object] | None]:
+) -> tuple[object, dict[str, object] | None]:
     if data_ref.get("_type") != _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE:
         raise ValueError("data_ref is not a direct CUDA IPC stream chunk")
     if data_ref.get("version") != 1:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -784,7 +785,7 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         def make_abort_callback(self) -> Any | None:
             return abort_callback
 
-        def extra_scheduler_callbacks(self) -> dict[str, Any]:
+        def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
             return {"shutdown_callback": shutdown_callback}
 
         def extra_scheduler_kwargs(self) -> dict[str, Any]:
