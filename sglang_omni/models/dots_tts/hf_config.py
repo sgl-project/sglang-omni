@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ class DotsTTSConfig(PretrainedConfig):
     def __init__(
         self,
         llm_config: Qwen2Config | dict[str, Any] | None = None,
-        dots_tts_config: dict[str, Any] | None = None,
+        dots_tts_config: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> None:
         if isinstance(llm_config, dict):
@@ -33,7 +34,9 @@ class DotsTTSConfig(PretrainedConfig):
         super().__init__(**kwargs)
 
     @classmethod
-    def from_dict(cls, config_dict: dict[str, Any], **kwargs: Any) -> "DotsTTSConfig":
+    def from_dict(
+        cls, config_dict: Mapping[str, object], **kwargs: object
+    ) -> "DotsTTSConfig":
         merged = dict(config_dict)
         if "llm_config" not in merged:
             checkpoint_dir = kwargs.get("name_or_path")

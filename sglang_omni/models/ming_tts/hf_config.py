@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from transformers import PretrainedConfig
@@ -38,7 +39,7 @@ class BailingMoeTTSConfig(PretrainedConfig):
         initializer_range: float = 0.006,
         max_position_embeddings: int = 32768,
         rope_theta: float = 600000.0,
-        rope_scaling: dict[str, Any] | None = None,
+        rope_scaling: Mapping[str, object] | None = None,
         use_cache: bool = True,
         use_sliding_window: bool = False,
         sliding_window: int = 4096,
