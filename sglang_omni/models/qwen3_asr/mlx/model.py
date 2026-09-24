@@ -64,13 +64,19 @@ class SinusoidalPositionEmbedding(nn.Module):
         )
         positions = mx.arange(length, dtype=mx.float32)[:, None]
         scaled_time = positions * inv_timescales[None, :]
-        self.positional_embedding = mx.concatenate(
-            [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
+        self._positional_embedding = (
+            mx.concatenate(  # noqa: leading-underscore - MLX computed buffer
+                [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
+            )
         )
-        mx.eval(self.positional_embedding)
+        mx.eval(
+            self._positional_embedding
+        )  # noqa: leading-underscore - MLX computed buffer
 
     def __call__(self, seqlen: int) -> mx.array:
-        return self.positional_embedding[:seqlen, :]
+        return self._positional_embedding[
+            :seqlen, :
+        ]  # noqa: leading-underscore - MLX computed buffer
 
 
 class AudioAttention(nn.Module):

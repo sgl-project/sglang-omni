@@ -291,7 +291,9 @@ def create_mlx_model_worker(
                 init_kwargs["pool_size"] = get_schedule().max_total_tokens
             else:
                 pass
-            self.mlx_runner = runner_class(**init_kwargs)
+            self._mlx_runner = runner_class(
+                **init_kwargs
+            )  # noqa: leading-underscore - SGLang worker state
             self._model_runner = MlxModelRunnerStub(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
@@ -303,10 +305,14 @@ def create_mlx_model_worker(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 memory_pool_config=self.memory_pool_config,
-                mlx_pool_size=self.mlx_runner.pool_size,
+                mlx_pool_size=self._mlx_runner.pool_size,  # noqa: leading-underscore - SGLang worker state
             )
-            self.mlx_active_rids = set()
-            self.mlx_pool_initialized = False
+            self._mlx_active_rids = (
+                set()
+            )  # noqa: leading-underscore - SGLang worker state
+            self._mlx_pool_initialized = (
+                False  # noqa: leading-underscore - SGLang worker state
+            )
 
         def get_tp_group(self):
             return self.model_runner.tp_group
