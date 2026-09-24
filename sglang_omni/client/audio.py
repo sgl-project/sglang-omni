@@ -14,7 +14,6 @@ import logging
 import shutil
 import struct
 from functools import cache
-from typing import Any
 
 import numpy as np
 
@@ -108,7 +107,7 @@ def audio_encoding_unavailable_reason(response_format: str) -> str | None:
 
 
 def to_numpy(
-    audio: Any,
+    audio: object,
 ) -> np.ndarray:
     """Convert audio data to a numpy float32 array.
 

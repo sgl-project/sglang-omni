@@ -8,10 +8,10 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping, MutableMapping
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import WebSocket
@@ -232,7 +232,7 @@ class TTSWebSocketProxy:
     async def _receive_initial_message(
         self,
         websocket: WebSocket,
-    ) -> dict[str, Any] | _SessionResult:
+    ) -> MutableMapping[str, object] | _SessionResult:
         message = await asyncio.wait_for(
             websocket.receive(),
             timeout=SPEECH_WS_CONFIG_TIMEOUT_S,
@@ -260,7 +260,7 @@ class TTSWebSocketProxy:
         self,
         websocket: WebSocket,
         worker: Worker,
-        first_message: dict[str, Any],
+        first_message: Mapping[str, object],
     ) -> _SessionResult:
         connect_options = {
             _WEBSOCKET_HEADERS_ARGUMENT: _forward_headers(websocket),
@@ -707,7 +707,9 @@ def _is_application_close(exc: ConnectionClosed) -> bool:
     )
 
 
-async def _send_upstream(upstream: UpstreamWebSocket, message: dict[str, Any]) -> None:
+async def _send_upstream(
+    upstream: UpstreamWebSocket, message: Mapping[str, object]
+) -> None:
     if message.get("type") != "websocket.receive":
         return
     text = message.get("text")

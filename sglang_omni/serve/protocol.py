@@ -6,7 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
@@ -64,7 +64,7 @@ class ChatCompletionRequest(BaseModel):
     modalities: list[str] | None = None  # e.g. ["text", "audio"]
 
     # Audio output configuration
-    audio: dict[str, Any] | None = None  # {"voice": "...", "format": "wav"}
+    audio: dict[str, object] | None = None  # {"voice": "...", "format": "wav"}
 
     # Audio input (sglang-omni extension)
     # Can be a list of audio file paths (local paths or URLs)
@@ -84,7 +84,7 @@ class ChatCompletionRequest(BaseModel):
     video_total_pixels: int | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
-    stage_sampling: dict[str, dict[str, Any]] | None = None
+    stage_sampling: dict[str, dict[str, object]] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output

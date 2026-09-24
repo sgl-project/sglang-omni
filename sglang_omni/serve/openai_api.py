@@ -25,9 +25,9 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from contextlib import aclosing, suppress
-from typing import Any, AsyncIterator, TypeVar
+from typing import AsyncIterator, TypeVar
 
 from fastapi import (
     Depends,
@@ -153,9 +153,9 @@ class VoiceUploadBodyLimitMiddleware:
 
     async def __call__(
         self,
-        scope: dict[str, Any],
-        receive: Callable[[], Awaitable[dict[str, Any]]],
-        send: Callable[[dict[str, Any]], Awaitable[None]],
+        scope: MutableMapping[str, object],
+        receive: Callable[[], Awaitable[MutableMapping[str, object]]],
+        send: Callable[[dict[str, object]], Awaitable[None]],
     ) -> None:
         if not _is_voice_upload_scope(scope):
             await self.app(scope, receive, send)
@@ -168,7 +168,7 @@ class VoiceUploadBodyLimitMiddleware:
 
         received_bytes = 0
 
-        async def limited_receive() -> dict[str, Any]:
+        async def limited_receive() -> MutableMapping[str, object]:
             nonlocal received_bytes
             message = await receive()
             if message["type"] == "http.request":
@@ -385,7 +385,7 @@ async def _read_voice_upload(audio_sample: UploadFile) -> bytes:
     return audio_bytes
 
 
-def _is_voice_upload_scope(scope: dict[str, ValueT]) -> bool:
+def _is_voice_upload_scope(scope: Mapping[str, object]) -> bool:
     return (
         scope.get("type") == "http"
         and scope.get("method") == "POST"
@@ -393,7 +393,7 @@ def _is_voice_upload_scope(scope: dict[str, ValueT]) -> bool:
     )
 
 
-def _content_length(scope: dict[str, Any]) -> int | None:
+def _content_length(scope: Mapping[str, object]) -> int | None:
     for name, value in scope.get("headers", ()):
         if name.lower() != b"content-length":
             continue
@@ -405,7 +405,7 @@ def _content_length(scope: dict[str, Any]) -> int | None:
 
 
 async def _send_voice_upload_too_large(
-    send: Callable[[dict[str, Any]], Awaitable[None]],
+    send: Callable[[dict[str, object]], Awaitable[None]],
     max_bytes: int,
 ) -> None:
     body = json.dumps(
@@ -634,7 +634,7 @@ def _model_info_response(result: dict[str, ValueT] | AdminResponse) -> JSONRespo
 
 
 def _extract_model_info_stage_data(
-    result: dict[str, Any] | AdminResponse,
+    result: Mapping[str, object] | AdminResponse,
 ) -> list[dict[str, object]]:
     infos: list[dict[str, object]] = []
     for item in result.get("results", []) or []:
@@ -1077,7 +1077,7 @@ def _register_generate(app: FastAPI) -> None:
 
 
 def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, int | float | list[int] | list[str]] = {}
     for key, value in (
         ("temperature", params.temperature),
         ("top_p", params.top_p),

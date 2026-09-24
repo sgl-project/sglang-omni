@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Protocol
+from typing import Mapping, Protocol
 
 from .semantic_vad import SemanticEOUModel, SemanticTurnDetector, SemanticVADConfig
 from .vad import Emit, StreamingVAD, VADConfig
@@ -23,7 +23,7 @@ class TurnDetectorBuild:
 
 
 def build_turn_detector(
-    config: Mapping[str, Any],
+    config: Mapping[str, object],
     smart_turn_model: SemanticEOUModel | None,
 ) -> TurnDetectorBuild:
     raw_type = config.get("type")

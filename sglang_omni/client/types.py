@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypedDict
+from typing import TypedDict
 
 
 class TokenUsageDict(TypedDict):
@@ -39,7 +40,7 @@ class UsageInfo:
     engine_time_s: float | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "UsageInfo | None":
+    def from_dict(cls, data: Mapping[str, object] | None) -> "UsageInfo | None":
         if not data:
             return None
         return cls(

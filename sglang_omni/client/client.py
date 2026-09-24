@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Mapping
 from contextlib import aclosing
 from dataclasses import replace
-from typing import Any, AsyncIterator, Callable, TypedDict, TypeVar
+from typing import AsyncIterator, Callable, TypedDict, TypeVar
 
 import numpy as np
 
@@ -428,7 +429,7 @@ class Client:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+    def _set_audio_data(chunk: GenerateChunk, data: Mapping[str, object]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
         if audio_data is None and data.get("audio_waveform") is not None:
             raw = data.get("audio_waveform")
@@ -448,7 +449,7 @@ class Client:
             chunk.sample_rate = sample_rate
 
     @staticmethod
-    def _build_usage_info(data: dict[str, Any]) -> UsageInfo | None:
+    def _build_usage_info(data: Mapping[str, object]) -> UsageInfo | None:
         usage = dict(data.get("usage") or {})
         if "prompt_tokens" not in usage and data.get("prompt_tokens") is not None:
             usage["prompt_tokens"] = data.get("prompt_tokens")

@@ -9,7 +9,7 @@ import logging
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Generator, Mapping, MutableMapping
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -102,7 +102,7 @@ class SpeechWebSocketSession:
         self.committed_sentence_count = 0
         self.segment_index = 0
         self.active_request_id: str | None = None
-        self.buffered_receive_messages: deque[MutableMapping[str, Any]] = deque()
+        self.buffered_receive_messages: deque[MutableMapping[str, object]] = deque()
         self.buffered_receive_message_bytes = 0
         self.config_prepared_request: PreparedSpeechRequest | None = None
 
