@@ -43,7 +43,8 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
     runner.im_end_token_id = 99
     prefill_request = SchedulerRequest(
         request_id="prefill",
-        data=SimpleNamespace(
+        data=S2ProSGLangRequestData(
+            input_ids=torch.tensor([10, 11, 12]),
             req=FakeFishReq(extend_len=3),
             vq_mask_tokens=torch.tensor([True, False, True]),
             vq_parts=[torch.tensor([[7, 8], [9, 10]], dtype=torch.long)],
@@ -210,7 +211,7 @@ def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
 
 def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     first = S2ProSGLangRequestData(
-        input_ids=torch.tensor([], dtype=torch.long),
+        input_ids=torch.tensor([10], dtype=torch.long),
         req=FakeFishReq(extend_len=1),
     )
     first.temperature = 0.55
@@ -221,7 +222,7 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     first.ras_top_p = 0.45
 
     second = S2ProSGLangRequestData(
-        input_ids=torch.tensor([], dtype=torch.long),
+        input_ids=torch.tensor([11], dtype=torch.long),
         req=FakeFishReq(extend_len=1),
     )
     second.temperature = 0.75
@@ -584,7 +585,7 @@ def test_fish_tts_request_builder_maps_finish_contract_onto_req() -> None:
     same_ref = request_builder(
         make_s2pro_payload(make_s2pro_state(max_new_tokens=6), request_id="req-again")
     )
-    assert data.req.extra_key == same_ref.req.extra_key is not None
+    assert data.req.extra_key != same_ref.req.extra_key
 
     other_cb1 = request_builder(
         make_s2pro_payload(
@@ -597,7 +598,7 @@ def test_fish_tts_request_builder_maps_finish_contract_onto_req() -> None:
     no_ref = request_builder(
         make_s2pro_payload(make_s2pro_state(vq_parts=None), request_id="req-zero-shot")
     )
-    assert no_ref.req.extra_key is None
+    assert no_ref.req.extra_key is not None
 
 
 def test_fish_tts_request_builder_clamps_budget_to_context() -> None:

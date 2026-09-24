@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -234,7 +235,8 @@ def build_sglang_zonos2_request(
         sampling_params=sp,
         eos_token_ids={RADIX_HASH_SPACE},
         vocab_size=RADIX_HASH_SPACE + 1,
-        extra_key=state.speaker_fingerprint,
+        # note (luojiaxuan): Frame hashes can collide; isolate each request lifecycle.
+        extra_key=f"zonos2:{uuid.uuid4().hex}",
     )
     req.tokenizer = None
 

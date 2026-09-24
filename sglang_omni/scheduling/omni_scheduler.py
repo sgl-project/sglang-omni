@@ -395,7 +395,8 @@ class OmniScheduler:
         self.num_paused_reqs = 0
         self.sessions: dict = {}
         self.forward_sleep_time = None
-        self.engine_paused = False
+        # note (luojiaxuan): Delegated SGLang methods require these exact field names.
+        self._engine_paused = False  # noqa: leading-underscore
         self.admin_lock = threading.Lock()
         self.admin_queue = _queue_mod.Queue()
         self.scheduler_thread_id: int | None = None
@@ -408,7 +409,7 @@ class OmniScheduler:
         else:
             pass
         self.chunked_req = None
-        self.pending_chunked_abort_req = None
+        self._pending_chunked_abort_req = None  # noqa: leading-underscore
         self.is_mixed_chunk = (
             self.chunked_prefill_size is not None and get_schedule().enable_mixed_chunk
         )
@@ -682,8 +683,8 @@ class OmniScheduler:
         self.total_prefill_uncached_tokens = 0
         self.total_prefill_busy_us = 0
         self.decode_moment_totals: list[float] = [0.0] * 6
-        self.prev_step = None
-        self.sched_idled = False
+        self._prev_step = None  # noqa: leading-underscore
+        self._sched_idled = False  # noqa: leading-underscore
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
@@ -1626,8 +1627,8 @@ class OmniScheduler:
         self.forward_ct += 1
         batch.forward_iter = self.forward_ct
         batch.launch_ts = time.monotonic()
-        batch.after_idle_gap = self.sched_idled
-        self.sched_idled = False
+        batch.after_idle_gap = self._sched_idled  # noqa: leading-underscore
+        self._sched_idled = False  # noqa: leading-underscore
         if batch.extend_num_tokens:
             self.processed_tokens_counter += batch.extend_num_tokens
         else:
@@ -2254,7 +2255,7 @@ class OmniScheduler:
             {
                 "stage_tp_rank": self.tp_rank,
                 "stage_tp_size": self.tp_size,
-                "engine_paused": self.engine_paused,
+                "engine_paused": self._engine_paused,  # noqa: leading-underscore
                 "waiting_queue_size": waiting_queue_size,
                 "request_build_workers": self.request_build_max_workers,
                 "request_build_pending": request_build_pending,
@@ -2284,7 +2285,7 @@ class OmniScheduler:
             pass
 
         with self.admin_lock:
-            self.engine_paused = True
+            self._engine_paused = True  # noqa: leading-underscore
             self.last_pause_mode = mode
             self.resolve_pending_async()
             num_paused = 0
@@ -2300,7 +2301,7 @@ class OmniScheduler:
             "data": {
                 "mode": mode,
                 "num_paused_requests": num_paused,
-                "engine_paused": self.engine_paused,
+                "engine_paused": self._engine_paused,  # noqa: leading-underscore
             },
         }
 
@@ -2310,12 +2311,12 @@ class OmniScheduler:
                 self.empty_torch_cache()
             else:
                 pass
-            self.engine_paused = False
+            self._engine_paused = False  # noqa: leading-underscore
             self.last_pause_mode = None
         return {
             "success": True,
             "message": "generation continued",
-            "data": {"engine_paused": self.engine_paused},
+            "data": {"engine_paused": self._engine_paused},  # noqa: leading-underscore
         }
 
     def admin_update_weights_from_disk(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2340,8 +2341,8 @@ class OmniScheduler:
         keep_pause = bool(payload.get("keep_pause", False))
         keep_engine_paused = keep_pause
         with self.admin_lock:
-            previous_pause_state = self.engine_paused
-            self.engine_paused = True
+            previous_pause_state = self._engine_paused  # noqa: leading-underscore
+            self._engine_paused = True  # noqa: leading-underscore
             try:
                 self.resolve_pending_async()
                 num_paused = 0
@@ -2354,7 +2355,9 @@ class OmniScheduler:
                         previous_pause_state
                     ):
                         if not keep_pause:
-                            self.engine_paused = previous_pause_state
+                            self._engine_paused = (
+                                previous_pause_state  # noqa: leading-underscore
+                            )
                         else:
                             pass
                         return {
@@ -2370,7 +2373,7 @@ class OmniScheduler:
                                 "active_request_ids": active_request_ids[:16],
                                 "abort_all_requests": abort_all_requests,
                                 "pause_mode": self.last_pause_mode,
-                                "engine_paused": self.engine_paused,
+                                "engine_paused": self._engine_paused,  # noqa: leading-underscore
                             },
                         }
                     else:
@@ -2409,16 +2412,18 @@ class OmniScheduler:
                     pass
             finally:
                 if keep_engine_paused:
-                    self.engine_paused = True
+                    self._engine_paused = True  # noqa: leading-underscore
                 else:
-                    self.engine_paused = previous_pause_state
+                    self._engine_paused = (
+                        previous_pause_state  # noqa: leading-underscore
+                    )
 
         data = {
             "num_paused_requests": num_paused,
             "flush_cache": payload.get("flush_cache", True),
             "flush_success": flush_success,
             "keep_pause": keep_pause,
-            "engine_paused": self.engine_paused,
+            "engine_paused": self._engine_paused,  # noqa: leading-underscore
         }
         data.update(result_data)
         return {
@@ -2557,7 +2562,9 @@ class OmniScheduler:
 
     def can_update_active_requests(self, previously_paused: bool | None = None) -> bool:
         engine_paused = (
-            self.engine_paused if previously_paused is None else previously_paused
+            self._engine_paused
+            if previously_paused is None
+            else previously_paused  # noqa: leading-underscore
         )
         return bool(engine_paused and self.last_pause_mode == "retract")
 
@@ -2729,7 +2736,7 @@ class OmniScheduler:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self.take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
-            if self.engine_paused:
+            if self._engine_paused:  # noqa: leading-underscore
                 self.process_admin_requests()
                 time.sleep(0.001)
                 continue
@@ -2746,7 +2753,7 @@ class OmniScheduler:
                 else:
                     pass
             else:
-                self.sched_idled = True
+                self._sched_idled = True  # noqa: leading-underscore
                 self.self_check_during_idle()
                 self.sleep_during_idle()
 
@@ -2980,7 +2987,7 @@ class OmniScheduler:
             recv_reqs = self.recv_requests()
             recv_reqs.extend(self.take_deferred_request_payloads())
             self.process_input_requests(recv_reqs)
-            if self.engine_paused:
+            if self._engine_paused:  # noqa: leading-underscore
                 self.process_admin_requests()
                 self.resolve_pending_async()
                 time.sleep(0.001)
@@ -3056,7 +3063,7 @@ class OmniScheduler:
                     else:
                         pass
                 else:
-                    self.sched_idled = True
+                    self._sched_idled = True  # noqa: leading-underscore
                     self.self_check_during_idle()
                     self.sleep_during_idle()
 

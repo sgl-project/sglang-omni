@@ -29,6 +29,8 @@ from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
     NO_SEED,
     HiggsBatchedSamplerState,
+    HiggsSamplerState,
+    step,
 )
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID, apply_delay_pattern
@@ -102,15 +104,24 @@ def test_higgs_prefill_embeddings_attach_private_sidecar() -> None:
     seeds: list[tuple[str, int | None]] = []
     model = SimpleNamespace(
         set_request_seed=lambda request_id, seed: seeds.append((request_id, seed)),
+        restore_sampler=lambda request_id, codes: None,
     )
     runner = object.__new__(HiggsTTSModelRunner)
+    runner.sampler_requests = {}
     runner.model = model
     raw_embeds = torch.arange(134 * 4, dtype=torch.float32).view(134, 4)
     runner.build_prefill_input_embeds = lambda _forward_batch, _requests: raw_embeds
     request = SimpleNamespace(
         request_id="request",
         data=SimpleNamespace(
-            req=SimpleNamespace(sampling_params=SimpleNamespace(sampling_seed=17))
+            req=SimpleNamespace(
+                sampling_params=SimpleNamespace(sampling_seed=17),
+                inflight_middle_chunks=0,
+                output_ids=[],
+            ),
+            output_code_buffer=None,
+            output_codes=[],
+            num_codebooks=2,
         ),
     )
     forward_batch = SimpleNamespace(
@@ -171,6 +182,185 @@ def test_higgs_prefill_embeddings_follow_radix_prefix_position() -> None:
     embeds = runner.build_prefill_input_embeds(forward_batch, [request])
 
     assert embeds.tolist() == [[20.0, 21.0], [30.0, 31.0]]
+
+
+@pytest.mark.parametrize("start,end", [(0, 3), (3, 6), (5, 7), (6, 8), (0, 8)])
+@pytest.mark.parametrize("use_buffer", [False, True])
+def test_higgs_reprefill_replays_absolute_generated_rows(
+    start: int, end: int, use_buffer: bool
+) -> None:
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner.model = SimpleNamespace(
+        backbone=SimpleNamespace(
+            model=SimpleNamespace(
+                embed_tokens=lambda ids: ids.float().unsqueeze(1).repeat(1, 2)
+            )
+        ),
+        multimodal_embedding=SimpleNamespace(
+            modality_embedding_0=lambda codes: codes.float()
+        ),
+    )
+    prompt = [7, AUDIO_PLACEHOLDER_ID, AUDIO_PLACEHOLDER_ID, 8, 9]
+    generated = torch.tensor([[100, 101], [200, 201], [300, 301]])
+    data = SimpleNamespace(
+        req=SimpleNamespace(
+            origin_input_ids=prompt,
+            extend_range=SimpleNamespace(start=start, length=end - start),
+        ),
+        reference_codes_delayed=[[10, 11], [20, 21]],
+        output_code_buffer=generated if use_buffer else None,
+        output_code_count=3,
+        output_codes=list(generated) if not use_buffer else [],
+        num_codebooks=2,
+    )
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor([66] + (prompt + [100, 200, 300])[start:end])
+    )
+    preceding = SimpleNamespace(
+        data=SimpleNamespace(
+            req=SimpleNamespace(
+                origin_input_ids=[66],
+                extend_range=SimpleNamespace(start=0, length=1),
+            ),
+            reference_codes_delayed=None,
+        )
+    )
+
+    embeddings = runner.build_prefill_input_embeds(
+        forward_batch, [preceding, SimpleNamespace(data=data)]
+    )
+
+    expected = torch.tensor(
+        [[7, 7], [10, 11], [20, 21], [8, 8], [9, 9]] + generated.tolist()
+    ).float()
+    torch.testing.assert_close(
+        embeddings, torch.cat([torch.tensor([[66.0, 66.0]]), expected[start:end]])
+    )
+
+
+@pytest.mark.parametrize("count", [0, 1, 4, 5, 6, 7])
+def test_higgs_restore_sampler_matches_committed_codes(count: int) -> None:
+    model = object.__new__(HiggsTTSModel)
+    model.rid_to_row = {}
+    model.free_rows = [0]
+    model.output_codes = {}
+    model.sampler_pool = HiggsBatchedSamplerState(1, 4, device="cpu")
+    oracle = HiggsSamplerState(num_codebooks=4)
+    rows = []
+    for index in range(count):
+        logits = torch.zeros((4, 1026))
+        logits[:, EOC_ID if index == 4 else index + 1] = 10
+        rows.append(step(logits, oracle, temperature=0))
+    codes = torch.stack(rows) if rows else torch.empty((0, 4), dtype=torch.long)
+    model.acquire_row("request")
+    model.sampler_pool.step_count[0] = 999
+    model.sampler_pool.eoc_countdown[0] = 0
+    model.sampler_pool.generation_done[0] = True
+    model.sampler_pool.last_codes[0].fill_(999)
+
+    model.restore_sampler("request", codes)
+
+    actual = model.sampler_pool.view_row(0)
+    assert actual.delay_count == oracle.delay_count
+    assert actual.eoc_countdown == oracle.eoc_countdown
+    assert actual.generation_done == oracle.generation_done
+    assert model.sampler_pool.step_count[0] == count
+    if count:
+        torch.testing.assert_close(actual.last_codes, oracle.last_codes)
+    else:
+        assert actual.last_codes is None
+
+
+def test_higgs_middle_prefill_chunk_does_not_sample() -> None:
+    sampled = []
+    model = SimpleNamespace(
+        is_decode_step=lambda batch: False,
+        extract_batch_metadata=lambda batch, request_ids: (request_ids, [None, None]),
+        backbone=SimpleNamespace(
+            model=lambda ids, positions, batch, embeddings: embeddings,
+            config=SimpleNamespace(vocab_size=16),
+        ),
+        prefill_skip_request_ids={"middle"},
+        decode_codebooks_batch=lambda hidden, request_ids, params: sampled.append(
+            request_ids
+        ),
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: True),
+        extend_seq_lens=torch.tensor([2, 1]),
+    )
+
+    result = HiggsTTSModel.forward(
+        model,
+        torch.tensor([1, 2, 3]),
+        torch.arange(3),
+        forward_batch,
+        input_embeds=torch.ones((3, 4)),
+        omni_prefill_rids=["middle", "final"],
+    )
+
+    assert sampled == [["final"]]
+    assert result.next_token_logits.shape == (2, 16)
+
+
+def test_higgs_full_sampler_pool_releases_retracts_and_restores_on_reentry() -> None:
+    model = object.__new__(HiggsTTSModel)
+    model.rid_to_row = {}
+    model.free_rows = [0, 1]
+    model.output_codes = {}
+    model.sampler_pool = HiggsBatchedSamplerState(2, 4, device="cpu")
+    model.acquire_row("waiting")
+    model.acquire_row("running")
+    waiting = SimpleNamespace(is_retracted=True, finished=lambda: False)
+    running = SimpleNamespace(is_retracted=False, finished=lambda: False)
+    runner = object.__new__(HiggsTTSModelRunner)
+    runner.model = model
+    runner.sampler_requests = {"waiting": waiting, "running": running}
+    runner.build_prefill_input_embeds = lambda batch, requests: torch.ones((1, 4))
+    batch = SimpleNamespace(input_ids=torch.tensor([1]), replace_embeds=None)
+    fresh = SimpleNamespace(
+        is_retracted=False,
+        finished=lambda: False,
+        inflight_middle_chunks=0,
+        output_ids=[],
+        sampling_params=SimpleNamespace(sampling_seed=17),
+    )
+    data = SimpleNamespace(
+        req=fresh,
+        output_code_buffer=None,
+        output_codes=[],
+        num_codebooks=4,
+        stream_code_buffer=[torch.tensor([1, 2, 3, 4])],
+        stream_code_seen_rows=1,
+    )
+    request = SimpleNamespace(request_id="fresh", data=data)
+
+    runner.before_prefill(batch, None, [request])
+
+    assert set(model.rid_to_row) == {"fresh", "running"}
+    assert len(data.stream_code_buffer) == 1
+    assert data.stream_code_seen_rows == 1
+    fresh.is_retracted = True
+    waiting.is_retracted = False
+    waiting.inflight_middle_chunks = 0
+    waiting.output_ids = [1, 2]
+    waiting.sampling_params = SimpleNamespace(sampling_seed=42)
+    data.req = waiting
+    data.output_codes = [
+        torch.tensor([1, 1024, 1024, 1024]),
+        torch.tensor([2, 3, 1024, 1024]),
+    ]
+    request.request_id = "waiting"
+
+    runner.before_prefill(batch, None, [request])
+
+    assert set(model.rid_to_row) == {"waiting", "running"}
+    row = model.rid_to_row["waiting"]
+    assert model.sampler_pool.step_count[row] == 2
+    assert model.sampler_pool.seeds[row] == 42
+    torch.testing.assert_close(
+        model.sampler_pool.last_codes[row], data.output_codes[-1]
+    )
 
 
 def test_higgs_shared_share_the_stride_between_both_consumers() -> None:
@@ -990,6 +1180,7 @@ def test_higgs_model_runner_marks_sampler_finish() -> None:
     req = SimpleNamespace(
         inflight_middle_chunks=0,
         finished_reason=None,
+        is_retracted=False,
         finished=lambda: False,
     )
     data = SimpleNamespace(
@@ -1026,6 +1217,7 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
     req = SimpleNamespace(
         inflight_middle_chunks=0,
         finished_reason=None,
+        is_retracted=False,
         finished=lambda: False,
     )
     data = SimpleNamespace(
@@ -1076,6 +1268,7 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
 
 def test_higgs_request_finish_flushes_partial_stream_window() -> None:
     runner = object.__new__(HiggsTTSModelRunner)
+    runner.sampler_requests = {"req-tail": None}
     runner.outbox = queue.Queue()
     runner.vocoder_target = "vocoder"
     data = SimpleNamespace(
@@ -1096,6 +1289,7 @@ def test_higgs_request_finish_flushes_partial_stream_window() -> None:
     assert output.data.tolist() == [[1, 2, 3], [4, 5, 6]]
     assert data.stream_code_buffer == []
     assert data.stream_code_first_flush_done is True
+    assert runner.sampler_requests == {}
 
 
 def test_higgs_model_runner_batches_stream_code_rows_on_decode_boundaries() -> None:
@@ -1166,6 +1360,7 @@ def test_higgs_model_runner_collect_streaming_uses_preallocated_buffer() -> None
     req = SimpleNamespace(
         inflight_middle_chunks=0,
         finished_reason=None,
+        is_retracted=False,
         finished=lambda: False,
     )
     data = SimpleNamespace(
@@ -1325,7 +1520,10 @@ def test_higgs_model_runner_marks_sampler_finish_cg() -> None:
         ),
     )
     req = SimpleNamespace(
-        inflight_middle_chunks=0, finished_reason=None, finished=lambda: False
+        inflight_middle_chunks=0,
+        finished_reason=None,
+        is_retracted=False,
+        finished=lambda: False,
     )
     data = SimpleNamespace(
         req=req,
@@ -1382,16 +1580,28 @@ def test_higgs_model_runner_collect_cg_mixed_batch() -> None:
     # row0 chunked, row1 was-done, row2 active (not done), row3 active (EOC done).
     reqs = [
         SimpleNamespace(
-            inflight_middle_chunks=1, finished_reason=None, finished=lambda: False
+            inflight_middle_chunks=1,
+            finished_reason=None,
+            is_retracted=False,
+            finished=lambda: False,
         ),
         SimpleNamespace(
-            inflight_middle_chunks=0, finished_reason=None, finished=lambda: False
+            inflight_middle_chunks=0,
+            finished_reason=None,
+            is_retracted=False,
+            finished=lambda: False,
         ),
         SimpleNamespace(
-            inflight_middle_chunks=0, finished_reason=None, finished=lambda: False
+            inflight_middle_chunks=0,
+            finished_reason=None,
+            is_retracted=False,
+            finished=lambda: False,
         ),
         SimpleNamespace(
-            inflight_middle_chunks=0, finished_reason=None, finished=lambda: False
+            inflight_middle_chunks=0,
+            finished_reason=None,
+            is_retracted=False,
+            finished=lambda: False,
         ),
     ]
     datas = [
@@ -1459,7 +1669,10 @@ def test_higgs_model_runner_collects_rollout_logprobs_only_when_requested() -> N
         ),
     )
     req = SimpleNamespace(
-        inflight_middle_chunks=0, finished_reason=None, finished=lambda: False
+        inflight_middle_chunks=0,
+        finished_reason=None,
+        is_retracted=False,
+        finished=lambda: False,
     )
     data = SimpleNamespace(
         req=req,

@@ -24,6 +24,7 @@ from sglang_omni.models.higgs_tts.sampler import (
     batched_step,
     batched_step_direct,
 )
+from sglang_omni.models.higgs_tts.utils import EOC_ID
 from sglang_omni.models.higgs_tts.weight_loader import DiscreteWeightMapper
 from sglang_omni.sampling.seed import resolve_row_seed
 
@@ -169,6 +170,7 @@ class HiggsTTSModel(nn.Module):
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
         self.output_codes: dict[str, list[torch.Tensor]] = {}
+        self.prefill_skip_request_ids: set[str] = set()
         cg_device = self.backbone.model.embed_tokens.weight.device
         self.cg_row_indices = torch.zeros(pool_size, dtype=torch.long, device=cg_device)
         self.cg_temperature = torch.ones(
@@ -275,6 +277,35 @@ class HiggsTTSModel(nn.Module):
         self.sampler_pool.seeds[row] = (
             NO_SEED if seed is None else resolve_row_seed(seed)
         )
+
+    def restore_sampler(self, request_id: str, codes: torch.Tensor) -> None:
+        """Restore continuation state from committed delayed code rows."""
+        row = self.acquire_row(request_id)
+        pool = self.sampler_pool
+        pool.reset_row(row)
+        count, num_codebooks = codes.shape
+        pool.delay_count[row] = min(count, num_codebooks)
+        pool.step_count[row] = count
+        # note (luojiaxuan): lookahead may leave the pool ahead of committed output.
+        end_positions = (codes[num_codebooks:, 0] == EOC_ID).nonzero().flatten()
+        done = False
+        if len(end_positions):
+            remaining = (
+                num_codebooks - 2 - (count - num_codebooks - int(end_positions[0]) - 1)
+            )
+            done = remaining <= 0
+            if num_codebooks > 2:
+                pool.eoc_countdown[row] = remaining
+            else:
+                pass
+        else:
+            pass
+        pool.generation_done[row] = done
+        if count:
+            pool.last_codes[row].copy_(codes[count - 2 if done else count - 1])
+        else:
+            pass
+        self.output_codes.pop(request_id, None)
 
     def release_row(self, req_id: str) -> None:
         """Return ``req_id``'s row to the free pool and drop its output codes."""
@@ -505,6 +536,26 @@ class HiggsTTSModel(nn.Module):
 
         if is_decode:
             text_logits_BV = self.decode_codebooks_batch_cg(hidden_states_last)
+        elif self.prefill_skip_request_ids:
+            sample_indices = [
+                index
+                for index, request_id in enumerate(req_ids)
+                if request_id not in self.prefill_skip_request_ids
+            ]
+            text_logits_BV = torch.zeros(
+                (len(req_ids), self.backbone.config.vocab_size),
+                device=hidden_states_last.device,
+                dtype=torch.float32,
+            )
+            # note (luojiaxuan): middle chunks rebuild KV without advancing the sampler.
+            if sample_indices:
+                self.decode_codebooks_batch(
+                    hidden_states_last[sample_indices],
+                    [req_ids[index] for index in sample_indices],
+                    [gen_params[index] for index in sample_indices],
+                )
+            else:
+                pass
         else:
             text_logits_BV = self.decode_codebooks_batch(
                 hidden_states_last, req_ids, gen_params

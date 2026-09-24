@@ -16,10 +16,17 @@ from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_exec, publish
 
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
+from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
+    FishQwen3AudioDecoder,
+)
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
     IM_END_TOKEN,
     IM_START_TOKEN,
     MODALITY_VOICE_TOKEN,
+)
+from sglang_omni.models.fishaudio_s2_pro.model_runner import (
+    FishS2ProModelRunner,
+    collect_s2pro_step_outputs,
 )
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.models.fishaudio_s2_pro.request_builders import (
@@ -28,12 +35,15 @@ from sglang_omni.models.fishaudio_s2_pro.request_builders import (
     build_sglang_tts_request,
     make_tts_scheduler_adapters,
 )
+from sglang_omni.models.fishaudio_s2_pro.sglang_model import S2ProSGLangTextModel
 from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     Reference,
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from sglang_omni.scheduling.types import SchedulerRequest
 from tests.unit_test.fixtures.fish_fakes import (
+    FakeFishReq,
     FakeFishTokenizer,
     make_s2pro_payload,
     make_s2pro_state,
@@ -1482,6 +1492,144 @@ def _tiny_fish_omni_config(*, with_audio_decoder: bool = True):
         text_config=text_config,
         audio_decoder_config=audio_decoder_config,
     )
+
+
+@pytest.mark.parametrize("with_reference", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_fish_retract_replays_decode_inputs_at_absolute_positions(
+    monkeypatch: pytest.MonkeyPatch, with_reference: bool, dtype: torch.dtype
+) -> None:
+    model = object.__new__(S2ProSGLangTextModel)
+    torch.nn.Module.__init__(model)
+    model.vocab_size = 640
+    model.embed_tokens = torch.nn.Embedding(model.vocab_size, 8, dtype=dtype)
+    decoder = FishQwen3AudioDecoder(_tiny_fish_omni_config().audio_decoder_config).to(
+        dtype
+    )
+    model.setup_vq_decode(
+        decoder,
+        num_codebooks=2,
+        codebook_size=16,
+        semantic_begin_id=200,
+        semantic_end_id=215,
+        im_end_token_id=99,
+        max_batch_size=8,
+        rep_history_len=3,
+    )
+    # note (luojiaxuan): retain the production decode fusion and stop before attention.
+    model.start_layer = model.end_layer = 0
+    model.tie_word_embeddings = True
+    model.norm = lambda hidden, residual: (hidden, residual)
+    monkeypatch.setattr(model, "decode_codebooks", lambda logits, hidden: None)
+    runner = object.__new__(FishS2ProModelRunner)
+    runner.model = model
+
+    prompt_ids = torch.tensor([10, 201, 202, 11])
+    reference_mask = torch.tensor([False, True, True, False])
+    reference_codes = torch.tensor([[1, 2], [7, 8]])
+    generated_codes = torch.tensor(
+        [[203, 3, 9], [204, 4, 10], [205, 5, 11], [206, 6, 12]]
+    )
+    data = S2ProSGLangRequestData(
+        req=FakeFishReq(extend_len=len(prompt_ids)),
+        input_ids=prompt_ids,
+        vq_mask_tokens=reference_mask if with_reference else None,
+        vq_parts=(
+            [reference_codes[:, :1], reference_codes[:, 1:]] if with_reference else None
+        ),
+        num_codebooks=2,
+        seed=123,
+    )
+    request = SchedulerRequest(request_id="retracted", data=data)
+    for codes in generated_codes:
+        collect_s2pro_step_outputs(
+            SimpleNamespace(next_token_ids=None),
+            [request],
+            output_codes=codes.unsqueeze(0),
+            output_semantic_ids=codes[:1],
+            im_end_token_id=99,
+            rep_history_len=3,
+        )
+
+    full_ids = torch.cat([prompt_ids, generated_codes[:, 0]])
+    model.vq_mask.zero_()
+    if with_reference:
+        model.vq_mask[:4].copy_(reference_mask)
+        model.vq_codes[1:3].copy_(reference_codes.T)
+    model.vq_mask[4:].fill_(True)
+    model.vq_codes[4:].copy_(generated_codes[:, 1:])
+    expected = (
+        model.forward(
+            full_ids,
+            torch.arange(len(full_ids)),
+            SimpleNamespace(
+                input_embeds=None,
+                forward_mode=SimpleNamespace(is_extend=lambda: False),
+            ),
+        )
+        .hidden_states.detach()
+        .clone()
+    )
+    plain_ids = torch.tensor([20, 21])
+    plain_request = SchedulerRequest(
+        request_id="plain",
+        data=S2ProSGLangRequestData(req=FakeFishReq(extend_len=2), input_ids=plain_ids),
+    )
+    history = data.semantic_history_tokens.clone()
+    for start in range(len(full_ids)):
+        for end in range(start + 1, len(full_ids) + 1):
+            data.req.extend_range = SimpleNamespace(
+                start=start, end=end, length=end - start
+            )
+            data.req.prefix_indices = torch.arange(start)
+            model.step_count.fill_(999)
+            forward_batch = SimpleNamespace(
+                input_ids=torch.cat([plain_ids, full_ids[start:end]])
+            )
+            runner.before_prefill(forward_batch, None, [plain_request, request])
+            torch.testing.assert_close(
+                forward_batch.input_embeds,
+                torch.cat([model.embed_tokens(plain_ids), expected[start:end]]),
+            )
+            assert int(model.step_count[1]) == len(generated_codes)
+            torch.testing.assert_close(model.prev_tokens[1], history)
+    assert data.semantic_history_count == len(generated_codes)
+    torch.testing.assert_close(data.last_codebook_values, generated_codes[-1, 1:])
+
+    data.req.inflight_middle_chunks = 1
+    collect_s2pro_step_outputs(
+        SimpleNamespace(next_token_ids=None),
+        [request],
+        output_codes=torch.tensor([[207, 7, 13]]),
+        output_semantic_ids=torch.tensor([207]),
+        im_end_token_id=99,
+        rep_history_len=3,
+    )
+    assert len(data.output_codes) == len(generated_codes)
+    assert data.semantic_history_count == len(generated_codes)
+    torch.testing.assert_close(data.semantic_history_tokens, history)
+    torch.testing.assert_close(data.last_codebook_values, generated_codes[-1, 1:])
+
+    data.output_codes[0][0, 0] += 1
+    data.req.extend_range = SimpleNamespace(start=4, end=5, length=1)
+    with pytest.raises(AssertionError, match="do not match replay token IDs"):
+        runner.build_prefill_input_embeds(
+            SimpleNamespace(input_ids=full_ids[4:5]), [request]
+        )
+
+
+def test_fish_retract_cache_key_is_unique_for_each_request_lifetime() -> None:
+    tokenizer = FakeFishTokenizer()
+    first = build_sglang_tts_request(make_s2pro_state(), tokenizer, request_id="reused")
+    second = build_sglang_tts_request(
+        make_s2pro_state(), tokenizer, request_id="reused"
+    )
+    key = first.req.extra_key
+    first.req.output_ids.extend([201, 202])
+    first.req.reset_for_retract()
+    assert first.req.extra_key == key
+    assert first.req.extra_key != second.req.extra_key
+    assert list(first.req.output_ids) == [201, 202]
 
 
 def _write_tiny_audio_decoder_checkpoint(tmp_path, *, drop_key: str | None = None):

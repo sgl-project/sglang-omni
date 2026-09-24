@@ -15,13 +15,14 @@ import os
 from typing import Any
 
 import torch
-from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN
+from sglang.srt.managers.schedule_batch import FINISH_MATCHED_TOKEN, Req
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
 from sglang_omni.models.higgs_tts.sampler import K_MAX, selected_token_logprobs
 from sglang_omni.models.higgs_tts.text_tokenizer import AUDIO_PLACEHOLDER_ID
 from sglang_omni.models.higgs_tts.utils import EOC_ID
@@ -68,6 +69,7 @@ class HiggsTTSModelRunner(ModelRunner):
         # composition is unchanged since the previous decode step.
         self.syncfree_launch: bool = syncfree_launch_enabled()
         self.cg_launch_key: tuple | None = None
+        self.sampler_requests: dict[str, Req] = {}
 
     def next_logprob_host_staging(self, device_buf: torch.Tensor) -> torch.Tensor:
         return self.pinned_pingpong(
@@ -84,10 +86,28 @@ class HiggsTTSModelRunner(ModelRunner):
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         """Flush a partial streaming-code window before terminal output."""
         self.flush_code_chunks(request_id, req_data, force=True)
+        self.sampler_requests.pop(request_id, None)
 
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
+        # note (luojiaxuan): waiting retracts must not occupy every sampler row.
+        for request_id, request in list(self.sampler_requests.items()):
+            if request.is_retracted or request.finished():
+                self.model.release_row(request_id)
+                self.sampler_requests.pop(request_id)
+            else:
+                pass
+        self.cg_launch_key = None
+        self.model.prefill_skip_request_ids = {
+            request.request_id
+            for request in requests
+            if request.data.req.inflight_middle_chunks > 0
+        }
         for req in requests:
+            self.sampler_requests[req.request_id] = req.data.req
+            codes = self.generated_codes(req.data)
+            assert len(codes) == len(req.data.req.output_ids)
+            self.model.restore_sampler(req.request_id, codes)
             self.model.set_request_seed(
                 req.request_id, req.data.req.sampling_params.sampling_seed
             )
@@ -419,7 +439,7 @@ class HiggsTTSModelRunner(ModelRunner):
             # length finishes too (which `_cg_was_done`, an EOC-only flag, does
             # not). No-op for the sync path: a req is never finished() at its
             # own collect (finish is set later, in process_batch_result).
-            if req.finished():
+            if req.finished() or self.req_is_retracted(req):
                 cb0_per_row.append(0)
                 continue
             else:
@@ -502,7 +522,41 @@ class HiggsTTSModelRunner(ModelRunner):
             text_embeds[mask_idx] = embed.to(text_embeds.dtype)
             offset = end
 
+        offset = 0
+        for request in requests:
+            data = request.data
+            window = data.req.extend_range
+            prompt_length = len(data.req.origin_input_ids)
+            start = max(window.start, prompt_length)
+            end = window.start + window.length
+            if start < end:
+                codes = self.generated_codes(data)
+                generated_start = start - prompt_length
+                generated_end = end - prompt_length
+                assert generated_end <= len(codes), "Missing Higgs generated codes"
+                # note (luojiaxuan): a replay chunk need not end at the generated tail.
+                with torch.no_grad():
+                    embeddings = fused_embed(
+                        codes[generated_start:generated_end].to(device=device)
+                    )
+                local_start = offset + start - window.start
+                text_embeds[local_start : offset + window.length] = embeddings.to(
+                    text_embeds.dtype
+                )
+            else:
+                pass
+            offset += window.length
+
         return text_embeds
+
+    @staticmethod
+    def generated_codes(data: HiggsSGLangRequestData) -> torch.Tensor:
+        if data.output_code_buffer is not None:
+            return data.output_code_buffer[: data.output_code_count]
+        elif data.output_codes:
+            return torch.stack(data.output_codes)
+        else:
+            return torch.empty((0, data.num_codebooks), dtype=torch.long)
 
     def collect_step_outputs(
         self, result: Any, requests: list, forward_batch: Any | None = None

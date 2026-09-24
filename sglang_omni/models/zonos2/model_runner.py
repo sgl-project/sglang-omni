@@ -13,10 +13,12 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.zonos2 import callbacks
 from sglang_omni.models.zonos2.radix_hash import EOS_SENTINEL, poly_row_hash
+from sglang_omni.models.zonos2.request_builders import Zonos2SGLangRequestData
 from sglang_omni.models.zonos2.sampler import sample_tts
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
@@ -72,9 +74,15 @@ class Zonos2ModelRunner(ModelRunner):
         # Opt-in async-decode lookahead (overlap the resolve D2H with the next
         # forward); also gates disable_overlap_schedule in sglang_stages.
         self.async_decode = async_decode
+        self.decode_requests: dict[str, Req] = {}
 
     def set_stream_outbox(self, outbox: Any) -> None:
         self.outbox = outbox
+
+    def on_request_finished(
+        self, request_id: str, req_data: Zonos2SGLangRequestData
+    ) -> None:
+        self.decode_requests.pop(request_id, None)
 
     # ---- FeedbackAR hooks: model-specific bodies live in callbacks.py ----
 
@@ -95,13 +103,47 @@ class Zonos2ModelRunner(ModelRunner):
 
     def build_prefill_embeds(self, forward_batch, requests) -> torch.Tensor:
         model = self.model
+        pool = model.decode_state_pool
+        # note (luojiaxuan): Admin retract can resume prefills before any decode cleanup.
+        for request_id, request in list(self.decode_requests.items()):
+            if request.is_retracted or request.finished():
+                pool.release_row(request_id)
+                self.decode_requests.pop(request_id)
+            else:
+                pass
         pieces = []
         for sr in requests:
             data = sr.data
             req = data.req
-            prefix_len = len(req.prefix_indices)
+            prefix_len = req.extend_range.start
+            end = req.extend_range.end
             req_len = int(req.extend_range.length)
-            rows = data.prompt_rows[prefix_len : prefix_len + req_len].to(model.device)
+            # note (luojiaxuan): Re-prefill needs full frames, not their scalar hashes.
+            assert len(data.output_codes) == len(
+                req.output_ids
+            ), "ZONOS2 frame history does not match committed tokens"
+            prompt_len = len(data.prompt_rows)
+            rows = data.prompt_rows[prefix_len:end].to(model.device)
+            n_generated = max(0, end - prompt_len)
+            if n_generated:
+                assert n_generated <= len(
+                    data.output_codes
+                ), "ZONOS2 re-prefill is missing generated frames"
+                codes = torch.stack(data.output_codes[:n_generated]).to(
+                    device=model.device, dtype=torch.long
+                )
+                generated_rows = torch.cat(
+                    [codes, codes.new_full((n_generated, 1), model.config.text_vocab)],
+                    dim=1,
+                )
+                rows = torch.cat(
+                    [rows, generated_rows[max(0, prefix_len - prompt_len) :]], dim=0
+                )
+            else:
+                pass
+            assert (
+                len(rows) == req_len
+            ), "ZONOS2 re-prefill frame count does not match extend range"
             emb = model.embed_frames(rows)
             if data.speaker_emb is not None:
                 pos = int(data.speaker_position) - prefix_len
@@ -120,6 +162,29 @@ class Zonos2ModelRunner(ModelRunner):
             else:
                 pass
             pieces.append(emb)
+            # note (luojiaxuan): Restore state only after replay rows pass validation.
+            row = pool.acquire_row(sr.request_id)
+            self.decode_requests[sr.request_id] = req
+            pool.reset_row(row)
+            if n_generated:
+                pool.generation_step[row] = n_generated
+                count = min(n_generated, pool.rep_ring)
+                pool.rep_hist[row, -count:] = codes[-count:]
+                pool.rep_len[row] = count
+                hits = codes == model.config.eoa_id
+                hit_frames = hits.any(dim=1).nonzero(as_tuple=True)[0]
+                if len(hit_frames):
+                    first = int(hit_frames[0])
+                    rightmost = int(hits[first].nonzero(as_tuple=True)[0][-1])
+                    pool.eos_frame_set[row] = True
+                    pool.eos_frame_val[row] = max(0, first - rightmost)
+                    pool.eos_countdown[row] = max(
+                        0, model.n_codebooks - (n_generated - 1 - first)
+                    )
+                else:
+                    pass
+            else:
+                pass
         return torch.cat(pieces, dim=0).to(device=model.device, dtype=model.dtype)
 
     # ---- frame collection (head + batched sample + EOS + feedback) ----
@@ -336,6 +401,11 @@ class Zonos2ModelRunner(ModelRunner):
         eos_val_cpu = packed_cpu[:, n + 1]
         for i, sr in enumerate(requests):
             data = sr.data
+            # note (luojiaxuan): Lagged results must not extend discarded histories.
+            if data.req.is_retracted or data.req.finished():
+                continue
+            else:
+                pass
             data.output_codes.append(codes_cpu[i].clone())
             data.eos_frame = int(eos_val_cpu[i]) if bool(eos_set_cpu[i]) else None
 

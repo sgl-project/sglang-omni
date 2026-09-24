@@ -72,10 +72,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder):
         dtype: str,
     ) -> dict[str, Any]:
         del dtype
-        # note (luojiaxuan): Radix cache is namespaced per ref-audio via
-        # Req.extra_key (set in build_sglang_higgs_request); shared -100
-        # placeholder prefixes from different ref audios can't cross-contaminate
-        # the KV tree.
+        # note (luojiaxuan): per-lifetime keys isolate full-codebook KV from cb0 collisions.
         return {
             "max_running_requests": self.max_running_requests,
             "cuda_graph_max_bs": self.cuda_graph_max_bs,

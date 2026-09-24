@@ -6,10 +6,12 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
+from sglang_omni.scheduling.types import SchedulerRequest
 
 
 def collect_s2pro_step_outputs(
@@ -176,8 +178,8 @@ class FishS2ProModelRunner(ModelRunner):
 
     def build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
         input_ids = forward_batch.input_ids
         if not isinstance(input_ids, torch.Tensor):
@@ -192,55 +194,63 @@ class FishS2ProModelRunner(ModelRunner):
         for sched_req in requests:
             data = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
+            extend_start = req.extend_range.start
+            extend_end = req.extend_range.end
+            extend_length = req.extend_range.length
+            prompt_length = len(data.input_ids)
 
-            if (
-                data.vq_mask_tokens is None
-                or data.vq_parts is None
-                or len(data.vq_parts) == 0
-            ):
-                offset += req_len
-                continue
+            if data.vq_mask_tokens is not None and data.vq_parts:
+                reference_mask = data.vq_mask_tokens.reshape(-1).to(device=device)
+                # note (luojiaxuan): reference masks end at the original prompt.
+                reference_length = max(0, min(extend_end, prompt_length) - extend_start)
+                mask_slice = reference_mask[
+                    extend_start : extend_start + reference_length
+                ]
+                if bool(mask_slice.any()):
+                    reference_codes = torch.cat(
+                        [part.to(device=device).T for part in data.vq_parts], dim=0
+                    )
+                    reference_start = int(reference_mask[:extend_start].sum().item())
+                    reference_end = reference_start + int(mask_slice.sum().item())
+                    reference_embeds = text_embeds[offset : offset + reference_length]
+                    fused = self.model.audio_decoder.embed_text_dim(
+                        reference_embeds.unsqueeze(0),
+                        reference_codes[reference_start:reference_end],
+                        mask_slice.unsqueeze(0),
+                    )
+                    text_embeds[mask_slice.nonzero(as_tuple=True)[0] + offset] = (
+                        fused.to(text_embeds.dtype)
+                    )
+                else:
+                    pass
             else:
                 pass
 
-            vq_mask = data.vq_mask_tokens.to(device=device)
-            if vq_mask.dim() == 2:
-                vq_mask = vq_mask.squeeze(0)
+            if extend_end > prompt_length:
+                # note (luojiaxuan): a replay chunk can end before the generated tail.
+                generated_start = max(extend_start, prompt_length) - prompt_length
+                generated_end = extend_end - prompt_length
+                assert 0 <= generated_start < generated_end <= len(data.output_codes)
+                codes = torch.cat(
+                    data.output_codes[generated_start:generated_end], dim=1
+                ).T.to(device=device, dtype=torch.long)
+                first_row = offset + max(prompt_length - extend_start, 0)
+                last_row = offset + extend_length
+                assert torch.equal(
+                    codes[:, 0], input_ids[first_row:last_row]
+                ), "Fish generated codes do not match replay token IDs"
+                generated_mask = torch.ones(
+                    generated_end - generated_start, dtype=torch.bool, device=device
+                )
+                fused = self.model.audio_decoder.embed_text_dim(
+                    text_embeds[first_row:last_row].unsqueeze(0),
+                    codes[:, 1:],
+                    generated_mask.unsqueeze(0),
+                )
+                text_embeds[first_row:last_row] = fused.to(text_embeds.dtype)
             else:
                 pass
-
-            prefix_len = len(req.prefix_indices)
-            mask_slice = vq_mask[prefix_len : prefix_len + req_len]
-            if not bool(mask_slice.any()):
-                offset += req_len
-                continue
-            else:
-                pass
-
-            parts = [
-                part.to(device=device).T for part in data.vq_parts if part.dim() == 2
-            ]
-            vq_parts_flat = torch.cat(parts, dim=0) if parts else None
-            if vq_parts_flat is None:
-                offset += req_len
-                continue
-            else:
-                pass
-
-            vq_before = int(vq_mask[:prefix_len].sum().item()) if prefix_len > 0 else 0
-            num_vq_in_slice = int(mask_slice.sum().item())
-            vq_slice = vq_parts_flat[vq_before : vq_before + num_vq_in_slice]
-
-            req_embeds = text_embeds[offset : offset + req_len]
-            vq_embeds = self.model.audio_decoder.embed_text_dim(
-                req_embeds.unsqueeze(0),
-                vq_slice,
-                mask_slice.unsqueeze(0),
-            )
-            mask_indices = mask_slice.nonzero(as_tuple=True)[0] + offset
-            text_embeds[mask_indices] = vq_embeds.to(text_embeds.dtype)
-            offset += req_len
+            offset += extend_length
 
         return text_embeds
 

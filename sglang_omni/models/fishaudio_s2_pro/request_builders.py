@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,22 +59,6 @@ def validate_s2pro_top_k(top_k: int) -> None:
         )
     else:
         pass
-
-
-def ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
-    # note (Gaokai): only cb0 of the ref VQ codes becomes prompt token ids;
-    # cb1..N ride in as embeddings, so extra_key must hash all codebooks to keep
-    # same-cb0 prompts from sharing radix KV across different reference audio.
-    if not vq_parts:
-        return None
-    else:
-        pass
-    digest = hashlib.blake2b(digest_size=16)
-    for part in vq_parts:
-        codes = part.detach().to(device="cpu", dtype=torch.int32).contiguous()
-        digest.update(str(tuple(codes.shape)).encode())
-        digest.update(codes.numpy().tobytes())
-    return digest.hexdigest()
 
 
 def build_sglang_tts_request(
@@ -163,7 +147,9 @@ def build_sglang_tts_request(
         sampling_params=sampling_params,
         vocab_size=vocab_size,
         eos_token_ids={im_end_token_id},
-        extra_key=ref_vq_fingerprint(vq_parts),
+        # note (Gaokai): scalar IDs omit acoustic codebooks from reference audio.
+        # note (luojiaxuan): isolate generated KV too, retaining reuse within a request.
+        extra_key=f"fish:{uuid.uuid4().hex}",
     )
     req.tokenizer = tokenizer
     req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

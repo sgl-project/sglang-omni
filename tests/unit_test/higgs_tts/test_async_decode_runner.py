@@ -83,6 +83,7 @@ def _build_runner(
             inflight_middle_chunks=inflight_middle_chunks[i],
             finished_reason=None,
             finished=finished[i],
+            is_retracted=False,
         )
         for i in range(n)
     ]
@@ -155,6 +156,23 @@ def _run_async(monkeypatch, **kw):
     # already-copied snapshot straight to resolve.
     runner.post_decode_resolve(host_buf, result, fb, None, sched)
     return _snapshot(reqs, datas, result)
+
+
+def test_async_resolve_does_not_commit_retracted_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, requests, result, batch, reqs, datas = _build_runner(
+        async_enabled=True, **_MIXED
+    )
+    _patch_cpu_host_staging(monkeypatch)
+    snapshot = runner.post_decode_launch(result, batch, requests)
+    reqs[2].is_retracted = True
+
+    runner.post_decode_resolve(snapshot, result, batch, None, requests)
+
+    assert datas[2].output_codes == []
+    assert datas[2].generation_done is False
+    assert result.next_token_ids.tolist() == [0, 0, 0, EOC_ID]
 
 
 def test_async_matches_sync_mixed_batch(monkeypatch):
@@ -343,7 +361,10 @@ def test_async_real_pinned_path_matches_sync():
         )
         reqs = [
             SimpleNamespace(
-                inflight_middle_chunks=c, finished_reason=None, finished=lambda: False
+                inflight_middle_chunks=c,
+                finished_reason=None,
+                is_retracted=False,
+                finished=lambda: False,
             )
             for c in (1, 0, 0, 0)
         ]
