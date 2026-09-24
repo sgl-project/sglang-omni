@@ -14,7 +14,7 @@ IFS=$'\n\t'
 readonly DEFAULT_OMNI_REPO="https://github.com/sgl-project/sglang-omni.git"
 readonly DEFAULT_OMNI_REF="main"
 readonly DEFAULT_SGLANG_REPO="https://github.com/sgl-project/sglang.git"
-readonly DEFAULT_SGLANG_REF="v0.5.19"
+readonly DEFAULT_SGLANG_REF="v0.5.20"
 
 SCRIPT_PATH="${BASH_SOURCE[0]:-}"
 if [[ -n "$SCRIPT_PATH" && -f "$SCRIPT_PATH" ]]; then
