@@ -380,6 +380,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     context_length: int,
     duration_scaled_default: bool = True,
     audio_encoder_service: Any | None = None,
+    greedy_only: bool = False,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
     Callable[[Any], StagePayload],
@@ -404,6 +405,19 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
         explicit_fields = explicit_generation_fields(metadata)
+        temperature = sampling_param(
+            params, explicit_fields, "temperature", DEFAULT_TEMPERATURE, float
+        )
+        repetition_penalty = sampling_param(
+            params, explicit_fields, "repetition_penalty", 1.0, float
+        )
+        if greedy_only and (temperature != 0.0 or repetition_penalty != 1.0):
+            raise ValueError(
+                "MOSS-Transcribe-Diarize Apple backend currently supports only "
+                "greedy decoding with repetition_penalty=1; set temperature=0"
+            )
+        else:
+            pass
         prepared = prepare_audio(
             payload,
             source_name="MOSS-Transcribe-Diarize",
@@ -517,16 +531,10 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             audio_end_id=audio_end_id,
         )
 
-        temperature = sampling_param(
-            params, explicit_fields, "temperature", DEFAULT_TEMPERATURE, float
-        )
         top_p = sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
         top_k = sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
         # Opt-in mitigation for repetition loops (#975): honoured only when
         # the caller sets it explicitly, so greedy defaults stay unchanged.
-        repetition_penalty = sampling_param(
-            params, explicit_fields, "repetition_penalty", 1.0, float
-        )
         # Same range SamplingParams enforces; failing here keeps the error
         # on the request path instead of inside the scheduler.
         if not 0.0 < repetition_penalty <= 2.0:

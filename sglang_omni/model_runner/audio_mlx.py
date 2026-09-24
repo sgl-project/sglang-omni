@@ -11,6 +11,7 @@ import torch
 
 class AudioMlxModelRunner:
     model_name = "Audio ASR"
+    prefill_chunk_size: int | None = None
 
     @classmethod
     def audio_item(cls, req: Any) -> Any:
@@ -140,8 +141,21 @@ class AudioMlxModelRunner:
 
         _input_ids, input_embeddings = self.audio_prefill_inputs(req, new_token_ids)
         cache = self._acquire_cache()  # noqa: leading-underscore
-        logits = self.model.forward_last_logits(input_embeddings, cache=cache)
-        # Note (yexiaodong): Chunked prefill is disabled for this audio path, so
+        chunk_size = self.prefill_chunk_size or input_embeddings.shape[1]
+        logits = None
+        for start in range(0, input_embeddings.shape[1], chunk_size):
+            logits = self.model.forward_last_logits(
+                input_embeddings[:, start : start + chunk_size],
+                cache=cache,
+            )
+            # Note (wirybeaver): Materialize intermediate chunks to bound memory;
+            # leave the final result lazy for the worker's asynchronous evaluation.
+            if start + chunk_size < input_embeddings.shape[1]:
+                mx.eval(logits)
+            else:
+                pass
+        assert logits is not None
+        # Note (yexiaodong): Scheduler-level chunked prefill is disabled, so
         # needs_logits is always true; retain the argument for the SGLang API.
         del needs_logits
         lazy_token = mx.argmax(logits[:, -1, :], axis=-1)

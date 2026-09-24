@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -25,6 +26,13 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+
+
+@pytest.fixture(autouse=True)
+def _select_torch_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
 
 def _make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -68,6 +76,12 @@ def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
     factory = config.stages[0].factory
     engine = config.stages[0].engine
     assert factory.device is None
+    assert (
+        inspect.signature(create_sglang_moss_transcribe_diarize_executor)
+        .parameters["device"]
+        .default
+        is None
+    )
     assert engine.max_running_requests == 16
     assert engine.enable_torch_compile is True
     assert engine.torch_compile_max_bs == 4
@@ -107,6 +121,202 @@ def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
         == defaults["chunked_prefill_size"]
         == 4096
     )
+
+
+def test_moss_transcribe_diarize_mlx_uses_single_request_apple_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    from sglang_omni import platforms
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    monkeypatch.setattr(platforms.current_platform, "is_mps", lambda: True)
+    builder = _make_moss_engine_builder()
+    builder.device = "mps"
+    builder.context_length = 8192
+    builder.tokenizer = SimpleNamespace(eos_token_id=151645)
+    overrides = {"enable_torch_compile": True, "max_running_requests": 16}
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+    builder.adjust_overrides(overrides)
+
+    assert defaults == {
+        "max_running_requests": 1,
+        "disable_cuda_graph": True,
+        "disable_overlap_schedule": True,
+        "disable_radix_cache": True,
+        "enable_torch_compile": False,
+        "max_total_tokens": 8192,
+        "max_prefill_tokens": 8192,
+        "chunked_prefill_size": -1,
+        "attention_backend": "torch_native",
+        "mm_attention_backend": "sdpa",
+        "sampling_backend": "pytorch",
+        "mem_fraction_static": 0.8,
+        "dtype": "bfloat16",
+    }
+    assert overrides["enable_torch_compile"] is False
+    assert overrides["max_running_requests"] == 1
+    scheduler_kwargs = builder.extra_scheduler_kwargs()
+    assert scheduler_kwargs["enable_async_decode"] is False
+    assert scheduler_kwargs["prefill_coalesce_requests"] == 0
+    assert scheduler_kwargs["request_build_max_workers"] == 1
+
+
+def test_moss_transcribe_diarize_mlx_context_override_sizes_mlx_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    monkeypatch.setattr(
+        "sglang_omni.models.moss_transcribe_diarize.engine_builder.current_platform.is_mps",
+        lambda: True,
+    )
+    builder = _make_moss_engine_builder()
+    builder.context_length = 131072
+    overrides = {
+        **builder.generation_defaults(dtype="bfloat16"),
+        "context_length": 8192,
+    }
+
+    builder.adjust_overrides(overrides)
+
+    assert "context_length" not in overrides
+    assert builder.context_length == 8192
+    assert overrides["max_total_tokens"] == 8192
+    assert overrides["max_prefill_tokens"] == 8192
+
+
+def test_moss_transcribe_diarize_torch_mps_uses_bounded_apple_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+    monkeypatch.setattr(
+        "sglang_omni.models.moss_transcribe_diarize.engine_builder.current_platform.is_mps",
+        lambda: True,
+    )
+    builder = _make_moss_engine_builder()
+    builder.device = "mps"
+    builder.context_length = 131072
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert builder.uses_torch_mps() is True
+    assert defaults["context_length"] == 32768
+    assert defaults["max_total_tokens"] == 32768
+    assert defaults["max_prefill_tokens"] == 32768
+    assert defaults["max_running_requests"] == 1
+    assert defaults["disable_radix_cache"] is True
+    assert defaults["chunked_prefill_size"] == -1
+
+
+def test_moss_transcribe_diarize_mlx_uses_scheduler_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    from sglang_omni.model_runner import mlx_model_worker
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    selected = object()
+    monkeypatch.setattr(
+        mlx_model_worker,
+        "MlxSchedulerModelRunner",
+        lambda worker, output: selected,
+    )
+
+    actual = _make_moss_engine_builder().make_model_runner(object(), object())
+
+    assert actual is selected
+
+
+def test_moss_transcribe_diarize_torch_mps_installs_runner_and_hf_decoder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    from sglang_omni.models.moss_transcribe_diarize import torch_mps_runner
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+    builder = _make_moss_engine_builder()
+    builder.device = "mps"
+    selected = SimpleNamespace(abort_request=object())
+    monkeypatch.setattr(
+        torch_mps_runner,
+        "MossTranscribeDiarizeTorchMpsModelRunner",
+        lambda worker, output: selected,
+    )
+    installed: list[tuple[object, str]] = []
+    monkeypatch.setattr(
+        torch_mps_runner,
+        "install_torch_mps_language_model",
+        lambda model, path: installed.append((model, path)),
+    )
+    model = object()
+
+    actual = builder.make_model_runner(object(), object())
+    builder.setup_model(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace(model=model)),
+        checkpoint_dir="/checkpoint",
+        device="mps",
+        gpu_id=0,
+        server_args=SimpleNamespace(),
+    )
+
+    assert actual is selected
+    assert installed == [(model, "/checkpoint")]
+    assert builder.make_abort_callback() is selected.abort_request
+
+
+def test_moss_transcribe_diarize_mlx_rejects_multi_request_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    from sglang_omni import platforms
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    monkeypatch.setattr(platforms.current_platform, "is_mps", lambda: True)
+    server_args = SimpleNamespace(
+        max_running_requests=2,
+        disable_radix_cache=True,
+        chunked_prefill_size=-1,
+        mlx_enable_sampling=False,
+        quantization=None,
+    )
+
+    with pytest.raises(ValueError, match="max_running_requests=1"):
+        _make_moss_engine_builder().validate_before_infrastructure(server_args)
+
+
+def test_moss_transcribe_diarize_mlx_skips_cuda_encoder_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang.srt.hardware_backend.mlx import runtime as mlx_runtime
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: True)
+    builder = _make_moss_engine_builder()
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    model = SimpleNamespace(
+        compile_encoder=lambda *_args: pytest.fail("compiled MLX encoder as Torch"),
+        init_encoder_graphs=lambda *_args: pytest.fail("captured CUDA graph on MLX"),
+        init_encoder_cache=lambda *_args: pytest.fail("created Torch encoder cache"),
+    )
+
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(),
+        generation_cuda_graph_enabled=True,
+    )
+    builder.setup_runtime_resources(model, SimpleNamespace())
+
+    assert builder.audio_encoder_service is None
 
 
 def test_moss_transcribe_diarize_compile_cap_survives_batch_overrides() -> None:
@@ -399,7 +609,9 @@ def test_factory_compiles_encoder_and_skips_cuda_graph_when_flag_on(
     calls = _stub_factory_env(monkeypatch, want_cuda_graph=True)
 
     create_sglang_moss_transcribe_diarize_executor(
-        "OpenMOSS-Team/MOSS-Transcribe-Diarize", encoder_torch_compile=True
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        device="cpu",
+        encoder_torch_compile=True,
     )
 
     assert len(calls["compile_encoder"]) == 1
@@ -465,6 +677,7 @@ def test_factory_context_length_override_uses_final_server_value(
 
     create_sglang_moss_transcribe_diarize_executor(
         "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        device="cpu",
         server_args_overrides={"context_length": 8192},
     )
 
@@ -485,8 +698,7 @@ def test_processor_compat_ignores_missing_additional_chat_templates(
 
     def missing_templates(*_args: object, **_kwargs: object) -> list[str]:
         raise _repo_not_found(
-            "https://huggingface.co/api/models/repo/tree/main/"
-            "additional_chat_templates"
+            "https://huggingface.co/api/models/repo/tree/main/additional_chat_templates"
         )
 
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_templates)
