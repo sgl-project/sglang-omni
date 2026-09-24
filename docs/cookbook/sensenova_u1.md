@@ -126,5 +126,6 @@ does not prove that model execution was batched.
 - Dynamic batching defaults to off (`max_batch_size=1`).
 - Quantization, CPU offload, compact mode, and thinking/SRT KV transfer are not
   exposed by the Omni stage.
-- Ascend I2I correctness, image quality, memory, kernel-hit, and performance
-  numbers still require real-hardware validation.
+- Ascend I2I basic functionality and memory behavior have been validated on
+  real hardware. Kernel-hit profiling and broader image-quality and performance
+  characterization remain pending.
