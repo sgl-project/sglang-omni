@@ -194,7 +194,15 @@ class Qwen3TTSPreprocessingContext:
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
 _PREPARED_REQUESTS: dict[str, Qwen3TTSPreparedRequest] = {}
 _ADHOC_REFERENCE_SERVICE_ENTRY: (
-    tuple[tuple[int, int], ReferenceEncodeService] | None
+    tuple[
+        tuple[int, int],
+        ReferenceEncodeService[
+            _Qwen3TTSAdhocReferenceInput,
+            tuple[VoicePrompt | dict[str, list[object]], str | None],
+            CachedVoicePrompt,
+        ],
+    ]
+    | None
 ) = None
 _PREPARED_REQUESTS_LOCK = threading.Lock()
 
@@ -770,7 +778,7 @@ def _cacheable_qwen3_tts_tensor(value: torch.Tensor) -> torch.Tensor:
 
 def _qwen3_tts_voice_prompt_from_cache(
     artifact: dict[str, Any] | CachedVoicePrompt,
-) -> tuple[dict[str, Any], str | None] | None:
+) -> tuple[dict[str, list[object]], str | None] | None:
     if artifact.get("artifact_type") != "qwen3_tts_voice_clone_prompt":
         return None
     prompt: dict[str, list[object]] = {
@@ -965,7 +973,7 @@ class _Qwen3TTSRefCodeBatcher:
 class _Qwen3TTSAdhocReferenceHook(
     KeyedReferenceEncodeHook[
         _Qwen3TTSAdhocReferenceInput,
-        tuple[dict[str, Any] | VoicePrompt, str | None],
+        tuple[VoicePrompt | dict[str, list[object]], str | None],
         CachedVoicePrompt,
     ]
 ):
@@ -1061,7 +1069,7 @@ class _Qwen3TTSAdhocReferenceHook(
         return voice_clone_prompt, item.ref_text
 
     def store_artifact(
-        self, artifact: tuple[dict[str, Any] | VoicePrompt, str | None]
+        self, artifact: tuple[VoicePrompt | dict[str, list[object]], str | None]
     ) -> CachedVoicePrompt:
         voice_clone_prompt, ref_text = artifact
         return _cacheable_qwen3_tts_voice_prompt(
@@ -1071,7 +1079,7 @@ class _Qwen3TTSAdhocReferenceHook(
 
     def load_artifact(
         self, stored: dict[str, Any] | CachedVoicePrompt
-    ) -> tuple[dict[str, Any], str | None]:
+    ) -> tuple[dict[str, list[object]], str | None]:
         cached_prompt = _qwen3_tts_voice_prompt_from_cache(stored)
         if cached_prompt is None:
             raise RuntimeError("Qwen3-TTS ad-hoc reference cache entry is invalid")
@@ -1126,7 +1134,11 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
     graph_bucket_frames: Sequence[int] = (
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
-) -> ReferenceEncodeService:
+) -> ReferenceEncodeService[
+    _Qwen3TTSAdhocReferenceInput,
+    tuple[VoicePrompt | dict[str, list[object]], str | None],
+    CachedVoicePrompt,
+]:
     global _ADHOC_REFERENCE_SERVICE_ENTRY
     owner = (id(model), id(wrapper))
     entry = _ADHOC_REFERENCE_SERVICE_ENTRY
@@ -1152,7 +1164,11 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
 def _get_qwen3_tts_adhoc_reference_service(
     model: PromptModel,
     wrapper: Qwen3TTSModel,
-) -> ReferenceEncodeService:
+) -> ReferenceEncodeService[
+    _Qwen3TTSAdhocReferenceInput,
+    tuple[VoicePrompt | dict[str, list[object]], str | None],
+    CachedVoicePrompt,
+]:
     with _PREPARED_REQUESTS_LOCK:
         return _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
 

@@ -8,7 +8,7 @@ import logging
 import math
 import os
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, Tuple, TypeAlias
 
@@ -478,7 +478,7 @@ class Qwen3TTSPromptBuilderMixin:
         return self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
 
     @torch.inference_mode()
-    def generate_speaker_prompt(self, voice_clone_prompt: dict[str, Any]):
+    def generate_speaker_prompt(self, voice_clone_prompt: Mapping[str, Any]):
         return [
             emb.to(self.device).to(self.dtype)
             for emb in voice_clone_prompt["ref_spk_embedding"]
@@ -639,7 +639,7 @@ class Qwen3TTSPromptBuilderMixin:
         *,
         input_id: torch.Tensor,
         ref_id: torch.Tensor | None,
-        voice_clone_prompt: dict[str, Any],
+        voice_clone_prompt: Mapping[str, Any],
         language: str,
         non_streaming_mode: bool,
         instruct_id: torch.Tensor | None = None,
