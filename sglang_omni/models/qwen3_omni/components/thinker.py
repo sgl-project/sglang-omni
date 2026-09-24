@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -238,7 +238,7 @@ class Qwen3OmniSplitThinker(nn.Module):
         image_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         video_embeds: torch.Tensor | list[torch.Tensor] | None = None,
         audio_embeds: torch.Tensor | list[torch.Tensor] | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ):
         image_embeds_t = _concat_features(image_embeds)
         video_embeds_t = _concat_features(video_embeds)

@@ -8,8 +8,9 @@ This module mirrors HF's talker prefill layout, then keeps HF's
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 from safetensors import safe_open
@@ -134,7 +135,9 @@ class TalkerPromptPrefill(TypedDict):
     prompt_model_inputs: dict[str, object]
 
 
-def resolve_speaker_id(params: dict[str, Any], speaker_map: dict[str, int]) -> int:
+def resolve_speaker_id(
+    params: Mapping[str, object], speaker_map: dict[str, int]
+) -> int:
     speaker_name = str(params.get("speaker", "Ethan")).lower()
     if speaker_name in speaker_map:
         return speaker_map[speaker_name]

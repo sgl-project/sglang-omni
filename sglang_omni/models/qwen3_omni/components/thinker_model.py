@@ -1,7 +1,8 @@
 import logging
 import math
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Mapping
+from typing import Iterable, List, Optional, Tuple
 
 import torch
 from sglang.srt.runtime_context import get_parallel, get_stream
@@ -151,7 +152,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         num_kv_heads: int,
         layer_id: int = 0,
         rope_theta: float = 10000,
-        rope_scaling: Optional[Dict[str, Any]] = None,
+        rope_scaling: Optional[Mapping[str, object]] = None,
         max_position_embeddings: int = 8192,
         head_dim: Optional[int] = None,
         rms_norm_eps: float = 1e-06,
@@ -159,7 +160,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         config: Optional[PretrainedConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        dual_chunk_attention_config: Optional[dict[str, Any]] = None,
+        dual_chunk_attention_config: Optional[Mapping[str, object]] = None,
         alt_stream: Optional[torch.Stream] = None,
     ) -> None:
         super().__init__()

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -116,7 +115,7 @@ class MingImageEncoder(nn.Module):
 
     @staticmethod
     def _vision_dict(
-        vision_cfg: Any,
+        vision_cfg: object,
     ) -> dict:
         """Convert VisionConfig dataclass to plain dict for PretrainedConfig."""
         if hasattr(vision_cfg, "__dataclass_fields__"):

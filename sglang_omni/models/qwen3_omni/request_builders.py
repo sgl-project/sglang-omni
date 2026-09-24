@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, overload
+from typing import TYPE_CHECKING, TypedDict, TypeVar, overload
 
 import torch
 import xxhash
@@ -66,7 +66,7 @@ class TalkerSamplingConfig(OptionalTalkerSamplingConfig):
     suppress_tokens: list[int]
 
 
-def _resolve_seed(params: dict[str, Any]) -> int | None:
+def _resolve_seed(params: Mapping[str, object]) -> int | None:
     """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
     for key in ("seed", "sampling_seed"):
         value = params.get(key)
@@ -215,7 +215,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
 class EncoderRequestData:
     """Typed encoder request data for pre-thinker stages."""
 
-    model_inputs: dict[str, Any]
+    model_inputs: dict[str, object]
     cache_key: str | None = None
     skip_result: dict[str, object] | None = None
 
@@ -553,7 +553,7 @@ def build_thinker_request(
 
 def _compute_mrope_positions(
     input_ids: torch.Tensor,
-    model_inputs: dict[str, Any],
+    model_inputs: Mapping[str, object],
     thinker_config: Qwen3OmniMoeThinkerConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute M-RoPE positions for multimodal inputs."""
@@ -588,7 +588,7 @@ def _compute_mrope_positions(
     if isinstance(audio_feature_lengths, torch.Tensor):
         audio_feature_lengths = audio_feature_lengths.cpu()
 
-    kwargs: dict[str, Any] = {
+    kwargs: dict[str, object] = {
         "audio_token_id": audio_token_id,
         "audio_start_token_id": audio_start_token_id,
         "position_id_per_seconds": position_id_per_seconds,
@@ -615,7 +615,7 @@ def _compute_mrope_positions(
 def build_sglang_thinker_request(
     state: Qwen3OmniPipelineState,
     *,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     tokenizer: "PreTrainedTokenizerBase | TiktokenTokenizer | None",
     vocab_size: int,
     request_id: str | None = None,
@@ -1125,7 +1125,7 @@ def make_talker_scheduler_adapters(
     )
 
     def _resolve_talker_sampling_config(
-        params: dict[str, Any],
+        params: Mapping[str, object],
     ) -> TalkerSamplingConfig:
         codec_eos_id = int(getattr(model.config, "codec_eos_token_id", -1))
         suppress_tokens = [
@@ -1185,7 +1185,7 @@ def _build_talker_request_data(
     image_token_id: int | None,
     video_token_id: int | None,
     thinker_config: Qwen3OmniMoeThinkerConfig | None,
-    resolve_sampling_config: Callable[[dict[str, Any]], TalkerSamplingConfig],
+    resolve_sampling_config: Callable[[dict[str, object]], TalkerSamplingConfig],
 ) -> SGLangARRequestData:
     params = payload.request.params
     sampling_cfg = resolve_sampling_config(params)

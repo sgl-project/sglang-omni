@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import numpy as np
 import torch
@@ -298,7 +298,7 @@ class MingPreprocessor:
         return self._video_processor
 
     def _process_images(
-        self, images: list[Any]
+        self, images: list[object]
     ) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
         """Process PIL images into pixel_values, grid_thw, and token counts.
 
@@ -486,7 +486,7 @@ class MingPreprocessor:
         )
 
         # Gather all loads concurrently
-        all_tasks: list[Awaitable[Any]] = []
+        all_tasks: list[Awaitable[object]] = []
         if image_coro is not None:
             all_tasks.append(image_coro)
         if video_coro is not None:

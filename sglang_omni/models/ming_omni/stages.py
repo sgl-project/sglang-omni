@@ -7,7 +7,8 @@ Ming's config remains usable in lightweight environments.
 
 from __future__ import annotations
 
-from typing import Any, TypeVar, overload
+from collections.abc import Mapping
+from typing import TypeVar, overload
 
 from sglang_omni.models.ming_omni.io import MingOmniPipelineState
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
@@ -122,7 +123,7 @@ def _project_encoder_input_metadata(
     return projected
 
 
-def _project_prompt_for_usage(prompt: object) -> dict[str, Any] | None:
+def _project_prompt_for_usage(prompt: object) -> dict[str, object] | None:
     if not isinstance(prompt, dict):
         return None
     input_ids = prompt.get("input_ids")
@@ -131,7 +132,7 @@ def _project_prompt_for_usage(prompt: object) -> dict[str, Any] | None:
     return {"input_ids": _copy_mutable_containers(input_ids)}
 
 
-def _slim_thinker_out(thinker_out: object) -> dict[str, Any] | None:
+def _slim_thinker_out(thinker_out: object) -> dict[str, object] | None:
     if not isinstance(thinker_out, dict):
         return None
 
@@ -308,7 +309,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     thinker_max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     enable_streaming_tts: bool = False,
 ):
     validate_stage_tp_support(stage_name="thinker", tp_size=tp_size)

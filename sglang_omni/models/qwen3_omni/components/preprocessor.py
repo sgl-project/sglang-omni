@@ -9,7 +9,7 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, TypedDict, TypeGuard
 
 import torch
 import xxhash
@@ -334,7 +334,7 @@ class Qwen3OmniPreprocessor:
         attention_mask: "torch.Tensor",
         prompt_text: str,
         full_mm_inputs: Mapping[str, Mapping[str, object]],
-        encoder_inputs: dict[str, dict[str, Any]],
+        encoder_inputs: dict[str, dict[str, object]],
     ) -> StagePayload:
         """Assemble the thinker-ready pipeline state (single source of shape)."""
         state = Qwen3OmniPipelineState(
@@ -359,7 +359,7 @@ class Qwen3OmniPreprocessor:
         self,
         payload: StagePayload,
         token_ids: list[int],
-        bundle: dict[str, Any] | None = None,
+        bundle: Mapping[str, object] | None = None,
     ) -> StagePayload:
         """Use Miles' exact token ids and optional processor tensors."""
         flat_inputs: dict[str, torch.Tensor] = {}

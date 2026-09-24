@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -65,7 +65,7 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
 
 def build_thinker_inputs(
     state: Qwen3OmniPipelineState,
-    encoder_outs: dict[str, Any],
+    encoder_outs: Mapping[str, Mapping[str, object]],
 ) -> dict[str, Mapping[str, object]]:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {})
@@ -173,7 +173,7 @@ def build_thinker_inputs(
 
 def _prune_preprocessing_for_thinker(
     state: Qwen3OmniPipelineState,
-    encoder_outs: dict[str, Any],
+    encoder_outs: Mapping[str, Mapping[str, object]],
 ) -> None:
     mm_inputs = state.mm_inputs
     mm_image = mm_inputs.get("image", {})

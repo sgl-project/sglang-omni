@@ -12,7 +12,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 import torch.nn.functional as F
@@ -125,7 +125,7 @@ def _apply_qwen_thinker_encoder_reserve(
 
 
 def _apply_colocated_ar_memory_contract(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     stage_name: str,
     total_gpu_memory_fraction: float | None,
