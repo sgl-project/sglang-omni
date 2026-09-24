@@ -88,6 +88,61 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Intel XPU
+
+Install `sglang-omni` from source as in [XPU Installation](../get_started/installation_xpu.md). The extra lives in `pyproject_xpu.toml`, so ask the XPU installer for it rather than running `pip install -e ".[fun-cosyvoice3]"`, which would resolve the CUDA project file and pull that file's CUDA-only dependencies:
+
+```bash
+scripts/xpu/install_xpu.sh --extras fun-cosyvoice3
+python -m pip install --no-deps openai-whisper==20250625
+```
+
+`openai-whisper` is required — the speech tokenizer takes its log-mel front end — but it is not in the extra and has to be installed with `--no-deps`. It declares `triton>=2`, and on XPU that module comes from `triton-xpu`, a different distribution name that pip cannot match against the requirement; a plain install therefore writes PyPI `triton` over the XPU one. Its other dependencies are already core deps. Check afterwards that the XPU build survived:
+
+```bash
+python -c "import triton, whisper; print(triton.__version__)"   # expect a +xpu-capable 3.7.x
+```
+
+The CosyVoice and Matcha-TTS checkouts and the two `PYTHONPATH` entries are the same as above. `sox` is not needed: it belongs to a different model's preprocessing.
+
+Pin the server to one card, and cap the engine's static memory so the KV pool leaves room for the decode activations:
+
+```bash
+export ZE_AFFINITY_MASK=0
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts_engine.engine.mem_fraction_static 0.4 \
+  --tts_engine.engine.disable_cuda_graph true \
+  --vocoder.factory.enable_flow_cuda_graph false \
+  --port 8000
+```
+
+Both graph flags are explained below: the AR engine's decode graphs cannot capture on XPU yet, and the Flow decoder's graphs do capture but measure slower than eager here.
+
+`--tts_engine.engine.mem_fraction_static` matters on a 24 GiB card. The default sizing gives the KV pool 1.5 M tokens (17.8 GB) and leaves 3.3 GB, which the first request exhausts:
+
+```
+RuntimeError: level_zero backend failed with error: 40 (UR_RESULT_ERROR_OUT_OF_RESOURCES)
+```
+
+`0.4` leaves 690 k KV tokens and 13 GB of headroom, which is far more than this model's context needs.
+
+The Flow decoder's graphs are a separate mechanism from the AR engine's, they are on by default, and they do record on XPU. Drop the `enable_flow_cuda_graph` flag from the command above and startup logs the shapes it captured, which for the default set takes about three minutes:
+
+```
+Captured 55 Fun-CosyVoice3 Flow graphs on xpu:0 (batch x mel_frame: 15x624, 16x576, ...)
+```
+
+A graph is replayed only when a request's batch size and its mel frame count rounded up to the next multiple of 16 both match a captured shape; anything else falls back to the eager solve. The default shapes cover batches 1-16 at 416-640 mel frames. Mel runs at 50 frames per second here (`token_frame_rate` 25 times `token_mel_ratio` 2), so that band is about 8.3-12.8 s of audio per request, and utterances on either side of it miss every shape.
+
+**On XPU the graphs are measurably not worth their cost, so pass `--vocoder.factory.enable_flow_cuda_graph false`.** Capture has to pin SDPA to a kernel XPU can record, and the recorded graph keeps that kernel for every replay. Measured on one Intel Arc Pro B60 for a batch-1 464-frame solve: eager with free dispatch 318 ms, eager pinned to the recordable kernel 426 ms, graph replay 411 ms. Replay is faster than the kernel it records (1.04x) but 29% slower than the kernel eager would have chosen, so the substitution costs more than replay saves. The graphs are correct — replay is bit-exact against eager under the same pin — they are just slower here, and capture additionally costs about three minutes of startup and roughly 6.5 GB of device memory for the 55 default shapes. On a card where the recordable kernel is also the fastest kernel, the trade goes the other way.
+
+`--tts_engine.engine.disable_cuda_graph true` is required for now: the AR engine's own decode-graph capture fails on XPU inside SGLang's graph runner, before this model's code is reached.
+
+```
+Exception: Capture cuda graph failed: Inplace update to inference tensor outside
+InferenceMode is not allowed.
+```
 
 ## Synthesizing Speech
 

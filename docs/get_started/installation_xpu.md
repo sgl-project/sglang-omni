@@ -13,8 +13,11 @@ family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
 Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
-`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
-(S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
+`[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
+that model's CosyVoice dependencies — see the
+[Fun-CosyVoice3 cookbook](../cookbook/fun_cosyvoice3.md#intel-xpu), which also
+needs two `PYTHONPATH` entries. Other model families (S2-Pro, Ming-Omni,
+Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
 > `egg-info` instead of a PEP 660 editable install. The installer always passes it.
