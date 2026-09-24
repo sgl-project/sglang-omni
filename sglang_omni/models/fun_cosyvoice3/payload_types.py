@@ -37,4 +37,4 @@ class FunCosyVoice3State(DeclarativeStateBase):
         None, codec="tensor_list"
     )
     audio_codes: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
-    audio_samples: Any | None = wire(None, codec="tensor_list")
+    audio_samples: object = wire(None, codec="tensor_list")

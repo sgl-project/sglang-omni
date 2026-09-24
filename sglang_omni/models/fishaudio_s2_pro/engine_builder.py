@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.fishaudio_s2_pro import request_builders
 from sglang_omni.models.fishaudio_s2_pro import stages as fish_stages
@@ -122,7 +122,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
             "random_seed": int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
         }
 
-    def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
         fast_ar_backend = _resolve_fast_ar_attention_backend(gpu_id=self.gpu_id)
         if overrides.get("attention_backend") is None:
             overrides["attention_backend"] = fast_ar_backend

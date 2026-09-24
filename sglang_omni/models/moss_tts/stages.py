@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import torch
 from transformers import AutoConfig, AutoTokenizer
@@ -100,7 +100,7 @@ def _normalize_moss_processor_config(
 
 
 def _audio_tokenizer_model_path_from_processor_dict(
-    processor_dict: dict[str, Any],
+    processor_dict: Mapping[str, object],
 ) -> str | None:
     model_path = processor_dict.get("audio_tokenizer_name_or_path")
     audio_tokenizer_dict = processor_dict.get("audio_tokenizer")
