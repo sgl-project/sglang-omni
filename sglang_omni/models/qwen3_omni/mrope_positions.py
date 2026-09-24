@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -33,7 +34,7 @@ def linear_mrope_positions(
 
 def talker_can_use_linear_mrope(
     input_ids: torch.Tensor,
-    model_inputs: dict[str, Any],
+    model_inputs: Mapping[str, object],
     thinker_config: "PretrainedConfig",
 ) -> bool:
     """True when linear arange+delta0 matches full mm MRoPE."""

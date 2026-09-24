@@ -26,7 +26,7 @@ def build_ming_sampling_kwargs(params: dict[str, ValueT]) -> dict[str, Any]:
 
 
 def build_ming_sampling_params(
-    params: dict[str, Any],
+    params: dict[str, ValueT],
     *,
     tokenizer: "PreTrainedTokenizerBase",
     vocab_size: int,

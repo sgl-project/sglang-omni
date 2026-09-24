@@ -89,7 +89,7 @@ def _explicit_prefill_cap(overrides: Mapping[str, Any]) -> int | None:
     return cap
 
 
-def nested_prefill_overrides(overrides: Mapping[str, object]) -> Mapping[str, Any]:
+def nested_prefill_overrides(overrides: Mapping[str, object]) -> Mapping[str, object]:
     """Extract the prefill section of a nested cuda_graph_config override."""
     config = overrides.get("cuda_graph_config")
     if isinstance(config, CudaGraphConfig):
