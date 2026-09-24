@@ -62,21 +62,22 @@ runners.
 
 ## Naming and lint checks
 
-Use public names for classes, functions, and methods defined in `sglang_omni/`.
-The leading-underscore lint hook checks these definitions in every Python file
-under that directory, including new model packages. It ignores vendor copies,
-dunder names such as `__init__`, a lone `_`, and definitions inside functions.
-It does not check every underscore in variables or attribute references.
+Use public names for classes, functions, methods, and attributes defined in
+`sglang_omni/`. The leading-underscore lint hook checks every Python file under
+that directory, including new model packages. It flags class and function
+definitions, every attribute read or write, and string names passed to
+`getattr`. It ignores vendor copies, dunder names such as `__init__`, a lone
+`_`, and definitions inside functions.
 
-Keep third-party API names exactly as the dependency provides them. For example,
-this Transformers reference needs no lint exemption:
+A name inherited from an upstream object still fails the check. Keep that
+spelling, and mark the line:
 
 ```python
-hf_modeling._get_feat_extract_output_lengths(lengths)
+session_request._omni_prompt_cache_key = adapter_request._omni_prompt_cache_key  # noqa: leading-underscore
 ```
 
-When a local definition must preserve a name required by an external interface,
-put `# noqa: leading-underscore` on its `def` or `class` line and explain why:
+When a local definition must keep a name because an external interface
+requires it, put `# noqa: leading-underscore` on that line and explain why:
 
 ```python
 class ExternalAdapter(ExternalBase):
