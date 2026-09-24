@@ -33,7 +33,7 @@ def build_encoder_request(
     state: LLaDA2UniPipelineState,
     *,
     stage_name: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Build encoder request dict from pipeline state."""
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:

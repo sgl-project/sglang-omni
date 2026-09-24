@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
+
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk
 from sglang_omni.models.ming_omni.bootstrap import (
@@ -169,6 +171,6 @@ def test_client_result_builder_merges_decode_with_talker_stream():
     chunk: GenerateChunk = Client._default_result_builder("req-x", merged)
     assert chunk.text == "Hello world."
     assert chunk.modality == "audio"
-    assert chunk.audio_data is not None
+    assert isinstance(chunk.audio_data, np.ndarray)
     assert int(chunk.audio_data.shape[0]) == 8
     assert chunk.sample_rate == 44100

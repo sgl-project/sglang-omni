@@ -151,7 +151,7 @@ class GenerateChunk:
     stage_name: str | None = None
     modality: str = "text"
     language: str | None = None
-    audio_data: Any = None
+    audio_data: object = None
     sample_rate: int | None = None
 
     def to_dict(self) -> dict[str, object]:

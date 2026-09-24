@@ -32,9 +32,9 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import uvicorn
 from fastapi import APIRouter, HTTPException
@@ -55,9 +55,18 @@ from sglang_omni.utils.gpu_memory import (
     get_gpu_device_info,
 )
 
+if TYPE_CHECKING:
+    from sglang_omni.client.types import GenerateChunk
+    from sglang_omni.proto import StreamMessage
+
 logger = logging.getLogger(__name__)
 
 _HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
+class ClientOptions(TypedDict, total=False):
+    result_builder: Callable[[str, object], GenerateChunk] | None
+    stream_builder: Callable[[str, StreamMessage], GenerateChunk] | None
 
 
 class StageRuntimeLog(TypedDict):
@@ -429,7 +438,7 @@ async def _run_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    client_kwargs: dict[str, Any] | None = None,
+    client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
@@ -568,7 +577,7 @@ def launch_server(
     port: int = 8000,
     model_name: str | None = None,
     log_level: str = "info",
-    client_kwargs: dict[str, Any] | None = None,
+    client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,

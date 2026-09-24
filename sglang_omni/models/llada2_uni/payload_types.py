@@ -20,10 +20,10 @@ class LLaDA2UniPipelineState:
     """Typed view of the per-request pipeline state."""
 
     prompt: dict[str, Any] | None = None
-    encoder_inputs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    encoder_inputs: dict[str, object] = field(default_factory=dict)
     encoder_outs: dict[str, Any] = field(default_factory=dict)
     thinker_out: ThinkerOutput | None = None
-    engine_outputs: dict[str, Any] = field(default_factory=dict)
+    engine_outputs: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: object) -> "LLaDA2UniPipelineState":
@@ -62,5 +62,5 @@ class LLaDA2UniEvent:
 
     type: str
     modality: str
-    payload: dict[str, Any]
+    payload: dict[str, object]
     is_final: bool = False

@@ -7,7 +7,6 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
 import torch
 from PIL import Image
@@ -214,7 +213,7 @@ class LLaDA2Preprocessor:
 
         images = await ensure_image_list_async(raw_images) if raw_images else []
 
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        encoder_inputs: dict[str, object] = {}
         image_token_counts: list[int] = []
         image_parts_by_msg: dict[int, list[str]] = {}
 
