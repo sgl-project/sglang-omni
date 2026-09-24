@@ -34,7 +34,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import uvicorn
 from fastapi import APIRouter, HTTPException
@@ -298,7 +298,7 @@ def _log_model_capabilities(pipeline_config: PipelineConfig) -> None:
 class StartReq(BaseModel):
     run_id: str | None = None
     trace_path_template: str | None = None
-    config: dict[str, Any] | None = None
+    config: dict[str, object] | None = None
     event_dir: str | None = None
     enable_torch: bool = True
 

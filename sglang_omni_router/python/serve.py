@@ -10,7 +10,7 @@ import logging.config
 import os
 import shlex
 from collections.abc import Sequence
-from typing import Any, get_args
+from typing import get_args
 
 import uvicorn
 from pydantic import ValidationError
@@ -98,7 +98,7 @@ def normalize_log_level(log_level: str) -> str:
     return normalized_level
 
 
-def build_log_config(log_level: str) -> dict[str, Any]:
+def build_log_config(log_level: str) -> dict[str, object]:
     normalized_level = normalize_log_level(log_level)
     log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
     log_config["loggers"]["sglang_omni_router.python"] = {

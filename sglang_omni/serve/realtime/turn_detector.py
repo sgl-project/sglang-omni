@@ -19,7 +19,7 @@ class TurnDetector(Protocol):
 @dataclass(frozen=True)
 class TurnDetectorBuild:
     detector: TurnDetector
-    effective_config: dict[str, Any]
+    effective_config: dict[str, object]
 
 
 def build_turn_detector(

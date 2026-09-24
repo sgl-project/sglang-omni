@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Any, TypedDict, TypeVar
+from typing import TypedDict, TypeVar
 from urllib.parse import quote, unquote
 
 import httpx
@@ -352,14 +352,14 @@ def register_admin_routes(
         )
         if worker_url is None:
             return _error_response(400, "worker url is required")
-        worker_config_kwargs: dict[str, Any] = {
+        worker_config_kwargs: dict[str, object] = {
             "url": worker_url,
             "model": payload.get("model"),
         }
         if "capabilities" in payload:
             worker_config_kwargs["capabilities"] = payload["capabilities"]
         try:
-            worker_config = WorkerConfig(**worker_config_kwargs)
+            worker_config = WorkerConfig.model_validate(worker_config_kwargs)
         except ValidationError as exc:
             return _error_response(400, str(exc))
         # Note (Jiaxin Deng): probe the staged worker BEFORE taking the registry

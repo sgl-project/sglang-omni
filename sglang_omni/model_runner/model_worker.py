@@ -382,7 +382,7 @@ class ModelWorker:
             },
         }
 
-    def model_info(self) -> dict[str, Any]:
+    def model_info(self) -> dict[str, object]:
         from sglang.srt.runtime_context import get_model, get_parallel, get_serving
 
         return {

@@ -76,7 +76,7 @@ class DecodeContinuation:
     output_ids: list[int]
     vocab_size: int
     sampling_params: dict[str, Any]
-    stage_payload: dict[str, Any]
+    stage_payload: dict[str, object]
     origin_input_ids_unpadded: list[int] | None = None
     eos_token_ids: list[int] | None = None
     cached_tokens: int = 0
@@ -97,7 +97,7 @@ class DecodeContinuation:
     return_sampling_mask: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
-    multimodal_resume: dict[str, Any] | None = None
+    multimodal_resume: dict[str, object] | None = None
     version: int = CONTINUATION_VERSION
 
     def __post_init__(self) -> None:
