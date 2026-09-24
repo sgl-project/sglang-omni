@@ -76,7 +76,7 @@ RUN pip install --no-cache-dir --extra-index-url ${TORCH_XPU_INDEX} \
         torch==2.13.0+xpu \
         torchvision==0.28.0+xpu \
         torchaudio==2.11.0+xpu \
-        torchcodec==0.15.0
+        torchcodec==0.13.0
 
 # SGLang's XPU manifest pins the SYCL kernel wheel itself. An isolated build would
 # download torch again and compile Rust extensions this image never loads, so it

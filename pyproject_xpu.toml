@@ -38,7 +38,7 @@ dependencies = [
     "torch==2.13.0+xpu",
     "torchvision==0.28.0+xpu",
     "torchaudio==2.11.0+xpu",
-    "torchcodec==0.15.0",
+    "torchcodec==0.13.0",
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
