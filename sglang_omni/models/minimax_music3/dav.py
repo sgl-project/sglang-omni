@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from types import MethodType
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import torch
 from torch import Tensor, nn
@@ -30,14 +30,6 @@ class Snake1d(nn.Module):
         return snake(x, self.alpha)
 
 
-def _wn_conv(*args: Any, **kwargs: Any) -> nn.Conv1d:
-    return nn.utils.weight_norm(nn.Conv1d(*args, **kwargs))
-
-
-def _wn_conv_transpose(*args: Any, **kwargs: Any) -> nn.ConvTranspose1d:
-    return nn.utils.weight_norm(nn.ConvTranspose1d(*args, **kwargs))
-
-
 def remove_weight_norm(module: nn.Module) -> int:
     """Fold fixed inference weight normalization into convolution weights."""
     removed = 0
@@ -56,9 +48,11 @@ class ResidualUnit(nn.Module):
         pad = (7 - 1) * dilation // 2
         self.block = nn.Sequential(
             Snake1d(dim),
-            _wn_conv(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
+            nn.utils.weight_norm(
+                nn.Conv1d(dim, dim, kernel_size=7, dilation=dilation, padding=pad)
+            ),
             Snake1d(dim),
-            _wn_conv(dim, dim, kernel_size=1),
+            nn.utils.weight_norm(nn.Conv1d(dim, dim, kernel_size=1)),
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -74,12 +68,14 @@ class DecoderBlock(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             Snake1d(input_dim),
-            _wn_conv_transpose(
-                input_dim,
-                output_dim,
-                kernel_size=2 * stride,
-                stride=stride,
-                padding=math.ceil(stride / 2),
+            nn.utils.weight_norm(
+                nn.ConvTranspose1d(
+                    input_dim,
+                    output_dim,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=math.ceil(stride / 2),
+                )
             ),
             ResidualUnit(output_dim, 1),
             ResidualUnit(output_dim, 3),
@@ -93,7 +89,9 @@ class DecoderBlock(nn.Module):
 class Decoder(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        layers: list[nn.Module] = [_wn_conv(1024, 1536, kernel_size=7, padding=3)]
+        layers: list[nn.Module] = [
+            nn.utils.weight_norm(nn.Conv1d(1024, 1536, kernel_size=7, padding=3))
+        ]
         rates = (8, 8, 4, 2)
         channels = 1536
         output_dim = channels
@@ -104,7 +102,9 @@ class Decoder(nn.Module):
         layers.extend(
             (
                 Snake1d(output_dim),
-                _wn_conv(output_dim, 1, kernel_size=7, padding=3),
+                nn.utils.weight_norm(
+                    nn.Conv1d(output_dim, 1, kernel_size=7, padding=3)
+                ),
                 nn.Tanh(),
             )
         )
