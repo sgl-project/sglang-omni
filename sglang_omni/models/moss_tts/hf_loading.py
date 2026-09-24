@@ -10,7 +10,7 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from numbers import Integral, Real
 from os import PathLike
-from typing import Any, Literal, Protocol, TypeAlias, TypeVar
+from typing import Literal, Protocol, TypeAlias, TypeVar
 
 import torch
 from sglang.srt.utils.hf_transformers import (
@@ -148,7 +148,7 @@ def _validate_context_length_metadata(text_config: object) -> bool:
 def resolve_moss_tts_context_length(
     checkpoint_dir: str,
     *,
-    server_args_overrides: Mapping[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> int:
     """Resolve MOSS-TTS text context from the runtime model settings."""
     overrides = server_args_overrides or {}

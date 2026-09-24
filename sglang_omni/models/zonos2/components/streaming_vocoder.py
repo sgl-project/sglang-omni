@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
 
 import torch
 
@@ -252,7 +252,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
         self,
         request_id: str,
         state: _Zonos2StreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:

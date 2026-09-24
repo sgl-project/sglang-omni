@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import TYPE_CHECKING, TypeVar, overload
 
 import torch
 
@@ -82,11 +82,11 @@ def _first_not_none(
     return next((value for value in values if value is not None), default)
 
 
-def _dict(value: object) -> dict[str, Any]:
+def _dict(value: object) -> dict[str, object]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _inputs(value: object) -> dict[str, Any]:
+def _inputs(value: object) -> dict[str, object]:
     if isinstance(value, str):
         return {"text": value}
     return _dict(value)

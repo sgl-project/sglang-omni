@@ -11,7 +11,7 @@ import os
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -190,7 +190,7 @@ def store_state(payload: StagePayload, state: S2ProState) -> StagePayload:
 @dataclass(frozen=True)
 class _FishReferenceInput:
     source_kind: str
-    source: Any
+    source: object
     media_type: str | None = None
 
 

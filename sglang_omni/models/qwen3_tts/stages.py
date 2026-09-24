@@ -8,7 +8,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -105,7 +105,7 @@ def _load_qwen3_tts_tokenizer(
                 f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
             )
             return tokenizer
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, str | torch.dtype] = {
             "device_map": device,
             "dtype": torch_dtype,
         }

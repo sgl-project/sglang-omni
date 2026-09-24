@@ -12,7 +12,7 @@ import queue
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 import torch
 
@@ -115,7 +115,7 @@ def _configure_pipeline_threads(worker_count: int) -> int:
 
 
 def _apply_colocated_ar_memory_budget(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     total_gpu_memory_fraction: float | None,
     codec_mem_reserve: float,

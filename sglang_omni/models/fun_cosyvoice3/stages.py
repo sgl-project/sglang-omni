@@ -10,7 +10,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
@@ -107,7 +107,7 @@ class MpsHiFTAdapter:
         self.f0_predictor.to(device="cpu")
         self.f0_predictor.to(dtype=torch.float64)
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self.hift, name)
 
     def parameters(self) -> Iterator[torch.nn.Parameter]:
@@ -765,13 +765,33 @@ class FunCosyVoice3Flow:
         # estimator, whose fixed (2, 80, T) profile keeps the padded layout.
         self.packed_estimator = packed_estimator
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattr__(self, name: str) -> object:
         return getattr(self.flow, name)
 
     def parameters(self) -> Iterator[torch.nn.Parameter]:
         return self.flow.parameters()
 
-    def to(self, *args: Any, **kwargs: Any) -> "FunCosyVoice3Flow":
+    def to(
+        self,
+        *args: str
+        | int
+        | torch.device
+        | torch.dtype
+        | torch.Tensor
+        | torch.memory_format
+        | bool
+        | None,
+        **kwargs: (
+            str
+            | int
+            | torch.device
+            | torch.dtype
+            | torch.Tensor
+            | torch.memory_format
+            | bool
+            | None
+        ),
+    ) -> "FunCosyVoice3Flow":
         self.flow.to(*args, **kwargs)
         return self
 
@@ -1866,7 +1886,7 @@ class FunCosyVoice3MlxStreamingVocoderScheduler(
         self,
         request_id: str,
         state: FunCosyVoice3MlxStreamState,
-        source: StagePayload | Mapping[str, Any],
+        source: StagePayload | Mapping[str, object],
         *,
         origin: str,
     ) -> None:

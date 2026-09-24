@@ -7,11 +7,11 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import torch
 
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_source
+from sglang_omni.utils.json import JsonValue
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
     return paths
 
 
-def load_json(path: Path) -> dict[str, Any]:
+def load_json(path: Path) -> dict[str, JsonValue]:
     with path.open("r", encoding="utf-8") as f:
         value = json.load(f)
     if not isinstance(value, dict):

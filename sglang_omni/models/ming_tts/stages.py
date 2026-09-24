@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.models.ming_tts.audio_config import resolve_ming_tts_audio_vae_config
 from sglang_omni.models.ming_tts.config import (
@@ -131,7 +132,7 @@ def create_sglang_tts_engine_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     context_length: int | None = None,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     tp_rank: int = 0,
     tp_size: int = 1,

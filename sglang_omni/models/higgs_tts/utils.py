@@ -13,8 +13,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -113,7 +113,9 @@ def to_codes_TN(
     return t.to(torch.long)
 
 
-def load_audio_to_24k(reference_audio: Any) -> tuple[np.ndarray, int]:
+def load_audio_to_24k(
+    reference_audio: str | Path | Mapping[str, object],
+) -> tuple[np.ndarray, int]:
     """Load ``inputs["reference_audio"]`` as 24 kHz mono float32.
 
     Accepts local path, HTTP/HTTPS URL, or ``{audio_path|path|bytes|base64|data}`` dict.

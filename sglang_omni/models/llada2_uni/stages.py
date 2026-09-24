@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
@@ -107,7 +107,7 @@ def create_sglang_dllm_thinker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     resolved_gpu_id = concrete_device.index or 0
 
-    overrides: dict[str, Any] = {
+    overrides: dict[str, object] = {
         "attention_backend": "flashinfer",
         "disable_cuda_graph": True,
         "sampling_backend": "pytorch",
