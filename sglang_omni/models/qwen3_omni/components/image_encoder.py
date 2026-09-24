@@ -135,7 +135,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
         vision_cfg = thinker_cfg.vision_config
-        self._device = torch.device(device)
+        self.device = torch.device(device)
         self.visual = build_visual(
             model_path,
             thinker_cfg=thinker_cfg,
@@ -164,8 +164,8 @@ class Qwen3OmniImageEncoder(nn.Module):
         if isinstance(pixel_values, torch.Tensor) and isinstance(
             image_grid_thw, torch.Tensor
         ):
-            image_grid_thw = image_grid_thw.to(self._device, dtype=torch.long)
-            pixel_values = pixel_values.to(device=self._device, dtype=self.visual.dtype)
+            image_grid_thw = image_grid_thw.to(self.device, dtype=torch.long)
+            pixel_values = pixel_values.to(device=self.device, dtype=self.visual.dtype)
             image_embeds, image_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values, grid_thw=image_grid_thw)
             )
@@ -174,7 +174,7 @@ class Qwen3OmniImageEncoder(nn.Module):
                 {
                     "image_embeds": image_embeds,
                     "image_grid_thw": image_grid_thw,
-                    "image_token_counts": image_token_counts.to(device=self._device),
+                    "image_token_counts": image_token_counts.to(device=self.device),
                     "deepstack_visual_embeds_image": image_embeds_multiscale,
                 }
             )
@@ -182,9 +182,9 @@ class Qwen3OmniImageEncoder(nn.Module):
         if isinstance(pixel_values_videos, torch.Tensor) and isinstance(
             video_grid_thw, torch.Tensor
         ):
-            video_grid_thw = video_grid_thw.to(self._device, dtype=torch.long)
+            video_grid_thw = video_grid_thw.to(self.device, dtype=torch.long)
             pixel_values_videos = pixel_values_videos.to(
-                device=self._device, dtype=self.visual.dtype
+                device=self.device, dtype=self.visual.dtype
             )
             video_embeds, video_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values_videos, grid_thw=video_grid_thw)
@@ -194,7 +194,7 @@ class Qwen3OmniImageEncoder(nn.Module):
                 {
                     "video_embeds": video_embeds,
                     "video_grid_thw": video_grid_thw,
-                    "video_token_counts": video_token_counts.to(device=self._device),
+                    "video_token_counts": video_token_counts.to(device=self.device),
                     "deepstack_visual_embeds_video": video_embeds_multiscale,
                 }
             )

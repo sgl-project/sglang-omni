@@ -123,7 +123,7 @@ class SpeechRequestValidator:
             # names, including when a stage overrides a Base model_path.
             self.requires_uploaded_voice_for_named_voice = False
             self.supports_uploaded_voice_references = False
-        self._speaker_keys = (
+        self.speaker_keys = (
             frozenset(name.casefold() for name in custom_voice_config.speakers)
             if custom_voice_config is not None
             else frozenset()
@@ -137,7 +137,7 @@ class SpeechRequestValidator:
         supported_languages = SUPPORTED_TTS_LANGUAGES | frozenset(
             additional_speech_languages
         )
-        self._tts_language_aliases = {
+        self.tts_language_aliases = {
             language.lower(): language for language in supported_languages
         }
         self.voice_store = voice_store
@@ -299,7 +299,7 @@ class SpeechRequestValidator:
                 "references are not supported by this model", param="references"
             )
         name = request.voice.strip().casefold()
-        if name in {"", "default"} or name in self._speaker_keys:
+        if name in {"", "default"} or name in self.speaker_keys:
             return
         supported = ", ".join(("default", *config.speakers))
         raise bad_request(
@@ -308,9 +308,9 @@ class SpeechRequestValidator:
         )
 
     def normalize_language(self, value: str) -> str:
-        normalized = self._tts_language_aliases.get(value.strip().lower())
+        normalized = self.tts_language_aliases.get(value.strip().lower())
         if normalized is None:
-            supported = ", ".join(sorted(self._tts_language_aliases.values()))
+            supported = ", ".join(sorted(self.tts_language_aliases.values()))
             raise bad_request(f"language must be one of: {supported}", param="language")
         return normalized
 

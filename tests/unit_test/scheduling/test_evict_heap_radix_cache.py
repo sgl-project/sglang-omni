@@ -44,8 +44,8 @@ def _make(cache_cls, eviction_policy="lru"):
 def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
     """Drive an identical insert/lock/unlock/evict trace; return eviction order."""
     order = []
-    orig_delete = cache._delete_leaf
-    cache._delete_leaf = lambda node: (
+    orig_delete = cache.delete_leaf
+    cache.delete_leaf = lambda node: (
         order.append((node.key.extra_key, tuple(node.key.token_ids))),
         orig_delete(node),
     )[1]
@@ -125,7 +125,7 @@ def test_heap_stays_bounded_and_recovers():
     cache = _make(EvictHeapRadixCache)
     _run_trace(cache, seed=7, steps=2000, drain=False)
     assert cache.evictable_leaves
-    assert len(cache._evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
+    assert len(cache.evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
     cache.evict(EvictParams(num_tokens=1 << 20))
     # The cache keeps working after a full drain.
     key = RadixKey(token_ids=[1, 2, 3], extra_key="post")

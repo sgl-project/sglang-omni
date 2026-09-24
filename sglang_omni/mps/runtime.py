@@ -269,22 +269,22 @@ class MpsPipelineRuntime:
         mode: str = "auto",
     ):
         self.managers = managers
-        self._plans = plans
-        self._mode = mode
-        self._leases: dict[str, MpsLease] = {}
-        self._operation_lock = asyncio.Lock()
-        self._client_uuid: dict[str, str] = {
+        self.plans = plans
+        self.mode = mode
+        self.leases: dict[str, MpsLease] = {}
+        self.operation_lock = asyncio.Lock()
+        self.client_uuid: dict[str, str] = {
             name: gpu_uuid
             for gpu_uuid, plan in plans.items()
             for name in plan.client_process_names
         }
-        self._client_tokens = {
-            process_name: secrets.token_hex(16) for process_name in self._client_uuid
+        self.client_tokens = {
+            process_name: secrets.token_hex(16) for process_name in self.client_uuid
         }
 
     @property
     def has_leases(self) -> bool:
-        return bool(self._leases)
+        return bool(self.leases)
 
     @classmethod
     def create(
@@ -327,7 +327,7 @@ class MpsPipelineRuntime:
         return cls(managers, physical_plans, mode=mode)
 
     async def start(self) -> None:
-        async with self._operation_lock:
+        async with self.operation_lock:
             try:
                 await self.run_blocking(self._start)
             except asyncio.CancelledError as cancellation:
@@ -345,19 +345,19 @@ class MpsPipelineRuntime:
     def _start(self) -> None:
         """Acquire every GPU transactionally, rolling back in reverse order."""
 
-        if self._leases:
+        if self.leases:
             raise MpsError("MPS pipeline runtime is already acquired")
         acquired: list[str] = []
         try:
             for gpu_uuid, manager in self.managers.items():
                 lease = manager.acquire(self.tokens_on(gpu_uuid))
-                self._leases[gpu_uuid] = lease
+                self.leases[gpu_uuid] = lease
                 acquired.append(gpu_uuid)
                 logger.info(
                     "MPS daemon ready on physical GPU %s (logical GPUs %s, pipe "
                     "dir %s)",
                     gpu_uuid,
-                    list(self._plans[gpu_uuid].logical_gpu_ids),
+                    list(self.plans[gpu_uuid].logical_gpu_ids),
                     manager.paths.pipe_dir,
                 )
         except BaseException as startup_error:
@@ -391,66 +391,66 @@ class MpsPipelineRuntime:
             raise
         logger.info(
             "MPS summary: mode=%s %s",
-            self._mode,
+            self.mode,
             {
                 gpu_uuid: {
-                    "logical_gpus": list(self._plans[gpu_uuid].logical_gpu_ids),
-                    "daemon_pid": self._leases[gpu_uuid].daemon_pid,
+                    "logical_gpus": list(self.plans[gpu_uuid].logical_gpu_ids),
+                    "daemon_pid": self.leases[gpu_uuid].daemon_pid,
                     "clients": sorted(self.names_on(gpu_uuid)),
                 }
-                for gpu_uuid in self._leases
+                for gpu_uuid in self.leases
             },
         )
 
     def names_on(self, gpu_uuid: str) -> list[str]:
         return [
-            name for name, physical in self._client_uuid.items() if physical == gpu_uuid
+            name for name, physical in self.client_uuid.items() if physical == gpu_uuid
         ]
 
     def tokens_on(self, gpu_uuid: str) -> dict[str, str]:
-        return {name: self._client_tokens[name] for name in self.names_on(gpu_uuid)}
+        return {name: self.client_tokens[name] for name in self.names_on(gpu_uuid)}
 
     def env_for_process(self, process_name: str) -> dict[str, str]:
-        gpu_uuid = self._client_uuid.get(process_name)
+        gpu_uuid = self.client_uuid.get(process_name)
         if gpu_uuid is None:
             return {}
         env = self.managers[gpu_uuid].env_for_stage()
         # UUID visibility makes the physical device local ordinal zero.
         env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] = "true"
-        env[MPS_CLIENT_TOKEN_ENV] = self._client_tokens[process_name]
+        env[MPS_CLIENT_TOKEN_ENV] = self.client_tokens[process_name]
         return env
 
     async def verify(self) -> None:
-        async with self._operation_lock:
+        async with self.operation_lock:
             await self.run_blocking(self._verify)
 
     def _verify(self) -> None:
-        for gpu_uuid, lease in self._leases.items():
+        for gpu_uuid, lease in self.leases.items():
             self.managers[gpu_uuid].verify(lease)
 
     async def retire_process_clients(self, process_name: str) -> set[MpsClientRef]:
         """Retire one process's MPS clients before the runner signals it."""
 
-        async with self._operation_lock:
+        async with self.operation_lock:
             return await self.run_blocking(
                 self._retire_process_clients,
                 process_name,
             )
 
     def _retire_process_clients(self, process_name: str) -> set[MpsClientRef]:
-        gpu_uuid = self._client_uuid.get(process_name)
-        lease = self._leases.get(gpu_uuid) if gpu_uuid is not None else None
+        gpu_uuid = self.client_uuid.get(process_name)
+        lease = self.leases.get(gpu_uuid) if gpu_uuid is not None else None
         if lease is None:
             return set()
         return self.managers[gpu_uuid].retire_clients_for(lease, process_name)
 
     async def probe_failures(self) -> dict[str, str]:
-        async with self._operation_lock:
+        async with self.operation_lock:
             return await self.run_blocking(self._probe_failures)
 
     def _probe_failures(self) -> dict[str, str]:
         failures: dict[str, str] = {}
-        for gpu_uuid, lease in self._leases.items():
+        for gpu_uuid, lease in self.leases.items():
             reason = self.managers[gpu_uuid].probe(lease)
             if reason is not None:
                 failures[gpu_uuid] = reason
@@ -468,7 +468,7 @@ class MpsPipelineRuntime:
             if process_start_attempts is None
             else frozenset(process_start_attempts)
         )
-        async with self._operation_lock:
+        async with self.operation_lock:
             await self.run_blocking(
                 self._close,
                 attempts,
@@ -476,7 +476,7 @@ class MpsPipelineRuntime:
 
     def _close(self, process_start_attempts: frozenset[str] | None) -> None:
         errors: list[tuple[str, MpsError]] = []
-        for gpu_uuid in reversed(list(self._leases)):
+        for gpu_uuid in reversed(list(self.leases)):
             clients_could_have_attached = (
                 process_start_attempts is None
                 or not process_start_attempts.isdisjoint(self.names_on(gpu_uuid))
@@ -534,7 +534,7 @@ class MpsPipelineRuntime:
         suppress_errors: bool,
         clients_could_have_attached: bool = True,
     ) -> MpsError | None:
-        lease = self._leases[gpu_uuid]
+        lease = self.leases[gpu_uuid]
         error: MpsError | None = None
         try:
             self.managers[gpu_uuid].release(
@@ -549,7 +549,7 @@ class MpsPipelineRuntime:
             # A released owner fd means the token no longer carries cleanup
             # authority, even when later daemon cleanup failed.
             if lease.owner_fd < 0:
-                self._leases.pop(gpu_uuid, None)
+                self.leases.pop(gpu_uuid, None)
         return error
 
 

@@ -400,7 +400,7 @@ def load_ming_tts_audio_vae_weights(
     assert_ming_tts_weight_coverage(report)
 
     audio_vae.eval()
-    audio_vae._ming_tts_weight_report = report
+    audio_vae._ming_tts_weight_report = report  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return report
 
 

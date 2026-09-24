@@ -529,8 +529,8 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
     async def _run() -> None:
         relay, source, destination = await _start_pair()
         stage = make_stage(name="source")
-        stage._running = True
-        source._task_done_callback = stage.on_background_task_done
+        stage.running = True
+        source.task_done_callback = stage.on_background_task_done
 
         async def drop_data_ready(
             sockets: dict[str, Any], target_endpoint: str, message: Any
@@ -543,7 +543,7 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
             "sglang_omni.comm.engine.send_to_endpoint",
             drop_data_ready,
         )
-        source._ack_timeout_s = 0.1
+        source.ack_timeout_s = 0.1
         source.register_kv_pool(_pool("source_pool"))
         destination.register_kv_pool(_pool("destination_pool"))
         destination.register_kv_receiver("destination_pool", _Receiver((0,)))
@@ -564,10 +564,10 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
             lease.release.assert_not_called()
             assert not relay.put_ops[0].waited
             assert relay.put_ops[0].failed is None
-            assert "transfer" not in source._pending
-            assert len(source._retained_pending_kv_transfers) == 1
-            assert isinstance(stage._background_task_error, TimeoutError)
-            assert not stage._running
+            assert "transfer" not in source.pending
+            assert len(source.retained_pending_kv_transfers) == 1
+            assert isinstance(stage.background_task_error, TimeoutError)
+            assert not stage.running
             assert stage.control_plane.closed
         finally:
             await source.close()
@@ -610,15 +610,15 @@ def test_kv_cleanup_before_ready_cancels_only_the_transfer(
         )
 
         try:
-            while "transfer" not in source._kv_ready:
+            while "transfer" not in source.kv_ready:
                 await asyncio.sleep(0)
             source.cleanup("request")
 
             with pytest.raises(KVTransferCancelled):
                 await task
             lease.release.assert_called_once_with()
-            assert "transfer" not in source._pending
-            assert not source._retained_pending_kv_transfers
+            assert "transfer" not in source.pending
+            assert not source.retained_pending_kv_transfers
         finally:
             await source.close()
 
@@ -632,28 +632,28 @@ def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
 ) -> None:
     async def _run() -> None:
         stage = make_stage(name="source")
-        stage._running = True
-        stage._active_requests.add("other-request")
+        stage.running = True
+        stage.active_requests.add("other-request")
         op = FakeOp({"transfer_info": {"size": 4}, "key": "kv-put"})
         lease = Mock()
-        stage._comm._outbound_kv_requests["transfer"] = "request"
-        stage._comm.register_pending(
+        stage.comm.outbound_kv_requests["transfer"] = "request"
+        stage.comm.register_pending(
             "transfer",
             [op],
             lease=lease,
             retain_pending_on_failure=True,
         )
-        pending_task = stage._comm.arm_pending("transfer")
+        pending_task = stage.comm.arm_pending("transfer")
         await asyncio.sleep(0)
 
         try:
             if abort_first:
                 stage.on_abort("request")
-                assert stage._comm._pending["transfer"].cleanup_requested
+                assert stage.comm.pending["transfer"].cleanup_requested
                 assert not pending_task.done()
                 lease.release.assert_not_called()
 
-            stage._comm.ack_transfer(
+            stage.comm.ack_transfer(
                 DataAckMessage(
                     request_id="request",
                     from_stage="destination",
@@ -673,16 +673,16 @@ def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
                 stage.on_abort("request")
 
             assert not pending_task.cancelled()
-            assert "transfer" not in stage._comm._pending
-            assert not stage._comm._retained_pending_kv_transfers
+            assert "transfer" not in stage.comm.pending
+            assert not stage.comm.retained_pending_kv_transfers
             assert op.waited
             lease.release.assert_called_once_with()
-            assert stage._background_task_error is None
-            assert stage._running
+            assert stage.background_task_error is None
+            assert stage.running
             assert not stage.control_plane.closed
-            assert stage._active_requests == {"other-request"}
+            assert stage.active_requests == {"other-request"}
         finally:
-            await stage._comm.close()
+            await stage.comm.close()
 
     asyncio.run(_run())
 
@@ -695,9 +695,9 @@ def test_kv_abort_and_terminal_ack_order_does_not_kill_stage(
 def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
     async def _run() -> None:
         stage = make_stage(name="source")
-        stage._running = True
-        stage._active_requests.update({"request", "other-request"})
-        stage._comm.send_kv_pages = AsyncMock(side_effect=error)
+        stage.running = True
+        stage.active_requests.update({"request", "other-request"})
+        stage.comm.send_kv_pages = AsyncMock(side_effect=error)
         transfer = KVPageTransfer(
             request_id="request",
             transfer_id="transfer",
@@ -709,7 +709,7 @@ def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
 
         await stage.send_kv_transfer(transfer)
 
-        stage._comm.send_kv_pages.assert_awaited_once()
+        stage.comm.send_kv_pages.assert_awaited_once()
         if isinstance(error, KVTransferRejected):
             [completion] = stage.control_plane.completions
             assert completion.request_id == "request"
@@ -717,9 +717,9 @@ def test_stage_handles_request_scoped_kv_failure(error: RuntimeError) -> None:
             assert completion.error == "KV copy failed"
         else:
             assert not stage.control_plane.completions
-        assert stage._active_requests == {"other-request"}
-        assert stage._running
-        assert stage._background_task_error is None
+        assert stage.active_requests == {"other-request"}
+        assert stage.running
+        assert stage.background_task_error is None
         assert not stage.control_plane.closed
 
     asyncio.run(_run())
@@ -960,7 +960,7 @@ def test_kv_ack_timeout_traces_the_retained_transfer_with_a_running_count(
                 "sglang_omni.comm.engine.send_to_endpoint",
                 drop_data_ready,
             )
-            source._ack_timeout_s = 0.1
+            source.ack_timeout_s = 0.1
             source.register_kv_pool(_pool("source_pool"))
             destination.register_kv_pool(_pool("destination_pool"))
             destination.register_kv_receiver("destination_pool", _Receiver((0,)))
@@ -975,7 +975,7 @@ def test_kv_ack_timeout_traces_the_retained_transfer_with_a_running_count(
                         to_stage="destination",
                         lease=Mock(),
                     )
-                assert len(source._retained_pending_kv_transfers) == 1
+                assert len(source.retained_pending_kv_transfers) == 1
             finally:
                 await source.close()
                 await destination.close()

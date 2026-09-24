@@ -289,10 +289,10 @@ def test_voxtral_vocoder_preserves_warmup_trim_and_fade(
         ).to_dict(),
     )
 
-    result = asyncio.run(scheduler._fn(payload))
+    result = asyncio.run(scheduler.fn(payload))
 
-    assert scheduler._max_batch_size == 1
-    assert scheduler._max_batch_wait_s == 0
+    assert scheduler.max_batch_size == 1
+    assert scheduler.max_batch_wait_s == 0
     assert [codes.tolist() for codes in seen_codes] == [
         [[9, 10], [9, 10], [9, 10], [11, 12]]
     ]
@@ -315,8 +315,8 @@ def test_voxtral_collect_audio_step_reuses_output_tokens_for_eos_filter() -> Non
 
     eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
     runner = VoxtralTTSModelRunner.__new__(VoxtralTTSModelRunner)
-    runner._pending_audio_codes = None
-    runner._pending_audio_embeds = None
+    runner.pending_audio_codes = None
+    runner.pending_audio_embeds = None
     runner.model = SimpleNamespace(
         acoustic_transformer=lambda hidden: torch.tensor(
             [[11, 12, 13], [eos_id, 21, 22]], dtype=torch.long
@@ -391,7 +391,7 @@ def test_voxtral_decode_writes_feedback_buffer_for_standard_forward() -> None:
     assert result is None
     assert not first.data.pending_feedback_queue
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.tensor(
             [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]],
             dtype=torch.float16,
@@ -412,7 +412,7 @@ def test_voxtral_decode_empty_batch_keeps_feedback_buffer() -> None:
 
     assert result is None
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.ones(1, 3, dtype=torch.float16),
     )
 
@@ -499,7 +499,7 @@ def test_voxtral_steady_decode_reports_cuda_graph_ready(
 
     assert output.can_run_cuda_graph is True
     assert torch.equal(
-        runner.model._decode_input_embed_buffer,
+        runner.model.decode_input_embed_buffer,
         torch.tensor([[1.0, 2.0, 3.0]]),
     )
 
@@ -508,9 +508,7 @@ def test_voxtral_forward_returns_graph_compatible_logits() -> None:
     from sglang_omni.models.voxtral_tts.sglang_model import VoxtralSGLangTTSModel
 
     model = VoxtralSGLangTTSModel.__new__(VoxtralSGLangTTSModel)
-    model._decode_input_embed_buffer = torch.arange(6, dtype=torch.float32).reshape(
-        2, 3
-    )
+    model.decode_input_embed_buffer = torch.arange(6, dtype=torch.float32).reshape(2, 3)
 
     def fake_language_model(input_ids, positions, forward_batch, input_embeds=None):
         del input_ids, positions, forward_batch

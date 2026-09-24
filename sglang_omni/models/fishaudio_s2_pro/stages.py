@@ -61,7 +61,7 @@ def warmup_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     if max_batch_size < 1:
         raise ValueError("max_batch_size must be >= 1")
 
-    audio_decoder = model._audio_decoder
+    audio_decoder = model.audio_decoder
     embedding_weight = audio_decoder.embeddings.weight
     hidden_size = int(embedding_weight.shape[1])
     batch_sizes = sorted(
@@ -105,7 +105,7 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
         "SGLANG_TORCH_COMPILE_MODE",
         "max-autotune-no-cudagraphs",
     )
-    audio_decoder = model._audio_decoder
+    audio_decoder = model.audio_decoder
     setup_start = time.perf_counter()
     compiled_forward_kvcached_layers = [
         torch.compile(layer.forward_kvcached, mode=compile_mode, dynamic=True)
@@ -120,8 +120,8 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
     try:
         warmup_s2pro_codebook_decoder(model, max_batch_size=max_batch_size)
     except Exception:
-        audio_decoder._compiled_forward_kvcached_layers = None
-        audio_decoder._compiled_forward_kvcached_max_bs = 0
+        audio_decoder.compiled_forward_kvcached_layers = None
+        audio_decoder.compiled_forward_kvcached_max_bs = 0
         audio_decoder.reset_caches()
         logger.exception(
             "Fish S2-Pro Fast AR compile warmup failed; continuing with eager layers"
@@ -142,7 +142,7 @@ def compile_s2pro_codebook_decoder(model: Any, *, max_batch_size: int) -> None:
 def resolve_s2pro_model_buffer_bs(model: Any) -> int:
     return min(
         int(model.vq_decode_max_batch_size),
-        int(model._audio_decoder.kv_cache_max_batch_size),
+        int(model.audio_decoder.kv_cache_max_batch_size),
     )
 
 
@@ -200,7 +200,7 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
     output_dtype = torch.long
 
     def __init__(self, *, codec: Any, checkpoint_id: str) -> None:
-        self._codec = codec
+        self.codec = codec
         self.model_revision = str(checkpoint_id)
         config = f"sample_rate:{int(codec.sample_rate)}"
         self.encoder_config_hash = _hash_bytes(config.encode("utf-8"))
@@ -227,17 +227,17 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
             audio = load_audio(
                 str(item.source),
-                target_sample_rate=int(self._codec.sample_rate),
+                target_sample_rate=int(self.codec.sample_rate),
                 mono=True,
             )
             audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
             return self.encode_reference_waveform(
-                audio_tensor, int(self._codec.sample_rate)
+                audio_tensor, int(self.codec.sample_rate)
             )
         if item.source_kind in ("bytes", "base64"):
             from sglang_omni.preprocessing.audio import AudioMediaIO
 
-            audio_io = AudioMediaIO(target_sr=self._codec.sample_rate)
+            audio_io = AudioMediaIO(target_sr=self.codec.sample_rate)
             if item.source_kind == "bytes":
                 audio, sr = audio_io.load_bytes(item.source)
             else:
@@ -267,11 +267,11 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
 
         if audio.shape[0] > 1:
             audio = audio.mean(0, keepdim=True)
-        audio = torchaudio.functional.resample(audio, sr, self._codec.sample_rate)
+        audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
         audios = audio.squeeze(0).unsqueeze(0)
         audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
         with torch.no_grad():
-            indices, _ = self._codec.encode(audios, audio_lengths)
+            indices, _ = self.codec.encode(audios, audio_lengths)
             if indices.ndim == 3:
                 indices = indices[0]
         return indices.cpu()

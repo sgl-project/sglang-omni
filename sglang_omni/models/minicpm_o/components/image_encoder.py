@@ -70,8 +70,8 @@ def init_sglang_tp() -> None:
     )
     parallel_state.initialize_model_parallel(tensor_model_parallel_size=1)
 
-    dp._ATTN_TP_SIZE = 1
-    dp._ATTN_TP_RANK = 0
+    dp._ATTN_TP_SIZE = 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    dp._ATTN_TP_RANK = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 def load_srt_weights(module: nn.Module, weights: dict[str, torch.Tensor]) -> None:
@@ -147,7 +147,9 @@ class MiniCPMOImageEncoder(nn.Module):
         self.eval()
         self.to(device=self.device, dtype=torch_dtype)
         # note (MayDomine): rebuild the positional cache in fp32 after the bf16 cast.
-        self.resampler._set_2d_pos_cache(self.resampler.max_size, device=device)
+        self.resampler._set_2d_pos_cache(
+            self.resampler.max_size, device=device
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         self.vision_batch_size = int(getattr(config, "vision_batch_size", 16))
 

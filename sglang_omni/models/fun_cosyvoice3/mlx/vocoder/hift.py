@@ -212,7 +212,7 @@ class CausalSineGen(nn.Module):
         rand_ini = mx.random.uniform(shape=(1, harmonic_num + 1))
         # Note (yexiaodong): Keep runtime phases deterministic without adding
         # them to the converted checkpoint's parameter tree.
-        self._rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
+        self.rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
 
     def f02uv(self, f0: mx.array) -> mx.array:
         return (f0 > self.voiced_threshold).astype(mx.float32)
@@ -224,7 +224,7 @@ class CausalSineGen(nn.Module):
 
         T = fn.shape[1]
         rad_values = (fn / self.sampling_rate) % 1  # (B, T, H+1)
-        rad_values = rad_values.at[:, 0, :].add(self._rand_ini)
+        rad_values = rad_values.at[:, 0, :].add(self.rand_ini)
 
         T_down = max(1, T // self.upsample_scale)
         rad_t = mx.swapaxes(rad_values, 1, 2)  # (B, H+1, T)
@@ -393,7 +393,7 @@ class CausalHiFTGenerator(nn.Module):
         )
 
         # Derived buffer, not a checkpoint weight.
-        self._stft_window = hann_window_periodic(config.istft_params["n_fft"])
+        self.stft_window = hann_window_periodic(config.istft_params["n_fft"])
         self.f0_predictor = CausalConvRNNF0Predictor(
             in_channels=config.in_channels, cond_channels=config.base_channels
         )
@@ -407,7 +407,7 @@ class CausalHiFTGenerator(nn.Module):
             x,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self.stft_window,
         )
 
     def istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
@@ -416,7 +416,7 @@ class CausalHiFTGenerator(nn.Module):
             phase,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self.stft_window,
         )
 
     def decode(self, x: mx.array, s: mx.array) -> mx.array:

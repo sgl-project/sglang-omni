@@ -88,15 +88,17 @@ class NcclOperation(RelayOperation):
     def __init__(
         self, connection: Connection, work_handle, tensor_ref: Any, metadata: Any = None
     ):
-        self._conn = connection
-        self._work = work_handle
-        self._tensor_ref = tensor_ref
-        self._metadata = metadata
-        self._completed = False
+        self.conn = connection
+        self.work = work_handle
+        self.tensor_ref = tensor_ref
+        self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.completed = False
 
     @property
     def metadata(self) -> Any:
-        return self._metadata
+        return (
+            self._metadata
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 class PutOperation(NcclOperation):
@@ -111,25 +113,25 @@ class PutOperation(NcclOperation):
         on_completion_cb: Callable[[], None] = None,
     ):
         super().__init__(connection, work_handle, tensor_ref, metadata)
-        self._on_completion_cb = on_completion_cb
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
 
         start = time.time()
         try:
-            while not self._work.is_completed():
+            while not self.work.is_completed():
                 if time.time() - start > timeout:
                     raise TimeoutError(f"PutOperation timed out")
                 await asyncio.sleep(0.0001)
 
-            self._work.wait()
+            self.work.wait()
 
         finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+            self.completed = True
+            if self.on_completion_cb:
+                self.on_completion_cb()
 
 
 class GetOperation(NcclOperation):
@@ -146,19 +148,19 @@ class GetOperation(NcclOperation):
         super().__init__(connection, work_handle, dest_tensor, metadata=None)
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
 
         start = time.time()
         try:
-            while not self._work.is_completed():
+            while not self.work.is_completed():
                 if time.time() - start > timeout:
                     raise TimeoutError(f"GetOperation timed out")
                 await asyncio.sleep(0.0001)
 
-            self._work.wait()
+            self.work.wait()
         finally:
-            self._completed = True
+            self.completed = True
 
 
 @register_relay("nccl")

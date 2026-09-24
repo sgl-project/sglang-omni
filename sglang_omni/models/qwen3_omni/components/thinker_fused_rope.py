@@ -57,7 +57,9 @@ def fused_apply_qk_norm_rope(
     cos_sin_cache: torch.Tensor,
 ):
     if not gate.enabled or qkv.dtype != torch.bfloat16 or not qkv.is_contiguous():
-        return attn._omni_unfused_apply_qk_norm_rope(qkv, positions, forward_batch)
+        return attn._omni_unfused_apply_qk_norm_rope(
+            qkv, positions, forward_batch
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
     tokens = qkv.shape[0]
@@ -73,7 +75,7 @@ def fused_apply_qk_norm_rope(
         attn.rotary_emb.is_neox_style,
         attn.q_norm.variance_epsilon,
     )
-    attn._used_fused_qk_norm_rope_last_call = True
+    attn.used_fused_qk_norm_rope_last_call = True
     return q, k, v
 
 
@@ -144,7 +146,9 @@ def install_thinker_fused_rope(
             # The kernel reads float32; the rotary keeps its table in query dtype.
             cos_sin_cache = attn.rotary_emb.cos_sin_cache.float().contiguous()
 
-        attn._omni_unfused_apply_qk_norm_rope = attn.apply_qk_norm_rope
+        attn._omni_unfused_apply_qk_norm_rope = (
+            attn.apply_qk_norm_rope
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         def _bound(
             attn_self,

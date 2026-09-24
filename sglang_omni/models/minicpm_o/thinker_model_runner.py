@@ -41,19 +41,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
         # note (MayDomine): parent embedding injection reads these names.
         model = self.model
-        self._outer_model = model.thinker
-        self._text_model = self._outer_model.model
-        self._embed_tokens = self._text_model.embed_tokens
-        self._th_host_bufs = None
-        self._th_slot = 0
+        self.outer_model = model.thinker
+        self.text_model = self.outer_model.model
+        self.embed_tokens = self.text_model.embed_tokens
+        self.th_host_bufs = None
+        self.th_slot = 0
         # note (MayDomine): bound-based injection needs no modality token ids.
-        self._image_token_id = -1
-        self._video_token_id = -1
-        self._audio_token_id = -1
+        self.image_token_id = -1
+        self.video_token_id = -1
+        self.audio_token_id = -1
 
         self.capture_hidden_mode = (
             CaptureHiddenMode.FULL
-            if output_processor._capture_hidden
+            if output_processor.capture_hidden
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}

@@ -116,11 +116,11 @@ class StreamingVocoderBase(
         abort_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.stream_states: dict[str, StreamStateT] = {}
-        self._emitted_stream_ids: set[str] = set()
-        self._completed_stream_request_ids: dict[str, None] = {}
+        self.emitted_stream_ids: set[str] = set()
+        self.completed_stream_request_ids: dict[str, None] = {}
         self.sample_rate = int(sample_rate)
-        self._stream_source_hint = stream_source_hint or type(self).__name__
-        self._stream_input_modality = str(stream_input_modality)
+        self.stream_source_hint = stream_source_hint or type(self).__name__
+        self.stream_input_modality = str(stream_input_modality)
         super().__init__(
             compute_fn,
             batch_compute_fn=batch_compute_fn,
@@ -156,24 +156,24 @@ class StreamingVocoderBase(
                 except Exception:
                     logger.exception(
                         "%s failed to release stream state for %s during shutdown",
-                        self._stream_source_hint,
+                        self.stream_source_hint,
                         request_id,
                     )
-            self._emitted_stream_ids.clear()
-            self._completed_stream_request_ids.clear()
+            self.emitted_stream_ids.clear()
+            self.completed_stream_request_ids.clear()
             self.on_serving_stop()
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         params = payload.request.params
         if not isinstance(params, dict):
             raise TypeError(
-                f"{self._stream_source_hint} request params must be a dict, got "
+                f"{self.stream_source_hint} request params must be a dict, got "
                 f"{type(params).__name__}"
             )
         return bool(params.get("stream", False))
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        self._completed_stream_request_ids.pop(request_id, None)
+        self.completed_stream_request_ids.pop(request_id, None)
         state = self.get_or_create_stream_state(request_id)
         if state is None:
             return
@@ -257,7 +257,7 @@ class StreamingVocoderBase(
         return messages
 
     def clear_stream_state(self, request_id: str) -> None:
-        self._emitted_stream_ids.discard(request_id)
+        self.emitted_stream_ids.discard(request_id)
         state = self.stream_states.pop(request_id, None)
         if state is not None:
             self.release_stream_resources(request_id, state)
@@ -271,7 +271,7 @@ class StreamingVocoderBase(
             return state
         if (
             self.is_aborted(request_id)
-            or request_id in self._completed_stream_request_ids
+            or request_id in self.completed_stream_request_ids
         ):
             return None
         state = self.create_stream_state(request_id)
@@ -287,24 +287,21 @@ class StreamingVocoderBase(
         return list(self.stream_states.items())
 
     def stream_has_emitted(self, request_id: str) -> bool:
-        return request_id in self._emitted_stream_ids
+        return request_id in self.emitted_stream_ids
 
     def mark_stream_emitted(self, request_id: str) -> None:
-        self._emitted_stream_ids.add(request_id)
+        self.emitted_stream_ids.add(request_id)
 
     def record_completed_stream_request_id(self, request_id: str) -> None:
-        self._completed_stream_request_ids[request_id] = None
-        if (
-            len(self._completed_stream_request_ids)
-            <= _COMPLETED_STREAM_REQUEST_ID_LIMIT
-        ):
+        self.completed_stream_request_ids[request_id] = None
+        if len(self.completed_stream_request_ids) <= _COMPLETED_STREAM_REQUEST_ID_LIMIT:
             return
         excess = (
-            len(self._completed_stream_request_ids)
+            len(self.completed_stream_request_ids)
             - _COMPLETED_STREAM_REQUEST_ID_RETAINED
         )
-        for stale_request_id in list(self._completed_stream_request_ids)[:excess]:
-            del self._completed_stream_request_ids[stale_request_id]
+        for stale_request_id in list(self.completed_stream_request_ids)[:excess]:
+            del self.completed_stream_request_ids[stale_request_id]
 
     def ingest_stream_item(
         self, request_id: str, item: StreamItem
@@ -315,17 +312,17 @@ class StreamingVocoderBase(
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise RuntimeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} is "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} is "
                 "missing metadata"
             )
-        if metadata.get("modality") not in (None, self._stream_input_modality):
+        if metadata.get("modality") not in (None, self.stream_input_modality):
             raise ValueError(
-                f"{self._stream_source_hint} stream chunk modality must be "
-                f"{self._stream_input_modality}, got {metadata.get('modality')!r}"
+                f"{self.stream_source_hint} stream chunk modality must be "
+                f"{self.stream_input_modality}, got {metadata.get('modality')!r}"
             )
         if not isinstance(metadata.get("stream"), bool):
             raise RuntimeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} must "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} must "
                 "include a bool metadata['stream']"
             )
         self.latch_stream_contract(
@@ -334,7 +331,7 @@ class StreamingVocoderBase(
         codes = item.data
         if not isinstance(codes, torch.Tensor):
             raise TypeError(
-                f"{self._stream_source_hint} stream chunk for {request_id!r} must "
+                f"{self.stream_source_hint} stream chunk for {request_id!r} must "
                 f"carry a torch.Tensor, got {type(codes).__name__}"
             )
         codes = self.validate_chunk(request_id, state, codes)
@@ -446,7 +443,7 @@ class StreamingVocoderBase(
             waveform,
             sample_rate=self.sample_rate,
             modality="audio",
-            source_hint=self._stream_source_hint,
+            source_hint=self.stream_source_hint,
         )
 
     @abstractmethod
@@ -516,7 +513,7 @@ class StreamingVocoderBase(
         off the GPU-serializing lock)."""
         logger.exception(
             "%s streaming decode step failed; aborting %d participating request(s)",
-            self._stream_source_hint,
+            self.stream_source_hint,
             len(participants),
         )
         failed: list[str] = []

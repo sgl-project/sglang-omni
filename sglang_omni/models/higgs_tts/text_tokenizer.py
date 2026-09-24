@@ -30,7 +30,7 @@ _REQUIRED_SPECIALS: tuple[str, ...] = (
 
 class HiggsTokenizerAdapter:
     def __init__(self, tokenizer: Any) -> None:
-        self._tok = tokenizer
+        self.tok = tokenizer
         vocab = dict(tokenizer.get_added_vocab())
         missing = [t for t in _REQUIRED_SPECIALS if t not in vocab]
         if missing:
@@ -44,7 +44,7 @@ class HiggsTokenizerAdapter:
 
     @property
     def tokenizer(self) -> Any:
-        return self._tok
+        return self.tok
 
     def build_prompt(
         self,
@@ -59,12 +59,12 @@ class HiggsTokenizerAdapter:
         ids: list[int] = [self.tts_id]
         if reference_text and num_ref_tokens > 0 and self.ref_text_id is not None:
             ids.append(self.ref_text_id)
-            ids.extend(self._tok.encode(reference_text, add_special_tokens=False))
+            ids.extend(self.tok.encode(reference_text, add_special_tokens=False))
         if num_ref_tokens > 0:
             ids.append(self.ref_audio_id)
             ids.extend([AUDIO_PLACEHOLDER_ID] * num_ref_tokens)
         ids.append(self.text_id)
-        ids.extend(self._tok.encode(prompt_text, add_special_tokens=False))
+        ids.extend(self.tok.encode(prompt_text, add_special_tokens=False))
         ids.append(self.audio_id)
         return ids
 

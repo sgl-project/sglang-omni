@@ -109,10 +109,10 @@ class CoordinatorSessions:
         """Open a fixed linear route, upstream to downstream, before accepting input."""
         if (
             self.is_sessions_stopping
-            or not self._running
-            or self._fatal_error is not None
+            or not self.running
+            or self.fatal_error is not None
         ):
-            raise RuntimeError(self._fatal_error or "Coordinator is not running")
+            raise RuntimeError(self.fatal_error or "Coordinator is not running")
         if (
             not stages
             or stages[0] != self.entry_stage
@@ -124,19 +124,19 @@ class CoordinatorSessions:
             raise ValueError("session ID already reserved")
         bindings = (
             assign_replica_bindings(
-                self._logical_process_plan, self._binding_policy, session_id
+                self.logical_process_plan, self.binding_policy, session_id
             )
             or {}
         )
         owners = tuple(
             (
-                self._replica_topology.resolve(stage, bindings[stage])
-                if self._replica_topology.is_replicated(stage)
+                self.replica_topology.resolve(stage, bindings[stage])
+                if self.replica_topology.is_replicated(stage)
                 else stage
             )
             for stage in stages
         )
-        if any(owner not in self._stages for owner in owners):
+        if any(owner not in self.stages for owner in owners):
             raise ValueError("session route contains an unregistered owner")
         if self.session_unavailable_stages.intersection(owners):
             raise ValueError(
@@ -353,14 +353,14 @@ class CoordinatorSessions:
                 request,
                 target_stage=owner,
                 terminal_stages=(
-                    {self._replica_topology.logical_name(owner)}
+                    {self.replica_topology.logical_name(owner)}
                     if owner
-                    else {self._replica_topology.logical_name(session.stages[-1])}
+                    else {self.replica_topology.logical_name(session.stages[-1])}
                 ),
                 replica_bindings=session.bindings,
                 should_bypass_admission=operation == "close",
             )
-            await self._completion_futures[request_id]
+            await self.completion_futures[request_id]
 
         try:
             if operation == "close":
@@ -376,9 +376,9 @@ class CoordinatorSessions:
             raise
         finally:
             self.session_stream_handlers.pop(request_id, None)
-            if request_id in self._requests:
+            if request_id in self.requests:
                 await self.abort(request_id)
-            future = self._completion_futures.pop(request_id, None)
+            future = self.completion_futures.pop(request_id, None)
             if future is not None and not future.done():
                 future.cancel()
 
@@ -447,7 +447,7 @@ class CoordinatorSessions:
             del self.sessions[session.session_identity.session_id]
 
     async def shutdown_stage_sessions(self, selected: set[str] | None) -> None:
-        affected = set(self._stages) if selected is None else selected
+        affected = set(self.stages) if selected is None else selected
         self.session_unavailable_stages.update(affected)
         if selected is None:
             await self.stop_sessions()

@@ -59,13 +59,13 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         if stream_holdback_tokens < 0:
             raise ValueError("stream_holdback_tokens must be >= 0")
 
-        self._codec = codec
-        self._stream_stride = int(stream_stride)
-        self._stream_followup_stride = int(stream_followup_stride)
-        self._default_initial_chunk_frames = max(0, int(initial_chunk_frames))
-        self._stream_overlap_tokens = int(stream_overlap_tokens)
-        self._stream_holdback_tokens = int(stream_holdback_tokens)
-        self._samples_per_frame = self.resolve_samples_per_frame(codec)
+        self.codec = codec
+        self.stream_stride = int(stream_stride)
+        self.stream_followup_stride = int(stream_followup_stride)
+        self.default_initial_chunk_frames = max(0, int(initial_chunk_frames))
+        self.stream_overlap_tokens = int(stream_overlap_tokens)
+        self.stream_holdback_tokens = int(stream_holdback_tokens)
+        self.samples_per_frame = self.resolve_samples_per_frame(codec)
 
         super().__init__(
             self.vocode_payload,
@@ -184,7 +184,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
             return None
         raw_total = delayed_count - num_codebooks + 1
 
-        steady_codec_frames = max(1, self._stream_stride - num_codebooks + 1)
+        steady_codec_frames = max(1, self.stream_stride - num_codebooks + 1)
         use_initial_chunk = (
             state.initial_codec_chunk_frames > 0
             and state.initial_codec_chunk_frames < steady_codec_frames
@@ -197,7 +197,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         next_decode_rows = state.next_decode_rows or (
             first_decode_rows
             if use_initial_chunk and not is_final
-            else max(num_codebooks, self._stream_stride)
+            else max(num_codebooks, self.stream_stride)
         )
         if not is_final and delayed_count < next_decode_rows:
             state.next_decode_rows = next_decode_rows
@@ -206,18 +206,16 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         emit_until_raw = raw_total
         if use_initial_chunk and not is_final:
             emit_until_raw = min(raw_total, state.initial_codec_chunk_frames)
-        elif not is_final and self._stream_holdback_tokens:
-            emit_until_raw = max(0, raw_total - self._stream_holdback_tokens)
-        can_flush_codec_tail = is_final and self._samples_per_frame is not None
+        elif not is_final and self.stream_holdback_tokens:
+            emit_until_raw = max(0, raw_total - self.stream_holdback_tokens)
+        can_flush_codec_tail = is_final and self.samples_per_frame is not None
         if emit_until_raw < state.emitted_raw_frames or (
             emit_until_raw == state.emitted_raw_frames and not can_flush_codec_tail
         ):
-            state.next_decode_rows = delayed_count + self._stream_followup_stride
+            state.next_decode_rows = delayed_count + self.stream_followup_stride
             return None
 
-        window_start_raw = max(
-            0, state.emitted_raw_frames - self._stream_overlap_tokens
-        )
+        window_start_raw = max(0, state.emitted_raw_frames - self.stream_overlap_tokens)
         rows_end = emit_until_raw + num_codebooks - 1
         rows = state.delayed_rows[window_start_raw:rows_end]
         audio = self.decode_delayed_rows(
@@ -227,19 +225,19 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         )
 
         decoded_raw_frames = emit_until_raw - window_start_raw
-        samples_per_frame = self._samples_per_frame or max(
+        samples_per_frame = self.samples_per_frame or max(
             int(audio.shape[-1]) // max(decoded_raw_frames, 1), 1
         )
         trim_frames = state.emitted_raw_frames - window_start_raw
         trim_samples = min(int(trim_frames * samples_per_frame), int(audio.shape[-1]))
-        if not is_final and self._samples_per_frame is not None:
+        if not is_final and self.samples_per_frame is not None:
             new_frames = emit_until_raw - state.emitted_raw_frames
             emit_samples = int(new_frames * samples_per_frame)
             delta = audio[trim_samples : trim_samples + emit_samples].contiguous()
         else:
             delta = audio[trim_samples:].contiguous()
         if delta.numel() == 0:
-            state.next_decode_rows = delayed_count + self._stream_followup_stride
+            state.next_decode_rows = delayed_count + self.stream_followup_stride
             return None
 
         state.emitted_raw_frames = emit_until_raw
@@ -323,11 +321,11 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         params: Mapping[str, Any] | None,
     ) -> None:
         num_codebooks, _ = self.require_stream_contract(state, request_id)
-        steady_codec_frames = max(1, self._stream_stride - num_codebooks + 1)
+        steady_codec_frames = max(1, self.stream_stride - num_codebooks + 1)
         state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
             params,
             steady_chunk_frames=steady_codec_frames,
-            default_frames=self._default_initial_chunk_frames,
+            default_frames=self.default_initial_chunk_frames,
         )
 
     @staticmethod
@@ -350,10 +348,8 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         emitted_initial_chunk: bool,
     ) -> int:
         if emitted_initial_chunk:
-            return (
-                max(num_codebooks, self._stream_stride) + self._stream_followup_stride
-            )
-        return delayed_count + self._stream_followup_stride
+            return max(num_codebooks, self.stream_stride) + self.stream_followup_stride
+        return delayed_count + self.stream_followup_stride
 
     def vocode_payload(self, payload: StagePayload) -> StagePayload:
         return self.vocode_payloads([payload])[0]
@@ -364,7 +360,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         waveforms: list[torch.Tensor | None] = [None] * len(items)
         if valid:
             indices, codes_list = zip(*valid)
-            wavs = self._codec.decode_batch(list(codes_list))
+            wavs = self.codec.decode_batch(list(codes_list))
             if len(wavs) != len(valid):
                 raise RuntimeError(
                     f"Higgs vocoder decode_batch returned {len(wavs)} audios "
@@ -445,7 +441,7 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
         codes_TN = torch.where(
             codes_TN >= codec_vocab, torch.zeros_like(codes_TN), codes_TN
         )
-        return self._codec.decode(codes_TN).detach().to(torch.float32)
+        return self.codec.decode(codes_TN).detach().to(torch.float32)
 
     @staticmethod
     def resolve_samples_per_frame(codec: HiggsAudioCodec) -> int | None:

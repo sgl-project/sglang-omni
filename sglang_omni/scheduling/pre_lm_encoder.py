@@ -34,15 +34,15 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def __init__(self, *, worker_name: str, max_queue_size: int = 0) -> None:
         if max_queue_size < 0:
             raise ValueError(f"max_queue_size must be >= 0, got {max_queue_size}")
-        self._queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
-        self._worker_state_lock = threading.Lock()
-        self._worker_error: Exception | None = None
-        self._thread = threading.Thread(
+        self.queue: queue.Queue[Any] = queue.Queue(maxsize=max_queue_size)
+        self.worker_state_lock = threading.Lock()
+        self.worker_error: Exception | None = None
+        self.thread = threading.Thread(
             target=self.worker,
             name=worker_name,
             daemon=True,
         )
-        self._thread.start()
+        self.thread.start()
 
     def enqueue(
         self,
@@ -52,14 +52,14 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         entry = QueueEntry(item=item, future=future)
         while True:
             try:
-                self._queue.put(entry, timeout=0.1)
+                self.queue.put(entry, timeout=0.1)
                 return
             except queue.Full:
-                with self._worker_state_lock:
-                    if self._worker_error is not None:
+                with self.worker_state_lock:
+                    if self.worker_error is not None:
                         raise RuntimeError(
                             "pre-LM encoder worker has failed"
-                        ) from self._worker_error
+                        ) from self.worker_error
 
     def submit(
         self,
@@ -68,14 +68,14 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     ) -> concurrent.futures.Future[Any]:
         if future is None:
             future = concurrent.futures.Future()
-        with self._worker_state_lock:
-            if self._worker_error is not None:
+        with self.worker_state_lock:
+            if self.worker_error is not None:
                 raise RuntimeError(
                     "pre-LM encoder worker has failed"
-                ) from self._worker_error
+                ) from self.worker_error
         self.enqueue(item, future)
-        with self._worker_state_lock:
-            worker_error = self._worker_error
+        with self.worker_state_lock:
+            worker_error = self.worker_error
         if worker_error is not None and not future.done():
             future.set_exception(worker_error)
         return future
@@ -243,12 +243,12 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
         exc: Exception,
         current_batch: list[QueueEntry[ItemT]],
     ) -> None:
-        with self._worker_state_lock:
-            self._worker_error = exc
+        with self.worker_state_lock:
+            self.worker_error = exc
             pending = list(current_batch)
             while True:
                 try:
-                    queued = self._queue.get_nowait()
+                    queued = self.queue.get_nowait()
                 except queue.Empty:
                     break
                 if isinstance(queued, QueueEntry):

@@ -161,7 +161,7 @@ class ArkAudioTower(nn.Module):
         super().__init__()
         wc = config.whisper_config
         embed_dim = wc.d_model
-        wc._attn_implementation = "sdpa"
+        wc._attn_implementation = "sdpa"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.conv1 = nn.Conv1d(wc.num_mel_bins, embed_dim, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1)
         self.embed_positions = nn.Embedding(wc.max_source_positions, embed_dim)

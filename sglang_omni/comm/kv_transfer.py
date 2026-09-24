@@ -42,10 +42,14 @@ class KVBufferRegion:
 
     @property
     def page_count(self) -> int:
-        return self._byte_view.numel() // self.bytes_per_page
+        return (
+            self._byte_view.numel() // self.bytes_per_page
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def byte_view(self) -> torch.Tensor:
-        return self._byte_view
+        return (
+            self._byte_view
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 @dataclass(frozen=True)

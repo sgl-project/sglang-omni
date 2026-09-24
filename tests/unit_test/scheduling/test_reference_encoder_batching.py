@@ -248,8 +248,8 @@ def test_close_stops_the_batch_worker() -> None:
     service = _service(hook)
     service.get_or_encode("a")
     service.close()
-    assert service._batch_thread is not None
-    assert not service._batch_thread.is_alive()
+    assert service.batch_thread is not None
+    assert not service.batch_thread.is_alive()
 
 
 def test_shutdown_fails_queued_waiters_instead_of_hanging() -> None:

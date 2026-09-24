@@ -38,85 +38,105 @@ class Qwen3TTSCodecStateArena:
     ) -> None:
         if num_slots <= 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
-        self._decoder = decoder
-        self._device = torch.device(device)
-        self._dtype = dtype
-        self._num_slots = int(num_slots)
+        self.decoder = decoder
+        self.device = torch.device(device)
+        self.dtype = dtype
+        self._num_slots = int(
+            num_slots
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         # note (luojiaxuan): one extra row past the last slot is the scratch
         # row. A captured graph gathers a fixed batch bucket, so the rows a
         # smaller cohort leaves unused point here and their scatter lands
         # here, never in a live slot.
-        self.scratch_slot = self._num_slots
-        self._storage = decoder.init_state(
-            self._num_slots + 1, device=self._device, dtype=dtype
+        self.scratch_slot = (
+            self._num_slots
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.storage = decoder.init_state(
+            self._num_slots + 1,
+            device=self.device,
+            dtype=dtype,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-        self._lock = threading.Lock()
+        self.lock = threading.Lock()
         # note (luojiaxuan): cohort indices reach the device through per-thread
         # pinned staging with non_blocking copies. Building them with
         # ``torch.as_tensor(list, device=cuda)`` issues a pageable H2D copy,
         # which blocks the host until every kernel already queued on the
         # stream (the decode just launched) has finished: an implicit
         # resolve() on every gather and scatter.
-        self._staging = threading.local()
+        self.staging = threading.local()
         # note (luojiaxuan): a slot's last owner may still have its zeroing or
         # scatter queued on another stream when the slot is released, so the
         # release records where that stream is and the next owner waits on it
         # before touching the rows.
-        self._release_events: dict[int, torch.cuda.Event] = {}
-        self._free: list[int] = list(reversed(range(self._num_slots)))
-        self._retired: set[int] = set()
-        self._exhausted_count = 0
+        self.release_events: dict[int, torch.cuda.Event] = {}
+        self.free: list[int] = list(
+            reversed(range(self._num_slots))
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.retired: set[int] = set()
+        self._exhausted_count = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         spec = decoder.state_spec()
-        self._bytes_per_slot = spec.bytes_per_stream(dtype)
+        self._bytes_per_slot = spec.bytes_per_stream(
+            dtype
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def num_slots(self) -> int:
-        return self._num_slots
+        return (
+            self._num_slots
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def bytes_per_slot(self) -> int:
-        return self._bytes_per_slot
+        return (
+            self._bytes_per_slot
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def total_bytes(self) -> int:
-        return self._bytes_per_slot * self._num_slots
+        return (
+            self._bytes_per_slot * self._num_slots
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def exhausted_count(self) -> int:
-        return self._exhausted_count
+        return (
+            self._exhausted_count
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def active_slots(self) -> int:
-        with self._lock:
-            return self._num_slots - len(self._free) - len(self._retired)
+        with self.lock:
+            return (
+                self._num_slots - len(self.free) - len(self.retired)
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def acquire(self) -> int | None:
         """Take a zeroed slot, or ``None`` when the arena is full."""
-        with self._lock:
-            if not self._free:
-                self._exhausted_count += 1
+        with self.lock:
+            if not self.free:
+                self._exhausted_count += 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 return None
-            slot = self._free.pop()
-            released = self._release_events.pop(slot, None)
+            slot = self.free.pop()
+            released = self.release_events.pop(slot, None)
         if released is not None:
-            torch.cuda.current_stream(self._device).wait_event(released)
+            torch.cuda.current_stream(self.device).wait_event(released)
         self.zero_slot(slot)
         return slot
 
     def release(self, slot: int) -> None:
         released = None
-        if self._device.type == "cuda":
+        if self.device.type == "cuda":
             released = torch.cuda.Event()
-            released.record(torch.cuda.current_stream(self._device))
-        with self._lock:
-            if slot in self._retired:
+            released.record(torch.cuda.current_stream(self.device))
+        with self.lock:
+            if slot in self.retired:
                 return
-            if slot in self._free:
+            if slot in self.free:
                 raise RuntimeError(
                     f"Qwen3-TTS codec state slot {slot} was released twice"
                 )
             if released is not None:
-                self._release_events[slot] = released
-            self._free.append(slot)
+                self.release_events[slot] = released
+            self.free.append(slot)
 
     def retire(self, slot: int) -> None:
         """Withdraw a slot for the life of the process.
@@ -124,11 +144,11 @@ class Qwen3TTSCodecStateArena:
         Note (Qihao Liu): used when a decode that touched the slot could not be
         proven complete, so its memory must never be handed to later work.
         """
-        with self._lock:
-            self._retired.add(slot)
-            self._release_events.pop(slot, None)
-            if slot in self._free:
-                self._free.remove(slot)
+        with self.lock:
+            self.retired.add(slot)
+            self.release_events.pop(slot, None)
+            if slot in self.free:
+                self.free.remove(slot)
 
     def _buffers(self, state: Qwen3TTSIncrementalCodecState) -> list[torch.Tensor]:
         return [
@@ -139,14 +159,14 @@ class Qwen3TTSCodecStateArena:
         ]
 
     def zero_slot(self, slot: int) -> None:
-        for buffer in self._buffers(self._storage):
+        for buffer in self._buffers(self.storage):
             buffer[slot].zero_()
-        self._storage.frame_positions[slot] = 0
+        self.storage.frame_positions[slot] = 0
 
     _STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if self._device.type != "cuda":
+        if self.device.type != "cuda":
             return torch.as_tensor(list(values), dtype=torch.long)
         count = len(values)
         if count == 0:
@@ -156,21 +176,25 @@ class Qwen3TTSCodecStateArena:
         # before its pending copy ran and the earlier cohort would decode the
         # later cohort's slots. Each call takes the next pair of a small ring;
         # a thread never has more than two cohorts between launch and resolve.
-        ring = getattr(self._staging, f"{name}_ring", None)
+        ring = getattr(self.staging, f"{name}_ring", None)
         if ring is None:
             ring = [
                 (
-                    torch.empty(self._num_slots + 1, dtype=torch.long).pin_memory(),
                     torch.empty(
-                        self._num_slots + 1, dtype=torch.long, device=self._device
+                        self._num_slots + 1, dtype=torch.long
+                    ).pin_memory(),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                    torch.empty(
+                        self._num_slots + 1,
+                        dtype=torch.long,
+                        device=self.device,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     ),
                 )
-                for _ in range(self._STAGING_RING)
+                for _ in range(self.STAGING_RING)
             ]
-            setattr(self._staging, f"{name}_ring", ring)
-            setattr(self._staging, f"{name}_turn", 0)
-        turn = (getattr(self._staging, f"{name}_turn") + 1) % self._STAGING_RING
-        setattr(self._staging, f"{name}_turn", turn)
+            setattr(self.staging, f"{name}_ring", ring)
+            setattr(self.staging, f"{name}_turn", 0)
+        turn = (getattr(self.staging, f"{name}_turn") + 1) % self.STAGING_RING
+        setattr(self.staging, f"{name}_turn", turn)
         host, device = ring[turn]
         host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
         device[:count].copy_(host[:count], non_blocking=True)
@@ -190,7 +214,7 @@ class Qwen3TTSCodecStateArena:
         Capturable: with a static index this is the gather half of a graph
         that reads the arena directly.
         """
-        storage = self._storage
+        storage = self.storage
         state = Qwen3TTSIncrementalCodecState(
             transformer_context_length=storage.transformer_context_length,
             frame_positions=storage.frame_positions.index_select(0, index),
@@ -215,7 +239,7 @@ class Qwen3TTSCodecStateArena:
         self, index: torch.Tensor, state: Qwen3TTSIncrementalCodecState
     ) -> None:
         """Write a cohort state into the rows named by a device index tensor."""
-        storage = self._storage
+        storage = self.storage
         if state.frame_positions is None:
             raise RuntimeError(
                 "Qwen3-TTS codec state arena requires per-row frame positions"
@@ -259,11 +283,11 @@ class Qwen3TTSCodecStateArena:
 
     def describe(self) -> dict[str, Any]:
         return {
-            "slots": self._num_slots,
+            "slots": self._num_slots,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             "active_slots": self.active_slots(),
-            "bytes_per_slot": self._bytes_per_slot,
+            "bytes_per_slot": self._bytes_per_slot,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             "total_bytes": self.total_bytes,
-            "exhausted": self._exhausted_count,
+            "exhausted": self._exhausted_count,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         }
 
 

@@ -45,7 +45,7 @@ def test_ming_thinker_runner_source_injects_multimodal_embeds() -> None:
     assert "validate_final_consumption" in source
     assert "continue" in source
     assert ".clamp(" in source
-    assert "self._embed_tokens.num_embeddings - 1" in source
+    assert "self.embed_tokens.num_embeddings - 1" in source
     assert "outer.model(" in source
     assert "input_ids=None" in source
     assert "input_embeds=input_embeds" in source
@@ -214,17 +214,15 @@ class _FakeMingTokenizer:
 def test_ming_preprocessor_builds_placeholder_input_ids_directly(monkeypatch) -> None:
     module = _load_preprocessor_with_fake_deps(monkeypatch)
     processor = module.MingPreprocessor.__new__(module.MingPreprocessor)
-    processor._tokenizer = _FakeMingTokenizer()
-    processor._audio_patch_id = processor._tokenizer.convert_tokens_to_ids(
+    processor.tokenizer = _FakeMingTokenizer()
+    processor.audio_patch_id = processor.tokenizer.convert_tokens_to_ids(
         module.AUDIO_PATCH
     )
-    processor._audio_start_id = processor._tokenizer.convert_tokens_to_ids(
+    processor.audio_start_id = processor.tokenizer.convert_tokens_to_ids(
         module.AUDIO_START
     )
-    processor._audio_end_id = processor._tokenizer.convert_tokens_to_ids(
-        module.AUDIO_END
-    )
-    processor._image_patch_id = processor._tokenizer.convert_tokens_to_ids(
+    processor.audio_end_id = processor.tokenizer.convert_tokens_to_ids(module.AUDIO_END)
+    processor.image_patch_id = processor.tokenizer.convert_tokens_to_ids(
         module.IMAGE_PATCH
     )
 
@@ -265,7 +263,7 @@ def test_ming_preprocessor_uses_config_image_patch_token_id(monkeypatch) -> None
 
     processor = module.MingPreprocessor("fake-model")
 
-    assert processor._image_patch_id == 222
+    assert processor.image_patch_id == 222
 
 
 def test_ming_config_and_stages_do_not_import_ming_runner() -> None:
@@ -329,10 +327,10 @@ class _FakeEmbedTokens:
 
 def _fake_runner(torch_module, runner_cls, **token_ids):
     runner = runner_cls.__new__(runner_cls)
-    runner._embed_tokens = _FakeEmbedTokens(torch_module)
-    runner._image_token_id = token_ids.get("image", 3)
-    runner._video_token_id = token_ids.get("video", 4)
-    runner._audio_token_id = token_ids.get("audio", 5)
+    runner.embed_tokens = _FakeEmbedTokens(torch_module)
+    runner.image_token_id = token_ids.get("image", 3)
+    runner.video_token_id = token_ids.get("video", 4)
+    runner.audio_token_id = token_ids.get("audio", 5)
     return runner
 
 
@@ -458,7 +456,7 @@ def test_ming_thinker_forward_publishes_sglang_forward_context() -> None:
         assert lm_head == "lm_head"
         return "logits"
 
-    runner._outer_model = SimpleNamespace(
+    runner.outer_model = SimpleNamespace(
         model=model,
         logits_processor=logits_processor,
         lm_head="lm_head",

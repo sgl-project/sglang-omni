@@ -253,11 +253,11 @@ class MossAudioTokenizerStreamingModule(nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self._streaming_state: MossAudioTokenizerStreamingState | None = None
+        self.streaming_state: MossAudioTokenizerStreamingState | None = None
 
     @property
     def is_streaming(self) -> bool:
-        return self._streaming_state is not None
+        return self.streaming_state is not None
 
     def streaming_device(self) -> torch.device:
         parameter = next(self.parameters(), None)
@@ -282,24 +282,24 @@ class MossAudioTokenizerStreamingModule(nn.Module):
             for module in self.modules()
             if isinstance(module, MossAudioTokenizerStreamingModule)
         ]
-        if any(module._streaming_state is not None for module in modules):
+        if any(module.streaming_state is not None for module in modules):
             raise RuntimeError("MOSS-Audio-Tokenizer is already streaming")
         initialized: list[MossAudioTokenizerStreamingModule] = []
         try:
             for module in modules:
-                module._streaming_state = module.init_streaming_state(batch_size)
+                module.streaming_state = module.init_streaming_state(batch_size)
                 initialized.append(module)
             yield
         finally:
             for module in reversed(initialized):
-                module._streaming_state = None
+                module.streaming_state = None
 
     def set_streaming_exec_mask(self, exec_mask: torch.Tensor) -> None:
         states = [
-            module._streaming_state
+            module.streaming_state
             for module in self.modules()
             if isinstance(module, MossAudioTokenizerStreamingModule)
-            and module._streaming_state is not None
+            and module.streaming_state is not None
         ]
         if not states:
             raise RuntimeError("MOSS-Audio-Tokenizer is not streaming")
@@ -340,7 +340,7 @@ def single_module(module: nn.Module, singular: str, plural: str) -> nn.Module:
 
 class PositionIdsCache:
     def __init__(self) -> None:
-        self._items: dict[tuple[str, int | None], torch.Tensor] = {}
+        self.items: dict[tuple[str, int | None], torch.Tensor] = {}
 
     def get(
         self,
@@ -351,10 +351,10 @@ class PositionIdsCache:
         if max_seqlen <= 0:
             raise ValueError(f"max_seqlen must be positive, got {max_seqlen}")
         key = (device.type, device.index)
-        position_ids = self._items.get(key)
+        position_ids = self.items.get(key)
         if position_ids is None or position_ids.shape[0] < max_seqlen:
             position_ids = torch.arange(max_seqlen, device=device, dtype=torch.long)
-            self._items[key] = position_ids
+            self.items[key] = position_ids
         cu_seqlens = torch.tensor([0, max_seqlen], dtype=torch.int32, device=device)
         return cu_seqlens, position_ids[:max_seqlen]
 
@@ -459,11 +459,11 @@ class MossPackedRopeCache:
     def __init__(self, *, max_period: float, streaming_max_positions: int = 0) -> None:
         self.max_period = float(max_period)
         self.streaming_max_positions = streaming_max_positions
-        self._device: torch.device | None = None
-        self._head_dim = 0
-        self._cos: torch.Tensor | None = None
-        self._sin: torch.Tensor | None = None
-        self._cos_sin: torch.Tensor | None = None
+        self.device: torch.device | None = None
+        self.head_dim = 0
+        self.cos: torch.Tensor | None = None
+        self.sin: torch.Tensor | None = None
+        self.cos_sin: torch.Tensor | None = None
 
     def get(
         self,
@@ -477,14 +477,14 @@ class MossPackedRopeCache:
         if head_dim <= 0 or head_dim % 2 != 0:
             raise ValueError(f"RoPE requires an even head_dim, got {head_dim}")
         if (
-            self._cos is not None
-            and self._sin is not None
-            and self._cos_sin is not None
-            and self._device == device
-            and self._head_dim == head_dim
-            and self._cos.shape[0] >= max_positions
+            self.cos is not None
+            and self.sin is not None
+            and self.cos_sin is not None
+            and self.device == device
+            and self.head_dim == head_dim
+            and self.cos.shape[0] >= max_positions
         ):
-            return self._cos[:max_positions], self._sin[:max_positions]
+            return self.cos[:max_positions], self.sin[:max_positions]
 
         half_dim = head_dim // 2
         ds = torch.arange(half_dim, device=device, dtype=torch.float32)
@@ -493,12 +493,12 @@ class MossPackedRopeCache:
             max_positions, device=device, dtype=torch.float32
         ).view(-1, 1)
         phase = positions * freqs.view(1, -1)
-        self._device = device
-        self._head_dim = head_dim
-        self._cos = torch.cos(phase)
-        self._sin = torch.sin(phase)
-        self._cos_sin = torch.cat((self._cos, self._sin), dim=-1)
-        return self._cos, self._sin
+        self.device = device
+        self.head_dim = head_dim
+        self.cos = torch.cos(phase)
+        self.sin = torch.sin(phase)
+        self.cos_sin = torch.cat((self.cos, self.sin), dim=-1)
+        return self.cos, self.sin
 
     def get_cos_sin_cache(
         self,
@@ -512,8 +512,8 @@ class MossPackedRopeCache:
             head_dim=head_dim,
             max_positions=max_positions,
         )
-        assert self._cos_sin is not None
-        return self._cos_sin[:max_positions]
+        assert self.cos_sin is not None
+        return self.cos_sin[:max_positions]
 
 
 def apply_cached_packed_rope(
@@ -842,9 +842,9 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         self.context = None if context is None else int(context)
         self.rope = rope
         self.attention_backend = validate_attention_backend(attention_backend)
-        self._flash_attn_varlen = flash_attn_varlen_func
+        self.flash_attn_varlen = flash_attn_varlen_func
         max_period = self.rope.max_period if self.rope is not None else 10000.0
-        self._packed_rope_cache = packed_rope_cache or MossPackedRopeCache(
+        self.packed_rope_cache = packed_rope_cache or MossPackedRopeCache(
             max_period=max_period
         )
 
@@ -967,7 +967,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         local_flash_plan: LocalCausalFlashPlan | None = None,
         execution_context: StreamingExecutionContext | None = None,
     ) -> torch.Tensor:
-        state = self._streaming_state
+        state = self.streaming_state
         if state is not None:
             if not isinstance(state, AttentionStreamingState):
                 raise RuntimeError("invalid MOSS attention streaming state")
@@ -1032,7 +1032,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
                 causal=self.causal,
                 context=self.context,
                 local_flash_plan=local_flash_plan,
-                flash_attn_varlen=self._flash_attn_varlen,
+                flash_attn_varlen=self.flash_attn_varlen,
             )
         else:
             if self.rope is not None:
@@ -1284,7 +1284,7 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
         q, current_k, current_v = self.project_qkv(x)
         if self.rope is not None:
             q, current_k = apply_cached_streaming_rope(
-                q, current_k, offsets, cache=self._packed_rope_cache
+                q, current_k, offsets, cache=self.packed_rope_cache
             )
         query_positions = offsets.view(-1, 1) + torch.arange(
             x.shape[1], device=x.device, dtype=torch.long
@@ -1445,5 +1445,5 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
             k,
             position_ids,
             max_positions=max_positions,
-            cache=self._packed_rope_cache,
+            cache=self.packed_rope_cache,
         )

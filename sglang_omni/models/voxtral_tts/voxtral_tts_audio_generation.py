@@ -161,7 +161,7 @@ class RotaryPositionEmbedding(nn.Module):
         self.head_dim = head_dim
         self.max_positions = max_positions
         self.theta = theta
-        self._dtype = dtype
+        self.dtype = dtype
         self.materialise_cache()
 
     def materialise_cache(self) -> None:
@@ -171,10 +171,10 @@ class RotaryPositionEmbedding(nn.Module):
         positions = torch.arange(self.max_positions, dtype=torch.float32)
         # outer product → [max_positions, half]
         angles = torch.outer(positions, inv_freq)
-        cos_cache = angles.cos().to(self._dtype)
-        sin_cache = angles.sin().to(self._dtype)
-        self.register_buffer("_cos", cos_cache, persistent=False)
-        self.register_buffer("_sin", sin_cache, persistent=False)
+        cos_cache = angles.cos().to(self.dtype)
+        sin_cache = angles.sin().to(self.dtype)
+        self.register_buffer("cos", cos_cache, persistent=False)
+        self.register_buffer("sin", sin_cache, persistent=False)
 
     @staticmethod
     def rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
@@ -189,8 +189,8 @@ class RotaryPositionEmbedding(nn.Module):
         k: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         seq_len = positions.numel()
-        cos = self._cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
-        sin = self._sin[positions.flatten()].unsqueeze(1).to(q.dtype)
+        cos = self.cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
+        sin = self.sin[positions.flatten()].unsqueeze(1).to(q.dtype)
 
         q = self.rotate(q.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
         k = self.rotate(k.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
@@ -593,7 +593,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
         model.audio_token_embedding.rebuild_offsets()
 
         at = model.acoustic_transformer
-        at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
+        at.timesteps = torch.linspace(0, 1, at.acoustic_decode_iters)
         dim = at.acoustic_transformer_args.dim
         at.time_embedding.inv_freq = torch.exp(
             -math.log(10_000.0) * torch.arange(dim // 2).float() / (dim // 2)

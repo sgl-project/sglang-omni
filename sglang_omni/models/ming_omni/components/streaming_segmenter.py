@@ -74,16 +74,16 @@ class MingStreamingSegmenterScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
-        self._config = config or SegmenterConfig()
-        self._token_count_fn = token_count_fn or default_token_count
-        self._target_stage = target_stage
-        self._running = False
-        self._states: dict[str, RequestState] = {}
+        self.config = config or SegmenterConfig()
+        self.token_count_fn = token_count_fn or default_token_count
+        self.target_stage = target_stage
+        self.running = False
+        self.states: dict[str, RequestState] = {}
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        self._running = True
-        while self._running:
+        self.running = True
+        while self.running:
             try:
                 msg = self.inbox.get(timeout=0.1)
             except _queue_mod.Empty:
@@ -98,18 +98,18 @@ class MingStreamingSegmenterScheduler:
                     msg.request_id,
                 )
                 self.emit_error(msg.request_id, exc)
-                self._states.pop(msg.request_id, None)
+                self.states.pop(msg.request_id, None)
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
 
     def abort(self, request_id: str) -> None:
-        state = self._states.get(request_id)
+        state = self.states.get(request_id)
         if state is None:
             return
         state.aborted = True
         # Drop without finalizing — the runtime will close the stream queue.
-        self._states.pop(request_id, None)
+        self.states.pop(request_id, None)
 
     # ------------------------------------------------------------------ dispatch
     def handle_message(self, msg: IncomingMessage) -> None:
@@ -126,12 +126,12 @@ class MingStreamingSegmenterScheduler:
     def on_new_request(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
         payload = msg.data
-        state = self._states.get(request_id)
+        state = self.states.get(request_id)
         if state is None:
             state = RequestState(
-                segmenter=SegmenterState(self._config, self._token_count_fn),
+                segmenter=SegmenterState(self.config, self.token_count_fn),
             )
-            self._states[request_id] = state
+            self.states[request_id] = state
         state.payload = payload
         state.payload_arrived = True
         # If the upstream stream already signalled done before the payload
@@ -143,14 +143,14 @@ class MingStreamingSegmenterScheduler:
     def on_stream_chunk(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
         item = msg.data
-        state = self._states.get(request_id)
+        state = self.states.get(request_id)
         if state is None:
             # First sight of this request: create state so we can buffer
             # incoming text even before the thinker's main payload arrives.
             state = RequestState(
-                segmenter=SegmenterState(self._config, self._token_count_fn),
+                segmenter=SegmenterState(self.config, self.token_count_fn),
             )
-            self._states[request_id] = state
+            self.states[request_id] = state
         if state.aborted or state.finalized:
             return
         if not isinstance(item, StreamItem):
@@ -171,7 +171,7 @@ class MingStreamingSegmenterScheduler:
     # ------------------------------------------------------------------ stream done
     def on_stream_done(self, msg: IncomingMessage) -> None:
         request_id = msg.request_id
-        state = self._states.get(request_id)
+        state = self.states.get(request_id)
         if state is None:
             return
         state.stream_done = True
@@ -180,11 +180,11 @@ class MingStreamingSegmenterScheduler:
 
     # ------------------------------------------------------------------ first-seg timer
     def tick_first_segment_timeouts(self) -> None:
-        if not self._states:
+        if not self.states:
             return
         now_ms = self.now_ms()
-        wait = self._config.first_segment_max_wait_ms
-        for request_id, state in list(self._states.items()):
+        wait = self.config.first_segment_max_wait_ms
+        for request_id, state in list(self.states.items()):
             if state.aborted or state.finalized or state.segment_count != 0:
                 continue
             if state.first_text_ms is None:
@@ -193,7 +193,7 @@ class MingStreamingSegmenterScheduler:
                 continue
             if (
                 state.segmenter.buffer_token_count()
-                < self._config.first_segment_min_tokens
+                < self.config.first_segment_min_tokens
             ):
                 continue
             for segment in state.segmenter.push("", now_ms=now_ms):
@@ -233,7 +233,7 @@ class MingStreamingSegmenterScheduler:
                 data=payload,
             )
         )
-        self._states.pop(request_id, None)
+        self.states.pop(request_id, None)
 
     # ------------------------------------------------------------------ emit helpers
     def emit_segment(self, request_id: str, segment: TextSegment) -> None:
@@ -243,7 +243,7 @@ class MingStreamingSegmenterScheduler:
                 request_id=request_id,
                 type="stream",
                 data=data,
-                target=self._target_stage,
+                target=self.target_stage,
                 metadata={
                     "segment_id": segment.segment_id,
                     "is_final_segment": bool(segment.is_final_segment),

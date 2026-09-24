@@ -892,8 +892,8 @@ def test_moss_tts_preprocessing_loads_separate_codec(
         assert context is not None
         assert context.processor is processor
         assert context.processor.audio_tokenizer is None
-        assert context.reference_encoder._audio_encoder is encoder
-        assert context.reference_encoder._n_vq == 32
+        assert context.reference_encoder.audio_encoder is encoder
+        assert context.reference_encoder.n_vq == 32
         assert isinstance(context.reference_encoder, stages.BatchedReferenceEncoder)
     finally:
         rb.clear_moss_tts_preprocessing_context()
@@ -1009,7 +1009,7 @@ def test_moss_tts_preprocessing_reference_cache_toggles(
         stages.create_preprocessing_executor("model", device="cpu")
         cached = rb._QUEUE.snapshot().context.reference_encoder
         assert isinstance(cached, stages.MossTTSReferenceEncoder)
-        assert cached._service._cache.max_size == 8192
+        assert cached.service.cache.max_size == 8192
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
@@ -1757,7 +1757,7 @@ def test_moss_collect_step_mixed_batch_uses_full_text_path() -> None:
     runner.collect_moss_step(result, object(), schedule_batch, requests)
 
     assert seen == {"head": False, "sampler": False}
-    assert runner._pending_rows[:, 0].tolist() == [
+    assert runner.pending_rows[:, 0].tolist() == [
         cfg.audio_assistant_gen_slot_token_id,
         5,
     ]
@@ -1831,7 +1831,7 @@ def _retract_runner(hidden_size: int = 2, decode_embedding=None):
         prepare_multi_modal_inputs=lambda rows: rows.to(torch.float32)[:, :hidden_size],
     )
     if decode_embedding is not None:
-        model._decode_input_embedding = decode_embedding
+        model.decode_input_embedding = decode_embedding
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = model
     return runner
@@ -2128,8 +2128,8 @@ def test_moss_post_process_outputs_skips_im_end() -> None:
             audio_end_token_id=11,
         )
     )
-    runner._pending_rows = torch.tensor([[12, 2, 4], [14, 4, 4]], dtype=torch.long)
-    runner._pending_embeds = torch.ones((2, 3))
+    runner.pending_rows = torch.tensor([[12, 2, 4], [14, 4, 4]], dtype=torch.long)
+    runner.pending_embeds = torch.ones((2, 3))
     requests = [
         SimpleNamespace(
             request_id="active",
@@ -2167,8 +2167,8 @@ def test_moss_post_process_audio_end_restores_full_text_sampling() -> None:
             audio_end_token_id=11,
         )
     )
-    runner._pending_rows = torch.tensor([[11, 4, 4]], dtype=torch.long)
-    runner._pending_embeds = torch.ones((1, 3))
+    runner.pending_rows = torch.tensor([[11, 4, 4]], dtype=torch.long)
+    runner.pending_embeds = torch.ones((1, 3))
     data = SimpleNamespace(
         output_rows=[],
         pending_feedback_queue=[],
@@ -2218,8 +2218,8 @@ def test_moss_audio_end_in_batch_uses_full_text_path_on_next_step() -> None:
             ),
         ),
     ]
-    runner._pending_rows = torch.tensor([[11, 4], [12, 2]], dtype=torch.long)
-    runner._pending_embeds = torch.ones((2, 2))
+    runner.pending_rows = torch.tensor([[11, 4], [12, 2]], dtype=torch.long)
+    runner.pending_embeds = torch.ones((2, 2))
 
     runner.post_process_outputs(
         object(),

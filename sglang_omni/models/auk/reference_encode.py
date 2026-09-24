@@ -45,7 +45,7 @@ class AuKConditionEncoder:
         class AuKThinker(Qwen2_5OmniThinkerForConditionalGeneration):
             _keys_to_ignore_on_load_unexpected = [
                 *(
-                    Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected
+                    Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     or []
                 ),
                 r"^(talker|token2wav)\.",

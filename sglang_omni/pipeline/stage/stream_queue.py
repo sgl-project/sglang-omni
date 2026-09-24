@@ -44,22 +44,22 @@ class StreamQueue:
     """
 
     def __init__(self, max_pending: int = 16):
-        self._max_pending = max_pending
-        self._queues: dict[str, asyncio.Queue] = {}
-        self._closed: set[str] = set()  # track closed request IDs for abort race
+        self.max_pending = max_pending
+        self.queues: dict[str, asyncio.Queue] = {}
+        self.closed: set[str] = set()  # track closed request IDs for abort race
 
     def open(self, request_id: str) -> None:
-        self._closed.discard(request_id)
-        if request_id not in self._queues:
-            self._queues[request_id] = (
+        self.closed.discard(request_id)
+        if request_id not in self.queues:
+            self.queues[request_id] = (
                 asyncio.Queue()
             )  # unbounded; backpressure at sender
 
     def has(self, request_id: str) -> bool:
-        return request_id in self._queues
+        return request_id in self.queues
 
     def put(self, request_id: str, item: StreamItem) -> None:
-        queue = self._queues.get(request_id)
+        queue = self.queues.get(request_id)
         if queue is None:
             # The queue can disappear between an ingress guard and delivery
             # when request cleanup races an in-flight stream chunk.
@@ -67,7 +67,7 @@ class StreamQueue:
         queue.put_nowait(item)
 
     def put_done(self, request_id: str, from_stage: str | None = None) -> None:
-        queue = self._queues.get(request_id)
+        queue = self.queues.get(request_id)
         if queue is None:
             return
         queue.put_nowait(StreamSignal(from_stage=from_stage, is_done=True))
@@ -75,16 +75,16 @@ class StreamQueue:
     def put_error(
         self, request_id: str, error: BaseException, from_stage: str | None = None
     ) -> None:
-        queue = self._queues.get(request_id)
+        queue = self.queues.get(request_id)
         if queue is None:
             return
         queue.put_nowait(StreamSignal(from_stage=from_stage, error=error))
 
     async def get(self, request_id: str) -> StreamItem | None:
         """Get next item. Returns None when done or closed (abort)."""
-        queue = self._queues.get(request_id)
+        queue = self.queues.get(request_id)
         if queue is None:
-            if request_id in self._closed:
+            if request_id in self.closed:
                 return None  # queue was closed — treat as done
             raise RuntimeError(f"No queue for {request_id}")
 
@@ -101,9 +101,9 @@ class StreamQueue:
 
     async def get_with_source(self, request_id: str) -> StreamItem | StreamSignal:
         """Get next item or signal while preserving the upstream stage info."""
-        queue = self._queues.get(request_id)
+        queue = self.queues.get(request_id)
         if queue is None:
-            if request_id in self._closed:
+            if request_id in self.closed:
                 return StreamSignal(is_done=True)  # abort signal
             raise RuntimeError(f"No queue for {request_id}")
 
@@ -114,15 +114,15 @@ class StreamQueue:
         return item
 
     def close(self, request_id: str) -> None:
-        q = self._queues.pop(request_id, None)
-        self._closed.add(request_id)
+        q = self.queues.pop(request_id, None)
+        self.closed.add(request_id)
         # Cap _closed size to prevent unbounded growth
-        if len(self._closed) > 10000:
+        if len(self.closed) > 10000:
             # Remove oldest entries (set is unordered, but bulk discard is fine)
-            excess = len(self._closed) - 5000
-            it = iter(self._closed)
+            excess = len(self.closed) - 5000
+            it = iter(self.closed)
             to_remove = [next(it) for _ in range(excess)]
-            self._closed -= set(to_remove)
+            self.closed -= set(to_remove)
         if q is not None:
             # Wake any blocked get() calls with a proper sentinel
             q.put_nowait(StreamSignal(is_done=True))

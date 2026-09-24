@@ -23,9 +23,9 @@ class RotaryEmbedding:
     def __init__(self, dim: int, theta: float = 10000.0):
         self.dim = dim
         self.theta = theta
-        self._cos: Optional[mx.array] = None
-        self._sin: Optional[mx.array] = None
-        self._cached_len = 0
+        self.cos: Optional[mx.array] = None
+        self.sin: Optional[mx.array] = None
+        self.cached_len = 0
 
     def build(self, seq_len: int):
         inv_freq = 1.0 / (
@@ -34,15 +34,15 @@ class RotaryEmbedding:
         t = mx.arange(seq_len).astype(mx.float32)
         freqs = mx.outer(t, inv_freq)
         freqs = mx.repeat(freqs, 2, axis=-1)
-        self._cos = mx.cos(freqs)
-        self._sin = mx.sin(freqs)
-        mx.eval(self._cos, self._sin)
-        self._cached_len = seq_len
+        self.cos = mx.cos(freqs)
+        self.sin = mx.sin(freqs)
+        mx.eval(self.cos, self.sin)
+        self.cached_len = seq_len
 
     def forward_from_seq_len(self, seq_len: int):
-        if self._cos is None or seq_len > self._cached_len:
+        if self.cos is None or seq_len > self.cached_len:
             self.build(seq_len)
-        return self._cos[:seq_len], self._sin[:seq_len]
+        return self.cos[:seq_len], self.sin[:seq_len]
 
 
 def rotate_half(x: mx.array) -> mx.array:

@@ -103,7 +103,9 @@ def cosyvoice3_model_revision(model: Any) -> str:
     config = getattr(model, "config", None)
     for candidate in (
         getattr(model, "name_or_path", None),
-        getattr(config, "_name_or_path", None),
+        getattr(
+            config, "_name_or_path", None
+        ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         getattr(config, "name_or_path", None),
     ):
         if candidate:
@@ -236,8 +238,8 @@ class CosyVoice3ReferenceEncodeHook(
     artifact_kind = "reference_conditioning"
 
     def __init__(self, *, model: Any, model_revision: str | None = None) -> None:
-        self._speech_tokenizer = None
-        self._speaker_encoder = None
+        self.speech_tokenizer = None
+        self.speaker_encoder = None
         self.model_revision = model_revision or cosyvoice3_model_revision(model)
         self.encoder_config_hash = _hash_bytes(
             json.dumps(
@@ -267,8 +269,8 @@ class CosyVoice3ReferenceEncodeHook(
         speaker_encoder: SpeakerEncoder,
     ) -> None:
         """Attach the process-local ONNX encoders after hook construction."""
-        self._speech_tokenizer = speech_tokenizer
-        self._speaker_encoder = speaker_encoder
+        self.speech_tokenizer = speech_tokenizer
+        self.speaker_encoder = speaker_encoder
 
     def normalize_input(self, raw_input: Any) -> CosyVoice3ReferenceInput:
         if isinstance(raw_input, CosyVoice3ReferenceInput):
@@ -283,15 +285,15 @@ class CosyVoice3ReferenceEncodeHook(
         return "prompt_16k+flow_24k+mono"
 
     def encode_one(self, item: CosyVoice3ReferenceInput) -> CosyVoice3ReferenceArtifact:
-        if self._speech_tokenizer is None or self._speaker_encoder is None:
+        if self.speech_tokenizer is None or self.speaker_encoder is None:
             raise RuntimeError("CosyVoice3 reference encoders are not bound")
 
         prompt_audio_16k = load_prompt_audio(item.ref_audio)
         prompt_audio_24k = load_prompt_audio_24k(item.ref_audio)
-        speaker_embedding = self._speaker_encoder.extract_embedding(
+        speaker_embedding = self.speaker_encoder.extract_embedding(
             prompt_audio_16k, _PROMPT_AUDIO_SR
         )
-        prompt_speech_token = self._speech_tokenizer.extract_speech_token(
+        prompt_speech_token = self.speech_tokenizer.extract_speech_token(
             prompt_audio_16k, _PROMPT_AUDIO_SR
         )
         prompt_speech_feat = extract_prompt_speech_feat(prompt_audio_24k, _SAMPLE_RATE)
@@ -821,10 +823,14 @@ def build_sglang_cosyvoice3_request(
         vocab_size=TOTAL_VOCAB_SIZE,
     )
     req.tokenizer = _COSYVOICE3_NULL_TOKENIZER
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
-    req._cosyvoice3_text_token_ids = list(prepared.text_token_ids)
-    req._cosyvoice3_prompt_speech_token_ids = list(prepared.llm_prompt_speech_token_ids)
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._cosyvoice3_text_token_ids = list(
+        prepared.text_token_ids
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._cosyvoice3_prompt_speech_token_ids = list(
+        prepared.llm_prompt_speech_token_ids
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = CosyVoice3SGLangRequestData(
         input_ids=prepared.input_ids,

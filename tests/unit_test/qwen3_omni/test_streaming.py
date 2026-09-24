@@ -233,7 +233,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
         return _TokenMetadataOnlyChunk(message)
 
     prefill_builder = object.__new__(TalkerPrefillBuilder)
-    prefill_builder._model = SimpleNamespace(
+    prefill_builder.model = SimpleNamespace(
         text_projection=lambda tensor: tensor * 2.0,
         hidden_projection=lambda tensor: tensor + 100.0,
         get_input_embeddings=lambda: (
@@ -241,22 +241,22 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
         ),
     )
     prefill_builder._device = torch.device("cpu")
-    prefill_builder._dtype = torch.float32
-    prefill_builder._audio_token_id = 30
-    prefill_builder._image_token_id = None
-    prefill_builder._video_token_id = None
-    prefill_builder._im_start_token_id = 10
-    prefill_builder._im_end_token_id = 99
-    prefill_builder._system_token_id = 19
-    prefill_builder._user_token_id = 20
-    prefill_builder._assistant_token_id = 40
-    prefill_builder._codec_nothink_id = 1
-    prefill_builder._codec_think_bos_id = 2
-    prefill_builder._codec_think_eos_id = 3
-    prefill_builder._codec_pad_id = 4
-    prefill_builder._codec_bos_id = 5
-    prefill_builder._tts_pad_token_id = 6
-    prefill_builder._speaker_map = {}
+    prefill_builder.dtype = torch.float32
+    prefill_builder.audio_token_id = 30
+    prefill_builder.image_token_id = None
+    prefill_builder.video_token_id = None
+    prefill_builder.im_start_token_id = 10
+    prefill_builder.im_end_token_id = 99
+    prefill_builder.system_token_id = 19
+    prefill_builder.user_token_id = 20
+    prefill_builder.assistant_token_id = 40
+    prefill_builder.codec_nothink_id = 1
+    prefill_builder.codec_think_bos_id = 2
+    prefill_builder.codec_think_eos_id = 3
+    prefill_builder.codec_pad_id = 4
+    prefill_builder.codec_bos_id = 5
+    prefill_builder.tts_pad_token_id = 6
+    prefill_builder.speaker_map = {}
 
     prompt_ids = torch.tensor([10, 20, 30, 31, 10, 40, 41], dtype=torch.long)
     prompt_embed = _token_embedding_rows(prompt_ids)
@@ -665,16 +665,16 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     """Construct a Stage shell that bypasses __init__ for unit-level checks."""
     s = Stage.__new__(Stage)
     s.name = "decode" if is_terminal else "thinker"
-    s._is_terminal = is_terminal
-    s._owns_external_io = owns_io
-    s._aborted = set()
-    s._active_requests = set()
-    s._replica_bindings = {}
-    s._stream_queue = None
-    s._stream_chunk_counters = {}
-    s._first_stream_chunk_seen = set()
-    s._local_stream_targets = {}
-    s._nonlocal_stream_targets = {}
+    s.is_terminal = is_terminal
+    s.owns_external_io = owns_io
+    s.aborted = set()
+    s.active_requests = set()
+    s.replica_bindings = {}
+    s.stream_queue = None
+    s.stream_chunk_counters = {}
+    s.first_stream_chunk_seen = set()
+    s.local_stream_targets = {}
+    s.nonlocal_stream_targets = {}
     s.relay = SimpleNamespace()
     s.input_handler = SimpleNamespace(cancel=lambda request_id: None)
     s.scheduler = SimpleNamespace(abort=lambda request_id: None)
@@ -721,13 +721,13 @@ def test_queue_stream_error_fast_fails_when_no_queue():
     assert len(s.control_plane.completions) == 1
     assert s.control_plane.completions[0].request_id == "req-1"
     assert s.control_plane.completions[0].error == "boom"
-    assert "req-1" in s._aborted
+    assert "req-1" in s.aborted
 
 
 def test_queue_stream_error_aborted_request_no_op():
     """An aborted request must not surface another failure to the coordinator."""
     s = _bare_stage(is_terminal=True)
-    s._aborted.add("req-1")
+    s.aborted.add("req-1")
     asyncio.run(
         s.queue_stream_error("req-1", from_stage="thinker", error=RuntimeError("late"))
     )

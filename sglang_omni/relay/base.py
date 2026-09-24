@@ -153,24 +153,24 @@ class CreditAllocator:
         self.credits = credits
         self.slot_size = slot_size
         self.base_ptr = base_ptr
-        self._free_credits = asyncio.Queue(maxsize=credits)
+        self.free_credits = asyncio.Queue(maxsize=credits)
 
         # Initialize credits
         for i in range(credits):
             if slot_size is not None:
                 # Memory mode: return offsets
-                self._free_credits.put_nowait(i * slot_size)
+                self.free_credits.put_nowait(i * slot_size)
             else:
                 # Simple mode: return credit IDs
-                self._free_credits.put_nowait(i)
+                self.free_credits.put_nowait(i)
 
     async def acquire_async(self) -> int:
         """Acquire a credit (blocks if none available)."""
-        return await self._free_credits.get()
+        return await self.free_credits.get()
 
     def release(self, credit_id: int):
         """Release a credit back to the pool."""
         try:
-            self._free_credits.put_nowait(credit_id)
+            self.free_credits.put_nowait(credit_id)
         except asyncio.QueueFull:
             logger.error("Attempted to release credit to a full pool!")

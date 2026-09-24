@@ -102,44 +102,46 @@ class ModelRunner:
         self.output_processor = output_processor
         self.device = current_platform.get_device(tp_worker.gpu_id)
         self.model = tp_worker.model_runner.model
-        self._execution_bridge: Any | None = None
+        self.execution_bridge: Any | None = None
 
         # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
-        self._async_enabled: bool = False
-        self._staging_slot: int = 0
-        self._host_staging_buffers: list[torch.Tensor] = []
+        self.async_enabled: bool = False
+        self.staging_slot: int = 0
+        self.host_staging_buffers: list[torch.Tensor] = []
         # Observability: how often resolve found the launched step's event
         # already done (no blocking) vs had to block on synchronize(). This
         # counts whether the launched step's GPU work was published in time; it
         # does NOT measure host-D2H overlap (only host-staging runners like Higgs
         # overlap a host copy; the device-snapshot path does not).
-        self._async_query_hit: int = 0
-        self._async_query_miss: int = 0
-        self._token_id_host_bufs: list[torch.Tensor] | None = None
-        self._token_id_host_slot: int = 0
-        self._suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
+        self.async_query_hit: int = 0
+        self.async_query_miss: int = 0
+        self.token_id_host_bufs: list[torch.Tensor] | None = None
+        self.token_id_host_slot: int = 0
+        self.suppress_tensor_cache: dict[tuple, tuple[Any, torch.Tensor | None]] = {}
 
     def stage_token_ids(self, result: Any, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
         # .tolist() never triggers a blocking pageable D2H; next_token_ids stays device-side
         if not (isinstance(ids, torch.Tensor) and ids.is_cuda):
-            result._host_token_ids = ids
-            result._host_token_ids_event = None
+            result._host_token_ids = ids  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            result._host_token_ids_event = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return
         n = ids.shape[0]
         buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
         event = torch.cuda.Event()
         event.record()
-        result._host_token_ids = buf[:n]
-        result._host_token_ids_event = event
+        result._host_token_ids = buf[
+            :n
+        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        result._host_token_ids_event = event  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
         # Note (wenyao): two buffers ping-ponged so a step's host read never races
         # the next step's async copy
         return self.pinned_pingpong(
-            "_token_id_host_bufs",
-            "_token_id_host_slot",
+            "token_id_host_bufs",
+            "token_id_host_slot",
             (n,),
             like.dtype,
             realloc_on_grow=True,
@@ -181,15 +183,19 @@ class ModelRunner:
         return buf
 
     def resolve_host_token_ids(self, result: Any) -> Any:
-        event = getattr(result, "_host_token_ids_event", None)
+        event = getattr(
+            result, "_host_token_ids_event", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if event is not None:
             event.synchronize()
-            result._host_token_ids_event = None
-        return getattr(result, "_host_token_ids", None)
+            result._host_token_ids_event = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return getattr(
+            result, "_host_token_ids", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def bind_execution_bridge(self, bridge: Any) -> None:
         """Bind the scheduler-owned SGLang execution-contract adapter."""
-        self._execution_bridge = bridge
+        self.execution_bridge = bridge
 
     def execution_context(
         self,
@@ -199,7 +205,7 @@ class ModelRunner:
     ):
         if schedule_batch.forward_mode.is_extend():
             self.restore_output_penalty_history(schedule_batch)
-        return self._execution_bridge.forward_context(
+        return self.execution_bridge.forward_context(
             schedule_batch,
             isolate_sampling=isolate_sampling,
         )
@@ -287,8 +293,8 @@ class ModelRunner:
         replacement cannot alias an in-flight snapshot.
         """
         return self.pinned_pingpong(
-            "_host_staging_buffers",
-            "_staging_slot",
+            "host_staging_buffers",
+            "staging_slot",
             tuple(shape),
             dtype,
             realloc_on_grow=True,
@@ -395,7 +401,7 @@ class ModelRunner:
                 schedule_batch,
                 scheduler_output.requests,
             )
-            event = self._execution_bridge.record_completion()
+            event = self.execution_bridge.record_completion()
             # Never retain the mutable live ScheduleBatch across a lookahead
             # iteration. The upstream overlap loop likewise queues batch.copy().
             resolve_batch = schedule_batch.copy()
@@ -424,10 +430,10 @@ class ModelRunner:
         if pending is None:
             return None
         if pending.event.query():
-            self._async_query_hit += 1
+            self.async_query_hit += 1
         else:
             pending.event.synchronize()
-            self._async_query_miss += 1
+            self.async_query_miss += 1
         # Skip reqs finished or retracted in a prior (lagged) step so _finalize
         # neither re-emits nor re-frees their KV (mirrors _resolve_and_process).
         skip_rids = {
@@ -477,7 +483,7 @@ class ModelRunner:
                 schedule_batch, scheduler_output.requests
             )
         )
-        if capture_hidden_mode is None and self.output_processor._capture_hidden:
+        if capture_hidden_mode is None and self.output_processor.capture_hidden:
             capture_hidden_mode = CaptureHiddenMode.LAST
 
         # init_new does not read capture_hidden_mode off the batch, so pass the
@@ -665,7 +671,7 @@ class ModelRunner:
     ) -> None:
         if schedule_batch.is_prefill_only:
             return
-        self._execution_bridge.publish_next_tokens(
+        self.execution_bridge.publish_next_tokens(
             schedule_batch,
             self.next_input_token_ids(result, forward_batch, requests),
         )
@@ -976,10 +982,10 @@ class ModelRunner:
         # by content collapses the whole fleet onto one device tensor; the key
         # itself is derived once per request because the builder hands out a
         # fresh list object each time.
-        cache = getattr(self, "_suppress_tensor_cache", None)
+        cache = getattr(self, "suppress_tensor_cache", None)
         if cache is None:
             cache = {}
-            self._suppress_tensor_cache = cache
+            self.suppress_tensor_cache = cache
         row_groups: dict[Any, tuple[torch.Tensor, list[int]]] = {}
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -987,15 +993,19 @@ class ModelRunner:
             if not suppress_tokens:
                 req = data.req
                 try:
-                    suppress_tokens = req._codec_suppress_tokens
+                    suppress_tokens = (
+                        req._codec_suppress_tokens
+                    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 except AttributeError:
                     suppress_tokens = None
             if not suppress_tokens:
                 continue
-            content = getattr(data, "_suppress_content", None)
+            content = getattr(
+                data, "_suppress_content", None
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if content is None:
                 content = tuple(int(t) for t in suppress_tokens)
-                data._suppress_content = content
+                data._suppress_content = content  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             key = (content, vocab, str(device))
             toks_t = cache.get(key)
             if key not in cache:

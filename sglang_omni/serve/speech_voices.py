@@ -144,14 +144,14 @@ class SpeakerSampleStore:
         if self.max_uploaded <= 0:
             raise ValueError("SPEAKER_MAX_UPLOADED must be positive")
         self.cache = cache or get_speaker_artifact_cache()
-        self._voices: dict[str, UploadedVoice] = {}
-        self._last_upload_timestamp = 0
-        self._lock = RLock()
+        self.voices: dict[str, UploadedVoice] = {}
+        self.last_upload_timestamp = 0
+        self.lock = RLock()
         self.restore()
 
     def list_response(self) -> dict[str, Any]:
-        with self._lock:
-            uploaded = sorted(self._voices.values(), key=lambda item: item.name.lower())
+        with self.lock:
+            uploaded = sorted(self.voices.values(), key=lambda item: item.name.lower())
             voices = sorted(
                 set(DEFAULT_VOICE_PRESETS) | {voice.name for voice in uploaded},
                 key=str.lower,
@@ -163,16 +163,16 @@ class SpeakerSampleStore:
             }
 
     def uploaded_voice_names(self) -> list[str]:
-        with self._lock:
+        with self.lock:
             return sorted(
-                (voice.name for voice in self._voices.values()),
+                (voice.name for voice in self.voices.values()),
                 key=str.lower,
             )
 
     def get(self, name: str) -> UploadedVoice | None:
         normalized = normalize_voice_name(name)
-        with self._lock:
-            return self._voices.get(normalized)
+        with self.lock:
+            return self.voices.get(normalized)
 
     def upload(
         self,
@@ -231,9 +231,9 @@ class SpeakerSampleStore:
                 samples,
                 voice.to_safetensors_metadata(),
             )
-            with self._lock:
-                replaced = normalized_name in self._voices
-                if not replaced and len(self._voices) >= self.max_uploaded:
+            with self.lock:
+                replaced = normalized_name in self.voices
+                if not replaced and len(self.voices) >= self.max_uploaded:
                     raise bad_request(
                         f"Uploaded voice limit reached ({self.max_uploaded})",
                         param="name",
@@ -242,7 +242,7 @@ class SpeakerSampleStore:
                 temp_path = None
                 if replaced:
                     self.cache.clear_voice(normalized_name)
-                self._voices[normalized_name] = voice
+                self.voices[normalized_name] = voice
         finally:
             if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
@@ -254,8 +254,8 @@ class SpeakerSampleStore:
 
     def delete(self, name: str) -> bool:
         normalized = normalize_voice_name(name)
-        with self._lock:
-            voice = self._voices.get(normalized)
+        with self.lock:
+            voice = self.voices.get(normalized)
             if voice is None:
                 return False
             try:
@@ -267,15 +267,15 @@ class SpeakerSampleStore:
                 raise internal_error(
                     f"Failed to delete voice '{voice.name}' from storage",
                 ) from exc
-            self._voices.pop(normalized)
+            self.voices.pop(normalized)
             self.cache.clear_voice(normalized)
         return True
 
     def resolve_reference(self, name: str) -> UploadedVoiceReference | None:
         normalized = normalize_voice_name(name)
         while True:
-            with self._lock:
-                voice = self._voices.get(normalized)
+            with self.lock:
+                voice = self.voices.get(normalized)
                 if voice is None:
                     return None
                 cache_key = voice_data_url_cache_key(voice)
@@ -288,8 +288,8 @@ class SpeakerSampleStore:
                 "ascii"
             )
             cached = f"data:audio/wav;base64,{audio_b64}"
-            with self._lock:
-                if self._voices.get(normalized) != voice:
+            with self.lock:
+                if self.voices.get(normalized) != voice:
                     continue
                 self.cache.put(cache_key, cached)
                 return UploadedVoiceReference(voice=voice, ref_audio=cached)
@@ -330,14 +330,14 @@ class SpeakerSampleStore:
                 continue
             restored[voice.normalized_name] = voice
             last_timestamp = max(last_timestamp, voice.created_at)
-        with self._lock:
-            self._voices = restored
-            self._last_upload_timestamp = last_timestamp
+        with self.lock:
+            self.voices = restored
+            self.last_upload_timestamp = last_timestamp
 
     def next_upload_timestamp(self) -> int:
-        with self._lock:
-            timestamp = max(int(time.time()), self._last_upload_timestamp + 1)
-            self._last_upload_timestamp = timestamp
+        with self.lock:
+            timestamp = max(int(time.time()), self.last_upload_timestamp + 1)
+            self.last_upload_timestamp = timestamp
             return timestamp
 
     def load_samples(self, voice: UploadedVoice) -> tuple[np.ndarray, int]:

@@ -170,15 +170,15 @@ class TTSTextNormalizer:
 
     def __init__(self, cache_root: str | None = None):
         self.cache_root = cache_root or default_cache_root()
-        self._normalizers: dict[str, object] = {}
-        self._locks: dict[str, threading.Lock] = {}
-        self._global_lock = threading.Lock()
+        self.normalizers: dict[str, object] = {}
+        self.locks: dict[str, threading.Lock] = {}
+        self.global_lock = threading.Lock()
 
     def lang_lock(self, lang: str) -> threading.Lock:
-        with self._global_lock:
-            if lang not in self._locks:
-                self._locks[lang] = threading.Lock()
-            return self._locks[lang]
+        with self.global_lock:
+            if lang not in self.locks:
+                self.locks[lang] = threading.Lock()
+            return self.locks[lang]
 
     def build(self, lang: str):
         from nemo_text_processing.text_normalization.normalize import Normalizer
@@ -212,9 +212,9 @@ class TTSTextNormalizer:
 
     def get(self, lang: str):
         with self.lang_lock(lang):
-            if lang not in self._normalizers:
-                self._normalizers[lang] = self.build(lang)
-            return self._normalizers[lang]
+            if lang not in self.normalizers:
+                self.normalizers[lang] = self.build(lang)
+            return self.normalizers[lang]
 
     def warmup(self, languages: list[str] | None = None) -> None:
         """Construct normalizers ahead of time (server codes or NeMo codes)."""

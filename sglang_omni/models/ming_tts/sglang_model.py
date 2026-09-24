@@ -107,7 +107,7 @@ class MingTTSTailGraph:
         self.outputs: MingTTSTailOutputs | None = None
 
     def capture(self) -> None:
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         device = weight.device
         hidden_dtype = weight.dtype
         float_dtype = torch.float32
@@ -601,7 +601,7 @@ class MingBailingMoeDecoderLayer(nn.Module):
             hidden_states = self.mlp(hidden_states, forward_batch)
 
         if fuse_mlp_allreduce:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states,
@@ -797,15 +797,15 @@ class MingTTSSGLangModel(nn.Module):
         tail_attn_backend = MING_TTS_TAIL_ATTN_BACKEND
 
         weight = self.model.word_embeddings.weight
-        self._decode_input_embedding = nn.Embedding(
+        self.decode_input_embedding = nn.Embedding(
             tail_batch_capacity,
             self.hidden_size,
             device=weight.device,
             dtype=weight.dtype,
         )
-        self._decode_input_embedding.weight.requires_grad_(False)
+        self.decode_input_embedding.weight.requires_grad_(False)
         self.register_buffer(
-            "_decode_input_row_ids",
+            "decode_input_row_ids",
             torch.arange(
                 tail_batch_capacity,
                 dtype=torch.long,
@@ -861,8 +861,8 @@ class MingTTSSGLangModel(nn.Module):
         )
         self.stop_head = nn.Linear(self.hidden_size, 2, bias=True)
         self.spk_head = nn.Linear(192, self.hidden_size, bias=True)
-        self._tail_graphs = None
-        self._cfm_timesteps: torch.Tensor | None = None
+        self.tail_graphs = None
+        self.cfm_timesteps: torch.Tensor | None = None
 
     def get_input_embeddings(self) -> nn.Module:
         return self.model.get_input_embeddings()
@@ -882,17 +882,17 @@ class MingTTSSGLangModel(nn.Module):
         feedback_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = int(feedback_embeddings.shape[0])
-        weight = self._decode_input_embedding.weight
+        weight = self.decode_input_embedding.weight
         weight[:batch_size].copy_(
             feedback_embeddings.to(device=weight.device, dtype=weight.dtype)
         )
-        return self._decode_input_row_ids[:batch_size]
+        return self.decode_input_row_ids[:batch_size]
 
     @torch.no_grad()
     def init_tail_graphs(self, batch_sizes: list[int]) -> None:
         graphs = MingTTSTailGraphCache(self)
         graphs.capture(batch_sizes)
-        self._tail_graphs = graphs
+        self.tail_graphs = graphs
         logger.info(
             "Ming TTS tail CUDA graphs captured for bs=%s",
             list(graphs.buckets),
@@ -904,7 +904,7 @@ class MingTTSSGLangModel(nn.Module):
             batch_size=int(inputs.hidden_states.shape[0]),
             device=inputs.hidden_states.device,
         )
-        tail_graphs = self._tail_graphs
+        tail_graphs = self.tail_graphs
         if tail_graphs is not None:
             return tail_graphs.replay(
                 inputs,
@@ -926,7 +926,7 @@ class MingTTSSGLangModel(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
     ) -> MingTTSTailOutputs:
-        weight = self._decode_input_embedding.weight
+        weight = self.decode_input_embedding.weight
         # Note(yzxiao): Eager and captured tails share one precision policy.
         # FP32 explicitly disables any autocast inherited from the caller.
         with torch.autocast(
@@ -968,14 +968,14 @@ class MingTTSSGLangModel(nn.Module):
             int(self.patch_size),
             device=device,
         )
-        timesteps = self._cfm_timesteps
+        timesteps = self.cfm_timesteps
         if timesteps is None or timesteps.device != device:
             timesteps = build_cfm_timesteps(
                 steps=_MING_TTS_CFM_STEPS,
                 device=device,
                 dtype=noise.dtype,
             )
-            self._cfm_timesteps = timesteps
+            self.cfm_timesteps = timesteps
         sde_random = build_cfm_sde_random(
             steps=_MING_TTS_CFM_STEPS,
             device=device,
@@ -1004,7 +1004,7 @@ class MingTTSSGLangModel(nn.Module):
         is_decode = bool(forward_mode.is_decode())
         is_extend = bool(forward_mode.is_extend())
         if input_embeds is None and is_decode:
-            input_embeds = self._decode_input_embedding(input_ids)
+            input_embeds = self.decode_input_embedding(input_ids)
             input_ids = None
 
         mrope_positions = getattr(forward_batch, "mrope_positions", None)
@@ -1182,13 +1182,13 @@ class MingTTSSGLangModel(nn.Module):
             else:
                 report.leftovers.append(original_name)
 
-        runtime_params = {"_decode_input_embedding.weight"}
+        runtime_params = {"decode_input_embedding.weight"}
         missing_params = sorted(set(params_dict) - loaded_param_names - runtime_params)
         if missing_params:
             report.missing["model_params"] = missing_params
 
         assert_ming_tts_weight_coverage(report)
-        self._weight_load_report = report
+        self.weight_load_report = report
         logger.info("%s", report.summary())
 
 

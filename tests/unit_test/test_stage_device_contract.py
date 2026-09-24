@@ -470,7 +470,7 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
         simple_scheduler, "SimpleScheduler", lambda *a, **k: SimpleNamespace()
     )
 
-    getattr(stages, f"create_{factory_name}_executor")("unused", device=None)
+    getattr(stages, f"create_{factory_name}executor")("unused", device=None)
 
     import torch
 

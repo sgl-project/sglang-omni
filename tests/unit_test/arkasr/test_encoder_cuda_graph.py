@@ -247,7 +247,7 @@ def test_replay_failure_sticks_to_eager() -> None:
     )
     runner.capture_working_set(8, max_mel_frames=64)
     assert runner.captured_buckets == ((1, 64),)
-    entry = runner._graphs[(1, 64)]
+    entry = runner.graphs[(1, 64)]
 
     def _boom() -> None:
         raise RuntimeError("replay boom")

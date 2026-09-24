@@ -87,7 +87,7 @@ class StageOutputCache:
             cache_device = torch.device(cache_device)
         if pin_memory and (cache_device is None or cache_device.type != "cpu"):
             raise ValueError("pin_memory requires cache_device='cpu'")
-        self._cache: OrderedDict[str, CacheEntry] = OrderedDict()
+        self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.max_size = max_size
         self.max_bytes = max_bytes
         self.cache_device = cache_device
@@ -96,44 +96,44 @@ class StageOutputCache:
         self.pin_memory = bool(pin_memory) and torch.cuda.is_available()
         self.current_bytes = 0
         self.eviction_count = 0
-        self._size_fn = size_fn or value_size_bytes
-        self._lock = threading.Lock()
+        self.size_fn = size_fn or value_size_bytes
+        self.lock = threading.Lock()
 
     def get(self, key: str | None) -> Any | None:
         if key is None:
             return None
         key = str(key)
-        with self._lock:
-            entry = self._cache.get(key)
+        with self.lock:
+            entry = self.cache.get(key)
             if entry is None:
                 return None
-            self._cache.move_to_end(key)
+            self.cache.move_to_end(key)
             return entry.data
 
     def put(self, key: str | None, data: Any) -> None:
         if key is None:
             return
         key = str(key)
-        size_bytes = self._size_fn(data)
-        with self._lock:
-            old_entry = self._cache.pop(key, None)
+        size_bytes = self.size_fn(data)
+        with self.lock:
+            old_entry = self.cache.pop(key, None)
             if old_entry is not None:
                 self.current_bytes -= old_entry.size_bytes
             if self.max_bytes is not None and size_bytes > self.max_bytes:
                 return
-            self._cache[key] = CacheEntry(
+            self.cache[key] = CacheEntry(
                 data=detach_value(
                     data, device=self.cache_device, pin_memory=self.pin_memory
                 ),
                 size_bytes=size_bytes,
             )
             self.current_bytes += size_bytes
-            self._cache.move_to_end(key)
+            self.cache.move_to_end(key)
             self.evict_over_budget()
 
     def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
+        with self.lock:
+            self.cache.clear()
             self.current_bytes = 0
 
     def remove_if_same(self, key: str | None, expected_data: Any) -> bool:
@@ -141,11 +141,11 @@ class StageOutputCache:
         if key is None:
             return False
         key = str(key)
-        with self._lock:
-            entry = self._cache.get(key)
+        with self.lock:
+            entry = self.cache.get(key)
             if entry is None or entry.data is not expected_data:
                 return False
-            del self._cache[key]
+            del self.cache[key]
             self.current_bytes -= entry.size_bytes
             return True
 
@@ -153,13 +153,13 @@ class StageOutputCache:
         # Evaluate the predicate outside the lock: it runs arbitrary caller code
         # and may re-enter this cache, which would deadlock the non-reentrant
         # lock. Snapshot keys, test them lock-free, then re-acquire to delete.
-        with self._lock:
-            keys = list(self._cache)
+        with self.lock:
+            keys = list(self.cache)
         to_remove = [key for key in keys if predicate(key)]
         removed = 0
-        with self._lock:
+        with self.lock:
             for key in to_remove:
-                entry = self._cache.pop(key, None)
+                entry = self.cache.pop(key, None)
                 if entry is None:
                     continue
                 self.current_bytes -= entry.size_bytes
@@ -167,18 +167,18 @@ class StageOutputCache:
         return removed
 
     def __len__(self) -> int:
-        with self._lock:
-            return len(self._cache)
+        with self.lock:
+            return len(self.cache)
 
     def evict_over_budget(self) -> None:
-        while self.max_size is not None and len(self._cache) > self.max_size:
-            _, entry = self._cache.popitem(last=False)
+        while self.max_size is not None and len(self.cache) > self.max_size:
+            _, entry = self.cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes
             self.eviction_count += 1
         while self.max_bytes is not None and self.current_bytes > self.max_bytes:
-            if not self._cache:
+            if not self.cache:
                 self.current_bytes = 0
                 return
-            _, entry = self._cache.popitem(last=False)
+            _, entry = self.cache.popitem(last=False)
             self.current_bytes -= entry.size_bytes
             self.eviction_count += 1

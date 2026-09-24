@@ -305,7 +305,7 @@ def make_whisper_scheduler_adapters(
             ),
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),

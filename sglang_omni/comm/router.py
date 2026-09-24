@@ -49,7 +49,7 @@ class CommRouter:
             for name, gpu_ids in (stage_gpu_ids or {}).items()
         }
         self.remote_stage_names = set(remote_stage_names or ())
-        self._direct_cuda_ipc_targets = frozenset(
+        self.direct_cuda_ipc_targets = frozenset(
             name
             for name, gpu_ids in self.stage_gpu_ids.items()
             if self.gpu_id == self.placement_gpu_id
@@ -59,13 +59,13 @@ class CommRouter:
         )
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
-        self._relays: dict[TransportKind, Relay] = {}
-        self._traced_transports: dict[tuple[str, str], str] = {}
-        self._cuda_ipc_peer_cache: dict[str, bool] = {}
+        self.relays: dict[TransportKind, Relay] = {}
+        self.traced_transports: dict[tuple[str, str], str] = {}
+        self.cuda_ipc_peer_cache: dict[str, bool] = {}
 
     def cuda_ipc_peer_available(self, target: str) -> bool:
         """Return whether a GPU edge can use CUDA IPC peer copies."""
-        cached = self._cuda_ipc_peer_cache.get(target)
+        cached = self.cuda_ipc_peer_cache.get(target)
         if cached is not None:
             return cached
         if target not in self.stage_gpu_ids:
@@ -77,14 +77,14 @@ class CommRouter:
         source_gpu = int(self.placement_gpu_id)
         target_gpu = int(target_gpu_ids[0])
         if source_gpu == target_gpu:
-            self._cuda_ipc_peer_cache[target] = True
+            self.cuda_ipc_peer_cache[target] = True
             return True
 
         if self.gpu_id is None or int(self.gpu_id) != source_gpu:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "source process uses a remapped GPU"
             )
-            self._cuda_ipc_peer_cache[target] = False
+            self.cuda_ipc_peer_cache[target] = False
             return False
         try:
             source_local = int(self.gpu_id)
@@ -101,13 +101,13 @@ class CommRouter:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, f"peer query failed: {exc}"
             )
-            self._cuda_ipc_peer_cache[target] = False
+            self.cuda_ipc_peer_cache[target] = False
             return False
         if not available:
             self.warn_cuda_ipc_fallback(
                 target, source_gpu, target_gpu, "peer access is unsupported"
             )
-        self._cuda_ipc_peer_cache[target] = available
+        self.cuda_ipc_peer_cache[target] = available
         return available
 
     def warn_cuda_ipc_fallback(
@@ -135,7 +135,7 @@ class CommRouter:
 
     def can_use_direct_cuda_ipc(self, target: str) -> bool:
         return (
-            target in self._direct_cuda_ipc_targets
+            target in self.direct_cuda_ipc_targets
             and current_platform.get_intra_node_transport() == TransportKind.CUDA_IPC
         )
 
@@ -167,10 +167,10 @@ class CommRouter:
         if not _comm_trace_enabled():
             return
         key = (direction, target)
-        previous = self._traced_transports.get(key)
+        previous = self.traced_transports.get(key)
         if previous == transport:
             return
-        self._traced_transports[key] = transport
+        self.traced_transports[key] = transport
         _comm_trace(
             "comm_transport_selected",
             stage=self.stage_name,
@@ -236,10 +236,10 @@ class CommRouter:
             raise ValueError("local_object has no relay")
         if self.injected_relay is not None:
             return self.injected_relay
-        relay = self._relays.get(kind)
+        relay = self.relays.get(kind)
         if relay is None:
             relay = self.build_relay(kind)
-            self._relays[kind] = relay
+            self.relays[kind] = relay
         return relay
 
     def relay_for(self, target: str) -> tuple[TransportKind, Relay]:
@@ -364,12 +364,12 @@ class CommRouter:
         for relay in self.active_relays():
             with suppress(Exception):
                 relay.close()
-        self._relays.clear()
+        self.relays.clear()
 
     def active_relays(self) -> list[Relay]:
         if self.injected_relay is not None:
             return [self.injected_relay]
-        return list(self._relays.values())
+        return list(self.relays.values())
 
 
 def tensor_devices(obj: Any, seen: set[int] | None = None) -> set[str]:

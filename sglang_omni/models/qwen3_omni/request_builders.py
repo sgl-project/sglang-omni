@@ -676,12 +676,12 @@ def build_sglang_thinker_request(
             req.multimodal_inputs = mm_inputs
 
     req.omni_model_inputs = model_inputs if model_inputs else None
-    req._omni_consumed = None
-    req._codec_suppress_tokens = None
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     # note (chenrui): recording placement here spares the thinker merge a sync on
     # a GPU mask to find placeholders; tensors spare it walking them as well.
-    req._omni_mm_positions = None
+    req._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if model_inputs and thinker_config is not None:
         mm_positions: dict[str, torch.Tensor] = {}
         for modality, orig_token_id in [
@@ -691,7 +691,7 @@ def build_sglang_thinker_request(
         ]:
             match_id = pad_values.get(modality, orig_token_id)
             mm_positions[modality] = (input_ids == match_id).nonzero(as_tuple=True)[0]
-        req._omni_mm_positions = mm_positions
+        req._omni_mm_positions = mm_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     # Build SGLangARRequestData — output_ids points to req.output_ids
     data = SGLangARRequestData(
@@ -799,10 +799,12 @@ def build_sglang_talker_request(
         vocab_size=codec_vocab_size,
     )
     req.tokenizer = tokenizer
-    req._input_embeds_are_projected = bool(input_embeds_are_projected)
+    req._input_embeds_are_projected = bool(
+        input_embeds_are_projected
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req.omni_model_inputs = dict(talker_model_inputs or {})
-    req._omni_consumed = None
-    req._codec_suppress_tokens = (
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         tuple(int(token_id) for token_id in suppress_tokens)
         if suppress_tokens
         else None
@@ -855,7 +857,9 @@ def build_sglang_talker_request(
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
     )
-    data.suppress_tokens = list(req._codec_suppress_tokens or [])
+    data.suppress_tokens = list(
+        req._codec_suppress_tokens or []
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     data.talker_model_inputs = dict(talker_model_inputs or {})
     if thinker_layer_hidden is not None:
         data.extra_model_outputs["thinker_layer_hidden"] = thinker_layer_hidden

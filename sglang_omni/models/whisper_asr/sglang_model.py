@@ -412,7 +412,7 @@ class WhisperForConditionalGeneration(nn.Module):
         self.logits_processor = LogitsProcessor(config)
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
-        self._encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
+        self.encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
 
     def init_encoder_graphs(
         self,
@@ -422,18 +422,18 @@ class WhisperForConditionalGeneration(nn.Module):
         """Capture fixed-shape Whisper encoder batches after model setup."""
         if not batch_buckets:
             return
-        self._encoder_graph_runner = WhisperEncoderCudaGraphRunner(
+        self.encoder_graph_runner = WhisperEncoderCudaGraphRunner(
             self.model.encoder,
             num_mel_bins=int(self.config.num_mel_bins),
             input_feature_len=int(input_feature_len),
         )
-        self._encoder_graph_runner.capture(batch_buckets)
+        self.encoder_graph_runner.capture(batch_buckets)
 
     def run_encoder(self, audio_features: torch.Tensor) -> torch.Tensor:
         """Run the Whisper encoder with CUDA-graph replay when available."""
-        if self._encoder_graph_runner is not None:
+        if self.encoder_graph_runner is not None:
             try:
-                return self._encoder_graph_runner.run(audio_features)
+                return self.encoder_graph_runner.run(audio_features)
             except Exception:
                 logger.exception(
                     "Whisper encoder CUDA graph replay failed; falling back to eager"

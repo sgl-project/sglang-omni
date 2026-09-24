@@ -152,40 +152,40 @@ class TalkerPrefillBuilder:
         codec_pad_id: int,
         speaker_map: dict[str, int] | None = None,
     ) -> None:
-        self._model = model
+        self.model = model
         model_dir = Path(model_path)
         if model_dir.exists():
-            self._model_path = str(model_dir)
+            self.model_path = str(model_dir)
         else:
-            self._model_path = str(
+            self.model_path = str(
                 resolve_model_path(model_path, local_files_only=False)
             )
 
-        self._audio_token_id = audio_token_id
-        self._image_token_id = image_token_id
-        self._video_token_id = video_token_id
-        self._tts_bos_token_id = tts_bos_token_id
-        self._tts_eos_token_id = tts_eos_token_id
-        self._tts_pad_token_id = tts_pad_token_id
-        self._im_start_token_id = im_start_token_id
-        self._im_end_token_id = im_end_token_id
-        self._system_token_id = system_token_id
-        self._user_token_id = user_token_id
-        self._assistant_token_id = assistant_token_id
-        self._codec_bos_id = codec_bos_id
-        self._codec_nothink_id = codec_nothink_id
-        self._codec_think_bos_id = codec_think_bos_id
-        self._codec_think_eos_id = codec_think_eos_id
-        self._codec_pad_id = codec_pad_id
-        self._speaker_map = {
+        self.audio_token_id = audio_token_id
+        self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
+        self.tts_bos_token_id = tts_bos_token_id
+        self.tts_eos_token_id = tts_eos_token_id
+        self.tts_pad_token_id = tts_pad_token_id
+        self.im_start_token_id = im_start_token_id
+        self.im_end_token_id = im_end_token_id
+        self.system_token_id = system_token_id
+        self.user_token_id = user_token_id
+        self.assistant_token_id = assistant_token_id
+        self.codec_bos_id = codec_bos_id
+        self.codec_nothink_id = codec_nothink_id
+        self.codec_think_bos_id = codec_think_bos_id
+        self.codec_think_eos_id = codec_think_eos_id
+        self.codec_pad_id = codec_pad_id
+        self.speaker_map = {
             str(name).lower(): int(speaker_id)
             for name, speaker_id in (speaker_map or {}).items()
         }
 
-        self._device = model.model.codec_embedding.weight.device
-        self._dtype = model.activation_dtype
-        self._thinker_embed_cache: dict[int, torch.Tensor] = {}
-        self._tts_special_cache: (
+        self.device = model.model.codec_embedding.weight.device
+        self.dtype = model.activation_dtype
+        self.thinker_embed_cache: dict[int, torch.Tensor] = {}
+        self.tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
 
@@ -213,32 +213,32 @@ class TalkerPrefillBuilder:
         multimodal_mask = self.build_multimodal_mask(thinker_input_ids)
 
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.get_tts_special_embeds()
-        speaker_id = resolve_speaker_id(payload.request.params, self._speaker_map)
+        speaker_id = resolve_speaker_id(payload.request.params, self.speaker_map)
 
         prefill = build_prefill_input(
             thinker_embed=thinker_embed,
             thinker_hidden=thinker_hidden,
             thinker_input_ids=thinker_input_ids,
             multimodal_mask=multimodal_mask,
-            text_projection=self._model.text_projection,
-            hidden_projection=self._model.hidden_projection,
-            codec_embed_fn=self._model.get_input_embeddings(),
+            text_projection=self.model.text_projection,
+            hidden_projection=self.model.hidden_projection,
+            codec_embed_fn=self.model.get_input_embeddings(),
             tts_bos_embed=tts_bos_embed,
             tts_eos_embed=tts_eos_embed,
             tts_pad_embed=tts_pad_embed,
-            im_start_token_id=self._im_start_token_id,
-            system_token_id=self._system_token_id,
-            user_token_id=self._user_token_id,
-            assistant_token_id=self._assistant_token_id,
+            im_start_token_id=self.im_start_token_id,
+            system_token_id=self.system_token_id,
+            user_token_id=self.user_token_id,
+            assistant_token_id=self.assistant_token_id,
             speaker_id=speaker_id,
-            codec_nothink_id=self._codec_nothink_id,
-            codec_think_bos_id=self._codec_think_bos_id,
-            codec_think_eos_id=self._codec_think_eos_id,
-            codec_pad_id=self._codec_pad_id,
-            codec_bos_id=self._codec_bos_id,
-            tts_pad_token_id=self._tts_pad_token_id,
+            codec_nothink_id=self.codec_nothink_id,
+            codec_think_bos_id=self.codec_think_bos_id,
+            codec_think_eos_id=self.codec_think_eos_id,
+            codec_pad_id=self.codec_pad_id,
+            codec_bos_id=self.codec_bos_id,
+            tts_pad_token_id=self.tts_pad_token_id,
             include_assistant_eos=thinker_done,
-            im_end_token_id=self._im_end_token_id,
+            im_end_token_id=self.im_end_token_id,
         )
 
         return {
@@ -258,7 +258,7 @@ class TalkerPrefillBuilder:
 
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
-        if token_id is not None and int(token_id) == self._im_end_token_id:
+        if token_id is not None and int(token_id) == self.im_end_token_id:
             return
 
         pending_text_queue = getattr(req_data, "pending_text_queue", None)
@@ -295,36 +295,36 @@ class TalkerPrefillBuilder:
             )
         else:
             chunk_tensor = chunk.data.to(
-                device=self._device, dtype=self._dtype
+                device=self.device, dtype=self.dtype
             ).unsqueeze(0)
-        projected = self._model.text_projection(chunk_tensor)
+        projected = self.model.text_projection(chunk_tensor)
         return projected[0].detach()
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
-        mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self._device)
-        token_ids = token_ids.to(device=self._device)
+        mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self.device)
+        token_ids = token_ids.to(device=self.device)
         for token_id in (
-            self._audio_token_id,
-            self._image_token_id,
-            self._video_token_id,
+            self.audio_token_id,
+            self.image_token_id,
+            self.video_token_id,
         ):
             if token_id is not None:
                 mask |= token_ids == int(token_id)
         return mask
 
     def get_tts_special_embeds(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if self._tts_special_cache is None:
+        if self.tts_special_cache is None:
             special_rows = load_thinker_embedding_rows(
-                self._model_path,
+                self.model_path,
                 [
-                    self._tts_bos_token_id,
-                    self._tts_eos_token_id,
-                    self._tts_pad_token_id,
+                    self.tts_bos_token_id,
+                    self.tts_eos_token_id,
+                    self.tts_pad_token_id,
                 ],
-            ).to(device=self._device, dtype=self._dtype)
-            projected = self._model.text_projection(special_rows)
-            self._tts_special_cache = projected.chunk(3, dim=0)
-        return self._tts_special_cache
+            ).to(device=self.device, dtype=self.dtype)
+            projected = self.model.text_projection(special_rows)
+            self.tts_special_cache = projected.chunk(3, dim=0)
+        return self.tts_special_cache
 
     def tensor_rows_to_queue(
         self, tensor: torch.Tensor | None
@@ -350,21 +350,21 @@ class TalkerPrefillBuilder:
             prompt_ids,
             prompt_embed,
             prompt_hidden,
-            token_id=self._audio_token_id,
+            token_id=self.audio_token_id,
             features=prompt_model_inputs.get("audio_embeds"),
         )
         merge_prompt_modality(
             prompt_ids,
             prompt_embed,
             prompt_hidden,
-            token_id=self._image_token_id,
+            token_id=self.image_token_id,
             features=prompt_model_inputs.get("image_embeds"),
         )
         merge_prompt_modality(
             prompt_ids,
             prompt_embed,
             prompt_hidden,
-            token_id=self._video_token_id,
+            token_id=self.video_token_id,
             features=prompt_model_inputs.get("video_embeds"),
         )
 
@@ -376,19 +376,19 @@ class TalkerPrefillBuilder:
         missing_ids = [
             int(token_id)
             for token_id in unique_ids.tolist()
-            if int(token_id) not in self._thinker_embed_cache
+            if int(token_id) not in self.thinker_embed_cache
         ]
         if missing_ids:
-            loaded_rows = load_thinker_embedding_rows(self._model_path, missing_ids).to(
-                device=self._device,
-                dtype=self._dtype,
+            loaded_rows = load_thinker_embedding_rows(self.model_path, missing_ids).to(
+                device=self.device,
+                dtype=self.dtype,
             )
             for token_id, row in zip(missing_ids, loaded_rows):
-                self._thinker_embed_cache[int(token_id)] = row.detach().clone()
+                self.thinker_embed_cache[int(token_id)] = row.detach().clone()
 
         unique_rows = torch.stack(
             [
-                self._thinker_embed_cache[int(token_id)]
+                self.thinker_embed_cache[int(token_id)]
                 for token_id in unique_ids.tolist()
             ],
             dim=0,

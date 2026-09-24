@@ -35,14 +35,14 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = int(max_running_requests)
         if self.max_running_requests <= 0:
             raise ValueError("MiniMax Music 3 max_running_requests must be positive")
-        self._model_runner: Any | None = None
-        self._checkpoint_root: str | None = None
+        self.model_runner: Any | None = None
+        self.checkpoint_root: str | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         from .checkpoint import resolve_checkpoint
 
         paths = resolve_checkpoint(model_path)
-        self._checkpoint_root = str(paths.root)
+        self.checkpoint_root = str(paths.root)
         return str(paths.qwen_dir)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
@@ -98,9 +98,9 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
 
         from .sglang_model import attach_minimax_modules, enable_graph_feedback
 
-        assert self._checkpoint_root is not None
+        assert self.checkpoint_root is not None
         model = model_worker.model_runner.model
-        attach_minimax_modules(model, self._checkpoint_root)
+        attach_minimax_modules(model, self.checkpoint_root)
         if not bool(get_exec().graph.disable_cuda_graph):
             enable_graph_feedback(
                 model,
@@ -134,8 +134,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from .model_runner import MiniMaxMusic3ModelRunner
 
-        self._model_runner = MiniMaxMusic3ModelRunner(model_worker, output_proc)
-        return self._model_runner
+        self.model_runner = MiniMaxMusic3ModelRunner(model_worker, output_proc)
+        return self.model_runner
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
@@ -148,8 +148,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
             build_sglang_minimax_request,
         )
 
-        assert self._checkpoint_root is not None
-        paths = resolve_checkpoint(self._checkpoint_root)
+        assert self.checkpoint_root is not None
+        paths = resolve_checkpoint(self.checkpoint_root)
         tokenizer = AutoTokenizer.from_pretrained(
             str(paths.tokenizer_dir), trust_remote_code=False
         )
@@ -161,8 +161,8 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         return build_request, apply_minimax_result
 
     def make_abort_callback(self) -> Any | None:
-        assert self._model_runner is not None
-        return self._model_runner.reset_request
+        assert self.model_runner is not None
+        return self.model_runner.reset_request
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         from .sglang_request_builder import build_stream_output
@@ -192,7 +192,9 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
     def filter_audio_weights() -> None:
         from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 
-        if getattr(Qwen3ForCausalLM.load_weights, "_minimax_filtered", False):
+        if getattr(
+            Qwen3ForCausalLM.load_weights, "_minimax_filtered", False
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return
         load_weights = Qwen3ForCausalLM.load_weights
 
@@ -206,7 +208,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
                 ),
             )
 
-        filtered_load_weights._minimax_filtered = True
+        filtered_load_weights._minimax_filtered = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         Qwen3ForCausalLM.load_weights = filtered_load_weights
         logger.info("MiniMax Music 3: Qwen3 weight loader now skips audio-module keys")
 

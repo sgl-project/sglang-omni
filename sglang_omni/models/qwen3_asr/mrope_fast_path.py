@@ -68,9 +68,9 @@ def apply_asr_mrope_fast_path() -> None:
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
     _orig_compute_mrope_positions = (
-        ForwardBatch._compute_mrope_positions
+        ForwardBatch._compute_mrope_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     )  # save the original function
-    ForwardBatch._compute_mrope_positions = (
+    ForwardBatch._compute_mrope_positions = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         fast_compute_mrope_positions  # replace with the fast path
     )
     logger.info("[qwen3-asr] fast mrope decode path applied")

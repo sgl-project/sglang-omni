@@ -82,26 +82,26 @@ class SegmenterState:
     ) -> None:
         self.config = config
         self.token_count_fn = token_count_fn
-        self._buffer = ""
-        self._segment_id = 0
-        self._first_text_ms: int | None = None
+        self.buffer = ""
+        self.segment_id = 0
+        self.first_text_ms: int | None = None
 
     def push(self, text: str, *, now_ms: int) -> list[TextSegment]:
-        if text and self._first_text_ms is None:
-            self._first_text_ms = now_ms
-        self._buffer += text
-        if not self._buffer:
+        if text and self.first_text_ms is None:
+            self.first_text_ms = now_ms
+        self.buffer += text
+        if not self.buffer:
             return []
 
-        tokens = self.token_count_fn(self._buffer)
+        tokens = self.token_count_fn(self.buffer)
         if tokens >= self.config.segment_max_tokens:
             return [self.emit_max_window(now_ms=now_ms)]
 
         first_timeout_ready = (
-            self._segment_id == 0
-            and self._first_text_ms is not None
+            self.segment_id == 0
+            and self.first_text_ms is not None
             and tokens >= self.config.first_segment_min_tokens
-            and now_ms - self._first_text_ms >= self.config.first_segment_max_wait_ms
+            and now_ms - self.first_text_ms >= self.config.first_segment_max_wait_ms
         )
         should_emit = (
             tokens >= self.config.segment_min_tokens
@@ -113,19 +113,19 @@ class SegmenterState:
         return [self.emit(is_final_segment=False)]
 
     def buffer_token_count(self) -> int:
-        return self.token_count_fn(self._buffer) if self._buffer else 0
+        return self.token_count_fn(self.buffer) if self.buffer else 0
 
     def flush(self) -> list[TextSegment]:
-        if not self._buffer:
+        if not self.buffer:
             return []
         return [self.emit(is_final_segment=True)]
 
     def has_segment_end_punctuation(self) -> bool:
-        return self._buffer.rstrip().endswith(_SEGMENT_END_PUNCTUATION)
+        return self.buffer.rstrip().endswith(_SEGMENT_END_PUNCTUATION)
 
     def emit_max_window(self, *, now_ms: int) -> TextSegment:
         text, remainder = split_whitespace_tokens(
-            self._buffer, self.config.segment_max_tokens
+            self.buffer, self.config.segment_max_tokens
         )
         return self.emit_text(
             text=text,
@@ -136,7 +136,7 @@ class SegmenterState:
 
     def emit(self, *, is_final_segment: bool) -> TextSegment:
         return self.emit_text(
-            text=self._buffer,
+            text=self.buffer,
             remainder="",
             is_final_segment=is_final_segment,
             remainder_start_ms=None,
@@ -151,11 +151,11 @@ class SegmenterState:
         remainder_start_ms: int | None,
     ) -> TextSegment:
         segment = TextSegment(
-            segment_id=self._segment_id,
+            segment_id=self.segment_id,
             text=text,
             is_final_segment=is_final_segment,
         )
-        self._segment_id += 1
-        self._buffer = remainder
-        self._first_text_ms = remainder_start_ms
+        self.segment_id += 1
+        self.buffer = remainder
+        self.first_text_ms = remainder_start_ms
         return segment

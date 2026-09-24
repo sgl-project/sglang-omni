@@ -65,7 +65,7 @@ class MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
     artifact_kind = "ref_conditioning"
 
     def __init__(self, encoder: "MingTTSReferenceEncoder", *, model_identity: str):
-        self._encoder = encoder
+        self.encoder = encoder
         self.model_id = str(model_identity)
         self.encoder_config_hash = (
             f"sr{encoder.sample_rate}:patch{encoder.patch_size}:"
@@ -81,7 +81,7 @@ class MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
         return reference_path_cache_key(item, trust_stat=False)
 
     def encode_one(self, item: str) -> dict:
-        return self._encoder.encode_reference(item)
+        return self.encoder.encode_reference(item)
 
     def store_artifact(self, artifact: dict) -> dict:
         return dict(artifact)
@@ -103,7 +103,7 @@ class MingTTSReferenceEncoder:
         cache_max_items: int | None = 256,
         cache_max_bytes: int | None = 64 * 1024 * 1024,
     ) -> None:
-        self._audio_vae = audio_vae
+        self.audio_vae = audio_vae
         self.sample_rate = int(audio_vae.config.sample_rate)
         first_parameter = next(audio_vae.parameters())
         self.device = first_parameter.device
@@ -119,9 +119,9 @@ class MingTTSReferenceEncoder:
             raise ValueError(
                 f"Ming-Omni-TTS reference encoder patch_size must be > 0, got {patch_size}"
             )
-        self._service: ReferenceEncodeService[str, dict, dict] | None = None
+        self.service: ReferenceEncodeService[str, dict, dict] | None = None
         if cache_model_identity is not None:
-            self._service = ReferenceEncodeService(
+            self.service = ReferenceEncodeService(
                 MingTTSReferenceEncodeHook(self, model_identity=cache_model_identity),
                 max_items=cache_max_items,
                 max_bytes=cache_max_bytes,
@@ -141,7 +141,7 @@ class MingTTSReferenceEncoder:
                 device=self.device,
             )
             prompt_waveform = self.prepare_audio_vae_waveform(prompt_waveform)
-            prompt_latent, _prompt_latent_length = self._audio_vae.encode_latent(
+            prompt_latent, _prompt_latent_length = self.audio_vae.encode_latent(
                 prompt_waveform,
                 waveform_length,
             )
@@ -170,8 +170,8 @@ class MingTTSReferenceEncoder:
             return payload
 
         ref_audio = str(state.ref_audio)
-        if self._service is not None:
-            artifact = self._service.get_or_encode(ref_audio, desc=repr(ref_audio))
+        if self.service is not None:
+            artifact = self.service.get_or_encode(ref_audio, desc=repr(ref_audio))
         else:
             artifact = self.encode_reference(ref_audio)
 

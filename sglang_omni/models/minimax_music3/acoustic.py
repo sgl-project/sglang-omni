@@ -331,8 +331,8 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         self,
         decoder: MiniMaxMusic3AcousticDecoder,
     ) -> None:
-        self._decoder = decoder
-        self._stream_states: dict[str, AcousticStreamState] = {}
+        self.decoder = decoder
+        self.stream_states: dict[str, AcousticStreamState] = {}
         super().__init__(compute_fn=None, max_batch_size=1)
 
     def is_streaming_payload(self, payload: Any) -> bool:
@@ -342,7 +342,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         return bool(data.get("internal_chunk_stream", False))
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        state = self._stream_states.setdefault(request_id, AcousticStreamState())
+        state = self.stream_states.setdefault(request_id, AcousticStreamState())
         state.final_state = MiniMaxMusic3State.from_dict(payload.data)
         logger.info(
             f"MiniMax Music 3 acoustic request={request_id} payload_ready seed={state.final_state.seed} expected_frames={state.final_state.generated_frames}"
@@ -365,7 +365,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
                 f"got {tuple(item.data.shape)}"
             )
         hidden = item.data[0]
-        state = self._stream_states.setdefault(request_id, AcousticStreamState())
+        state = self.stream_states.setdefault(request_id, AcousticStreamState())
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise ValueError(
@@ -391,7 +391,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         )
         try:
             wave, state.last_latent, state.last_condition = (
-                self._decoder.decode_with_state(
+                self.decoder.decode_with_state(
                     hidden,
                     seed=seed,
                     chunk_idx=chunk_idx,
@@ -415,7 +415,7 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         return []
 
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        state = self._stream_states.get(request_id)
+        state = self.stream_states.get(request_id)
         if state is None or state.final_state is None:
             raise ValueError("MiniMax Music 3 stream completed without final payload")
         if not state.wave_chunks:
@@ -452,13 +452,13 @@ class MiniMaxMusic3AcousticScheduler(StreamingSimpleScheduler):
         ]
 
     def abort(self, request_id: str) -> None:
-        state = self._stream_states.get(request_id)
+        state = self.stream_states.get(request_id)
         if state is not None:
             state.abort_event.set()
         super().abort(request_id)
 
     def clear_stream_state(self, request_id: str) -> None:
-        state = self._stream_states.pop(request_id, None)
+        state = self.stream_states.pop(request_id, None)
         if state is not None:
             state.abort_event.set()
             state.wave_chunks.clear()

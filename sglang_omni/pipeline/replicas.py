@@ -239,14 +239,14 @@ class RoundRobinBindingPolicy:
     """Per-process round-robin selection; thread-safe."""
 
     def __init__(self) -> None:
-        self._counters: dict[str, int] = {}
-        self._lock = threading.Lock()
+        self.counters: dict[str, int] = {}
+        self.lock = threading.Lock()
 
     def bind(self, process_name: str, num_replicas: int, request_id: str) -> int:
         del request_id
-        with self._lock:
-            index = self._counters.get(process_name, 0)
-            self._counters[process_name] = index + 1
+        with self.lock:
+            index = self.counters.get(process_name, 0)
+            self.counters[process_name] = index + 1
         return index % num_replicas
 
 

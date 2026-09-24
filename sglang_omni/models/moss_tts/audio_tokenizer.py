@@ -337,7 +337,7 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
             packed_rope_cache = MossPackedRopeCache(max_period=max_period)
             if isinstance(source_module, MossAudioTokenizerTransformer):
                 packed_rope_cache.streaming_max_positions = (
-                    source_module._packed_rope_cache.streaming_max_positions
+                    source_module.packed_rope_cache.streaming_max_positions
                 )
             layers = [
                 MossAudioTokenizerTransformerLayer.from_module(
@@ -377,7 +377,7 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
                 "MOSS-Audio-Tokenizer transformer requires config or source_module"
             )
         self.layers = nn.ModuleList(layers)
-        self._packed_rope_cache = packed_rope_cache
+        self.packed_rope_cache = packed_rope_cache
         self.positional_embedding = positional_embedding
         self.positional_scale = float(positional_scale)
         self.max_period = float(max_period)
@@ -418,7 +418,7 @@ class MossAudioTokenizerTransformer(MossAudioTokenizerStreamingModule):
 
     def forward(self, x: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         execution_context = kwargs.pop("execution_context", None)
-        state = self._streaming_state
+        state = self.streaming_state
         if state is None and execution_context is not None:
             raise RuntimeError(
                 "streaming execution context requires an active transformer state"
@@ -523,7 +523,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         self.input_proj = input_proj
         self.transformer = transformer
         self.output_proj = output_proj
-        self._position_ids_cache = PositionIdsCache()
+        self.position_ids_cache = PositionIdsCache()
 
     @property
     def is_streaming(self) -> bool:
@@ -578,7 +578,7 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
                 if is_unpadded_single:
                     packed_x, cu_seqlens, position_ids = pack_unpadded_sequence(
                         x,
-                        self._position_ids_cache,
+                        self.position_ids_cache,
                     )
                     valid_mask = None
                     flat_indices = None
@@ -745,7 +745,7 @@ class MossAudioTokenizerVocoderDecoder(nn.ModuleList):
                         dtype=dtype,
                         attention_backend=attention_backend,
                     )
-                    stage.transformer._packed_rope_cache.streaming_max_positions = (
+                    stage.transformer.packed_rope_cache.streaming_max_positions = (
                         math.ceil(frame_rate * _STREAMING_ROPE_CACHE_DURATION_SECONDS)
                     )
                 else:
@@ -1200,16 +1200,16 @@ class ResidualLFQ(nn.Module):
         )
         # Note (Zhang Yiyang): Build this optional cache after loading to remove
         # repeated embedding/projection setup without changing the reference path.
-        self._decode_cache: MossAudioTokenizerQuantizerDecoder | None = None
+        self.decode_cache: MossAudioTokenizerQuantizerDecoder | None = None
 
     @torch.no_grad()
     def build_decode_cache(self) -> None:
         """Cache one batched codebook gather and fixed projection weights."""
-        self._decode_cache = MossAudioTokenizerQuantizerDecoder(self)
+        self.decode_cache = MossAudioTokenizerQuantizerDecoder(self)
 
     def clear_decode_cache(self) -> None:
         """Drop the inference-only cache and restore the reference decode path."""
-        self._decode_cache = None
+        self.decode_cache = None
 
     @torch.no_grad()
     def forward(
@@ -1261,10 +1261,10 @@ class ResidualLFQ(nn.Module):
                     f"[1, {self.num_quantizers}], got {count}"
                 )
             if (
-                self._decode_cache is not None
-                and codes.device == self._decode_cache.device
+                self.decode_cache is not None
+                and codes.device == self.decode_cache.device
             ):
-                return self._decode_cache.decode_codes(codes)
+                return self.decode_cache.decode_codes(codes)
             decoded = torch.zeros(
                 batch_size,
                 self.rvq_dim,
@@ -1344,7 +1344,7 @@ class MossAudioTokenizerEncoder(nn.Module):
         # FP32 below.
         self.encoder_dtype = effective_encoder_dtype
         self.attention_backend = validate_attention_backend(attention_backend)
-        self._uses_moss_audio_tokenizer_v1_weights = "number_channels" not in config
+        self.uses_moss_audio_tokenizer_v1_weights = "number_channels" not in config
 
         default_context_duration = float(
             config.get("causal_transformer_context_duration", 10.0)
@@ -1379,7 +1379,7 @@ class MossAudioTokenizerEncoder(nn.Module):
                     stage_config,
                     context=int(round(frame_rate * context_duration)),
                     moss_audio_tokenizer_v1_weights=(
-                        self._uses_moss_audio_tokenizer_v1_weights
+                        self.uses_moss_audio_tokenizer_v1_weights
                     ),
                     device=parameter_device,
                     dtype=self.encoder_dtype,
@@ -1787,7 +1787,7 @@ def load_moss_audio_encoder(
         prefix="encoder.",
         dtype=model.encoder_dtype,
         device=device,
-        v1_weights=model._uses_moss_audio_tokenizer_v1_weights,
+        v1_weights=model.uses_moss_audio_tokenizer_v1_weights,
     )
     model.quantizer = load_moss_audio_quantizer(
         model.quantizer,
@@ -1846,7 +1846,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         self.decoder_dtype = decoder_dtype if compute_dtype is None else compute_dtype
         self.compute_dtype = None if compute_dtype is torch.float32 else compute_dtype
         self.attention_backend = validate_attention_backend(attention_backend)
-        self._uses_moss_audio_tokenizer_v1_weights = "number_channels" not in config
+        self.uses_moss_audio_tokenizer_v1_weights = "number_channels" not in config
 
         quantizer_config = dict(config["quantizer_kwargs"])
         quantizer_type = quantizer_config.get(
@@ -1864,18 +1864,16 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
 
         self.decoder = MossAudioTokenizerVocoderDecoder(
             config,
-            moss_audio_tokenizer_v1_weights=(
-                self._uses_moss_audio_tokenizer_v1_weights
-            ),
+            moss_audio_tokenizer_v1_weights=(self.uses_moss_audio_tokenizer_v1_weights),
             device=parameter_device,
             dtype=self.decoder_dtype,
             attention_backend=self.attention_backend,
         )
         # Note (Zhang Yiyang): Keep persistent decoder state separate from the
         # scheduler's compact execution width.
-        self._decoder_streaming_modules: list[MossAudioTokenizerStreamingModule] = []
-        self._decoder_state_capacity = 0
-        self._decoder_real_state_capacity = 0
+        self.decoder_streaming_modules: list[MossAudioTokenizerStreamingModule] = []
+        self.decoder_state_capacity = 0
+        self.decoder_real_state_capacity = 0
 
     def decoder_device(self) -> torch.device:
         parameter = next(self.decoder.parameters(), None)
@@ -1884,7 +1882,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         return self.streaming_device()
 
     def start_decoder_state_pool(self, total_capacity: int) -> None:
-        if self._decoder_streaming_modules:
+        if self.decoder_streaming_modules:
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer decoder state pool is already initialized"
             )
@@ -1897,18 +1895,18 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer decoder has no streaming-capable stages"
             )
-        if any(module._streaming_state is not None for module in modules):
+        if any(module.streaming_state is not None for module in modules):
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer decoder is already in a streaming session"
             )
         try:
             for module in modules:
-                module._streaming_state = module.init_streaming_state(total_capacity)
+                module.streaming_state = module.init_streaming_state(total_capacity)
         except BaseException:
             for module in modules:
-                module._streaming_state = None
+                module.streaming_state = None
             raise
-        self._decoder_streaming_modules = modules
+        self.decoder_streaming_modules = modules
 
     def initialize_decoder_state_pool(
         self,
@@ -1927,22 +1925,22 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
             )
         total_capacity = state_capacity + scratch_capacity
         self.start_decoder_state_pool(total_capacity)
-        self._decoder_state_capacity = total_capacity
-        self._decoder_real_state_capacity = state_capacity
+        self.decoder_state_capacity = total_capacity
+        self.decoder_real_state_capacity = state_capacity
 
     def close_decoder_state_pool(self) -> None:
         """Release all decoder streaming state and its persistent cache rows."""
-        if not self._decoder_streaming_modules:
+        if not self.decoder_streaming_modules:
             return
-        for module in reversed(self._decoder_streaming_modules):
-            module._streaming_state = None
-        self._decoder_streaming_modules = []
-        self._decoder_state_capacity = 0
-        self._decoder_real_state_capacity = 0
+        for module in reversed(self.decoder_streaming_modules):
+            module.streaming_state = None
+        self.decoder_streaming_modules = []
+        self.decoder_state_capacity = 0
+        self.decoder_real_state_capacity = 0
 
     def reset_decoder_state_slots(self, state_slot_ids: torch.Tensor) -> None:
         """Reset only the requested decoder state slots."""
-        if not self._decoder_streaming_modules:
+        if not self.decoder_streaming_modules:
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer decoder state pool is not initialized"
             )
@@ -1961,17 +1959,17 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
             return
         if device.type != "cuda":
             if bool(torch.any(state_slot_ids < 0)) or bool(
-                torch.any(state_slot_ids >= self._decoder_state_capacity)
+                torch.any(state_slot_ids >= self.decoder_state_capacity)
             ):
                 raise ValueError(
                     "state_slot_ids must be in "
-                    f"[0, {self._decoder_state_capacity}), got "
+                    f"[0, {self.decoder_state_capacity}), got "
                     f"{state_slot_ids.detach().to('cpu').tolist()}"
                 )
             if torch.unique(state_slot_ids).numel() != state_slot_ids.numel():
                 raise ValueError("state_slot_ids must be unique")
-        for module in self._decoder_streaming_modules:
-            state = module._streaming_state
+        for module in self.decoder_streaming_modules:
+            state = module.streaming_state
             if state is None:
                 raise RuntimeError(
                     "MOSS-Audio-Tokenizer decoder streaming state was unexpectedly closed"
@@ -1985,7 +1983,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         state_slot_ids: torch.Tensor,
         valid_rows: torch.Tensor,
     ) -> StreamingExecutionContext:
-        if not self._decoder_streaming_modules:
+        if not self.decoder_streaming_modules:
             raise RuntimeError(
                 "MOSS-Audio-Tokenizer decoder state pool is not initialized"
             )
@@ -2020,13 +2018,13 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # GPU synchronization.
         if device.type != "cuda":
             if bool(torch.any(state_slot_ids < 0)) or bool(
-                torch.any(state_slot_ids >= self._decoder_state_capacity)
+                torch.any(state_slot_ids >= self.decoder_state_capacity)
             ):
                 raise ValueError(
-                    f"state_slot_ids must be in [0, {self._decoder_state_capacity})"
+                    f"state_slot_ids must be in [0, {self.decoder_state_capacity})"
                 )
             valid_slots = state_slot_ids[valid_rows]
-            if bool(torch.any(valid_slots >= self._decoder_real_state_capacity)):
+            if bool(torch.any(valid_slots >= self.decoder_real_state_capacity)):
                 raise ValueError("valid rows must use real decoder state slots")
             if torch.unique(valid_slots).numel() != valid_slots.numel():
                 raise ValueError("valid state_slot_ids must be unique")
@@ -2204,7 +2202,7 @@ def load_moss_audio_vocoder(
         prefix="decoder.",
         dtype=model.decoder_dtype,
         device=device,
-        v1_weights=model._uses_moss_audio_tokenizer_v1_weights,
+        v1_weights=model.uses_moss_audio_tokenizer_v1_weights,
     )
     model.eval()
     logger.info(

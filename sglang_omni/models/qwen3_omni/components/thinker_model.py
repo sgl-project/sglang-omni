@@ -232,8 +232,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             and self.compatible_with_fused_qk_norm_rope
             and fused_qk_norm_rope is not None
         )
-        self._used_fused_qk_norm_rope_last_call = False
-        self._used_fused_set_kv_buffer_last_call = False
+        self.used_fused_qk_norm_rope_last_call = False
+        self.used_fused_set_kv_buffer_last_call = False
 
         self.attn = RadixAttention(
             self.num_heads,
@@ -292,8 +292,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 attention_factor,
             )
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-            self._used_fused_qk_norm_rope_last_call = True
-            self._used_fused_set_kv_buffer_last_call = False
+            self.used_fused_qk_norm_rope_last_call = True
+            self.used_fused_set_kv_buffer_last_call = False
         else:
             # Fallback to non-fused QK Norm & RoPE implementation
             q_linear, k_linear, v = qkv.split(
@@ -326,8 +326,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                     else None
                 ),
             )
-            self._used_fused_qk_norm_rope_last_call = False
-            self._used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
+            self.used_fused_qk_norm_rope_last_call = False
+            self.used_fused_set_kv_buffer_last_call = use_fused_set_kv_buffer
         return q, k, v
 
     def forward_prepare(
@@ -351,8 +351,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
 
         q, k, v, fb = inner_state
 
-        must_save_kv = self._used_fused_qk_norm_rope_last_call
-        save_kv_cache = must_save_kv or not self._used_fused_set_kv_buffer_last_call
+        must_save_kv = self.used_fused_qk_norm_rope_last_call
+        save_kv_cache = must_save_kv or not self.used_fused_set_kv_buffer_last_call
         attn_output = self.attn(
             q,
             k,
@@ -591,7 +591,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         )
 
         if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states, residual, forward_batch
@@ -644,7 +644,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         # For EAGLE3 support
         self.layers_to_capture = []
         bind_default_weight_loaders(self)
-        self._cached_params_dict = dict(self.named_parameters())
+        self.cached_params_dict = dict(self.named_parameters())
 
     def forward(
         self,
@@ -716,7 +716,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         (model): Qwen3OmniMoeThinkerTextModel
         (lm_head): lm_head
         """
-        params_dict = self._cached_params_dict
+        params_dict = self.cached_params_dict
 
         preprocess_weight = get_weight_preprocessor(
             self.config, fp8_scale_inverted=True

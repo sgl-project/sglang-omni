@@ -179,7 +179,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
         self.enable_encoder_cuda_graph = bool(enable_encoder_cuda_graph)
-        self._using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
+        self.using_default_encoder_graph_buckets = encoder_graph_batch_buckets is None
         self.encoder_graph_batch_buckets = normalize_encoder_graph_buckets(
             encoder_graph_batch_buckets
         )
@@ -253,7 +253,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder):
             encoder_token_count=self.encoder_token_count,
             max_running_requests=(
                 max_running_requests
-                if self._using_default_encoder_graph_buckets
+                if self.using_default_encoder_graph_buckets
                 else None
             ),
         )

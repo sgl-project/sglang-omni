@@ -33,12 +33,12 @@ class QwenTalkerModelRunner(ModelRunner):
         codec_coalesce_early_frames: int = 0,
     ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._outbox = outbox
-        self._code2wav_target = code2wav_target
-        self._feedback_enabled = bool(feedback_enabled)
-        self._codec_coalesce_frames = max(int(codec_coalesce_frames), 0)
-        self._codec_coalesce_first_frames = max(int(codec_coalesce_first_frames), 0)
-        self._codec_coalesce_early_frames = max(int(codec_coalesce_early_frames), 0)
+        self.outbox = outbox
+        self.code2wav_target = code2wav_target
+        self.feedback_enabled = bool(feedback_enabled)
+        self.codec_coalesce_frames = max(int(codec_coalesce_frames), 0)
+        self.codec_coalesce_first_frames = max(int(codec_coalesce_first_frames), 0)
+        self.codec_coalesce_early_frames = max(int(codec_coalesce_early_frames), 0)
 
     def execute(self, scheduler_output: Any):
         return super().execute(scheduler_output)
@@ -73,7 +73,7 @@ class QwenTalkerModelRunner(ModelRunner):
         del is_lookahead
         del forward_batch
         del schedule_batch
-        if not self._feedback_enabled:
+        if not self.feedback_enabled:
             return
 
         if not self.requests_ready_for_decode(requests):
@@ -93,7 +93,7 @@ class QwenTalkerModelRunner(ModelRunner):
     ) -> None:
         # Note (Xuesong): Do not clear data.prefill_input_embeds: decode retract may requeue
         # the Req for another prefill pass and Req.input_embeds is None.
-        if not self._feedback_enabled:
+        if not self.feedback_enabled:
             return
 
         if result.next_token_ids is None:
@@ -118,11 +118,11 @@ class QwenTalkerModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        if not self._feedback_enabled:
+        if not self.feedback_enabled:
             return
 
         batch_size = len(requests)
-        result.next_token_ids = self.model._sampled_token_ids[:batch_size].clone()
+        result.next_token_ids = self.model.sampled_token_ids[:batch_size].clone()
         self.stage_token_ids(result, result.next_token_ids)
         self.emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
@@ -139,9 +139,9 @@ class QwenTalkerModelRunner(ModelRunner):
         # Note (wenyao): one batched clone per buffer, not one per row: the
         # snapshot must be a fresh allocation so its rows survive the next
         # in-graph write to the fixed-address _output_codes/_output_embeds.
-        codes_snap = self.model._output_codes[:bs].detach().clone()
-        embeds_snap = self.model._output_embeds[:bs].detach().clone()
-        coalesce = self._codec_coalesce_frames
+        codes_snap = self.model.output_codes[:bs].detach().clone()
+        embeds_snap = self.model.output_embeds[:bs].detach().clone()
+        coalesce = self.codec_coalesce_frames
         for idx, sched_req in enumerate(requests):
             req = schedule_batch.reqs[idx]
             code_chunk = codes_snap[idx]
@@ -150,20 +150,20 @@ class QwenTalkerModelRunner(ModelRunner):
                 data = sched_req.data
                 pending = data.pending_codec_rows
                 data.codec_frames_seen += 1
-                if data.codec_frames_seen <= self._codec_coalesce_early_frames:
-                    self._outbox.put(
+                if data.codec_frames_seen <= self.codec_coalesce_early_frames:
+                    self.outbox.put(
                         OutgoingMessage(
                             request_id=req.rid,
                             type="stream",
                             data=code_chunk,
-                            target=self._code2wav_target,
+                            target=self.code2wav_target,
                             metadata={"stream": self.is_streaming(data)},
                         )
                     )
                 else:
                     # Note (wenyao): Only the newest row can be EOS; holding it for the finish
                     # hook keeps threshold flushes EOS-free without a sender-side sync.
-                    if self._codec_coalesce_early_frames > 0:
+                    if self.codec_coalesce_early_frames > 0:
                         # Note (wenyao): Align full batches to the emitted early prefix.
                         flush_ready = len(pending) >= coalesce
                     else:
@@ -172,12 +172,12 @@ class QwenTalkerModelRunner(ModelRunner):
                         self.flush_codec_rows(req.rid, data)
                     pending.append(code_chunk)
             else:
-                self._outbox.put(
+                self.outbox.put(
                     OutgoingMessage(
                         request_id=req.rid,
                         type="stream",
                         data=code_chunk,
-                        target=self._code2wav_target,
+                        target=self.code2wav_target,
                         metadata={"stream": self.is_streaming(sched_req.data)},
                     )
                 )
@@ -192,10 +192,10 @@ class QwenTalkerModelRunner(ModelRunner):
         )
 
     def coalesce_threshold(self, data: Any) -> int:
-        first = self._codec_coalesce_first_frames
+        first = self.codec_coalesce_first_frames
         if first > 0 and not data.codec_first_flush_done:
             return first
-        return self._codec_coalesce_frames
+        return self.codec_coalesce_frames
 
     def flush_codec_rows(self, request_id: str, data: Any) -> None:
         pending = data.pending_codec_rows
@@ -204,12 +204,12 @@ class QwenTalkerModelRunner(ModelRunner):
         data.codec_first_flush_done = True
         rows = pending[0] if len(pending) == 1 else torch.stack(pending, dim=0)
         pending.clear()
-        self._outbox.put(
+        self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
                 data=rows,
-                target=self._code2wav_target,
+                target=self.code2wav_target,
                 metadata={"stream": self.is_streaming(data)},
             )
         )
@@ -238,10 +238,12 @@ class QwenTalkerModelRunner(ModelRunner):
         return False
 
     def is_decode_batch_ready(self, schedule_batch: Any) -> bool:
-        if not self._feedback_enabled or not schedule_batch.forward_mode.is_decode():
+        if not self.feedback_enabled or not schedule_batch.forward_mode.is_decode():
             return True
         return all(
-            self.data_has_next_decode_input(getattr(req, "_omni_data", None))
+            self.data_has_next_decode_input(
+                getattr(req, "_omni_data", None)
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             for req in schedule_batch.reqs
         )
 
@@ -424,8 +426,8 @@ class QwenTalkerModelRunner(ModelRunner):
         if batch_size == 0:
             return
 
-        feedback_buffer = self.model._feedback_buffer
-        feedback_mask = self.model._feedback_mask
+        feedback_buffer = self.model.feedback_buffer
+        feedback_mask = self.model.feedback_mask
         feedback_mask[:batch_size] = False
 
         rows: list[int] = []

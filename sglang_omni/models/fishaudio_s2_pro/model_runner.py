@@ -71,9 +71,9 @@ class FishS2ProModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._semantic_begin_id = int(self.model._semantic_begin_id)
-        self._semantic_end_id = int(self.model._semantic_end_id)
-        self._im_end_token_id = int(self.model._im_end_token_id)
+        self.semantic_begin_id = int(self.model.semantic_begin_id)
+        self.semantic_end_id = int(self.model.semantic_end_id)
+        self.im_end_token_id = int(self.model.im_end_token_id)
 
     def lookahead_eligible(self, batch: Any) -> bool:
         # note (Junnan Li): not supported yet; semantic_history_tokens is
@@ -100,10 +100,10 @@ class FishS2ProModelRunner(ModelRunner):
         del schedule_batch
         input_ids = forward_batch.input_ids
         batch_size = input_ids.shape[0]
-        is_semantic = (input_ids >= self._semantic_begin_id) & (
-            input_ids <= self._semantic_end_id
+        is_semantic = (input_ids >= self.semantic_begin_id) & (
+            input_ids <= self.semantic_end_id
         )
-        self.model._vq_mask[:batch_size].copy_(is_semantic)
+        self.model.vq_mask[:batch_size].copy_(is_semantic)
 
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
@@ -112,10 +112,10 @@ class FishS2ProModelRunner(ModelRunner):
             last_codes = data.last_codebook_values
             if last_codes is None:
                 continue
-            self.model._vq_codes[row_idx].copy_(
+            self.model.vq_codes[row_idx].copy_(
                 last_codes.to(
-                    device=self.model._vq_codes.device,
-                    dtype=self.model._vq_codes.dtype,
+                    device=self.model.vq_codes.device,
+                    dtype=self.model.vq_codes.dtype,
                 )
             )
 
@@ -132,33 +132,33 @@ class FishS2ProModelRunner(ModelRunner):
             self.sync_decode_row_state(row_idx, sched_req.data)
 
     def sync_decode_row_state(self, row_idx: int, data: Any) -> None:
-        self.model._sampling_temperature[row_idx] = data.temperature
-        self.model._sampling_top_p[row_idx] = data.top_p
-        self.model._sampling_top_k[row_idx] = data.top_k
-        self.model._sampling_rep_penalty[row_idx] = data.repetition_penalty
-        self.model._ras_temperature[row_idx] = data.ras_temperature
-        self.model._ras_top_p[row_idx] = data.ras_top_p
-        self.model._sampling_seeds[row_idx] = (
+        self.model.sampling_temperature[row_idx] = data.temperature
+        self.model.sampling_top_p[row_idx] = data.top_p
+        self.model.sampling_top_k[row_idx] = data.top_k
+        self.model.sampling_rep_penalty[row_idx] = data.repetition_penalty
+        self.model.ras_temperature[row_idx] = data.ras_temperature
+        self.model.ras_top_p[row_idx] = data.ras_top_p
+        self.model.sampling_seeds[row_idx] = (
             _NO_SEED if data.seed is None else resolve_row_seed(data.seed)
         )
         # semantic_history_count is the uncapped per-request AR step (pre-step).
-        self.model._step_count[row_idx] = int(data.semantic_history_count)
+        self.model.step_count[row_idx] = int(data.semantic_history_count)
 
-        history_len = self.model._rep_history_len
+        history_len = self.model.rep_history_len
         history = data.semantic_history_tokens
         if history is not None:
-            self.model._prev_tokens[row_idx].copy_(
+            self.model.prev_tokens[row_idx].copy_(
                 history.to(
-                    device=self.model._prev_tokens.device,
-                    dtype=self.model._prev_tokens.dtype,
+                    device=self.model.prev_tokens.device,
+                    dtype=self.model.prev_tokens.dtype,
                 )
             )
-            self.model._prev_token_count[row_idx] = min(
+            self.model.prev_token_count[row_idx] = min(
                 int(data.semantic_history_count), history_len
             )
         else:
-            self.model._prev_tokens[row_idx].zero_()
-            self.model._prev_token_count[row_idx] = 0
+            self.model.prev_tokens[row_idx].zero_()
+            self.model.prev_token_count[row_idx] = 0
 
     def build_prefill_input_embeds(
         self,
@@ -209,7 +209,7 @@ class FishS2ProModelRunner(ModelRunner):
             vq_slice = vq_parts_flat[vq_before : vq_before + num_vq_in_slice]
 
             req_embeds = text_embeds[offset : offset + req_len]
-            vq_embeds = self.model._audio_decoder.embed_text_dim(
+            vq_embeds = self.model.audio_decoder.embed_text_dim(
                 req_embeds.unsqueeze(0),
                 vq_slice,
                 mask_slice.unsqueeze(0),
@@ -224,8 +224,8 @@ class FishS2ProModelRunner(ModelRunner):
         collect_s2pro_step_outputs(
             result,
             requests,
-            output_codes=self.model._output_codes,
-            output_semantic_ids=self.model._output_semantic_ids,
-            im_end_token_id=self._im_end_token_id,
-            rep_history_len=self.model._rep_history_len,
+            output_codes=self.model.output_codes,
+            output_semantic_ids=self.model.output_semantic_ids,
+            im_end_token_id=self.im_end_token_id,
+            rep_history_len=self.model.rep_history_len,
         )

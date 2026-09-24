@@ -242,9 +242,9 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
 
     Model.compile_encoder(model, [2, 1, 1], input_feature_len=6)
 
-    assert model._compiled_encoder is runner
-    assert model._compiled_chunk_buckets == frozenset({1, 2})
-    assert model._compiled_input_feature_len == 6
+    assert model.compiled_encoder is runner
+    assert model.compiled_chunk_buckets == frozenset({1, 2})
+    assert model.compiled_input_feature_len == 6
     assert len(warmups) == 6
     assert {shape[0] for shape in warmups} == {1, 2}
     assert all(shape[1:] == (4, 6) for shape in warmups)
@@ -280,7 +280,7 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
 
     Model.compile_encoder(model, [1, 2], input_feature_len=6)
 
-    assert model._compiled_chunk_buckets == frozenset({1})
+    assert model.compiled_chunk_buckets == frozenset({1})
 
 
 def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):

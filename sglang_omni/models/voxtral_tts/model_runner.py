@@ -15,8 +15,8 @@ from sglang_omni.scheduling.types import RequestOutput
 class VoxtralTTSModelRunner(ModelRunner):
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._pending_audio_codes: torch.Tensor | None = None
-        self._pending_audio_embeds: torch.Tensor | None = None
+        self.pending_audio_codes: torch.Tensor | None = None
+        self.pending_audio_embeds: torch.Tensor | None = None
 
     def before_prefill(
         self,
@@ -45,7 +45,7 @@ class VoxtralTTSModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
-        buffer = self.model._decode_input_embed_buffer
+        buffer = self.model.decode_input_embed_buffer
         rows = []
         for sched_req in requests:
             queue = sched_req.data.pending_feedback_queue
@@ -132,8 +132,8 @@ class VoxtralTTSModelRunner(ModelRunner):
         semantic_ids = codes[:, 0].to(dtype=torch.long)
         result.next_token_ids = semantic_ids
 
-        self._pending_audio_codes = codes
-        self._pending_audio_embeds = self.model.audio_token_embedding(
+        self.pending_audio_codes = codes
+        self.pending_audio_embeds = self.model.audio_token_embedding(
             codes.unsqueeze(2)
         ).sum(dim=1)
 
@@ -144,10 +144,10 @@ class VoxtralTTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
-        codes = self._pending_audio_codes
-        embeds = self._pending_audio_embeds
-        self._pending_audio_codes = None
-        self._pending_audio_embeds = None
+        codes = self.pending_audio_codes
+        embeds = self.pending_audio_embeds
+        self.pending_audio_codes = None
+        self.pending_audio_embeds = None
         if codes is None or embeds is None:
             return
 

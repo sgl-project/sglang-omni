@@ -70,7 +70,7 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 prefix=add_prefix("lm_head", prefix),
             )
         self.logits_processor = LogitsProcessor(self.config)
-        self._fused_rope_gate = install_thinker_fused_rope(self.model)
+        self.fused_rope_gate = install_thinker_fused_rope(self.model)
 
     @property
     def thinker(self) -> "Qwen3OmniThinkerForCausalLM":
@@ -91,8 +91,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         del get_embedding, omni_prefill_rids
         if forward_batch.mrope_positions is not None:
             positions = forward_batch.mrope_positions
-        if self._fused_rope_gate is not None:
-            self._fused_rope_gate.evaluate(positions, forward_batch)
+        if self.fused_rope_gate is not None:
+            self.fused_rope_gate.evaluate(positions, forward_batch)
 
         hidden_states = self.model(
             input_ids=input_ids,

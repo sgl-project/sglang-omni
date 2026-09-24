@@ -49,8 +49,8 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._has_pending_code_step = False
-        self._row_ids_cache: torch.Tensor | None = None
+        self.has_pending_code_step = False
+        self.row_ids_cache: torch.Tensor | None = None
 
     def before_prefill(
         self,
@@ -170,7 +170,7 @@ class Qwen3TTSModelRunner(ModelRunner):
     ) -> None:
         batch_size = len(requests)
         forward_batch.sampling_info.sampling_seed = (
-            self.model._semantic_sampling_seed_tensor[:batch_size]
+            self.model.semantic_sampling_seed_tensor[:batch_size]
         )
 
     def collect_codes(
@@ -180,7 +180,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         schedule_batch: Any,
         requests: list,
     ) -> None:
-        self._has_pending_code_step = False
+        self.has_pending_code_step = False
         if result.next_token_ids is None:
             return
         layer0_codes = result.next_token_ids
@@ -199,7 +199,7 @@ class Qwen3TTSModelRunner(ModelRunner):
             hidden,
             semantic_positions=semantic_positions,
         )
-        self._has_pending_code_step = True
+        self.has_pending_code_step = True
 
     def post_process_outputs(
         self,
@@ -208,15 +208,15 @@ class Qwen3TTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
-        if not self._has_pending_code_step:
+        if not self.has_pending_code_step:
             return
-        self._has_pending_code_step = False
+        self.has_pending_code_step = False
         eos_id = int(self.model.config.codec_eos_token_id)
         # Note: (Jiaxin Deng) per-row clones were a c32 decode-loop hot spot;
         # rows must stay views of a snapshot, never of the reused graph buffers.
         batch_size = len(scheduler_output.requests)
-        codes_snap = self.model._output_codes[:batch_size].detach().clone()
-        embeds_snap = self.model._output_embeds[:batch_size].detach().clone()
+        codes_snap = self.model.output_codes[:batch_size].detach().clone()
+        embeds_snap = self.model.output_embeds[:batch_size].detach().clone()
         codes_ready = None
         if codes_snap.is_cuda:
             codes_ready = torch.cuda.Event()
@@ -259,7 +259,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
-        decode_feedback_embedding = self.model._decode_feedback_embedding
+        decode_feedback_embedding = self.model.decode_feedback_embedding
         input_ids = forward_batch.input_ids
         if input_ids.numel() < batch_size:
             raise RuntimeError(
@@ -318,7 +318,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         input_ids[:batch_size].copy_(row_ids)
 
     def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
-        cached = getattr(self, "_row_ids_cache", None)
+        cached = getattr(self, "row_ids_cache", None)
         if (
             cached is None
             or cached.numel() < batch_size
@@ -330,7 +330,7 @@ class Qwen3TTSModelRunner(ModelRunner):
                 device=input_ids.device,
                 dtype=input_ids.dtype,
             )
-            self._row_ids_cache = cached
+            self.row_ids_cache = cached
         return cached[:batch_size]
 
     def build_prefill_input_embeds(

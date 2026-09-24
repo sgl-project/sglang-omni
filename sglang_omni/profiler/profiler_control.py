@@ -22,21 +22,21 @@ class ProfilerControlClient:
     _socks: dict[str, PushSocket] | None = None
 
     async def start(self) -> None:
-        if self._socks is not None:
+        if self.socks is not None:
             return
-        self._socks = {}
+        self.socks = {}
         for stage_name, endpoint in self.stage_endpoints.items():
             sock = PushSocket(endpoint)
             await sock.connect()
-            self._socks[stage_name] = sock
-        logger.info("ProfilerControlClient connected to %d stages", len(self._socks))
+            self.socks[stage_name] = sock
+        logger.info("ProfilerControlClient connected to %d stages", len(self.socks))
 
     async def close(self) -> None:
-        if not self._socks:
+        if not self.socks:
             return
-        for sock in self._socks.values():
+        for sock in self.socks.values():
             sock.close()
-        self._socks = None
+        self.socks = None
 
     async def broadcast_start(
         self,
@@ -48,8 +48,8 @@ class ProfilerControlClient:
         enable_torch: bool = True,
     ) -> None:
         await self.start()
-        assert self._socks is not None
-        targets = stages or list(self._socks.keys())
+        assert self.socks is not None
+        targets = stages or list(self.socks.keys())
         msg = ProfilerStartMessage(
             run_id=run_id,
             trace_path_template=trace_path_template,
@@ -57,7 +57,7 @@ class ProfilerControlClient:
             enable_torch=enable_torch,
         )
         for s in targets:
-            sock = self._socks.get(s)
+            sock = self.socks.get(s)
             if sock is None:
                 continue
             await sock.send(msg)
@@ -76,11 +76,11 @@ class ProfilerControlClient:
     ) -> None:
         """Broadcast stop. ``run_id=None`` is a wildcard."""
         await self.start()
-        assert self._socks is not None
-        targets = stages or list(self._socks.keys())
+        assert self.socks is not None
+        targets = stages or list(self.socks.keys())
         msg = ProfilerStopMessage(run_id=run_id)
         for s in targets:
-            sock = self._socks.get(s)
+            sock = self.socks.get(s)
             if sock is None:
                 continue
             await sock.send(msg)

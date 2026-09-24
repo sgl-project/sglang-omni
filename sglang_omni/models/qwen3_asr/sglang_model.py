@@ -64,7 +64,7 @@ def fused_asr_forward_prepare_native(
     hidden_states: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if hidden_states.dtype != torch.bfloat16 or fused_qk_norm_rope is None:
-        return attention._asr_unfused_forward_prepare_native(
+        return attention._asr_unfused_forward_prepare_native(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             positions,
             hidden_states,
         )
@@ -107,7 +107,9 @@ def enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
         attention = layer.self_attn
         if attention.head_dim not in (64, 128, 256):
             continue
-        attention._asr_unfused_forward_prepare_native = attention.forward_prepare_native
+        attention._asr_unfused_forward_prepare_native = (
+            attention.forward_prepare_native
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         attention.forward_prepare_native = MethodType(
             fused_asr_forward_prepare_native,
             attention,
@@ -155,7 +157,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         )
         enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
-        self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
+        self.encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
 
     def init_encoder_graphs(
         self, *, max_batch_size: int, max_tokens_per_clip: int
@@ -171,7 +173,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             graph_backend=graph_backend,
         )
         runner.capture_all()
-        self._encoder_graph_runner = runner
+        self.encoder_graph_runner = runner
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
@@ -238,7 +240,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 -1, input_features.shape[1]
             )
 
-        runner = self._encoder_graph_runner
+        runner = self.encoder_graph_runner
         if runner is not None:
             token_counts = [
                 (item.model_specific_data or {}).get("num_audio_tokens")

@@ -235,57 +235,57 @@ class MingPreprocessor:
     """
 
     def __init__(self, model_path: str):
-        self._model_path = model_path
-        self._config = load_ming_config(model_path)
-        self._tokenizer = load_ming_tokenizer(model_path)
-        self._audio_config = self._config.audio_config
-        self._vision_config = self._config.vision_config
+        self.model_path = model_path
+        self.config = load_ming_config(model_path)
+        self.tokenizer = load_ming_tokenizer(model_path)
+        self.audio_config = self.config.audio_config
+        self.vision_config = self.config.vision_config
 
         # Resolve special token IDs
-        self._audio_patch_id = self._tokenizer.convert_tokens_to_ids(AUDIO_PATCH)
-        self._audio_start_id = self._tokenizer.convert_tokens_to_ids(AUDIO_START)
-        self._audio_end_id = self._tokenizer.convert_tokens_to_ids(AUDIO_END)
-        llm_config = getattr(self._config, "llm_config", None)
-        self._image_patch_id = getattr(llm_config, "image_patch_token", None)
-        if self._image_patch_id is None:
-            self._image_patch_id = self._tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
-        self._video_patch_id = getattr(llm_config, "video_patch_token", None)
-        if self._video_patch_id is None:
-            self._video_patch_id = self._tokenizer.convert_tokens_to_ids(VIDEO_PATCH)
+        self.audio_patch_id = self.tokenizer.convert_tokens_to_ids(AUDIO_PATCH)
+        self.audio_start_id = self.tokenizer.convert_tokens_to_ids(AUDIO_START)
+        self.audio_end_id = self.tokenizer.convert_tokens_to_ids(AUDIO_END)
+        llm_config = getattr(self.config, "llm_config", None)
+        self.image_patch_id = getattr(llm_config, "image_patch_token", None)
+        if self.image_patch_id is None:
+            self.image_patch_id = self.tokenizer.convert_tokens_to_ids(IMAGE_PATCH)
+        self.video_patch_id = getattr(llm_config, "video_patch_token", None)
+        if self.video_patch_id is None:
+            self.video_patch_id = self.tokenizer.convert_tokens_to_ids(VIDEO_PATCH)
 
         # Lazy-init vision processors
-        self._image_processor = None
-        self._video_processor = None
+        self.image_processor = None
+        self.video_processor = None
 
     def get_image_processor(self):
         """Lazy-init Qwen2VLImageProcessor (same processor as Ming-Omni uses)."""
-        if self._image_processor is None:
+        if self.image_processor is None:
             from transformers import Qwen2VLImageProcessor
 
-            vc = self._vision_config
-            self._image_processor = Qwen2VLImageProcessor(
+            vc = self.vision_config
+            self.image_processor = Qwen2VLImageProcessor(
                 min_pixels=256 * 28 * 28,
                 max_pixels=1280 * 28 * 28,
                 patch_size=vc.patch_size,
                 temporal_patch_size=vc.temporal_patch_size,
                 merge_size=vc.spatial_merge_size,
             )
-        return self._image_processor
+        return self.image_processor
 
     def get_video_processor(self):
         """Lazy-init the video processor from the pinned Transformers version."""
-        if self._video_processor is None:
+        if self.video_processor is None:
             from transformers import Qwen2VLVideoProcessor
 
-            vc = self._vision_config
-            self._video_processor = Qwen2VLVideoProcessor(
+            vc = self.vision_config
+            self.video_processor = Qwen2VLVideoProcessor(
                 min_pixels=256 * 28 * 28,
                 max_pixels=1280 * 28 * 28,
                 patch_size=vc.patch_size,
                 temporal_patch_size=vc.temporal_patch_size,
                 merge_size=vc.spatial_merge_size,
             )
-        return self._video_processor
+        return self.video_processor
 
     def process_images(
         self, images: list[Any]
@@ -303,7 +303,7 @@ class MingPreprocessor:
         image_grid_thw = result["image_grid_thw"]
         token_counts = estimate_image_tokens(
             image_grid_thw.tolist(),
-            self._vision_config.spatial_merge_size,
+            self.vision_config.spatial_merge_size,
         )
         return pixel_values, image_grid_thw, token_counts
 
@@ -341,7 +341,7 @@ class MingPreprocessor:
         video_grid_thw = result["video_grid_thw"]
         token_counts = estimate_image_tokens(
             video_grid_thw.tolist(),
-            self._vision_config.spatial_merge_size,
+            self.vision_config.spatial_merge_size,
         )
         return pixel_values_videos, video_grid_thw, token_counts
 
@@ -541,8 +541,8 @@ class MingPreprocessor:
         audio_token_counts: list[int] = []
 
         if waveforms:
-            ds_kernel_size = getattr(self._audio_config, "ds_kernel_size", 1)
-            ds_stride = getattr(self._audio_config, "ds_stride", 1)
+            ds_kernel_size = getattr(self.audio_config, "ds_kernel_size", 1)
+            ds_stride = getattr(self.audio_config, "ds_stride", 1)
 
             mel_results = await asyncio.gather(
                 *[
@@ -674,7 +674,7 @@ class MingPreprocessor:
             if not text_buffer:
                 return
             input_ids.extend(
-                self._tokenizer.encode("".join(text_buffer), add_special_tokens=False)
+                self.tokenizer.encode("".join(text_buffer), add_special_tokens=False)
             )
             text_buffer.clear()
 
@@ -697,13 +697,11 @@ class MingPreprocessor:
             flush_text()
 
             input_ids.extend(
-                self._tokenizer.encode(start_token, add_special_tokens=False)
+                self.tokenizer.encode(start_token, add_special_tokens=False)
             )
             patch_start = len(input_ids)
             input_ids.extend([int(patch_id)] * n_tokens)
-            input_ids.extend(
-                self._tokenizer.encode(end_token, add_special_tokens=False)
-            )
+            input_ids.extend(self.tokenizer.encode(end_token, add_special_tokens=False))
             return patch_start
 
         # Keep the Ming prompt text aligned with the known-good Ming reference path.
@@ -747,7 +745,7 @@ class MingPreprocessor:
                                     AUDIO_START,
                                     AUDIO_PATCH,
                                     AUDIO_END,
-                                    self._audio_patch_id,
+                                    self.audio_patch_id,
                                     n_tokens,
                                 )
                             )
@@ -760,7 +758,7 @@ class MingPreprocessor:
                                 IMAGE_START,
                                 IMAGE_PATCH,
                                 IMAGE_END,
-                                self._image_patch_id,
+                                self.image_patch_id,
                                 n_tokens,
                             )
                             image_idx += 1
@@ -772,7 +770,7 @@ class MingPreprocessor:
                                 VIDEO_START,
                                 VIDEO_PATCH,
                                 VIDEO_END,
-                                self._video_patch_id,
+                                self.video_patch_id,
                                 n_tokens,
                             )
                             video_idx += 1

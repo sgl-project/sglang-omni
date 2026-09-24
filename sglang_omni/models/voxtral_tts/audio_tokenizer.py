@@ -126,13 +126,17 @@ class SemanticCodebook(nn.Module):
 
     @property
     def embedding(self) -> torch.Tensor:
-        if self._embedding is None:
+        if (
+            self._embedding is None
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             embedding = (
                 self.embedding_sum / self.cluster_usage.clamp(min=self.epsilon)[:, None]
             )
             self.register_buffer("_embedding", embedding, persistent=False)
             return embedding
-        return self._embedding
+        return (
+            self._embedding
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         codes = codes.squeeze(1)
@@ -243,20 +247,26 @@ class CausalConv1d(nn.Module):
         )
         self.conv = weight_norm(conv) if use_weight_norm else conv
         self.pad_mode = pad_mode
-        self._stride = self.conv.stride[0]
-        self._effective_kernel_size = (kernel_size - 1) * self.conv.dilation[0] + 1
-        self._padding_total = self._effective_kernel_size - self._stride
+        self._stride = self.conv.stride[
+            0
+        ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.effective_kernel_size = (kernel_size - 1) * self.conv.dilation[0] + 1
+        self.padding_total = (
+            self.effective_kernel_size - self._stride
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.stride = self.conv.stride
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         n_frames = (
-            x.shape[-1] - self._effective_kernel_size + self._padding_total
-        ) / self._stride + 1
-        target_length = (math.ceil(n_frames) - 1) * self._stride + (
-            self._effective_kernel_size - self._padding_total
+            x.shape[-1] - self.effective_kernel_size + self.padding_total
+        ) / self._stride + 1  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        target_length = (
+            math.ceil(n_frames) - 1
+        ) * self._stride + (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.effective_kernel_size - self.padding_total
         )
         extra_padding = target_length - x.shape[-1]
-        x = pad1d(x, (self._padding_total, extra_padding), mode=self.pad_mode)
+        x = pad1d(x, (self.padding_total, extra_padding), mode=self.pad_mode)
         return self.conv(x)
 
 
@@ -403,7 +413,7 @@ class Attention(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: AudioTokenizerArgs) -> None:
         super().__init__()
-        self._layer_id = layer_id
+        self._layer_id = layer_id  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.attention = Attention(args, layer_id=layer_id)
         self.feed_forward = FeedForward(args.dim, args.hidden_dim, args.use_biases)
         self.attention_norm = rms_norm(args.dim, eps=args.norm_eps)
@@ -429,7 +439,9 @@ class TransformerBlock(nn.Module):
 
     @property
     def layer_id(self) -> int:
-        return self._layer_id
+        return (
+            self._layer_id
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         r = self.attention(self.attention_norm(x))
@@ -548,16 +560,22 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         )
 
         scale_factor = math.prod(args.encoder_convs_strides)
-        self._frame_rate = args.sampling_rate / (self.patch_size * scale_factor)
-        self._sampling_rate = args.sampling_rate
+        self.frame_rate = args.sampling_rate / (self.patch_size * scale_factor)
+        self._sampling_rate = (
+            args.sampling_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def sampling_rate(self) -> int:
-        return self._sampling_rate
+        return (
+            self._sampling_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def downsample_factor(self) -> int:
-        return int(self._sampling_rate / self._frame_rate)
+        return int(
+            self._sampling_rate / self.frame_rate
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def num_codebooks(self) -> int:

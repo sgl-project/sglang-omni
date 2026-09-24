@@ -23,7 +23,7 @@ class NemotronTalkerScheduler(OmniScheduler):
         if (
             batch is not None
             and batch.forward_mode.is_decode()
-            and not self._model_runner.is_decode_batch_ready(batch)
+            and not self.model_runner.is_decode_batch_ready(batch)
         ):
             self.rollback_decode_prep_after_skip(batch)
             return None

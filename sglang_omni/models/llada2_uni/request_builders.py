@@ -153,7 +153,7 @@ def build_dllm_thinker_request(
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = None
-    req._omni_consumed = None
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangDLLMRequestData(
         output_ids=req.output_ids,

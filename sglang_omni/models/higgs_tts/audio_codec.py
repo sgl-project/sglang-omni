@@ -137,15 +137,15 @@ class HiggsAudioCodec:
     ) -> None:
         self.model = model
         self.device = device
-        self._dtype = next(model.parameters()).dtype
-        self._decode_cuda_graphs: dict[int, DecodeCudaGraph] = {}
-        self._decode_cuda_graph_hits = 0
-        self._decode_cuda_graph_misses = 0
-        self._decode_cuda_graph_missed_shapes: set[int] = set()
+        self.dtype = next(model.parameters()).dtype
+        self.decode_cuda_graphs: dict[int, DecodeCudaGraph] = {}
+        self.decode_cuda_graph_hits = 0
+        self.decode_cuda_graph_misses = 0
+        self.decode_cuda_graph_missed_shapes: set[int] = set()
         # Graphs for different frame counts share one private CUDA memory pool.
         # Their temporary/output storage may therefore alias and decode must
         # remain single-flight until the selected output has reached the host.
-        self._decode_single_flight_lock = threading.Lock()
+        self.decode_single_flight_lock = threading.Lock()
 
     @classmethod
     def from_pretrained(
@@ -195,7 +195,7 @@ class HiggsAudioCodec:
     @torch.no_grad()
     def capture_decode_cuda_graphs(self, frame_counts: tuple[int, ...]) -> None:
         """Capture and publish decode graphs while decode is quiescent."""
-        with self._decode_single_flight_lock:
+        with self.decode_single_flight_lock:
             self.capture_decode_cuda_graphs_locked(frame_counts)
 
     def capture_decode_cuda_graphs_locked(self, frame_counts: tuple[int, ...]) -> None:
@@ -273,7 +273,7 @@ class HiggsAudioCodec:
 
         current_stream.wait_stream(capture_stream)
         torch.cuda.synchronize(self.device)
-        self._decode_cuda_graphs = captured
+        self.decode_cuda_graphs = captured
         logger.info(
             f"Captured {len(captured)} Higgs codec decode CUDA graphs for "
             f"frame counts {min(captured)}..{max(captured)}"
@@ -299,7 +299,7 @@ class HiggsAudioCodec:
         if wav.shape[-1] < self.SAMPLE_RATE:
             wav = F.pad(wav, (0, self.SAMPLE_RATE - wav.shape[-1]))
 
-        wav = wav.to(device=self.device, dtype=self._dtype)
+        wav = wav.to(device=self.device, dtype=self.dtype)
         codes_BNT = self.model.encode(wav).audio_codes
         return codes_BNT.squeeze(0).transpose(0, 1).to(torch.long).cpu()
 
@@ -349,7 +349,7 @@ class HiggsAudioCodec:
             padded.append(wav)
 
         def _batch_fn(batch_items: list[torch.Tensor]) -> list[torch.Tensor]:
-            batch = torch.cat(batch_items).to(device=self.device, dtype=self._dtype)
+            batch = torch.cat(batch_items).to(device=self.device, dtype=self.dtype)
             codes_BNT = self.model.encode(batch).audio_codes.to(torch.long).cpu()
             return [codes_BNT[j].transpose(0, 1) for j in range(len(batch_items))]
 
@@ -364,7 +364,7 @@ class HiggsAudioCodec:
     @torch.no_grad()
     def decode(self, codes_TN: torch.Tensor) -> torch.Tensor:
         """``[T, num_codebooks]`` → mono waveform ``[L]``."""
-        with self._decode_single_flight_lock:
+        with self.decode_single_flight_lock:
             return self.decode_one(codes_TN)
 
     def decode_one(self, codes_TN: torch.Tensor) -> torch.Tensor:
@@ -373,11 +373,11 @@ class HiggsAudioCodec:
                 f"codes must be 2-D [T, num_codebooks], got {tuple(codes_TN.shape)}"
             )
         frame_count = int(codes_TN.shape[0])
-        decode_graphs = self._decode_cuda_graphs
+        decode_graphs = self.decode_cuda_graphs
         decode_graph = decode_graphs.get(frame_count)
         codes_BNT = codes_TN.transpose(0, 1).unsqueeze(0)
         if decode_graph is not None:
-            self._decode_cuda_graph_hits += 1
+            self.decode_cuda_graph_hits += 1
             if int(codes_BNT.shape[1]) != int(decode_graph.input_codes.shape[1]):
                 raise ValueError(
                     f"codes have {int(codes_BNT.shape[1])} quantizers, expected "
@@ -390,9 +390,9 @@ class HiggsAudioCodec:
             audio = decode_graph.output_audio
         else:
             if decode_graphs:
-                self._decode_cuda_graph_misses += 1
-                if frame_count not in self._decode_cuda_graph_missed_shapes:
-                    self._decode_cuda_graph_missed_shapes.add(frame_count)
+                self.decode_cuda_graph_misses += 1
+                if frame_count not in self.decode_cuda_graph_missed_shapes:
+                    self.decode_cuda_graph_missed_shapes.add(frame_count)
                     logger.warning(
                         f"Higgs codec decode CUDA graph miss for frame count "
                         f"{frame_count}; using eager decode"
@@ -401,13 +401,13 @@ class HiggsAudioCodec:
                 codes_BNT.to(device=self.device, dtype=torch.long)
             ).audio_values
         total_graph_lookups = (
-            self._decode_cuda_graph_hits + self._decode_cuda_graph_misses
+            self.decode_cuda_graph_hits + self.decode_cuda_graph_misses
         )
         if decode_graphs and total_graph_lookups % 1024 == 0:
             logger.info(
                 f"Higgs codec decode CUDA graph stats: "
-                f"hits={self._decode_cuda_graph_hits} "
-                f"misses={self._decode_cuda_graph_misses}"
+                f"hits={self.decode_cuda_graph_hits} "
+                f"misses={self.decode_cuda_graph_misses}"
             )
         return audio.squeeze(0).squeeze(0).cpu()
 
@@ -423,7 +423,7 @@ class HiggsAudioCodec:
             audio = self.model.decode(codes_BNT).audio_values.cpu()
             return [audio[j, 0] for j in range(len(batch_items))]
 
-        with self._decode_single_flight_lock:
+        with self.decode_single_flight_lock:
             return self.bucketed_batch(
                 codes_list,
                 bucket_key_fn=lambda c: c.shape[0],

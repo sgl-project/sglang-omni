@@ -75,19 +75,19 @@ class MingStreamingDetokenizeScheduler:
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
-        self._tokenizer = tokenizer
-        self._eos_token_id = eos_token_id
+        self.tokenizer = tokenizer
+        self.eos_token_id = eos_token_id
         self.stage_name = stage_name
-        self._running = False
-        self._state: dict[str, RequestState] = {}
-        self._done_seen: OrderedDict[str, None] = OrderedDict()
+        self.running = False
+        self.state: dict[str, RequestState] = {}
+        self.done_seen: OrderedDict[str, None] = OrderedDict()
         # abort() runs on the stage's event-loop thread while start() runs on
         # the scheduler thread; guards iteration/multi-op sections.
-        self._state_lock = threading.Lock()
+        self.state_lock = threading.Lock()
 
     def start(self) -> None:
-        self._running = True
-        while self._running:
+        self.running = True
+        while self.running:
             try:
                 msg = self.inbox.get(timeout=0.1)
             except _queue_mod.Empty:
@@ -114,33 +114,33 @@ class MingStreamingDetokenizeScheduler:
                 )
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
 
     def abort(self, request_id: str) -> None:
-        with self._state_lock:
-            self._state.pop(request_id, None)
-            self._done_seen.pop(request_id, None)
+        with self.state_lock:
+            self.state.pop(request_id, None)
+            self.done_seen.pop(request_id, None)
 
     def ensure_state(self, request_id: str) -> RequestState:
-        s = self._state.get(request_id)
+        s = self.state.get(request_id)
         if s is None:
             s = RequestState(last_seen=time.monotonic())
-            self._state[request_id] = s
-            if len(self._state) > _STATE_MAX:
+            self.state[request_id] = s
+            if len(self.state) > _STATE_MAX:
                 self.evict_idle_orphans()
         s.last_seen = time.monotonic()
         return s
 
     def evict_idle_orphans(self) -> None:
         cutoff = time.monotonic() - _STATE_ORPHAN_IDLE_S
-        with self._state_lock:
+        with self.state_lock:
             stale = [
                 rid
-                for rid, st in self._state.items()
+                for rid, st in self.state.items()
                 if st.payload is None and not st.done and st.last_seen < cutoff
             ]
             for rid in stale:
-                self._state.pop(rid, None)
+                self.state.pop(rid, None)
         if stale:
             logger.warning(
                 "Evicted %d idle orphan stream states (cap %d exceeded)",
@@ -157,7 +157,7 @@ class MingStreamingDetokenizeScheduler:
         s = self.ensure_state(request_id)
         s.pending_tokens.append(token_id)
 
-        candidate = self._tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
+        candidate = self.tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
         # A trailing U+FFFD means an incomplete multi-byte UTF-8 char; hold
         # until the next token. Interior U+FFFD (model emitting a literal
         # replacement char) flushes normally — holding would stall streaming
@@ -184,15 +184,15 @@ class MingStreamingDetokenizeScheduler:
         )
 
     def on_stream_done(self, request_id: str) -> None:
-        s = self._state.get(request_id)
+        s = self.state.get(request_id)
         if s is None:
             # Zero-token generation or late duplicate done — latch for
             # _on_new_request to consume.
-            self._done_seen[request_id] = None
-            if len(self._done_seen) > _DONE_SEEN_MAX:
-                with self._state_lock:
-                    while len(self._done_seen) > _DONE_SEEN_EVICT_TO:
-                        self._done_seen.popitem(last=False)
+            self.done_seen[request_id] = None
+            if len(self.done_seen) > _DONE_SEEN_MAX:
+                with self.state_lock:
+                    while len(self.done_seen) > _DONE_SEEN_EVICT_TO:
+                        self.done_seen.popitem(last=False)
             return
         s.done = True
         if s.payload is not None:
@@ -201,24 +201,22 @@ class MingStreamingDetokenizeScheduler:
     def on_new_request(self, request_id: str, payload: StagePayload) -> None:
         s = self.ensure_state(request_id)
         s.payload = payload
-        if request_id in self._done_seen:
+        if request_id in self.done_seen:
             s.done = True
-            self._done_seen.pop(request_id, None)
+            self.done_seen.pop(request_id, None)
         is_streaming = bool((payload.request.params or {}).get("stream", False))
         if s.done or not is_streaming:
             self.finalize(request_id)
 
     def finalize(self, request_id: str) -> None:
-        s = self._state.pop(request_id, None)
-        self._done_seen.pop(request_id, None)
+        s = self.state.pop(request_id, None)
+        self.done_seen.pop(request_id, None)
         if s is None or s.payload is None:
             return
 
         # Flush any remaining pending tokens (e.g. truncated UTF-8 on max_tokens).
         if s.pending_tokens:
-            leftover = self._tokenizer.decode(
-                s.pending_tokens, skip_special_tokens=True
-            )
+            leftover = self.tokenizer.decode(s.pending_tokens, skip_special_tokens=True)
             if leftover:
                 self.outbox.put(
                     OutgoingMessage(
@@ -263,8 +261,8 @@ class MingStreamingDetokenizeScheduler:
             decode_events(
                 thinker_out=thinker_out,
                 state=state,
-                tokenizer=self._tokenizer,
-                eos_token_id=self._eos_token_id,
+                tokenizer=self.tokenizer,
+                eos_token_id=self.eos_token_id,
                 step=step,
             )
         )
@@ -292,7 +290,7 @@ class MingStreamingDetokenizeScheduler:
         elif "text" not in result:
             output_ids = thinker_out.get("output_ids")
             if isinstance(output_ids, list) and output_ids:
-                result["text"] = self._tokenizer.decode(
+                result["text"] = self.tokenizer.decode(
                     output_ids, skip_special_tokens=True
                 )
                 result.setdefault("modality", "text")

@@ -109,7 +109,7 @@ async def test_worker_failure_wakes_output_and_fails_session(tmp_path, monkeypat
         processes[-1].kill()
         processes[-1].expected_exitcode = -9
         await asyncio.to_thread(processes[-1].join, 5)
-        futures = list(coordinator._completion_futures.values())
+        futures = list(coordinator.completion_futures.values())
         assert futures and not any(future.done() for future in futures)
         # Note (Junnan Li): Cleanup waits for the pump, which waits on this future; fail the waiters first.
         entered, release = block_session_cleanup(monkeypatch, coordinator)
@@ -308,7 +308,7 @@ async def test_public_submit_rejects_session_metadata(linear_pair):
         await coordinator.submit("rogue", request)
     with pytest.raises(ValueError, match="reserved"):
         await anext(coordinator.stream("rogue", request))
-    assert "rogue" not in coordinator._requests
+    assert "rogue" not in coordinator.requests
 
 
 @pytest.mark.asyncio(loop_scope="session")

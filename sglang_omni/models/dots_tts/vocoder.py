@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class DotsTTSBatchVocoder(BatchVocoderBase):
     def __init__(self, codec: DotsAudioCodec) -> None:
         self.codec = codec
-        self._logged_batch = False
+        self.logged_batch = False
 
     def prepare_item(self, payload: StagePayload) -> tuple[DotsTTSState, torch.Tensor]:
         state = load_dots_tts_state(payload)
@@ -45,14 +45,14 @@ class DotsTTSBatchVocoder(BatchVocoderBase):
             buckets.setdefault(bucket, []).append((index, latents))
 
         bucket_sizes = [len(bucket_items) for bucket_items in buckets.values()]
-        if not self._logged_batch and max(bucket_sizes, default=0) > 1:
+        if not self.logged_batch and max(bucket_sizes, default=0) > 1:
             logger.info(
                 "dots.tts AudioVAE batched decode is active: requests=%d "
                 "bucket_sizes=%s",
                 len(items),
                 bucket_sizes,
             )
-            self._logged_batch = True
+            self.logged_batch = True
 
         with self.codec.lock:
             for bucket_items in buckets.values():
@@ -175,14 +175,14 @@ class DotsTTSStreamingVocoder(
         self.optimize = bool(optimize)
         self.merge_steps = int(merge_steps) if optimize else 1
         self.stream_slots = int(stream_slots)
-        self._batch_vocoder = DotsTTSBatchVocoder(codec)
-        self._slot_pool = slot_pool
+        self.batch_vocoder = DotsTTSBatchVocoder(codec)
+        self.slot_pool = slot_pool
         # note (guozhihao-224): coalesce width follows max_batch_size only;
         # stream_slots is admission capacity and must not redefine the batch cap.
         self.stream_chunk_batch_max = int(max_batch_size)
         super().__init__(
-            self._batch_vocoder.decode_payload,
-            batch_compute_fn=self._batch_vocoder.decode_payloads,
+            self.batch_vocoder.decode_payload,
+            batch_compute_fn=self.batch_vocoder.decode_payloads,
             max_batch_size=max_batch_size,
             max_batch_wait_ms=max_batch_wait_ms,
             sample_rate=codec.sample_rate,
@@ -196,8 +196,8 @@ class DotsTTSStreamingVocoder(
             return self.get_or_create_pool_locked()
 
     def validate_non_streaming_payload(self, payload: StagePayload) -> None:
-        _state, latents = self._batch_vocoder.prepare_item(payload)
-        self._batch_vocoder.validate_latents(latents)
+        _state, latents = self.batch_vocoder.prepare_item(payload)
+        self.batch_vocoder.validate_latents(latents)
 
     def create_stream_state(self, request_id: str) -> DotsStreamState:
         del request_id
@@ -364,8 +364,8 @@ class DotsTTSStreamingVocoder(
 
     def get_or_create_pool_locked(self) -> DotsVocoderSlotPool:
         # Caller must hold self.codec.lock (RLock).
-        if self._slot_pool is None:
-            self._slot_pool = DotsVocoderSlotPool(
+        if self.slot_pool is None:
+            self.slot_pool = DotsVocoderSlotPool(
                 self.codec.inference,
                 num_slots=self.stream_slots,
                 chunk_size=self.codec.patch_size * self.merge_steps,
@@ -377,7 +377,7 @@ class DotsTTSStreamingVocoder(
                 self.merge_steps,
                 self.codec.patch_size * self.merge_steps,
             )
-        return self._slot_pool
+        return self.slot_pool
 
     def ensure_slot(self, state: DotsStreamState) -> None:
         if state.slot is not None:

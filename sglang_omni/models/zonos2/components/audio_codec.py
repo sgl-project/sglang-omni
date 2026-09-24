@@ -66,7 +66,7 @@ class Zonos2DACVocoder:
         self.sample_rate = ZONOS2_SAMPLE_RATE
         self.hop_length = DAC_HOP_LENGTH
         self.audio_pad_id = _AUDIO_PAD_ID
-        self._dac = get_dac(device)
+        self.dac = get_dac(device)
 
     @torch.inference_mode()
     def decode(
@@ -103,8 +103,8 @@ class Zonos2DACVocoder:
         codes = codes.permute(0, 2, 1).contiguous()
 
         # float32: bf16 ConvTranspose is numerically unstable.
-        z = self._dac.quantizer.from_codes(codes)[0]
-        audio = self._dac.decode(z).float().squeeze(1).cpu()
+        z = self.dac.quantizer.from_codes(codes)[0]
+        audio = self.dac.decode(z).float().squeeze(1).cpu()
 
         return audio[0].contiguous()
 
@@ -162,8 +162,8 @@ class Zonos2DACVocoder:
 
         # DAC expects (batch, codebooks, seq); float32 for stable ConvTranspose.
         batch = batch.permute(0, 2, 1).contiguous()
-        z = self._dac.quantizer.from_codes(batch)[0]
-        audio = self._dac.decode(z).float().squeeze(1).cpu()
+        z = self.dac.quantizer.from_codes(batch)[0]
+        audio = self.dac.decode(z).float().squeeze(1).cpu()
 
         for j, i in enumerate(keep):
             results[i] = audio[j, : valids[j] * self.hop_length].contiguous()

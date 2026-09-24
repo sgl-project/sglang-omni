@@ -99,7 +99,7 @@ class SemanticTurnDetector:
         self.silence_run_samples = 0
         self.candidate_probability: float | None = None
         self.utterance_audio = bytearray()
-        self._eou_broken = False
+        self.eou_broken = False
 
     def process(self, pcm_bytes: bytes) -> list[Emit]:
         if not pcm_bytes:
@@ -143,7 +143,7 @@ class SemanticTurnDetector:
             self.silence_run_samples += VAD_FRAME_SAMPLES
             silence_ms = self.silence_run_samples * 1000 // VAD_SAMPLE_RATE
 
-            if self._eou_broken:
+            if self.eou_broken:
                 if silence_ms >= self.config.fallback_silence_ms:
                     emits.append(self.end_turn())
                 continue
@@ -159,7 +159,7 @@ class SemanticTurnDetector:
                         "Smart Turn inference failed; using fixed-silence fallback",
                         exc_info=True,
                     )
-                    self._eou_broken = True
+                    self.eou_broken = True
                     if silence_ms >= self.config.fallback_silence_ms:
                         emits.append(self.end_turn())
                     continue
@@ -210,5 +210,5 @@ class SemanticTurnDetector:
         self.silence_run_samples = 0
         self.candidate_probability = None
         self.utterance_audio.clear()
-        self._eou_broken = False
+        self.eou_broken = False
         self.speech_model.reset()

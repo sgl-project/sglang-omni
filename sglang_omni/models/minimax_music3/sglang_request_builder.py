@@ -87,8 +87,8 @@ def build_sglang_minimax_request(
         vocab_size=vocab_size,
     )
     req.tokenizer = None
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     uncond_ids = prompt_token_ids.clone()
     uncond_ids[1:-2] = SPECIAL_TOKEN_IDS["<|audio_cfg|>"]
@@ -101,8 +101,8 @@ def build_sglang_minimax_request(
         vocab_size=vocab_size,
     )
     uncond_req.tokenizer = None
-    uncond_req._input_embeds_are_projected = True
-    uncond_req._codec_suppress_tokens = None
+    uncond_req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    uncond_req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     uncond = MiniMaxMusic3SGLangRequestData(
         minimax_state=state,
         stage_payload=payload,

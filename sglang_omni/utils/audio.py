@@ -220,7 +220,7 @@ def resample_kernel(
 ) -> tuple[torch.Tensor, int]:
     # Note (Jiaxin Deng): torchaudio rebuilds this per call even though it
     # depends only on the rate pair, the options and the tensor type.
-    return torchaudio.functional.functional._get_sinc_resample_kernel(
+    return torchaudio.functional.functional._get_sinc_resample_kernel(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         orig_freq,
         new_freq,
         gcd,
@@ -248,7 +248,7 @@ def cached_resample(
             waveform.device,
             waveform.dtype,
         )
-        return torchaudio.functional.functional._apply_sinc_resample_kernel(
+        return torchaudio.functional.functional._apply_sinc_resample_kernel(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             waveform, orig_freq, new_freq, gcd, kernel, width
         )
     except (AttributeError, TypeError, RuntimeError):

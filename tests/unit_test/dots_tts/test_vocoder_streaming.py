@@ -144,13 +144,13 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
     pool.step({s0: older, s1: newer})
     assert inference.batch_steps[-1] == (2, 3)
-    assert pool._total_frames[s0] == 6
-    assert pool._total_frames[s1] == 3
+    assert pool.total_frames[s0] == 6
+    assert pool.total_frames[s1] == 3
 
     pool.release(s0)
     reused = pool.acquire()
     assert reused == s0
-    assert pool._total_frames[reused] == 0
+    assert pool.total_frames[reused] == 0
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
@@ -275,7 +275,7 @@ def test_stream_done_flushes_and_releases_slot() -> None:
     assert waveform is not None
     assert state.slot is None
     assert pool.flushes == [slot]
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_release_stream_resources_returns_slot() -> None:
@@ -290,7 +290,7 @@ def test_release_stream_resources_returns_slot() -> None:
     slot = state.slot
     vocoder.release_stream_resources("req", state)
     assert state.slot is None
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:

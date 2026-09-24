@@ -224,10 +224,14 @@ class StageGroup:
             )
         self.group_name = group_name
         self.process_specs = list(process_specs)
-        self._processes: list[multiprocessing.Process] = []
-        self._ready_events: list[multiprocessing.Event] = []
-        self._startup_error_channels: list[object] = []
-        self._process_start_attempts: set[str] = set()
+        self._processes: list[multiprocessing.Process] = (
+            []
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.ready_events: list[multiprocessing.Event] = []
+        self.startup_error_channels: list[object] = []
+        self._process_start_attempts: set[str] = (
+            set()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def process_count(self) -> int:
@@ -263,11 +267,15 @@ class StageGroup:
 
     @property
     def processes(self) -> list[multiprocessing.Process]:
-        return list(self._processes)
+        return list(
+            self._processes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def process_start_attempts(self) -> set[str]:
         """Return process names whose ``Process.start()`` was called."""
-        return set(self._process_start_attempts)
+        return set(
+            self._process_start_attempts
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def spawn(
         self,
@@ -292,20 +300,28 @@ class StageGroup:
                     else None
                 )
                 with patched_spawn_env(spec, extra_env=extra_env):
-                    self._process_start_attempts.add(spec.process_name)
+                    self._process_start_attempts.add(
+                        spec.process_name
+                    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     proc.start()
             except Exception:
                 close_queue(startup_error_channel)
                 raise
-            self._processes.append(proc)
-            self._ready_events.append(event)
-            self._startup_error_channels.append(startup_error_channel)
+            self._processes.append(
+                proc
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.ready_events.append(event)
+            self.startup_error_channels.append(startup_error_channel)
 
         logger.info(
             "StageGroup %s: spawned %d process(es) (pids=%s)",
             self.group_name,
-            len(self._processes),
-            [p.pid for p in self._processes],
+            len(
+                self._processes
+            ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            [
+                p.pid for p in self._processes
+            ],  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
 
     async def wait_ready(self, timeout: float) -> None:
@@ -313,11 +329,13 @@ class StageGroup:
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + timeout
 
-        for i, event in enumerate(self._ready_events):
-            proc = self._processes[i]
+        for i, event in enumerate(self.ready_events):
+            proc = self._processes[
+                i
+            ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             spec = self.process_specs[i]
             process_label = spec.process_name
-            startup_error_channel = self._startup_error_channels[i]
+            startup_error_channel = self.startup_error_channels[i]
 
             while not event.is_set():
                 remaining = deadline - time.monotonic()
@@ -351,12 +369,16 @@ class StageGroup:
 
     def any_dead(self) -> bool:
         """Return True if any process in the group exited while runner is active."""
-        return any(not p.is_alive() for p in self._processes)
+        return any(
+            not p.is_alive() for p in self._processes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def dead_summary(self) -> str:
         """Human-readable summary of dead processes (for error messages)."""
         parts = []
-        for i, p in enumerate(self._processes):
+        for i, p in enumerate(
+            self._processes
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
@@ -365,7 +387,7 @@ class StageGroup:
         return ", ".join(parts) if parts else "(none)"
 
     def close_control_channels(self) -> None:
-        for q in self._startup_error_channels:
+        for q in self.startup_error_channels:
             close_queue(q)
         for stage_spec in self.specs:
             for q in (
@@ -381,7 +403,9 @@ class StageGroup:
         before_signal: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         try:
-            for spec, p in zip(self.process_specs, self._processes):
+            for spec, p in zip(
+                self.process_specs, self._processes
+            ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 p.join(timeout=join_timeout)
                 if p.is_alive():
                     logger.warning(
@@ -398,9 +422,9 @@ class StageGroup:
                         p.join(timeout=2)
         finally:
             self.close_control_channels()
-            self._processes.clear()
-            self._ready_events.clear()
-            self._startup_error_channels.clear()
+            self._processes.clear()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.ready_events.clear()
+            self.startup_error_channels.clear()
 
 
 def stage_process_main(
@@ -494,7 +518,7 @@ def run_process(
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             for stage in stages:
-                if stage._running:
+                if stage.running:
                     await stage.stop()
 
     try:
@@ -805,7 +829,7 @@ def construct_stage(
     )
 
     if spec.is_stream_receiver:
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
 
     return stage
 

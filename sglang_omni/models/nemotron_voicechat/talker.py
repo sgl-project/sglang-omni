@@ -240,11 +240,11 @@ class NemotronVoiceChatTalker(nn.Module):
         max_batch = get_schedule().max_running_requests
         embed_dtype = torch.get_default_dtype()
         device = "cuda"
-        self._fusion_buffer = torch.zeros(
+        self.fusion_buffer = torch.zeros(
             max_batch, hidden_size, dtype=embed_dtype, device=device
         )
-        self._fusion_mask = torch.zeros(max_batch, dtype=torch.bool, device=device)
-        self._hidden_out = torch.zeros(
+        self.fusion_mask = torch.zeros(max_batch, dtype=torch.bool, device=device)
+        self.hidden_out = torch.zeros(
             max_batch, hidden_size, dtype=embed_dtype, device=device
         )
 
@@ -255,16 +255,16 @@ class NemotronVoiceChatTalker(nn.Module):
         if input_embeds is None:
             batch = input_ids.shape[0]
             assert bool(
-                self._fusion_mask[:batch].all()
+                self.fusion_mask[:batch].all()
             ), "talker decode step reached the model without fused inputs"
-            input_embeds = self._fusion_buffer[:batch]
-            self._fusion_mask[:batch] = False
+            input_embeds = self.fusion_buffer[:batch]
+            self.fusion_mask[:batch] = False
         hidden = self.llm.model(input_ids, positions, forward_batch, input_embeds)
         if forward_batch.forward_mode.is_decode():
-            self._hidden_out[: hidden.shape[0]] = hidden
+            self.hidden_out[: hidden.shape[0]] = hidden
         else:
             last_rows = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
-            self._hidden_out[: last_rows.shape[0]] = hidden[last_rows]
+            self.hidden_out[: last_rows.shape[0]] = hidden[last_rows]
         return self.llm.logits_processor(
             input_ids, hidden, self.llm.model.embed_tokens, forward_batch
         )

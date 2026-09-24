@@ -90,14 +90,14 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             prefix=add_prefix("model.language_model", prefix),
         )
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
-        self._encoder_cache: Optional[StageOutputCache] = None
-        self._encoder_graph_runner = None
-        self._compiled_encoder = None
-        self._compiled_chunk_buckets: frozenset[int] = frozenset()
-        self._compiled_input_feature_len = 0
+        self.encoder_cache: Optional[StageOutputCache] = None
+        self.encoder_graph_runner = None
+        self.compiled_encoder = None
+        self.compiled_chunk_buckets: frozenset[int] = frozenset()
+        self.compiled_input_feature_len = 0
 
     def init_encoder_cache(self, max_bytes: int) -> None:
-        self._encoder_cache = (
+        self.encoder_cache = (
             StageOutputCache(
                 max_size=_ENCODER_CACHE_MAX_ENTRIES,
                 max_bytes=max_bytes,
@@ -130,7 +130,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             input_feature_len=int(input_feature_len),
         )
         runner.capture(buckets)
-        self._encoder_graph_runner = runner
+        self.encoder_graph_runner = runner
 
     def compile_encoder(self, chunk_buckets, input_feature_len: int) -> None:
         """torch.compile the Whisper encoder, warming one specialization per
@@ -150,8 +150,8 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         if not buckets:
             return
         set_torch_compile_config()
-        self._compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
-        self._compiled_input_feature_len = int(input_feature_len)
+        self.compiled_encoder = torch.compile(self.whisper_encoder, dynamic=False)
+        self.compiled_input_feature_len = int(input_feature_len)
         p = next(self.whisper_encoder.parameters())
         frames = int(input_feature_len)
         num_mel_bins = int(self.config.audio_config.num_mel_bins)
@@ -164,7 +164,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 )
                 try:
                     for _ in range(3):
-                        self._compiled_encoder(feats, pos, None)
+                        self.compiled_encoder(feats, pos, None)
                 except Exception as exc:
                     logger.warning(
                         f"MOSS-TD encoder torch.compile warmup failed for "
@@ -172,7 +172,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                     )
                     continue
                 warmed.append(n)
-        self._compiled_chunk_buckets = frozenset(warmed)
+        self.compiled_chunk_buckets = frozenset(warmed)
         logger.info(f"MOSS-TD encoder torch.compile warmed buckets={warmed}")
 
     def time_merge(self, features: torch.Tensor) -> torch.Tensor:
@@ -188,7 +188,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        cache = self._encoder_cache
+        cache = self.encoder_cache
         key = getattr(items[0], "hash", None) if len(items) == 1 else None
         if cache is not None and key is not None:
             cached = cache.get(str(key))
@@ -269,15 +269,15 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 encoder_len, device=device, dtype=torch.long
             )
             if (
-                self._compiled_encoder is not None
-                and batched_features.shape[0] in self._compiled_chunk_buckets
-                and batched_features.shape[-1] == self._compiled_input_feature_len
+                self.compiled_encoder is not None
+                and batched_features.shape[0] in self.compiled_chunk_buckets
+                and batched_features.shape[-1] == self.compiled_input_feature_len
             ):
-                features = self._compiled_encoder(
+                features = self.compiled_encoder(
                     batched_features, encoder_position_ids, forward_batch
                 )
-            elif self._encoder_graph_runner is not None:
-                features = self._encoder_graph_runner.run(
+            elif self.encoder_graph_runner is not None:
+                features = self.encoder_graph_runner.run(
                     batched_features, encoder_position_ids, forward_batch
                 )
             else:

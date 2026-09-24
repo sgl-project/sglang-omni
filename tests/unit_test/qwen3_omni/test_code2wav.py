@@ -149,7 +149,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
         device="cpu",
     )
 
-    assert scheduler._cuda_graph_runner is None
+    assert scheduler.cuda_graph_runner is None
 
 
 def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
@@ -232,8 +232,8 @@ def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
         total_gpu_memory_fraction=0.02,
     )
 
-    assert scheduler._enable_batching is True
-    assert scheduler._cuda_graph_runner is runner
+    assert scheduler.enable_batching is True
+    assert scheduler.cuda_graph_runner is runner
     assert scheduler.chunk_aligned_dispatch is True
 
 
@@ -272,8 +272,8 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
         total_gpu_memory_fraction=0.02,
     )
 
-    assert scheduler._enable_batching is True
-    assert scheduler._cuda_graph_runner is not None
+    assert scheduler.enable_batching is True
+    assert scheduler.cuda_graph_runner is not None
     (keys,) = captured_keys
     frames = (10, 20, 30, 35)
     assert keys == tuple(
@@ -322,7 +322,7 @@ def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
     # Note (ruoyu): the runner degrades internally, so the factory never
     # rebuilds; it only drops batching once the runner is fully disabled.
     assert len(build_calls) == 1
-    assert scheduler._enable_batching is False
+    assert scheduler.enable_batching is False
     assert scheduler.chunk_aligned_dispatch is False
 
 
@@ -423,9 +423,9 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
         "graph_keys": expected_graph_keys,
     }
     assert scheduler._device == torch.device("cuda:3")
-    assert scheduler._stream_chunk_size == 20
-    assert scheduler._left_context_size == 25
-    assert scheduler._cuda_graph_runner is runner
+    assert scheduler.stream_chunk_size == 20
+    assert scheduler.left_context_size == 25
+    assert scheduler.cuda_graph_runner is runner
     stats_record = next(
         record
         for record in caplog.records
@@ -473,7 +473,7 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
             total_gpu_memory_fraction=0.02,
         )
 
-    assert scheduler._cuda_graph_runner is runner
+    assert scheduler.cuda_graph_runner is runner
     stats_record = next(
         record
         for record in caplog.records

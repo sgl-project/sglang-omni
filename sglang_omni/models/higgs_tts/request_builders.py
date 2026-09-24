@@ -112,8 +112,8 @@ def build_sglang_higgs_request(
         extra_key=ref_audio_fingerprint(state.reference_codes_delayed),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
-    req._codec_suppress_tokens = None
-    req._input_embeds_are_projected = False
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     return HiggsSGLangRequestData(
         input_ids=input_ids,

@@ -79,12 +79,12 @@ class MingTTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._tp_rank = int(tp_worker.tp_rank)
-        self._tp_size = int(get_parallel().tp_size)
-        self._request_states: dict[str, MingTTSRequestState] = {}
+        self.tp_rank = int(tp_worker.tp_rank)
+        self.tp_size = int(get_parallel().tp_size)
+        self.request_states: dict[str, MingTTSRequestState] = {}
 
     def reset_request(self, request_id: str) -> None:
-        self._request_states.pop(request_id, None)
+        self.request_states.pop(request_id, None)
 
     def before_prefill(
         self,
@@ -98,12 +98,12 @@ class MingTTSModelRunner(ModelRunner):
 
     def materialize_request_state(self, sched_req: Any) -> None:
         request_id = sched_req.request_id
-        if request_id in self._request_states:
+        if request_id in self.request_states:
             return
 
         data = sched_req.data
         state = data.state
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         device = weight.device
         dtype = weight.dtype
         speaker_embedding = state.spk_emb
@@ -158,7 +158,7 @@ class MingTTSModelRunner(ModelRunner):
                 else:
                     latent_history[:, -prompt_len:, :].copy_(prompt_latent)
 
-        self._request_states[request_id] = MingTTSRequestState(
+        self.request_states[request_id] = MingTTSRequestState(
             prefill_input_embeds=prefill_input_embeds,
             latent_history=latent_history,
         )
@@ -179,12 +179,12 @@ class MingTTSModelRunner(ModelRunner):
         requests: list,
     ) -> torch.Tensor:
         batch_parts = []
-        dtype = self.model._decode_input_embedding.weight.dtype
+        dtype = self.model.decode_input_embedding.weight.dtype
         device = forward_batch.input_ids.device
         input_embedding = self.model.get_input_embeddings()
         for sched_req in requests:
             data = sched_req.data
-            request_state = self._request_states[sched_req.request_id]
+            request_state = self.request_states[sched_req.request_id]
             req = data.req
             prefix_len = len(req.prefix_indices)
             extend_len = int(req.extend_range.length)
@@ -259,10 +259,10 @@ class MingTTSModelRunner(ModelRunner):
             return
 
         rows = []
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         for sched_req in requests:
             rows.append(
-                self._request_states[sched_req.request_id]
+                self.request_states[sched_req.request_id]
                 .feedback_embeddings[-1]
                 .to(
                     device=weight.device,
@@ -315,7 +315,7 @@ class MingTTSModelRunner(ModelRunner):
             hidden = hidden.unsqueeze(1)
         hidden_states = hidden
 
-        weight = self.model._decode_input_embedding.weight
+        weight = self.model.decode_input_embedding.weight
         step_update = MingTTSTPStepUpdate.empty_for_broadcast(
             batch_size=len(requests),
             hidden_size=int(weight.shape[1]),
@@ -348,7 +348,7 @@ class MingTTSModelRunner(ModelRunner):
         device = hidden_states.device
         next_ids = []
 
-        request_states = [self._request_states[req.request_id] for req in requests]
+        request_states = [self.request_states[req.request_id] for req in requests]
         steps = [int(req.data.generation_steps) for req in requests]
         max_steps = [int(req.data.max_new_tokens) for req in requests]
         histories = [state.latent_history for state in request_states]
@@ -472,7 +472,7 @@ class MingTTSModelRunner(ModelRunner):
         if tail_failure_list[0]:
             raise RuntimeError("Ming TTS acoustic tail failed on the entry rank")
         for row_idx, sched_req in enumerate(requests):
-            request_state = self._request_states[sched_req.request_id]
+            request_state = self.request_states[sched_req.request_id]
             if feedback_list[row_idx]:
                 feedback = step_update.feedback_embeddings[row_idx].detach().clone()
                 request_state.feedback_embeddings.append(feedback)
@@ -481,10 +481,10 @@ class MingTTSModelRunner(ModelRunner):
     def is_entry_rank(self) -> bool:
         # Note (yzxiao): FlowLoss is not tensor-parallel, so rank 0 owns
         # acoustic sampling while followers only mirror the next AR input.
-        return self._tp_rank == 0
+        return self.tp_rank == 0
 
     def broadcast_tp_step_update(self, step_update: MingTTSTPStepUpdate) -> None:
-        if self._tp_size <= 1:
+        if self.tp_size <= 1:
             return
         for tensor in (
             step_update.control_tensor,

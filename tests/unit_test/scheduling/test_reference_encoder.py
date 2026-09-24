@@ -370,7 +370,7 @@ def test_revalidate_exception_clears_inflight_and_does_not_poison() -> None:
         service.get_or_encode("k")
     assert service.stats()["entries"] == 0
     assert service.stats()["failed"] == 1
-    assert len(service._inflight) == 0
+    assert len(service.inflight) == 0
 
     # New leader (not a stuck follower) -> encode runs again instead of hanging.
     with pytest.raises(RuntimeError, match="revalidate boom"):
@@ -425,4 +425,4 @@ def test_revalidate_exception_propagates_to_followers_without_timeout() -> None:
     assert len(errors) == 4
     assert all(isinstance(error, RuntimeError) for error in errors)
     assert all(str(error) == "revalidate boom" for error in errors)
-    assert len(service._inflight) == 0
+    assert len(service.inflight) == 0

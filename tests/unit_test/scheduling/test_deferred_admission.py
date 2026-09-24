@@ -53,12 +53,12 @@ def test_request_waits_outside_lm_queue_until_dependency_completes() -> None:
 
     scheduler.admit_or_defer_built_request(payload, False, deferred)
     assert scheduler.admitted == []
-    assert list(scheduler._pending_request_admissions) == ["r1"]
+    assert list(scheduler.pending_request_admissions) == ["r1"]
 
     future.set_result(None)
     scheduler.drain_request_admission_results()
     assert scheduler.admitted == ["r1"]
-    assert scheduler._pending_request_admissions == {}
+    assert scheduler.pending_request_admissions == {}
 
 
 def test_aborted_deferred_request_is_never_admitted() -> None:
@@ -86,7 +86,7 @@ def test_failed_dependency_emits_error_without_admission() -> None:
     assert len(scheduler.errors) == 1
     assert scheduler.errors[0][0] == "r1"
     assert "encode failed" in str(scheduler.errors[0][1])
-    assert "r1" in scheduler._aborted_request_ids
+    assert "r1" in scheduler.aborted_request_ids
 
 
 class _WaitPolicyScheduler:

@@ -426,7 +426,7 @@ def make_qwen3_asr_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         req_data = Qwen3ASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
@@ -569,7 +569,9 @@ def make_qwen3_asr_stream_output_builder(
         if req_data.language is not None:
             return token_stream_builder(request_id, req_data, req_output)
         try:
-            transcript_started = req._qwen3_asr_stream_transcript_started
+            transcript_started = (
+                req._qwen3_asr_stream_transcript_started
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         except AttributeError:
             transcript_started = False
         if transcript_started:
@@ -586,7 +588,9 @@ def make_qwen3_asr_stream_output_builder(
             return token_stream_builder(request_id, req_data, req_output)
 
         try:
-            matched = int(req._qwen3_asr_stream_marker_match_len)
+            matched = int(
+                req._qwen3_asr_stream_marker_match_len
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         except AttributeError:
             matched = 0
         candidate = [*asr_text_token_ids[:matched], token_id]
@@ -597,10 +601,10 @@ def make_qwen3_asr_stream_output_builder(
                 break
 
         if matched == len(asr_text_token_ids):
-            req._qwen3_asr_stream_transcript_started = True
-            req._qwen3_asr_stream_marker_match_len = 0
+            req._qwen3_asr_stream_transcript_started = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            req._qwen3_asr_stream_marker_match_len = 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
-            req._qwen3_asr_stream_marker_match_len = matched
+            req._qwen3_asr_stream_marker_match_len = matched  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return []
 
     def _flush_stream_output(request_id: str, req_data: Any) -> list[OutgoingMessage]:

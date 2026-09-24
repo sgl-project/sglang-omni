@@ -82,7 +82,7 @@ def test_ming_talker_generation_failures_are_not_empty_successes(monkeypatch) ->
         module = importlib.import_module(module_name)
 
         executor = module.MingTalkerExecutor(model_path="/fake/model/path")
-        executor._talker = object()
+        executor.talker = object()
         with pytest.raises(RuntimeError, match="no supported generation method"):
             executor.generate_speech("hello")
 
@@ -90,8 +90,8 @@ def test_ming_talker_generation_failures_are_not_empty_successes(monkeypatch) ->
             def omni_audio_generation(self, **_kwargs):
                 yield None, None, None, None
 
-        executor._talker = EmptyTalker()
-        executor._vae = object()
+        executor.talker = EmptyTalker()
+        executor.vae = object()
         with pytest.raises(RuntimeError, match="produced no audio"):
             executor.generate_speech("hello")
     finally:

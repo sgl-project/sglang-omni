@@ -25,16 +25,16 @@ class ThinkerModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
 
         model = self.model
-        self._outer_model = model.thinker
-        self._text_model = self._outer_model.model
-        self._embed_tokens = self._text_model.embed_tokens
-        self._th_host_bufs = None
-        self._th_slot = 0
+        self.outer_model = model.thinker
+        self.text_model = self.outer_model.model
+        self.embed_tokens = self.text_model.embed_tokens
+        self.th_host_bufs = None
+        self.th_slot = 0
 
         thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
-        self._image_token_id = thinker_cfg.image_token_id
-        self._video_token_id = thinker_cfg.video_token_id
-        self._audio_token_id = thinker_cfg.audio_token_id
+        self.image_token_id = thinker_cfg.image_token_id
+        self.video_token_id = thinker_cfg.video_token_id
+        self.audio_token_id = thinker_cfg.audio_token_id
 
     def custom_prefill_forward(self, forward_batch, schedule_batch, requests):
         if not schedule_batch.forward_mode.is_extend():
@@ -79,7 +79,9 @@ class ThinkerModelRunner(ModelRunner):
     ) -> dict[str, torch.Tensor]:
         """Prompt-absolute placeholder positions per modality, as CPU int64
         tensors so the merge never reads placement off a GPU mask."""
-        positions = getattr(req, "_omni_mm_positions", None)
+        positions = getattr(
+            req, "_omni_mm_positions", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if positions is not None:
             return positions
         prompt_ids = torch.as_tensor(req.origin_input_ids, dtype=torch.long)
@@ -88,12 +90,12 @@ class ThinkerModelRunner(ModelRunner):
                 as_tuple=True
             )[0]
             for modality, default_id in (
-                ("image", self._image_token_id),
-                ("video", self._video_token_id),
-                ("audio", self._audio_token_id),
+                ("image", self.image_token_id),
+                ("video", self.video_token_id),
+                ("audio", self.audio_token_id),
             )
         }
-        req._omni_mm_positions = positions
+        req._omni_mm_positions = positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return positions
 
     @staticmethod
@@ -118,10 +120,12 @@ class ThinkerModelRunner(ModelRunner):
 
     @staticmethod
     def ensure_consumed_cursor(req: Any) -> dict[str, Any]:
-        consumed = req._omni_consumed
+        consumed = (
+            req._omni_consumed
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if consumed is None:
             consumed = {}
-            req._omni_consumed = consumed
+            req._omni_consumed = consumed  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         elif not isinstance(consumed, dict):
             raise TypeError(
                 "req._omni_consumed must be None or a dict, "
@@ -182,9 +186,9 @@ class ThinkerModelRunner(ModelRunner):
         device = forward_batch.input_ids.device
 
         embed_input_ids = forward_batch.input_ids.clamp(
-            0, self._embed_tokens.num_embeddings - 1
+            0, self.embed_tokens.num_embeddings - 1
         )
-        input_embeds = self._embed_tokens(embed_input_ids)
+        input_embeds = self.embed_tokens(embed_input_ids)
 
         # note (chenrui): these arrive as CPU tensors on some sglang paths, where
         # int(tensor[i]) per request would put a .item() on the hot path.
@@ -316,8 +320,8 @@ class ThinkerModelRunner(ModelRunner):
 
             if req.inflight_middle_chunks == 0:
                 req.omni_model_inputs = None
-                req._omni_consumed = None
-                req._omni_mm_positions = None
+                req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                req._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         if scatter_rows:
             # note (chenrui): one index_copy_ keeps the kernel count independent
@@ -365,7 +369,7 @@ class ThinkerModelRunner(ModelRunner):
         visual_pos_masks=None,
     ):
         model_runner = self.tp_worker.model_runner
-        outer = self._outer_model
+        outer = self.outer_model
 
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 
@@ -422,7 +426,9 @@ class ThinkerModelRunner(ModelRunner):
             # note (jiaxin deng): fail closed if the request data is missing or None
             # so a hidden-capture batch can never slip onto the async path.
             try:
-                data = req._omni_data
+                data = (
+                    req._omni_data
+                )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             except AttributeError:
                 data = None
             if data is None or should_generate_audio_output(data.stage_payload):
@@ -449,14 +455,14 @@ class ThinkerModelRunner(ModelRunner):
     def async_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
         # note (jiaxin deng): two pinned buffers ping-ponged so resolve(N) reads
         # one while launch(N+1) writes the other.
-        if self._th_host_bufs is None or self._th_host_bufs[0].shape[0] < n:
-            self._th_host_bufs = [
+        if self.th_host_bufs is None or self.th_host_bufs[0].shape[0] < n:
+            self.th_host_bufs = [
                 torch.empty(n, dtype=like.dtype, device="cpu", pin_memory=True)
                 for _ in range(2)
             ]
-            self._th_slot = 0
-        buf = self._th_host_bufs[self._th_slot]
-        self._th_slot ^= 1
+            self.th_slot = 0
+        buf = self.th_host_bufs[self.th_slot]
+        self.th_slot ^= 1
         return buf
 
     def sample_lookahead(self, logits_output, forward_batch, requests):

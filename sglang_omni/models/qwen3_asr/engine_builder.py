@@ -108,8 +108,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.device: str | None = None
         self.model_path: str | None = None
         self.audio_encoder_service: Any = None
-        self._torch_mps_model_runner: Any = None
-        self._should_wait_for_encode: Callable[[], bool] | None = None
+        self.torch_mps_model_runner: Any = None
+        self._should_wait_for_encode: Callable[[], bool] | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -221,11 +223,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 Qwen3ASRTorchMpsModelRunner,
             )
 
-            self._torch_mps_model_runner = Qwen3ASRTorchMpsModelRunner(
+            self.torch_mps_model_runner = Qwen3ASRTorchMpsModelRunner(
                 model_worker,
                 output_proc,
             )
-            return self._torch_mps_model_runner
+            return self.torch_mps_model_runner
         return super().make_model_runner(model_worker, output_proc)
 
     def setup_model(
@@ -375,8 +377,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
     def should_wait_for_encode(self) -> bool:
         return (
             False
-            if self._should_wait_for_encode is None
-            else self._should_wait_for_encode()
+            if self._should_wait_for_encode
+            is None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            else self._should_wait_for_encode()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
@@ -394,13 +397,15 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         )
 
     def make_abort_callback(self) -> Any | None:
-        if self._torch_mps_model_runner is None:
+        if self.torch_mps_model_runner is None:
             return None
-        return self._torch_mps_model_runner.abort_request
+        return self.torch_mps_model_runner.abort_request
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner
-        self._should_wait_for_encode = scheduler.request_build_queue_fits_workers
+        self._should_wait_for_encode = (
+            scheduler.request_build_queue_fits_workers
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.audio_encoder_service is None:

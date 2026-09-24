@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Lint and optionally rename leading-underscore class/function names.
+"""Lint and optionally rename leading-underscore names.
 
 Every Python file under sglang_omni/ is in scope, including files added later
 (new model packages under sglang_omni/models/, new runners, etc.). There is no
 per-directory allowlist: a new path is checked as soon as it exists.
 
-Nested functions, and classes defined inside functions, may keep a leading
-underscore. Dunder names, a lone "_", and vendor copies are ignored. A
-definition may opt out with "# noqa: leading-underscore" on its def/class
-line. ALLOWED_DEFS is only the existing third-party/collision exceptions.
+Checked names:
+- class and function definitions at module or class scope
+- every attribute read or write, including another object's attribute
+- string literals passed to getattr
 
---fix rewrites one file at a time, like isort: the definition and its
-in-file references. Same-scope public-name collisions are left for the
-human to resolve. It does not rewrite other files or dotted names repo-wide.
+Nested functions, and classes defined inside functions, may keep a leading
+underscore. Dunder names, a lone "_", and vendor copies are ignored. A line
+may opt out with "# noqa: leading-underscore". ALLOWED_DEFS is only the
+existing third-party method exceptions; those names are also ignored as
+attributes in the same file.
+
+--fix rewrites one file at a time, like isort. Same-scope public-name
+collisions are left for the human to resolve. It does not rewrite other files.
 """
 
 from __future__ import annotations
@@ -131,9 +136,14 @@ class Site:
 class RenamePlan:
     module_renames: dict[str, str]
     method_renames: dict[str, dict[str, str]]
+    attribute_renames: dict[str, dict[str, str]]
 
     def is_empty(self) -> bool:
-        return not self.module_renames and not self.method_renames
+        return (
+            not self.module_renames
+            and not self.method_renames
+            and not self.attribute_renames
+        )
 
 
 def is_leading_underscore_name(name: str) -> bool:
@@ -169,12 +179,37 @@ def is_in_scope(path: Path) -> bool:
     return resolved.suffix == ".py"
 
 
+def is_self_or_cls(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id in {"self", "cls"}
+
+
+def iter_assign_targets(target: ast.AST) -> list[ast.AST]:
+    if isinstance(target, (ast.Tuple, ast.List)):
+        nested: list[ast.AST] = []
+        for element in target.elts:
+            nested.extend(iter_assign_targets(element))
+        return nested
+    if isinstance(target, ast.Starred):
+        return iter_assign_targets(target.value)
+    return [target]
+
+
 class LeadingUnderscoreVisitor(ast.NodeVisitor):
     def __init__(self, path: Path, source_lines: list[str]) -> None:
         self.path = path
         self.source_lines = source_lines
         self.function_depth = 0
+        self.noqa_defs: set[str] = set()
+        self.parents_linked = False
         self.violations: list[Violation] = []
+
+    def visit(self, node: ast.AST) -> None:
+        if not self.parents_linked:
+            for parent in ast.walk(node):
+                for child in ast.iter_child_nodes(parent):
+                    child.parent = parent  # type: ignore[attr-defined]
+            self.parents_linked = True
+        super().visit(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         if self.function_depth == 0:
@@ -196,25 +231,109 @@ class LeadingUnderscoreVisitor(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_depth -= 1
 
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._record_assigned_attribute(target)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._record_assigned_attribute(node.target)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._record_assigned_attribute(node.target)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        column = (node.end_col_offset or 0) - len(node.attr)
+        self._record_name(node.attr, node.lineno, column, "attribute", node)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._record_getattr(node)
+        self.generic_visit(node)
+
+    def _record_assigned_attribute(self, target: ast.AST) -> None:
+        for item in iter_assign_targets(target):
+            if not isinstance(item, ast.Attribute) or is_self_or_cls(item.value):
+                continue
+            column = (item.end_col_offset or 0) - len(item.attr)
+            self._record_name(item.attr, item.lineno, column, "attribute", item)
+
+    def _record_getattr(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+            return
+        if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
+            return
+        attr_name = node.args[1].value
+        if not isinstance(attr_name, str):
+            return
+        self._record_name(
+            attr_name,
+            node.args[1].lineno,
+            node.args[1].col_offset,
+            "attribute",
+            node.args[1],
+        )
+
     def _record(self, node: ast.AST, kind: str) -> None:
-        name = node.name  # type: ignore[attr-defined]
+        self._record_name(
+            node.name,  # type: ignore[attr-defined]
+            node.lineno,
+            node.col_offset,
+            kind,
+            node,
+        )
+
+    def statement_has_noqa(self, node: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None and not isinstance(current, ast.stmt):
+            current = getattr(current, "parent", None)
+        if current is None:
+            return False
+        start = current.lineno
+        end = current.end_lineno or start
+        return any(
+            has_noqa(self.source_lines[index]) for index in range(start - 1, end)
+        )
+
+    def _record_name(
+        self, name: str, lineno: int, column: int, kind: str, node: ast.AST
+    ) -> None:
         if not is_leading_underscore_name(name):
             return
-        line = self.source_lines[node.lineno - 1]
-        if has_noqa(line):
+        if lineno < 1 or lineno > len(self.source_lines):
             return
-        rel = repo_relative(self.path)
-        if (rel, name) in ALLOWED_DEFS:
+        if has_noqa(self.source_lines[lineno - 1]) or self.statement_has_noqa(node):
             return
-        self.violations.append(
-            Violation(self.path, node.lineno, node.col_offset, name, kind)
-        )
+        if (repo_relative(self.path), name) in ALLOWED_DEFS:
+            return
+        if kind == "attribute" and name in self.noqa_defs:
+            return
+        self.violations.append(Violation(self.path, lineno, column, name, kind))
+
+
+def noqa_definition_names(
+    tree: ast.AST, source_lines: list[str], path: Path
+) -> set[str]:
+    names: set[str] = set()
+    relative = repo_relative(path)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if (relative, node.name) in ALLOWED_DEFS or has_noqa(
+            source_lines[node.lineno - 1]
+        ):
+            names.add(node.name)
+    return names
 
 
 def check_file(path: Path) -> list[Violation]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    visitor = LeadingUnderscoreVisitor(path, source.splitlines())
+    lines = source.splitlines()
+    visitor = LeadingUnderscoreVisitor(path, lines)
+    visitor.noqa_defs = noqa_definition_names(tree, lines, path)
     visitor.visit(tree)
     return visitor.violations
 
@@ -297,6 +416,11 @@ class ScopeIndex(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_depth -= 1
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if self.class_stack and is_self_or_cls(node.value):
+            self.class_names[".".join(self.class_stack)].add(node.attr)
+        self.generic_visit(node)
+
     def add_name(self, name: str) -> None:
         if self.function_depth > 0:
             return
@@ -315,6 +439,8 @@ class RenamePlanner(ast.NodeVisitor):
         self.class_stack: list[str] = []
         self.module_renames: dict[str, str] = {}
         self.method_renames: dict[str, dict[str, str]] = defaultdict(dict)
+        self.attribute_renames: dict[str, dict[str, str]] = defaultdict(dict)
+        self.class_defs: dict[str, set[str]] = defaultdict(set)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.consider(node)
@@ -352,8 +478,31 @@ class RenamePlanner(ast.NodeVisitor):
             return
         if owner:
             self.method_renames[owner][name] = new
+            self.class_defs[owner].add(name)
         else:
             self.module_renames[name] = new
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if is_self_or_cls(node.value) and (node.lineno, node.attr) in self.wanted:
+            self.consider_attribute(node.attr)
+        self.generic_visit(node)
+
+    def consider_attribute(self, name: str) -> None:
+        owner = ".".join(self.class_stack)
+        if not owner or name in self.class_defs.get(owner, set()):
+            return
+        new = public_name(name)
+        if new in self.index.class_names.get(owner, set()):
+            return
+        self.attribute_renames[owner][name] = new
+
+
+def file_attribute_renames(plan: RenamePlan) -> dict[str, str]:
+    agreed: dict[str, set[str]] = defaultdict(set)
+    for mapping in plan.attribute_renames.values():
+        for old, new in mapping.items():
+            agreed[old].add(new)
+    return {old: next(iter(news)) for old, news in agreed.items() if len(news) == 1}
 
 
 def plan_renames(tree: ast.AST, violations: list[Violation]) -> RenamePlan:
@@ -361,13 +510,18 @@ def plan_renames(tree: ast.AST, violations: list[Violation]) -> RenamePlan:
     index.visit(tree)
     planner = RenamePlanner({(item.lineno, item.name) for item in violations}, index)
     planner.visit(tree)
-    return RenamePlan(planner.module_renames, dict(planner.method_renames))
+    return RenamePlan(
+        planner.module_renames,
+        dict(planner.method_renames),
+        dict(planner.attribute_renames),
+    )
 
 
 class FixVisitor(ast.NodeVisitor):
     def __init__(self, source_lines: list[str], plan: RenamePlan) -> None:
         self.source_lines = source_lines
         self.plan = plan
+        self.file_attributes = file_attribute_renames(plan)
         self.function_depth = 0
         self.class_stack: list[str] = []
         self.sites: list[Site] = []
@@ -415,19 +569,66 @@ class FixVisitor(ast.NodeVisitor):
         if new:
             self.add_site(node.lineno, node.col_offset, node.id, new)
 
+    def visit_Call(self, node: ast.Call) -> None:
+        self.rename_getattr(node)
+        self.generic_visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
         new = self.attribute_rename(node)
-        if new:
-            lineno = node.end_lineno or node.lineno
+        lineno = node.end_lineno or node.lineno
+        if new and not has_noqa(self.source_lines[lineno - 1]):
             col = (node.end_col_offset or 0) - len(node.attr)
             self.add_site(lineno, col, node.attr, new)
         self.generic_visit(node)
 
+    def rename_getattr(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+            return
+        if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
+            return
+        old = node.args[1].value
+        if not isinstance(old, str):
+            return
+        new = self.file_attributes.get(old)
+        if new is None:
+            return
+        constant = node.args[1]
+        if has_noqa(self.source_lines[constant.lineno - 1]):
+            return
+        literal = self.source_lines[constant.lineno - 1][
+            constant.col_offset : constant.end_col_offset
+        ]
+        if old not in literal:
+            return
+        self.add_site(
+            constant.lineno,
+            constant.col_offset,
+            literal,
+            literal.replace(old, new, 1),
+        )
+
     def attribute_rename(self, node: ast.Attribute) -> str | None:
-        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
-            return self.method_rename(node.attr)
+        if is_self_or_cls(node.value):
+            renamed = self.method_rename(node.attr)
+            if renamed is not None:
+                return renamed
+            renamed = self.field_rename(node.attr)
+            if renamed is not None:
+                return renamed
+            return self.file_attributes.get(node.attr)
         if isinstance(node.value, ast.Name):
             return self.class_attr_rename(node.value.id, node.attr)
+        return None
+
+    def field_rename(self, name: str) -> str | None:
+        current = ".".join(self.class_stack)
+        while current:
+            mapping = self.plan.attribute_renames.get(current)
+            if mapping and name in mapping:
+                return mapping[name]
+            if "." not in current:
+                break
+            current = current.rsplit(".", 1)[0]
         return None
 
     def method_rename(self, name: str) -> str | None:
@@ -451,7 +652,9 @@ class FixVisitor(ast.NodeVisitor):
 def fix_file(path: Path) -> tuple[int, list[Violation]]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    before = LeadingUnderscoreVisitor(path, source.splitlines())
+    lines = source.splitlines()
+    before = LeadingUnderscoreVisitor(path, lines)
+    before.noqa_defs = noqa_definition_names(tree, lines, path)
     before.visit(tree)
     if not before.violations:
         return 0, []
@@ -473,7 +676,8 @@ def report_violations(violations: list[Violation]) -> int:
     for violation in violations:
         print(format_violation(violation), file=sys.stderr)
     print(
-        f"{len(violations)} leading-underscore class/function name(s) in sglang_omni/",
+        f"{len(violations)} leading-underscore class/function/attribute name(s) "
+        f"in sglang_omni/",
         file=sys.stderr,
     )
     return 1

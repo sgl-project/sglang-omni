@@ -68,7 +68,7 @@ def models():
     decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
-        return decode._fn(engine._fn(conditioning._fn(payload)))
+        return decode.fn(engine.fn(conditioning.fn(payload)))
 
     return upstream, generate, checkpoint, Path(source)
 

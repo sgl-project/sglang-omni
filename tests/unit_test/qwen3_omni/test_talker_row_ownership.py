@@ -29,11 +29,11 @@ def _fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
 def _runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner = object.__new__(QwenTalkerModelRunner)
     runner.model = model
-    runner._feedback_enabled = True
-    runner._code2wav_target = "code2wav"
-    runner._codec_coalesce_frames = 0
-    runner._outbox = SimpleNamespace(sent=[])
-    runner._outbox.put = runner._outbox.sent.append
+    runner.feedback_enabled = True
+    runner.code2wav_target = "code2wav"
+    runner.codec_coalesce_frames = 0
+    runner.outbox = SimpleNamespace(sent=[])
+    runner.outbox.put = runner.outbox.sent.append
     return runner
 
 
@@ -75,23 +75,23 @@ def test_row_ownership_survives_prep_then_emit() -> None:
 
     runner.write_feedback_buffers(requests)
 
-    assert torch.equal(model._feedback_mask, torch.ones(n, dtype=torch.bool))
+    assert torch.equal(model.feedback_mask, torch.ones(n, dtype=torch.bool))
     for i in range(n):
-        assert torch.equal(model._feedback_buffer[i], feedbacks[i] + texts[i])
+        assert torch.equal(model.feedback_buffer[i], feedbacks[i] + texts[i])
 
     runner.emit_code_chunks_and_feedback(
         schedule_batch=schedule_batch, requests=requests
     )
 
-    sent = runner._outbox.sent
+    sent = runner.outbox.sent
     assert [m.request_id for m in sent] == [f"r{i}" for i in range(n)]
     for i, msg in enumerate(sent):
         assert msg.target == "code2wav"
         assert msg.metadata == {"stream": False}
-        assert torch.equal(msg.data, model._output_codes[i])
+        assert torch.equal(msg.data, model.output_codes[i])
         fb_queue = requests[i].data.pending_feedback_queue
         assert len(fb_queue) == 1
-        assert torch.equal(fb_queue[0], model._output_embeds[i])
+        assert torch.equal(fb_queue[0], model.output_embeds[i])
 
 
 def test_sparse_feedback_row_stays_unwritten() -> None:
@@ -109,17 +109,17 @@ def test_sparse_feedback_row_stays_unwritten() -> None:
 
     runner.write_feedback_buffers(requests)
 
-    assert model._feedback_mask.tolist() == [True, False, True]
-    assert torch.equal(model._feedback_buffer[1], torch.zeros(hidden))
-    assert torch.equal(model._feedback_buffer[0], feedbacks[0] + texts[0])
-    assert torch.equal(model._feedback_buffer[2], feedbacks[2] + texts[2])
+    assert model.feedback_mask.tolist() == [True, False, True]
+    assert torch.equal(model.feedback_buffer[1], torch.zeros(hidden))
+    assert torch.equal(model.feedback_buffer[0], feedbacks[0] + texts[0])
+    assert torch.equal(model.feedback_buffer[2], feedbacks[2] + texts[2])
 
 
 def test_stale_mask_cannot_leak_into_reused_slot() -> None:
     # Note (wenyao): forward-side mask reset (talker.py:422) needs a real forward; integration-level only
     n, hidden, code_groups = 2, 3, 2
     model = _fake_model(n, hidden, code_groups)
-    model._feedback_mask[:n] = True
+    model.feedback_mask[:n] = True
     runner = _runner(model)
 
     feedback1 = torch.full((hidden,), 5.0)
@@ -131,9 +131,9 @@ def test_stale_mask_cannot_leak_into_reused_slot() -> None:
 
     runner.write_feedback_buffers(requests)
 
-    assert model._feedback_mask.tolist() == [False, True]
-    assert torch.equal(model._feedback_buffer[0], torch.zeros(hidden))
-    assert torch.equal(model._feedback_buffer[1], feedback1 + text1)
+    assert model.feedback_mask.tolist() == [False, True]
+    assert torch.equal(model.feedback_buffer[0], torch.zeros(hidden))
+    assert torch.equal(model.feedback_buffer[1], feedback1 + text1)
 
 
 def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
@@ -181,14 +181,14 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
 
         runner.write_feedback_buffers(requests)
 
-        assert model._feedback_mask.tolist() == [True] * len(order) + [False] * (
+        assert model.feedback_mask.tolist() == [True] * len(order) + [False] * (
             n - len(order)
         )
         for row, expected in enumerate(expected_inputs):
-            assert torch.equal(model._feedback_buffer[row], expected)
+            assert torch.equal(model.feedback_buffer[row], expected)
 
         # Match the real forward, which consumes and clears the active mask.
-        model._feedback_mask[: len(order)] = False
+        model.feedback_mask[: len(order)] = False
         tokens = torch.tensor(
             [step * 10 + int(rid[-1]) for rid in order], dtype=torch.long
         )
@@ -207,8 +207,8 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
                 for rid in order
             ]
         )
-        model._output_codes[: len(order)] = codes
-        model._output_embeds[: len(order)] = embeds
+        model.output_codes[: len(order)] = codes
+        model.output_embeds[: len(order)] = embeds
 
         result = SimpleNamespace()
         runner.stage_token_ids(result, tokens)
@@ -217,7 +217,7 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
             requests=requests,
         )
 
-        emitted = runner._outbox.sent[-len(order) :]
+        emitted = runner.outbox.sent[-len(order) :]
         assert [message.request_id for message in emitted] == list(order)
         for row, rid in enumerate(order):
             assert torch.equal(emitted[row].data, codes[row])
@@ -226,9 +226,9 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
             expected_messages.append((rid, codes[row].clone()))
             expected_pending_feedback[rid] = embeds[row].clone()
 
-        assert len(runner._outbox.sent) == len(expected_messages)
+        assert len(runner.outbox.sent) == len(expected_messages)
         for message, (expected_rid, expected_code) in zip(
-            runner._outbox.sent, expected_messages
+            runner.outbox.sent, expected_messages
         ):
             assert message.request_id == expected_rid
             assert torch.equal(message.data, expected_code)

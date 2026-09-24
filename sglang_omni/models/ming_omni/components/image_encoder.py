@@ -102,7 +102,7 @@ class MingImageEncoder(nn.Module):
         )
 
         # Store spatial merge size for token count computation
-        self._spatial_merge_size = vision_cfg.spatial_merge_size
+        self.spatial_merge_size = vision_cfg.spatial_merge_size
 
         # Move to device
         torch_dtype = resolve_dtype(dtype)
@@ -140,12 +140,16 @@ class MingImageEncoder(nn.Module):
         from sglang.srt.distributed import parallel_state
 
         dp_tp_ready = (
-            getattr(dp, "_ATTN_TP_SIZE", None) is not None and dp._ATTN_TP_SIZE > 0
+            getattr(dp, "_ATTN_TP_SIZE", None) is not None
+            and dp._ATTN_TP_SIZE
+            > 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
         if dp_tp_ready and parallel_state.model_parallel_is_initialized():
-            if dp._ATTN_TP_SIZE != tp_size:
+            if (
+                dp._ATTN_TP_SIZE != tp_size
+            ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 raise RuntimeError(
-                    f"TP already initialized with tp_size={dp._ATTN_TP_SIZE}, "
+                    f"TP already initialized with tp_size={dp._ATTN_TP_SIZE}, "  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     f"cannot reinitialize with tp_size={tp_size}"
                 )
             return
@@ -180,10 +184,10 @@ class MingImageEncoder(nn.Module):
             parallel_state.initialize_model_parallel(
                 tensor_model_parallel_size=tp_size,
             )
-            cls._did_init_tp = True
+            cls.did_init_tp = True
 
-        dp._ATTN_TP_SIZE = tp_size
-        dp._ATTN_TP_RANK = tp_rank
+        dp._ATTN_TP_SIZE = tp_size  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        dp._ATTN_TP_RANK = tp_rank  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @classmethod
     def cleanup_sglang_tp(cls):
@@ -192,9 +196,9 @@ class MingImageEncoder(nn.Module):
         Only cleans up if we were the ones who initialized it.
         torch.distributed stays alive — only the TP/PP groups are removed.
         """
-        if not cls._did_init_tp:
+        if not cls.did_init_tp:
             return
-        cls._did_init_tp = False
+        cls.did_init_tp = False
 
         from sglang.srt.distributed import parallel_state
 
@@ -221,7 +225,7 @@ class MingImageEncoder(nn.Module):
             embeds = self.linear_proj(embeds)
             embeds = F.normalize(embeds, dim=-1)
 
-        merge_sq = self._spatial_merge_size**2
+        merge_sq = self.spatial_merge_size**2
         token_counts = (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]) // merge_sq
         return embeds, token_counts
 

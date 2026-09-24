@@ -80,7 +80,7 @@ def make_ming_tts_scheduler_adapters(
             extra_key=f"ming_tts:{payload.request_id}",
         )
         req.tokenizer = None
-        req._input_embeds_are_projected = requires_projected_prefill
+        req._input_embeds_are_projected = requires_projected_prefill  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         input_ids = torch.tensor(input_ids_list, dtype=torch.long)
         data = MingTTSSGLangRequestData(

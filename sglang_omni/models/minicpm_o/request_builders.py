@@ -166,9 +166,9 @@ def build_sglang_thinker_request(
     req.tokenizer = tokenizer
 
     req.omni_model_inputs = model_inputs if model_inputs else None
-    req._omni_consumed = None
-    req._codec_suppress_tokens = None
-    req._omni_mm_positions = mm_positions
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._omni_mm_positions = mm_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangARRequestData(
         input_ids=input_ids,

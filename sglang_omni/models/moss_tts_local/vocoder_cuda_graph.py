@@ -49,71 +49,83 @@ class MossVocoderCudaGraphRunner:
         warmup_iters: int = 3,
         min_free_gb: float = 3.0,
     ) -> None:
-        self._codec = codec
-        self._real_state_capacity = int(real_state_capacity)
-        self._scratch_capacity = int(scratch_capacity)
-        self._device = next(codec.parameters()).device
-        self._num_quantizers = int(num_quantizers)
-        self._warmup_iters = max(int(warmup_iters), 1)
-        self._min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._batch_sizes = sorted(
+        self.codec = codec
+        self.real_state_capacity = int(real_state_capacity)
+        self._scratch_capacity = int(
+            scratch_capacity
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.device = next(codec.parameters()).device
+        self.num_quantizers = int(num_quantizers)
+        self.warmup_iters = max(int(warmup_iters), 1)
+        self.min_free_bytes = int(float(min_free_gb) * (1024**3))
+        self._batch_sizes = sorted(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             {
                 int(size)
                 for size in batch_sizes
-                if 0 < int(size) <= self._real_state_capacity
+                if 0 < int(size) <= self.real_state_capacity
             }
         )
-        self._frame_sizes = sorted({int(size) for size in frame_sizes if int(size) > 0})
-        self._graphs: dict[tuple[int, int], CapturedVocoderGraph] = {}
-        self._pool = None
-        self._sealed = False
+        self._frame_sizes = sorted(
+            {int(size) for size in frame_sizes if int(size) > 0}
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.graphs: dict[tuple[int, int], CapturedVocoderGraph] = {}
+        self.pool = None
+        self.sealed = False
 
-        if self._real_state_capacity <= 0:
+        if self.real_state_capacity <= 0:
             raise ValueError("real_state_capacity must be positive")
-        if self._scratch_capacity < max(self._batch_sizes, default=0):
+        if self._scratch_capacity < max(
+            self._batch_sizes, default=0
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise ValueError(
                 "scratch_capacity must cover the largest compact graph bucket; "
-                f"got scratch_capacity={self._scratch_capacity}, "
-                f"largest_bucket={max(self._batch_sizes, default=0)}"
+                f"got scratch_capacity={self._scratch_capacity}, "  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                f"largest_bucket={max(self._batch_sizes, default=0)}"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             )
-        if self._num_quantizers <= 0:
+        if self.num_quantizers <= 0:
             raise ValueError("num_quantizers must be positive")
 
     @property
     def is_ready(self) -> bool:
-        return bool(self._graphs)
+        return bool(self.graphs)
 
     @property
     def capture_sizes(self) -> list[tuple[int, int]]:
-        return sorted(self._graphs)
+        return sorted(self.graphs)
 
     @property
     def batch_sizes(self) -> list[int]:
-        return list(self._batch_sizes)
+        return list(
+            self._batch_sizes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def frame_sizes(self) -> list[int]:
-        return list(self._frame_sizes)
+        return list(
+            self._frame_sizes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def scratch_capacity(self) -> int:
-        return self._scratch_capacity
+        return (
+            self._scratch_capacity
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def capture_state_slots(
         self, batch_size: int, *, device: torch.device
     ) -> torch.Tensor:
-        return self._real_state_capacity + torch.arange(
+        return self.real_state_capacity + torch.arange(
             batch_size,
             dtype=torch.long,
             device=device,
         )
 
     def enough_free_vram(self) -> tuple[bool, int]:
-        free, _ = torch.cuda.mem_get_info(self._device)
-        return free >= self._min_free_bytes, free
+        free, _ = torch.cuda.mem_get_info(self.device)
+        return free >= self.min_free_bytes, free
 
     def has_unbounded_attention_context(self) -> bool:
-        decoder = getattr(self._codec, "decoder", None)
+        decoder = getattr(self.codec, "decoder", None)
         if decoder is None or not callable(getattr(decoder, "modules", None)):
             return False
         return any(
@@ -123,9 +135,9 @@ class MossVocoderCudaGraphRunner:
 
     @torch.no_grad()
     def capture(self, batch_size: int, frame_size: int) -> None:
-        device = self._device
+        device = self.device
         codes = torch.zeros(
-            self._num_quantizers,
+            self.num_quantizers,
             batch_size,
             frame_size,
             dtype=torch.long,
@@ -140,8 +152,8 @@ class MossVocoderCudaGraphRunner:
         stream = torch.cuda.Stream(device=device)
         stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(stream):
-            for _ in range(self._warmup_iters):
-                self._codec.decode_streaming_tensors(
+            for _ in range(self.warmup_iters):
+                self.codec.decode_streaming_tensors(
                     codes,
                     lengths,
                     state_slot_ids,
@@ -149,23 +161,23 @@ class MossVocoderCudaGraphRunner:
                 )
         torch.cuda.current_stream(device).wait_stream(stream)
         torch.cuda.synchronize(device)
-        self._codec.reset_decoder_state_slots(state_slot_ids)
+        self.codec.reset_decoder_state_slots(state_slot_ids)
 
-        if self._pool is None:
-            self._pool = torch.cuda.graph_pool_handle()
+        if self.pool is None:
+            self.pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(
             graph,
-            pool=self._pool,
+            pool=self.pool,
             capture_error_mode="thread_local",
         ):
-            static_audio, static_audio_lengths = self._codec.decode_streaming_tensors(
+            static_audio, static_audio_lengths = self.codec.decode_streaming_tensors(
                 codes,
                 lengths,
                 state_slot_ids,
                 valid_rows,
             )
-        self._graphs[(batch_size, frame_size)] = CapturedVocoderGraph(
+        self.graphs[(batch_size, frame_size)] = CapturedVocoderGraph(
             graph=graph,
             static_codes=codes,
             static_lengths=lengths,
@@ -185,10 +197,10 @@ class MossVocoderCudaGraphRunner:
         captured.  The runner is sealed after one attempt to prevent capture
         work from happening on the serving hot path.
         """
-        if self._sealed:
+        if self.sealed:
             return self.capture_sizes
-        self._sealed = True
-        if self._device.type != "cuda" or not torch.cuda.is_available():
+        self.sealed = True
+        if self.device.type != "cuda" or not torch.cuda.is_available():
             return []
         if self.has_unbounded_attention_context():
             logger.info(
@@ -197,11 +209,13 @@ class MossVocoderCudaGraphRunner:
             )
             return []
         frame_sizes = (
-            self._frame_sizes
+            self._frame_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if frames is None
             else sorted({int(frame) for frame in frames if int(frame) > 0})
         )
-        if not self._batch_sizes or not frame_sizes:
+        if (
+            not self._batch_sizes or not frame_sizes
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             return []
 
         # Note (Zhang Yiyang): Capture largest allocations first when sharing a
@@ -209,12 +223,12 @@ class MossVocoderCudaGraphRunner:
         keys = sorted(
             (
                 (batch_size, frame_size)
-                for batch_size in self._batch_sizes
+                for batch_size in self._batch_sizes  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 for frame_size in frame_sizes
             ),
             reverse=True,
         )
-        with torch.cuda.device(self._device):
+        with torch.cuda.device(self.device):
             for batch_size, frame_size in keys:
                 key = (batch_size, frame_size)
                 enough, free = self.enough_free_vram()
@@ -223,20 +237,20 @@ class MossVocoderCudaGraphRunner:
                         "MOSS-Audio-Tokenizer vocoder CUDA graphs: free VRAM %.1fGB < %.1fGB; "
                         "skipping remaining captures",
                         free / 1024**3,
-                        self._min_free_bytes / 1024**3,
+                        self.min_free_bytes / 1024**3,
                     )
                     break
                 try:
                     self.capture(batch_size, frame_size)
                 except Exception:
-                    self._graphs.pop(key, None)
+                    self.graphs.pop(key, None)
                     # Note (Zhang Yiyang): Reset scratch state after a failed
                     # capture so eager execution remains available.
                     try:
-                        self._codec.reset_decoder_state_slots(
+                        self.codec.reset_decoder_state_slots(
                             self.capture_state_slots(
                                 batch_size,
-                                device=self._device,
+                                device=self.device,
                             )
                         )
                     except Exception:
@@ -253,14 +267,14 @@ class MossVocoderCudaGraphRunner:
                     )
         logger.info(
             "MOSS-Audio-Tokenizer vocoder CUDA graphs sealed: %d/%d captured %s",
-            len(self._graphs),
+            len(self.graphs),
             len(keys),
             self.capture_sizes,
         )
         return self.capture_sizes
 
     def captured_frames(self) -> list[int]:
-        return sorted({frame_size for _, frame_size in self._graphs})
+        return sorted({frame_size for _, frame_size in self.graphs})
 
     @torch.no_grad()
     def decode_step(
@@ -276,7 +290,7 @@ class MossVocoderCudaGraphRunner:
             return None
         num_quantizers, actual_batch_size, frame_size = map(int, codes.shape)
         if (
-            num_quantizers != self._num_quantizers
+            num_quantizers != self.num_quantizers
             or int(state_slot_ids.shape[0]) != actual_batch_size
             or actual_batch_size <= 0
         ):
@@ -294,12 +308,14 @@ class MossVocoderCudaGraphRunner:
         ):
             return None
         batch_size = next(
-            (size for size in self._batch_sizes if size >= actual_batch_size),
+            (
+                size for size in self._batch_sizes if size >= actual_batch_size
+            ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             None,
         )
         if batch_size is None:
             return None
-        entry = self._graphs.get((batch_size, frame_size))
+        entry = self.graphs.get((batch_size, frame_size))
         if entry is None:
             return None
 

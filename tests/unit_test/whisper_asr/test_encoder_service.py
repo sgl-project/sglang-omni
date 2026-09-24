@@ -142,7 +142,7 @@ def test_pinning_is_off_without_cuda_device() -> None:
     # service must not try to page-lock anything.
     service = _make_service()
     assert service.pin_host_memory is False
-    assert service._cache.pin_memory is False
+    assert service.cache.pin_memory is False
     assert service.stats()["pin_prewarm_s"] == 0.0
 
 
@@ -212,7 +212,7 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
     cached = _cached_entry(service, "fallback")
     assert not cached.is_pinned()
     assert service.pin_host_memory is False
-    assert service._cache.pin_memory is False
+    assert service.cache.pin_memory is False
     assert service.stats()["pin_failures"] == 1
     torch.cuda.synchronize()
     assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
@@ -365,7 +365,7 @@ def test_no_fingerprint_does_not_cache() -> None:
     assert item.precomputed_embeddings is not None
     assert service.stats()["misses"] == 0
     assert service.stats()["hits"] == 0
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_close_rejects_new_encodes() -> None:
@@ -377,7 +377,7 @@ def test_close_rejects_new_encodes() -> None:
 
 def test_batched_encode_retries_per_item_on_multi_failure() -> None:
     model = _StubModel()
-    model._encoder.fail_multi_item = True
+    model.encoder.fail_multi_item = True
     service = _make_service(model, max_batch_size=4)
     items = [_make_item(fingerprint=f"b{i}", fill=float(i + 1)) for i in range(3)]
     import concurrent.futures

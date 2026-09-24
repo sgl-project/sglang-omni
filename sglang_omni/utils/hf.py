@@ -254,5 +254,7 @@ def instantiate_module(module_cls: type[nn.Module], config: Any) -> nn.Module:
     """Instantiate a module without allocating its parameters."""
     with no_init_weights():
         if hasattr(module_cls, "_from_config"):
-            return module_cls._from_config(config)
+            return module_cls._from_config(
+                config
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return module_cls(config)

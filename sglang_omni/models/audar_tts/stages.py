@@ -136,11 +136,11 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         codec_revision: str,
         codec_lock: threading.Lock | None = None,
     ) -> None:
-        self._codec = codec
-        self._device = device
+        self.codec = codec
+        self.device = device
         self.model_id = codec_model
         self.model_revision = codec_revision
-        self._codec_lock = codec_lock or threading.Lock()
+        self.codec_lock = codec_lock or threading.Lock()
         self.encoder_config_hash = hash_bytes(
             f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
         )
@@ -152,8 +152,8 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         return reference_key(item)
 
     def encode_one(self, item: ReferenceInput) -> torch.Tensor:
-        with self._codec_lock:
-            return encode_reference(self._codec, self._device, item)
+        with self.codec_lock:
+            return encode_reference(self.codec, self.device, item)
 
     def revalidate(self, item: ReferenceInput, key: ReferenceEncodeKey) -> bool:
         return item.source_kind != "path" or reference_key(item) == key.input_key

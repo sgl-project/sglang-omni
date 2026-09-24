@@ -87,7 +87,7 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     worker = object.__new__(ModelWorker)
     worker.dllm_algorithm = None
     worker.model_runner = runner
-    worker._prefill_cuda_graph_usage = PrefillCudaGraphUsage()
+    worker.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_model",
         lambda: SimpleNamespace(model_path="model", load_format="auto"),

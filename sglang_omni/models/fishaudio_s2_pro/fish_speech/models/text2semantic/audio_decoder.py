@@ -268,7 +268,7 @@ class Attention(nn.Module):
         self.attention_qk_norm = config.attention_qk_norm
         self.kv_cache: KVCache | None = None
 
-        self._register_load_state_dict_pre_hook(self.load_hook)
+        self.register_load_state_dict_pre_hook(self.load_hook)
 
     def load_hook(self, state_dict, prefix, *args):
         """Normalize legacy split-QKV checkpoints before strict loading."""
@@ -403,13 +403,13 @@ class FishQwen3AudioDecoder(PreTrainedModel):
         self.layers = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.n_layer)]
         )
-        self._eager_forward_kvcached_layers: list[
+        self.eager_forward_kvcached_layers: list[
             Callable[[Tensor, Tensor, Tensor, int], Tensor]
         ] = [layer.forward_kvcached for layer in self.layers]
-        self._compiled_forward_kvcached_layers: (
+        self.compiled_forward_kvcached_layers: (
             list[Callable[[Tensor, Tensor, Tensor, int], Tensor]] | None
         ) = None
-        self._compiled_forward_kvcached_max_bs = 0
+        self.compiled_forward_kvcached_max_bs = 0
         self.norm = RMSNorm(config.dim, eps=config.norm_eps)
         self.output = nn.Linear(config.dim, config.vocab_size, bias=False)
 
@@ -482,18 +482,18 @@ class FishQwen3AudioDecoder(PreTrainedModel):
             raise ValueError("max_batch_size must be >= 1")
         if len(forward_kvcached_layers) != len(self.layers):
             raise ValueError("compiled layer count must match decoder layer count")
-        self._compiled_forward_kvcached_layers = forward_kvcached_layers
-        self._compiled_forward_kvcached_max_bs = max_batch_size
+        self.compiled_forward_kvcached_layers = forward_kvcached_layers
+        self.compiled_forward_kvcached_max_bs = max_batch_size
 
     def select_forward_kvcached_layers(
         self, bsz: int
     ) -> list[Callable[[Tensor, Tensor, Tensor, int], Tensor]]:
         if (
-            self._compiled_forward_kvcached_layers is not None
-            and bsz <= self._compiled_forward_kvcached_max_bs
+            self.compiled_forward_kvcached_layers is not None
+            and bsz <= self.compiled_forward_kvcached_max_bs
         ):
-            return self._compiled_forward_kvcached_layers
-        return self._eager_forward_kvcached_layers
+            return self.compiled_forward_kvcached_layers
+        return self.eager_forward_kvcached_layers
 
     def forward_kvcached(self, x: Tensor, codebook_idx: int) -> Tensor:
         """Predict one residual codebook step with the persistent KV cache."""

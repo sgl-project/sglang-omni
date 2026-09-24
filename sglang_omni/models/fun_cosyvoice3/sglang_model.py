@@ -35,7 +35,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         self.text_embed_tokens = self.model.embed_tokens
         self.speech_embedding = nn.Embedding(TOTAL_VOCAB_SIZE, config.hidden_size)
         self.llm_decoder = nn.Linear(config.hidden_size, TOTAL_VOCAB_SIZE, bias=False)
-        self._cached_params_dict = dict(self.named_parameters())
+        self.cached_params_dict = dict(self.named_parameters())
 
     @property
     def vocab_size(self) -> int:
@@ -111,7 +111,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
                 "llm_decoder.weight",
                 "llm_decoder.bias",
             ):
-                param = self._cached_params_dict.get(name)
+                param = self.cached_params_dict.get(name)
                 if param is not None:
                     loader = getattr(param, "weight_loader", default_weight_loader)
                     loader(param, loaded_weight)

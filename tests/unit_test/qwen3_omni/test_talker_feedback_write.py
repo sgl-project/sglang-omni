@@ -59,9 +59,9 @@ def test_dense_write_skips_index_tensor(monkeypatch: Any) -> None:
     runner.write_feedback_buffers(requests)
 
     assert calls == []
-    assert torch.equal(model._feedback_mask, torch.ones(n, dtype=torch.bool))
+    assert torch.equal(model.feedback_mask, torch.ones(n, dtype=torch.bool))
     for i in range(n):
-        assert torch.equal(model._feedback_buffer[i], feedbacks[i] + texts[i])
+        assert torch.equal(model.feedback_buffer[i], feedbacks[i] + texts[i])
 
 
 def test_sparse_write_leaves_starved_row_unwritten() -> None:
@@ -79,7 +79,7 @@ def test_sparse_write_leaves_starved_row_unwritten() -> None:
 
     runner.write_feedback_buffers(requests)
 
-    assert model._feedback_mask.tolist() == [True, False, True]
-    assert torch.equal(model._feedback_buffer[0], feedbacks[0] + texts[0])
-    assert torch.equal(model._feedback_buffer[1], torch.zeros(hidden))
-    assert torch.equal(model._feedback_buffer[2], feedbacks[2] + texts[2])
+    assert model.feedback_mask.tolist() == [True, False, True]
+    assert torch.equal(model.feedback_buffer[0], feedbacks[0] + texts[0])
+    assert torch.equal(model.feedback_buffer[1], torch.zeros(hidden))
+    assert torch.equal(model.feedback_buffer[2], feedbacks[2] + texts[2])

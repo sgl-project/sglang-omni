@@ -226,29 +226,29 @@ class MossTTSVocoder(BatchVocoderBase):
         compute_dtype: torch.dtype | None = None,
         max_segment_batch_size: int = 8,
     ) -> None:
-        self._processor = processor
-        self._audio_vocoder = audio_vocoder
-        self._device = device
-        self._compute_dtype = compute_dtype
-        self._max_segment_batch_size = max(int(max_segment_batch_size), 1)
-        self._codec = getattr(audio_vocoder, "model", None)
-        self._quantizer = getattr(self._codec, "quantizer", None)
-        self._nonstream_decoder = None
+        self.processor = processor
+        self.audio_vocoder = audio_vocoder
+        self.device = device
+        self.compute_dtype = compute_dtype
+        self.max_segment_batch_size = max(int(max_segment_batch_size), 1)
+        self.codec = getattr(audio_vocoder, "model", None)
+        self.quantizer = getattr(self.codec, "quantizer", None)
+        self.nonstream_decoder = None
         if (
-            self._compute_dtype is not None
-            and self._codec is not None
-            and callable(getattr(self._quantizer, "decode_codes", None))
-            and hasattr(self._codec, "decoder")
+            self.compute_dtype is not None
+            and self.codec is not None
+            and callable(getattr(self.quantizer, "decode_codes", None))
+            and hasattr(self.codec, "decoder")
         ):
-            resolved_codec_device = codec_device(self._codec, self._device)
+            resolved_codec_device = codec_device(self.codec, self.device)
             try:
-                source_decoder = self._codec.decoder
+                source_decoder = self.codec.decoder
                 nonstream_decoder = MossAudioTokenizerVocoderDecoder.from_module(
                     source_decoder
                 )
                 supports_packed_attention = nonstream_decoder.supports_packed_attention(
                     resolved_codec_device,
-                    self._compute_dtype,
+                    self.compute_dtype,
                 )
             except (AttributeError, AssertionError, TypeError, ValueError):
                 logger.exception(
@@ -257,20 +257,20 @@ class MossTTSVocoder(BatchVocoderBase):
                 )
             else:
                 if supports_packed_attention:
-                    self._quantizer.to(dtype=torch.float32)
-                    self._nonstream_decoder = nonstream_decoder
+                    self.quantizer.to(dtype=torch.float32)
+                    self.nonstream_decoder = nonstream_decoder
                     logger.info(
                         "MOSS-TTS Delay vocoder enabled batched packed decoder "
                         "stages=%d compute_dtype=%s",
-                        len(self._nonstream_decoder),
-                        self._compute_dtype,
+                        len(self.nonstream_decoder),
+                        self.compute_dtype,
                     )
                 else:
                     logger.info(
                         "MOSS-TTS Delay packed decoder is unavailable for "
                         "device=%s compute_dtype=%s; using standalone codec decode",
                         resolved_codec_device,
-                        self._compute_dtype,
+                        self.compute_dtype,
                     )
 
     def prepare_item(self, payload: StagePayload) -> tuple[MossTTSState, torch.Tensor]:
@@ -287,22 +287,22 @@ class MossTTSVocoder(BatchVocoderBase):
         state: MossTTSState,
         delayed_codes: torch.Tensor,
     ) -> tuple[torch.Tensor, int]:
-        delayed_codes = delayed_codes.to(device=self._device, dtype=torch.long)
+        delayed_codes = delayed_codes.to(device=self.device, dtype=torch.long)
         audio_pad_code = resolve_moss_audio_pad_code(
-            getattr(self._processor, "model_config", None)
+            getattr(self.processor, "model_config", None)
         )
         segments = split_moss_audio_segments(
             delayed_codes,
             audio_pad_code=audio_pad_code,
             assistant_start_length=int(state.assistant_start_length),
         )
-        codec_decoder = getattr(self._codec, "decoder", self._codec)
-        codec_dtype = module_dtype(codec_decoder) or module_dtype(self._codec)
-        resolved_codec_device = codec_device(self._codec, self._device)
+        codec_decoder = getattr(self.codec, "decoder", self.codec)
+        codec_dtype = module_dtype(codec_decoder) or module_dtype(self.codec)
+        resolved_codec_device = codec_device(self.codec, self.device)
         decoded = []
         with autocast_if_supported(resolved_codec_device, codec_dtype):
             for segment in segments:
-                decoded.extend(self._audio_vocoder.decode_codes([segment]))
+                decoded.extend(self.audio_vocoder.decode_codes([segment]))
         if not decoded:
             raise RuntimeError("MOSS-TTS vocoder decoded no audio segments")
         waveforms = [
@@ -313,10 +313,10 @@ class MossTTSVocoder(BatchVocoderBase):
 
     def resolve_sample_rate(self, state: MossTTSState) -> int:
         return int(
-            getattr(self._audio_vocoder, "sample_rate", 0)
-            or getattr(getattr(self._codec, "config", None), "sampling_rate", 0)
+            getattr(self.audio_vocoder, "sample_rate", 0)
+            or getattr(getattr(self.codec, "config", None), "sampling_rate", 0)
             or getattr(
-                getattr(self._processor, "model_config", None), "sampling_rate", 0
+                getattr(self.processor, "model_config", None), "sampling_rate", 0
             )
             or state.sample_rate
             or 24000
@@ -328,12 +328,12 @@ class MossTTSVocoder(BatchVocoderBase):
     ) -> list[torch.Tensor]:
         if not segments:
             return []
-        codec = self._codec
+        codec = self.codec
         if codec is None:
             raise RuntimeError("batched MOSS-TTS Delay codec path is unavailable")
-        if self._nonstream_decoder is None:
+        if self.nonstream_decoder is None:
             raise RuntimeError("packed MOSS-TTS Delay codec path is unavailable")
-        quantizer = self._quantizer
+        quantizer = self.quantizer
         if quantizer is None or not callable(getattr(quantizer, "decode_codes", None)):
             raise RuntimeError(
                 "MOSS-TTS Delay audio tokenizer has no supported "
@@ -342,10 +342,10 @@ class MossTTSVocoder(BatchVocoderBase):
         wavs = decode_codes_batch(
             segments,
             quantizer_decode=quantizer.decode_codes,
-            decoder=self._nonstream_decoder,
-            device=codec_device(codec, self._device),
-            compute_dtype=self._compute_dtype,
-            max_batch_size=self._max_segment_batch_size,
+            decoder=self.nonstream_decoder,
+            device=codec_device(codec, self.device),
+            compute_dtype=self.compute_dtype,
+            max_batch_size=self.max_segment_batch_size,
         )
         # note (Zhang Yiyang): the Delay codec is mono: [1, samples] ->
         # [samples].
@@ -354,11 +354,11 @@ class MossTTSVocoder(BatchVocoderBase):
     async def decode_batch(
         self, items: list[tuple[MossTTSState, torch.Tensor]]
     ) -> list[tuple[torch.Tensor, int]]:
-        if self._nonstream_decoder is None:
+        if self.nonstream_decoder is None:
             return [self.decode_audio(state, codes) for state, codes in items]
 
         audio_pad_code = resolve_moss_audio_pad_code(
-            getattr(self._processor, "model_config", None)
+            getattr(self.processor, "model_config", None)
         )
         request_segments: list[list[int]] = [[] for _ in items]
         flat_segments: list[torch.Tensor] = []
@@ -384,7 +384,7 @@ class MossTTSVocoder(BatchVocoderBase):
             # failed batch's CUDA tensors throughout the fallback.
             failure_traceback = traceback.format_exc()
         if failure_traceback is not None:
-            self._nonstream_decoder = None
+            self.nonstream_decoder = None
             logger.error(
                 "MOSS-TTS Delay packed codec decode failed; disabling the "
                 "packed path and falling back to standalone codec decode:\n%s",

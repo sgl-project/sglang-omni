@@ -61,7 +61,7 @@ def patch_fish_config_for_sglang() -> None:
             self.architectures = ["S2ProSGLangTextModel"]
 
     FishQwen3Config.__init__ = _patched_text_init
-    FishQwen3Config._sglang_patched = True
+    FishQwen3Config._sglang_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     original_omni_init = FishQwen3OmniConfig.__init__
 

@@ -126,7 +126,9 @@ def load_code2wav_model(
         Qwen3OmniMoeCode2Wav,
     )
 
-    model = Qwen3OmniMoeCode2Wav._from_config(code2wav_config)
+    model = Qwen3OmniMoeCode2Wav._from_config(
+        code2wav_config
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     model = load_module(
         model,
         model_path,
@@ -186,15 +188,13 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         enable_cuda_graph: bool = False,
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
     ):
-        self._model = model
-        self._device = torch.device(device)
-        self._stream_chunk_size = max(int(stream_chunk_size), 1)
-        self._left_context_size = max(int(left_context_size), 0)
-        self._codec_eos_token_id = codec_eos_token_id
-        self._total_upsample = int(model.total_upsample)
-        self._cuda_graph_runner = (
-            _cuda_graph_runner if bool(enable_cuda_graph) else None
-        )
+        self.model = model
+        self.device = torch.device(device)
+        self.stream_chunk_size = max(int(stream_chunk_size), 1)
+        self.left_context_size = max(int(left_context_size), 0)
+        self.codec_eos_token_id = codec_eos_token_id
+        self.total_upsample = int(model.total_upsample)
+        self.cuda_graph_runner = _cuda_graph_runner if bool(enable_cuda_graph) else None
         super().__init__(
             None,
             sample_rate=sample_rate,
@@ -202,48 +202,48 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         )
         # Note (wenyao): batching fields set after super().__init__ — the base
         # scheduler assigns its own max_batch_wait_s and would clobber ours.
-        self._enable_batching = bool(enable_batching)
+        self.enable_batching = bool(enable_batching)
         self.max_batch_wait_s = max(int(max_batch_wait_ms), 0) / 1000.0
-        self._batch_floor = max(int(batch_floor), 1)
-        self._initial_codec_chunk_frames = min(
+        self.batch_floor = max(int(batch_floor), 1)
+        self.initial_codec_chunk_frames = min(
             max(int(initial_codec_chunk_frames), 0), int(stream_chunk_size)
         )
-        self._batch_ceiling = min(max(int(batch_ceiling), 1), _DECOMPOSE_SIZES[0])
-        self._drain_mode = False
-        self._last_fire_reason: str | None = None
-        self._last_oldest_wait_ms: float = 0.0
-        self._last_due_bucket_count: int = 0
-        self._pending_step_failures: list[str] = []
-        self.can_batch_stream_chunks = self._enable_batching
-        if self._enable_batching:
-            self.stream_chunk_batch_max = self._batch_ceiling
+        self.batch_ceiling = min(max(int(batch_ceiling), 1), _DECOMPOSE_SIZES[0])
+        self.drain_mode = False
+        self.last_fire_reason: str | None = None
+        self.last_oldest_wait_ms: float = 0.0
+        self.last_due_bucket_count: int = 0
+        self.pending_step_failures: list[str] = []
+        self.can_batch_stream_chunks = self.enable_batching
+        if self.enable_batching:
+            self.stream_chunk_batch_max = self.batch_ceiling
         # Note (edwardzh): serial path only — run_step is #1237's and
         # its window shapes are not the ones this pipeline reasons about.
-        self._enable_output_overlap = bool(enable_output_overlap)
-        self._eos_lazy_scan = self._enable_output_overlap and not self._enable_batching
-        self._pipeline_active = self._eos_lazy_scan and self._device.type == "cuda"
-        self._default_slot_samples = self._stream_chunk_size * self._total_upsample
+        self.enable_output_overlap = bool(enable_output_overlap)
+        self.eos_lazy_scan = self.enable_output_overlap and not self.enable_batching
+        self.pipeline_active = self.eos_lazy_scan and self.device.type == "cuda"
+        self.default_slot_samples = self.stream_chunk_size * self.total_upsample
         # Note (jiannan-17): Each slot only grows its buffer and reuses one
         # event, avoiding steady-state allocations.
-        self._pinned_free: list[PinnedTransferSlot] = []
-        self._pinned_created = 0
+        self.pinned_free: list[PinnedTransferSlot] = []
+        self.pinned_created = 0
         # Note (wenyao): Slots must have one owner; quarantined slots are never reused
         # but still count toward the cap so event failures cannot inflate the pool.
-        self._pinned_retired: list[PinnedTransferSlot] = []
-        self._pinned_quarantined: list[PinnedTransferSlot] = []
+        self.pinned_retired: list[PinnedTransferSlot] = []
+        self.pinned_quarantined: list[PinnedTransferSlot] = []
         # Note (wenyao): A batch reserves every slot before flushing; extra headroom
         # (~75 KiB/slot) avoids blocking pageable D2H when other streams retain windows.
-        self._max_pinned_slots = self._MAX_PINNED_SLOTS + self._batch_ceiling
+        self.max_pinned_slots = self.MAX_PINNED_SLOTS + self.batch_ceiling
 
     @property
     def chunk_aligned_dispatch(self) -> bool:
         """Chunk alignment only pays off while graphs are live: uniform windows
         keep every step inside the captured key set, so it follows the runner's
         current published keys rather than the startup flags."""
-        if not self._enable_batching or self._cuda_graph_runner is None:
+        if not self.enable_batching or self.cuda_graph_runner is None:
             return False
-        steady_window = self._left_context_size + self._stream_chunk_size
-        return bool(self._cuda_graph_runner.available_batch_sizes(steady_window))
+        steady_window = self.left_context_size + self.stream_chunk_size
+        return bool(self.cuda_graph_runner.available_batch_sizes(steady_window))
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         del payload
@@ -271,7 +271,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
     ) -> torch.Tensor:
         del request_id, state
-        return codes.to(device=self._device, dtype=torch.long)
+        return codes.to(device=self.device, dtype=torch.long)
 
     def ingest(
         self, request_id: str, state: Code2WavStreamState, codes: torch.Tensor
@@ -284,16 +284,16 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             # checked avoids #1237's serial scan and its extra D2H sync per frame.
             state.chunks.extend(codes.unbind(0))
             state.checked = len(state.chunks)
-        elif self._eos_lazy_scan:
+        elif self.eos_lazy_scan:
             # Note (edwardzh): one frame per message, so checking here
             # costs one sync per frame; should_decode batches them per window.
             state.chunks.append(codes)
         elif codes.ndim >= 1:
             if profile is None:
-                is_eos = codes[0].item() == self._codec_eos_token_id
+                is_eos = codes[0].item() == self.codec_eos_token_id
             else:
                 eos_start_ns = time.perf_counter_ns()
-                is_eos = codes[0].item() == self._codec_eos_token_id
+                is_eos = codes[0].item() == self.codec_eos_token_id
                 profile[0]["eos_check_host_ns"] += time.perf_counter_ns() - eos_start_ns
                 profile[0]["eos_checks"] += 1
             if not is_eos:
@@ -310,7 +310,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         if state.emitted > 0:
             return None
         run_id = _get_event_recorder().active_run_id()
-        profile = state._critical_ingest_profile
+        profile = (
+            state._critical_ingest_profile
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if profile is None or profile["run_id"] != run_id:
             profile = {
                 "run_id": run_id,
@@ -322,7 +324,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 "started_with_frames": len(state.chunks),
                 "ready_emitted": False,
             }
-            state._critical_ingest_profile = profile
+            state._critical_ingest_profile = profile  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if profile["ready_emitted"]:
             return None
         return profile, time.time_ns(), time.perf_counter_ns(), len(state.chunks)
@@ -340,9 +342,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         profile["accepted_frames"] += len(state.chunks) - before_frames
         profile["ingest_host_ns"] += time.perf_counter_ns() - start_ns
         threshold = (
-            (self._initial_codec_chunk_frames or self._stream_chunk_size)
-            if self._enable_batching
-            else self._stream_chunk_size
+            (self.initial_codec_chunk_frames or self.stream_chunk_size)
+            if self.enable_batching
+            else self.stream_chunk_size
         )
         first_ingest = profile["messages"] == 1
         ready = self.ready(state) >= threshold
@@ -362,7 +364,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         metadata.update(
             ready_frames=self.ready(state),
             threshold_frames=threshold,
-            eos_scan_deferred=self._eos_lazy_scan,
+            eos_scan_deferred=self.eos_lazy_scan,
             inbox_depth=self.inbox.qsize(),
             pending_message_depth=len(self.pending_messages),
             active_request_count=len(self.stream_states),
@@ -387,14 +389,14 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def should_decode(self, state: Code2WavStreamState, *, is_final: bool) -> bool:
         del is_final
         if (
-            self._eos_lazy_scan
+            self.eos_lazy_scan
             and state.checked < len(state.chunks)
-            and self.ready(state) >= self._stream_chunk_size
+            and self.ready(state) >= self.stream_chunk_size
         ):
             # Note (edwardzh): scan before gating — a staged EOS would
             # inflate the count and fire a short window, missing the graph key.
             self.scan_unchecked(state)
-        return self.ready(state) >= self._stream_chunk_size
+        return self.ready(state) >= self.stream_chunk_size
 
     def scan_unchecked(self, state: Code2WavStreamState) -> None:
         """Batched EOS scan over frames staged by the lazy-ingest path.
@@ -415,10 +417,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         unchecked = chunks[start:]
         if all(codes.ndim == 1 for codes in unchecked):
             heads = torch.stack([codes[0] for codes in unchecked])
-            is_eos = (heads == self._codec_eos_token_id).tolist()
+            is_eos = (heads == self.codec_eos_token_id).tolist()
         else:
             is_eos = [
-                codes.ndim >= 1 and codes[0].item() == self._codec_eos_token_id
+                codes.ndim >= 1 and codes[0].item() == self.codec_eos_token_id
                 for codes in unchecked
             ]
         if any(is_eos):
@@ -428,14 +430,14 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def decode_delta(
         self, request_id: str, state: Code2WavStreamState, *, is_final: bool
     ) -> torch.Tensor | None:
-        if self._eos_lazy_scan and is_final:
+        if self.eos_lazy_scan and is_final:
             # Note (edwardzh): the stream-done flush never goes through
             # should_decode, so the tail is still unscanned here.
             self.scan_unchecked(state)
         start, end = state.emitted, len(state.chunks)
         if start >= end:
             return None
-        context = min(self._left_context_size, start)
+        context = min(self.left_context_size, start)
         profile_metadata: dict[str, Any] | None = None
         if _get_event_recorder().is_active():
             profile_metadata = {
@@ -447,7 +449,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 "window_frames": end - start + context,
                 "active_request_count": len(self.stream_states),
                 "threshold_ready_request_count": sum(
-                    self.ready(ready_state) >= self._stream_chunk_size
+                    self.ready(ready_state) >= self.stream_chunk_size
                     for _, ready_state in self.stream_state_items()
                 ),
                 "inbox_depth": self.inbox.qsize(),
@@ -465,14 +467,14 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             codes,
             graph_eligible=not is_final,
         )
-        wav = wav[..., -(end - start) * self._total_upsample :]
+        wav = wav[..., -(end - start) * self.total_upsample :]
         samples = int(wav.numel())
         prev_wait_ns = 0
         prev_waveform: torch.Tensor | None = None
         slot: PinnedTransferSlot | None = None
         # Note (edwardzh): the first window stays synchronous so
         # time-to-first-audio is unchanged.
-        if self._pipeline_active and not is_final and start > 0 and samples > 0:
+        if self.pipeline_active and not is_final and start > 0 and samples > 0:
             slot = self.acquire_slot(samples)
             if slot is None and state.pending is not None:
                 # Note (edwardzh): freeing this request's own pending
@@ -485,7 +487,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             if profile_metadata is not None:
                 extra = (
                     {"pipelined": False, "d2h_wait_ns": prev_wait_ns}
-                    if self._pipeline_active
+                    if self.pipeline_active
                     else {}
                 )
                 _emit_event(
@@ -522,7 +524,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             slot.view(samples).copy_(
                 wav.reshape(-1).to(torch.float32), non_blocking=True
             )
-            slot.record(torch.cuda.current_stream(self._device))
+            slot.record(torch.cuda.current_stream(self.device))
             event_recorded = True
             if profile_metadata is not None:
                 _emit_event(
@@ -620,8 +622,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def acquire_slot(self, samples: int) -> PinnedTransferSlot | None:
         self.reap_retired_slots()
-        if self._pinned_free:
-            slot = self._pinned_free.pop()
+        if self.pinned_free:
+            slot = self.pinned_free.pop()
             try:
                 slot.ensure_capacity(samples)
             except Exception:
@@ -631,25 +633,25 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 self.release_slot(slot)
                 raise
             return slot
-        if self._pinned_created < self._max_pinned_slots:
+        if self.pinned_created < self.max_pinned_slots:
             slot = PinnedTransferSlot(
-                self._device,
+                self.device,
                 torch.float32,
-                initial_capacity=max(samples, self._default_slot_samples),
+                initial_capacity=max(samples, self.default_slot_samples),
             )
-            self._pinned_created += 1
+            self.pinned_created += 1
             return slot
         return None
 
     def release_slot(self, slot: PinnedTransferSlot) -> None:
-        self._pinned_free.append(slot)
+        self.pinned_free.append(slot)
 
     def retire_slot(self, slot: PinnedTransferSlot) -> None:
-        self._pinned_retired.append(slot)
+        self.pinned_retired.append(slot)
 
     def quarantine_slot(self, slot: PinnedTransferSlot) -> None:
-        self._pinned_quarantined.append(slot)
-        self._pipeline_active = False
+        self.pinned_quarantined.append(slot)
+        self.pipeline_active = False
 
     def reap_retired_slots(self) -> None:
         """Non-blockingly return completed retired slots to the free pool.
@@ -657,10 +659,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         Callers hold ``state_lock``. An event-query error leaves the buffer
         owned by the scheduler but permanently unavailable for reuse.
         """
-        if not self._pinned_retired:
+        if not self.pinned_retired:
             return
         still_retired: list[PinnedTransferSlot] = []
-        for slot in self._pinned_retired:
+        for slot in self.pinned_retired:
             try:
                 complete = slot.query()
             except Exception:
@@ -671,7 +673,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 self.release_slot(slot)
             else:
                 still_retired.append(slot)
-        self._pinned_retired = still_retired
+        self.pinned_retired = still_retired
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Code2WavStreamState
@@ -696,17 +698,17 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         with torch.no_grad():
-            if self._device.type != "cpu":
-                torch.get_device_module(self._device).set_device(self._device)
-            if self._cuda_graph_runner is None:
+            if self.device.type != "cpu":
+                torch.get_device_module(self.device).set_device(self.device)
+            if self.cuda_graph_runner is None:
                 result = Code2WavRunResult(
-                    output=self._model(codes),
+                    output=self.model(codes),
                     execution_mode="eager",
                     key=None,
                     fallback_reason=None,
                 )
             else:
-                result = self._cuda_graph_runner.run(
+                result = self.cuda_graph_runner.run(
                     codes,
                     eligible=graph_eligible,
                 )
@@ -797,9 +799,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         # of raising, so its request ids surface here — the caller still owes
         # them the abort callback it runs off ``state_lock``.
         failed = super().pump_streams()
-        if self._pending_step_failures:
-            failed = failed + self._pending_step_failures
-            self._pending_step_failures = []
+        if self.pending_step_failures:
+            failed = failed + self.pending_step_failures
+            self.pending_step_failures = []
         return failed
 
     def ready(self, state: Code2WavStreamState) -> int:
@@ -809,14 +811,14 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         """New frames the next step consumes; capped at one chunk so a backlog
         cannot push the window outside the captured key set."""
         ready = self.ready(state)
-        if state.emitted == 0 and self._initial_codec_chunk_frames:
-            ready = min(ready, self._initial_codec_chunk_frames)
+        if state.emitted == 0 and self.initial_codec_chunk_frames:
+            ready = min(ready, self.initial_codec_chunk_frames)
         if self.chunk_aligned_dispatch:
-            return min(ready, self._stream_chunk_size)
+            return min(ready, self.stream_chunk_size)
         return ready
 
     def bucket(self, state: Code2WavStreamState) -> tuple[int, int]:
-        context = min(self._left_context_size, state.emitted)
+        context = min(self.left_context_size, state.emitted)
         return (context, context + self.step_frames(state))
 
     def bucket_batch_ceiling(self, frames: int) -> int:
@@ -829,11 +831,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         that held before the large classes existed.
         """
         largest_graph = 1
-        if self._cuda_graph_runner is not None:
-            sizes = self._cuda_graph_runner.available_batch_sizes(frames)
+        if self.cuda_graph_runner is not None:
+            sizes = self.cuda_graph_runner.available_batch_sizes(frames)
             if sizes:
                 largest_graph = max(sizes)
-        return min(self._batch_ceiling, max(largest_graph, _STEADY_BATCH_MAX))
+        return min(self.batch_ceiling, max(largest_graph, _STEADY_BATCH_MAX))
 
     @staticmethod
     def decompose_batch(n: int, sizes: tuple[int, ...] = _DECOMPOSE_SIZES) -> list[int]:
@@ -849,7 +851,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         return plan
 
     def stop(self) -> None:
-        self._drain_mode = True
+        self.drain_mode = True
         super().stop()
 
     def drain_pending_window(self, request_id: str) -> list[OutgoingMessage]:
@@ -867,23 +869,23 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def on_stream_done(self, request_id: str):
         state = self.stream_states.get(request_id)
-        prev_drain = self._drain_mode
+        prev_drain = self.drain_mode
         if state is not None and state.due_since is not None:
-            self._drain_mode = True
+            self.drain_mode = True
         try:
             messages = self.drain_pending_window(request_id)
             messages.extend(super().on_stream_done(request_id))
             return messages
         finally:
-            self._drain_mode = prev_drain
+            self.drain_mode = prev_drain
 
     def on_stream_done_before_payload(self, request_id: str) -> list[OutgoingMessage]:
         # Note (wenyao): talker_ar sends EOS before the code-free terminal latch, so
         # audio must drain now; only the terminal result should wait for the payload.
         state = self.stream_states.get(request_id)
-        prev_drain = self._drain_mode
+        prev_drain = self.drain_mode
         if state is not None and state.due_since is not None:
-            self._drain_mode = True
+            self.drain_mode = True
         try:
             messages = self.drain_pending_window(request_id)
             if state is not None:
@@ -893,7 +895,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     messages.append(self.stream_chunk_message(request_id, waveform))
             return messages
         finally:
-            self._drain_mode = prev_drain
+            self.drain_mode = prev_drain
 
     def release_stream_resources(
         self, request_id: str, state: Code2WavStreamState
@@ -910,8 +912,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
 
     def on_serving_stop(self) -> None:
         """Drain retired slots at shutdown, when blocking costs no latency."""
-        retired = self._pinned_retired
-        self._pinned_retired = []
+        retired = self.pinned_retired
+        self.pinned_retired = []
         for slot in retired:
             try:
                 slot.synchronize()
@@ -919,7 +921,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 logger.exception(
                     "code2wav failed to synchronize a retired D2H copy on shutdown"
                 )
-                self._pinned_quarantined.append(slot)
+                self.pinned_quarantined.append(slot)
             else:
                 self.release_slot(slot)
 
@@ -930,11 +932,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         for rid, state in self.stream_state_items():
             ready = self.ready(state)
             if state.emitted == 0 and ready >= (
-                self._initial_codec_chunk_frames or self._stream_chunk_size
+                self.initial_codec_chunk_frames or self.stream_chunk_size
             ):
                 first_ready.append((rid, state))
                 continue
-            if state.emitted > 0 and ready >= self._stream_chunk_size:
+            if state.emitted > 0 and ready >= self.stream_chunk_size:
                 if state.due_since is None:
                     state.due_since = now
                 due.setdefault(self.bucket(state), []).append((rid, state))
@@ -942,9 +944,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             # Note (wenyao): same bucket ⇒ one trim scalar holds for the batch.
             key = self.bucket(first_ready[0][1])
             same_bucket = [p for p in first_ready if self.bucket(p[1]) == key]
-            self._last_fire_reason = "first"
-            self._last_oldest_wait_ms = 0.0
-            self._last_due_bucket_count = len(due)
+            self.last_fire_reason = "first"
+            self.last_oldest_wait_ms = 0.0
+            self.last_due_bucket_count = len(due)
             return same_bucket[: self.bucket_batch_ceiling(key[1])]
         if not due:
             return []
@@ -952,21 +954,21 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         anchor = sorted(due[anchor_key], key=lambda p: p[1].due_since)
         oldest_wait = now - anchor[0][1].due_since
         fire = (
-            len(anchor) >= self._batch_floor
+            len(anchor) >= self.batch_floor
             or oldest_wait >= self.max_batch_wait_s
-            or self._drain_mode
+            or self.drain_mode
         )
         if not fire:
             return []
-        if len(anchor) >= self._batch_floor:
+        if len(anchor) >= self.batch_floor:
             reason = "floor"
         elif oldest_wait >= self.max_batch_wait_s:
             reason = "deadline"
         else:
             reason = "drain"
-        self._last_fire_reason = reason
-        self._last_oldest_wait_ms = oldest_wait * 1000.0
-        self._last_due_bucket_count = len(due)
+        self.last_fire_reason = reason
+        self.last_oldest_wait_ms = oldest_wait * 1000.0
+        self.last_due_bucket_count = len(due)
         return anchor[: self.bucket_batch_ceiling(anchor_key[1])]
 
     def build_step_plan(
@@ -981,7 +983,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         window_frames = self.bucket(participants[0][1])[1]
         sizes = tuple(
             size
-            for size in self._cuda_graph_runner.available_batch_sizes(window_frames)
+            for size in self.cuda_graph_runner.available_batch_sizes(window_frames)
             if size > 1
         )
         if not sizes:
@@ -999,11 +1001,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         decoded: dict[str, torch.Tensor] = {}
         profile_metadata: dict[str, Any] | None = None
         if _get_recorder().is_active():
-            self._critical_batch_id = getattr(self, "_critical_batch_id", 0) + 1
+            self.critical_batch_id = getattr(self, "critical_batch_id", 0) + 1
             first_state = participants[0][1]
             bucket = self.bucket(first_state)
             profile_metadata = {
-                "batch_id": self._critical_batch_id,
+                "batch_id": self.critical_batch_id,
                 "participant_request_ids": [rid for rid, _ in participants],
                 "first_audio_request_ids": [
                     rid for rid, state in participants if not state.audio_parts
@@ -1014,9 +1016,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 "window_frames": bucket[1],
                 "active_request_count": len(self.stream_states),
                 "inbox_depth": self.inbox.qsize(),
-                "oldest_wait_ms": self._last_oldest_wait_ms,
-                "fire_reason": self._last_fire_reason,
-                "due_bucket_count": self._last_due_bucket_count,
+                "oldest_wait_ms": self.last_oldest_wait_ms,
+                "fire_reason": self.last_fire_reason,
+                "due_bucket_count": self.last_due_bucket_count,
                 "subbatch_decomposition": list(plan),
             }
             _emit_event(
@@ -1041,7 +1043,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 # Note (ruoyu): the sub-batches already decoded advanced their
                 # cursors, so aborting every participant would drop audio the
                 # client is owed; fail only the ones that did not decode.
-                self._pending_step_failures.extend(
+                self.pending_step_failures.extend(
                     self.on_step_failure(participants[cursor:], exc)
                 )
                 break
@@ -1089,7 +1091,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             start = state.emitted
             end = start + self.step_frames(state)
             window_ends.append(end)
-            context = min(self._left_context_size, start)
+            context = min(self.left_context_size, start)
             rows.append(
                 torch.stack(state.chunks[start - context : end], dim=0).transpose(0, 1)
             )
@@ -1110,8 +1112,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 f"code2wav step returned {wav.shape[0]} rows for "
                 f"{len(group)} requests"
             )
-        context = min(self._left_context_size, group[0][1].emitted)
-        wav = wav[..., -(window_frames - context) * self._total_upsample :]
+        context = min(self.left_context_size, group[0][1].emitted)
+        wav = wav[..., -(window_frames - context) * self.total_upsample :]
         host = wav.detach().cpu().float()
         audio_samples = 0
         for i, (rid, state) in enumerate(group):

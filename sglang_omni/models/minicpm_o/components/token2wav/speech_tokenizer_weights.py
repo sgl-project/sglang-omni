@@ -28,7 +28,7 @@ def rename_weights(weights_dict: dict[str, torch.Tensor]) -> dict[str, torch.Ten
     for k in weights_dict.keys():
         if "quantizer" in k:
             if k == "/quantizer/rq/model/layers.0/_codebook/Pow_1":
-                new_weight_dict["quantizer._codebook.embed"] = weights_dict[k]
+                new_weight_dict["quantizer.codebook.embed"] = weights_dict[k]
             elif "project_down" in k:
                 new_weight_dict[k] = weights_dict[k]
         elif "positional_embedding" in k:
@@ -90,9 +90,9 @@ def load_tokenizer_weights(onnx_path: Path) -> dict[str, torch.Tensor]:
                 elif input_name == "encoders.positional_embedding":
                     weight_name = "encoder.positional_embedding"
                 elif input_name == "quantizer.project_in.bias":
-                    weight_name = "quantizer._codebook.project_down.bias"
+                    weight_name = "quantizer.codebook.project_down.bias"
                 elif input_name == "onnx::MatMul_2536":
-                    weight_name = "quantizer._codebook.project_down.weight"
+                    weight_name = "quantizer.codebook.project_down.weight"
                 elif node.op_type == "LayerNormalization":
                     ln_name = node.name.replace("/LayerNormalization", "")
                     ln_weight_name = ln_name + ".weight"

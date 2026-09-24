@@ -28,57 +28,57 @@ class RVQDepthCudaGraphRunner:
         num_codebooks: int,
         buckets: list[int],
     ) -> None:
-        self._forward = forward
-        self._device = device
-        self._buckets = sorted(set(buckets))
-        if not self._buckets or self._buckets[0] < 1:
+        self.forward = forward
+        self.device = device
+        self.buckets = sorted(set(buckets))
+        if not self.buckets or self.buckets[0] < 1:
             raise ValueError("MiniMax Music 3 RVQ graph needs positive batch buckets")
-        self._graphs: dict[int, torch.cuda.CUDAGraph] = {}
-        self._inputs: dict[int, tuple[Tensor, ...]] = {}
-        self._outputs: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
+        self.graphs: dict[int, torch.cuda.CUDAGraph] = {}
+        self.inputs: dict[int, tuple[Tensor, ...]] = {}
+        self.outputs: dict[int, tuple[Tensor, Tensor, Tensor]] = {}
         self.allocated_bytes = 0
-        for size in self._buckets:
+        for size in self.buckets:
             self.capture(size, dtype, hidden_size, num_codebooks)
         logger.info(
-            f"MiniMax Music 3 RVQ depth CUDA graphs captured buckets={self._buckets} memory={self.allocated_bytes / 2 ** 20:.1f}MiB"
+            f"MiniMax Music 3 RVQ depth CUDA graphs captured buckets={self.buckets} memory={self.allocated_bytes / 2 ** 20:.1f}MiB"
         )
 
     @property
     def max_batch_size(self) -> int:
-        return self._buckets[-1]
+        return self.buckets[-1]
 
     @torch.inference_mode()
     def capture(
         self, size: int, dtype: torch.dtype, hidden_size: int, num_codebooks: int
     ) -> None:
-        hidden = torch.zeros((size, hidden_size), device=self._device, dtype=dtype)
-        c0 = torch.zeros((size,), device=self._device, dtype=torch.long)
-        seeds = torch.ones((size,), device=self._device, dtype=torch.int64)
-        positions = torch.zeros((size,), device=self._device, dtype=torch.int64)
+        hidden = torch.zeros((size, hidden_size), device=self.device, dtype=dtype)
+        c0 = torch.zeros((size,), device=self.device, dtype=torch.long)
+        seeds = torch.ones((size,), device=self.device, dtype=torch.int64)
+        positions = torch.zeros((size,), device=self.device, dtype=torch.int64)
         forced = torch.zeros(
-            (size, num_codebooks), device=self._device, dtype=torch.long
+            (size, num_codebooks), device=self.device, dtype=torch.long
         )
-        replay = torch.zeros((), device=self._device, dtype=torch.bool)
+        replay = torch.zeros((), device=self.device, dtype=torch.bool)
 
-        with torch.cuda.device(self._device):
+        with torch.cuda.device(self.device):
             for _ in range(_WARMUP_REPLAYS):
-                self._forward(hidden, c0, seeds, positions, forced, replay)
-            torch.cuda.synchronize(self._device)
-            allocated_before = torch.cuda.memory_allocated(self._device)
+                self.forward(hidden, c0, seeds, positions, forced, replay)
+            torch.cuda.synchronize(self.device)
+            allocated_before = torch.cuda.memory_allocated(self.device)
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(graph):
-                outputs = self._forward(hidden, c0, seeds, positions, forced, replay)
-            torch.cuda.synchronize(self._device)
+                outputs = self.forward(hidden, c0, seeds, positions, forced, replay)
+            torch.cuda.synchronize(self.device)
             self.allocated_bytes += max(
-                0, torch.cuda.memory_allocated(self._device) - allocated_before
+                0, torch.cuda.memory_allocated(self.device) - allocated_before
             )
 
-        self._graphs[size] = graph
-        self._inputs[size] = (hidden, c0, seeds, positions, forced, replay)
-        self._outputs[size] = outputs
+        self.graphs[size] = graph
+        self.inputs[size] = (hidden, c0, seeds, positions, forced, replay)
+        self.outputs[size] = outputs
 
     def bucket_for(self, rows: int) -> int | None:
-        for size in self._buckets:
+        for size in self.buckets:
             if size >= rows:
                 return size
         return None
@@ -98,7 +98,7 @@ class RVQDepthCudaGraphRunner:
         size = self.bucket_for(rows)
         if size is None:
             return None
-        statics = self._inputs[size]
+        statics = self.inputs[size]
         static_hidden, static_c0, static_seeds, static_positions = statics[:4]
         static_forced, static_replay = statics[4:]
         static_hidden[:rows].copy_(hidden)
@@ -107,8 +107,8 @@ class RVQDepthCudaGraphRunner:
         static_positions[:rows].copy_(positions)
         static_forced[:rows].copy_(forced)
         static_replay.copy_(replay)
-        self._graphs[size].replay()
-        return tuple(output[:rows].clone() for output in self._outputs[size])
+        self.graphs[size].replay()
+        return tuple(output[:rows].clone() for output in self.outputs[size])
 
 
 __all__ = ["RVQDepthCudaGraphRunner"]

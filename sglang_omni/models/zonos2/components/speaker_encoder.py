@@ -50,8 +50,8 @@ class Qwen3SpeakerEmbedding(nn.Module):
     def __init__(self, device: str = "cuda", compile_forward: bool = False):
         super().__init__()
         self.device = device
-        self._compile_forward = compile_forward
-        self._compiled = None
+        self.compile_forward = compile_forward
+        self.compiled = None
         self.model = AutoModel.from_pretrained(
             self.MODEL_NAME,
             trust_remote_code=True,
@@ -104,18 +104,20 @@ class Qwen3SpeakerEmbedding(nn.Module):
     def forward_impl(self, wav: torch.Tensor, sample_rate: int):
         wav = self.prepare_input(wav, sample_rate)
         mel = self.make_mel(wav)
-        if self._compile_forward:
+        if self.compile_forward:
             # note (Yue Yin): mark the mel time dim symbolic so dynamic=True yields
             # one graph across variable audio lengths instead of per-length recompiles.
-            torch._dynamo.mark_dynamic(mel, 1)
+            torch._dynamo.mark_dynamic(
+                mel, 1
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return self.model(input_values=mel).last_hidden_state.to(torch.float32)
 
     def forward(self, wav: torch.Tensor, sample_rate: int):
-        if not self._compile_forward:
+        if not self.compile_forward:
             return self.forward_impl(wav, sample_rate)
-        if self._compiled is None:
-            self._compiled = torch.compile(self.forward_impl, dynamic=True)
-        return self._compiled(wav, sample_rate)
+        if self.compiled is None:
+            self.compiled = torch.compile(self.forward_impl, dynamic=True)
+        return self.compiled(wav, sample_rate)
 
 
 def transcode_audio_bytes_to_wav(audio_bytes: bytes) -> bytes:
@@ -254,14 +256,14 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         if int(cache_max_items) < 1:
             raise ValueError(f"cache_max_items must be >= 1, got {cache_max_items}")
         self.device = device
-        self._embedder: Qwen3SpeakerEmbedding | None = None
-        self._embedder_lock = threading.Lock()
+        self.embedder: Qwen3SpeakerEmbedding | None = None
+        self.embedder_lock = threading.Lock()
         # note (Yue Yin): opt-in compile kill-switch (default OFF for bit-for-bit
         # parity); driven by the speaker_encode stage's spk_compile factory arg.
-        self._compile = compile_forward
+        self.compile = compile_forward
         # note (Yue Yin): [2048] embeddings are fixed-size, so the count cap is the
         # budget (no byte cap). The service holds the content-hash LRU + single-flight.
-        self._service: ReferenceEncodeService[
+        self.service: ReferenceEncodeService[
             Zonos2RefInput, torch.Tensor, torch.Tensor
         ] = ReferenceEncodeService(
             self,
@@ -271,13 +273,13 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         )
 
     def get_embedder(self) -> Qwen3SpeakerEmbedding:
-        if self._embedder is None:
-            with self._embedder_lock:
-                if self._embedder is None:
-                    self._embedder = Qwen3SpeakerEmbedding(
-                        device=self.device, compile_forward=self._compile
+        if self.embedder is None:
+            with self.embedder_lock:
+                if self.embedder is None:
+                    self.embedder = Qwen3SpeakerEmbedding(
+                        device=self.device, compile_forward=self.compile
                     )
-        return self._embedder
+        return self.embedder
 
     def encode(self, ref_audio: Any, sample_rate: int | None = None) -> torch.Tensor:
         """Encode reference audio into a raw ``[2048]`` CPU float32 embedding.
@@ -293,7 +295,7 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
     ) -> tuple[torch.Tensor, str]:
         """Return an embedding and the fingerprint of the same normalized input."""
         item = self.normalize_input((ref_audio, sample_rate))
-        return self._service.get_or_encode(item), item.input_key
+        return self.service.get_or_encode(item), item.input_key
 
     # ---- ReferenceEncodeHook ----
 

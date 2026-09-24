@@ -71,25 +71,25 @@ class MossAudioTokenizerQuantizerDecoder:
                     "MOSS quantizer output projection has an unexpected input size"
                 )
 
-        self._num_quantizers = len(quantizers)
-        self._output_dim = output_dim
-        self._flat_codebooks = torch.stack(codebooks).flatten(0, 1)
-        self._weights = tuple(weights)
-        self._biases = tuple(biases)
-        self._offsets = (
+        self.num_quantizers = len(quantizers)
+        self.output_dim = output_dim
+        self.flat_codebooks = torch.stack(codebooks).flatten(0, 1)
+        self.weights = tuple(weights)
+        self.biases = tuple(biases)
+        self.offsets = (
             torch.arange(
-                self._num_quantizers,
-                device=self._flat_codebooks.device,
+                self.num_quantizers,
+                device=self.flat_codebooks.device,
                 dtype=torch.long,
             )
             * codebook_size
         ).view(-1, 1, 1)
-        self._output_weight = output_weight
-        self._output_bias = output_bias
+        self.output_weight = output_weight
+        self.output_bias = output_bias
 
     @property
     def device(self) -> torch.device:
-        return self._flat_codebooks.device
+        return self.flat_codebooks.device
 
     def decode_codes(self, codes: torch.Tensor) -> torch.Tensor:
         if codes.ndim != 3:
@@ -97,12 +97,12 @@ class MossAudioTokenizerQuantizerDecoder:
                 f"MOSS quantizer codes must be [N, B, T], got {tuple(codes.shape)}"
             )
         num_quantizers = int(codes.shape[0])
-        if num_quantizers <= 0 or num_quantizers > self._num_quantizers:
+        if num_quantizers <= 0 or num_quantizers > self.num_quantizers:
             raise ValueError(
                 "MOSS quantizer codebook count must be within "
-                f"[1, {self._num_quantizers}], got {num_quantizers}"
+                f"[1, {self.num_quantizers}], got {num_quantizers}"
             )
-        if codes.device != self._flat_codebooks.device:
+        if codes.device != self.flat_codebooks.device:
             raise ValueError(
                 "MOSS quantizer codes and cached weights must share one device"
             )
@@ -110,28 +110,28 @@ class MossAudioTokenizerQuantizerDecoder:
         _, batch_size, frames = codes.shape
         decoded = torch.zeros(
             batch_size,
-            self._output_dim,
+            self.output_dim,
             frames,
             device=codes.device,
             dtype=torch.float32,
         )
         embedded = F.embedding(
-            codes + self._offsets[:num_quantizers],
-            self._flat_codebooks,
+            codes + self.offsets[:num_quantizers],
+            self.flat_codebooks,
         )
         for index in range(num_quantizers):
             decoded.add_(
                 F.conv1d(
                     embedded[index].transpose(1, 2),
-                    self._weights[index].unsqueeze(-1),
-                    self._biases[index],
+                    self.weights[index].unsqueeze(-1),
+                    self.biases[index],
                 )
             )
-        if self._output_weight is not None:
+        if self.output_weight is not None:
             decoded = F.conv1d(
                 decoded,
-                self._output_weight.unsqueeze(-1),
-                self._output_bias,
+                self.output_weight.unsqueeze(-1),
+                self.output_bias,
             )
         return decoded
 

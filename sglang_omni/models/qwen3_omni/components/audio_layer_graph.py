@@ -104,38 +104,38 @@ class AudioLayerGraphRunner:
     ) -> None:
         if device.type != "cuda":
             raise ValueError("audio layer CUDA graphs require a CUDA device")
-        self._tower = tower
+        self.tower = tower
         # Note (wenyao): an indexless "cuda" never equals a tensor's "cuda:N",
         # so resolve the index or every replay silently declines.
-        self._device = torch.device(
+        self.device = torch.device(
             "cuda",
             torch.cuda.current_device() if device.index is None else device.index,
         )
-        self._window = int(window)
-        self._token_buckets = tuple(sorted(token_buckets))
-        self._max_batch_rows = int(max_batch_rows)
-        self._graphs: dict[int, Captured] = {}
-        self._pool = None
-        self._disabled_reason: str | None = None
-        self._owner_pid = os.getpid()
-        self._dtype = next(tower.parameters()).dtype
-        self._hidden = tower.config.d_model
-        self._packed_attention: nn.Module | None = None
-        self._backend: str | None = None
+        self.window = int(window)
+        self.token_buckets = tuple(sorted(token_buckets))
+        self.max_batch_rows = int(max_batch_rows)
+        self.graphs: dict[int, Captured] = {}
+        self.pool = None
+        self.disabled_reason: str | None = None
+        self.owner_pid = os.getpid()
+        self.dtype = next(tower.parameters()).dtype
+        self.hidden = tower.config.d_model
+        self.packed_attention: nn.Module | None = None
+        self.backend: str | None = None
 
     @property
     def has_graphs(self) -> bool:
-        return bool(self._graphs) and self._disabled_reason is None
+        return bool(self.graphs) and self.disabled_reason is None
 
     def segment_slots(self, bucket: int) -> int:
         # Note (wenyao): a row contributes one window per full block plus a
         # remainder, so slack has to cover every row in the batch, not just
         # the bucket's own window count.
-        return bucket // self._window + self._max_batch_rows + 2
+        return bucket // self.window + self.max_batch_rows + 2
 
     def window_segments(self, tokens: int) -> list[int]:
-        full, remainder = divmod(tokens, self._window)
-        segments = [self._window] * full
+        full, remainder = divmod(tokens, self.window)
+        segments = [self.window] * full
         if remainder:
             segments.append(remainder)
         return segments
@@ -149,28 +149,26 @@ class AudioLayerGraphRunner:
         return segments
 
     def resolve_attention(self) -> None:
-        if self._packed_attention is not None or self._disabled_reason is not None:
+        if self.packed_attention is not None or self.disabled_reason is not None:
             return
         try:
-            self._packed_attention, self._backend = resolve_packed_attention(
-                self._device
-            )
+            self.packed_attention, self.backend = resolve_packed_attention(self.device)
         except Exception as exc:
             # Like a failed capture: the encoder stays eager, the stage lives.
-            self._disabled_reason = f"packed attention unavailable: {exc}"
+            self.disabled_reason = f"packed attention unavailable: {exc}"
             logger.warning(
                 "audio layer CUDA graphs unavailable: %s",
-                self._disabled_reason,
+                self.disabled_reason,
                 exc_info=True,
             )
 
     def run_layers(self, hidden_states, cu_seqlens, max_seqlen: int):
-        for layer in self._tower.layers:
+        for layer in self.tower.layers:
             residual = hidden_states
             hidden_states = layer.self_attn_layer_norm(hidden_states)
             hidden_states = packed_attention_forward(
                 layer.self_attn,
-                self._packed_attention,
+                self.packed_attention,
                 hidden_states,
                 cu_seqlens,
                 max_seqlen,
@@ -188,31 +186,27 @@ class AudioLayerGraphRunner:
     def capture(self, bucket: int) -> Captured | None:
         slots = self.segment_slots(bucket)
         hidden_states = torch.zeros(
-            bucket, self._hidden, device=self._device, dtype=self._dtype
+            bucket, self.hidden, device=self.device, dtype=self.dtype
         )
         cu_seqlens = (
             torch.tensor([0, *self.capture_segments(bucket)], dtype=torch.int32)
             .cumsum(0)
             .to(torch.int32)
-            .to(self._device)
+            .to(self.device)
         )
         try:
             with torch.no_grad():
                 for _ in range(WARMUP_ITERATIONS):
-                    self.run_layers(hidden_states, cu_seqlens, self._window)
+                    self.run_layers(hidden_states, cu_seqlens, self.window)
                 torch.cuda.synchronize()
                 graph = torch.cuda.CUDAGraph()
-                if self._pool is None:
+                if self.pool is None:
                     with torch.cuda.graph(graph):
-                        output = self.run_layers(
-                            hidden_states, cu_seqlens, self._window
-                        )
-                    self._pool = graph.pool()
+                        output = self.run_layers(hidden_states, cu_seqlens, self.window)
+                    self.pool = graph.pool()
                 else:
-                    with torch.cuda.graph(graph, pool=self._pool):
-                        output = self.run_layers(
-                            hidden_states, cu_seqlens, self._window
-                        )
+                    with torch.cuda.graph(graph, pool=self.pool):
+                        output = self.run_layers(hidden_states, cu_seqlens, self.window)
             torch.cuda.synchronize()
         except Exception:
             logger.warning(
@@ -225,32 +219,32 @@ class AudioLayerGraphRunner:
 
     def capture_all(self) -> None:
         self.resolve_attention()
-        if self._disabled_reason is not None:
+        if self.disabled_reason is not None:
             return
-        for bucket in self._token_buckets:
+        for bucket in self.token_buckets:
             captured = self.capture(bucket)
             if captured is None:
-                self._disabled_reason = f"capture failed at bucket {bucket}"
-                self._graphs.clear()
+                self.disabled_reason = f"capture failed at bucket {bucket}"
+                self.graphs.clear()
                 return
-            self._graphs[bucket] = captured
+            self.graphs[bucket] = captured
         logger.info(
             "audio layer CUDA graphs captured for buckets %s with %s attention",
-            list(self._graphs),
-            self._backend,
+            list(self.graphs),
+            self.backend,
         )
 
     def select(self, tokens: int, segments: list[int]) -> int | None:
         if sum(segments) != tokens or any(
-            segment < 0 or segment > self._window for segment in segments
+            segment < 0 or segment > self.window for segment in segments
         ):
             return None
-        for bucket in self._token_buckets:
-            if bucket >= tokens and self._graphs.get(bucket) is not None:
+        for bucket in self.token_buckets:
+            if bucket >= tokens and self.graphs.get(bucket) is not None:
                 required_slots = len(segments) + len(
                     self.window_segments(bucket - tokens)
                 )
-                if required_slots <= self._graphs[bucket].segment_slots:
+                if required_slots <= self.graphs[bucket].segment_slots:
                     return bucket
         return None
 
@@ -258,15 +252,15 @@ class AudioLayerGraphRunner:
         self, hidden_states: torch.Tensor, cu_seqlens: torch.Tensor, segments: list[int]
     ) -> torch.Tensor | None:
         """Return the layer-stack output, or None when the caller must run eager."""
-        if self._disabled_reason is not None or not self._graphs:
+        if self.disabled_reason is not None or not self.graphs:
             return None
-        if os.getpid() != self._owner_pid or hidden_states.device != self._device:
+        if os.getpid() != self.owner_pid or hidden_states.device != self.device:
             return None
         tokens = hidden_states.shape[0]
         bucket = self.select(tokens, segments)
         if bucket is None:
             return None
-        captured = self._graphs[bucket]
+        captured = self.graphs[bucket]
         padded = [*segments, *self.window_segments(bucket - tokens)]
         # Note (wenyao): real segments are never widened, only new ones added,
         # so padding rows form their own attention window and cannot reach the
@@ -275,6 +269,6 @@ class AudioLayerGraphRunner:
         cu = torch.tensor([0, *padded], dtype=torch.int32).cumsum(0).to(torch.int32)
         captured.hidden_states[:tokens].copy_(hidden_states)
         captured.hidden_states[tokens:].zero_()
-        captured.cu_seqlens.copy_(cu.to(self._device, non_blocking=True))
+        captured.cu_seqlens.copy_(cu.to(self.device, non_blocking=True))
         captured.graph.replay()
         return captured.output[:tokens]

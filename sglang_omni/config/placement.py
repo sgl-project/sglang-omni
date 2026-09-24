@@ -57,7 +57,7 @@ class StagePlacementPlanner:
     """Build a model-agnostic placement plan from pipeline stage config."""
 
     def __init__(self, config: PipelineConfig):
-        self._config = config
+        self.config = config
 
     def build(
         self,
@@ -66,7 +66,7 @@ class StagePlacementPlanner:
         apply_policy: bool = True,
         replica_instances: dict[str, tuple[str, ...]] | None = None,
     ) -> StagePlacementPlan:
-        stages = stages_cfg if stages_cfg is not None else self._config.stages
+        stages = stages_cfg if stages_cfg is not None else self.config.stages
         placements: dict[str, StagePlacement] = {}
         gpu_entries: dict[int, list[StagePlacement]] = defaultdict(list)
 
@@ -101,11 +101,11 @@ class StagePlacementPlanner:
         )
         self.validate_memory_budgets(plan)
         if apply_policy:
-            apply_placement_policy(self._config, plan)
+            apply_placement_policy(self.config, plan)
         return plan
 
     def validate_memory_budgets(self, plan: StagePlacementPlan) -> None:
-        limit = self._config.placement.max_total_gpu_memory_fraction_per_gpu
+        limit = self.config.placement.max_total_gpu_memory_fraction_per_gpu
         for gpu in plan.gpus.values():
             if gpu.total_gpu_memory_fraction > limit + 1e-9:
                 raise ValueError(

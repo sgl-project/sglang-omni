@@ -47,13 +47,13 @@ class SimpleScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = True
-        self._fn = compute_fn
-        self._batch_fn = batch_compute_fn
-        self._max_batch_size = max(int(max_batch_size), 1)
-        self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._batch_wait_when_idle = bool(batch_wait_when_idle)
-        self._request_cost_fn = request_cost_fn
-        self._max_batch_cost = (
+        self.fn = compute_fn
+        self.batch_fn = batch_compute_fn
+        self.max_batch_size = max(int(max_batch_size), 1)
+        self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self.batch_wait_when_idle = bool(batch_wait_when_idle)
+        self.request_cost_fn = request_cost_fn
+        self.max_batch_cost = (
             max(int(max_batch_cost), 0) if max_batch_cost is not None else None
         )
         # Note (Chenchen, Chenyang):
@@ -61,47 +61,47 @@ class SimpleScheduler:
         # via asyncio.to_thread so synchronous chunks do not pin the event loop.
         # Requires compute_fn to be re-entrant. Mutually exclusive with the
         # batch_compute_fn path (set one or the other, not both).
-        self._max_concurrency = max(int(max_concurrency), 1)
-        if self._max_concurrency > 1 and batch_compute_fn is not None:
+        self.max_concurrency = max(int(max_concurrency), 1)
+        if self.max_concurrency > 1 and batch_compute_fn is not None:
             raise ValueError(
                 "max_concurrency > 1 and batch_compute_fn are mutually exclusive"
             )
-        self._abort_callback = abort_callback
-        self._shutdown_callback = shutdown_callback
-        self._shutdown_lock = threading.Lock()
-        self._aborted: set[str] = set()
-        self._abort_lock = threading.Lock()
-        self._running = False
-        self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+        self.abort_callback = abort_callback
+        self.shutdown_callback = shutdown_callback
+        self.shutdown_lock = threading.Lock()
+        self.aborted: set[str] = set()
+        self.abort_lock = threading.Lock()
+        self.running = False
+        self.pending_messages: collections.deque[IncomingMessage] = collections.deque()
 
     def cleanup_aborted_request(self, request_id: str) -> None:
-        if self._abort_callback is None:
+        if self.abort_callback is None:
             return
         try:
-            self._abort_callback(request_id)
+            self.abort_callback(request_id)
         except Exception:
             logger.exception("SimpleScheduler: abort cleanup failed for %s", request_id)
 
     def is_aborted(self, request_id: str) -> bool:
-        with self._abort_lock:
-            return request_id in self._aborted
+        with self.abort_lock:
+            return request_id in self.aborted
 
     def consume_if_aborted(self, request_id: str) -> bool:
-        with self._abort_lock:
-            if request_id not in self._aborted:
+        with self.abort_lock:
+            if request_id not in self.aborted:
                 return False
-            self._aborted.discard(request_id)
+            self.aborted.discard(request_id)
         self.cleanup_aborted_request(request_id)
         return True
 
     def message_cost(self, msg: IncomingMessage) -> int:
-        if self._request_cost_fn is None or msg.type != "new_request":
+        if self.request_cost_fn is None or msg.type != "new_request":
             return 0
-        return max(int(self._request_cost_fn(msg.data)), 0)
+        return max(int(self.request_cost_fn(msg.data)), 0)
 
     def next_message(self) -> IncomingMessage | None:
-        if self._pending_messages:
-            return self._pending_messages.popleft()
+        if self.pending_messages:
+            return self.pending_messages.popleft()
         try:
             return self.inbox.get(timeout=0.1)
         except _queue_mod.Empty:
@@ -109,16 +109,16 @@ class SimpleScheduler:
 
     def collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
         batch = [first_msg]
-        if self._batch_fn is None or self._max_batch_size <= 1:
+        if self.batch_fn is None or self.max_batch_size <= 1:
             return batch
 
         batch_cost = self.message_cost(first_msg)
         deadline: float | None = (
-            time.monotonic() + self._max_batch_wait_s
-            if self._batch_wait_when_idle
+            time.monotonic() + self.max_batch_wait_s
+            if self.batch_wait_when_idle
             else None
         )
-        while len(batch) < self._max_batch_size:
+        while len(batch) < self.max_batch_size:
             try:
                 msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
@@ -133,17 +133,17 @@ class SimpleScheduler:
                     break
 
             if msg.type == "new_request":
-                if self._max_batch_cost is not None:
+                if self.max_batch_cost is not None:
                     msg_cost = self.message_cost(msg)
-                    if batch and batch_cost + msg_cost > self._max_batch_cost:
-                        self._pending_messages.appendleft(msg)
+                    if batch and batch_cost + msg_cost > self.max_batch_cost:
+                        self.pending_messages.appendleft(msg)
                         break
                     batch_cost += msg_cost
                 batch.append(msg)
                 if deadline is None:
-                    deadline = time.monotonic() + self._max_batch_wait_s
+                    deadline = time.monotonic() + self.max_batch_wait_s
             else:
-                self._pending_messages.append(msg)
+                self.pending_messages.append(msg)
         return batch
 
     @staticmethod
@@ -174,7 +174,7 @@ class SimpleScheduler:
         if self.consume_if_aborted(msg.request_id):
             return
         try:
-            result = self._fn(msg.data)
+            result = self.fn(msg.data)
             if asyncio.iscoroutine(result):
                 result = loop.run_until_complete(result)
         except Exception:
@@ -190,13 +190,13 @@ class SimpleScheduler:
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        if self._batch_fn is None or len(batch) <= 1:
+        if self.batch_fn is None or len(batch) <= 1:
             for msg in batch:
                 self.run_single(msg, loop)
             return
 
         payloads = [msg.data for msg in batch]
-        results = self._batch_fn(payloads)
+        results = self.batch_fn(payloads)
         if asyncio.iscoroutine(results):
             results = loop.run_until_complete(results)
         if len(results) != len(batch):
@@ -213,15 +213,15 @@ class SimpleScheduler:
         return await result
 
     def run_compute_in_thread(self, payload: Any) -> Any:
-        result = self._fn(payload)
+        result = self.fn(payload)
         if inspect.isawaitable(result):
             result = asyncio.run(self.await_result(result))
         return result
 
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
-        self._running = True
-        if self._max_concurrency > 1:
+        self.running = True
+        if self.max_concurrency > 1:
             self.start_concurrent()
         else:
             self.start_serial()
@@ -229,7 +229,7 @@ class SimpleScheduler:
     def start_serial(self) -> None:
         loop = asyncio.new_event_loop()
         try:
-            while self._running:
+            while self.running:
                 msg = self.next_message()
                 if msg is None:
                     continue
@@ -267,7 +267,7 @@ class SimpleScheduler:
         async_inbox: asyncio.Queue[IncomingMessage] = asyncio.Queue()
 
         async def bridge_inbox() -> None:
-            while self._running:
+            while self.running:
                 try:
                     msg = await loop.run_in_executor(
                         None, lambda: self.inbox.get(timeout=0.05)
@@ -277,7 +277,7 @@ class SimpleScheduler:
                 await async_inbox.put(msg)
 
         async def worker() -> None:
-            while self._running:
+            while self.running:
                 try:
                     msg = await asyncio.wait_for(async_inbox.get(), timeout=0.1)
                 except asyncio.TimeoutError:
@@ -303,7 +303,7 @@ class SimpleScheduler:
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
-            asyncio.create_task(worker()) for _ in range(self._max_concurrency)
+            asyncio.create_task(worker()) for _ in range(self.max_concurrency)
         ]
         try:
             await asyncio.gather(bridge_task, *worker_tasks)
@@ -312,18 +312,18 @@ class SimpleScheduler:
             logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
 
     def stop(self) -> None:
-        self._running = False
-        with self._shutdown_lock:
-            callback = self._shutdown_callback
-            self._shutdown_callback = None
+        self.running = False
+        with self.shutdown_lock:
+            callback = self.shutdown_callback
+            self.shutdown_callback = None
         if callback is not None:
             callback()
 
     def abort(self, request_id: str) -> None:
-        with self._abort_lock:
-            self._aborted.add(request_id)
-            if len(self._aborted) > 10000:
-                excess = len(self._aborted) - 5000
-                for stale_request_id in list(self._aborted)[:excess]:
-                    self._aborted.discard(stale_request_id)
+        with self.abort_lock:
+            self.aborted.add(request_id)
+            if len(self.aborted) > 10000:
+                excess = len(self.aborted) - 5000
+                for stale_request_id in list(self.aborted)[:excess]:
+                    self.aborted.discard(stale_request_id)
         self.cleanup_aborted_request(request_id)

@@ -41,25 +41,25 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
-        self._token_hop_len = hop
-        self._checkpoint_root: str | None = None
-        self._mlx_model_path = mlx_model_path
-        self._mlx_model_revision = mlx_model_revision
+        self.token_hop_len = hop
+        self.checkpoint_root: str | None = None
+        self.mlx_model_path = mlx_model_path
+        self.mlx_model_revision = mlx_model_revision
         self.device: str | None = None
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
         # cap it at the host core count instead of trusting the default of 16.
-        self._onnx_intra_op_threads = max(
+        self.onnx_intra_op_threads = max(
             1, min(int(onnx_intra_op_threads), os.cpu_count() or 1)
         )
 
     def blanken_dir(self) -> str:
-        assert self._checkpoint_root is not None, "checkpoint_root not set"
-        return os.path.join(self._checkpoint_root, "CosyVoice-BlankEN")
+        assert self.checkpoint_root is not None, "checkpoint_root not set"
+        return os.path.join(self.checkpoint_root, "CosyVoice-BlankEN")
 
     def resolve_checkpoint(self, model_path: str) -> str:
         resolved = _resolve_checkpoint(model_path)
-        self._checkpoint_root = resolved
+        self.checkpoint_root = resolved
         # SGLang needs CosyVoice-BlankEN/ which has config.json (model_type: qwen2)
         return self.blanken_dir()
 
@@ -140,7 +140,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         # the whole process, so they are built before sglang reads free memory
         # for the KV pool.
         del checkpoint_dir, gpu_id, server_args
-        root = self._checkpoint_root
+        root = self.checkpoint_root
         assert root is not None, "checkpoint_root not set"
         from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 
@@ -164,12 +164,12 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         speech_tokenizer = SpeechTokenizerV3(
             speech_tokenizer_path,
             device=device,
-            intra_op_threads=self._onnx_intra_op_threads,
+            intra_op_threads=self.onnx_intra_op_threads,
         )
         speaker_encoder = SpeakerEncoder(
             campplus_path,
             device=device,
-            intra_op_threads=self._onnx_intra_op_threads,
+            intra_op_threads=self.onnx_intra_op_threads,
         )
 
         request_builders.set_cosyvoice3_preprocessing_context(
@@ -203,7 +203,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
             return FunCosyVoice3MlxSchedulerModelRunner(
                 model_worker,
                 output_proc,
-                token_hop_len=self._token_hop_len,
+                token_hop_len=self.token_hop_len,
             )
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fun_cosyvoice3.model_runner"
@@ -211,7 +211,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         return model_runner_mod.FunCosyVoice3ModelRunner(
             model_worker,
             output_proc,
-            token_hop_len=self._token_hop_len,
+            token_hop_len=self.token_hop_len,
         )
 
     def validate_before_infrastructure(self, server_args: Any) -> None:
@@ -263,8 +263,8 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         # native runner may load a separate artifact; keep that override in
         # Omni's typed worker config rather than upstream ServerArgs.
         return {
-            "mlx_model_path": self._mlx_model_path or self._checkpoint_root,
-            "mlx_model_revision": self._mlx_model_revision,
+            "mlx_model_path": self.mlx_model_path or self.checkpoint_root,
+            "mlx_model_revision": self.mlx_model_revision,
         }
 
     def make_abort_callback(self) -> Any | None:

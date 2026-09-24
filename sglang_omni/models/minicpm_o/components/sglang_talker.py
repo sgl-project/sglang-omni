@@ -193,7 +193,9 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
                 "MiniCPM-o checkpoint is missing weight-norm talker head "
                 "parameters (tts.head_code.0.parametrizations.weight.*)"
             )
-        restored = torch._weight_norm(head_v, head_g, dim=0)
+        restored = torch._weight_norm(
+            head_v, head_g, dim=0
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.head_code.weight.data.copy_(
             restored.to(
                 device=self.head_code.weight.device,

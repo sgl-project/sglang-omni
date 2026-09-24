@@ -50,9 +50,9 @@ class TPLeaderFanout:
         follower_admin_result_queues: list[Any] | None = None,
     ) -> None:
         self.stage_name = stage_name
-        self._follower_work_queues = list(follower_work_queues)
-        self._follower_abort_queues = list(follower_abort_queues)
-        self._follower_admin_result_queues = list(follower_admin_result_queues or [])
+        self.follower_work_queues = list(follower_work_queues)
+        self.follower_abort_queues = list(follower_abort_queues)
+        self.follower_admin_result_queues = list(follower_admin_result_queues or [])
 
     async def fanout_control(
         self,
@@ -60,16 +60,16 @@ class TPLeaderFanout:
             ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | AdminMessage
         ),
     ) -> None:
-        for q in self._follower_work_queues:
+        for q in self.follower_work_queues:
             q.put_nowait(msg)
 
     def fanout_work(self, payload: Any) -> None:
         msg = TPWorkMessage(request_id=getattr(payload, "request_id", ""), data=payload)
-        for q in self._follower_work_queues:
+        for q in self.follower_work_queues:
             q.put_nowait(msg)
 
     async def fanout_abort(self, msg: AbortMessage) -> None:
-        for q in self._follower_abort_queues:
+        for q in self.follower_abort_queues:
             q.put_nowait(msg)
 
     async def collect_admin_results(
@@ -79,7 +79,7 @@ class TPLeaderFanout:
         timeout_s: float = 60.0,
     ) -> list[AdminResultMessage]:
         """Collect one admin result from every TP follower."""
-        if not self._follower_admin_result_queues:
+        if not self.follower_admin_result_queues:
             return []
 
         loop = asyncio.get_running_loop()
@@ -88,7 +88,7 @@ class TPLeaderFanout:
                 None,
                 lambda q=q: q.get(timeout=timeout_s),
             )
-            for q in self._follower_admin_result_queues
+            for q in self.follower_admin_result_queues
         ]
         raw_results = await asyncio.gather(*tasks)
         results: list[AdminResultMessage] = []
@@ -106,9 +106,9 @@ class TPLeaderFanout:
         return results
 
     def close(self) -> None:
-        self._follower_work_queues.clear()
-        self._follower_abort_queues.clear()
-        self._follower_admin_result_queues.clear()
+        self.follower_work_queues.clear()
+        self.follower_abort_queues.clear()
+        self.follower_admin_result_queues.clear()
 
 
 class TPFollowerControlPlane:
@@ -125,10 +125,10 @@ class TPFollowerControlPlane:
     ) -> None:
         self.stage_name = stage_name
         self.recv_endpoint = recv_endpoint
-        self._work_queue = work_queue
-        self._abort_queue = abort_queue
-        self._admin_result_queue = admin_result_queue
-        self._closed = False
+        self.work_queue = work_queue
+        self.abort_queue = abort_queue
+        self.admin_result_queue = admin_result_queue
+        self.closed = False
 
     async def start(self) -> None:
         logger.info("TP follower control plane started for stage %s", self.stage_name)
@@ -142,7 +142,7 @@ class TPFollowerControlPlane:
         | ProfilerStopMessage
         | TPWorkMessage
     ):
-        msg = await self.recv_from_queue(self._work_queue)
+        msg = await self.recv_from_queue(self.work_queue)
         if isinstance(
             msg,
             (
@@ -157,22 +157,22 @@ class TPFollowerControlPlane:
         raise ValueError(f"Unexpected TP follower work message: {type(msg)}")
 
     async def recv_abort(self) -> AbortMessage:
-        msg = await self.recv_from_queue(self._abort_queue)
+        msg = await self.recv_from_queue(self.abort_queue)
         if isinstance(msg, AbortMessage):
             return msg
         raise ValueError(f"Unexpected TP follower abort message: {type(msg)}")
 
     async def send_admin_result(self, msg: AdminResultMessage) -> None:
-        if self._admin_result_queue is None:
+        if self.admin_result_queue is None:
             raise RuntimeError(
                 f"TP follower stage {self.stage_name} has no admin result queue"
             )
-        self._admin_result_queue.put_nowait(msg)
+        self.admin_result_queue.put_nowait(msg)
 
     async def recv_from_queue(self, q: Any) -> Any:
         loop = asyncio.get_running_loop()
         while True:
-            if self._closed:
+            if self.closed:
                 raise RuntimeError(
                     f"TP follower control plane closed for stage {self.stage_name}"
                 )
@@ -185,4 +185,4 @@ class TPFollowerControlPlane:
                 continue
 
     def close(self) -> None:
-        self._closed = True
+        self.closed = True

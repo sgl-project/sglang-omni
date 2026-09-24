@@ -43,9 +43,9 @@ class Client:
         result_builder: Callable[[str, Any], GenerateChunk] | None = None,
         stream_builder: Callable[[str, StreamMessage], GenerateChunk] | None = None,
     ) -> None:
-        self._coordinator = coordinator
-        self._result_builder = result_builder or self.default_result_builder
-        self._stream_builder = stream_builder or self.default_stream_builder
+        self.coordinator = coordinator
+        self.result_builder = result_builder or self.default_result_builder
+        self.stream_builder = stream_builder or self.default_stream_builder
 
     # ------------------------------------------------------------------
     # Low-level generate (backward compatible)
@@ -59,17 +59,17 @@ class Client:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self.build_omni_request(request)
         if request.stream:
-            coordinator_stream = self._coordinator.stream(req_id, omni_request)
+            coordinator_stream = self.coordinator.stream(req_id, omni_request)
             async with aclosing(coordinator_stream):
                 async for msg in coordinator_stream:
                     if isinstance(msg, StreamMessage):
-                        yield self._stream_builder(req_id, msg)
+                        yield self.stream_builder(req_id, msg)
                     else:
-                        yield self._result_builder(req_id, msg.result)
+                        yield self.result_builder(req_id, msg.result)
             return
 
-        result = await self._coordinator.submit(req_id, omni_request)
-        yield self._result_builder(req_id, result)
+        result = await self.coordinator.submit(req_id, omni_request)
+        yield self.result_builder(req_id, result)
 
     # ------------------------------------------------------------------
     # High-level: non-streaming completion
@@ -284,17 +284,17 @@ class Client:
         request_id: str,
         level: AbortLevel = AbortLevel.SOFT,
     ) -> AbortResult:
-        success = await self._coordinator.abort(request_id)
+        success = await self.coordinator.abort(request_id)
         return AbortResult(success=success, level_applied=level)
 
     async def get_status(self, request_id: str) -> RequestState | None:
-        info = self._coordinator.get_request_info(request_id)
+        info = self.coordinator.get_request_info(request_id)
         if info is None:
             return None
         return info.state
 
     def health(self) -> dict[str, Any]:
-        return self._coordinator.health()
+        return self.coordinator.health()
 
     async def admin(
         self,
@@ -304,7 +304,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.admin(
+        return await self.coordinator.admin(
             action,
             payload,
             stages=stages,
@@ -317,7 +317,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 30.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.model_info(
+        return await self.coordinator.model_info(
             stages=stages,
             timeout_s=timeout_s,
         )
@@ -329,7 +329,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.pause_generation(
+        return await self.coordinator.pause_generation(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -342,7 +342,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 60.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.continue_generation(
+        return await self.coordinator.continue_generation(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -355,7 +355,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.update_weights_from_disk(
+        return await self.coordinator.update_weights_from_disk(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -368,7 +368,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.init_weights_update_group(
+        return await self.coordinator.init_weights_update_group(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -381,7 +381,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.destroy_weights_update_group(
+        return await self.coordinator.destroy_weights_update_group(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -394,7 +394,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 300.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.update_weights_from_distributed(
+        return await self.coordinator.update_weights_from_distributed(
             payload,
             stages=stages,
             timeout_s=timeout_s,
@@ -407,7 +407,7 @@ class Client:
         stages: list[str] | None = None,
         timeout_s: float = 120.0,
     ) -> dict[str, Any]:
-        return await self._coordinator.weights_checker(
+        return await self.coordinator.weights_checker(
             payload,
             stages=stages,
             timeout_s=timeout_s,

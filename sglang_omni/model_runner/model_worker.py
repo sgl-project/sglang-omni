@@ -88,7 +88,7 @@ class ModelWorker:
         )
         self.init_model_runner()
         self.init_dllm_algorithm()
-        self._prefill_cuda_graph_usage = PrefillCudaGraphUsage()
+        self.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
         from sglang.srt.runtime_context import get_device
@@ -343,18 +343,18 @@ class ModelWorker:
         if not can_run_graph:
             # Note (wenyao): custom eager forwards (visual/deepstack) return
             # before ModelWorker is called; intentionally absent here.
-            self._prefill_cuda_graph_usage.standard_eager_count += 1
+            self.prefill_cuda_graph_usage.standard_eager_count += 1
             return
 
         runner = self.model_runner.prefill_cuda_graph_runner
         buckets = runner.capture_num_tokens
         actual_bucket = buckets[bisect_left(buckets, len(forward_batch.input_ids))]
-        self._prefill_cuda_graph_usage.replay_count += 1
-        self._prefill_cuda_graph_usage.replay_buckets[int(actual_bucket)] += 1
+        self.prefill_cuda_graph_usage.replay_count += 1
+        self.prefill_cuda_graph_usage.replay_buckets[int(actual_bucket)] += 1
 
     def record_custom_prefill_eager(self) -> None:
         """Record a custom prefill forward that bypasses SGLang graph dispatch."""
-        self._prefill_cuda_graph_usage.custom_eager_count += 1
+        self.prefill_cuda_graph_usage.custom_eager_count += 1
 
     def prefill_cuda_graph_info(self) -> dict[str, Any]:
         from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
@@ -371,7 +371,7 @@ class ModelWorker:
         from sglang.srt.runtime_context import get_exec
 
         backend = get_exec().graph.cuda_graph_config.prefill.backend
-        usage = self._prefill_cuda_graph_usage
+        usage = self.prefill_cuda_graph_usage
         return {
             "backend": backend,
             "runner": type(runner).__name__ if runner is not None else None,
@@ -500,12 +500,12 @@ class ModelWorker:
         return bool(success), str(message)
 
     def weights_checker(self, action: str) -> dict[str, Any]:
-        checker = getattr(self, "_strict_weight_checker", None)
+        checker = getattr(self, "strict_weight_checker", None)
         if checker is None:
             from sglang_omni.model_runner.weight_checker import StrictWeightChecker
 
             checker = StrictWeightChecker(self.model_runner)
-            self._strict_weight_checker = checker
+            self.strict_weight_checker = checker
         return checker.run(action)
 
     def call_optional_weight_method(

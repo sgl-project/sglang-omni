@@ -219,7 +219,7 @@ class FlowEstimatorTRT:
         self.io_dtype = io_dtype
         self.max_batch = _CFG_BATCH
         self.device = canonicalize_device(device)
-        self._pool: queue.Queue = queue.Queue(maxsize=trt_concurrent)
+        self.pool: queue.Queue = queue.Queue(maxsize=trt_concurrent)
         for _ in range(trt_concurrent):
             ctx = engine.create_execution_context()
             if ctx is None:
@@ -227,13 +227,13 @@ class FlowEstimatorTRT:
                     "failed to create TRT execution context (out of memory?)"
                 )
             stream = torch.cuda.Stream(device=self.device)
-            self._pool.put([ctx, stream])
+            self.pool.put([ctx, stream])
 
     def acquire_estimator(self) -> tuple[list[Any], Any]:
-        return self._pool.get(), self.trt_engine
+        return self.pool.get(), self.trt_engine
 
     def release_estimator(self, context: Any, stream: Any) -> None:
-        self._pool.put([context, stream])
+        self.pool.put([context, stream])
 
     def execute(
         self,
@@ -396,7 +396,7 @@ class FlowEstimatorTRTModule(torch.nn.Module):
         self.max_batch = int(trt.max_batch)
         # Keep fallback off the module tree so CosyVoice's state_dict / to()
         # paths do not double-register DiT weights; we only call it on miss.
-        self._fallback = fallback
+        self.fallback = fallback
 
     def forward(
         self,
@@ -410,7 +410,7 @@ class FlowEstimatorTRTModule(torch.nn.Module):
     ) -> torch.Tensor:
         frames = int(x.shape[2])
         if frames < self.min_time or frames > self.max_time:
-            if self._fallback is None:
+            if self.fallback is None:
                 raise ValueError(
                     f"Flow-estimator TensorRT time dim {frames} is outside "
                     f"the engine profile [{self.min_time}, {self.max_time}] "
@@ -423,7 +423,7 @@ class FlowEstimatorTRTModule(torch.nn.Module):
                 self.min_time,
                 self.max_time,
             )
-            return self._fallback(x, mask, mu, t, spks, cond, streaming=streaming)
+            return self.fallback(x, mask, mu, t, spks, cond, streaming=streaming)
         # TRT ONNX freezes attention; streaming only affects the torch path.
         del streaming
         return execute_flow_estimator(self.trt, x, mask, mu, t, spks, cond)

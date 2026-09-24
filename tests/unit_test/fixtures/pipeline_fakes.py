@@ -333,7 +333,7 @@ class ReplicaProcessProbeScheduler:
         process_id = os.getpid()
         if self._emit_stream:
             payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}_pid"] = process_id
+            payload.data[f"{self._marker}pid"] = process_id
             payload.data["producer_payload_id"] = id(payload)
             payload.data["_local_marker"] = threading.Lock()
             self.outbox.put(
@@ -354,7 +354,7 @@ class ReplicaProcessProbeScheduler:
             if local_marker is None:
                 raise AssertionError("same-process payload lost its local marker")
             payload.data[f"{self._marker}_process"] = process_name
-            payload.data[f"{self._marker}_pid"] = process_id
+            payload.data[f"{self._marker}pid"] = process_id
             payload.data["same_payload_object"] = payload.data[
                 "producer_payload_id"
             ] == id(payload)

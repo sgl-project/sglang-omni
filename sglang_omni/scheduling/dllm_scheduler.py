@@ -50,8 +50,8 @@ class DllmScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
 
-        self._request_builder = request_builder
-        self._result_adapter = result_adapter
+        self.request_builder = request_builder
+        self.result_adapter = result_adapter
 
         self.tp_worker = tp_worker
         self.tree_cache = tree_cache
@@ -60,33 +60,33 @@ class DllmScheduler:
         self.server_args = server_args
         self.model_config = model_config
         self.dllm_config = dllm_config
-        self._chunked_prefill_size = (
+        self.chunked_prefill_size = (
             dllm_config.block_size or get_schedule().chunked_prefill_size
         )
 
-        self._running = False
-        self._abort_lock = threading.Lock()
-        self._aborted_request_ids: set[str] = set()
-        self._rid_to_req_data: dict[str, Any] = {}
-        self._waiting_queue: list[Req] = []
-        self._staging_queue: list[Req] = []
+        self.running = False
+        self.abort_lock = threading.Lock()
+        self.aborted_request_ids: set[str] = set()
+        self.rid_to_req_data: dict[str, Any] = {}
+        self.waiting_queue: list[Req] = []
+        self.staging_queue: list[Req] = []
 
     def start(self) -> None:
-        self._running = True
+        self.running = True
         self._event_loop()
 
     def event_loop(self) -> None:
         self.start()
 
     def stop(self) -> None:
-        self._running = False
+        self.running = False
 
     def abort(self, request_id: str) -> None:
-        with self._abort_lock:
-            self._aborted_request_ids.add(request_id)
+        with self.abort_lock:
+            self.aborted_request_ids.add(request_id)
 
     def _event_loop(self) -> None:
-        while self._running:
+        while self.running:
             self.drain_and_purge()
             batch = self.schedule_next_batch()
 
@@ -109,9 +109,9 @@ class DllmScheduler:
             self.post_step(batch)
 
     def drain_and_purge(self) -> None:
-        with self._abort_lock:
-            aborted = self._aborted_request_ids
-            self._aborted_request_ids = set()
+        with self.abort_lock:
+            aborted = self.aborted_request_ids
+            self.aborted_request_ids = set()
 
         while True:
             try:
@@ -123,10 +123,10 @@ class DllmScheduler:
                 continue
 
             if msg.type == "new_request":
-                req_data = self._request_builder(msg.data)
+                req_data = self.request_builder(msg.data)
                 req = req_data.req
-                self._rid_to_req_data[req.rid] = req_data
-                self._waiting_queue.append(req)
+                self.rid_to_req_data[req.rid] = req_data
+                self.waiting_queue.append(req)
             else:
                 logger.warning(
                     "DllmScheduler: unhandled message type %r for request %s",
@@ -134,22 +134,22 @@ class DllmScheduler:
                     msg.request_id,
                 )
 
-        self._waiting_queue = [
-            r for r in self._waiting_queue if r.rid not in aborted and not r.finished()
+        self.waiting_queue = [
+            r for r in self.waiting_queue if r.rid not in aborted and not r.finished()
         ]
         new_staging = []
-        for req in self._staging_queue:
+        for req in self.staging_queue:
             if req.rid in aborted:
                 release_kv_cache(req, self.tree_cache)
             elif not req.finished():
                 new_staging.append(req)
-        self._staging_queue = new_staging
+        self.staging_queue = new_staging
 
         for rid in aborted:
-            self._rid_to_req_data.pop(rid, None)
+            self.rid_to_req_data.pop(rid, None)
 
     def schedule_next_batch(self) -> ScheduleBatch | None:
-        if not self._waiting_queue and not self._staging_queue:
+        if not self.waiting_queue and not self.staging_queue:
             return None
 
         adder = PrefillAdder(
@@ -159,7 +159,7 @@ class DllmScheduler:
             None,  # running_batch
             0.5,  # new_token_ratio
             get_schedule().max_prefill_tokens,
-            self._chunked_prefill_size,
+            self.chunked_prefill_size,
             prefill_max_requests=1,
             dllm_config=self.dllm_config,
         )
@@ -168,7 +168,7 @@ class DllmScheduler:
         # path. In FDFO mode an unresolved block must fit in full so its carried
         # algorithm state and resident KV describe the same block next round.
         staging_no_token = False
-        for req in self._staging_queue:
+        for req in self.staging_queue:
             req.init_next_round_input()
             if adder.add_dllm_staging_req(req) == AddReqResult.NO_TOKEN:
                 # A staging request that cannot fit stops all admission this
@@ -179,12 +179,12 @@ class DllmScheduler:
 
         # Add new waiting requests.
         if not staging_no_token:
-            for req in self._waiting_queue:
+            for req in self.waiting_queue:
                 req.init_next_round_input(self.tree_cache)
                 if (
                     adder.add_one_req(
                         req,
-                        has_chunked_req=bool(self._staging_queue),
+                        has_chunked_req=bool(self.staging_queue),
                         truncation_align_size=None,
                     )
                     != AddReqResult.CONTINUE
@@ -196,13 +196,13 @@ class DllmScheduler:
 
         # Diffusion requests need to be rescheduled until they finish. Keep each
         # scheduled request in our stage-local staging queue.
-        staging_rids = {r.rid for r in self._staging_queue}
+        staging_rids = {r.rid for r in self.staging_queue}
         for req in adder.can_run_list:
             if req.rid not in staging_rids:
-                self._staging_queue.append(req)
+                self.staging_queue.append(req)
                 staging_rids.add(req.rid)
-        self._waiting_queue = [
-            r for r in self._waiting_queue if r.rid not in staging_rids
+        self.waiting_queue = [
+            r for r in self.waiting_queue if r.rid not in staging_rids
         ]
 
         new_batch = ScheduleBatch.init_new(
@@ -317,7 +317,7 @@ class DllmScheduler:
             req.update_finish_state(new_accepted_len=new_tokens)
 
             if req.finished():
-                req_data = self._rid_to_req_data.pop(req.rid, None)
+                req_data = self.rid_to_req_data.pop(req.rid, None)
                 if req_data is None:
                     continue
                 req_data.output_ids = list(req.output_ids_through_stop)
@@ -331,7 +331,7 @@ class DllmScheduler:
                     OutgoingMessage(
                         request_id=req.rid,
                         type="result",
-                        data=self._result_adapter(req_data),
+                        data=self.result_adapter(req_data),
                     )
                 )
 
@@ -344,7 +344,7 @@ class DllmScheduler:
 
         new_staging = []
         fdfo_mode = bool(self.dllm_config.first_done_first_out_mode)
-        for req in self._staging_queue:
+        for req in self.staging_queue:
             exclude.add(req)
             if req.finished():
                 continue
@@ -359,6 +359,6 @@ class DllmScheduler:
                 # req.kv.req_pool_idx and resets it to None.
                 self.req_to_token_pool.free(req)
             new_staging.append(req)
-        self._staging_queue = new_staging
+        self.staging_queue = new_staging
 
         batch.filter_batch(chunked_req_to_exclude=list(exclude))

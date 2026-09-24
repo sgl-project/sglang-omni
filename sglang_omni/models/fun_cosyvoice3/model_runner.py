@@ -41,14 +41,14 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
-        self._token_hop_len = hop
-        self._ar_followup_flush_tokens = hop
-        self._outbox: Any | None = None
-        self._vocoder_target = "vocoder"
-        self._cosyvoice3_recent_tokens: dict[str, list[int]] = {}
+        self.token_hop_len = hop
+        self.ar_followup_flush_tokens = hop
+        self.outbox: Any | None = None
+        self.vocoder_target = "vocoder"
+        self.cosyvoice3_recent_tokens: dict[str, list[int]] = {}
 
     def set_stream_outbox(self, outbox: Any) -> None:
-        self._outbox = outbox
+        self.outbox = outbox
 
     def custom_prefill_forward(
         self,
@@ -210,13 +210,13 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         request = requests[0]
         request_id = str(request.request_id)
         if (
-            self._cosyvoice3_recent_tokens
-            and request_id not in self._cosyvoice3_recent_tokens
+            self.cosyvoice3_recent_tokens
+            and request_id not in self.cosyvoice3_recent_tokens
         ):
             # Note (yexiaodong): MPS sampling is single-request; clear state
             # here because aborts can bypass the normal finish hook.
-            self._cosyvoice3_recent_tokens.clear()
-        recent = self._cosyvoice3_recent_tokens.setdefault(request_id, [])
+            self.cosyvoice3_recent_tokens.clear()
+        recent = self.cosyvoice3_recent_tokens.setdefault(request_id, [])
         token_ids = next_token_ids.reshape(-1)
         token_id = int(token_ids[0].item())
 
@@ -263,7 +263,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
             self.flush_code_chunks(request_id, req_data, force=True)
-        recent_tokens = getattr(self, "_cosyvoice3_recent_tokens", None)
+        recent_tokens = getattr(self, "cosyvoice3_recent_tokens", None)
         if recent_tokens is not None:
             recent_tokens.pop(str(request_id), None)
 
@@ -295,7 +295,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         token: torch.Tensor,
     ) -> None:
         data = sched_req.data
-        if self._outbox is None or data.stream_metadata is None:
+        if self.outbox is None or data.stream_metadata is None:
             return
         if not accept_cosyvoice3_stream_token(data, token):
             return
@@ -306,7 +306,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             # alignment is applied on Flow prompt tensors, not extra AR tokens.
             data.stream_code_next_flush = first_ar_flush_tokens(
                 prompt_token_len(data.flow_prompt_speech_token),
-                hop_len=self._token_hop_len,
+                hop_len=self.token_hop_len,
             )
         if data.stream_code_seen >= data.stream_code_next_flush:
             self.flush_code_chunks(sched_req.request_id, data, force=False)
@@ -325,7 +325,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         pending.clear()
         if not force:
             data.stream_code_next_flush = (
-                int(data.stream_code_seen) + self._ar_followup_flush_tokens
+                int(data.stream_code_seen) + self.ar_followup_flush_tokens
             )
         self.emit_code_chunk(request_id, data, payload)
 
@@ -335,7 +335,7 @@ class FunCosyVoice3ModelRunner(ModelRunner):
         data: Any,
         codes: torch.Tensor,
     ) -> None:
-        if self._outbox is None:
+        if self.outbox is None:
             return
         metadata = data.stream_metadata
         if metadata is None:
@@ -348,11 +348,11 @@ class FunCosyVoice3ModelRunner(ModelRunner):
             chunk_metadata["flow_prompt_speech_feat"] = data.flow_prompt_speech_feat
             chunk_metadata["flow_embedding"] = data.flow_embedding
             data.stream_prompt_sent = True
-        self._outbox.put(
+        self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                target=self._vocoder_target,
+                target=self.vocoder_target,
                 data=codes,
                 metadata=chunk_metadata,
             )
@@ -429,11 +429,11 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         hop = int(token_hop_len)
         if hop <= 0:
             raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
-        self._token_hop_len = hop
+        self.token_hop_len = hop
 
     def set_stream_outbox(self, outbox: Any) -> None:
-        self._outbox = outbox
-        self._vocoder_target = "vocoder"
+        self.outbox = outbox
+        self.vocoder_target = "vocoder"
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         if req_data is not None:
@@ -442,7 +442,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1 or batch.has_grammar:
             return False
-        previous = self._last_mlx_pending
+        previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in batch.reqs]
@@ -474,7 +474,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
                 f"the scheduler batch ({len(token_ids)} != {len(requests)})"
             )
         for sched_req, token_id in zip(requests, token_ids, strict=True):
-            if sched_req.request_id in self._resolve_skip_rids:
+            if sched_req.request_id in self.resolve_skip_rids:
                 continue
             token_id = int(token_id)
             if 0 <= token_id < VOCAB_SIZE:
@@ -484,7 +484,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
 
     def queue_or_emit_code_chunk(self, sched_req: Any, token: torch.Tensor) -> None:
         data = sched_req.data
-        if getattr(self, "_outbox", None) is None or data.stream_metadata is None:
+        if getattr(self, "outbox", None) is None or data.stream_metadata is None:
             return
         if not accept_cosyvoice3_stream_token(data, token):
             return
@@ -493,7 +493,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         if int(data.stream_code_next_flush) <= 0:
             data.stream_code_next_flush = first_ar_flush_tokens(
                 prompt_token_len(data.flow_prompt_speech_token),
-                hop_len=getattr(self, "_token_hop_len", TOKEN_HOP_LEN),
+                hop_len=getattr(self, "token_hop_len", TOKEN_HOP_LEN),
             )
         if data.stream_code_seen >= data.stream_code_next_flush:
             self.flush_code_chunks(sched_req.request_id, data, force=False)
@@ -506,12 +506,12 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
         pending.clear()
         if not force:
             data.stream_code_next_flush = int(data.stream_code_seen) + getattr(
-                self, "_token_hop_len", TOKEN_HOP_LEN
+                self, "token_hop_len", TOKEN_HOP_LEN
             )
         self.emit_code_chunk(request_id, data, payload)
 
     def emit_code_chunk(self, request_id: str, data: Any, codes: torch.Tensor) -> None:
-        outbox = getattr(self, "_outbox", None)
+        outbox = getattr(self, "outbox", None)
         if outbox is None or data.stream_metadata is None:
             return
         metadata = dict(data.stream_metadata)
@@ -524,7 +524,7 @@ class FunCosyVoice3MlxSchedulerModelRunner(MlxSchedulerModelRunner):
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                target=getattr(self, "_vocoder_target", "vocoder"),
+                target=getattr(self, "vocoder_target", "vocoder"),
                 data=codes,
                 metadata=metadata,
             )

@@ -206,7 +206,7 @@ class ContinuousTransformer(nn.Module):
         self.project_in = nn.Linear(2304, 2048, bias=False)
         self.project_out = nn.Linear(2048, 128, bias=False)
         self.rotary_pos_emb = RotaryEmbedding(32)
-        self._rotary_cache: dict[
+        self.rotary_cache: dict[
             tuple[int, torch.dtype, torch.device], tuple[Tensor, Tensor]
         ] = {}
         self.layers = nn.ModuleList(
@@ -226,12 +226,12 @@ class ContinuousTransformer(nn.Module):
         self, seq_len: int, *, dtype: torch.dtype, device: torch.device
     ) -> tuple[Tensor, Tensor]:
         key = (seq_len, dtype, device)
-        cached = self._rotary_cache.get(key)
+        cached = self.rotary_cache.get(key)
         if cached is None:
             freqs = self.rotary_pos_emb.forward_from_seq_len(seq_len)[0]
             freqs = freqs.to(dtype=dtype, device=device)
             cached = (freqs.cos(), freqs.sin())
-            self._rotary_cache[key] = cached
+            self.rotary_cache[key] = cached
         return cached
 
     def forward(self, x: Tensor, timestep_embed: Tensor) -> Tensor:
@@ -260,16 +260,16 @@ class DiffusionTransformer(nn.Module):
         )
         self.preprocess_conv = nn.Conv1d(2304, 2304, 1, bias=False)
         self.postprocess_conv = nn.Conv1d(128, 128, 1, bias=False)
-        self._latent_zeros_cache: dict[
+        self.latent_zeros_cache: dict[
             tuple[tuple[int, ...], torch.dtype, torch.device], Tensor
         ] = {}
 
     def latent_zeros(self, x: Tensor) -> Tensor:
         key = (tuple(x.shape), x.dtype, x.device)
-        zeros = self._latent_zeros_cache.get(key)
+        zeros = self.latent_zeros_cache.get(key)
         if zeros is None:
             zeros = torch.zeros_like(x)
-            self._latent_zeros_cache[key] = zeros
+            self.latent_zeros_cache[key] = zeros
         return zeros
 
     def _transformer(self, x: Tensor, t: Tensor, align_cond: Tensor) -> Tensor:
@@ -310,7 +310,7 @@ class MiniMaxMusic3DIT(nn.Module):
         self.sr_output = 44100
         self.hop_size_input = 960
         self.hop_size_output = 512
-        self._bcg_runner: DiffusionBreakableCudaGraphRunner | None = None
+        self.bcg_runner: DiffusionBreakableCudaGraphRunner | None = None
 
     def enable_compiled_blocks(self, *, warmup_mel_length: int) -> None:
         """Fold each block's elementwise work into its matmul stream.s"""
@@ -355,7 +355,7 @@ class MiniMaxMusic3DIT(nn.Module):
                 max_continuous_cached_steps=max_continuous_cached_steps,
             ),
         )
-        self._cache_dit_adapter = adapter
+        self.cache_dit_adapter = adapter
 
     def aligned_mel_length(self, frames: int) -> int:
         return max(
@@ -400,7 +400,7 @@ class MiniMaxMusic3DIT(nn.Module):
         if not captured:
             runner.reset()
             return False
-        self._bcg_runner = runner
+        self.bcg_runner = runner
         logger.info(
             f"MiniMax Music 3 diffusion BCG captured mel_len={mel_len} entries={len(runner.entries)} free_gb={free_gb:.1f}"
         )
@@ -479,10 +479,10 @@ class MiniMaxMusic3DIT(nn.Module):
             x_cfg = x.expand(2, -1, -1)
             t_cfg = t.expand(2)
             with set_forward_context(step, None):
-                if self._bcg_runner is None:
+                if self.bcg_runner is None:
                     d = self.diffusion_transformer._transformer(x_cfg, t_cfg, cond_cfg)
                 else:
-                    d = self._bcg_runner(
+                    d = self.bcg_runner(
                         x=x_cfg,
                         t=t_cfg,
                         align_cond=cond_cfg,

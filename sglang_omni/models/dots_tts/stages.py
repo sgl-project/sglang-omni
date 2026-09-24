@@ -39,8 +39,10 @@ def configure_optimized_kernels() -> None:
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     set_torch_compile_config()
-    inference_utils._COMPILE_OPTIONS["mode"] = os.environ.get(
-        "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+    inference_utils._COMPILE_OPTIONS["mode"] = (
+        os.environ.get(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+        )
     )
     os.environ.setdefault("DOTS_TTS_DELAYED_DIT_BACKEND", "sdpa")
     compile_module_forward = dit_inference.compile_module_forward
@@ -482,7 +484,7 @@ def create_vocoder_executor(
         vocoder.merge_steps,
         vocoder.stream_slots,
         max_batch_size,
-        vocoder._stream_chunk_batch_max,
+        vocoder._stream_chunk_batch_max,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         max_batch_wait_ms,
     )
     return vocoder

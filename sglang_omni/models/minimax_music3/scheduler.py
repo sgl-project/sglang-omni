@@ -33,7 +33,7 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
         if request_admission_lock_held:
             self.enqueue_cfg_uncond(req_data, uncond)
             return
-        with self._request_admission_lock:
+        with self.request_admission_lock:
             self.enqueue_cfg_uncond(req_data, uncond)
 
     def enqueue_cfg_uncond(self, req_data: Any, uncond: Any) -> None:
@@ -42,9 +42,11 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
             return
         req = uncond.req
         self.normalize_req_token_arrays(req)
-        req._coalesce_enqueue_t = cond_req._coalesce_enqueue_t
-        req._omni_terminal_claimed = False
-        req._omni_data = uncond
+        req._coalesce_enqueue_t = (
+            cond_req._coalesce_enqueue_t
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        req._omni_data = uncond  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.waiting_queue.append(req)
 
     def get_new_batch_prefill(self, running_batch: Any) -> Any:
@@ -97,7 +99,9 @@ class MiniMaxMusic3Scheduler(OmniScheduler):
 
     @staticmethod
     def is_cfg_uncond(req: Any) -> bool:
-        data = getattr(req, "_omni_data", None)
+        data = getattr(
+            req, "_omni_data", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return data is not None and data.is_cfg_uncond
 
 

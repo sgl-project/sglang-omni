@@ -32,8 +32,10 @@ class StrictWeightChecker:
     """Compute strict per-tensor and aggregate SHA256 digests."""
 
     def __init__(self, model_runner: Any):
-        self._model_runner = model_runner
-        self._snapshot: dict[str, TensorDigest] | None = None
+        self.model_runner = model_runner
+        self._snapshot: dict[str, TensorDigest] | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
 
     def run(self, action: str) -> dict[str, Any]:
         if action == "snapshot":
@@ -50,28 +52,53 @@ class StrictWeightChecker:
         )
 
     def snapshot(self) -> dict[str, Any]:
-        self._snapshot = self.digest_model()
-        return self.summary(self._snapshot, action="snapshot")
+        self._snapshot = (
+            self.digest_model()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self.summary(
+            self._snapshot, action="snapshot"
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def reset_tensors(self) -> dict[str, Any]:
-        self._snapshot = self.digest_model()
-        return self.summary(self._snapshot, action="reset_tensors")
+        self._snapshot = (
+            self.digest_model()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return self.summary(
+            self._snapshot, action="reset_tensors"
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def checksum(self) -> dict[str, Any]:
         return self.summary(self.digest_model(), action="checksum")
 
     def compare(self) -> dict[str, Any]:
-        if self._snapshot is None:
+        if (
+            self._snapshot is None
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             raise RuntimeError("weights_checker compare requires snapshot first")
         current = self.digest_model()
-        missing = sorted(set(self._snapshot) - set(current))
-        unexpected = sorted(set(current) - set(self._snapshot))
+        missing = sorted(
+            set(self._snapshot) - set(current)
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        unexpected = sorted(
+            set(current) - set(self._snapshot)
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         changed = [
             name
-            for name in sorted(set(self._snapshot) & set(current))
-            if self._snapshot[name].sha256 != current[name].sha256
-            or self._snapshot[name].shape != current[name].shape
-            or self._snapshot[name].dtype != current[name].dtype
+            for name in sorted(
+                set(self._snapshot) & set(current)
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            if self._snapshot[name].sha256
+            != current[
+                name
+            ].sha256  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            or self._snapshot[name].shape
+            != current[
+                name
+            ].shape  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            or self._snapshot[name].dtype
+            != current[
+                name
+            ].dtype  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         ]
         summary = self.summary(current, action="compare")
         summary.update(
@@ -85,7 +112,7 @@ class StrictWeightChecker:
         return summary
 
     def digest_model(self) -> dict[str, TensorDigest]:
-        model = getattr(self._model_runner, "model", None)
+        model = getattr(self.model_runner, "model", None)
         if model is None:
             raise RuntimeError("model_runner has no model for weights_checker")
 

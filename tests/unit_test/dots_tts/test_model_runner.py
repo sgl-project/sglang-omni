@@ -23,12 +23,12 @@ def test_dots_abort_callback_clears_flow_state() -> None:
     runner.model = SimpleNamespace(
         flow=SimpleNamespace(release_request=released.append)
     )
-    runner._request_data = {"req-1": request_data}
+    runner.request_data = {"req-1": request_data}
 
     runner.reset_request("req-1")
     runner.reset_request("req-1")
 
-    assert runner._request_data == {}
+    assert runner.request_data == {}
     assert not request_data.pending_feedback_queue
     assert request_data.flow_state is None
     assert released == [flow_state]
@@ -45,7 +45,7 @@ def test_dots_finish_callback_releases_flow_state_once() -> None:
     runner.model = SimpleNamespace(
         flow=SimpleNamespace(release_request=released.append)
     )
-    runner._request_data = {"req-1": request_data}
+    runner.request_data = {"req-1": request_data}
 
     runner.on_request_finished("req-1", request_data)
     runner.reset_request("req-1")
@@ -118,7 +118,7 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
         return SimpleNamespace(request_id=request_id, data=data)
 
     requests = [_request("a", 11.0), _request("b", 22.0)]
-    runner._request_data = {"a": requests[0].data}
+    runner.request_data = {"a": requests[0].data}
     forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1, 2, 3, 1, 2, 3]), input_embeds=None
     )
@@ -154,7 +154,7 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
         flow=_Flow(),
         get_input_embeddings=lambda: nn.Embedding(10, 4),
     )
-    runner._request_data = {}
+    runner.request_data = {}
 
     def _request(request_id: str):
         data = SimpleNamespace(
@@ -189,7 +189,7 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
         runner.before_prefill(forward_batch, object(), requests)
 
     assert released == [flow_state]
-    assert runner._request_data == {}
+    assert runner.request_data == {}
     assert requests[0].data.flow_state is None
 
 

@@ -48,7 +48,7 @@ def encode_typed_tensor(value: Any, *, key: str) -> dict[str, Any]:
     return {
         f"{key}_bytes": contiguous.tobytes(),
         f"{key}_shape": list(contiguous.shape),
-        f"{key}_dtype": str(contiguous.dtype),
+        f"{key}dtype": str(contiguous.dtype),
     }
 
 
@@ -70,7 +70,7 @@ def decode_typed_tensor(
     shape = data.get(f"{key}_shape")
     if raw is None or shape is None:
         return None
-    dtype = np.dtype(data.get(f"{key}_dtype", "uint16"))
+    dtype = np.dtype(data.get(f"{key}dtype", "uint16"))
     array = np.frombuffer(raw, dtype=dtype).reshape(shape)
     if array.dtype.kind == "f":
         # astype copies, so the tensor never aliases the read-only buffer.

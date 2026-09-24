@@ -44,16 +44,16 @@ class ConfigResolver:
     """Applies a patch set to a baseline config."""
 
     def __init__(self, base: PipelineConfig) -> None:
-        self._base = base
+        self.base = base
 
     @property
     def config_cls(self) -> type[PipelineConfig]:
-        return type(self._base)
+        return type(self.base)
 
     def resolve(self, patchset: ConfigPatchSet) -> ResolvedConfig:
         patchset.require_no_conflicts()
 
-        data = self._base.model_dump()
+        data = self.base.model_dump()
         provenance = ProvenanceMap.from_patchset(patchset)
 
         ordered = patchset.ordered()
@@ -71,7 +71,7 @@ class ConfigResolver:
         if (
             "model_path" in touched
             and "name" not in touched
-            and data.get("name") == self._base.model_path
+            and data.get("name") == self.base.model_path
         ):
             data["name"] = None
 

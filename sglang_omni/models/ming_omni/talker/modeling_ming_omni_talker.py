@@ -285,7 +285,7 @@ class MingOmniTalker(nn.Module):
         # Qwen2 LLM backbone
         self.model_config = Qwen2Config(**config.llm_config)
         self.model = Qwen2Model(self.model_config)
-        self.model.config._attn_implementation = "sdpa"
+        self.model.config._attn_implementation = "sdpa"  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         self.latent_dim = config.latent_dim
         self.cfm = CFM(

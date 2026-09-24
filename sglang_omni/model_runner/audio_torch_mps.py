@@ -17,7 +17,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._past_key_values: dict[str, Any] = {}
+        self.past_key_values: dict[str, Any] = {}
 
     def lookahead_eligible(self, batch: Any) -> bool:
         del batch
@@ -126,7 +126,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
             use_cache=True,
             logits_to_keep=1,
         )
-        self._past_key_values[scheduler_request.request_id] = output.past_key_values
+        self.past_key_values[scheduler_request.request_id] = output.past_key_values
         return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     @torch.inference_mode()
@@ -140,7 +140,7 @@ class AudioTorchMpsModelRunner(ModelRunner):
         scheduler_request = self.one_request(requests)
         request_id = scheduler_request.request_id
         try:
-            past_key_values = self._past_key_values[request_id]
+            past_key_values = self.past_key_values[request_id]
         except KeyError as exc:
             raise RuntimeError(
                 f"{self.model_name} Torch MPS decode has no cache for {request_id}"
@@ -156,12 +156,12 @@ class AudioTorchMpsModelRunner(ModelRunner):
             use_cache=True,
             logits_to_keep=1,
         )
-        self._past_key_values[request_id] = output.past_key_values
+        self.past_key_values[request_id] = output.past_key_values
         return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         del req_data
-        self._past_key_values.pop(request_id, None)
+        self.past_key_values.pop(request_id, None)
 
     def abort_request(self, request_id: str) -> None:
-        self._past_key_values.pop(request_id, None)
+        self.past_key_values.pop(request_id, None)

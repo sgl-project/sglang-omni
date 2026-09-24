@@ -19,8 +19,8 @@ class SGLangOutputProcessor:
         capture_hidden: bool = False,
         should_emit_hidden: Callable[[Any], bool] | None = None,
     ):
-        self._capture_hidden = capture_hidden
-        self._should_emit_hidden = should_emit_hidden
+        self.capture_hidden = capture_hidden
+        self.should_emit_hidden = should_emit_hidden
 
     def process(
         self,
@@ -34,7 +34,7 @@ class SGLangOutputProcessor:
         token_list = ids.tolist() if ids is not None else []
 
         hidden_extras_by_request: dict[int, dict[str, Any] | None] = {}
-        if self._capture_hidden:
+        if self.capture_hidden:
             should_emit_hidden_by_request = [
                 self.should_emit_hidden_for_request(request)
                 for request in scheduler_output.requests
@@ -58,9 +58,9 @@ class SGLangOutputProcessor:
         return outputs
 
     def should_emit_hidden_for_request(self, request: Any) -> bool:
-        if self._should_emit_hidden is None:
+        if self.should_emit_hidden is None:
             return True
-        return self._should_emit_hidden(request)
+        return self.should_emit_hidden(request)
 
     def build_hidden_extras_by_request(
         self,

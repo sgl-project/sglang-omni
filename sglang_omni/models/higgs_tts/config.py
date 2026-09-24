@@ -89,7 +89,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             vocoder_extra = self.stage_named("vocoder").factory.model_extra or {}
             return {
                 key: vocoder_extra[key]
-                for key in self._STREAM_CADENCE_KEYS
+                for key in self.STREAM_CADENCE_KEYS
                 if key in vocoder_extra
             }
         if stage_name == "vocoder":
@@ -125,7 +125,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             )
         vocoder_extra = stages["vocoder"].factory.model_extra or {}
         tts_engine_extra = stages["tts_engine"].factory.model_extra or {}
-        for key in self._STREAM_CADENCE_KEYS:
+        for key in self.STREAM_CADENCE_KEYS:
             if key not in vocoder_extra:
                 if key in tts_engine_extra:
                     raise ValueError(

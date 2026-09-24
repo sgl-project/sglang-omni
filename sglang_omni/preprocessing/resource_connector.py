@@ -32,33 +32,33 @@ class ResourceHTTPConnection:
     """Manages persistent HTTP clients for connection pooling."""
 
     def __init__(self, timeout: float = 30.0):
-        self._client: httpx.Client | None = None
-        self._async_client: httpx.AsyncClient | None = None
-        self._timeout = timeout
+        self.client: httpx.Client | None = None
+        self.async_client: httpx.AsyncClient | None = None
+        self.timeout = timeout
 
     def get_sync_client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(timeout=self._timeout, follow_redirects=True)
-        return self._client
+        if self.client is None:
+            self.client = httpx.Client(timeout=self.timeout, follow_redirects=True)
+        return self.client
 
     async def get_async_client(self) -> httpx.AsyncClient:
-        if self._async_client is None:
+        if self.async_client is None:
             timeout_config = httpx.Timeout(
                 connect=30.0,
-                read=self._timeout,
+                read=self.timeout,
                 write=30.0,
                 pool=30.0,
             )
-            self._async_client = httpx.AsyncClient(
+            self.async_client = httpx.AsyncClient(
                 timeout=timeout_config, follow_redirects=True
             )
-        return self._async_client
+        return self.async_client
 
     async def close(self):
-        if self._async_client:
-            await self._async_client.aclose()
-        if self._client:
-            self._client.close()
+        if self.async_client:
+            await self.async_client.aclose()
+        if self.client:
+            self.client.close()
 
 
 global_http_connection = ResourceHTTPConnection()

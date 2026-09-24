@@ -66,22 +66,25 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         if stream_holdback_tokens < 0:
             raise ValueError("stream holdback must be >= 0")
 
-        self._vocoder = vocoder
-        self._audio_vocoder = vocoder._audio_vocoder
-        self._stream_stride = int(stream_stride)
-        self._stream_followup_stride = int(stream_followup_stride)
-        self._stream_overlap_tokens = int(stream_overlap_tokens)
-        self._stream_holdback_tokens = int(stream_holdback_tokens)
-        self._default_initial_chunk_frames = max(0, int(initial_chunk_frames))
-        self._default_n_vq = int(
-            getattr(getattr(vocoder._processor, "model_config", None), "n_vq", 0) or 0
+        self.vocoder = vocoder
+        self.audio_vocoder = vocoder.audio_vocoder
+        self.stream_stride = int(stream_stride)
+        self.stream_followup_stride = int(stream_followup_stride)
+        self.stream_overlap_tokens = int(stream_overlap_tokens)
+        self.stream_holdback_tokens = int(stream_holdback_tokens)
+        self.default_initial_chunk_frames = max(0, int(initial_chunk_frames))
+        self.default_n_vq = int(
+            getattr(getattr(vocoder._processor, "model_config", None), "n_vq", 0)
+            or 0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-        self._default_audio_pad_code = resolve_moss_audio_pad_code(
-            getattr(vocoder._processor, "model_config", None)
+        self.default_audio_pad_code = resolve_moss_audio_pad_code(
+            getattr(
+                vocoder._processor, "model_config", None
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
-        sample_rate = int(self._audio_vocoder.sample_rate)
-        self._default_samples_per_frame = self.resolve_samples_per_frame(
-            self._audio_vocoder, sample_rate
+        sample_rate = int(self.audio_vocoder.sample_rate)
+        self.default_samples_per_frame = self.resolve_samples_per_frame(
+            self.audio_vocoder, sample_rate
         )
 
         super().__init__(
@@ -96,10 +99,10 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
     def create_stream_state(self, request_id: str) -> MossStreamState:
         del request_id
         return MossStreamState(
-            n_vq=self._default_n_vq or None,
-            audio_pad_code=self._default_audio_pad_code,
+            n_vq=self.default_n_vq or None,
+            audio_pad_code=self.default_audio_pad_code,
             sample_rate=self.sample_rate,
-            samples_per_frame=self._default_samples_per_frame,
+            samples_per_frame=self.default_samples_per_frame,
         )
 
     def latch_stream_contract(
@@ -204,7 +207,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         process_count = (
             pending_count
             if is_final
-            else max(0, pending_count - self._stream_holdback_tokens)
+            else max(0, pending_count - self.stream_holdback_tokens)
         )
         for _ in range(process_count):
             self.ingest_raw_frame(
@@ -226,18 +229,18 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
                 chunks.append(chunk)
 
         if chunks:
-            state.next_decode_rows = state.delayed_count + self._stream_followup_stride
+            state.next_decode_rows = state.delayed_count + self.stream_followup_stride
             return chunks[0] if len(chunks) == 1 else torch.cat(chunks)
 
         if not is_final:
-            if len(state.pending_raw_frames) <= self._stream_holdback_tokens:
+            if len(state.pending_raw_frames) <= self.stream_holdback_tokens:
                 state.next_decode_rows = max(
                     state.delayed_count + 1,
-                    n_vq + self._stream_holdback_tokens,
+                    n_vq + self.stream_holdback_tokens,
                 )
             else:
                 state.next_decode_rows = (
-                    state.delayed_count + self._stream_followup_stride
+                    state.delayed_count + self.stream_followup_stride
                 )
         return None
 
@@ -248,8 +251,8 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         state: MossStreamState,
     ) -> torch.Tensor | None:
         del request_id, state
-        final_state, delayed_codes = self._vocoder.prepare_item(payload)
-        waveform, _ = self._vocoder.decode_audio(final_state, delayed_codes)
+        final_state, delayed_codes = self.vocoder.prepare_item(payload)
+        waveform, _ = self.vocoder.decode_audio(final_state, delayed_codes)
         return waveform
 
     def final_result_data(
@@ -274,15 +277,15 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         return (await self.vocode_payloads([payload]))[0]
 
     async def vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
-        items = [self._vocoder.prepare_item(payload) for payload in payloads]
-        results = await self._vocoder.decode_batch(items)
+        items = [self.vocoder.prepare_item(payload) for payload in payloads]
+        results = await self.vocoder.decode_batch(items)
         if len(results) != len(items):
             raise RuntimeError(
                 f"MOSS-TTS vocoder returned {len(results)} results for "
                 f"{len(items)} requests"
             )
         return [
-            self._vocoder.store_result(payload, item[0], waveform, sample_rate)
+            self.vocoder.store_result(payload, item[0], waveform, sample_rate)
             for payload, item, (waveform, sample_rate) in zip(payloads, items, results)
         ]
 
@@ -300,9 +303,9 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         if total_frames == emitted_frames and (not flush_tail or segment.tail_emitted):
             return None
 
-        window_start = max(0, emitted_frames - self._stream_overlap_tokens)
+        window_start = max(0, emitted_frames - self.stream_overlap_tokens)
         window = torch.stack(segment.frames[window_start:], dim=0)
-        decoded = self._audio_vocoder.decode_codes([window])
+        decoded = self.audio_vocoder.decode_codes([window])
         if not decoded:
             return None
         audio = torch.as_tensor(decoded[0]).detach().reshape(-1).to(torch.float32)
@@ -350,8 +353,8 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
     def first_decode_rows(self, state: MossStreamState, n_vq: int) -> int:
         initial_frames = int(state.initial_codec_chunk_frames)
         if initial_frames > 0:
-            return n_vq - 1 + initial_frames + self._stream_holdback_tokens
-        return max(n_vq, self._stream_stride)
+            return n_vq - 1 + initial_frames + self.stream_holdback_tokens
+        return max(n_vq, self.stream_stride)
 
     def latch_initial_chunk_frames(
         self,
@@ -359,11 +362,11 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[MossStreamState, None])
         values: Mapping[str, Any] | None,
     ) -> None:
         self.require_contract(state, "<stream>")
-        steady_frames = self._stream_followup_stride
+        steady_frames = self.stream_followup_stride
         state.initial_codec_chunk_frames = resolve_initial_codec_chunk_frames(
             values,
             steady_chunk_frames=steady_frames,
-            default_frames=self._default_initial_chunk_frames,
+            default_frames=self.default_initial_chunk_frames,
         )
 
     @staticmethod

@@ -300,7 +300,7 @@ class VoxtralTTSVocoder(BatchVocoderBase):
     _FADE_IN_MS = 10
 
     def __init__(self, audio_tokenizer: Any) -> None:
-        self._audio_tokenizer = audio_tokenizer
+        self.audio_tokenizer = audio_tokenizer
 
     def prepare_item(
         self, payload: StagePayload
@@ -319,7 +319,7 @@ class VoxtralTTSVocoder(BatchVocoderBase):
         # warmup frames are trimmed away.
         if audio_codes.shape[0] > 0:
             first_frame = audio_codes[0:1]
-            warmup = first_frame.repeat(self._N_WARMUP, 1)
+            warmup = first_frame.repeat(self.N_WARMUP, 1)
             codes_with_warmup = torch.cat([warmup, audio_codes], dim=0)
         else:
             codes_with_warmup = audio_codes
@@ -330,8 +330,8 @@ class VoxtralTTSVocoder(BatchVocoderBase):
         self, items: list[tuple[VoxtralTTSState, torch.Tensor]]
     ) -> list[tuple[torch.Tensor, int]]:
         codes_list = [codes for _, codes in items]
-        results = self._audio_tokenizer.decode_helper_batch_async(codes_list)
-        sample_rate = self._audio_tokenizer.sampling_rate
+        results = self.audio_tokenizer.decode_helper_batch_async(codes_list)
+        sample_rate = self.audio_tokenizer.sampling_rate
         return [(audio_np, sample_rate) for audio_np in results]
 
     def store_result(
@@ -350,7 +350,7 @@ class VoxtralTTSVocoder(BatchVocoderBase):
             else len(original_codes)
         )
         warmup_samples = (
-            self._N_WARMUP * self._audio_tokenizer.downsample_factor
+            self.N_WARMUP * self.audio_tokenizer.downsample_factor
             if original_len > 0
             else 0
         )
@@ -361,7 +361,7 @@ class VoxtralTTSVocoder(BatchVocoderBase):
 
         # Apply a short fade-in to smooth any residual onset artifacts
         fade_samples = min(
-            int(self._FADE_IN_MS * sample_rate / 1000),
+            int(self.FADE_IN_MS * sample_rate / 1000),
             len(audio_np),
         )
         if fade_samples > 0:

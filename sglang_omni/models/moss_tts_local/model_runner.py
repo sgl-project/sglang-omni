@@ -34,11 +34,11 @@ class MossTTSLocalModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._outbox: Any | None = None
-        self._vocoder_target = "vocoder"
+        self.outbox: Any | None = None
+        self.vocoder_target = "vocoder"
 
     def set_stream_outbox(self, outbox: Any) -> None:
-        self._outbox = outbox
+        self.outbox = outbox
 
     def flush_stream_rows(
         self,
@@ -48,7 +48,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         force: bool,
     ) -> None:
         metadata = data.stream_metadata
-        if metadata is None or self._outbox is None:
+        if metadata is None or self.outbox is None:
             return
         pending = data.stream_pending_rows
         if not pending:
@@ -60,11 +60,11 @@ class MossTTSLocalModelRunner(ModelRunner):
         rows = pending[0] if len(pending) == 1 else torch.stack(pending)
         pending.clear()
         data.stream_first_batch_sent = True
-        self._outbox.put(
+        self.outbox.put(
             OutgoingMessage(
                 request_id=request_id,
                 type="stream",
-                target=self._vocoder_target,
+                target=self.vocoder_target,
                 data=rows,
                 metadata=metadata,
             )
@@ -144,7 +144,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             return False
         for req in reqs:
             try:
-                data = req._omni_data
+                data = (
+                    req._omni_data
+                )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             except AttributeError:
                 data = None
             if data is None:
@@ -171,7 +173,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
             req_len = int(req.extend_range.length)
             prefix_len = len(req.prefix_indices)
-            pool = self.model._state_pool
+            pool = self.model.state_pool
             if data.output_rows:
                 # KV-pressure retraction re-prefills with an extend region
                 # spanning already-generated frames; their rows live in
@@ -220,8 +222,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
-        pool = self.model._state_pool
-        weight = self.model._decode_input_embedding.weight
+        pool = self.model.state_pool
+        weight = self.model.decode_input_embedding.weight
         if forward_batch.input_ids.numel() < batch_size:
             raise RuntimeError(
                 "MOSS-TTS Local decode input_ids must contain one row id per request"
@@ -284,7 +286,7 @@ class MossTTSLocalModelRunner(ModelRunner):
 
         cfg = self.model.config
         device = hidden_states.device
-        pool = self.model._state_pool
+        pool = self.model.state_pool
         batch_size = len(requests)
         num_channels = int(cfg.n_vq) + 1
 
@@ -328,7 +330,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             for i, sched_req in enumerate(requests)
             if not self.is_chunked_request(sched_req)
         ]
-        if self._async_enabled:
+        if self.async_enabled:
             # note (Zhang Yiyang): Lookahead sampling can lead the committed step.
             gen_steps = torch.maximum(
                 pool.sampling_steps[row_t].to(device=device),
@@ -571,7 +573,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         self, sched_req: Any, generation_steps: int
     ) -> None:
         try:
-            pool = self.model._state_pool
+            pool = self.model.state_pool
         except AttributeError:
             return
         if pool is not None:
@@ -581,7 +583,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         self, advanced_steps: list[tuple[Any, int]], forward_batch: Any
     ) -> None:
         try:
-            pool = self.model._state_pool
+            pool = self.model.state_pool
         except AttributeError:
             return
         if pool is None or not advanced_steps:
@@ -672,7 +674,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                 continue
             sched_req.data.output_rows.append(journal.rows[i])
             stream_metadata = getattr(sched_req.data, "stream_metadata", None)
-            if stream_metadata is None or self._outbox is None:
+            if stream_metadata is None or self.outbox is None:
                 continue
             # Keep the step-private journal row on its producing device. The
             # pipeline runtime selects local-object, direct CUDA IPC, or relay

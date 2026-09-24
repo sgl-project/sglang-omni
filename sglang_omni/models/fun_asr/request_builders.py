@@ -309,7 +309,7 @@ def make_fun_asr_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         return FunASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),

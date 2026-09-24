@@ -88,12 +88,12 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any) -> None:
         super().__init__(tp_worker, output_processor)
-        self._request_data: dict[str, Any] = {}
-        self._dump_dir = os.environ.get(_HIDDEN_DUMP_DIR_ENV) or None
-        self._forced_codes_dir = os.environ.get(_FORCED_CODES_DIR_ENV) or None
-        if self._forced_codes_dir is not None:
+        self.request_data: dict[str, Any] = {}
+        self.dump_dir = os.environ.get(_HIDDEN_DUMP_DIR_ENV) or None
+        self.forced_codes_dir = os.environ.get(_FORCED_CODES_DIR_ENV) or None
+        if self.forced_codes_dir is not None:
             logger.warning(
-                f"MiniMax Music 3 is replaying reference code trajectories from {self._forced_codes_dir}; generated audio is the reference's, not this model's"
+                f"MiniMax Music 3 is replaying reference code trajectories from {self.forced_codes_dir}; generated audio is the reference's, not this model's"
             )
 
     def requested_capture_hidden_mode_prefill(
@@ -179,7 +179,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
         ar_state = req_data.ar_state
-        self._request_data.pop(request_id, None)
+        self.request_data.pop(request_id, None)
         if ar_state is None:
             return
         if ar_state.generated_frames == 0:
@@ -200,7 +200,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         )
 
     def reset_request(self, request_id: str) -> None:
-        data = self._request_data.pop(request_id, None)
+        data = self.request_data.pop(request_id, None)
         if data is not None:
             data.ar_state = None
 
@@ -299,7 +299,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
             started_s=time.perf_counter(),
             forced_codes=self.load_forced_codes(state.seed),
         )
-        self._request_data[request_id] = data
+        self.request_data[request_id] = data
         logger.info(
             f"MiniMax Music 3 AR start request={request_id} seed={state.seed} max_frames={decode_limit} prompt_tokens={data.prompt_tokens}"
         )
@@ -327,9 +327,9 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
 
     def load_forced_codes(self, seed: int) -> torch.Tensor | None:
         """Reference codes for this request seed, or None when not replaying."""
-        if self._forced_codes_dir is None:
+        if self.forced_codes_dir is None:
             return None
-        path = Path(self._forced_codes_dir) / f"codes_seed{int(seed)}.pt"
+        path = Path(self.forced_codes_dir) / f"codes_seed{int(seed)}.pt"
         if not path.exists():
             raise FileNotFoundError(
                 f"MiniMax Music 3 reference replay has no trajectory for seed {seed}: "
@@ -341,7 +341,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         self, ar_states: list[ARState], device: torch.device
     ) -> torch.Tensor | None:
         """Stack this step's reference codes, one row per request."""
-        if self._forced_codes_dir is None:
+        if self.forced_codes_dir is None:
             return None
         rows = []
         for ar_state in ar_states:
@@ -426,21 +426,21 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         )
 
     def dump_reference_ranks(self, ar_state: ARState) -> None:
-        if self._dump_dir is None or not ar_state.reference_ranks:
+        if self.dump_dir is None or not ar_state.reference_ranks:
             return
-        os.makedirs(self._dump_dir, exist_ok=True)
+        os.makedirs(self.dump_dir, exist_ok=True)
         torch.save(
             torch.stack(ar_state.reference_ranks).cpu(),
-            os.path.join(self._dump_dir, f"seed{int(ar_state.seed)}_ranks.pt"),
+            os.path.join(self.dump_dir, f"seed{int(ar_state.seed)}_ranks.pt"),
         )
 
     def dump_chunk(self, chunk: torch.Tensor, seed: int, window: ChunkWindow) -> None:
         """Write one window for the latent comparison."""
-        if self._dump_dir is None:
+        if self.dump_dir is None:
             return
-        os.makedirs(self._dump_dir, exist_ok=True)
+        os.makedirs(self.dump_dir, exist_ok=True)
         path = os.path.join(
-            self._dump_dir, f"seed{int(seed)}_chunk{window.index:03d}_hidden.pt"
+            self.dump_dir, f"seed{int(seed)}_chunk{window.index:03d}hidden.pt"
         )
         torch.save(chunk.cpu(), path)
 

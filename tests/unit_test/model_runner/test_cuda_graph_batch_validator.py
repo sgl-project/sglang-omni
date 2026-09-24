@@ -205,7 +205,7 @@ def test_read_buffer_higgs_sampler_pool():
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 65
-    assert "_sampler_pool.seeds.shape[0]" in source
+    assert "sampler_pool.seeds.shape[0]" in source
 
 
 def test_read_buffer_returns_minimum_across_registered_buffers():
@@ -218,14 +218,14 @@ def test_read_buffer_returns_minimum_across_registered_buffers():
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 40
-    assert "_cg_codes_BN.shape[0]" in source
+    assert "cg_codes_BN.shape[0]" in source
 
 
 def test_read_buffer_qwen3_tts_feedback():
     model = _as_named(None, "Qwen3TTSTalker", _feedback_buffer=_FakeTensor(64))
     cap, source = read_model_buffer_capacity(model)
     assert cap == 64
-    assert "_feedback_buffer.shape[0]" in source
+    assert "feedback_buffer.shape[0]" in source
 
 
 def test_read_buffer_inner_submodule_fallback():
@@ -239,11 +239,11 @@ def test_read_buffer_inner_submodule_fallback():
 def test_read_buffer_qwen3_omni_prefers_top_level_alias():
     inner = _as_named(None, "TextModel", _feedback_buffer=_FakeTensor(48))
     model = _as_named(
-        None, "Qwen3OmniTalker", model=inner, _feedback_buffer=inner._feedback_buffer
+        None, "Qwen3OmniTalker", model=inner, _feedback_buffer=inner.feedback_buffer
     )
     cap, source = read_model_buffer_capacity(model)
     assert cap == 48
-    assert source == "model._feedback_buffer.shape[0]"
+    assert source == "model.feedback_buffer.shape[0]"
 
 
 def test_read_buffer_unregistered_model():

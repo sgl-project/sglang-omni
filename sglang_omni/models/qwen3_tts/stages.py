@@ -136,7 +136,7 @@ def register_qwen3_tts_hf_config() -> None:
                 self.text_config = talker_config
 
         Qwen3TTSConfig.__init__ = _patched_init
-        Qwen3TTSConfig._sglang_omni_patched = True
+        Qwen3TTSConfig._sglang_omni_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     try:
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
     except ValueError:

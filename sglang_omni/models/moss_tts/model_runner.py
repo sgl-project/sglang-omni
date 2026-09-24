@@ -31,8 +31,8 @@ class MossTTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
-        self._pending_rows: torch.Tensor | None = None
-        self._pending_embeds: torch.Tensor | None = None
+        self.pending_rows: torch.Tensor | None = None
+        self.pending_embeds: torch.Tensor | None = None
 
     def custom_prefill_forward(
         self,
@@ -133,7 +133,7 @@ class MossTTSModelRunner(ModelRunner):
         batch_size = len(requests)
         if batch_size == 0:
             return
-        embedding = self.model._decode_input_embedding
+        embedding = self.model.decode_input_embedding
         weight = embedding.weight
         if forward_batch.input_ids.numel() < batch_size:
             raise RuntimeError(
@@ -200,8 +200,8 @@ class MossTTSModelRunner(ModelRunner):
         embeds = self.model.prepare_multi_modal_inputs(
             rows.to(device=self.model.device)
         )
-        self._pending_rows = rows
-        self._pending_embeds = embeds.detach()
+        self.pending_rows = rows
+        self.pending_embeds = embeds.detach()
 
     def can_use_sampling_cuda_graph(
         self,
@@ -776,10 +776,10 @@ class MossTTSModelRunner(ModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
-        rows = self._pending_rows
-        embeds = self._pending_embeds
-        self._pending_rows = None
-        self._pending_embeds = None
+        rows = self.pending_rows
+        embeds = self.pending_embeds
+        self.pending_rows = None
+        self.pending_embeds = None
         if rows is None or embeds is None:
             return
 

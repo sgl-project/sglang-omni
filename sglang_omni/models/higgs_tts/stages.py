@@ -189,21 +189,21 @@ class HiggsReferenceEncodeHook(TensorReferenceEncodeHook[HiggsReferenceInput]):
     output_dtype = torch.long
 
     def __init__(self, codec: Any, *, num_codebooks: int, model_identity: str):
-        self._codec = codec
-        self._num_codebooks = int(num_codebooks)
+        self.codec = codec
+        self.num_codebooks = int(num_codebooks)
         self.model_id = str(model_identity)
-        self.encoder_config_hash = f"nq{self._num_codebooks}"
+        self.encoder_config_hash = f"nq{self.num_codebooks}"
 
     def input_key(self, item: HiggsReferenceInput) -> str | None:
         return item.content_key
 
     def encode_one(self, item: HiggsReferenceInput) -> torch.Tensor:
-        ref_codes_TN = self._codec.encode_reference(
-            item.waveform, sample_rate=24000
-        ).to(torch.long)
-        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != self._num_codebooks:
+        ref_codes_TN = self.codec.encode_reference(item.waveform, sample_rate=24000).to(
+            torch.long
+        )
+        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != self.num_codebooks:
             raise ValueError(
-                f"codec output must be [T, {self._num_codebooks}], got "
+                f"codec output must be [T, {self.num_codebooks}], got "
                 f"{tuple(ref_codes_TN.shape)}"
             )
         return apply_delay_pattern(ref_codes_TN)

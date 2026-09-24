@@ -71,7 +71,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             reference_encoder_cuda_graph_bucket_frames
         )
         self.wrapper: Any | None = None
-        self._stream_output_builder: Any | None = None
+        self.stream_output_builder: Any | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -160,7 +160,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
         subtalker = request_builders.resolve_subtalker_sampling(
-            self.wrapper._merge_generate_kwargs()
+            self.wrapper._merge_generate_kwargs()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
         model.capture_predictor_graphs(
             do_sample=subtalker.do_sample,
@@ -211,7 +211,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         return model_runner_mod.Qwen3TTSModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
-        request_builder, result_adapter, self._stream_output_builder = (
+        request_builder, result_adapter, self.stream_output_builder = (
             request_builders.make_qwen3_tts_scheduler_adapters(
                 model=model,
                 wrapper=self.wrapper,
@@ -221,7 +221,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
-            "stream_output_builder": self._stream_output_builder,
+            "stream_output_builder": self.stream_output_builder,
             "request_build_max_workers": 4,
             "request_build_max_pending": 16,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,

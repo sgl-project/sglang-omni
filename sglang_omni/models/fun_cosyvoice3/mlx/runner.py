@@ -30,23 +30,27 @@ class FunCosyVoice3MlxModelRunner:
         ensure_remote_code_allowed(model_dir, self.trust_remote_code)
         self.model = load_cosyvoice3_mlx_model(
             model_dir,
-            quantization=self._quantization,
+            quantization=self.quantization,
         )
-        self._trunk = None
+        self.trunk = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._cosyvoice3_prompt_lengths: dict[str, int] = {}
-        self._cosyvoice3_min_lengths: dict[str, int] = {}
-        self._cosyvoice3_repetition_penalties: dict[str, float] = {}
-        self._cosyvoice3_seen_masks: dict[str, mx.array] = {}
-        self._cosyvoice3_recent_tokens: dict[str, list[int]] = {}
-        self._cosyvoice3_sampling_pending_tokens: mx.array | None = None
+        self.cosyvoice3_prompt_lengths: dict[str, int] = {}
+        self.cosyvoice3_min_lengths: dict[str, int] = {}
+        self.cosyvoice3_repetition_penalties: dict[str, float] = {}
+        self.cosyvoice3_seen_masks: dict[str, mx.array] = {}
+        self.cosyvoice3_recent_tokens: dict[str, list[int]] = {}
+        self.cosyvoice3_sampling_pending_tokens: mx.array | None = None
 
     @staticmethod
     def request_prompt(req: Any) -> tuple[list[int], list[int]]:
-        text_ids = getattr(req, "_cosyvoice3_text_token_ids", None)
-        prompt_ids = getattr(req, "_cosyvoice3_prompt_speech_token_ids", None)
+        text_ids = getattr(
+            req, "_cosyvoice3_text_token_ids", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        prompt_ids = getattr(
+            req, "_cosyvoice3_prompt_speech_token_ids", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if text_ids is None or prompt_ids is None:
             raise ValueError(
                 "Fun-CosyVoice3 MLX request is missing raw prompt token metadata"
@@ -66,15 +70,15 @@ class FunCosyVoice3MlxModelRunner:
         rows = []
         for index, req_id in enumerate(req_ids):
             row = logits[index]
-            prompt_length = self._cosyvoice3_prompt_lengths.get(req_id, 0)
+            prompt_length = self.cosyvoice3_prompt_lengths.get(req_id, 0)
             if initial:
                 generated_count = 0
             else:
                 generated_count = max(
-                    self._first_attention_cache(caches[index]).offset - prompt_length,
+                    self.first_attention_cache(caches[index]).offset - prompt_length,
                     0,
                 )
-            if generated_count < self._cosyvoice3_min_lengths.get(req_id, 0):
+            if generated_count < self.cosyvoice3_min_lengths.get(req_id, 0):
                 row = mx.concatenate(
                     [
                         row[:SPEECH_TOKEN_SIZE],
@@ -82,9 +86,9 @@ class FunCosyVoice3MlxModelRunner:
                     ]
                 )
 
-            penalty = self._cosyvoice3_repetition_penalties.get(req_id, 1.0)
+            penalty = self.cosyvoice3_repetition_penalties.get(req_id, 1.0)
             if penalty != 1.0:
-                seen = self._cosyvoice3_seen_masks[req_id]
+                seen = self.cosyvoice3_seen_masks[req_id]
                 if pending_tokens is not None:
                     # Note (yexiaodong): Chained steps share a lazy predecessor;
                     # carry its token so repetition state remains exact.
@@ -97,7 +101,7 @@ class FunCosyVoice3MlxModelRunner:
                 )
                 speech_logits = mx.where(seen, adjusted, speech_logits)
             else:
-                seen = self._cosyvoice3_seen_masks[req_id]
+                seen = self.cosyvoice3_seen_masks[req_id]
                 if pending_tokens is not None:
                     seen = seen | (_SPEECH_IDS == pending_tokens[index])
                 speech_logits = row[:SPEECH_TOKEN_SIZE]
@@ -133,20 +137,20 @@ class FunCosyVoice3MlxModelRunner:
         if not self.disable_radix_cache:
             raise RuntimeError("Fun-CosyVoice3 MLX requires disable_radix_cache=True")
 
-        if self._enable_sampling:
-            self._req_sampling[req_id] = self.sampling_params_for_request(req)
-        self._cosyvoice3_prompt_lengths[req_id] = len(full_token_ids)
-        self._cosyvoice3_min_lengths[req_id] = int(req.sampling_params.min_new_tokens)
-        self._cosyvoice3_repetition_penalties[req_id] = float(
+        if self.enable_sampling:
+            self.req_sampling[req_id] = self.sampling_params_for_request(req)
+        self.cosyvoice3_prompt_lengths[req_id] = len(full_token_ids)
+        self.cosyvoice3_min_lengths[req_id] = int(req.sampling_params.min_new_tokens)
+        self.cosyvoice3_repetition_penalties[req_id] = float(
             req.sampling_params.repetition_penalty
         )
-        self._cosyvoice3_seen_masks[req_id] = mx.zeros(
+        self.cosyvoice3_seen_masks[req_id] = mx.zeros(
             (SPEECH_TOKEN_SIZE,), dtype=mx.bool_
         )
-        self._cosyvoice3_recent_tokens[req_id] = []
+        self.cosyvoice3_recent_tokens[req_id] = []
         text_ids, prompt_ids = self.request_prompt(req)
         embeddings = self.model.build_prompt_embeddings(text_ids, prompt_ids)
-        cache = self._acquire_cache()
+        cache = self.acquire_cache()
         logits = self.model.forward_embeddings(embeddings, cache=cache)
         logits = self.constrain_logits(
             logits[:, -1, :],
@@ -182,7 +186,7 @@ class FunCosyVoice3MlxModelRunner:
         # Note (yexiaodong): Preserve the request seed when global deterministic
         # inference is disabled; global state is only a default.
         seed = sampling_params.sampling_seed
-        if seed is None and self._deterministic_seeding:
+        if seed is None and self.deterministic_seeding:
             seed = DEFAULT_SAMPLING_SEED
         # Note (yexiaodong): This runner applies repetition penalties itself,
         # so avoid the shared constructor's misleading warning.
@@ -211,12 +215,12 @@ class FunCosyVoice3MlxModelRunner:
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
         req_id = req_ids[0]
-        cache = self._req_caches[req_id]
-        input_ids = mx.array([[self._req_token_ids[req_id][-1]]], dtype=mx.int32)
-        logits = self._decode_with_native_cache([cache], [input_ids])
+        cache = self.req_caches[req_id]
+        input_ids = mx.array([[self.req_token_ids[req_id][-1]]], dtype=mx.int32)
+        logits = self.decode_with_native_cache([cache], [input_ids])
         logits = self.constrain_logits(logits, req_ids, [cache])
         if logits_hook is not None:
-            logits = self._run_logits_hook(logits, logits_hook)
+            logits = self.run_logits_hook(logits, logits_hook)
         lazy_tokens, lazy_logprobs = self._select_tokens_with_logprobs(
             logits,
             req_ids,
@@ -242,7 +246,7 @@ class FunCosyVoice3MlxModelRunner:
         masks = []
         for index, req_id in enumerate(req_ids):
             mask = mx.zeros((SPEECH_TOKEN_SIZE,), dtype=mx.bool_)
-            recent = self._cosyvoice3_recent_tokens.get(req_id, [])
+            recent = self.cosyvoice3_recent_tokens.get(req_id, [])
             if recent:
                 mask = mask.at[mx.array(recent, dtype=mx.int32)].add(True)
             if pending_tokens is not None:
@@ -265,7 +269,7 @@ class FunCosyVoice3MlxModelRunner:
         full distribution with that candidate masked. Keep this entirely in
         the MLX graph so chained decode remains valid.
         """
-        if not self._enable_sampling:
+        if not self.enable_sampling:
             return super()._select_tokens_with_logprobs(
                 last_logits,
                 req_ids,
@@ -281,11 +285,11 @@ class FunCosyVoice3MlxModelRunner:
             scale_by_temperature,
         )
 
-        params = [self._req_sampling[req_id] for req_id in req_ids]
-        edited = self._edited_logits(last_logits, edit_rows)
+        params = [self.req_sampling[req_id] for req_id in req_ids]
+        edited = self.edited_logits(last_logits, edit_rows)
         scaled = scale_by_temperature(edited, params)
-        positions = [self._first_attention_cache(cache).offset - 1 for cache in caches]
-        self._rng_key, first_key = mx.random.split(self._rng_key)
+        positions = [self.first_attention_cache(cache).offset - 1 for cache in caches]
+        self.rng_key, first_key = mx.random.split(self.rng_key)
         first = sample_tokens(
             edited,
             params,
@@ -296,7 +300,7 @@ class FunCosyVoice3MlxModelRunner:
 
         recent_masks = self.recent_token_masks(
             req_ids,
-            self._cosyvoice3_sampling_pending_tokens,
+            self.cosyvoice3_sampling_pending_tokens,
         )
         first_is_speech = first < SPEECH_TOKEN_SIZE
         repeated = first_is_speech & mx.take_along_axis(
@@ -326,7 +330,7 @@ class FunCosyVoice3MlxModelRunner:
         fallback_logits = mx.concatenate(
             [fallback_logits, edited[:, SPEECH_TOKEN_SIZE:]], axis=1
         )
-        self._rng_key, fallback_key = mx.random.split(self._rng_key)
+        self.rng_key, fallback_key = mx.random.split(self.rng_key)
         fallback = sample_tokens(
             fallback_logits,
             fallback_params,
@@ -353,9 +357,9 @@ class FunCosyVoice3MlxModelRunner:
             return super().decode_batch_start_chained(prev)
         from sglang.srt.hardware_backend.mlx.model_runner import MlxPendingDecode
 
-        self._cosyvoice3_sampling_pending_tokens = prev.lazy_tokens
+        self.cosyvoice3_sampling_pending_tokens = prev.lazy_tokens
         try:
-            logits = self._decode_with_native_cache(
+            logits = self.decode_with_native_cache(
                 prev.caches,
                 [prev.lazy_tokens[:, None]],
             )
@@ -373,7 +377,7 @@ class FunCosyVoice3MlxModelRunner:
                 prev.logprob_spec,
             )
         finally:
-            self._cosyvoice3_sampling_pending_tokens = None
+            self.cosyvoice3_sampling_pending_tokens = None
         return MlxPendingDecode(
             lazy_tokens=lazy_tokens,
             req_ids=prev.req_ids,
@@ -397,29 +401,29 @@ class FunCosyVoice3MlxModelRunner:
         return token_ids
 
     def record_seen_token(self, req_id: str, token_id: int) -> None:
-        seen = self._cosyvoice3_seen_masks[req_id] | (_SPEECH_IDS == token_id)
+        seen = self.cosyvoice3_seen_masks[req_id] | (_SPEECH_IDS == token_id)
         mx.eval(seen)
-        self._cosyvoice3_seen_masks[req_id] = seen
-        recent = self._cosyvoice3_recent_tokens.setdefault(req_id, [])
+        self.cosyvoice3_seen_masks[req_id] = seen
+        recent = self.cosyvoice3_recent_tokens.setdefault(req_id, [])
         recent.append(token_id)
         del recent[:-10]
 
     def remove_request(self, req_id: str) -> None:
         super().remove_request(req_id)
-        self._cosyvoice3_prompt_lengths.pop(req_id, None)
-        self._cosyvoice3_min_lengths.pop(req_id, None)
-        self._cosyvoice3_repetition_penalties.pop(req_id, None)
-        self._cosyvoice3_seen_masks.pop(req_id, None)
-        self._cosyvoice3_recent_tokens.pop(req_id, None)
+        self.cosyvoice3_prompt_lengths.pop(req_id, None)
+        self.cosyvoice3_min_lengths.pop(req_id, None)
+        self.cosyvoice3_repetition_penalties.pop(req_id, None)
+        self.cosyvoice3_seen_masks.pop(req_id, None)
+        self.cosyvoice3_recent_tokens.pop(req_id, None)
 
     def clear(self) -> None:
         super().clear()
-        self._cosyvoice3_sampling_pending_tokens = None
-        self._cosyvoice3_prompt_lengths.clear()
-        self._cosyvoice3_min_lengths.clear()
-        self._cosyvoice3_repetition_penalties.clear()
-        self._cosyvoice3_seen_masks.clear()
-        self._cosyvoice3_recent_tokens.clear()
+        self.cosyvoice3_sampling_pending_tokens = None
+        self.cosyvoice3_prompt_lengths.clear()
+        self.cosyvoice3_min_lengths.clear()
+        self.cosyvoice3_repetition_penalties.clear()
+        self.cosyvoice3_seen_masks.clear()
+        self.cosyvoice3_recent_tokens.clear()
 
 
 def make_fun_cosyvoice3_mlx_runner_class():

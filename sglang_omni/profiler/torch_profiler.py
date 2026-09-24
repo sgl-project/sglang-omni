@@ -52,42 +52,42 @@ class TorchProfiler(ProfilerBase):
 
     @classmethod
     def get_active_run_id(cls) -> str | None:
-        return cls._active_run_id
+        return cls.active_run_id
 
     @classmethod
     def start(cls, trace_path_template: str, run_id: str | None = None) -> str:
         """
         Start the profiler with the given trace path template.
         """
-        with cls._lock:
+        with cls.lock:
 
             # 1. Cleanup any existing profiler
-            if cls._profiler is not None:
-                if run_id is not None and cls._active_run_id == run_id:
-                    return f"{cls._trace_template}_rank{rank}.trace.json.gz"
+            if cls.profiler is not None:
+                if run_id is not None and cls.active_run_id == run_id:
+                    return f"{cls.trace_template}_rank{rank}.trace.json.gz"
 
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
                     rank,
-                    cls._active_run_id,
+                    cls.active_run_id,
                     run_id,
                 )
                 try:
-                    cls._profiler.stop()
+                    cls.profiler.stop()
                 except Exception as e:
                     logger.warning(
                         "[Rank %s] Failed to stop existing profiler: %s", rank, e
                     )
-                cls._profiler = None
-                cls._active_run_id = None
-                cls._trace_template = ""
+                cls.profiler = None
+                cls.active_run_id = None
+                cls.trace_template = ""
 
             rank = cls.get_rank()
 
             # 2. Make path absolute
             trace_path_template = os.path.abspath(trace_path_template)
-            cls._trace_template = trace_path_template
-            cls._active_run_id = run_id
+            cls.trace_template = trace_path_template
+            cls.active_run_id = run_id
 
             # Expected paths
             json_file = f"{trace_path_template}_rank{rank}.trace.json"
@@ -125,7 +125,7 @@ class TorchProfiler(ProfilerBase):
             # No ``schedule``: record continuously between start/stop.
             # Expensive flags are env-var opt-in (default off keeps the
             # trace tens of MB; all on can hit multi-GB).
-            cls._profiler = profile(
+            cls.profiler = profile(
                 activities=profiler_activities(),
                 on_trace_ready=trace_handler,
                 record_shapes=os.environ.get("SGLANG_TORCH_PROFILER_RECORD_SHAPES")
@@ -137,7 +137,7 @@ class TorchProfiler(ProfilerBase):
             )
 
             # 5. Start profiling
-            cls._profiler.start()
+            cls.profiler.start()
 
             # Return the expected final path
             return f"{trace_path_template}_rank{rank}.trace.json.gz"
@@ -150,12 +150,12 @@ class TorchProfiler(ProfilerBase):
         If run_id is provided:
           - only stop when active_run_id matches (otherwise ignore)
         """
-        with cls._lock:
-            if cls._profiler is None:
+        with cls.lock:
+            if cls.profiler is None:
                 return None
 
             rank = cls.get_rank()
-            active = cls._active_run_id
+            active = cls.active_run_id
 
             if run_id is not None and active is not None and active != run_id:
                 logger.warning(
@@ -166,11 +166,11 @@ class TorchProfiler(ProfilerBase):
                 )
                 return None
 
-            base_path = f"{cls._trace_template}_rank{rank}"
+            base_path = f"{cls.trace_template}_rank{rank}"
             json_path = f"{base_path}.trace.json"
             gz_path = f"{json_path}.gz"
 
-            profiler = cls._profiler
+            profiler = cls.profiler
             try:
                 profiler.stop()
             except Exception as e:
@@ -198,20 +198,20 @@ class TorchProfiler(ProfilerBase):
             except Exception as e:
                 logger.warning("[Rank %s] Failed to export trace: %s", rank, e)
 
-            cls._profiler = None
-            cls._active_run_id = None
-            cls._trace_template = ""
+            cls.profiler = None
+            cls.active_run_id = None
+            cls.trace_template = ""
 
             return {"trace": gz_path, "table": None}
 
     @classmethod
     def step(cls):
-        if cls._profiler is not None:
-            cls._profiler.step()
+        if cls.profiler is not None:
+            cls.profiler.step()
 
     @classmethod
     def is_active(cls) -> bool:
-        return cls._profiler is not None
+        return cls.profiler is not None
 
     @classmethod
     def get_step_context(cls):
@@ -222,32 +222,32 @@ class TorchNPUProfiler(TorchProfiler):
 
     @classmethod
     def start(cls, trace_path_template: str, run_id: str | None = None) -> str:
-        with cls._lock:
+        with cls.lock:
             trace_path_template = os.path.abspath(trace_path_template)
             rank = cls.get_rank()
-            if cls._profiler is not None:
-                if run_id is not None and cls._active_run_id == run_id:
+            if cls.profiler is not None:
+                if run_id is not None and cls.active_run_id == run_id:
                     return trace_path_template
 
                 rank = cls.get_rank()
                 logger.warning(
                     "[Rank %s] Torch profiler already active (run_id=%s), restarting for run_id=%s",
                     rank,
-                    cls._active_run_id,
+                    cls.active_run_id,
                     run_id,
                 )
                 try:
-                    cls._profiler.stop()
+                    cls.profiler.stop()
                 except Exception as e:
                     logger.warning(
                         "[Rank %s] Failed to stop existing profiler: %s", rank, e
                     )
-                cls._profiler = None
-                cls._active_run_id = None
-                cls._trace_template = ""
+                cls.profiler = None
+                cls.active_run_id = None
+                cls.trace_template = ""
 
-            cls._active_run_id = run_id
-            cls._trace_template = trace_path_template
+            cls.active_run_id = run_id
+            cls.trace_template = trace_path_template
 
             os.makedirs(trace_path_template, exist_ok=True)
 
@@ -255,7 +255,7 @@ class TorchNPUProfiler(TorchProfiler):
                 "[Rank %s] Starting End-to-End Torch profiler (run_id=%s)", rank, run_id
             )
 
-            cls._profiler = torch_npu.profiler.profile(
+            cls.profiler = torch_npu.profiler.profile(
                 activities=[
                     torch_npu.profiler.ProfilerActivity.CPU,
                     torch_npu.profiler.ProfilerActivity.NPU,
@@ -270,19 +270,19 @@ class TorchNPUProfiler(TorchProfiler):
                 with_stack=os.environ.get("SGLANG_TORCH_PROFILER_WITH_STACK") == "1",
                 with_flops=os.environ.get("SGLANG_TORCH_PROFILER_WITH_FLOPS") == "1",
             )
-            cls._profiler.start()
+            cls.profiler.start()
 
             return trace_path_template
 
     @classmethod
     def stop(cls, *, run_id: str | None = None) -> dict | None:
-        with cls._lock:
-            if cls._profiler is None:
+        with cls.lock:
+            if cls.profiler is None:
                 return None
 
             rank = cls.get_rank()
-            active = cls._active_run_id
-            trace_path = cls._trace_template
+            active = cls.active_run_id
+            trace_path = cls.trace_template
 
             if run_id is not None and active is not None and active != run_id:
                 logger.warning(
@@ -293,14 +293,14 @@ class TorchNPUProfiler(TorchProfiler):
                 )
                 return None
 
-            profiler = cls._profiler
+            profiler = cls.profiler
             try:
                 profiler.stop()
             except Exception as e:
                 logger.warning("[Rank %s] Profiler stop failed: %s", rank, e)
 
-            cls._profiler = None
-            cls._active_run_id = None
-            cls._trace_template = ""
+            cls.profiler = None
+            cls.active_run_id = None
+            cls.trace_template = ""
 
             return {"trace": trace_path, "table": None}

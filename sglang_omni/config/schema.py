@@ -206,7 +206,7 @@ class EngineArgs(BaseModel):
         return {
             key: value
             for key, value in self.model_dump().items()
-            if (value is not None or key in extra) and key not in self._NON_SERVER_KEYS
+            if (value is not None or key in extra) and key not in self.NON_SERVER_KEYS
         }
 
 

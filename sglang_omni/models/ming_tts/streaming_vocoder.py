@@ -31,27 +31,27 @@ class AudioVAEStreamingSlotBindings:
         self,
         decoder: MingAudioDecoder,
     ) -> None:
-        self._decoder = decoder
-        self._request_to_slot: dict[str, int] = {}
-        self._free_slots = list(reversed(range(decoder.stream_capacity)))
+        self.decoder = decoder
+        self.request_to_slot: dict[str, int] = {}
+        self.free_slots = list(reversed(range(decoder.stream_capacity)))
 
     def try_bind(self, request_id: str) -> int | None:
-        slot = self._request_to_slot.get(request_id)
+        slot = self.request_to_slot.get(request_id)
         if slot is not None:
             return slot
-        if not self._free_slots:
+        if not self.free_slots:
             return None
-        slot = self._free_slots.pop()
-        self._request_to_slot[request_id] = slot
+        slot = self.free_slots.pop()
+        self.request_to_slot[request_id] = slot
         return slot
 
     def slot_for(self, request_id: str) -> int | None:
-        return self._request_to_slot.get(request_id)
+        return self.request_to_slot.get(request_id)
 
     def resolve_slots(self, request_ids: Sequence[str]) -> tuple[int, ...]:
         slots = []
         for request_id in request_ids:
-            slot = self._request_to_slot.get(request_id)
+            slot = self.request_to_slot.get(request_id)
             if slot is None:
                 raise RuntimeError(
                     f"Ming-Omni-TTS stream {request_id!r} has no AudioVAE slot"
@@ -61,33 +61,33 @@ class AudioVAEStreamingSlotBindings:
 
     def reset_and_release(self, request_ids: Sequence[str]) -> None:
         bindings = {
-            request_id: self._request_to_slot[request_id]
+            request_id: self.request_to_slot[request_id]
             for request_id in request_ids
-            if request_id in self._request_to_slot
+            if request_id in self.request_to_slot
         }
         if not bindings:
             return
 
         slots = tuple(bindings.values())
         try:
-            self._decoder.reset_stream_rows(slots)
+            self.decoder.reset_stream_rows(slots)
         finally:
             for request_id in bindings:
-                del self._request_to_slot[request_id]
+                del self.request_to_slot[request_id]
 
         for slot in bindings.values():
-            self._free_slots.append(slot)
+            self.free_slots.append(slot)
 
     def release_clean(self, request_ids: Sequence[str]) -> None:
         slots = self.resolve_slots(request_ids)
         for request_id, slot in zip(request_ids, slots, strict=True):
-            del self._request_to_slot[request_id]
-            self._free_slots.append(slot)
+            del self.request_to_slot[request_id]
+            self.free_slots.append(slot)
 
     def reset_all(self) -> None:
-        self._decoder.reset_all_stream_rows()
-        self._request_to_slot.clear()
-        self._free_slots = list(reversed(range(self._decoder.stream_capacity)))
+        self.decoder.reset_all_stream_rows()
+        self.request_to_slot.clear()
+        self.free_slots = list(reversed(range(self.decoder.stream_capacity)))
 
 
 @dataclass(slots=True)
@@ -124,16 +124,16 @@ class MingTTSStreamingVocoderScheduler(
         steady_chunk_patches: int,
         keep_latents: bool = False,
     ) -> None:
-        self._decoder = decoder
-        self._slot_bindings = AudioVAEStreamingSlotBindings(decoder)
+        self.decoder = decoder
+        self.slot_bindings = AudioVAEStreamingSlotBindings(decoder)
         self.stream_chunk_batch_max = decoder.stream_capacity
-        self._patch_size = int(patch_size)
-        self._latent_dim = int(latent_dim)
-        self._initial_chunk_patches = int(initial_chunk_patches)
-        self._steady_chunk_patches = int(steady_chunk_patches)
-        self._pending_release_ids: set[str] = set()
-        self._stop_requested = threading.Event()
-        self._serving_stopped = False
+        self.patch_size = int(patch_size)
+        self.latent_dim = int(latent_dim)
+        self.initial_chunk_patches = int(initial_chunk_patches)
+        self.steady_chunk_patches = int(steady_chunk_patches)
+        self.pending_release_ids: set[str] = set()
+        self.stop_requested = threading.Event()
+        self.serving_stopped = False
         super().__init__(
             partial(
                 decode_ming_tts_audio_payload,
@@ -146,15 +146,15 @@ class MingTTSStreamingVocoderScheduler(
         )
 
     def stop(self) -> None:
-        self._stop_requested.set()
+        self.stop_requested.set()
         super().stop()
 
     def next_message(self) -> IncomingMessage | None:
-        if self._stop_requested.is_set():
+        if self.stop_requested.is_set():
             self.running = False
             return None
         msg = super().next_message()
-        if self._stop_requested.is_set():
+        if self.stop_requested.is_set():
             self.running = False
             return None
         return msg
@@ -216,7 +216,7 @@ class MingTTSStreamingVocoderScheduler(
                 "Ming-Omni-TTS stream latent dtype must be torch.float32, "
                 f"got {latents.dtype}"
             )
-        expected_shape = (self._patch_size, self._latent_dim)
+        expected_shape = (self.patch_size, self.latent_dim)
         if tuple(latents.shape) != expected_shape:
             raise ValueError(
                 f"Ming-Omni-TTS stream latent shape must be {expected_shape}, "
@@ -242,8 +242,8 @@ class MingTTSStreamingVocoderScheduler(
 
     def next_chunk_patches(self, state: StreamState) -> int:
         if state.initial_group_consumed:
-            return self._steady_chunk_patches
-        return self._initial_chunk_patches
+            return self.steady_chunk_patches
+        return self.initial_chunk_patches
 
     def select_step_participants(self) -> list[tuple[str, StreamState]]:
         # Note (yzxiao): External abort only marks a binding dirty; the scheduler
@@ -253,7 +253,7 @@ class MingTTSStreamingVocoderScheduler(
         for request_id, state in self.stream_state_items():
             if self.is_aborted(request_id) or not self.has_executable_work(state):
                 continue
-            if self._slot_bindings.try_bind(request_id) is None:
+            if self.slot_bindings.try_bind(request_id) is None:
                 continue
             participants.append((request_id, state))
         return participants
@@ -286,11 +286,11 @@ class MingTTSStreamingVocoderScheduler(
         plan: _StreamingStepPlan,
     ) -> dict[str, torch.Tensor]:
         request_ids = tuple(request_id for request_id, _ in participants)
-        slot_ids = self._slot_bindings.resolve_slots(request_ids)
+        slot_ids = self.slot_bindings.resolve_slots(request_ids)
         # Note (yzxiao): The decoder returns owned CPU waveforms all-or-error, so
         # request progress is committed only after it succeeds. Terminal transitions
         # already clean their rows and need no second reset.
-        waveforms = self._decoder.run_streaming(
+        waveforms = self.decoder.run_streaming(
             slot_ids=slot_ids,
             patch_groups=tuple(item.patches for item in plan),
             terminal_flags=tuple(item.terminal for item in plan),
@@ -308,7 +308,7 @@ class MingTTSStreamingVocoderScheduler(
             request_id for (request_id, _), item, _ in step_results if item.terminal
         )
         if terminal_request_ids:
-            self._slot_bindings.release_clean(terminal_request_ids)
+            self.slot_bindings.release_clean(terminal_request_ids)
 
         return {
             request_id: waveform
@@ -339,7 +339,7 @@ class MingTTSStreamingVocoderScheduler(
                 "terminal latent patch"
             )
         if not state.terminal_committed:
-            if self._slot_bindings.slot_for(request_id) is None:
+            if self.slot_bindings.slot_for(request_id) is None:
                 return None
             raise RuntimeError(
                 f"Ming-Omni-TTS stream {request_id!r} ended before its terminal "
@@ -359,7 +359,7 @@ class MingTTSStreamingVocoderScheduler(
     ) -> torch.Tensor:
         del payload
         latents = torch.stack(state.pending_patches, dim=0)
-        waveform = self._decoder.decode_full(latents)
+        waveform = self.decoder.decode_full(latents)
         sample_count = int(waveform.numel())
         if sample_count == 0:
             raise RuntimeError(
@@ -369,18 +369,18 @@ class MingTTSStreamingVocoderScheduler(
         return waveform
 
     def drain_pending_releases(self) -> None:
-        pending = tuple(self._pending_release_ids)
+        pending = tuple(self.pending_release_ids)
         if not pending:
             return
         try:
-            self._slot_bindings.reset_and_release(pending)
+            self.slot_bindings.reset_and_release(pending)
         except Exception:
             logger.exception(
                 "Ming-Omni-TTS failed to reset AudioVAE rows; their slots "
                 "will remain unavailable"
             )
         finally:
-            self._pending_release_ids.difference_update(pending)
+            self.pending_release_ids.difference_update(pending)
 
     def release_stream_resources(
         self,
@@ -388,30 +388,30 @@ class MingTTSStreamingVocoderScheduler(
         state: StreamState,
     ) -> None:
         del state
-        if self._slot_bindings.slot_for(request_id) is None:
+        if self.slot_bindings.slot_for(request_id) is None:
             return
-        self._pending_release_ids.add(request_id)
+        self.pending_release_ids.add(request_id)
 
     def warmup_now(self) -> None:
-        self._decoder.prepare_streaming()
+        self.decoder.prepare_streaming()
 
     def on_serving_start(self) -> None:
-        if self._stop_requested.is_set():
+        if self.stop_requested.is_set():
             return
-        if not self._decoder.streaming_ready:
+        if not self.decoder.streaming_ready:
             raise RuntimeError(
                 "Ming-Omni-TTS streaming AudioVAE backend is not prepared"
             )
 
     def on_serving_stop(self) -> None:
-        if self._serving_stopped:
+        if self.serving_stopped:
             return
-        self._serving_stopped = True
+        self.serving_stopped = True
         try:
-            self._slot_bindings.reset_all()
+            self.slot_bindings.reset_all()
         finally:
-            self._pending_release_ids.clear()
-            self._decoder.close()
+            self.pending_release_ids.clear()
+            self.decoder.close()
 
     def final_result_data(
         self,
@@ -421,9 +421,9 @@ class MingTTSStreamingVocoderScheduler(
     ) -> dict[str, Any]:
         del request_id
         final_state = load_ming_tts_state(payload)
-        final_state.sample_rate = int(self._decoder.sample_rate)
+        final_state.sample_rate = int(self.decoder.sample_rate)
         final_state.duration_s = float(
-            state.emitted_samples / int(self._decoder.sample_rate)
+            state.emitted_samples / int(self.decoder.sample_rate)
         )
         data = final_state.to_dict()
         data["modality"] = "audio"

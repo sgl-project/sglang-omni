@@ -450,11 +450,13 @@ class Qwen3TTSIncrementalDecoder:
                     "act2",
                     "conv2",
                 )
-        self._decoder = decoder
+        self.decoder = decoder
         self.total_upsample = int(decoder.total_upsample)
-        self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = None
-        self._compiled_kernel: Any = None
-        self._compiled_shapes: set[tuple[int, int]] = set()
+        self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
+        self.compiled_kernel: Any = None
+        self.compiled_shapes: set[tuple[int, int]] = set()
 
     @staticmethod
     def require_attrs(module: Any, path: str, *names: str) -> None:
@@ -473,12 +475,18 @@ class Qwen3TTSIncrementalDecoder:
         from them. This walks the validated module tree in the same order
         ``decode`` does and derives every key and shape statically.
         """
-        if self._state_spec is None:
-            self._state_spec = self.build_state_spec()
-        return self._state_spec
+        if (
+            self._state_spec is None
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self._state_spec = (
+                self.build_state_spec()
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return (
+            self._state_spec
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def build_state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
-        decoder = self._decoder
+        decoder = self.decoder
         conv: list[tuple[str, int, int]] = []
         transconv: list[tuple[str, int, int]] = []
 
@@ -589,11 +597,11 @@ class Qwen3TTSIncrementalDecoder:
         # eager decode stays off Dynamo, whose value guards would otherwise
         # recompile once per stream position and hit the recompile limit.
         shape = (int(codes.shape[0]), fresh_frames)
-        if compiled and shape not in self._compiled_shapes:
+        if compiled and shape not in self.compiled_shapes:
             raise RuntimeError(
                 f"Qwen3-TTS incremental codec shape {shape} was not precompiled"
             )
-        kernel = self._compiled_kernel if compiled else self.decode_tensors
+        kernel = self.compiled_kernel if compiled else self.decode_tensors
         waveform = kernel(codes, state)
         expected_samples = fresh_frames * self.total_upsample
         if int(waveform.shape[-1]) != expected_samples:
@@ -618,18 +626,18 @@ class Qwen3TTSIncrementalDecoder:
         they are the Python scalars that change every step, and inside the
         traced region each distinct value would force a recompile.
         """
-        hidden_states = self._decoder.quantizer.decode(codes)
+        hidden_states = self.decoder.quantizer.decode(codes)
         hidden_states = incremental_causal_conv1d(
-            self._decoder.pre_conv,
+            self.decoder.pre_conv,
             hidden_states,
             state,
             "pre_conv",
         ).transpose(1, 2)
         hidden_states = incremental_transformer(
-            self._decoder.pre_transformer, hidden_states, state
+            self.decoder.pre_transformer, hidden_states, state
         ).permute(0, 2, 1)
 
-        for stage_index, blocks in enumerate(self._decoder.upsample):
+        for stage_index, blocks in enumerate(self.decoder.upsample):
             if len(blocks) != 2:
                 raise TypeError("unsupported Qwen3-TTS upsample layout")
             hidden_states = incremental_causal_transconv1d(
@@ -646,10 +654,10 @@ class Qwen3TTSIncrementalDecoder:
             )
 
         waveform = incremental_causal_conv1d(
-            self._decoder.decoder[0], hidden_states, state, "decoder.0"
+            self.decoder.decoder[0], hidden_states, state, "decoder.0"
         )
         for block_index, decoder_block in enumerate(
-            self._decoder.decoder[1:-2], start=1
+            self.decoder.decoder[1:-2], start=1
         ):
             if len(decoder_block.block) < 2:
                 raise TypeError("unsupported Qwen3-TTS decoder block layout")
@@ -667,9 +675,9 @@ class Qwen3TTSIncrementalDecoder:
                     state,
                     f"decoder.{block_index}.residual.{residual_index}",
                 )
-        waveform = self._decoder.decoder[-2](waveform)
+        waveform = self.decoder.decoder[-2](waveform)
         return incremental_causal_conv1d(
-            self._decoder.decoder[-1], waveform, state, "decoder.final"
+            self.decoder.decoder[-1], waveform, state, "decoder.final"
         ).clamp(min=-1, max=1)
 
     def precompile(
@@ -684,17 +692,19 @@ class Qwen3TTSIncrementalDecoder:
         Pass the codes and state of a real decode, in its grad-disabling
         context: Dynamo guards on both, and the step advances the state.
         """
-        if self._compiled_kernel is None:
-            self._compiled_kernel = torch.compile(
+        if self.compiled_kernel is None:
+            self.compiled_kernel = torch.compile(
                 self.decode_tensors, dynamic=False, fullgraph=True
             )
         shape = (int(codes.shape[0]), int(codes.shape[-1]))
-        if shape in self._compiled_shapes:
+        if shape in self.compiled_shapes:
             return
         # note (luojiaxuan): one trace per (batch, width) pair, past the default
         # 8; ``decode`` never compiles a new shape, so the limit only matters here.
-        with torch._dynamo.config.patch(
-            recompile_limit=max(torch._dynamo.config.recompile_limit, 64)
+        with torch._dynamo.config.patch(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            recompile_limit=max(
+                torch._dynamo.config.recompile_limit, 64
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         ):
-            self._compiled_kernel(codes, state)
-        self._compiled_shapes.add(shape)
+            self.compiled_kernel(codes, state)
+        self.compiled_shapes.add(shape)

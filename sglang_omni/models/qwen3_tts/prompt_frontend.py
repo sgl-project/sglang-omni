@@ -48,7 +48,7 @@ class PromptEmbeddings(nn.Module):
         # Note (Jiaxin Deng): the prompt builders only read this buffer's device
         # and dtype; the talker's real feedback buffer lives in the engine.
         self.register_buffer(
-            "_feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
+            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:

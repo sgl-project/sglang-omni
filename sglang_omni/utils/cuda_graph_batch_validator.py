@@ -26,45 +26,45 @@ class BufferProbe:
 _BUFFER_PROBES: dict[str, BufferProbe] = {
     "HiggsTTSModel": BufferProbe(
         (
-            ("_sampler_pool.seeds", lambda m: m._sampler_pool.seeds.shape[0]),
-            ("_cg_codes_BN", lambda m: m._cg_codes_BN.shape[0]),
-            ("_cg_active_last_codes", lambda m: m._cg_active_last_codes.shape[0]),
+            ("sampler_pool.seeds", lambda m: m.sampler_pool.seeds.shape[0]),
+            ("cg_codes_BN", lambda m: m.cg_codes_BN.shape[0]),
+            ("cg_active_last_codes", lambda m: m.cg_active_last_codes.shape[0]),
         ),
         note="sampler pool = max_running_requests + 1 (one reserved padding row)",
     ),
     "Qwen3TTSTalker": BufferProbe(
-        (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
+        (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
     ),
     "MossTTSDelaySGLangModel": BufferProbe(
         (
             (
-                "_decode_input_embedding.weight",
-                lambda m: m._decode_input_embedding.weight.shape[0],
+                "decode_input_embedding.weight",
+                lambda m: m.decode_input_embedding.weight.shape[0],
             ),
         )
     ),
     "MossTTSLocalSGLangModel": BufferProbe(
         (
             (
-                "_decode_input_embedding.weight",
-                lambda m: m._decode_input_embedding.weight.shape[0],
+                "decode_input_embedding.weight",
+                lambda m: m.decode_input_embedding.weight.shape[0],
             ),
         )
     ),
     "S2ProSGLangTextModel": BufferProbe(
-        (("_vq_codes", lambda m: m._vq_codes.shape[0]),),
+        (("vq_codes", lambda m: m.vq_codes.shape[0]),),
         note="allocated only after setup_vq_decode()",
     ),
     "VoxtralSGLangTTSModel": BufferProbe(
         (
             (
-                "_decode_input_embed_buffer",
-                lambda m: m._decode_input_embed_buffer.shape[0],
+                "decode_input_embed_buffer",
+                lambda m: m.decode_input_embed_buffer.shape[0],
             ),
         )
     ),
     "Qwen3OmniTalker": BufferProbe(
-        (("_feedback_buffer", lambda m: m._feedback_buffer.shape[0]),)
+        (("feedback_buffer", lambda m: m.feedback_buffer.shape[0]),)
     ),
 }
 

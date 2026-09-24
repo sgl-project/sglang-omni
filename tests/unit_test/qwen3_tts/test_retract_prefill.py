@@ -209,7 +209,7 @@ def test_reprefill_restores_retained_repetition_penalty_history() -> None:
             return contextlib.nullcontext()
 
     runner = _runner()
-    runner._execution_bridge = _ExecutionBridge()
+    runner.execution_bridge = _ExecutionBridge()
     with runner.execution_context(schedule_batch, isolate_sampling=True):
         pass
 

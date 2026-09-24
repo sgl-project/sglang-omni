@@ -139,7 +139,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
         self.mem_fraction_static = mem_fraction_static
-        self._cuda_graph_bs: list[int] = []
+        self.cuda_graph_bs: list[int] = []
 
     def resolve_checkpoint(self, model_path: str) -> str:
         local = resolve_checkpoint(model_path)
@@ -173,8 +173,8 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
-        self._cuda_graph_bs = cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
-        overrides["cuda_graph_bs"] = self._cuda_graph_bs
+        self.cuda_graph_bs = cuda_graph_buckets(int(overrides["cuda_graph_max_bs"]))
+        overrides["cuda_graph_bs"] = self.cuda_graph_bs
 
     def customize_server_args(self, server_args: Any) -> None:
         # note (Chenchen Hong): per-frame feedback/EOS state has no rollback, so a
@@ -208,7 +208,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
                 TTSSamplingParams,
             )
 
-            model.capture_tail_graphs(self._cuda_graph_bs, TTSSamplingParams())
+            model.capture_tail_graphs(self.cuda_graph_bs, TTSSamplingParams())
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner

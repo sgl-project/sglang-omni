@@ -26,21 +26,21 @@ class MlxSchedulerModelRunner(ModelRunner):
 
         # Note (yexiaodong): The scheduler still owns every pending handle;
         # this reference is only the lazy decode root used to build its successor.
-        self._last_mlx_pending: MlxSchedulerPendingStep | None = None
-        self._resolve_skip_rids: set[str] = set()
+        self.last_mlx_pending: MlxSchedulerPendingStep | None = None
+        self.resolve_skip_rids: set[str] = set()
         # Note (yexiaodong): MLX 0.32 streams are thread-local, so the
         # scheduler thread needs its own stream for async evaluation.
-        self._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
+        self.mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
 
     def mlx_stream_context(self):
         import mlx.core as mx
 
-        return mx.stream(self._mlx_thread_stream)
+        return mx.stream(self.mlx_thread_stream)
 
     def lookahead_eligible(self, batch: Any) -> bool:
         if len(batch.reqs) != 1:
             return False
-        previous = self._last_mlx_pending
+        previous = self.last_mlx_pending
         if previous is not None:
             previous_ids = [req.rid for req in previous.reqs]
             current_ids = [req.rid for req in batch.reqs]
@@ -95,13 +95,13 @@ class MlxSchedulerModelRunner(ModelRunner):
         # Note (yexiaodong): A batch may carry deferred CPU prefill inputs or a
         # preceding decode token instead of input_ids, so MLX must resolve the
         # same FutureMap contract as SGLang's scheduler.
-        if self._execution_bridge is not None:
+        if self.execution_bridge is not None:
             from sglang.srt.managers.overlap_utils import resolve_forward_inputs
 
-            resolve_forward_inputs(schedule_batch, self._execution_bridge.future_map)
+            resolve_forward_inputs(schedule_batch, self.execution_bridge.future_map)
 
         reqs = list(schedule_batch.reqs)
-        previous = self._last_mlx_pending
+        previous = self.last_mlx_pending
         with self.mlx_stream_context():
             if previous is None:
                 launch = self.tp_worker.async_forward_batch_generation_mlx(
@@ -131,7 +131,7 @@ class MlxSchedulerModelRunner(ModelRunner):
             ),
             schedule_batch=schedule_batch_copy,
         )
-        self._last_mlx_pending = pending
+        self.last_mlx_pending = pending
         return pending
 
     def execute_resolve(self, pending: MlxSchedulerPendingStep | None):
@@ -147,19 +147,19 @@ class MlxSchedulerModelRunner(ModelRunner):
         except Exception:
             # Note (yexiaodong): A predecessor failure invalidates any chained
             # successor that shares its lazily updated cache objects.
-            self._last_mlx_pending = None
+            self.last_mlx_pending = None
             raise
         else:
-            if self._last_mlx_pending is pending:
-                self._last_mlx_pending = None
+            if self.last_mlx_pending is pending:
+                self.last_mlx_pending = None
 
         if (
-            self._execution_bridge is not None
+            self.execution_bridge is not None
             and batch_result.next_token_ids is not None
         ):
             # Note (yexiaodong): The custom MLX worker owns forward execution,
             # so publish its sampled token for a later batch that breaks a chain.
-            self._execution_bridge.publish_next_tokens(
+            self.execution_bridge.publish_next_tokens(
                 pending.schedule_batch,
                 batch_result.next_token_ids,
             )
@@ -169,7 +169,7 @@ class MlxSchedulerModelRunner(ModelRunner):
             for request in pending.scheduler_output.requests
             if request.data.req.finished() or self.req_is_retracted(request.data.req)
         }
-        self._resolve_skip_rids = skip_rids
+        self.resolve_skip_rids = skip_rids
         try:
             return self.finalize(
                 batch_result,
@@ -179,7 +179,7 @@ class MlxSchedulerModelRunner(ModelRunner):
                 skip_rids=skip_rids,
             )
         finally:
-            self._resolve_skip_rids = set()
+            self.resolve_skip_rids = set()
 
 
 def create_mlx_model_worker(
@@ -263,8 +263,8 @@ def create_mlx_model_worker(
             }
             if get_schedule().max_total_tokens is not None:
                 init_kwargs["pool_size"] = get_schedule().max_total_tokens
-            self._mlx_runner = runner_class(**init_kwargs)
-            self._model_runner = MlxModelRunnerStub(
+            self.mlx_runner = runner_class(**init_kwargs)
+            self._model_runner = MlxModelRunnerStub(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
                 gpu_id=self.gpu_id,
@@ -275,10 +275,10 @@ def create_mlx_model_worker(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 memory_pool_config=self.memory_pool_config,
-                mlx_pool_size=self._mlx_runner.pool_size,
+                mlx_pool_size=self.mlx_runner.pool_size,
             )
-            self._mlx_active_rids = set()
-            self._mlx_pool_initialized = False
+            self.mlx_active_rids = set()
+            self.mlx_pool_initialized = False
 
         def get_tp_group(self):
             return self.model_runner.tp_group

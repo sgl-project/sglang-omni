@@ -60,7 +60,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         self.nccl_port = nccl_port
         self.config: Any = None
         self.tokenizer: Any = None
-        self._model_runner: Any = None
+        self.model_runner: Any = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from sglang_omni.models.ming_tts import stages as ming_stages
@@ -164,7 +164,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
 
         from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 
-        self._model_worker = model_worker
+        self.model_worker = model_worker
         model_worker.model_runner.model.eval()
         self.tokenizer = load_ming_tts_tokenizer(
             checkpoint_dir,
@@ -185,7 +185,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         )
 
     def get_model_buffer_bs(self, model: Any) -> int | None:
-        return int(model._decode_input_embedding.num_embeddings)
+        return int(model.decode_input_embedding.num_embeddings)
 
     def post_cuda_graph_setup(self, model: Any, server_args: Any) -> None:
         del server_args
@@ -194,14 +194,14 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         if self.tp_rank != 0:
             return
         model.init_tail_graphs(
-            list(self._model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
+            list(self.model_worker.model_runner.decode_cuda_graph_runner.capture_bs)
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
-        self._model_runner = MingTTSModelRunner(model_worker, output_proc)
-        return self._model_runner
+        self.model_runner = MingTTSModelRunner(model_worker, output_proc)
+        return self.model_runner
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         from sglang_omni.models.ming_tts.engine_io import (
@@ -211,7 +211,7 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         return make_ming_tts_scheduler_adapters(
             model=model,
             tokenizer=self.tokenizer,
-            reset_request=self._model_runner.reset_request,
+            reset_request=self.model_runner.reset_request,
             owns_acoustic_result=self.tp_rank == 0,
         )
 
@@ -223,4 +223,4 @@ class MingTtsEngineBuilder(TtsEngineBuilder):
         return {"stream_output_builder": build_ming_tts_stream_output}
 
     def make_abort_callback(self) -> Any | None:
-        return self._model_runner.reset_request
+        return self.model_runner.reset_request

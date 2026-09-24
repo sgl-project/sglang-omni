@@ -73,8 +73,12 @@ def resolve_platform() -> OmniPlatform:
 
 
 def get_platform_spec(platform: OmniPlatform) -> str:
-    if platform._omni_platform_qualname is not None:
-        return platform._omni_platform_qualname
+    if (
+        platform._omni_platform_qualname is not None
+    ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        return (
+            platform._omni_platform_qualname
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return f"{type(platform).__module__}.{type(platform).__qualname__}"
 
 

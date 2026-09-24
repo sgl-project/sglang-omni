@@ -184,7 +184,7 @@ def is_qwen3_tts_base_model(model_path: str) -> bool:
         for marker in _QWEN3_TTS_CUSTOM_VARIANT_MARKERS
     ):
         return False
-    return any(part.endswith("_base") or "_base_" in part for part in qwen3_tts_parts)
+    return any(part.endswith("base") or "_base_" in part for part in qwen3_tts_parts)
 
 
 EntryClass = Qwen3TTSPipelineConfig

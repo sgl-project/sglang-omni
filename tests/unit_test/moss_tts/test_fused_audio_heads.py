@@ -47,8 +47,8 @@ def test_replacing_any_audio_head_disables_fused_path(replaced_index: int) -> No
         stub.lm_heads[replaced_index].weight
     )
     assert stub.fused_audio_heads_ready() is False
-    assert stub._stacked_audio_head_weight is None
-    assert stub._fused_audio_heads_enabled is False
+    assert stub.stacked_audio_head_weight is None
+    assert stub.fused_audio_heads_enabled is False
 
 
 def test_ready_never_stacks_lazily() -> None:
@@ -167,9 +167,9 @@ def test_weight_share_attach_adopts_the_shared_stack(monkeypatch) -> None:
 
     assert stub.fused_audio_heads_ready() is True
     # A view over the leader's storage, not a second copy of it.
-    assert stub._stacked_audio_head_weight.data_ptr() == shared.data_ptr()
-    assert torch.equal(stub._stacked_audio_head_weight, shared)
-    assert stub._audio_head_padded_vocab == 8
+    assert stub.stacked_audio_head_weight.data_ptr() == shared.data_ptr()
+    assert torch.equal(stub.stacked_audio_head_weight, shared)
+    assert stub.audio_head_padded_vocab == 8
 
 
 def test_weight_share_attach_fails_closed_when_heads_are_not_one_block(
@@ -187,7 +187,7 @@ def test_weight_share_attach_honors_the_disable_switch(monkeypatch) -> None:
 
     stub.on_weight_share_attached()
 
-    assert stub._fused_audio_heads_enabled is False
+    assert stub.fused_audio_heads_enabled is False
     assert stub.fused_audio_heads_ready() is False
 
 

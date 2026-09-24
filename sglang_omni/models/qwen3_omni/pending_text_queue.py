@@ -49,8 +49,8 @@ class PendingTextTensorQueue:
             if self.rows is not None
             else 0
         )
-        self._pending_rows = head_rows + sum(
-            int(chunk.shape[0]) for chunk in self._chunks
+        self.pending_rows = head_rows + sum(
+            int(chunk.shape[0]) for chunk in self.chunks
         )
 
     @classmethod
@@ -66,18 +66,18 @@ class PendingTextTensorQueue:
         return type(self)(
             rows=self.rows,
             cursor=self.cursor,
-            _chunks=deque(self._chunks),
+            _chunks=deque(self.chunks),
         )
 
     def __len__(self) -> int:
-        return self._pending_rows
+        return self.pending_rows
 
     def __iter__(self) -> Iterator[torch.Tensor]:
         if self.rows is None:
             return
         for idx in range(self.cursor, int(self.rows.shape[0])):
             yield self.rows[idx]
-        for chunk in self._chunks:
+        for chunk in self.chunks:
             yield from chunk
 
     def __getitem__(self, idx: int) -> torch.Tensor:
@@ -93,18 +93,18 @@ class PendingTextTensorQueue:
         # Note (cuzmi): Preserve the original queue's arbitrary-index behavior
         # for callers outside the decode hot path.
         remaining = self.rows[self.cursor :]
-        if not self._chunks:
+        if not self.chunks:
             return remaining[idx]
-        return torch.cat([remaining, *self._chunks], dim=0)[idx]
+        return torch.cat([remaining, *self.chunks], dim=0)[idx]
 
     def popleft(self) -> torch.Tensor:
         row = self[0]
         self.cursor += 1
-        self._pending_rows -= 1
+        self.pending_rows -= 1
         if self.rows is not None and self.cursor >= int(self.rows.shape[0]):
             # Note (cuzmi): Drop the consumed head and promote the next chunk
             # without copying.
-            self.rows = self._chunks.popleft() if self._chunks else None
+            self.rows = self.chunks.popleft() if self.chunks else None
             self.cursor = 0
         return row
 
@@ -119,8 +119,8 @@ class PendingTextTensorQueue:
         if self.rows is None or len(self) == 0:
             self.rows = rows
             self.cursor = 0
-            self._chunks.clear()
-            self._pending_rows = appended_rows
+            self.chunks.clear()
+            self.pending_rows = appended_rows
             return
 
         if int(rows.shape[1]) != int(self.rows.shape[1]):
@@ -129,8 +129,8 @@ class PendingTextTensorQueue:
             )
 
         rows = rows.to(device=self.rows.device, dtype=self.rows.dtype)
-        self._chunks.append(rows)
-        self._pending_rows += appended_rows
+        self.chunks.append(rows)
+        self.pending_rows += appended_rows
 
 
 def coerce_pending_text_queue(value: object) -> PendingTextTensorQueue:

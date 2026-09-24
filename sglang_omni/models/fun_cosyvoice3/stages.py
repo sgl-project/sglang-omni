@@ -1122,9 +1122,9 @@ def compile_dit_backbone(
         raise ValueError(f"warmup_mel_frames must be >= 2, got {warmup_mel_frames}")
 
     original_forward = estimator.forward
-    torch._inductor.config.fx_graph_cache = True
-    torch._dynamo.config.cache_size_limit = 1024
-    torch._dynamo.config.accumulated_cache_size_limit = 1024
+    torch._inductor.config.fx_graph_cache = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    torch._dynamo.config.cache_size_limit = 1024  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    torch._dynamo.config.accumulated_cache_size_limit = 1024  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     # note (guozhihao-224): inductor NaN-compares subsequent_chunk_mask in
     # DiT.forward; keep the mask eager.
     global CHUNK_MASK_COMPILE_DISABLED

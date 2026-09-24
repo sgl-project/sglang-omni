@@ -59,10 +59,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self.capture_bs = tuple(int(batch_size) for batch_size in capture_bs)
         self.disable_padding = bool(disable_padding)
         self.graphs: dict[int, CapturedSamplingGraph] = {}
-        self._inputs: StaticSamplingInputs | None = None
-        self._graph_pool = None
-        self._warmup_stream: torch.cuda.Stream | None = None
-        self._capture_stream: torch.cuda.Stream | None = None
+        self.inputs: StaticSamplingInputs | None = None
+        self.graph_pool = None
+        self.warmup_stream: torch.cuda.Stream | None = None
+        self.capture_stream: torch.cuda.Stream | None = None
 
     @classmethod
     def capture(
@@ -106,7 +106,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         buckets = self.capture_buckets
         if not buckets:
             return
-        self._inputs = self.make_static_inputs(buckets[-1])
+        self.inputs = self.make_static_inputs(buckets[-1])
 
         for bucket in reversed(buckets):
             free_bytes, _ = torch.cuda.mem_get_info(self.model.device)
@@ -152,10 +152,10 @@ class MossTTSDelaySamplingCudaGraphRunner:
 
     def clear(self) -> None:
         self.graphs.clear()
-        self._inputs = None
-        self._graph_pool = None
-        self._warmup_stream = None
-        self._capture_stream = None
+        self.inputs = None
+        self.graph_pool = None
+        self.warmup_stream = None
+        self.capture_stream = None
         gc.collect()
         if self.model.device.type in ("cuda", "musa"):
             device_module = torch.get_device_module(self.model.device)
@@ -197,9 +197,9 @@ class MossTTSDelaySamplingCudaGraphRunner:
         )
 
     def require_inputs(self) -> StaticSamplingInputs:
-        if self._inputs is None:
+        if self.inputs is None:
             raise RuntimeError("MOSS-TTS Delay sampling CUDA graph is not captured")
-        return self._inputs
+        return self.inputs
 
     def run_static(
         self,
@@ -223,9 +223,9 @@ class MossTTSDelaySamplingCudaGraphRunner:
         bucket: int,
     ) -> CapturedSamplingGraph:
         device = self.model.device
-        if self._warmup_stream is None:
-            self._warmup_stream = torch.cuda.Stream(device=device)
-        warmup_stream = self._warmup_stream
+        if self.warmup_stream is None:
+            self.warmup_stream = torch.cuda.Stream(device=device)
+        warmup_stream = self.warmup_stream
         warmup_stream.wait_stream(torch.cuda.current_stream(device))
         with torch.cuda.stream(warmup_stream):
             for _ in range(2):
@@ -233,17 +233,17 @@ class MossTTSDelaySamplingCudaGraphRunner:
         torch.cuda.current_stream(device).wait_stream(warmup_stream)
         torch.cuda.synchronize(device)
 
-        if self._graph_pool is None:
-            self._graph_pool = torch.cuda.graph_pool_handle()
-        if self._capture_stream is None:
-            self._capture_stream = torch.cuda.Stream(device=device)
-        capture_stream = self._capture_stream
+        if self.graph_pool is None:
+            self.graph_pool = torch.cuda.graph_pool_handle()
+        if self.capture_stream is None:
+            self.capture_stream = torch.cuda.Stream(device=device)
+        capture_stream = self.capture_stream
         capture_stream.wait_stream(torch.cuda.current_stream(device))
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.stream(capture_stream):
             with torch.cuda.graph(
                 graph,
-                pool=self._graph_pool,
+                pool=self.graph_pool,
                 stream=capture_stream,
                 capture_error_mode="thread_local",
             ):

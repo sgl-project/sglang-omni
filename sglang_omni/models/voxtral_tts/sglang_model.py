@@ -189,7 +189,7 @@ class VoxtralSGLangTTSModel(nn.Module):
         self.hidden_size = text_cfg.dim
         max_batch_size = get_schedule().max_running_requests
         embed_weight = next(self.language_model.embed_tokens.parameters())
-        self._decode_input_embed_buffer = torch.zeros(
+        self.decode_input_embed_buffer = torch.zeros(
             max_batch_size,
             text_cfg.dim,
             device=embed_weight.device,
@@ -208,7 +208,7 @@ class VoxtralSGLangTTSModel(nn.Module):
         input_embeds: torch.Tensor | None = None,
     ) -> LogitsProcessorOutput:
         if input_embeds is None and forward_batch.forward_mode.is_decode():
-            input_embeds = self._decode_input_embed_buffer[: input_ids.shape[0]]
+            input_embeds = self.decode_input_embed_buffer[: input_ids.shape[0]]
         hidden_states = self.language_model(
             input_ids=input_ids,
             positions=positions,

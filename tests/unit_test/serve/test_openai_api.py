@@ -962,7 +962,7 @@ def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
         scope = _http_scope(path="/v1/chat/completions", spec_version="2.4")
         response_task = asyncio.create_task(response(scope, receive, send))
         for _ in range(100):
-            if request_id in coordinator._stream_queues:
+            if request_id in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -978,9 +978,9 @@ def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
         with pytest.raises(RuntimeError, match="client vanished during body send"):
             await response_task
         assert [msg.request_id for msg in control_plane.aborts] == [request_id]
-        assert request_id not in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
+        assert request_id not in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -1033,7 +1033,7 @@ def test_chat_asgi_receive_disconnect_aborts_backend_and_cleans_state() -> None:
             )
         )
         for _ in range(100):
-            if request_id in coordinator._stream_queues:
+            if request_id in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -1052,19 +1052,19 @@ def test_chat_asgi_receive_disconnect_aborts_backend_and_cleans_state() -> None:
 
         assert [msg.request_id for msg in control_plane.aborts] == [request_id]
         assert blocking_control_plane.abort_cancelled is False
-        abort_task = coordinator._abort_tasks[request_id]
-        assert request_id in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
+        abort_task = coordinator.abort_tasks[request_id]
+        assert request_id in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
 
         blocking_control_plane.release_abort.set()
         assert await asyncio.wait_for(asyncio.shield(abort_task), timeout=1) is True
         await asyncio.sleep(0)
 
-        assert request_id not in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
-        assert request_id not in coordinator._abort_tasks
+        assert request_id not in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
+        assert request_id not in coordinator.abort_tasks
 
     asyncio.run(_run())
 
@@ -1112,7 +1112,7 @@ def test_chat_asgi_task_cancellation_aborts_backend_and_stays_cancelled() -> Non
             )
         )
         for _ in range(100):
-            if request_id in coordinator._stream_queues:
+            if request_id in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
 
@@ -1121,9 +1121,9 @@ def test_chat_asgi_task_cancellation_aborts_backend_and_stays_cancelled() -> Non
             await response_task
 
         assert [msg.request_id for msg in control_plane.aborts] == [request_id]
-        assert request_id not in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
+        assert request_id not in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -1138,7 +1138,7 @@ def test_client_completion_stream_close_reaches_coordinator_owner() -> None:
         )
         first_chunk = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if request_id in coordinator._stream_queues:
+            if request_id in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -1153,9 +1153,9 @@ def test_client_completion_stream_close_reaches_coordinator_owner() -> None:
         await stream.aclose()
 
         assert [msg.request_id for msg in control_plane.aborts] == [request_id]
-        assert request_id not in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
+        assert request_id not in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
 
     asyncio.run(_run())
 
@@ -1176,7 +1176,7 @@ def test_transcription_stream_close_reaches_coordinator_owner() -> None:
         )
         first_event = asyncio.create_task(anext(stream))
         for _ in range(100):
-            if request_id in coordinator._stream_queues:
+            if request_id in coordinator.stream_queues:
                 break
             await asyncio.sleep(0)
         await coordinator.handle_stream(
@@ -1191,9 +1191,9 @@ def test_transcription_stream_close_reaches_coordinator_owner() -> None:
         await stream.aclose()
 
         assert [msg.request_id for msg in control_plane.aborts] == [request_id]
-        assert request_id not in coordinator._requests
-        assert request_id not in coordinator._stream_queues
-        assert request_id not in coordinator._completion_futures
+        assert request_id not in coordinator.requests
+        assert request_id not in coordinator.stream_queues
+        assert request_id not in coordinator.completion_futures
 
     asyncio.run(_run())
 

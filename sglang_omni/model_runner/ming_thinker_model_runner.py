@@ -18,23 +18,23 @@ class MingThinkerModelRunner(ModelRunner):
     def __init__(self, tp_worker: Any, output_processor: Any):
         super().__init__(tp_worker, output_processor)
 
-        self._outer_model = self.model
-        self._text_model = getattr(self._outer_model, "model", self._outer_model)
-        self._embed_tokens = self.get_embed_tokens(self._text_model)
+        self.outer_model = self.model
+        self.text_model = getattr(self.outer_model, "model", self.outer_model)
+        self.embed_tokens = self.get_embed_tokens(self.text_model)
 
         hf_config = tp_worker.model_runner.model_config.hf_config
         llm_config = getattr(hf_config, "llm_config", hf_config)
-        self._image_token_id = self.token_id(
+        self.image_token_id = self.token_id(
             hf_config,
             "image_token_id",
             fallback=getattr(llm_config, "image_patch_token", None),
         )
-        self._video_token_id = self.token_id(
+        self.video_token_id = self.token_id(
             hf_config,
             "video_token_id",
             fallback=getattr(llm_config, "video_patch_token", None),
         )
-        self._audio_token_id = self.token_id(hf_config, "audio_token_id")
+        self.audio_token_id = self.token_id(hf_config, "audio_token_id")
 
     @staticmethod
     def get_embed_tokens(text_model: Any) -> Any:
@@ -76,9 +76,9 @@ class MingThinkerModelRunner(ModelRunner):
 
         device = forward_batch.input_ids.device
         embed_input_ids = forward_batch.input_ids.clamp(
-            0, self._embed_tokens.num_embeddings - 1
+            0, self.embed_tokens.num_embeddings - 1
         )
-        input_embeds = self._embed_tokens(embed_input_ids)
+        input_embeds = self.embed_tokens(embed_input_ids)
 
         extend_lens = forward_batch.extend_seq_lens_cpu
         offsets = []
@@ -95,15 +95,17 @@ class MingThinkerModelRunner(ModelRunner):
             start = offsets[i]
             end = start + extend_lens[i]
             req_input_ids = forward_batch.input_ids[start:end]
-            consumed = getattr(req, "_omni_consumed", None) or {}
+            consumed = (
+                getattr(req, "_omni_consumed", None) or {}
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             pad_values = omni_inputs.get("pad_values", {})
             is_final_chunk = req.inflight_middle_chunks == 0
             req_id = self.request_id(req)
 
             for modality, embed_key, token_id in [
-                ("image", "image_embeds", self._image_token_id),
-                ("video", "video_embeds", self._video_token_id),
-                ("audio", "audio_embeds", self._audio_token_id),
+                ("image", "image_embeds", self.image_token_id),
+                ("video", "video_embeds", self.video_token_id),
+                ("audio", "audio_embeds", self.audio_token_id),
             ]:
                 embeds = omni_inputs.get(embed_key)
                 if embeds is None:
@@ -141,13 +143,13 @@ class MingThinkerModelRunner(ModelRunner):
                 input_embeds[torch.where(mask)[0] + start] = chunk_embeds
                 consumed[modality] = offset + n_tokens
 
-            req._omni_consumed = consumed
+            req._omni_consumed = consumed  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
             if is_final_chunk:
                 # Skip strict consumed==total validation: radix prefix cache may
                 # have absorbed placeholder positions. Mirrors qwen3 path.
                 req.omni_model_inputs = None
-                req._omni_consumed = None
+                req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         return input_embeds
 
@@ -225,7 +227,7 @@ class MingThinkerModelRunner(ModelRunner):
         self, forward_batch: Any, input_embeds: torch.Tensor
     ) -> Any:
         model_runner = self.tp_worker.model_runner
-        outer = self._outer_model
+        outer = self.outer_model
 
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 

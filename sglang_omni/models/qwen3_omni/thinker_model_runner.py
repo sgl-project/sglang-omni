@@ -152,7 +152,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             or audio_embeds.shape[1] <= 0
         ):
             return False
-        embedding_dim = getattr(self._embed_tokens, "embedding_dim", None)
+        embedding_dim = getattr(self.embed_tokens, "embedding_dim", None)
         if embedding_dim is not None and audio_embeds.shape[1] != embedding_dim:
             return False
 
@@ -190,7 +190,9 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
             return False
 
         prefix, length = chunk_span
-        consumed = getattr(req, "_omni_consumed", None)
+        consumed = getattr(
+            req, "_omni_consumed", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if consumed is None:
             cached_audio = positions["audio"][positions["audio"] < prefix]
             future_audio = positions["audio"][positions["audio"] >= prefix]
@@ -268,7 +270,7 @@ class Qwen3OmniThinkerModelRunner(ThinkerModelRunner):
         return PrefillDisposition(_SIDECAR, has_audio=has_audio)
 
     def text_input_embeds(self, forward_batch: Any) -> torch.Tensor:
-        return self._embed_tokens(forward_batch.input_ids)
+        return self.embed_tokens(forward_batch.input_ids)
 
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list[Any]

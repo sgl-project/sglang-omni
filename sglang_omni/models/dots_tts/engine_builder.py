@@ -32,8 +32,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         self.max_running_requests = int(max_running_requests)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
-        self._model_runner: Any | None = None
-        self._acoustic_tail: Any | None = None
+        self.model_runner: Any | None = None
+        self.acoustic_tail: Any | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -127,7 +127,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
             )
-            self._acoustic_tail = model.flow.batched_tail
+            self.acoustic_tail = model.flow.batched_tail
         if max_running_requests == 1:
             tail_backend = (
                 "compiled single-request DiT/semantic encoder"
@@ -156,8 +156,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
-        self._model_runner = DotsTTSModelRunner(model_worker, output_proc)
-        return self._model_runner
+        self.model_runner = DotsTTSModelRunner(model_worker, output_proc)
+        return self.model_runner
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         from sglang_omni.models.dots_tts.request_builders import (
@@ -178,13 +178,13 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         return _build_request, apply_latent_result
 
     def make_abort_callback(self) -> Any | None:
-        assert self._model_runner is not None
-        return self._model_runner.reset_request
+        assert self.model_runner is not None
+        return self.model_runner.reset_request
 
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
-        if self._acoustic_tail is None:
+        if self.acoustic_tail is None:
             return {}
-        return {"shutdown_callback": self._acoustic_tail.log_graph_counters}
+        return {"shutdown_callback": self.acoustic_tail.log_graph_counters}
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         from sglang_omni.models.dots_tts.request_builders import build_stream_output

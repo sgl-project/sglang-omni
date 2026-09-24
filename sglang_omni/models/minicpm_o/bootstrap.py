@@ -71,7 +71,7 @@ def create_talker_scheduler(
     # note (MayDomine): graph sampling buffers must use the codec vocabulary size.
     codec_vocab_size = model.num_audio_tokens
     model_config.vocab_size = codec_vocab_size
-    model._sampler = model_worker.model_runner.sampler
+    model.sampler = model_worker.model_runner.sampler
     if want_cuda_graph:
         init_sglang_cuda_graphs(model_worker)
 

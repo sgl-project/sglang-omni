@@ -132,7 +132,9 @@ def prepare_weight_share_process_compat() -> None:
 
     monkey_patch_torch_reductions()
     # The NPU branch of the SGLang patch never installs a CUDA reducer.
-    original = getattr(reductions, "_reduce_tensor_original", None)
+    original = getattr(
+        reductions, "_reduce_tensor_original", None
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if original is None or hasattr(reductions, "_sglang_omni_cpu_reduce_original"):
         return
 
@@ -148,7 +150,7 @@ def prepare_weight_share_process_compat() -> None:
             return original(tensor, *args, **kwargs)
         return patched(tensor, *args, **kwargs)
 
-    reductions._sglang_omni_cpu_reduce_original = original
+    reductions._sglang_omni_cpu_reduce_original = original  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     reductions.reduce_tensor = reduce_tensor
     reductions.init_reductions()
 
@@ -290,12 +292,12 @@ WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # Note (Jiaxin Deng): MOSS local stages per-request decode feedback into
     # this registered embedding every step; everything else is load-once.
     "MossTTSLocalSGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): MOSS delay stages decode feedback the same way MOSS
     # local does; its other registered tensors are load or init once.
     "MossTTSDelaySGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): the four ASR models carry no decode staging scratch;
     # every registered tensor is checkpoint-loaded or an init-computed constant.
@@ -314,7 +316,7 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # Note (Jiaxin Deng): Ming stages decode feedback like MOSS local; blocked
     # on VRAM (leader alone reaches the card edge on 80 GB).
     "MingTTSSGLangModel": WeightSharePolicy(
-        private_tensor_names=frozenset({"_decode_input_embedding.weight"})
+        private_tensor_names=frozenset({"decode_input_embedding.weight"})
     ),
     # Note (Jiaxin Deng): Voxtral keeps its decode staging in an unregistered
     # plain tensor; if that scratch is ever registered, this needs its name.
@@ -331,7 +333,7 @@ AUDIT_ONLY_WEIGHT_SHARE_POLICIES: dict[str, WeightSharePolicy] = {
     # dual-registered embedding, listed under its deduped canonical name; the
     # external speech tokenizer never enters the module tree.
     "Qwen3TTSTalker": WeightSharePolicy(
-        private_tensor_names=frozenset({"model._decode_feedback_embedding.weight"})
+        private_tensor_names=frozenset({"model.decode_feedback_embedding.weight"})
     ),
     # Note (Jiaxin Deng): Qwen3-Omni runs two engines per pipeline; the
     # launcher only drives single-SGLang-engine pipelines, so these cannot
@@ -485,8 +487,10 @@ class LeaderLivenessMonitor:
         self.leader_start_time = leader_start_time
         self.poll_interval_s = poll_interval_s
         self.exit_code = exit_code
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._stop = (
+            threading.Event()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.thread: threading.Thread | None = None
 
     def leader_present(self) -> bool:
         if not pid_is_alive(self.leader_pid):
@@ -498,28 +502,32 @@ class LeaderLivenessMonitor:
         return True
 
     def start(self) -> None:
-        if self._thread is not None or not self.leader_pid:
+        if self.thread is not None or not self.leader_pid:
             return
-        self._thread = threading.Thread(
+        self.thread = threading.Thread(
             target=self.run, name="weight-share-leader-liveness", daemon=True
         )
-        self._thread.start()
+        self.thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        self._stop.set()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+            self.thread = None
 
     def run(self) -> None:
-        while not self._stop.wait(self.poll_interval_s):
+        while not self._stop.wait(
+            self.poll_interval_s
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if self.leader_present():
                 continue
             logger.critical(
                 "[weight-share] leader pid=%s is gone; terminating follower",
                 self.leader_pid,
             )
-            os._exit(self.exit_code)
+            os._exit(
+                self.exit_code
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 def atomic_write(file_path: str, data: bytes) -> None:
@@ -1086,11 +1094,15 @@ def rebind_buffer(
 ) -> None:
     module_path, _, leaf = dotted_name.rpartition(".")
     module = model.get_submodule(module_path) if module_path else model
-    if leaf not in module._buffers:
+    if (
+        leaf not in module._buffers
+    ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         raise WeightShareError(
             f"{dotted_name!r} is not a registered buffer on the follower model"
         )
-    module._buffers[leaf] = tensor
+    module._buffers[leaf] = (
+        tensor  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    )
 
 
 def raise_manifest_mismatch(

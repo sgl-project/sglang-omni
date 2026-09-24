@@ -69,64 +69,62 @@ class FunASREncoderCudaGraphRunner:
         min_free_gb: float = 3.0,
         warmup_iters: int = 3,
     ) -> None:
-        self._audio_tower = audio_tower
-        self._projector = multi_modal_projector
+        self.audio_tower = audio_tower
+        self.projector = multi_modal_projector
         reference = next(audio_tower.parameters())
-        self._device = reference.device
-        self._dtype = reference.dtype
-        self._max_batch = max(int(max_batch_size), 1)
-        self._min_free_bytes = int(float(min_free_gb) * (1024**3))
-        self._warmup_iters = int(warmup_iters)
+        self.device = reference.device
+        self.dtype = reference.dtype
+        self.max_batch = max(int(max_batch_size), 1)
+        self.min_free_bytes = int(float(min_free_gb) * (1024**3))
+        self.warmup_iters = int(warmup_iters)
         # (batch_bucket, t_bucket) -> (graph, static_xs, static_ilens, static_out)
-        self._graphs: dict[Tuple[int, int], tuple] = {}
-        self._failed: set[Tuple[int, int]] = set()
-        self._pool = None
+        self.graphs: dict[Tuple[int, int], tuple] = {}
+        self.failed: set[Tuple[int, int]] = set()
+        self.pool = None
         # note (wilsonzheng0327): serializes capture and replay -- replay
         # mutates the bucket's static buffers, and both the pre-LM worker and
         # the scheduler's inline prefill path can reach get_audio_feature.
-        self._lock = threading.Lock()
-        self._done_event = torch.cuda.Event()
-        self._event_recorded = False
+        self.lock = threading.Lock()
+        self.done_event = torch.cuda.Event()
+        self.event_recorded = False
 
     def forward(self, xs: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
-        enc_out = self._audio_tower(xs, mask)
-        return self._projector(enc_out, mask)
+        enc_out = self.audio_tower(xs, mask)
+        return self.projector(enc_out, mask)
 
     def enough_free_vram(self) -> tuple[bool, int]:
-        free, _ = torch.cuda.mem_get_info(self._device)
-        return free >= self._min_free_bytes, free
+        free, _ = torch.cuda.mem_get_info(self.device)
+        return free >= self.min_free_bytes, free
 
     def capture(self, batch_bucket: int, t_bucket: int, feat_dim: int) -> tuple:
         static_xs = torch.zeros(
-            batch_bucket, t_bucket, feat_dim, device=self._device, dtype=self._dtype
+            batch_bucket, t_bucket, feat_dim, device=self.device, dtype=self.dtype
         )
-        static_ilens = torch.ones(batch_bucket, device=self._device, dtype=torch.long)
+        static_ilens = torch.ones(batch_bucket, device=self.device, dtype=torch.long)
 
         def _masked_forward() -> torch.Tensor:
             mask = sanm_mask_from_lengths(
-                static_ilens, t_bucket, dtype=self._dtype, device=self._device
+                static_ilens, t_bucket, dtype=self.dtype, device=self.device
             )
             return self.forward(static_xs, mask)
 
         # note (wilsonzheng0327): warmup on a fresh stream so allocator state
         # settles before capture.
-        stream = torch.cuda.Stream(device=self._device)
+        stream = torch.cuda.Stream(device=self.device)
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
-            for _ in range(self._warmup_iters):
+            for _ in range(self.warmup_iters):
                 _masked_forward()
         torch.cuda.current_stream().wait_stream(stream)
         torch.cuda.synchronize()
 
-        if self._pool is None:
-            self._pool = torch.cuda.graph_pool_handle()
+        if self.pool is None:
+            self.pool = torch.cuda.graph_pool_handle()
         graph = torch.cuda.CUDAGraph()
         # note (wilsonzheng0327): thread_local error mode -- the LM scheduler
         # thread keeps launching kernels concurrently and must not poison this
         # thread's capture.
-        with torch.cuda.graph(
-            graph, pool=self._pool, capture_error_mode="thread_local"
-        ):
+        with torch.cuda.graph(graph, pool=self.pool, capture_error_mode="thread_local"):
             static_out = _masked_forward()
         logger.info(
             "Captured Fun-ASR encoder CUDA graph batch=%d t=%d -> out %s "
@@ -134,7 +132,7 @@ class FunASREncoderCudaGraphRunner:
             batch_bucket,
             t_bucket,
             tuple(static_out.shape),
-            len(self._graphs) + 1,
+            len(self.graphs) + 1,
         )
         return graph, static_xs, static_ilens, static_out
 
@@ -147,16 +145,16 @@ class FunASREncoderCudaGraphRunner:
         the eager path).
         """
         b, t, feat_dim = xs.shape
-        batch_bucket = bucket_batch(b, self._max_batch)
+        batch_bucket = bucket_batch(b, self.max_batch)
         t_bucket = bucket_t(t)
         if batch_bucket is None or t_bucket is None:
             return None
         key = (batch_bucket, t_bucket)
-        if key in self._failed:
+        if key in self.failed:
             return None
 
-        with self._lock:
-            entry = self._graphs.get(key)
+        with self.lock:
+            entry = self.graphs.get(key)
             if entry is None:
                 enough, free = self.enough_free_vram()
                 if not enough:
@@ -164,14 +162,14 @@ class FunASREncoderCudaGraphRunner:
                         "Fun-ASR encoder CUDA graph: free VRAM %.1fGB < %.1fGB "
                         "headroom; running batch=%d t=%d eager",
                         free / 1024**3,
-                        self._min_free_bytes / 1024**3,
+                        self.min_free_bytes / 1024**3,
                         batch_bucket,
                         t_bucket,
                     )
-                    self._failed.add(key)
+                    self.failed.add(key)
                     return None
                 try:
-                    with torch.cuda.device(self._device):
+                    with torch.cuda.device(self.device):
                         entry = self.capture(batch_bucket, t_bucket, feat_dim)
                 except Exception as exc:
                     logger.warning(
@@ -181,18 +179,18 @@ class FunASREncoderCudaGraphRunner:
                         t_bucket,
                         exc,
                     )
-                    self._failed.add(key)
+                    self.failed.add(key)
                     return None
-                self._graphs[key] = entry
+                self.graphs[key] = entry
 
             graph, static_xs, static_ilens, static_out = entry
             if static_xs.shape[-1] != feat_dim:
                 return None
-            stream = torch.cuda.current_stream(self._device)
+            stream = torch.cuda.current_stream(self.device)
             # note (wilsonzheng0327): wait for previous caller's output copy
             # on some stream to finish before using shared resource
-            if self._event_recorded:
-                self._done_event.wait(stream)
+            if self.event_recorded:
+                self.done_event.wait(stream)
             static_xs.zero_()
             static_xs[:b, :t].copy_(xs, non_blocking=True)
             # Padded rows keep ilens=1: one valid zeroed frame, output dropped.
@@ -204,8 +202,8 @@ class FunASREncoderCudaGraphRunner:
             # note (wilsonzheng0327): the next call needs to wait on this
             # event before it touches anything shared to ensure clone finishes
             out = static_out[:b].clone()
-            self._done_event.record(stream)
-            self._event_recorded = True
+            self.done_event.record(stream)
+            self.event_recorded = True
             return out
 
 

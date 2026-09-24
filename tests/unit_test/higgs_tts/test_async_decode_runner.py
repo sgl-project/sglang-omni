@@ -50,16 +50,16 @@ def _build_runner(
     """
     n = len(codes_BN)
     runner = object.__new__(HiggsTTSModelRunner)
-    runner._outbox = None
-    runner._vocoder_target = "vocoder"
+    runner.outbox = None
+    runner.vocoder_target = "vocoder"
     # async-decode base-runner state (normally set in BaseModelRunner.__init__)
-    runner._async_enabled = async_enabled
-    runner._staging_slot = 0
-    runner._host_staging_buffers = []
-    runner._logprob_host_buffers = None
-    runner._logprob_slot = 0
-    runner._async_query_hit = 0
-    runner._async_query_miss = 0
+    runner.async_enabled = async_enabled
+    runner.staging_slot = 0
+    runner.host_staging_buffers = []
+    runner.logprob_host_buffers = None
+    runner.logprob_slot = 0
+    runner.async_query_hit = 0
+    runner.async_query_miss = 0
     runner.model = SimpleNamespace(
         _cg_row_indices=torch.arange(n),
         _cg_active_delay_count=torch.zeros(n, dtype=torch.int32),
@@ -280,8 +280,8 @@ def test_rollout_logprob_host_staging_grows_with_async_batch(
 
     monkeypatch.setattr(torch, "empty", cpu_empty)
     runner = object.__new__(HiggsTTSModelRunner)
-    runner._logprob_host_buffers = None
-    runner._logprob_slot = 0
+    runner.logprob_host_buffers = None
+    runner.logprob_slot = 0
 
     first = runner.next_logprob_host_staging(torch.empty((1, 8)))
     grown = runner.next_logprob_host_staging(torch.empty((2, 8)))
@@ -310,15 +310,15 @@ def test_async_real_pinned_path_matches_sync():
     def build(async_enabled):
         n = 4
         runner = object.__new__(HiggsTTSModelRunner)
-        runner._outbox = None
-        runner._vocoder_target = "vocoder"
-        runner._async_enabled = async_enabled
-        runner._staging_slot = 0
-        runner._host_staging_buffers = []
-        runner._logprob_host_buffers = None
-        runner._logprob_slot = 0
-        runner._async_query_hit = 0
-        runner._async_query_miss = 0
+        runner.outbox = None
+        runner.vocoder_target = "vocoder"
+        runner.async_enabled = async_enabled
+        runner.staging_slot = 0
+        runner.host_staging_buffers = []
+        runner.logprob_host_buffers = None
+        runner.logprob_slot = 0
+        runner.async_query_hit = 0
+        runner.async_query_miss = 0
         runner.model = SimpleNamespace(
             _cg_row_indices=torch.arange(n, device=dev),
             _cg_active_delay_count=torch.zeros(n, dtype=torch.int32, device=dev),

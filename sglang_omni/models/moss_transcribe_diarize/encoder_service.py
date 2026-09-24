@@ -37,20 +37,20 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
     def __init__(self, model: Any, *, max_batch_size: int = 2) -> None:
         if max_batch_size < 1:
             raise ValueError("max_batch_size must be >= 1")
-        self._model = model
-        self._max_batch_size = int(max_batch_size)
-        self._device = next(model.whisper_encoder.parameters()).device
+        self.model = model
+        self.max_batch_size = int(max_batch_size)
+        self.device = next(model.whisper_encoder.parameters()).device
         adaptor_reference = next(model.vq_adaptor.parameters())
-        self._dtype = adaptor_reference.dtype
-        self._hidden_size = int(model.config.text_config.hidden_size)
-        self._stream = torch.cuda.Stream(device=self._device)
-        self._cache = StageOutputCache(
+        self.dtype = adaptor_reference.dtype
+        self.hidden_size = int(model.config.text_config.hidden_size)
+        self.stream = torch.cuda.Stream(device=self.device)
+        self.cache = StageOutputCache(
             max_size=_CACHE_MAX_ENTRIES,
             max_bytes=_CACHE_MAX_BYTES,
             cache_device="cpu",
         )
-        self._batch_count = 0
-        self._item_count = 0
+        self.batch_count = 0
+        self.item_count = 0
         super().__init__(worker_name="moss-td-audio-encode")
 
     def encode_item(self, item: Any) -> None:
@@ -82,7 +82,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         key: str | None,
         expected_tokens: int,
     ) -> torch.Tensor | None:
-        cached = self._cache.get(key)
+        cached = self.cache.get(key)
         if cached is None:
             return None
         if self.is_valid(cached, expected_tokens):
@@ -94,7 +94,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             getattr(cached, "shape", None),
             getattr(cached, "dtype", None),
         )
-        self._cache.remove_if_same(key, cached)
+        self.cache.remove_if_same(key, cached)
         return None
 
     def cache_key(self, item: Any) -> str | None:
@@ -108,16 +108,16 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
             and embedding.shape[0] == expected_tokens
-            and embedding.shape[1] == self._hidden_size
-            and embedding.dtype == self._dtype
+            and embedding.shape[1] == self.hidden_size
+            and embedding.dtype == self.dtype
         )
 
     def drain_batch(self) -> list[QueueEntry[Any]]:
         # note (yichi): never wait — a window costs 8~16ms at low concurrency, buys <=5ms at high.
-        batch = [self._queue.get()]
-        for _ in range(self._max_batch_size - 1):
+        batch = [self.queue.get()]
+        for _ in range(self.max_batch_size - 1):
             try:
-                batch.append(self._queue.get_nowait())
+                batch.append(self.queue.get_nowait())
             except queue.Empty:
                 break
         return batch
@@ -126,10 +126,10 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         return self.drain_batch(), False
 
     def batch_context(self) -> contextlib.AbstractContextManager[Any]:
-        return torch.cuda.stream(self._stream)
+        return torch.cuda.stream(self.stream)
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
-        return self._model.get_audio_feature_uncached(items, None)
+        return self.model.get_audio_feature_uncached(items, None)
 
     def split_embeddings(
         self,
@@ -147,14 +147,14 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         ]
 
     def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
-        item.precomputed_embeddings = embedding.to(self._device, non_blocking=True)
+        item.precomputed_embeddings = embedding.to(self.device, non_blocking=True)
         item.feature = None
 
     def attach_before_synchronize(self) -> bool:
         return False
 
     def synchronize_batch(self) -> None:
-        self._stream.synchronize()
+        self.stream.synchronize()
 
     def cache_embedding(
         self,
@@ -163,7 +163,7 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         host_copy: torch.Tensor | None = None,
     ) -> None:
         del host_copy
-        self._cache.put(self.cache_key(item), embedding)
+        self.cache.put(self.cache_key(item), embedding)
 
     def handle_batch_failure(
         self,
@@ -241,24 +241,24 @@ class BatchedAudioEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Te
         if not isinstance(exc, torch.OutOfMemoryError):
             return
         try:
-            self._stream.synchronize()
+            self.stream.synchronize()
         except Exception:
             logger.warning(
                 "MOSS-TD encoder stream cleanup failed after OOM", exc_info=True
             )
         try:
-            with torch.cuda.device(self._device):
+            with torch.cuda.device(self.device):
                 torch.cuda.empty_cache()
         except Exception:
             logger.warning("MOSS-TD CUDA cache cleanup failed after OOM", exc_info=True)
 
     def record_success(self, item_count: int) -> None:
-        self._batch_count += 1
-        self._item_count += item_count
-        if self._batch_count % 50 == 1:
+        self.batch_count += 1
+        self.item_count += item_count
+        if self.batch_count % 50 == 1:
             logger.info(
-                f"MOSS-TD pre-LM encoder stage: {self._batch_count} batches, "
-                f"{self._item_count} items (avg "
-                f"{self._item_count / self._batch_count:.2f} items/batch, "
+                f"MOSS-TD pre-LM encoder stage: {self.batch_count} batches, "
+                f"{self.item_count} items (avg "
+                f"{self.item_count / self.batch_count:.2f} items/batch, "
                 f"last batch: {item_count})"
             )

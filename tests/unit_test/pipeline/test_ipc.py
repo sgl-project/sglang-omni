@@ -671,7 +671,7 @@ async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
     assert runner.started
     assert runner.stopped
     assert replayed_signals == []
-    assert server_ref._captured_signals == []
+    assert server_ref.captured_signals == []
 
 
 @pytest.mark.asyncio

@@ -60,13 +60,13 @@ class SinusoidalPositionEmbedding(nn.Module):
         )
         positions = mx.arange(length, dtype=mx.float32)[:, None]
         scaled_time = positions * inv_timescales[None, :]
-        self._positional_embedding = mx.concatenate(
+        self.positional_embedding = mx.concatenate(
             [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
         )
-        mx.eval(self._positional_embedding)
+        mx.eval(self.positional_embedding)
 
     def __call__(self, seqlen: int) -> mx.array:
-        return self._positional_embedding[:seqlen, :]
+        return self.positional_embedding[:seqlen, :]
 
 
 class AudioAttention(nn.Module):

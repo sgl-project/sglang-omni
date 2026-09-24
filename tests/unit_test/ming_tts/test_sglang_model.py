@@ -128,7 +128,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_max_batch_size=2 * expected_tail_capacity,
         norm_layer=norm_layer,
     )
-    assert model._decode_input_embedding.num_embeddings == expected_tail_capacity
+    assert model.decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config
     assert config.ditar_config["execution_config"] is stale_execution_config
     provider.assert_called_once_with()

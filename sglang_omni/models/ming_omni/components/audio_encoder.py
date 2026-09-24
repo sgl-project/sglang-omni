@@ -61,9 +61,9 @@ class MingAudioEncoder(nn.Module):
         dtype: str | None = None,
     ):
         super().__init__()
-        self._model_path = model_path
-        self._device = device
-        self._dtype = resolve_dtype(dtype) if dtype else torch.bfloat16
+        self.model_path = model_path
+        self.device = device
+        self.dtype = resolve_dtype(dtype) if dtype else torch.bfloat16
 
         config = load_ming_config(model_path)
         audio_cfg = config.audio_config
@@ -89,13 +89,13 @@ class MingAudioEncoder(nn.Module):
         mlp_modules.append(Transpose(-1, -2))
         self.projection = nn.Sequential(*mlp_modules)
 
-        self._norm_query_embeds = audio_cfg.norm_query_embeds
+        self.norm_query_embeds = audio_cfg.norm_query_embeds
 
         # Load weights
         self.load_weights()
 
         # Move to target device/dtype
-        self.to(device=self._device, dtype=self._dtype)
+        self.to(device=self.device, dtype=self.dtype)
         self.eval()
 
     def build_whisper_encoder(self, whisper_cfg: Any) -> nn.Module:
@@ -119,19 +119,19 @@ class MingAudioEncoder(nn.Module):
 
     def load_weights(self) -> None:
         """Load audio tower and projection weights from checkpoint."""
-        logger.info(f"Loading Ming audio encoder weights from {self._model_path}")
+        logger.info(f"Loading Ming audio encoder weights from {self.model_path}")
         load_module(
             self.audio_tower,
-            self._model_path,
+            self.model_path,
             prefix=AUDIO_TOWER_PREFIXES,
-            dtype=self._dtype,
+            dtype=self.dtype,
             device="cpu",
         )
         load_module(
             self.projection,
-            self._model_path,
+            self.model_path,
             prefix=AUDIO_PROJ_PREFIXES,
-            dtype=self._dtype,
+            dtype=self.dtype,
             device="cpu",
         )
 
@@ -151,9 +151,9 @@ class MingAudioEncoder(nn.Module):
                 audio_embeds: Projected embeddings [B, T', hidden_size]
                 audio_embed_lengths: Output lengths [B, N]
         """
-        audio_feats = audio_feats.to(device=self._device)
+        audio_feats = audio_feats.to(device=self.device)
         if audio_feats_lengths is not None:
-            audio_feats_lengths = audio_feats_lengths.to(device=self._device)
+            audio_feats_lengths = audio_feats_lengths.to(device=self.device)
 
         # Whisper encoder expects [B, T, n_mels] and we process segments independently
         # Unwrap segments for per-segment encoding
@@ -180,7 +180,7 @@ class MingAudioEncoder(nn.Module):
             projected = self.projection(encoded.transpose(-1, -2)).transpose(-1, -2)
 
             # Compute output lengths after Conv1d downsampling
-            config = load_ming_config(self._model_path)
+            config = load_ming_config(self.model_path)
             audio_cfg = config.audio_config
             out_lengths = self.compute_output_lengths(
                 seg_lengths,
@@ -189,7 +189,7 @@ class MingAudioEncoder(nn.Module):
             )
 
             # Normalize if configured
-            if self._norm_query_embeds:
+            if self.norm_query_embeds:
                 projected = F.normalize(projected, dim=-1)
 
         # Re-wrap to batch-concatenated format if needed

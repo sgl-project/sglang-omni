@@ -90,9 +90,9 @@ class _FakeModel:
 def _make_runner(model, *, enabled=True, async_enabled=False):
     runner = object.__new__(HiggsTTSModelRunner)
     runner.model = model
-    runner._async_enabled = async_enabled
-    runner._syncfree_launch = enabled
-    runner._cg_launch_key = None
+    runner.async_enabled = async_enabled
+    runner.syncfree_launch = enabled
+    runner.cg_launch_key = None
     calls = {"extract": 0}
     orig = HiggsTTSModelRunner.extract_decode_sampling_params
 
@@ -139,10 +139,10 @@ def test_hit_skips_extract_and_keeps_buffers():
     runner.populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 1
     snap = {
-        "rows": model._cg_row_indices.clone(),
-        "temp": model._cg_temperature.clone(),
-        "top_p": model._cg_top_p.clone(),
-        "top_k": model._cg_top_k_buf.clone(),
+        "rows": model.cg_row_indices.clone(),
+        "temp": model.cg_temperature.clone(),
+        "top_p": model.cg_top_p.clone(),
+        "top_k": model.cg_top_k_buf.clone(),
     }
     assert snap["temp"][:2].tolist() == pytest.approx([0.7, 0.9])
     assert snap["top_p"][:2].tolist() == pytest.approx([0.95, 0.8])
@@ -151,10 +151,10 @@ def test_hit_skips_extract_and_keeps_buffers():
     for _ in range(3):
         runner.populate_cg_buffers(fb, reqs)
     assert calls["extract"] == 1  # all hits
-    assert torch.equal(model._cg_row_indices, snap["rows"])
-    assert torch.equal(model._cg_temperature, snap["temp"])
-    assert torch.equal(model._cg_top_p, snap["top_p"])
-    assert torch.equal(model._cg_top_k_buf, snap["top_k"])
+    assert torch.equal(model.cg_row_indices, snap["rows"])
+    assert torch.equal(model.cg_temperature, snap["temp"])
+    assert torch.equal(model.cg_top_p, snap["top_p"])
+    assert torch.equal(model.cg_top_k_buf, snap["top_k"])
 
 
 def test_pool_gathers_still_run_on_hit():
@@ -163,13 +163,13 @@ def test_pool_gathers_still_run_on_hit():
     fb = _fb(2)
     reqs = _reqs(["a", "b"], *AB_FB)
     runner.populate_cg_buffers(fb, reqs)
-    row_a = model._rid_to_row["a"]
+    row_a = model.rid_to_row["a"]
     # Note (Yueying Li): simulate the previous step's scatter mutating pool state.
-    model._sampler_pool.delay_count[row_a] = 5
-    model._sampler_pool.step_count[row_a] = 7
+    model.sampler_pool.delay_count[row_a] = 5
+    model.sampler_pool.step_count[row_a] = 7
     runner.populate_cg_buffers(fb, reqs)  # hit
-    assert int(model._cg_active_delay_count[0]) == 5
-    assert int(model._cg_active_step_count[0]) == 7
+    assert int(model.cg_active_delay_count[0]) == 5
+    assert int(model.cg_active_step_count[0]) == 7
 
 
 def test_miss_on_admission_finish_reorder_bs_and_rows():
@@ -184,7 +184,7 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
     fb_ab = _fb(2)
     runner.populate_cg_buffers(fb_ab, _reqs(["a", "b"], *AB_FB))
     assert calls["extract"] == 2
-    assert model._cg_temperature[:2].tolist() == pytest.approx([0.7, 0.9])
+    assert model.cg_temperature[:2].tolist() == pytest.approx([0.7, 0.9])
 
     # Reorder: [a, b] -> [b, a] (order-sensitive key)
     fb_ba = _fb(2)
@@ -192,34 +192,34 @@ def test_miss_on_admission_finish_reorder_bs_and_rows():
         fb_ba, _reqs(["b", "a"], [0.9, 0.7], [0.8, 0.95], [0, 50])
     )
     assert calls["extract"] == 3
-    assert model._cg_temperature[:2].tolist() == pytest.approx([0.9, 0.7])
-    assert model._cg_top_k_buf[:2].tolist() == [K_MAX, 50]
+    assert model.cg_temperature[:2].tolist() == pytest.approx([0.9, 0.7])
+    assert model.cg_top_k_buf[:2].tolist() == [K_MAX, 50]
 
     # Finish/removal: [b, a] -> [b]
     fb_b = _fb(1)
     runner.populate_cg_buffers(fb_b, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 4
-    assert model._cg_row_indices[0] == model._rid_to_row["b"]
+    assert model.cg_row_indices[0] == model.rid_to_row["b"]
 
     # Padded-bs change with same composition: bs 1 -> 3
     fb_b_pad = _fb(3)
     runner.populate_cg_buffers(fb_b_pad, _reqs(["b"], [0.9], [0.8], [0]))
     assert calls["extract"] == 5
-    assert model._cg_row_indices[1:3].tolist() == [PAD_ROW, PAD_ROW]
-    assert model._cg_temperature[1:3].tolist() == [1.0, 1.0]
-    assert model._cg_top_k_buf[1:3].tolist() == [K_MAX, K_MAX]
+    assert model.cg_row_indices[1:3].tolist() == [PAD_ROW, PAD_ROW]
+    assert model.cg_temperature[1:3].tolist() == [1.0, 1.0]
+    assert model.cg_top_k_buf[1:3].tolist() == [K_MAX, K_MAX]
 
     # Note (Yueying Li): row re-allocation under an identical rid tuple: retract-like release,
     # another request steals the row, then "b" is re-admitted.
-    old_row = model._rid_to_row["b"]
+    old_row = model.rid_to_row["b"]
     model.release_row("b")
     assert model.acquire_row("z") == old_row  # steals b's row
     runner.populate_cg_buffers(
         fb_b_pad, _reqs(["b"], [0.9], [0.8], [0])
     )  # same rids, same bs
     assert calls["extract"] == 6  # row change -> miss
-    assert model._cg_row_indices[0] == model._rid_to_row["b"]
-    assert model._rid_to_row["b"] != old_row
+    assert model.cg_row_indices[0] == model.rid_to_row["b"]
+    assert model.rid_to_row["b"] != old_row
 
 
 def test_flag_off_always_rebuilds():
@@ -240,21 +240,21 @@ def test_lookahead_guard_redirect_persists_and_matches_baseline():
         reqs = _reqs(["a", "b"], *AB_FB)
         rows_per_step = []
         runner.populate_cg_buffers(fb, reqs, is_lookahead=True)
-        rows_per_step.append(model._cg_row_indices[:2].tolist())
+        rows_per_step.append(model.cg_row_indices[:2].tolist())
         # Note (Yueying Li): request "b" finishes via EOC on-GPU: the step's scatter marks its
         # pool row done while the host has not yet filtered it out.
-        model._sampler_pool.generation_done[model._rid_to_row["b"]] = True
+        model.sampler_pool.generation_done[model.rid_to_row["b"]] = True
         for _ in range(2):  # overrun steps, composition unchanged
             runner.populate_cg_buffers(fb, reqs, is_lookahead=True)
-            rows_per_step.append(model._cg_row_indices[:2].tolist())
+            rows_per_step.append(model.cg_row_indices[:2].tolist())
         # Host drops "b": composition changes -> rebuild.
         model.release_row("b")
         fb_a = _fb(1)
         runner.populate_cg_buffers(
             fb_a, _reqs(["a"], [0.7], [0.95], [50]), is_lookahead=True
         )
-        rows_per_step.append(model._cg_row_indices[:1].tolist())
-        return rows_per_step, model._rid_to_row["a"], calls["extract"]
+        rows_per_step.append(model.cg_row_indices[:1].tolist())
+        return rows_per_step, model.rid_to_row["a"], calls["extract"]
 
     cached_rows, row_a, cached_extracts = run_steps(enabled=True)
     baseline_rows, _, baseline_extracts = run_steps(enabled=False)
@@ -280,28 +280,28 @@ def test_rid_reuse_on_same_row_misses():
         fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
     )
     assert calls["extract"] == 1
-    row = model._rid_to_row["x"]
+    row = model.rid_to_row["x"]
 
     # "x" EOC-finishes on-GPU; overrun step redirects its slot to padding.
-    model._sampler_pool.generation_done[row] = True
+    model.sampler_pool.generation_done[row] = True
     runner.populate_cg_buffers(
         fb_old, _reqs(["x"], [0.3], [0.5], [10]), is_lookahead=True
     )
     assert calls["extract"] == 1  # hit, as in baseline
-    assert int(model._cg_row_indices[0]) == PAD_ROW
+    assert int(model.cg_row_indices[0]) == PAD_ROW
 
     # Host drops "x"; LIFO hands the same row to the reincarnated rid "x".
     model.release_row("x")
-    model._sampler_pool.generation_done[row] = False
+    model.sampler_pool.generation_done[row] = False
     fb_new = _fb(1)
     runner.populate_cg_buffers(
         fb_new, _reqs(["x"], [0.9], [0.8], [50]), is_lookahead=True
     )
-    assert model._rid_to_row["x"] == row  # same row: key would collide
+    assert model.rid_to_row["x"] == row  # same row: key would collide
     assert calls["extract"] == 2  # fresh acquisition -> MISS
-    assert int(model._cg_row_indices[0]) == row  # redirect cleared
-    assert float(model._cg_temperature[0]) == pytest.approx(0.9)
-    assert int(model._cg_top_k_buf[0]) == 50
+    assert int(model.cg_row_indices[0]) == row  # redirect cleared
+    assert float(model.cg_temperature[0]) == pytest.approx(0.9)
+    assert int(model.cg_top_k_buf[0]) == 50
 
 
 def test_env_flag_parsing(monkeypatch):

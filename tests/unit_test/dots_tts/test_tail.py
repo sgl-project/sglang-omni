@@ -197,7 +197,7 @@ def test_kv_cached_tail_matches_full_recompute(slots: int) -> None:
     actual = acoustic_tail.sample_patches([slot], fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
-    assert acoustic_tail._dit_contiguous_view_steps == (NFE if slots == 1 else 0)
+    assert acoustic_tail.dit_contiguous_view_steps == (NFE if slots == 1 else 0)
 
 
 def test_tail_slots_are_bounded_and_reusable() -> None:
@@ -220,7 +220,7 @@ def test_tail_slots_are_bounded_and_reusable() -> None:
 
 def test_estimate_acoustic_pool_bytes_matches_allocated_tensors() -> None:
     acoustic_tail = _build_tail(_TailModel().eval(), slots=2, patch_capacity=8)
-    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail._mods_width)
+    estimate = acoustic_tail.pool_memory_estimate(acoustic_tail.mods_width)
     assert estimate.total_bytes == acoustic_tail.allocated_pool_bytes()
     assert estimate.num_slots == 2
     assert estimate.patch_capacity == 8
@@ -236,16 +236,16 @@ def test_estimate_acoustic_pool_bytes_matches_allocated_tensors() -> None:
             latent_dim=LATENT_DIM,
             fm_hidden_size=FM_HIDDEN,
         ),
-        dit_layers=acoustic_tail._dit_layers,
-        dit_heads=acoustic_tail._dit_heads,
-        dit_head_dim=acoustic_tail._dit_head_dim,
-        encoder_layers=acoustic_tail._encoder_layers,
-        encoder_heads=acoustic_tail._encoder_heads,
-        encoder_head_dim=acoustic_tail._encoder_head_dim,
-        encoder_block=acoustic_tail._encoder_block,
-        encoder_conv_channels=int(acoustic_tail._encoder.ds_proj.in_channels),
-        encoder_conv_padding=int(acoustic_tail._encoder.ds_proj.left_padding),
-        mods_width=acoustic_tail._mods_width,
+        dit_layers=acoustic_tail.dit_layers,
+        dit_heads=acoustic_tail.dit_heads,
+        dit_head_dim=acoustic_tail.dit_head_dim,
+        encoder_layers=acoustic_tail.encoder_layers,
+        encoder_heads=acoustic_tail.encoder_heads,
+        encoder_head_dim=acoustic_tail.encoder_head_dim,
+        encoder_block=acoustic_tail.encoder_block,
+        encoder_conv_channels=int(acoustic_tail.encoder.ds_proj.in_channels),
+        encoder_conv_padding=int(acoustic_tail.encoder.ds_proj.left_padding),
+        mods_width=acoustic_tail.mods_width,
         dtype=acoustic_tail.dtype,
     )
     assert double.total_bytes == 2 * estimate.total_bytes
@@ -357,8 +357,8 @@ def test_permuted_full_pool_matches_fragmented_gather_fallback() -> None:
     expected = fallback.sample_patches(fallback_slots, fm_hidden_rows=hidden)
 
     torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
-    assert direct._dit_contiguous_view_steps == NFE
-    assert fallback._dit_contiguous_view_steps == 0
+    assert direct.dit_contiguous_view_steps == NFE
+    assert fallback.dit_contiguous_view_steps == 0
 
 
 def test_request_release_forgets_slot_before_it_can_be_reused() -> None:
@@ -413,20 +413,20 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     )
 
     for name in (
-        "_dit_k",
-        "_dit_v",
-        "_encoder_k",
-        "_encoder_v",
-        "_encoder_conv_tail",
-        "_window",
-        "_all_mods",
+        "dit_k",
+        "dit_v",
+        "encoder_k",
+        "encoder_v",
+        "encoder_conv_tail",
+        "window",
+        "all_mods",
     ):
         eager_value = getattr(eager, name)
         eager_value.normal_(0, 0.05)
         getattr(graph, name).copy_(eager_value)
     for slot in range(8):
         eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = 15
-        eager._encoder_seq_len[slot] = graph._encoder_seq_len[slot] = 4
+        eager.encoder_seq_len[slot] = graph.encoder_seq_len[slot] = 4
         eager.initialize_slot_rng(slot, 100 + slot)
         graph.initialize_slot_rng(slot, 100 + slot)
 
@@ -440,9 +440,9 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     eager_feedback = eager.encode_feedback(slots, latent)
     graph_feedback = graph.encode_feedback(slots, latent)
     torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
-    assert graph._graph_replays == {"meanflow": 1, "semantic_encoder": 1}
-    assert not graph._graph_misses
-    assert graph._dit_contiguous_view_steps == NFE
+    assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph.graph_misses
+    assert graph.dit_contiguous_view_steps == NFE
 
 
 def _seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
@@ -470,8 +470,8 @@ def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
     acoustic_tail, slot = _seed_single_slot_tail(patch_capacity=60)
     # A captured batch-8 bucket that batch-1 decode can never select: every
     # cycle is a real miss, which is exactly what the counters report.
-    acoustic_tail._meanflow_graphs[(8, 16)] = object()
-    acoustic_tail._encoder_graphs[(8, 16)] = object()
+    acoustic_tail.meanflow_graphs[(8, 16)] = object()
+    acoustic_tail.encoder_graphs[(8, 16)] = object()
 
     with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
         for step in range(50):
@@ -496,10 +496,10 @@ def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
     assert "meanflow_misses=50" in message
     assert "semantic_encoder_replays=0" in message
     assert "semantic_encoder_misses=50" in message
-    assert acoustic_tail._graph_misses == Counter(
+    assert acoustic_tail.graph_misses == Counter(
         {"meanflow": 50, "semantic_encoder": 50}
     )
-    assert acoustic_tail._graph_replays == Counter()
+    assert acoustic_tail.graph_replays == Counter()
 
 
 def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
@@ -515,8 +515,8 @@ def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
             acoustic_tail.note_decode_cycle()
         acoustic_tail.log_graph_counters()
 
-    assert acoustic_tail._tail_steps == 50
-    assert acoustic_tail._graph_misses == Counter(
+    assert acoustic_tail.tail_steps == 50
+    assert acoustic_tail.graph_misses == Counter(
         {"meanflow": 50, "semantic_encoder": 50}
     )
     assert not _counter_records(caplog)

@@ -98,41 +98,41 @@ class MossTTSLocalTransformer(nn.Module):
             "rope_sin", freqs.sin().repeat_interleave(2, dim=-1), persistent=False
         )
 
-        self._kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
-        self._kv_capacity = 0
-        self._kv_frozen = False
+        self.kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.kv_capacity = 0
+        self.kv_frozen = False
 
     def freeze_kv_cache(self) -> None:
         """Forbid KV reallocation; captured CUDA graphs hold raw pointers
         into the current buffers, so growing them would leave the graphs
         reading freed memory."""
-        self._kv_frozen = True
+        self.kv_frozen = True
 
     def ensure_kv_cache(
         self, batch_size: int, device: torch.device, dtype: torch.dtype
     ) -> None:
         if (
-            self._kv_capacity >= batch_size
-            and self._kv_cache
-            and self._kv_cache[0][0].device == device
-            and self._kv_cache[0][0].dtype == dtype
+            self.kv_capacity >= batch_size
+            and self.kv_cache
+            and self.kv_cache[0][0].device == device
+            and self.kv_cache[0][0].dtype == dtype
         ):
             return
-        if self._kv_frozen:
+        if self.kv_frozen:
             raise RuntimeError(
                 "local-transformer KV cache is frozen after CUDA graph capture "
-                f"(capacity {self._kv_capacity}, requested {batch_size})"
+                f"(capacity {self.kv_capacity}, requested {batch_size})"
             )
-        capacity = max(batch_size, self._kv_capacity, 1)
+        capacity = max(batch_size, self.kv_capacity, 1)
         shape = (capacity, self.num_heads, self.max_positions, self.head_dim)
-        self._kv_cache = [
+        self.kv_cache = [
             (
                 torch.empty(shape, device=device, dtype=dtype),
                 torch.empty(shape, device=device, dtype=dtype),
             )
             for _ in self.h
         ]
-        self._kv_capacity = capacity
+        self.kv_capacity = capacity
 
     def step(self, hidden_states: torch.Tensor, position: int) -> torch.Tensor:
         """One micro-step for the whole batch."""
@@ -156,7 +156,7 @@ class MossTTSLocalTransformer(nn.Module):
             query = query * cos + rotate_half_interleaved(query) * sin
             key = key * cos + rotate_half_interleaved(key) * sin
 
-            key_cache, value_cache = self._kv_cache[layer_idx]
+            key_cache, value_cache = self.kv_cache[layer_idx]
             key_cache[:batch_size, :, position] = key
             value_cache[:batch_size, :, position] = value
 

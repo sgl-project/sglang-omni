@@ -16,30 +16,30 @@ from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
 
 class EvictHeapRadixCache(RadixCache):
     def __init__(self, params):
-        self._evict_heap: list = []
-        self._evict_heap_seq = 0
+        self.evict_heap: list = []
+        self.evict_heap_seq = 0
         super().__init__(params)
 
     def reset(self):
-        self._evict_heap.clear()
+        self.evict_heap.clear()
         super().reset()
 
     def evict_heap_push(self, node: TreeNode) -> None:
-        self._evict_heap_seq += 1
+        self.evict_heap_seq += 1
         heapq.heappush(
-            self._evict_heap,
-            (self.eviction_strategy.get_priority(node), self._evict_heap_seq, node),
+            self.evict_heap,
+            (self.eviction_strategy.get_priority(node), self.evict_heap_seq, node),
         )
-        if len(self._evict_heap) > max(1024, 4 * len(self.evictable_leaves)):
+        if len(self.evict_heap) > max(1024, 4 * len(self.evictable_leaves)):
             self.evict_heap_rebuild()
 
     def evict_heap_rebuild(self) -> None:
-        self._evict_heap = [
+        self.evict_heap = [
             (self.eviction_strategy.get_priority(n), i, n)
             for i, n in enumerate(self.evictable_leaves)
         ]
-        self._evict_heap_seq = len(self._evict_heap)
-        heapq.heapify(self._evict_heap)
+        self.evict_heap_seq = len(self.evict_heap)
+        heapq.heapify(self.evict_heap)
 
     def _update_leaf_status(self, node: TreeNode) -> None:
         was_evictable = node in self.evictable_leaves
@@ -55,8 +55,8 @@ class EvictHeapRadixCache(RadixCache):
         num_tokens = params.num_tokens
 
         num_evicted = 0
-        while num_evicted < num_tokens and self._evict_heap:
-            priority, _seq, x = heapq.heappop(self._evict_heap)
+        while num_evicted < num_tokens and self.evict_heap:
+            priority, _seq, x = heapq.heappop(self.evict_heap)
 
             if x not in self.evictable_leaves:
                 continue
@@ -69,7 +69,7 @@ class EvictHeapRadixCache(RadixCache):
             self.token_to_kv_pool_allocator.free_segment(x.value, start_pos=0)
             num_evicted += len(x.value)
             # note (Junnan Li): _delete_leaf relands the parent via _update_leaf_status.
-            self._delete_leaf(x)
+            self.delete_leaf(x)
             self.kv_events.record_remove(x)
 
         self.update_eviction_metrics(num_evicted, start_time)

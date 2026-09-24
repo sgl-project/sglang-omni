@@ -239,7 +239,7 @@ def test_the_installed_wrapper_hands_the_kernel_views_of_the_packed_qkv(
     assert q.shape == (tokens, heads * dim)
     assert k.shape == (tokens, kv_heads * dim)
     assert torch.equal(v, v_before)
-    assert attn._used_fused_qk_norm_rope_last_call is True
+    assert attn.used_fused_qk_norm_rope_last_call is True
 
     gate.evaluate(positions, _decode_batch())
     assert attn.apply_qk_norm_rope(qkv, positions, None) == "unfused"

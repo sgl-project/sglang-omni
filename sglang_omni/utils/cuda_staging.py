@@ -43,14 +43,14 @@ class GrowablePinnedBuffer:
     def __init__(self, dtype: torch.dtype, *, initial_capacity: int = 0) -> None:
         if initial_capacity < 0:
             raise ValueError("initial_capacity must be >= 0")
-        self._dtype = dtype
-        self._storage: torch.Tensor | None = None
+        self.dtype = dtype
+        self.storage: torch.Tensor | None = None
         if initial_capacity:
             self.ensure_capacity(initial_capacity)
 
     @property
     def capacity(self) -> int:
-        return 0 if self._storage is None else int(self._storage.numel())
+        return 0 if self.storage is None else int(self.storage.numel())
 
     def ensure_capacity(self, required: int) -> None:
         """Grow to ``required`` elements. On failure the old storage is kept."""
@@ -58,8 +58,8 @@ class GrowablePinnedBuffer:
             raise ValueError("required capacity must be >= 0")
         if required <= self.capacity:
             return
-        storage = allocate_pinned(required, self._dtype)
-        self._storage = storage
+        storage = allocate_pinned(required, self.dtype)
+        self.storage = storage
 
     def view(self, numel: int) -> torch.Tensor:
         """Return the first ``numel`` elements without allocating pinned memory."""
@@ -68,10 +68,10 @@ class GrowablePinnedBuffer:
                 f"requested {numel} elements from a pinned buffer with capacity "
                 f"{self.capacity}"
             )
-        if self._storage is None:
+        if self.storage is None:
             with torch.inference_mode(False):
-                return torch.empty(0, dtype=self._dtype)
-        return self._storage[:numel]
+                return torch.empty(0, dtype=self.dtype)
+        return self.storage[:numel]
 
 
 class PinnedTransferSlot:
@@ -93,24 +93,24 @@ class PinnedTransferSlot:
         initial_capacity: int = 0,
     ) -> None:
         self.device = normalize_device(device)
-        self._buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
-        self._event: Any = None
+        self.buffer = GrowablePinnedBuffer(dtype, initial_capacity=initial_capacity)
+        self.event: Any = None
         # Note (jiannan-17): True only while the most recent ``record()``
         # succeeded. The event object alone cannot tell "never recorded" from
         # "the last record() raised", and CUDA reports an event whose record
         # never happened as already complete, which would hand the owner a
         # completion marker for a transfer that was never fenced.
-        self._recorded = False
+        self.recorded = False
 
     @property
     def capacity(self) -> int:
-        return self._buffer.capacity
+        return self.buffer.capacity
 
     def ensure_capacity(self, required: int) -> None:
-        self._buffer.ensure_capacity(required)
+        self.buffer.ensure_capacity(required)
 
     def view(self, numel: int) -> torch.Tensor:
-        return self._buffer.view(numel)
+        return self.buffer.view(numel)
 
     def device_guard(self) -> contextlib.AbstractContextManager[Any]:
         if self.device.type == "cuda":
@@ -128,7 +128,7 @@ class PinnedTransferSlot:
         # Note (jiannan-17): cleared before anything can fail, so neither a
         # rejected stream nor a failed CUDA record can leave the previous
         # transfer's completion state readable as this transfer's.
-        self._recorded = False
+        self.recorded = False
         stream_device = getattr(stream, "device", None)
         if stream_device is not None and normalize_device(stream_device) != self.device:
             raise ValueError(
@@ -136,18 +136,18 @@ class PinnedTransferSlot:
                 f"{stream_device}"
             )
         with self.device_guard():
-            if self._event is None:
-                self._event = torch.cuda.Event()
-            self._event.record(stream)
-        self._recorded = True
+            if self.event is None:
+                self.event = torch.cuda.Event()
+            self.event.record(stream)
+        self.recorded = True
 
     def recorded_event(self) -> Any:
-        if not self._recorded:
+        if not self.recorded:
             raise RuntimeError(
                 "transfer event was not recorded: no record() has succeeded on "
                 "this slot since it was created or since its last record() raised"
             )
-        return self._event
+        return self.event
 
     def query(self) -> bool:
         """Return whether the recorded event has completed, without blocking.

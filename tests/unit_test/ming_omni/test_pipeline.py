@@ -907,8 +907,8 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
             }
 
     preprocessor = MingPreprocessor.__new__(MingPreprocessor)
-    preprocessor._video_processor = FakeVideoProcessor()
-    preprocessor._vision_config = SimpleNamespace(spatial_merge_size=2)
+    preprocessor.video_processor = FakeVideoProcessor()
+    preprocessor.vision_config = SimpleNamespace(spatial_merge_size=2)
 
     frames = torch.zeros((4, 3, 8, 8), dtype=torch.float32)
     pixel_values, grid, token_counts = preprocessor.process_videos([frames])
@@ -916,7 +916,7 @@ def test_ming_preprocessor_uses_dedicated_video_processor_contract() -> None:
     assert tuple(pixel_values.shape) == (8, 16)
     assert grid.tolist() == [[2, 4, 4]]
     assert token_counts == [8]
-    videos, return_tensors = preprocessor._video_processor.calls[0]
+    videos, return_tensors = preprocessor.video_processor.calls[0]
     assert return_tensors == "pt"
     assert len(videos) == 1
     assert videos[0].shape == (4, 8, 8, 3)
@@ -1106,7 +1106,7 @@ def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
     enc = object.__new__(MingImageEncoder)
-    enc.__dict__["_spatial_merge_size"] = spatial_merge_size
+    enc.__dict__["spatial_merge_size"] = spatial_merge_size
     enc.__dict__["visual"] = types.SimpleNamespace(device=torch.device("cpu"))
 
     def fake_encode(pixel_values, grid_thw):

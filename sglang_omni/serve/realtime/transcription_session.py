@@ -148,7 +148,7 @@ class RealtimeTranscriptionSession:
         self.session_id = session_id or new_id("sess")
         self.closed = False
         self.event_index = 0
-        self._send_lock = asyncio.Lock()
+        self.send_lock = asyncio.Lock()
         self.transcription_config = transcription_config
         self.strategy = strategy
         self.settings = TranscriptionSessionSettings(
@@ -174,13 +174,13 @@ class RealtimeTranscriptionSession:
         self.buffer_origin_samples = 0
         self.active_segment: ActiveTranscriptionSegment | None = None
         self.committed_segments: list[CommittedTranscriptionSegment] = []
-        self._next_segment_id = 0
-        self._decode_event = asyncio.Event()
-        self._pending_finals: deque[FinalDecode] = deque()
-        self._final_waiters: set[asyncio.Future[None]] = set()
-        self._inflight_request_id: str | None = None
-        self._decode_worker_task = self.spawn_decode_worker()
-        self._input_done = False
+        self.next_segment_id = 0
+        self.decode_event = asyncio.Event()
+        self.pending_finals: deque[FinalDecode] = deque()
+        self.final_waiters: set[asyncio.Future[None]] = set()
+        self.inflight_request_id: str | None = None
+        self.decode_worker_task = self.spawn_decode_worker()
+        self.input_done = False
 
     async def run(self) -> None:
         await self.send(self.initial_event())
@@ -252,7 +252,7 @@ class RealtimeTranscriptionSession:
             return
         if isinstance(event, TranscriptionServerEvent):
             event = event.model_dump(exclude={"event_id", "event_index"})
-        async with self._send_lock:
+        async with self.send_lock:
             self.event_index += 1
             event.setdefault("event_id", new_id("evt"))
             event.setdefault("event_index", self.event_index)
@@ -382,7 +382,7 @@ class RealtimeTranscriptionSession:
         await self.send(TranscriptionSessionUpdated(session=self.session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
-        if self._input_done:
+        if self.input_done:
             await self.send_error(
                 "invalid_request_error",
                 "input_already_done",
@@ -458,7 +458,7 @@ class RealtimeTranscriptionSession:
     def start_segment(self, start_sample: int) -> ActiveTranscriptionSegment:
         interval_samples = self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
         segment = ActiveTranscriptionSegment(
-            segment_id=self._next_segment_id,
+            segment_id=self.next_segment_id,
             start_sample=start_sample,
             strategy_state=self.strategy.create_state(
                 model_name=self.model_name,
@@ -466,7 +466,7 @@ class RealtimeTranscriptionSession:
             ),
             next_refresh_sample=start_sample + interval_samples,
         )
-        self._next_segment_id += 1
+        self.next_segment_id += 1
         self.active_segment = segment
         return segment
 
@@ -539,9 +539,9 @@ class RealtimeTranscriptionSession:
         )
         pcm = bytes(self.audio_buffer.buf[start_byte:end_byte])
         done = asyncio.get_running_loop().create_future()
-        done.add_done_callback(self._final_waiters.discard)
-        self._final_waiters.add(done)
-        self._pending_finals.append(
+        done.add_done_callback(self.final_waiters.discard)
+        self.final_waiters.add(done)
+        self.pending_finals.append(
             FinalDecode(
                 segment=segment,
                 pcm=pcm,
@@ -553,7 +553,7 @@ class RealtimeTranscriptionSession:
         self.audio_buffer.drop_prefix(end_byte)
         self.buffer_origin_samples += end_byte // 2
         self.active_segment = None
-        self._decode_event.set()
+        self.decode_event.set()
         await self.send(
             TranscriptionCommitted(
                 segment_id=segment.segment_id,
@@ -565,7 +565,7 @@ class RealtimeTranscriptionSession:
         if segment is None:
             return
         if self.absolute_buffer_end() >= segment.next_refresh_sample:
-            self._decode_event.set()
+            self.decode_event.set()
 
     def spawn_decode_worker(self) -> asyncio.Task[None]:
         task = asyncio.create_task(self.decode_worker())
@@ -585,13 +585,13 @@ class RealtimeTranscriptionSession:
 
     async def decode_worker(self) -> None:
         while True:
-            await self._decode_event.wait()
-            self._decode_event.clear()
+            await self.decode_event.wait()
+            self.decode_event.clear()
             if self.closed:
                 return
 
-            while self._pending_finals:
-                final = self._pending_finals.popleft()
+            while self.pending_finals:
+                final = self.pending_finals.popleft()
                 try:
                     if self.is_silent(final.pcm):
                         await self.emit_hypothesis(final.segment, "", is_final=True)
@@ -649,7 +649,7 @@ class RealtimeTranscriptionSession:
             is_final=is_final,
             request_id=request_id,
         )
-        self._inflight_request_id = request_id
+        self.inflight_request_id = request_id
         try:
             result = await self.client.completion(request, request_id=request_id)
         except asyncio.CancelledError:
@@ -658,8 +658,8 @@ class RealtimeTranscriptionSession:
             await self.send_error("server_error", "transcription_failed", str(exc))
             return
         finally:
-            if self._inflight_request_id == request_id:
-                self._inflight_request_id = None
+            if self.inflight_request_id == request_id:
+                self.inflight_request_id = None
         if not is_final and self.active_segment is not segment:
             return
         text = self.strategy.update_hypothesis(
@@ -700,17 +700,17 @@ class RealtimeTranscriptionSession:
 
     async def handle_audio_clear(self, event: InputAudioBufferClear) -> None:
         del event
-        request_id = self._inflight_request_id
-        await self.cancel_and_abort(self._decode_worker_task, request_id)
-        for final in self._pending_finals:
+        request_id = self.inflight_request_id
+        await self.cancel_and_abort(self.decode_worker_task, request_id)
+        for final in self.pending_finals:
             if not final.done.done():
                 final.done.cancel()
-        for waiter in list(self._final_waiters):
+        for waiter in list(self.final_waiters):
             if not waiter.done():
                 waiter.cancel()
-        self._pending_finals.clear()
-        self._final_waiters.clear()
-        self._decode_event.clear()
+        self.pending_finals.clear()
+        self.final_waiters.clear()
+        self.decode_event.clear()
 
         buffer_end = self.absolute_buffer_end()
         self.audio_buffer.clear()
@@ -720,7 +720,7 @@ class RealtimeTranscriptionSession:
             self.vad.reset()
         self.vad_origin_samples = self.buffer_origin_samples
 
-        self._decode_worker_task = self.spawn_decode_worker()
+        self.decode_worker_task = self.spawn_decode_worker()
         await self.send(TranscriptionCleared())
 
     async def commit_buffer(self, reason: str) -> None:
@@ -742,18 +742,18 @@ class RealtimeTranscriptionSession:
 
     async def handle_transcription_done(self, event: TranscriptionDone) -> None:
         del event
-        if self._input_done:
+        if self.input_done:
             await self.send_error(
                 "invalid_request_error",
                 "input_already_done",
                 "transcription.done was already received.",
             )
             return
-        self._input_done = True
+        self.input_done = True
         await self.commit_buffer("session_end")
-        if self._final_waiters:
-            await asyncio.gather(*list(self._final_waiters))
-        await self.cancel_and_abort(self._decode_worker_task, None)
+        if self.final_waiters:
+            await asyncio.gather(*list(self.final_waiters))
+        await self.cancel_and_abort(self.decode_worker_task, None)
         ordered = sorted(self.committed_segments, key=lambda item: item.segment_id)
         await self.send(
             TranscriptionCompleted(
@@ -764,15 +764,15 @@ class RealtimeTranscriptionSession:
     async def teardown(self) -> None:
         self.closed = True
         self.active_segment = None
-        request_id = self._inflight_request_id
-        await self.cancel_and_abort(self._decode_worker_task, request_id)
-        for final in self._pending_finals:
+        request_id = self.inflight_request_id
+        await self.cancel_and_abort(self.decode_worker_task, request_id)
+        for final in self.pending_finals:
             if not final.done.done():
                 final.done.cancel()
-        for waiter in list(self._final_waiters):
+        for waiter in list(self.final_waiters):
             if not waiter.done():
                 waiter.cancel()
-        self._pending_finals.clear()
+        self.pending_finals.clear()
         if self.websocket.client_state == WebSocketState.CONNECTED:
             await self.websocket.close()
 

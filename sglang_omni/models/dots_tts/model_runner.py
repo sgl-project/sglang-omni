@@ -28,7 +28,7 @@ class DotsTTSModelRunner(ModelRunner):
 
     def __init__(self, tp_worker: Any, output_processor: Any) -> None:
         super().__init__(tp_worker, output_processor)
-        self._request_data: dict[str, Any] = {}
+        self.request_data: dict[str, Any] = {}
 
     def before_prefill(
         self, forward_batch: Any, schedule_batch: Any, requests: list
@@ -51,7 +51,7 @@ class DotsTTSModelRunner(ModelRunner):
                     data.flow_state, DotsFlowResume
                 ):
                     self.suspend_request_data(data)
-                self._request_data.pop(request.request_id, None)
+                self.request_data.pop(request.request_id, None)
                 resume = data.flow_state
                 flow_state, prompt_embeddings = self.model.flow.new_request(
                     max_audio_patch_count=int(data.span_positions.numel()),
@@ -65,7 +65,7 @@ class DotsTTSModelRunner(ModelRunner):
                     ),
                 )
                 data.flow_state = flow_state
-                self._request_data[request.request_id] = data
+                self.request_data[request.request_id] = data
                 materialized.append((request.request_id, data))
                 device = forward_batch.input_ids.device
                 prefill_ids = schedule[:, : data.prefill_end].to(device=device)
@@ -101,7 +101,7 @@ class DotsTTSModelRunner(ModelRunner):
             forward_batch.input_embeds = torch.cat(rows, dim=0)
         except BaseException:
             for request_id, data in materialized:
-                self._request_data.pop(request_id, None)
+                self.request_data.pop(request_id, None)
                 self.clear_request_data(data)
             raise
 
@@ -302,16 +302,16 @@ class DotsTTSModelRunner(ModelRunner):
         return hidden
 
     def on_request_finished(self, request_id: str, req_data: Any) -> None:
-        self._request_data.pop(request_id, None)
+        self.request_data.pop(request_id, None)
         self.clear_request_data(req_data)
 
     def reset_request(self, request_id: str) -> None:
-        req_data = self._request_data.pop(request_id, None)
+        req_data = self.request_data.pop(request_id, None)
         if req_data is not None:
             self.clear_request_data(req_data)
 
     def release_retracted_flow_states(self) -> None:
-        for req_data in self._request_data.values():
+        for req_data in self.request_data.values():
             if (
                 req_data.flow_state is not None
                 and not isinstance(req_data.flow_state, DotsFlowResume)

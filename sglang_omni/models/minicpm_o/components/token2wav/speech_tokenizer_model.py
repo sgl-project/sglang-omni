@@ -125,12 +125,12 @@ class FSQVectorQuantization(torch.nn.Module):
     def __init__(self, dim: int, codebook_size: int) -> None:
         super().__init__()
         assert 3**8 == codebook_size
-        self._codebook = FSQCodebook(dim=dim, level=3)
+        self.codebook = FSQCodebook(dim=dim, level=3)
         self.codebook_size = codebook_size
 
     @torch.inference_mode()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self._codebook.encode(x)
+        return self.codebook.encode(x)
 
 
 class FSMNMultiHeadAttention(nn.Module):

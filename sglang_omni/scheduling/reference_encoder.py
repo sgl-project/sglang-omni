@@ -150,83 +150,89 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             raise ValueError(f"max_batch_size must be >= 1, got {max_batch_size}")
         if max_batch_wait_ms < 0:
             raise ValueError(f"max_batch_wait_ms must be >= 0, got {max_batch_wait_ms}")
-        self._hook = hook
-        self._cache = StageOutputCache(max_size=max_items, max_bytes=max_bytes)
-        self._timeout_s = float(timeout_s)
-        self._log_prefix = log_prefix
-        self._lock = threading.Lock()
-        self._inflight: dict[str, concurrent.futures.Future[StoredT]] = {}
-        self._hits = 0
-        self._misses = 0
-        self._merged = 0
-        self._failed = 0
-        self._uncacheable = 0
-        self._batches = 0
-        self._batched_items = 0
-        self._last_log_time = 0.0
+        self._hook = hook  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.cache = StageOutputCache(max_size=max_items, max_bytes=max_bytes)
+        self.timeout_s = float(timeout_s)
+        self.log_prefix = log_prefix
+        self.lock = threading.Lock()
+        self.inflight: dict[str, concurrent.futures.Future[StoredT]] = {}
+        self.hits = 0
+        self.misses = 0
+        self.merged = 0
+        self.failed = 0
+        self.uncacheable = 0
+        self.batches = 0
+        self.batched_items = 0
+        self.last_log_time = 0.0
 
         # Only distinct cache-miss leaders reach the queue; hits and same-key
         # followers resolve first, so batching preserves lookup order/single-flight.
-        self._max_batch_size = int(max_batch_size)
-        self._max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
-        self._batching = self._max_batch_size > 1 and bool(hook.can_encode_batch())
-        self._batch_queue: (
+        self.max_batch_size = int(max_batch_size)
+        self.max_batch_wait_s = float(max_batch_wait_ms) / 1000.0
+        self.batching = self.max_batch_size > 1 and bool(hook.can_encode_batch())
+        self.batch_queue: (
             _queue_mod.Queue[tuple[InputT, concurrent.futures.Future[ArtifactT]] | None]
             | None
         ) = None
-        self._batch_thread: threading.Thread | None = None
-        if self._batching:
-            self._batch_queue = _queue_mod.Queue()
-            self._batch_thread = threading.Thread(
+        self.batch_thread: threading.Thread | None = None
+        if self.batching:
+            self.batch_queue = _queue_mod.Queue()
+            self.batch_thread = threading.Thread(
                 target=self.batch_worker,
                 name=batch_worker_name,
                 daemon=True,
             )
-            self._batch_thread.start()
+            self.batch_thread.start()
 
     @property
     def hook(self) -> ReferenceEncodeHook[InputT, ArtifactT, StoredT]:
-        return self._hook
+        return (
+            self._hook
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def batching_enabled(self) -> bool:
-        return self._batching
+        return self.batching
 
     def close(self) -> None:
-        if self._batch_queue is not None:
-            self._batch_queue.put(None)
-        thread = self._batch_thread
+        if self.batch_queue is not None:
+            self.batch_queue.put(None)
+        thread = self.batch_thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=5.0)
-        close = getattr(self._hook, "close", None)
+        close = getattr(
+            self._hook, "close", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if callable(close):
             close()
 
     def encode_leader(self, item: InputT) -> ArtifactT:
-        if self._batch_queue is None:
-            return self._hook.encode_one(item)
+        if self.batch_queue is None:
+            return self._hook.encode_one(
+                item
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         future: concurrent.futures.Future[ArtifactT] = concurrent.futures.Future()
-        self._batch_queue.put((item, future))
-        return future.result(timeout=self._timeout_s)
+        self.batch_queue.put((item, future))
+        return future.result(timeout=self.timeout_s)
 
     def drain_batch(
         self,
     ) -> tuple[list[tuple[InputT, concurrent.futures.Future[ArtifactT]]], bool]:
-        assert self._batch_queue is not None
-        first = self._batch_queue.get()
+        assert self.batch_queue is not None
+        first = self.batch_queue.get()
         if first is None:
             return [], True
         batch = [first]
-        deadline = time.monotonic() + self._max_batch_wait_s
-        while len(batch) < self._max_batch_size:
+        deadline = time.monotonic() + self.max_batch_wait_s
+        while len(batch) < self.max_batch_size:
             try:
-                entry = self._batch_queue.get_nowait()
+                entry = self.batch_queue.get_nowait()
             except _queue_mod.Empty:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 try:
-                    entry = self._batch_queue.get(timeout=remaining)
+                    entry = self.batch_queue.get(timeout=remaining)
                 except _queue_mod.Empty:
                     break
             if entry is None:
@@ -260,11 +266,11 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
 
     def drain_pending_on_shutdown(self) -> None:
         """Fail queued waiters instead of leaving them to time out."""
-        if self._batch_queue is None:
+        if self.batch_queue is None:
             return
         while True:
             try:
-                entry = self._batch_queue.get_nowait()
+                entry = self.batch_queue.get_nowait()
             except _queue_mod.Empty:
                 return
             if entry is None:
@@ -278,73 +284,85 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
     def encode_batch(self, items: list[InputT]) -> list[Any]:
         """Encode a drained batch, falling back to per-item encodes on failure."""
         try:
-            artifacts = self._hook.encode_batch(items)
+            artifacts = self._hook.encode_batch(
+                items
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if len(artifacts) != len(items):
                 raise RuntimeError(
                     f"encode_batch returned {len(artifacts)} artifacts for "
                     f"{len(items)} items"
                 )
-            with self._lock:
-                self._batches += 1
-                self._batched_items += len(items)
+            with self.lock:
+                self.batches += 1
+                self.batched_items += len(items)
             return list(artifacts)
         except Exception:
             logger.exception(
                 "%s batched reference encode failed; retrying per item",
-                self._log_prefix or "reference encode",
+                self.log_prefix or "reference encode",
             )
         results: list[Any] = []
         for item in items:
             try:
-                results.append(self._hook.encode_one(item))
+                results.append(
+                    self._hook.encode_one(item)
+                )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             except Exception as exc:
                 results.append(exc)
         return results
 
     def get_or_encode(self, raw_input: Any, *, desc: str | None = None) -> ArtifactT:
-        item = self._hook.normalize_input(raw_input)
-        key = self._hook.cache_key(item)
+        item = self._hook.normalize_input(
+            raw_input
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        key = self._hook.cache_key(
+            item
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if key is None:
-            with self._lock:
-                self._uncacheable += 1
+            with self.lock:
+                self.uncacheable += 1
             try:
                 return self.encode_leader(item)
             except BaseException as exc:
                 self.add_exception_note(exc, desc)
-                with self._lock:
-                    self._failed += 1
+                with self.lock:
+                    self.failed += 1
                 raise
 
         cache_key = key.to_string()
         leader_fut: concurrent.futures.Future[StoredT] | None = None
         follower_fut: concurrent.futures.Future[StoredT] | None = None
         stored: StoredT | None = None
-        with self._lock:
-            stored = self._cache.get(cache_key)
+        with self.lock:
+            stored = self.cache.get(cache_key)
             if stored is not None:
-                self._hits += 1
-            elif cache_key in self._inflight:
-                self._merged += 1
-                follower_fut = self._inflight[cache_key]
+                self.hits += 1
+            elif cache_key in self.inflight:
+                self.merged += 1
+                follower_fut = self.inflight[cache_key]
             else:
-                self._misses += 1
+                self.misses += 1
                 leader_fut = concurrent.futures.Future()
-                self._inflight[cache_key] = leader_fut
+                self.inflight[cache_key] = leader_fut
 
         if stored is not None:
             self.maybe_log()
-            return self._hook.load_artifact(stored)
+            return self._hook.load_artifact(
+                stored
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         if follower_fut is not None:
             try:
-                stored = follower_fut.result(timeout=self._timeout_s)
+                stored = follower_fut.result(timeout=self.timeout_s)
             except concurrent.futures.TimeoutError as exc:
                 self.add_exception_note(exc, desc)
                 raise
             except BaseException as exc:
                 self.add_exception_note(exc, desc)
                 raise fresh_exception(exc) from exc
-            return self._hook.load_artifact(stored)
+            return self._hook.load_artifact(
+                stored
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         assert leader_fut is not None
         # revalidate() and cache.put() run inside the same guard as encode: any
@@ -355,36 +373,42 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
         # raise (e.g. a reference file mutated during the encode window).
         try:
             artifact = self.encode_leader(item)
-            stored = self._hook.store_artifact(artifact)
-            should_cache = self._hook.revalidate(item, key)
-            with self._lock:
+            stored = self._hook.store_artifact(
+                artifact
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            should_cache = self._hook.revalidate(
+                item, key
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            with self.lock:
                 if should_cache:
-                    self._cache.put(cache_key, stored)
-                self._inflight.pop(cache_key, None)
+                    self.cache.put(cache_key, stored)
+                self.inflight.pop(cache_key, None)
         except BaseException as exc:
             self.add_exception_note(exc, desc)
-            with self._lock:
-                self._inflight.pop(cache_key, None)
-                self._failed += 1
+            with self.lock:
+                self.inflight.pop(cache_key, None)
+                self.failed += 1
             leader_fut.set_exception(exc)
             raise
         leader_fut.set_result(stored)
         self.maybe_log()
-        return self._hook.load_artifact(stored)
+        return self._hook.load_artifact(
+            stored
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def stats(self) -> dict[str, int]:
-        with self._lock:
+        with self.lock:
             return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "merged": self._merged,
-                "entries": len(self._cache),
-                "bytes": self._cache.current_bytes,
-                "evictions": self._cache.eviction_count,
-                "failed": self._failed,
-                "uncacheable": self._uncacheable,
-                "batches": self._batches,
-                "batched_items": self._batched_items,
+                "hits": self.hits,
+                "misses": self.misses,
+                "merged": self.merged,
+                "entries": len(self.cache),
+                "bytes": self.cache.current_bytes,
+                "evictions": self.cache.eviction_count,
+                "failed": self.failed,
+                "uncacheable": self.uncacheable,
+                "batches": self.batches,
+                "batched_items": self.batched_items,
             }
 
     @staticmethod
@@ -396,25 +420,25 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT]):
             add_note(f"Reference encode context: {desc}")
 
     def maybe_log(self) -> None:
-        if self._log_prefix is None:
+        if self.log_prefix is None:
             return
         now = time.monotonic()
-        if now - self._last_log_time < self._LOG_INTERVAL_S:
+        if now - self.last_log_time < self.LOG_INTERVAL_S:
             return
-        with self._lock:
-            if now - self._last_log_time < self._LOG_INTERVAL_S:
+        with self.lock:
+            if now - self.last_log_time < self.LOG_INTERVAL_S:
                 return
-            self._last_log_time = now
+            self.last_log_time = now
             stats = {
-                "hits": self._hits,
-                "misses": self._misses,
-                "merged": self._merged,
-                "entries": len(self._cache),
-                "bytes": self._cache.current_bytes,
-                "evictions": self._cache.eviction_count,
-                "failed": self._failed,
-                "uncacheable": self._uncacheable,
-                "batches": self._batches,
-                "batched_items": self._batched_items,
+                "hits": self.hits,
+                "misses": self.misses,
+                "merged": self.merged,
+                "entries": len(self.cache),
+                "bytes": self.cache.current_bytes,
+                "evictions": self.cache.eviction_count,
+                "failed": self.failed,
+                "uncacheable": self.uncacheable,
+                "batches": self.batches,
+                "batched_items": self.batched_items,
             }
-        logger.info("%s reference encode stats: %s", self._log_prefix, stats)
+        logger.info("%s reference encode stats: %s", self.log_prefix, stats)

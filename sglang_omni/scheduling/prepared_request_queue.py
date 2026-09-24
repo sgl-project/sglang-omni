@@ -35,77 +35,77 @@ class PreparedRequestQueue(Generic[CtxT, PrepT]):
     """
 
     def __init__(self) -> None:
-        self._context: CtxT | None = None
-        self._prepared: dict[str, PrepT] = {}
-        self._inflight: set[str] = set()
-        self._aborted: set[str] = set()
-        self._lock = threading.Lock()
+        self.context: CtxT | None = None
+        self.prepared: dict[str, PrepT] = {}
+        self.inflight: set[str] = set()
+        self.aborted: set[str] = set()
+        self.lock = threading.Lock()
 
     def snapshot(self) -> QueueSnapshot:
         """Read-only view of the current state."""
-        with self._lock:
+        with self.lock:
             return QueueSnapshot(
-                context=self._context,
-                prepared=frozenset(self._prepared),
-                inflight=frozenset(self._inflight),
-                aborted=frozenset(self._aborted),
+                context=self.context,
+                prepared=frozenset(self.prepared),
+                inflight=frozenset(self.inflight),
+                aborted=frozenset(self.aborted),
             )
 
     def set_context(self, context: CtxT) -> None:
         """Register the preprocessing context and reset the registry."""
-        with self._lock:
-            self._context = context
-            self._prepared.clear()
-            self._inflight.clear()
-            self._aborted.clear()
+        with self.lock:
+            self.context = context
+            self.prepared.clear()
+            self.inflight.clear()
+            self.aborted.clear()
 
     def clear_context(self) -> None:
         """Drop the context and reset the registry (mainly tests and reloads)."""
-        with self._lock:
-            self._context = None
-            self._prepared.clear()
-            self._inflight.clear()
-            self._aborted.clear()
+        with self.lock:
+            self.context = None
+            self.prepared.clear()
+            self.inflight.clear()
+            self.aborted.clear()
 
     def begin(self, request_id: str) -> CtxT | None:
         # note (Yue Yin): read the context and mark in-flight under one lock, so a
         # concurrent clear_context cannot leave a stale in-flight id behind.
-        with self._lock:
-            context = self._context
+        with self.lock:
+            context = self.context
             if context is not None:
-                self._inflight.add(request_id)
+                self.inflight.add(request_id)
             return context
 
     def fail_inflight(self, request_id: str) -> None:
         """Roll back an in-flight request whose preprocessing raised."""
-        with self._lock:
-            self._inflight.discard(request_id)
-            self._aborted.discard(request_id)
+        with self.lock:
+            self.inflight.discard(request_id)
+            self.aborted.discard(request_id)
 
     def publish(self, request_id: str, prepared: PrepT) -> bool:
         # note (Yue Yin): fail closed -- store only while the id is still in flight,
         # so a publish after a context reset or without begin() cannot leave a stale
         # handoff. Returns False when dropped.
-        with self._lock:
-            inflight = request_id in self._inflight
-            self._inflight.discard(request_id)
-            aborted = request_id in self._aborted
-            self._aborted.discard(request_id)
+        with self.lock:
+            inflight = request_id in self.inflight
+            self.inflight.discard(request_id)
+            aborted = request_id in self.aborted
+            self.aborted.discard(request_id)
             if inflight and not aborted:
-                self._prepared[request_id] = prepared
+                self.prepared[request_id] = prepared
                 return True
             return False
 
     def abort(self, request_id: str) -> None:
         # note (Yue Yin): only tombstone while preprocessing is in flight; an abort
         # for a request that is not being preprocessed leaves nothing behind.
-        with self._lock:
-            if self._prepared.pop(request_id, None) is not None:
+        with self.lock:
+            if self.prepared.pop(request_id, None) is not None:
                 return
-            if request_id in self._inflight:
-                self._aborted.add(request_id)
+            if request_id in self.inflight:
+                self.aborted.add(request_id)
 
     def pop(self, request_id: str) -> PrepT | None:
         """Remove and return a published handoff, or None if absent."""
-        with self._lock:
-            return self._prepared.pop(request_id, None)
+        with self.lock:
+            return self.prepared.pop(request_id, None)

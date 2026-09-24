@@ -122,7 +122,7 @@ class MooncakeConnection:
         self.session_id = f"{hostname}:{self.engine.get_rpc_port()}"
 
         # Track registered memory
-        self._memory_handles: Dict[int, int] = {}  # ptr -> handle
+        self.memory_handles: Dict[int, int] = {}  # ptr -> handle
 
         logger.info(
             f"[{engine_id}] Mooncake connection initialized: "
@@ -140,9 +140,9 @@ class MooncakeConnection:
         Returns:
             Memory handle (ptr itself)
         """
-        if ptr in self._memory_handles:
+        if ptr in self.memory_handles:
             logger.warning(f"Memory at {hex(ptr)} already registered")
-            return self._memory_handles[ptr]
+            return self.memory_handles[ptr]
 
         # Register with Mooncake
         ret = self.engine.register_memory(ptr, size)
@@ -151,20 +151,20 @@ class MooncakeConnection:
             raise RuntimeError(f"Failed to register memory (error code: {ret})")
 
         # Use ptr as handle
-        self._memory_handles[ptr] = ptr
+        self.memory_handles[ptr] = ptr
 
         logger.debug(f"Registered memory: ptr={hex(ptr)}, size={size} bytes")
         return ptr
 
     def deregister_memory(self, handle: int) -> None:
         """Deregister memory from Mooncake."""
-        if handle not in self._memory_handles:
+        if handle not in self.memory_handles:
             logger.warning(f"Memory handle {hex(handle)} not found")
             return
 
         try:
             self.engine.unregister_memory(handle)
-            del self._memory_handles[handle]
+            del self.memory_handles[handle]
             logger.debug(f"Deregistered memory: handle={hex(handle)}")
         except Exception as e:
             logger.error(f"Failed to deregister memory: {e}")
@@ -251,7 +251,7 @@ class MooncakeConnection:
     def close(self) -> None:
         """Close the Mooncake connection and cleanup resources."""
         # Deregister all memory
-        for handle in list(self._memory_handles.keys()):
+        for handle in list(self.memory_handles.keys()):
             self.deregister_memory(handle)
 
         logger.info(f"[{self.engine_id}] Mooncake connection closed")
@@ -266,13 +266,15 @@ class MooncakeOperation(RelayOperation):
     """Base class for Mooncake async operations."""
 
     def __init__(self, connection: MooncakeConnection, metadata: Any = None):
-        self._conn = connection
-        self._metadata = metadata
-        self._completed = False
+        self.conn = connection
+        self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.completed = False
 
     @property
     def metadata(self) -> Any:
-        return self._metadata
+        return (
+            self._metadata
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 class PutOperation(MooncakeOperation):
@@ -291,9 +293,9 @@ class PutOperation(MooncakeOperation):
         on_completion_cb: Callable[[], None],
     ):
         super().__init__(connection, metadata)
-        self._transfer_id = transfer_id
-        self._tensor_ref = tensor_ref
-        self._on_completion_cb = on_completion_cb
+        self.transfer_id = transfer_id
+        self.tensor_ref = tensor_ref
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
         """
@@ -301,18 +303,18 @@ class PutOperation(MooncakeOperation):
         This ensures the receiver has finished reading before we reuse the buffer.
         Uses Mooncake's built-in notification mechanism via get_notifies().
         """
-        if self._completed:
+        if self.completed:
             return
 
         try:
             # Wait for receiver to send completion notification via Mooncake
             await MooncakeRelay.wait_for_mooncake_notification(
-                self._transfer_id, timeout
+                self.transfer_id, timeout
             )
         finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+            self.completed = True
+            if self.on_completion_cb:
+                self.on_completion_cb()
 
 
 class GetOperation(MooncakeOperation):
@@ -333,30 +335,30 @@ class GetOperation(MooncakeOperation):
         on_completion_cb: Callable[[], None],
     ):
         super().__init__(connection, metadata=None)
-        self._remote_session_id = remote_session_id
-        self._local_ptr = local_ptr
-        self._remote_ptr = remote_ptr
-        self._size = size
-        self._transfer_id = transfer_id
-        self._on_completion_cb = on_completion_cb
+        self.remote_session_id = remote_session_id
+        self.local_ptr = local_ptr
+        self.remote_ptr = remote_ptr
+        self.size = size
+        self.transfer_id = transfer_id
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
 
         try:
             # Create notification for sender (Mooncake will send this automatically)
-            notify = TransferNotify(self._transfer_id, "transfer_complete")
+            notify = TransferNotify(self.transfer_id, "transfer_complete")
 
             # Execute synchronous transfer with notification (to memory pool)
             # Data will be copied from pool to dest_tensor in cleanup callback
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                self._conn.transfer_sync,
-                self._remote_session_id,
-                self._local_ptr,
-                self._remote_ptr,
-                self._size,
+                self.conn.transfer_sync,
+                self.remote_session_id,
+                self.local_ptr,
+                self.remote_ptr,
+                self.size,
                 TransferOpcode.Read,
                 notify,
             )
@@ -364,9 +366,9 @@ class GetOperation(MooncakeOperation):
             # No copy needed - data transferred directly to dest_tensor!
 
         finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+            self.completed = True
+            if self.on_completion_cb:
+                self.on_completion_cb()
 
 
 # ==========================================
@@ -473,8 +475,8 @@ class MooncakeRelay(Relay):
         )
 
         # Initialize notification listener for Mooncake notifications
-        self._running = True
-        self._listener_task = None
+        self.running = True
+        self.listener_task = None
 
         logger.info(
             f"[{engine_id}] MooncakeRelay initialized: "
@@ -647,12 +649,10 @@ class MooncakeRelay(Relay):
 
     def ensure_listener_started(self) -> None:
         """Ensure the notification listener task is running."""
-        if self._listener_task is None or self._listener_task.done():
+        if self.listener_task is None or self.listener_task.done():
             try:
                 loop = asyncio.get_event_loop()
-                self._listener_task = loop.create_task(
-                    self.notification_listener_loop()
-                )
+                self.listener_task = loop.create_task(self.notification_listener_loop())
                 logger.debug(
                     f"[{self.engine_id}] Mooncake notification listener started"
                 )
@@ -668,7 +668,7 @@ class MooncakeRelay(Relay):
         """
         logger.debug(f"[{self.engine_id}] Notification listener loop started")
 
-        while self._running:
+        while self.running:
             try:
                 # Poll Mooncake for notifications from remote peers
                 notifies = self.connection.get_notifies()
@@ -683,9 +683,9 @@ class MooncakeRelay(Relay):
                     )
 
                     # Set the event for this transfer_id
-                    async with self._registry_lock:
-                        if transfer_id in self._notification_registry:
-                            self._notification_registry[transfer_id].set()
+                    async with self.registry_lock:
+                        if transfer_id in self.notification_registry:
+                            self.notification_registry[transfer_id].set()
                             logger.debug(
                                 f"[{self.engine_id}] Triggered event for {transfer_id}"
                             )
@@ -694,7 +694,7 @@ class MooncakeRelay(Relay):
                 await asyncio.sleep(0.001)  # 1ms polling interval
 
             except Exception as e:
-                if self._running:
+                if self.running:
                     logger.error(
                         f"[{self.engine_id}] Error in notification listener: {e}"
                     )
@@ -705,9 +705,9 @@ class MooncakeRelay(Relay):
     @classmethod
     async def register_notification(cls, transfer_id: str) -> asyncio.Event:
         """Register a notification event for a transfer."""
-        async with cls._registry_lock:
+        async with cls.registry_lock:
             event = asyncio.Event()
-            cls._notification_registry[transfer_id] = event
+            cls.notification_registry[transfer_id] = event
             return event
 
     @classmethod
@@ -734,8 +734,8 @@ class MooncakeRelay(Relay):
             raise asyncio.TimeoutError(f"Notification timeout for {transfer_id}")
         finally:
             # Clean up the event from registry
-            async with cls._registry_lock:
-                cls._notification_registry.pop(transfer_id, None)
+            async with cls.registry_lock:
+                cls.notification_registry.pop(transfer_id, None)
 
     def cleanup(self, request_id: str) -> None:
         """
@@ -764,9 +764,9 @@ class MooncakeRelay(Relay):
         logger.info(f"[{self.engine_id}] Closing MooncakeRelay...")
 
         # Stop notification listener task
-        self._running = False
-        if self._listener_task is not None and not self._listener_task.done():
-            self._listener_task.cancel()
+        self.running = False
+        if self.listener_task is not None and not self.listener_task.done():
+            self.listener_task.cancel()
             logger.info(f"[{self.engine_id}] Notification listener task cancelled")
 
         # Deregister memory pool

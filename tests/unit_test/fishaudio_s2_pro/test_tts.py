@@ -38,9 +38,9 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
     """Preserves VQ prompt embedding injection and semantic code collection."""
     runner = object.__new__(FishS2ProModelRunner)
     runner.model = FakeFishModel()
-    runner._semantic_begin_id = 200
-    runner._semantic_end_id = 295
-    runner._im_end_token_id = 99
+    runner.semantic_begin_id = 200
+    runner.semantic_end_id = 295
+    runner.im_end_token_id = 99
     prefill_request = SchedulerRequest(
         request_id="prefill",
         data=SimpleNamespace(
@@ -172,8 +172,8 @@ def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
     request = SchedulerRequest(request_id="req-history", data=data)
 
     runner = object.__new__(FishS2ProModelRunner)
-    runner._semantic_begin_id = SEMANTIC_TOKEN_ID
-    runner._semantic_end_id = SEMANTIC_TOKEN_ID + 10
+    runner.semantic_begin_id = SEMANTIC_TOKEN_ID
+    runner.semantic_end_id = SEMANTIC_TOKEN_ID + 10
     runner.model = SimpleNamespace(
         _rep_history_len=4,
         _vq_mask=torch.zeros(1, dtype=torch.bool),
@@ -194,18 +194,18 @@ def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
     runner.before_decode(forward_batch, None, [request])
 
     assert torch.equal(
-        runner.model._prev_tokens[0],
+        runner.model.prev_tokens[0],
         torch.tensor([SEMANTIC_TOKEN_ID + 1, SEMANTIC_TOKEN_ID + 2, 0, 0]),
     )
-    assert int(runner.model._prev_token_count[0].item()) == 2
-    assert torch.equal(runner.model._vq_codes[0], torch.tensor([11, 22]))
-    assert bool(runner.model._vq_mask[0])
-    assert torch.allclose(runner.model._sampling_temperature, torch.tensor([0.6]))
-    assert torch.allclose(runner.model._sampling_top_p, torch.tensor([0.7]))
-    assert int(runner.model._sampling_top_k[0].item()) == 8
-    assert torch.allclose(runner.model._sampling_rep_penalty, torch.tensor([1.3]))
-    assert torch.allclose(runner.model._ras_temperature, torch.tensor([0.4]))
-    assert torch.allclose(runner.model._ras_top_p, torch.tensor([0.5]))
+    assert int(runner.model.prev_token_count[0].item()) == 2
+    assert torch.equal(runner.model.vq_codes[0], torch.tensor([11, 22]))
+    assert bool(runner.model.vq_mask[0])
+    assert torch.allclose(runner.model.sampling_temperature, torch.tensor([0.6]))
+    assert torch.allclose(runner.model.sampling_top_p, torch.tensor([0.7]))
+    assert int(runner.model.sampling_top_k[0].item()) == 8
+    assert torch.allclose(runner.model.sampling_rep_penalty, torch.tensor([1.3]))
+    assert torch.allclose(runner.model.ras_temperature, torch.tensor([0.4]))
+    assert torch.allclose(runner.model.ras_top_p, torch.tensor([0.5]))
 
 
 def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
@@ -270,25 +270,25 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
     )
 
     assert hasattr(forward_batch, "input_embeds")
-    assert torch.equal(runner.model._prev_tokens[0], torch.zeros(4, dtype=torch.long))
-    assert int(runner.model._prev_token_count[0].item()) == 0
+    assert torch.equal(runner.model.prev_tokens[0], torch.zeros(4, dtype=torch.long))
+    assert int(runner.model.prev_token_count[0].item()) == 0
     assert torch.equal(
-        runner.model._prev_tokens[1],
+        runner.model.prev_tokens[1],
         torch.tensor([SEMANTIC_TOKEN_ID + 1, SEMANTIC_TOKEN_ID + 2, 0, 0]),
     )
-    assert int(runner.model._prev_token_count[1].item()) == 2
-    assert runner.model._sampling_top_k.tolist() == [6, 12]
+    assert int(runner.model.prev_token_count[1].item()) == 2
+    assert runner.model.sampling_top_k.tolist() == [6, 12]
     assert torch.allclose(
-        runner.model._sampling_temperature,
+        runner.model.sampling_temperature,
         torch.tensor([0.55, 0.75]),
     )
-    assert torch.allclose(runner.model._sampling_top_p, torch.tensor([0.65, 0.85]))
+    assert torch.allclose(runner.model.sampling_top_p, torch.tensor([0.65, 0.85]))
     assert torch.allclose(
-        runner.model._sampling_rep_penalty,
+        runner.model.sampling_rep_penalty,
         torch.tensor([1.25, 1.05]),
     )
-    assert torch.allclose(runner.model._ras_temperature, torch.tensor([0.35, 0.25]))
-    assert torch.allclose(runner.model._ras_top_p, torch.tensor([0.45, 0.95]))
+    assert torch.allclose(runner.model.ras_temperature, torch.tensor([0.35, 0.25]))
+    assert torch.allclose(runner.model.ras_top_p, torch.tensor([0.45, 0.95]))
 
 
 def test_fish_s2pro_accepts_default_top_k_sentinel() -> None:
@@ -317,18 +317,18 @@ def test_fish_s2pro_setup_vq_decode_allocates_sampling_state() -> None:
         rep_history_len=5,
     )
 
-    assert model._rep_history_len == 5
-    assert model._prev_tokens.shape == (3, 5)
-    assert model._prev_token_count.shape == (3,)
-    assert model._sampling_temperature.shape == (3,)
-    assert model._sampling_top_p.shape == (3,)
-    assert model._sampling_top_k.tolist() == [30, 30, 30]
-    assert model._sampling_rep_penalty.shape == (3,)
-    assert model._ras_temperature.shape == (3,)
-    assert model._ras_top_p.shape == (3,)
-    assert model._rep_positions.tolist() == [0, 1, 2, 3, 4]
-    assert model._top_k_positions.shape == (30,)
-    assert model._vq_ready
+    assert model.rep_history_len == 5
+    assert model.prev_tokens.shape == (3, 5)
+    assert model.prev_token_count.shape == (3,)
+    assert model.sampling_temperature.shape == (3,)
+    assert model.sampling_top_p.shape == (3,)
+    assert model.sampling_top_k.tolist() == [30, 30, 30]
+    assert model.sampling_rep_penalty.shape == (3,)
+    assert model.ras_temperature.shape == (3,)
+    assert model.ras_top_p.shape == (3,)
+    assert model.rep_positions.tolist() == [0, 1, 2, 3, 4]
+    assert model.top_k_positions.shape == (30,)
+    assert model.vq_ready
 
 
 def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
@@ -398,8 +398,8 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         _output_codes=torch.zeros(1, 3, dtype=torch.long),
         _output_semantic_ids=torch.zeros(1, dtype=torch.long),
     )
-    model._semantic_bias[10:18] = 0.0
-    model._semantic_bias[30] = 0.0
+    model.semantic_bias[10:18] = 0.0
+    model.semantic_bias[30] = 0.0
     logits = torch.full((1, 40), -1_000_000.0)
     logits[0, 30] = 1_000_000.0
 
@@ -409,8 +409,8 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         torch.zeros(1, 4),
     )
 
-    assert int(model._output_semantic_ids[0].item()) == 30
-    assert int(model._output_codes[0, 0].item()) == 30
+    assert int(model.output_semantic_ids[0].item()) == 30
+    assert int(model.output_codes[0, 0].item()) == 30
     assert int(audio_decoder.seen_embedding_ids[0][0].item()) == 0
 
 
@@ -484,9 +484,7 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
         torch.zeros(batch, 4, device=device),
     )
 
-    token0_rate = (
-        (model._output_semantic_ids == semantic_begin_id).float().mean().item()
-    )
+    token0_rate = (model.output_semantic_ids == semantic_begin_id).float().mean().item()
     assert 0.87 < token0_rate < 0.93
 
 
@@ -656,18 +654,18 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length(
     assert req.finished()
 
     scheduler = object.__new__(OmniScheduler)
-    scheduler._request_admission_lock = threading.RLock()
+    scheduler.request_admission_lock = threading.RLock()
     scheduler.outbox = Queue()
-    scheduler._aborted_request_ids = set()
-    scheduler._completed_request_ids = {}
-    scheduler._pending_stream_ingress = {}
-    scheduler._request_finished_callback = None
-    scheduler._first_emit_done = set()
-    scheduler._prefill_start_done = set()
-    scheduler._prefill_end_done = set()
-    scheduler._result_adapter = result_adapter
+    scheduler.aborted_request_ids = set()
+    scheduler.completed_request_ids = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.request_finished_callback = None
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.result_adapter = result_adapter
     scheduler._model_runner = None
-    scheduler._stream_output_builder = None
+    scheduler.stream_output_builder = None
     monkeypatch.setattr(
         omni_scheduler_module,
         "get_serving",

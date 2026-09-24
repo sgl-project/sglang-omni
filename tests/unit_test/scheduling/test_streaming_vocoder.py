@@ -317,7 +317,7 @@ def test_registry_lifecycle_and_hook_call_order() -> None:
         "frames": 2,
     }
     assert scheduler.stream_states == {}
-    assert scheduler._emitted_stream_ids == set()
+    assert scheduler.emitted_stream_ids == set()
 
 
 def test_threshold_accumulate_then_flush_on_done() -> None:
@@ -348,7 +348,7 @@ def test_stream_done_before_payload_is_buffered() -> None:
     assert [m.type for m in messages] == ["stream", "result"]
     np.testing.assert_array_equal(_waveform(messages[0].data), [7.0])
     assert scheduler.stream_states == {}
-    assert scheduler._emitted_stream_ids == set()
+    assert scheduler.emitted_stream_ids == set()
     assert "r" not in scheduler.pending_done
 
 
@@ -383,7 +383,7 @@ def test_stream_done_before_payload_can_opt_in_to_early_tail() -> None:
     }
     assert "fallback:r" not in scheduler.calls
     assert scheduler.stream_states == {}
-    assert scheduler._emitted_stream_ids == set()
+    assert scheduler.emitted_stream_ids == set()
     assert "r" not in scheduler.pending_done
 
 
@@ -462,7 +462,7 @@ def test_completed_stream_ids_evict_oldest_first(
     scheduler = _FakeStreamingVocoder(threshold=1)
     for rid in ("r0", "r1", "r2", "r3"):
         scheduler.record_completed_stream_request_id(rid)
-    assert list(scheduler._completed_stream_request_ids) == ["r2", "r3"]
+    assert list(scheduler.completed_stream_request_ids) == ["r2", "r3"]
 
 
 def test_contract_latch_is_immutable_per_request() -> None:
@@ -700,7 +700,7 @@ def test_stop_releases_live_streams_then_calls_serving_stop_hook() -> None:
     states = dict(scheduler.stream_states)
     scheduler.stop()
     assert scheduler.stream_states == {}
-    assert scheduler._emitted_stream_ids == set()
+    assert scheduler.emitted_stream_ids == set()
     assert all(state.released for state in states.values())
     assert scheduler.calls[-3:] == ["release:a", "release:b", "serving_stop"]
 

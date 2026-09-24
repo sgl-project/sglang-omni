@@ -373,8 +373,8 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         lambda **kwargs: emitted.append(kwargs["request_id"]),
     )
     scheduler = object.__new__(omni_scheduler.OmniScheduler)
-    scheduler._prefill_start_done = {"r1"}
-    scheduler._prefill_end_done = {"r1"}
+    scheduler.prefill_start_done = {"r1"}
+    scheduler.prefill_end_done = {"r1"}
 
     class _ExplodingBatch:
         # note (luojiaxuan): the O(1) fast path must return before touching
@@ -390,8 +390,8 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
     scheduler.emit_prefill_end_for_batch(_ExplodingBatch())
     assert emitted == []
 
-    scheduler._prefill_start_done = {"r1", "r2"}
+    scheduler.prefill_start_done = {"r1", "r2"}
     batch = SimpleNamespace(reqs=[SimpleNamespace(rid="r2")], is_extend_in_batch=True)
     scheduler.emit_prefill_end_for_batch(batch)
     assert emitted == ["r2"]
-    assert scheduler._prefill_end_done == {"r1", "r2"}
+    assert scheduler.prefill_end_done == {"r1", "r2"}

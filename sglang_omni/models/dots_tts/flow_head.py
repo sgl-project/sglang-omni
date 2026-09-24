@@ -105,60 +105,60 @@ class DotsTTSFlowHead(nn.Module):
             nn.Linear(int(llm_hidden_size), 2),
         )
         self.io = IOHelper(Path(latent_stats_path))
-        self._patch_inference: Any = None
-        self._dit_solver: Any = None
-        self._tail: Any = None
-        self._batched_nfe: int | None = None
-        self._eos_pinned: torch.Tensor | None = None
-        self._eos_event: torch.cuda.Event | None = None
-        self._batched_eos_pinned: torch.Tensor | None = None
-        self._batched_eos_event: torch.cuda.Event | None = None
-        self._batched_eos_host: list[bool] | None = None
-        self._batched_eos_pending: int = 0
+        self.patch_inference: Any = None
+        self.dit_solver: Any = None
+        self.tail: Any = None
+        self.batched_nfe: int | None = None
+        self.eos_pinned: torch.Tensor | None = None
+        self.eos_event: torch.cuda.Event | None = None
+        self.batched_eos_pinned: torch.Tensor | None = None
+        self.batched_eos_event: torch.cuda.Event | None = None
+        self.batched_eos_host: list[bool] | None = None
+        self.batched_eos_pending: int = 0
 
     def bucket(self, requested: int) -> int:
         if requested <= 0:
             raise ValueError("dots.tts max audio patch count must be positive")
-        for bucket in self._LENGTH_BUCKETS:
+        for bucket in self.LENGTH_BUCKETS:
             if requested <= bucket:
                 return bucket
         raise ValueError(
-            f"dots.tts supports at most {self._LENGTH_BUCKETS[-1]} audio patches"
+            f"dots.tts supports at most {self.LENGTH_BUCKETS[-1]} audio patches"
         )
 
     def patch_encoder_inference(self):
-        if self._patch_inference is None:
+        if self.patch_inference is None:
             import_dots_tts()
             from dots_tts.modules.backbone.encoder_inference import (
                 SemanticEncoderInference,
             )
 
-            self._patch_inference = SemanticEncoderInference(self.patch_encoder)
-        return self._patch_inference
+            self.patch_inference = SemanticEncoderInference(self.patch_encoder)
+        return self.patch_inference
 
     def solver(self):
-        if self._dit_solver is None:
+        if self.dit_solver is None:
             import_dots_tts()
             from dots_tts.modules.backbone.dit_inference import (
                 DiTInferenceContext,
                 DiTSolver,
             )
 
-            self._dit_solver = DiTSolver(
+            self.dit_solver = DiTSolver(
                 DiTInferenceContext.from_core(self),
                 optimize=self.optimize,
                 bucket_resolver=self.bucket,
                 meanflow=self.mode == "meanflow",
             )
-        return self._dit_solver
+        return self.dit_solver
 
     @property
     def is_batched(self) -> bool:
-        return self._tail is not None
+        return self.tail is not None
 
     @property
     def batched_tail(self) -> Any | None:
-        return self._tail
+        return self.tail
 
     def init_batched_tail(
         self,
@@ -184,7 +184,7 @@ class DotsTTSFlowHead(nn.Module):
         )
 
         parameter = next(self.parameters())
-        self._tail = DotsTtsAcousticTail(
+        self.tail = DotsTtsAcousticTail(
             dit=fuse_dit_for_inference(self),
             coordinate_proj=self.coordinate_proj,
             latent_proj=self.latent_proj,
@@ -202,7 +202,7 @@ class DotsTTSFlowHead(nn.Module):
             dtype=parameter.dtype,
             optimize=optimize,
         )
-        self._batched_nfe = int(nfe)
+        self.batched_nfe = int(nfe)
         self.prepare_batched_eos_staging(int(num_slots), parameter.device)
 
     def validate_request(
@@ -215,10 +215,10 @@ class DotsTTSFlowHead(nn.Module):
     ) -> None:
         if not self.is_batched:
             return
-        if int(num_steps) != self._batched_nfe:
+        if int(num_steps) != self.batched_nfe:
             raise ValueError(
                 "dots.tts num_steps is fixed for continuous batching: "
-                f"requested={num_steps} engine={self._batched_nfe}"
+                f"requested={num_steps} engine={self.batched_nfe}"
             )
         if str(ode_method) != "euler":
             raise ValueError("dots.tts continuous batching currently requires euler")
@@ -228,7 +228,7 @@ class DotsTTSFlowHead(nn.Module):
             )
         # The patch-encoder KV pool is the binding pool: it holds one row per
         # audio span, so prompt + generated spans must fit patch_capacity.
-        max_spans = int(self._tail.spec.patch_capacity)
+        max_spans = int(self.tail.spec.patch_capacity)
         if total_span_count is not None and int(total_span_count) > max_spans:
             raise ValueError(
                 f"dots.tts request needs {total_span_count} audio spans but the "
@@ -253,9 +253,9 @@ class DotsTTSFlowHead(nn.Module):
                 raise ValueError(
                     "dots.tts continuous batching requires reference audio"
                 )
-            slot = self._tail.acquire_slot()
+            slot = self.tail.acquire_slot()
             try:
-                self._tail.initialize_slot_rng(slot, rng)
+                self.tail.initialize_slot_rng(slot, rng)
                 g_cond = None
                 if speaker_embedding is not None:
                     speaker_embedding = speaker_embedding.to(device=device, dtype=dtype)
@@ -263,17 +263,17 @@ class DotsTTSFlowHead(nn.Module):
                 grid = torch.linspace(
                     0.0,
                     1.0,
-                    int(self._batched_nfe) + 1,
+                    int(self.batched_nfe) + 1,
                     device=device,
                     dtype=dtype,
                 )
-                all_mods = self._tail.dit.build_mods(
+                all_mods = self.tail.dit.build_mods(
                     grid[:-1],
                     duration=grid[1:] - grid[:-1],
                     g_cond=g_cond,
                 )
                 prompt_latents = prompt_latents.to(device=device, dtype=dtype)
-                prompt_embeddings = self._tail.encode_prompt_patches(
+                prompt_embeddings = self.tail.encode_prompt_patches(
                     slot, self.patch_encoder_input(prompt_latents)
                 )
                 prompt_patches = rearrange(
@@ -298,7 +298,7 @@ class DotsTTSFlowHead(nn.Module):
                     prompt_embeddings.unsqueeze(0),
                 )
             except BaseException:
-                self._tail.release_slot(slot)
+                self.tail.release_slot(slot)
                 raise
         capacity_patches = (
             self.bucket(max_audio_patch_count)
@@ -381,7 +381,7 @@ class DotsTTSFlowHead(nn.Module):
                     dtype=state.fm_sequence.dtype,
                 )
             else:
-                feedback = self._tail.encode_feedback([state.slot], patch_input)
+                feedback = self.tail.encode_feedback([state.slot], patch_input)
             rows.append(feedback.reshape(-1, feedback.shape[-1])[-1])
         return torch.stack(rows)
 
@@ -418,7 +418,7 @@ class DotsTTSFlowHead(nn.Module):
                 [hidden_rows[:, None], latent_rows], dim=1
             ).reshape(-1, self.fm_hidden_size)
             if not decoded_count:
-                self._tail.seed_fm_history(
+                self.tail.seed_fm_history(
                     state.slot,
                     fm_rows=prompt_fm_rows,
                     all_mods=state.all_mods,
@@ -451,7 +451,7 @@ class DotsTTSFlowHead(nn.Module):
                     dim=1,
                 ).reshape(-1, self.fm_hidden_size)
             )
-            self._tail.seed_fm_history(
+            self.tail.seed_fm_history(
                 state.slot,
                 fm_rows=torch.cat(fm_parts, dim=0),
                 all_mods=state.all_mods,
@@ -541,13 +541,11 @@ class DotsTTSFlowHead(nn.Module):
                 .reshape(())
             )
             if eos_hit.is_cuda:
-                if self._eos_pinned is None:
-                    self._eos_pinned = torch.zeros(
-                        (), dtype=torch.bool, pin_memory=True
-                    )
-                    self._eos_event = torch.cuda.Event()
-                self._eos_pinned.copy_(eos_hit, non_blocking=True)
-                self._eos_event.record()
+                if self.eos_pinned is None:
+                    self.eos_pinned = torch.zeros((), dtype=torch.bool, pin_memory=True)
+                    self.eos_event = torch.cuda.Event()
+                self.eos_pinned.copy_(eos_hit, non_blocking=True)
+                self.eos_event.record()
         import_dots_tts()
         from dots_tts.modules.backbone.dit_inference import DiTSolverState
 
@@ -590,8 +588,8 @@ class DotsTTSFlowHead(nn.Module):
         if eos_hit is None:
             finished = False
         elif eos_hit.is_cuda:
-            self._eos_event.synchronize()
-            finished = bool(self._eos_pinned.item())
+            self.eos_event.synchronize()
+            finished = bool(self.eos_pinned.item())
         else:
             finished = bool(eos_hit.item())
         emit = not state.drop_regenerated_prompt_patch
@@ -651,7 +649,7 @@ class DotsTTSFlowHead(nn.Module):
         slots = [state.slot for state in states]
         if any(slot is None for slot in slots):
             raise RuntimeError("dots.tts batched request is missing its tail slot")
-        normalized = self._tail.sample_patches(
+        normalized = self.tail.sample_patches(
             slots,
             fm_hidden_rows=self.hidden_proj(hidden),
         )
@@ -661,11 +659,11 @@ class DotsTTSFlowHead(nn.Module):
             if self.patch_encoder.expects_normalized_input
             else latent_patches
         ).to(dtype=next(self.patch_encoder.parameters()).dtype)
-        feedback = self._tail.encode_feedback(
+        feedback = self.tail.encode_feedback(
             slots,
             patch_encoder_input,
         )
-        self._tail.note_decode_cycle()
+        self.tail.note_decode_cycle()
         self.stage_batched_eos(eos_hits)
         results = []
         for row, state in enumerate(states):
@@ -684,31 +682,31 @@ class DotsTTSFlowHead(nn.Module):
 
     @property
     def has_pending_batched_eos(self) -> bool:
-        return self._batched_eos_pending > 0
+        return self.batched_eos_pending > 0
 
     def resolve_batched_eos(self) -> list[bool]:
         """Return staged batched EOS flags. Call before the next decode_batch."""
-        n = int(self._batched_eos_pending)
+        n = int(self.batched_eos_pending)
         if n <= 0:
             return []
-        if self._batched_eos_host is not None:
-            flags = self._batched_eos_host
-            self._batched_eos_host = None
+        if self.batched_eos_host is not None:
+            flags = self.batched_eos_host
+            self.batched_eos_host = None
         else:
-            assert self._batched_eos_event is not None
-            assert self._batched_eos_pinned is not None
-            self._batched_eos_event.synchronize()
-            flags = [bool(value) for value in self._batched_eos_pinned[:n].tolist()]
-        self._batched_eos_pending = 0
+            assert self.batched_eos_event is not None
+            assert self.batched_eos_pinned is not None
+            self.batched_eos_event.synchronize()
+            flags = [bool(value) for value in self.batched_eos_pinned[:n].tolist()]
+        self.batched_eos_pending = 0
         return flags
 
     def prepare_batched_eos_staging(self, capacity: int, device: torch.device) -> None:
         """Reset pending EOS staging and size the pinned buffer at init."""
-        self._batched_eos_pending = 0
-        self._batched_eos_host = None
+        self.batched_eos_pending = 0
+        self.batched_eos_host = None
         if device.type != "cuda" or capacity <= 0:
-            self._batched_eos_pinned = None
-            self._batched_eos_event = None
+            self.batched_eos_pinned = None
+            self.batched_eos_event = None
             return
         self.ensure_batched_eos_capacity(capacity, device)
 
@@ -716,13 +714,13 @@ class DotsTTSFlowHead(nn.Module):
         if device.type != "cuda" or capacity <= 0:
             return
         if (
-            self._batched_eos_pinned is None
-            or int(self._batched_eos_pinned.numel()) < capacity
+            self.batched_eos_pinned is None
+            or int(self.batched_eos_pinned.numel()) < capacity
         ):
-            self._batched_eos_pinned = torch.zeros(
+            self.batched_eos_pinned = torch.zeros(
                 capacity, dtype=torch.bool, pin_memory=True
             )
-            self._batched_eos_event = torch.cuda.Event()
+            self.batched_eos_event = torch.cuda.Event()
 
     def stage_batched_eos(self, eos_hits: torch.Tensor) -> None:
         if eos_hits.ndim != 1:
@@ -731,30 +729,30 @@ class DotsTTSFlowHead(nn.Module):
             )
         n = int(eos_hits.shape[0])
         if n <= 0:
-            self._batched_eos_pending = 0
-            self._batched_eos_host = None
+            self.batched_eos_pending = 0
+            self.batched_eos_host = None
             return
         if eos_hits.is_cuda:
             self.ensure_batched_eos_capacity(n, eos_hits.device)
-            assert self._batched_eos_pinned is not None
-            assert self._batched_eos_event is not None
-            self._batched_eos_pinned[:n].copy_(
+            assert self.batched_eos_pinned is not None
+            assert self.batched_eos_event is not None
+            self.batched_eos_pinned[:n].copy_(
                 eos_hits.to(dtype=torch.bool), non_blocking=True
             )
-            self._batched_eos_event.record()
-            self._batched_eos_host = None
+            self.batched_eos_event.record()
+            self.batched_eos_host = None
         else:
-            self._batched_eos_host = [bool(value) for value in eos_hits.tolist()]
-        self._batched_eos_pending = n
+            self.batched_eos_host = [bool(value) for value in eos_hits.tolist()]
+        self.batched_eos_pending = n
 
     def release_request(self, state: DotsFlowState | None) -> None:
-        if state is not None and state.slot is not None and self._tail is not None:
+        if state is not None and state.slot is not None and self.tail is not None:
             slot, state.slot = state.slot, None
-            self._tail.release_slot(slot)
+            self.tail.release_slot(slot)
 
     def suspend_request(self, state: DotsFlowState) -> torch.Tensor | None:
         if state.slot is not None:
-            rng_state = self._tail.slot_rng_state(state.slot)
+            rng_state = self.tail.slot_rng_state(state.slot)
             self.release_request(state)
             return rng_state
         return None if state.rng_state is None else state.rng_state.clone()

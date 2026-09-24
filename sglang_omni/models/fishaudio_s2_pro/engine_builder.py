@@ -188,7 +188,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
-        request_builder, result_adapter, self._stream_output_builder = (
+        request_builder, result_adapter, self.stream_output_builder = (
             request_builders.make_tts_scheduler_adapters(
                 tokenizer=self.tokenizer,
                 max_new_tokens_cap=self.max_new_tokens,
@@ -199,4 +199,4 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return request_builder, result_adapter
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        return {"stream_output_builder": self._stream_output_builder}
+        return {"stream_output_builder": self.stream_output_builder}

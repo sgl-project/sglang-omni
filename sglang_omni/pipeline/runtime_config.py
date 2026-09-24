@@ -50,7 +50,7 @@ class IpcRuntimeDir:
 
     def __init__(self, path: Path):
         self.path = path
-        self._closed = False
+        self.closed = False
 
     def __enter__(self) -> IpcRuntimeDir:
         return self
@@ -59,12 +59,12 @@ class IpcRuntimeDir:
         self.close()
 
     def __repr__(self) -> str:
-        return f"IpcRuntimeDir(path={self.path!r}, closed={self._closed})"
+        return f"IpcRuntimeDir(path={self.path!r}, closed={self.closed})"
 
     def close(self) -> None:
-        if self._closed:
+        if self.closed:
             return
-        self._closed = True
+        self.closed = True
         try:
             shutil.rmtree(self.path)
         except FileNotFoundError:
