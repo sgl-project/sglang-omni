@@ -262,6 +262,10 @@ class StreamingSimpleScheduler:
             return 0
         return max(int(self.request_cost_fn(msg.data)), 0)
 
+    def new_request_batch_wait_s(self, first_msg: IncomingMessage) -> float:
+        del first_msg
+        return self.max_batch_wait_s
+
     def collect_new_request_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
@@ -275,7 +279,9 @@ class StreamingSimpleScheduler:
 
         deferred: list[IncomingMessage] = []
         batch_cost = self.message_cost(first_msg)
-        deadline = time.monotonic() + self.max_batch_wait_s
+        deadline = time.monotonic() + max(
+            float(self.new_request_batch_wait_s(first_msg)), 0.0
+        )
         while len(batch) < self.max_batch_size:
             try:
                 msg = self.get_batch_message()

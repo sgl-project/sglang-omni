@@ -11,6 +11,7 @@ the next step (or the stream-done flush) is when they become audio.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -20,7 +21,12 @@ from typing import Any, Literal, Mapping
 import torch
 
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
-from sglang_omni.models.fun_cosyvoice3.stages import CosyVoice3Vocoder, FlowBatchInput
+from sglang_omni.models.fun_cosyvoice3.stages import (
+    CosyVoice3Vocoder,
+    FlowBatchInput,
+    PreparedFlowRequest,
+    adaptive_flow_requests_grouping,
+)
 from sglang_omni.models.fun_cosyvoice3.streaming import (
     PRE_LOOKAHEAD_LEN,
     TOKEN_HOP_LEN,
@@ -33,7 +39,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     pad_flow_prompt_to_hop,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -70,6 +76,14 @@ class CosyVoice3StreamState:
             return "fallback"
         else:
             return "wait"
+
+
+@dataclass
+class CosyVoice3BufferedState:
+    payload: StagePayload
+    pipeline_state: FunCosyVoice3State
+    prepared: PreparedFlowRequest
+    admission_cost: int
 
 
 class FunCosyVoice3StreamingVocoderScheduler(
@@ -118,6 +132,11 @@ class FunCosyVoice3StreamingVocoderScheduler(
             request_cost_fn=request_cost_fn,
             max_batch_cost=max_batch_cost,
         )
+        self.buffered_pending: dict[str, CosyVoice3BufferedState] = {}
+        self.next_buffered_request_index = 0
+        self.buffered_plan: list[tuple[str, ...]] = []
+        self.buffered_plan_dirty = True
+        self.buffered_active_group_ids: set[str] = set()
 
     def pump_one_step(self) -> list[str] | None:
         with self.vocoder.stream_context:
@@ -129,6 +148,63 @@ class FunCosyVoice3StreamingVocoderScheduler(
 
     async def vocode_payloads(self, payloads: list[StagePayload]) -> list[StagePayload]:
         return await self.vocoder.decode_payloads(payloads)
+
+    def new_request_batch_wait_s(self, first_msg: IncomingMessage) -> float:
+        del first_msg
+        with self.state_lock:
+            if self.buffered_pending:
+                return 0.0
+        return self.max_batch_wait_s
+
+    def run_non_streaming_batch(
+        self,
+        batch: list[IncomingMessage],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Prepare and register non-streaming requests for a later decode step."""
+        active = [msg for msg in batch if not self.is_aborted(msg.request_id)]
+        if not active:
+            return
+
+        with self.state_lock:
+            for msg in active:
+                self.pending_done.discard(msg.request_id)
+
+        for msg in active:
+            try:
+                self.validate_non_streaming_payload(msg.data)
+                pipeline_state, codes = self.vocoder.prepare_item(msg.data)
+                with self.state_lock:
+                    request_index = self.next_buffered_request_index
+                    self.next_buffered_request_index += 1
+                prepared = self.vocoder.prepare_flow_request(
+                    request_index, pipeline_state, codes
+                )
+                admission_cost = prepared.total_mel_frames
+            except Exception as exc:
+                if not self.is_aborted(msg.request_id):
+                    self.emit_error(msg.request_id, exc)
+                    self.record_completed_non_streaming_request_id(msg.request_id)
+                continue
+            if self.is_aborted(msg.request_id):
+                continue
+            with self.state_lock:
+                self.buffered_pending[msg.request_id] = CosyVoice3BufferedState(
+                    payload=msg.data,
+                    pipeline_state=pipeline_state,
+                    prepared=prepared,
+                    admission_cost=admission_cost,
+                )
+                self.buffered_plan_dirty = True
+
+    def clear_request_state(
+        self, request_id: str, *, keep_aborted: bool = False
+    ) -> None:
+        with self.state_lock:
+            if self.buffered_pending.pop(request_id, None) is not None:
+                if request_id not in self.buffered_active_group_ids:
+                    self.buffered_plan_dirty = True
+            super().clear_request_state(request_id, keep_aborted=keep_aborted)
 
     def create_stream_state(self, request_id: str) -> CosyVoice3StreamState:
         return CosyVoice3StreamState(hop_len=self.token_hop_len)
@@ -300,10 +376,149 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 state.next_decode() != "wait" and not self.is_aborted(request_id)
                 for request_id, state in self.stream_state_items()
             )
-            if ready:
-                return True
+            return ready or bool(self.buffered_pending)
+
+    def remove_buffered_group_locked(
+        self, group_ids: tuple[str, ...]
+    ) -> dict[str, CosyVoice3BufferedState]:
+        if self.buffered_plan and self.buffered_plan[0] == group_ids:
+            self.buffered_plan.pop(0)
+        group: dict[str, CosyVoice3BufferedState] = {}
+        for request_id in group_ids:
+            buffered = self.buffered_pending.pop(request_id, None)
+            if buffered is not None:
+                group[request_id] = buffered
+        for request_id in group_ids:
+            self.pending_done.discard(request_id)
+        self.buffered_active_group_ids.difference_update(group_ids)
+        return group
+
+    def run_ready_step(self) -> None:
+        flow_group: list[PreparedFlowRequest] | None = None
+        group_ids: tuple[str, ...] = ()
+        requests_by_index: dict[int, tuple[str, CosyVoice3BufferedState]] = {}
+        with self.state_lock:
+            streaming_ready = any(
+                state.next_decode() != "wait" and not self.is_aborted(request_id)
+                for request_id, state in self.stream_state_items()
+            )
+            if streaming_ready:
+                failed = self._pump_one_step() or []
             else:
-                return False
+                failed = []
+                if self.buffered_plan_dirty or not self.buffered_plan:
+                    candidates: list[tuple[str, CosyVoice3BufferedState]] = []
+                    candidate_cost = 0
+                    for request_id, buffered in list(self.buffered_pending.items()):
+                        if self.is_aborted(request_id):
+                            self.buffered_pending.pop(request_id, None)
+                            self.buffered_plan_dirty = True
+                            continue
+                        if len(candidates) >= self.max_batch_size:
+                            break
+                        request_cost = buffered.admission_cost
+                        if (
+                            self.max_batch_cost is not None
+                            and candidates
+                            and candidate_cost + request_cost > self.max_batch_cost
+                        ):
+                            break
+                        candidates.append((request_id, buffered))
+                        candidate_cost += request_cost
+
+                    if candidates:
+                        request_ids_by_index = {
+                            buffered.prepared.index: request_id
+                            for request_id, buffered in candidates
+                        }
+                        groups = adaptive_flow_requests_grouping(
+                            [buffered.prepared for _, buffered in candidates],
+                            flow_merge_max_gap_frames=self.vocoder.flow_merge_max_gap_frames,
+                            flow_merge_pad_budget_percent=self.vocoder.flow_merge_pad_budget_percent,
+                        )
+                        groups.sort(key=len, reverse=True)
+                        self.buffered_plan = [
+                            tuple(
+                                request_ids_by_index[request.index] for request in group
+                            )
+                            for group in groups
+                        ]
+                    else:
+                        self.buffered_plan = []
+                    self.buffered_plan_dirty = False
+
+                if self.buffered_plan:
+                    group_ids = self.buffered_plan[0]
+                    group = [
+                        (request_id, self.buffered_pending.get(request_id))
+                        for request_id in group_ids
+                    ]
+                    if all(
+                        buffered is not None and not self.is_aborted(request_id)
+                        for request_id, buffered in group
+                    ):
+                        requests_by_index = {
+                            buffered.prepared.index: (request_id, buffered)
+                            for request_id, buffered in group
+                            if buffered is not None
+                        }
+                        flow_group = [
+                            buffered.prepared
+                            for _, buffered in group
+                            if buffered is not None
+                        ]
+                        self.buffered_active_group_ids = set(group_ids)
+                    else:
+                        self.buffered_plan_dirty = True
+
+        if streaming_ready:
+            for request_id in failed:
+                self.cleanup_aborted_request(request_id)
+            return
+        if flow_group is None:
+            return
+
+        try:
+            completed = self.vocoder.decode_flow_group(flow_group)
+            completed_by_index = {
+                request.index: (request, wav, sample_rate)
+                for request, wav, sample_rate in completed
+            }
+            if set(completed_by_index) != set(requests_by_index):
+                raise RuntimeError(
+                    "Fun-CosyVoice3 vocoder did not decode every request in the "
+                    "Flow group"
+                )
+        except Exception as exc:
+            with self.state_lock:
+                self.remove_buffered_group_locked(group_ids)
+            for request_id in group_ids:
+                if not self.is_aborted(request_id):
+                    self.emit_error(request_id, exc)
+                    self.record_completed_non_streaming_request_id(request_id)
+            return
+
+        with self.state_lock:
+            buffered_group = self.remove_buffered_group_locked(group_ids)
+        for request_index, (request_id, buffered) in requests_by_index.items():
+            if request_id not in buffered_group or self.is_aborted(request_id):
+                continue
+            _, wav, sample_rate = completed_by_index[request_index]
+            try:
+                result = self.vocoder.store_result(
+                    buffered.payload,
+                    buffered.pipeline_state,
+                    wav,
+                    sample_rate,
+                )
+            except Exception as exc:
+                if not self.is_aborted(request_id):
+                    self.emit_error(request_id, exc)
+                    self.record_completed_non_streaming_request_id(request_id)
+            else:
+                if not self.is_aborted(request_id):
+                    self.emit_result(request_id, result)
+                    self.record_completed_non_streaming_request_id(request_id)
 
     def select_step_participants(
         self,

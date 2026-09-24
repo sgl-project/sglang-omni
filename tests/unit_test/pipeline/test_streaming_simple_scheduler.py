@@ -75,6 +75,22 @@ class _TestStreamingScheduler(StreamingSimpleScheduler):
         return payloads
 
 
+class _RecordingBatchScheduler(_TestStreamingScheduler):
+    def __init__(self, **kwargs: int) -> None:
+        self.collection_timeouts: list[float] = []
+        super().__init__(**kwargs)
+
+    def get_batch_message(self, *, timeout: float = 0.0) -> IncomingMessage:
+        self.collection_timeouts.append(timeout)
+        return super().get_batch_message(timeout=0.0)
+
+
+class _ReadyBatchScheduler(_RecordingBatchScheduler):
+    def new_request_batch_wait_s(self, first_msg: IncomingMessage) -> float:
+        del first_msg
+        return 0.0
+
+
 def _drain_results(scheduler: StreamingSimpleScheduler) -> list[OutgoingMessage]:
     messages: list[OutgoingMessage] = []
     while True:
@@ -95,6 +111,29 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
 
     assert scheduler.batch_calls == [["a", "b", "c"]]
     assert [msg.request_id for msg in _drain_results(scheduler)] == ["a", "b", "c"]
+
+
+def test_streaming_simple_scheduler_default_batch_wait_is_preserved() -> None:
+    scheduler = _RecordingBatchScheduler(max_batch_size=3, max_batch_wait_ms=30)
+
+    scheduler.collect_new_request_batch(
+        IncomingMessage("a", "new_request", _payload("a"))
+    )
+
+    assert scheduler.collection_timeouts[0] == 0.0
+    assert scheduler.collection_timeouts[1] > 0.0
+
+
+def test_streaming_simple_scheduler_ready_work_drains_without_waiting() -> None:
+    scheduler = _ReadyBatchScheduler(max_batch_size=3, max_batch_wait_ms=30)
+    scheduler.inbox.put(IncomingMessage("b", "new_request", _payload("b")))
+
+    batch = scheduler.collect_new_request_batch(
+        IncomingMessage("a", "new_request", _payload("a"))
+    )
+
+    assert [msg.request_id for msg in batch] == ["a", "b"]
+    assert scheduler.collection_timeouts == [0.0, 0.0]
 
 
 @pytest.mark.parametrize("source", ["inbox", "pending", "split"])
