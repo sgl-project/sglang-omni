@@ -15,6 +15,7 @@ import torchaudio.compliance.kaldi as kaldi
 import whisper
 import yaml
 from librosa.filters import mel as librosa_mel
+from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
@@ -145,6 +146,9 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.hift.to(device).eval()
+        for module in list(self.hift.modules()):
+            if is_parametrized(module, "weight"):
+                remove_parametrizations(module, "weight", leave_parametrized=True)
         self.cache: SpeakerPrompt | None = None
 
     @torch.inference_mode()

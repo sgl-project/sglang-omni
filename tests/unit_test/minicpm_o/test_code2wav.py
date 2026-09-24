@@ -19,6 +19,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -110,6 +111,38 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
         batched[1].shape == single_b.shape == (len(tokens_b) * SAMPLES_PER_CODEC_TOKEN,)
     )
     assert all(np.isfinite(wave).all() for wave in (*batched, single_a, single_b))
+
+
+@pytest.mark.accelerator
+def test_hift_matches_checkpoint_parametrized_reference() -> None:
+    checkpoint = _checkpoint_dir()
+    if checkpoint is None or not torch.cuda.is_available():
+        pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
+    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    reference = HiFTGenerator()
+    weights = torch.load(
+        checkpoint / "assets" / "token2wav" / "hift.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    reference.load_state_dict(
+        {key.removeprefix("generator."): value for key, value in weights.items()},
+        strict=True,
+    )
+    reference.cuda().eval()
+    with (
+        torch.inference_mode(),
+        torch.random.fork_rng(devices=[0]),
+        torch.backends.cudnn.flags(benchmark=False, deterministic=True),
+    ):
+        torch.manual_seed(2025)
+        mel = torch.randn(2, 80, 16, device="cuda")
+        torch.manual_seed(2026)
+        expected, expected_source = reference(mel)
+        torch.manual_seed(2026)
+        actual, actual_source = model.token2wav.hift(mel)
+        torch.testing.assert_close(actual_source, expected_source, rtol=0, atol=0)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
 def _data_uri(audio: bytes) -> str:
