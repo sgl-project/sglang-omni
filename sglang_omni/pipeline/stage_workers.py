@@ -820,6 +820,7 @@ def construct_stage(
             def expected_sources_fn(request_id, from_stage, data, _fn=wait_for_fn):
                 resolved_sources = _fn(request_id, from_stage, data)
                 return _wait_source_list(resolved_sources)
+
         else:
             pass
 
