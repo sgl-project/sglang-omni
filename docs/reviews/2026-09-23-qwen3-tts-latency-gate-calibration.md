@@ -161,3 +161,7 @@ CI 主机做迁移验证;最不确定的是 ×1.25 与加性余量之争以及�
 ## 采纳情况
 
 见 `docs/benchmarks/qwen3_tts_r20_vocoder_study.md` 第三十六轮的"外审处理"。
+
+后续(2026-09-24 00:10 PT):第一条(参照取自 CI runner 重跑)起初没采纳,Base 臂在 CI 上的第一次运行就因 20 rps p95 256.4 ms
+超过按 eval-h100 定的 236.8 ms 而误报,随后照这条改了:每臂在 runner 上重跑 5 次作参照,Base 的 20 rps p95 因双峰只打印。
+它说的"不能把 CustomVoice 的主机差迁移到 Base"被实测证实。
