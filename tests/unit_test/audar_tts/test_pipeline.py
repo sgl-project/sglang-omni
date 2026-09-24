@@ -73,7 +73,9 @@ def make_payload(
     state: AudarTTSState | None = None,
     request_id: str = "request",
 ) -> StagePayload:
-    metadata = {"tts_params": tts_params} if tts_params is not None else {}
+    metadata: dict[str, object] = (
+        {"tts_params": tts_params} if tts_params is not None else {}
+    )
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs=inputs, params=params or {}, metadata=metadata),

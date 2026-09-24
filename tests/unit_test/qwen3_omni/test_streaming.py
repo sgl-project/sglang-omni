@@ -98,7 +98,7 @@ def _drain_outbox(scheduler: StreamingDetokenizeScheduler) -> list[OutgoingMessa
 
 
 def _thinker_stage_payload(output_modalities: list[str] | None) -> StagePayload:
-    metadata = {}
+    metadata: dict[str, object] = {}
     if output_modalities is not None:
         metadata["output_modalities"] = output_modalities
     return StagePayload(

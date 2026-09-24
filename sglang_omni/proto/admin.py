@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import TypedDict
 
 ADMIN_MODEL_INFO = "model_info"
 ADMIN_PAUSE_GENERATION = "pause_generation"
@@ -57,7 +58,7 @@ class AdminOperation:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AdminOperation":
+    def from_dict(cls, data: Mapping[str, object]) -> "AdminOperation":
         target_stages = data.get("target_stages")
         return cls(
             op_id=str(data["op_id"]),
@@ -96,7 +97,7 @@ class AdminResult:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AdminResult":
+    def from_dict(cls, data: Mapping[str, object]) -> "AdminResult":
         return cls(
             op_id=str(data["op_id"]),
             stage=str(data["stage"]),

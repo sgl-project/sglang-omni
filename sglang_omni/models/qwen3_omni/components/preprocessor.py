@@ -9,7 +9,7 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
 
 import torch
 import xxhash
@@ -180,7 +180,7 @@ def validate_prompt_seq_len(
         )
 
 
-def _is_pretokenized_prompt(inputs: object) -> bool:
+def _is_pretokenized_prompt(inputs: object) -> TypeGuard[list[int]]:
     """True when a rollout request carries pre-tokenized prompt ids.
 
     Miles RL rollout sends the exact prompt token ids it trains on, so those

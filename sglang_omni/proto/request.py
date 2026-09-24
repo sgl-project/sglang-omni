@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request state and tracking."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 
@@ -37,9 +37,9 @@ EXPLICIT_GENERATION_PARAMS_KEY = "explicit_generation_params"
 class OmniRequest:
     """User-facing request with inputs and parameters."""
 
-    inputs: Any
-    params: dict[str, Any] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    inputs: object
+    params: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -50,7 +50,7 @@ class OmniRequest:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "OmniRequest":
+    def from_dict(cls, data: Mapping[str, object]) -> "OmniRequest":
         return cls(
             inputs=data.get("inputs"),
             params=data.get("params", {}),
@@ -64,7 +64,7 @@ class StagePayload:
 
     request_id: str
     request: OmniRequest
-    data: Any
+    data: object
     # Scheduler-local stream ingress state. These fields intentionally stay
     # out of to_dict(); they are rebuilt by the receiving scheduler and never
     # form part of the inter-stage wire contract.
@@ -84,7 +84,7 @@ class StagePayload:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "StagePayload":
+    def from_dict(cls, data: Mapping[str, object]) -> "StagePayload":
         request = data.get("request", {})
         if isinstance(request, dict) and request.get("_type") == "OmniRequest":
             request_obj = OmniRequest.from_dict(request)
