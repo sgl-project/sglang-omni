@@ -141,7 +141,7 @@ def _find_weight(weights: dict[str, mx.array], *names: str) -> mx.array:
 
 def _load_converted_backbone(
     args: ModelArgs,
-    config: dict[str, Any],
+    config: dict[str, object],
     weights: dict[str, mx.array],
 ) -> Qwen2Model:
     backbone = Qwen2Model(args)

@@ -390,7 +390,7 @@ def _lookup_cached_encoder_output(
     request_id: str,
     stage_name: str,
     cache: StageOutputCache | None,
-) -> Any | None:
+) -> object | None:
     if cache is None or request.cache_key is None:
         return None
     cached = cache.get(request.cache_key)

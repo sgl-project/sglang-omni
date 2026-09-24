@@ -45,7 +45,9 @@ def _get_context() -> AuKPreprocessingContext:
     return _CONTEXT
 
 
-def _normalize_inputs(inputs: object) -> tuple[str, list[dict[str, Any]], Any | None]:
+def _normalize_inputs(
+    inputs: object,
+) -> tuple[str, list[dict[str, Any]], object | None]:
     """Accept flat text, a dict payload, or a structured references list."""
     if isinstance(inputs, str):
         return inputs, [], None

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -277,17 +278,17 @@ class Qwen3OmniPreprocessor:
 
     def _build_multimodal_messages(
         self,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         *,
         num_images: int,
         num_audios: int,
         num_videos: int,
-    ) -> list[dict[str, Any]]:
+    ) -> Sequence[Mapping[str, object]]:
         """Convert simple messages to HF's structured multimodal format."""
         if num_images == 0 and num_audios == 0 and num_videos == 0:
             return messages
 
-        result: list[dict[str, object]] = []
+        result: list[Mapping[str, object]] = []
         for i, msg in enumerate(messages):
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -692,7 +693,7 @@ class Qwen3OmniPreprocessor:
             request_id=payload.request_id,
         )
 
-        full_mm_inputs: dict[str, Any] = {
+        full_mm_inputs: dict[str, dict[str, object]] = {
             "image": build_image_mm_inputs(hf_inputs),
             "audio": build_audio_mm_inputs(hf_inputs),
             "video": build_video_mm_inputs(hf_inputs),
@@ -744,7 +745,7 @@ class Qwen3OmniPreprocessor:
         if contextualized_audio_cache_key:
             audio_encoder_inputs["cache_key"] = contextualized_audio_cache_key
 
-        encoder_inputs: dict[str, dict[str, Any]] = {}
+        encoder_inputs: dict[str, dict[str, object]] = {}
         image_encoder_inputs = {
             k: v for k, v in image_encoder_inputs.items() if v is not None
         }

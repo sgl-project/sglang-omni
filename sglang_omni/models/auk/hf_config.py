@@ -24,9 +24,9 @@ class AuKRuntimeConfig:
 
     model_path: str
     name: str = "AuK"
-    arch: dict[str, Any] = field(default_factory=dict)
+    arch: dict[str, object] = field(default_factory=dict)
     vae: dict[str, Any] = field(default_factory=dict)
-    schedule: dict[str, Any] = field(default_factory=dict)
+    schedule: dict[str, object] = field(default_factory=dict)
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER
 
     @property
@@ -46,7 +46,7 @@ class AuKRuntimeConfig:
         return int(self.vae.get("latent_dim", C.LATENT_DIM))
 
     @property
-    def vae_init_kwargs(self) -> dict[str, Any]:
+    def vae_init_kwargs(self) -> dict[str, object]:
         kwargs = self.vae.get("model_init_kwargs") or {}
         return dict(kwargs)
 

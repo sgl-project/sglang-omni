@@ -60,7 +60,7 @@ class TextConfig:
     use_cache: bool = True
     tie_word_embeddings: bool = True
     rope_theta: float = 1000000.0
-    rope_scaling: dict[str, Any] | None = None
+    rope_scaling: dict[str, object] | None = None
     attention_bias: bool = False
     attention_dropout: float = 0.0
 
@@ -79,8 +79,8 @@ class TextConfig:
 class ModelConfig:
     """Configuration for Qwen3-ASR model."""
 
-    audio_config: AudioEncoderConfig | dict[str, Any] | None = None
-    text_config: TextConfig | dict[str, Any] | None = None
+    audio_config: AudioEncoderConfig | dict[str, object] | None = None
+    text_config: TextConfig | dict[str, object] | None = None
     model_type: str = "qwen3_asr"
     model_repo: str | None = None
     audio_token_id: int = 151676

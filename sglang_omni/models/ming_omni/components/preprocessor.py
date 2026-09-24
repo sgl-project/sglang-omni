@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
@@ -146,9 +146,9 @@ def _estimate_image_tokens(
 
 
 def _inject_top_level_images(
-    messages: list[dict[str, Any]],
+    messages: Sequence[Mapping[str, object]],
     images: list[str],
-) -> list[dict[str, Any]]:
+) -> list[Mapping[str, object]]:
     """Convert top-level ``images`` into inline content items.
 
     When the request uses ``{"images": ["url1"], "messages": [...]}`` instead of
@@ -176,9 +176,9 @@ def _inject_top_level_images(
 
 
 def _inject_top_level_audios(
-    messages: list[dict[str, Any]],
+    messages: Sequence[Mapping[str, object]],
     audios: list[str],
-) -> list[dict[str, Any]]:
+) -> list[Mapping[str, object]]:
     """Convert top-level ``audios`` into inline content items.
 
     Ming-Omni was trained with text BEFORE audio in user turns
@@ -207,9 +207,9 @@ def _inject_top_level_audios(
 
 
 def _inject_top_level_videos(
-    messages: list[dict[str, Any]],
+    messages: Sequence[Mapping[str, object]],
     videos: list[str],
-) -> list[dict[str, Any]]:
+) -> list[Mapping[str, object]]:
     """Convert top-level ``videos`` into inline content items.
 
     Mirrors ``_inject_top_level_audios``: text comes before video so attention
