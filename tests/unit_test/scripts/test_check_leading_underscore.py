@@ -79,6 +79,32 @@ def _kept() -> None:  # noqa: leading-underscore
     assert _violations(source, tmp_path) == set()
 
 
+def test_self_attribute_assignment_and_getattr_are_reported(tmp_path: Path) -> None:
+    source = """
+class Session:
+    def attach(self, request):
+        self._cache_key = request._cache_key
+        request._cache_key = self._cache_key
+        key = getattr(request, "_cache_key", None)
+        return key
+"""
+    assert _violations(source, tmp_path) == {"_cache_key"}
+
+
+def test_noqa_on_a_wrapped_statement_covers_the_attribute(tmp_path: Path) -> None:
+    source = """
+value = (
+    request._omni_prompt_cache_key
+)  # noqa: leading-underscore
+"""
+    assert _violations(source, tmp_path) == set()
+
+
+def test_upstream_attribute_read_is_reported(tmp_path: Path) -> None:
+    source = "value = hf_modeling._get_feat_extract_output_lengths(lengths)\n"
+    assert _violations(source, tmp_path) == {"_get_feat_extract_output_lengths"}
+
+
 def test_top_level_underscore_class_and_method_are_reported(tmp_path: Path) -> None:
     source = "class _Hidden:\n    def _method(self) -> None:\n        return None\n"
     assert _violations(source, tmp_path) == {"_Hidden", "_method"}
@@ -143,18 +169,14 @@ lengths = _get_feat_extract_output_lengths([100, 200])
     with _probe_model_file(source) as (_checker, probe):
         result = _run_checker(str(probe))
         assert result.returncode == 1
-        assert "1 leading-underscore" in result.stderr
+        assert "_get_feat_extract_output_lengths" in result.stderr
 
         result = _run_checker("--fix", str(probe))
-        assert result.returncode == 0, result.stderr
-        expected = source.replace(
-            "def _get_feat_extract_output_lengths(",
-            "def get_feat_extract_output_lengths(",
-        ).replace(
-            "lengths = _get_feat_extract_output_lengths(",
-            "lengths = get_feat_extract_output_lengths(",
-        )
-        assert probe.read_text(encoding="utf-8") == expected
+        assert result.returncode == 1
+        rewritten = probe.read_text(encoding="utf-8")
+        assert "def get_feat_extract_output_lengths(" in rewritten
+        assert "hf_modeling._get_feat_extract_output_lengths" in rewritten
+        assert "lengths = get_feat_extract_output_lengths(" in rewritten
 
 
 def test_fix_preserves_noqa_definitions_and_references() -> None:

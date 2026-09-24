@@ -82,6 +82,8 @@ class DotsTTSPipelineConfig(PipelineConfig):
         super().model_post_init(__context)
         if any(stage.tp_size != 1 for stage in self.stages):
             raise ValueError("dots.tts currently supports tp_size=1 only")
+        else:
+            pass
         # note (guozhihao-224): preprocessing bakes the generation schedule the
         # latent engine executes, so num_steps and max_generate_length must
         # agree between the two stages when both are set. The latent_engine
@@ -102,6 +104,8 @@ class DotsTTSPipelineConfig(PipelineConfig):
                     f"configure only latent_engine.factory.{derived_key} and let "
                     "preprocessing derive it, or set both to the same value"
                 )
+            else:
+                pass
         # note (guozhihao-224): stream_slots must match backbone concurrency
         # so a max_running_requests override cannot outrun vocoder admission
         # after readiness. A pinned value that disagrees is refused here, on
@@ -120,6 +124,10 @@ class DotsTTSPipelineConfig(PipelineConfig):
                     f"max_running_requests ({derived}); "
                     "omit stream_slots to derive it from the latent engine"
                 )
+            else:
+                pass
+        else:
+            pass
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name == "preprocessing":
@@ -130,12 +138,16 @@ class DotsTTSPipelineConfig(PipelineConfig):
                     latent_extra.get("max_generate_length", 500)
                 ),
             }
+        else:
+            pass
         if stage_name == "vocoder":
             return {
                 "stream_slots": self.latent_max_running_requests(
                     self.stage_named("latent_engine")
                 )
             }
+        else:
+            pass
         return {}
 
     @staticmethod
@@ -145,6 +157,8 @@ class DotsTTSPipelineConfig(PipelineConfig):
         if value is None:
             # Match DotsTTSEngineBuilder default when unset.
             return 16
+        else:
+            pass
         return int(value)
 
     def supports_uploaded_voice_references(self) -> bool:

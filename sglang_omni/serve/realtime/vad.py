@@ -58,6 +58,8 @@ class StreamingVAD:
         """Feed PCM16 LE mono @ 16 kHz; return any state transitions."""
         if not pcm_bytes:
             return []
+        else:
+            pass
         self.leftover_pcm.extend(pcm_bytes)
         emits: list[Emit] = []
 
@@ -85,6 +87,8 @@ class StreamingVAD:
                             event_type=VADEvent.SPEECH_STARTED, sample_offset=started_at
                         )
                     )
+                else:
+                    pass
             else:
                 self.silence_run_samples += VAD_FRAME_SAMPLES
                 if self.is_speech:
@@ -99,6 +103,10 @@ class StreamingVAD:
                                 sample_offset=self.last_speech_offset,
                             )
                         )
+                    else:
+                        pass
+                else:
+                    pass
 
         return emits
 
@@ -116,6 +124,8 @@ class StreamingVAD:
         self.last_speech_offset = 0
         if hasattr(self.vad_model, "reset_states"):
             self.vad_model.reset_states()  # type: ignore[union-attr]
+        else:
+            pass
 
 
 def offsets_to_ms(samples: int) -> int:

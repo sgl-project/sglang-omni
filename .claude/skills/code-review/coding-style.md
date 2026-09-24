@@ -187,10 +187,31 @@ speculative generality.
 ## CONTROL FLOW
 
 - Validate inputs and preconditions before the main logic. Organize conditions
-  into mutually exclusive if/elif/else branches. If an if assigns a variable
-  or returns a value, it must have the matching else (or elif/.../else).
-  Keep the main execution path in the final branch. Do not leave a lone if
-  that returns or assigns and then fall through.
+  into mutually exclusive if/elif/else branches. Keep the main execution path
+  in the final branch.
+- Every `if` has an `else`, or belongs to one `if`/`elif`/`else` chain that ends
+  in `else`. A short `if` is where this gets skipped, and a short `if` without
+  `else` is still a violation. Raising, returning, or calling one function does
+  not exempt it. When the other branch does nothing, write `else: pass`. Do not
+  drop the `else` to save a line.
+
+  Wrong:
+
+  ```python
+  if session is not None:
+      close_session(session)
+  payload.data = {"closed": True}
+  ```
+
+  Right:
+
+  ```python
+  if session is not None:
+      close_session(session)
+  else:
+      pass
+  payload.data = {"closed": True}
+  ```
 
 ## LOGGING
 

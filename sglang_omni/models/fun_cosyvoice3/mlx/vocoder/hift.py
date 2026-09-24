@@ -25,6 +25,8 @@ def linear_interpolate_align_false(x: mx.array, new_size: int) -> mx.array:
     T = x.shape[-1]
     if new_size == T:
         return x
+    else:
+        pass
     dst = mx.arange(new_size).astype(x.dtype)
     src = (dst + 0.5) * (T / new_size) - 0.5
     src = mx.clip(src, 0, T - 1)
@@ -67,6 +69,8 @@ class CausalConv1d(nn.Module):
                 else [(0, 0), (0, self.causal_padding), (0, 0)]
             )
             x = mx.pad(x, widths)
+        else:
+            pass
         y = mx.conv1d(x, self.weight, stride=1, padding=0, dilation=self.dilation)
         return y + self.bias
 
@@ -212,7 +216,9 @@ class CausalSineGen(nn.Module):
         rand_ini = mx.random.uniform(shape=(1, harmonic_num + 1))
         # Note (yexiaodong): Keep runtime phases deterministic without adding
         # them to the converted checkpoint's parameter tree.
-        self._rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
+        self._rand_ini = mx.concatenate(
+            [mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1
+        )  # noqa: leading-underscore
 
     def f02uv(self, f0: mx.array) -> mx.array:
         return (f0 > self.voiced_threshold).astype(mx.float32)
@@ -224,7 +230,9 @@ class CausalSineGen(nn.Module):
 
         T = fn.shape[1]
         rad_values = (fn / self.sampling_rate) % 1  # (B, T, H+1)
-        rad_values = rad_values.at[:, 0, :].add(self._rand_ini)
+        rad_values = rad_values.at[:, 0, :].add(
+            self._rand_ini
+        )  # noqa: leading-underscore
 
         T_down = max(1, T // self.upsample_scale)
         rad_t = mx.swapaxes(rad_values, 1, 2)  # (B, H+1, T)
@@ -244,6 +252,8 @@ class CausalSineGen(nn.Module):
             phase_t = mx.pad(phase_t, [(0, 0), (0, 0), (0, diff)])
         elif diff < 0:
             phase_t = phase_t[:, :, :T]
+        else:
+            pass
         phase = mx.swapaxes(phase_t, 1, 2)  # (B, T, H+1)
 
         sine_waves = mx.sin(phase) * self.sine_amp
@@ -393,7 +403,9 @@ class CausalHiFTGenerator(nn.Module):
         )
 
         # Derived buffer, not a checkpoint weight.
-        self._stft_window = hann_window_periodic(config.istft_params["n_fft"])
+        self._stft_window = hann_window_periodic(
+            config.istft_params["n_fft"]
+        )  # noqa: leading-underscore
         self.f0_predictor = CausalConvRNNF0Predictor(
             in_channels=config.in_channels, cond_channels=config.base_channels
         )
@@ -407,7 +419,7 @@ class CausalHiFTGenerator(nn.Module):
             x,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self._stft_window,  # noqa: leading-underscore
         )
 
     def istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
@@ -416,7 +428,7 @@ class CausalHiFTGenerator(nn.Module):
             phase,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self._stft_window,
+            self._stft_window,  # noqa: leading-underscore
         )
 
     def decode(self, x: mx.array, s: mx.array) -> mx.array:
@@ -436,6 +448,8 @@ class CausalHiFTGenerator(nn.Module):
 
             if i == self.num_upsamples - 1:
                 x = mx.concatenate([x[:, :, 1:2], x], axis=2)  # reflection pad (1, 0)
+            else:
+                pass
 
             si = mx.swapaxes(s_stft, 1, 2)
             si = self.source_downs[i](si)

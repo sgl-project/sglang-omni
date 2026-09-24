@@ -89,7 +89,16 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from benchmarks.benchmarker.conditions import (
+    ConcurrencyAggregate,
+    RepeatSpeedSummary,
+    add_fingerprint_argument,
+    aggregate_repeats,
+    collect_run_fingerprint,
+    warn_if_tail_percentile_is_thin,
+)
 from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.fingerprint import BenchmarkFingerprint
 from benchmarks.benchmarker.runner import (
     BenchmarkRunner,
     RunConfig,
@@ -224,6 +233,7 @@ class TtsSeedttsBenchmarkConfig:
     similarity_checkpoint: str | None = None
     asr_model_path: str = QWEN3_ASR_MODEL_PATH
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+    environment_fingerprint: BenchmarkFingerprint | None = None
 
 
 def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -267,7 +277,7 @@ def _build_results_config(
     *,
     base_url: str,
 ) -> dict:
-    return {
+    recorded = {
         "model": config.model,
         "base_url": base_url,
         "meta": config.meta,
@@ -282,6 +292,10 @@ def _build_results_config(
         "max_samples": config.max_samples,
         "sample_offset": config.sample_offset,
         "max_new_tokens": config.max_new_tokens,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "top_k": config.top_k,
+        "repetition_penalty": config.repetition_penalty,
         "seed": config.seed,
         "subtalker_dosample_ratio": config.subtalker_dosample_ratio,
         "token_count": config.token_count,
@@ -295,6 +309,12 @@ def _build_results_config(
         "cuda_graph_max_bs": config.cuda_graph_max_bs,
         "server_config": config.server_config,
         "quantization": config.quantization,
+    }
+    if config.environment_fingerprint is None:
+        return recorded
+    return {
+        **recorded,
+        "environment_fingerprint": config.environment_fingerprint,
     }
 
 
@@ -402,6 +422,7 @@ async def run_tts_seedtts_benchmark(
         )
     )
     outputs = await runner.run(samples, send_fn)
+    warn_if_tail_percentile_is_thin(len(outputs))
 
     metrics = compute_speed_metrics(outputs, wall_clock_s=runner.wall_clock_s)
     results_config = _build_results_config(config, base_url=base_url)
@@ -433,6 +454,10 @@ def run_tts_seedtts_transcribe(
         "max_new_tokens": config.max_new_tokens,
         "token_count": config.token_count,
         "temperature": config.temperature,
+        "top_p": config.top_p,
+        "top_k": config.top_k,
+        "repetition_penalty": config.repetition_penalty,
+        "seed": config.seed,
         "max_samples": config.max_samples,
         "stream": config.stream,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
@@ -628,42 +653,50 @@ def _percentile(values: list[float], pct: float) -> float | None:
 async def run_tts_concurrency_sweep(
     config: TtsSeedttsBenchmarkConfig,
     concurrencies: list[int],
+    *,
+    repeats: int = 1,
 ) -> dict[str, Any]:
-    """Run generate-only once per concurrency and write a summary JSON."""
-    rows: list[dict[str, Any]] = []
+    """Run generate-only across concurrencies and optional repeats."""
+    if repeats < 1:
+        raise ValueError(f"repeats must be positive, got {repeats}")
+    rows: list[ConcurrencyAggregate] = []
     for concurrency in concurrencies:
-        point_output_dir = os.path.join(config.output_dir, f"c{concurrency}")
-        point = replace(
-            config,
-            concurrency=concurrency,
-            output_dir=point_output_dir,
-        )
-        print(f"[conc={concurrency}] generate pass")
-        results = await run_tts_seedtts_benchmark(point)
-        summary = results["summary"]
-        success = int(summary.get("completed_requests") or 0)
-        failed = int(summary.get("failed_requests") or 0)
-        row = {
-            "concurrency": concurrency,
-            "warmup": _resolve_warmup(point),
-            "output_dir": point_output_dir,
-            "success": success,
-            "failed": failed,
-            "latency_p95_s": summary.get("latency_p95_s"),
-            "audio_ttfp_p95_s": summary.get("audio_ttfp_p95_s"),
-            "summary": summary,
-        }
-        rows.append(row)
-        print_speed_summary(summary, config.model, concurrency=concurrency)
-        print(
-            f"  success={success} failed={failed} "
-            f"latency_p95={row['latency_p95_s']} "
-            f"ttfa_p95={row['audio_ttfp_p95_s']}"
-        )
+        repeat_summaries: list[RepeatSpeedSummary] = []
+        for repeat_index in range(1, repeats + 1):
+            if repeats == 1:
+                point_name = f"c{concurrency}"
+            else:
+                point_name = f"c{concurrency}_r{repeat_index}"
+            point_output_dir = os.path.join(config.output_dir, point_name)
+            point = replace(
+                config,
+                concurrency=concurrency,
+                output_dir=point_output_dir,
+            )
+            print(f"[conc={concurrency} repeat={repeat_index}/{repeats}] generate pass")
+            results = await run_tts_seedtts_benchmark(point)
+            summary = results["summary"]
+            repeat_summaries.append(
+                {
+                    "repeat": repeat_index,
+                    "output_dir": point_output_dir,
+                    **summary,
+                    "warmup": _resolve_warmup(point),
+                }
+            )
+            print_speed_summary(summary, config.model, concurrency=concurrency)
+            print(
+                f"  success={summary.get('completed_requests')} "
+                f"failed={summary.get('failed_requests')} "
+                f"latency_p95={summary.get('latency_p95_s')} "
+                f"ttfa_p95={summary.get('audio_ttfp_p95_s')}"
+            )
+        rows.append(aggregate_repeats(concurrency, repeat_summaries))
 
     payload = {
         "config": _build_results_config(config, base_url=build_base_url(config)),
         "concurrencies": concurrencies,
+        "repeats": repeats,
         "rows": rows,
     }
     out_path = os.path.join(config.output_dir, "concurrency_sweep.json")
@@ -671,7 +704,7 @@ async def run_tts_concurrency_sweep(
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
-    logger.info("Wrote concurrency sweep to %s", out_path)
+    logger.info(f"Wrote concurrency sweep to {out_path}")
     return payload
 
 
@@ -872,6 +905,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Comma-separated concurrency levels to sweep (requires --generate-only).",
     )
     parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Measured passes per concurrency. Requires --generate-only when above 1.",
+    )
+    add_fingerprint_argument(parser)
+    parser.add_argument(
         "--sustained-overshoot",
         action="store_true",
         help="Open-loop soak above running+queued (needs --generate-only and --max-queued-requests).",
@@ -1055,12 +1095,17 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         parser.error("--max-queued-requests must be >= 1")
     if args.cuda_graph_max_bs <= 0:
         parser.error("--cuda-graph-max-bs must be positive")
-    if args.concurrencies is not None and not args.generate_only:
-        parser.error("--concurrencies currently requires --generate-only")
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    is_sweep = args.concurrencies is not None or args.repeats > 1
+    if is_sweep and not args.generate_only:
+        parser.error("--concurrencies and --repeats require --generate-only")
     if args.sustained_overshoot and not args.generate_only:
         parser.error("--sustained-overshoot currently requires --generate-only")
-    if args.sustained_overshoot and args.concurrencies is not None:
-        parser.error("--sustained-overshoot cannot be combined with --concurrencies")
+    if args.sustained_overshoot and is_sweep:
+        parser.error(
+            "--sustained-overshoot cannot be combined with --concurrencies or --repeats"
+        )
     if args.sustained_overshoot and args.max_queued_requests is None:
         parser.error("--sustained-overshoot requires --max-queued-requests")
     if args.overshoot_duration_s <= 0:
@@ -1116,8 +1161,19 @@ def main() -> None:
         return
 
     async def _run_generate() -> None:
-        if args.concurrencies is not None:
-            await run_tts_concurrency_sweep(config, args.concurrencies)
+        if args.fingerprint:
+            config.environment_fingerprint = collect_run_fingerprint(
+                build_base_url(config)
+            )
+        else:
+            config.environment_fingerprint = None
+        is_sweep = args.concurrencies is not None or args.repeats > 1
+        if is_sweep:
+            if args.concurrencies is None:
+                concurrencies = [config.concurrency]
+            else:
+                concurrencies = args.concurrencies
+            await run_tts_concurrency_sweep(config, concurrencies, repeats=args.repeats)
         elif args.sustained_overshoot:
             await run_tts_sustained_overshoot(config)
         else:

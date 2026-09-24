@@ -94,14 +94,23 @@ if HAS_TRITON:
         y = (xv + m).to(tl.bfloat16)
         tl.store(y_ptr + ptrs, y, mask=mask)
 
+else:
+    pass
+
 
 def block_for(t: int) -> int:
     if t <= 64:
         return 64
+    else:
+        pass
     if t <= 128:
         return 128
+    else:
+        pass
     if t <= 256:
         return 256
+    else:
+        pass
     return 1024
 
 
@@ -142,35 +151,57 @@ def fused_snake_beta(
     try:
         if not HAS_TRITON:
             return None
+        else:
+            pass
         if (
             not isinstance(x, torch.Tensor)
             or not isinstance(alpha, torch.Tensor)
             or not isinstance(beta, torch.Tensor)
         ):
             return None
+        else:
+            pass
         if (
             x.dtype is not torch.bfloat16
             or alpha.dtype is not torch.bfloat16
             or beta.dtype is not torch.bfloat16
         ):
             return None
+        else:
+            pass
         if x.device.type != "cuda":
             return None
+        else:
+            pass
         if alpha.device != x.device or beta.device != x.device:
             return None
+        else:
+            pass
         if x.dim() != 3 or not x.is_contiguous():
             return None
+        else:
+            pass
         batch, channels, t = x.shape
         if channels not in ALLOWED_CHANNELS:
             return None
+        else:
+            pass
         if not (1 <= batch <= MAX_BATCH) or not (1 <= t <= MAX_T):
             return None
+        else:
+            pass
         if alpha.shape != (channels,) or beta.shape != (channels,):
             return None
+        else:
+            pass
         if not alpha.is_contiguous():
             alpha = alpha.contiguous()
+        else:
+            pass
         if not beta.is_contiguous():
             beta = beta.contiguous()
+        else:
+            pass
     except Exception:
         return None
     return launch(x, alpha, beta)
@@ -190,6 +221,8 @@ class FusedSnakeBeta(torch.nn.Module):
         fused = fused_snake_beta(hidden_states, self.alpha, self.beta)
         if fused is not None:
             return fused
+        else:
+            pass
         # Original qwen-tts SnakeBeta arithmetic, op for op.
         alpha = self.alpha.unsqueeze(0).unsqueeze(-1)
         beta = self.beta.unsqueeze(0).unsqueeze(-1)
@@ -218,6 +251,8 @@ def prewarm(device: torch.device) -> None:
     """
     if not HAS_TRITON or device.type != "cuda":
         return
+    else:
+        pass
     with torch.cuda.device(device):
         for t in (2, 128, 256, 1024):  # one T per BLOCK bucket
             x = torch.zeros((1, 96, t), dtype=torch.bfloat16, device=device)
@@ -245,11 +280,15 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
     """
     if not isinstance(decoder, torch.nn.Module):
         return 0
+    else:
+        pass
     replacements: list[tuple[torch.nn.Module, str]] = []
     for module in decoder.modules():
         for name, child in module.named_children():
             if is_snake_beta(child):
                 replacements.append((module, name))
+            else:
+                pass
 
     if replacements and HAS_TRITON and torch.cuda.is_available():
         try:
@@ -262,6 +301,8 @@ def fuse_vocoder_decoder(decoder: torch.nn.Module) -> int:
                 exc_info=True,
             )
             return 0
+    else:
+        pass
 
     for parent, name in replacements:
         setattr(parent, name, FusedSnakeBeta(getattr(parent, name)))

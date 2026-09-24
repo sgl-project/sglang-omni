@@ -72,8 +72,8 @@ def session_bundle():
             wanted.add(total % chunk_t)
     try:
         captured = session.warmup_cuda_graph(sorted(wanted))
-        assert session._cg_runner is not None
-        assert set(session._cg_runner.capture_sizes) == {
+        assert session.cg_runner is not None
+        assert set(session.cg_runner.capture_sizes) == {
             (batch_size, length)
             for batch_size in session.graph_batch_sizes()
             for length in wanted
@@ -89,14 +89,14 @@ def _step(session, slot_codes, *, require_graph=False):
             size for size in session.graph_batch_sizes() if size >= len(slot_codes)
         )
         length = next(iter(slot_codes.values())).shape[1]
-        assert session._cg_runner is not None
-        assert (batch_size, length) in session._cg_runner.capture_sizes
-        graph_steps = sum(session._cg_graph_t.values())
-        eager_steps = sum(session._cg_eager_t.values())
+        assert session.cg_runner is not None
+        assert (batch_size, length) in session.cg_runner.capture_sizes
+        graph_steps = sum(session.cg_graph_t.values())
+        eager_steps = sum(session.cg_eager_t.values())
     output = session.step(slot_codes)
     if require_graph:
-        assert sum(session._cg_graph_t.values()) == graph_steps + 1
-        assert sum(session._cg_eager_t.values()) == eager_steps
+        assert sum(session.cg_graph_t.values()) == graph_steps + 1
+        assert sum(session.cg_eager_t.values()) == eager_steps
     return output
 
 
@@ -128,7 +128,7 @@ def test_indexed_streaming_matches_sequential_precision_and_cache_order(session_
     )
 
     session, n_vq, vocab, _ = session_bundle
-    codec = session._codec
+    codec = session.codec
     # note (Zhang Yiyang): Compare indexed and sequential state at the same
     # batch width; independent attention math is tested in test_audio_tokenizer.
     reference = MossAudioTokenizerStreamingModule()
@@ -195,12 +195,12 @@ def test_streaming_pcm_bit_identical(session_bundle, chunk_t, n_active, total):
         s: torch.randint(0, vocab, (n_vq, total), device="cuda", dtype=torch.long)
         for s in range(n_active)
     }
-    runner = session._cg_runner
+    runner = session.cg_runner
     try:
-        session._cg_runner = None
+        session.cg_runner = None
         eager = _decode_chunks(session, slot_seqs, chunk_t)
     finally:
-        session._cg_runner = runner
+        session.cg_runner = runner
     graphed = _decode_chunks(session, slot_seqs, chunk_t, require_graph=True)
     for s in range(n_active):
         assert torch.equal(eager[s], graphed[s]), (
@@ -246,12 +246,12 @@ def test_graph_tracks_eager_with_changing_batches_and_slot_reuse(session_bundle)
                 session.release(slot)
         return outputs
 
-    runner = session._cg_runner
+    runner = session.cg_runner
     try:
-        session._cg_runner = None
+        session.cg_runner = None
         eager = decode_trace(require_graph=False)
     finally:
-        session._cg_runner = runner
+        session.cg_runner = runner
     graphed = decode_trace(require_graph=True)
     for actual, expected in zip(graphed, eager, strict=True):
         for name in expected:
@@ -270,11 +270,11 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
     seq = {
         0: torch.randint(0, vocab, (n_vq, chunk_t * 3), device="cuda", dtype=torch.long)
     }
-    runner = session._cg_runner
-    session._cg_runner = None  # pure-eager reference
+    runner = session.cg_runner
+    session.cg_runner = None  # pure-eager reference
     eager_ref = _decode_chunks(session, seq, chunk_t)[0]
 
-    session._cg_runner = runner  # graph path, but make the next replay blow up
+    session.cg_runner = runner  # graph path, but make the next replay blow up
     session.reset_slots([0])
 
     def boom(*args, **kwargs):
@@ -286,7 +286,7 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
         with pytest.raises(RuntimeError):
             session.step({0: seq[0][:, :chunk_t]})
         assert (
-            session._cg_runner is None
+            session.cg_runner is None
         ), "runner must be disabled after a replay failure"
         # session is now eager-only -> a fresh decode must be bit-identical to the pure-eager reference
         after = _decode_chunks(session, seq, chunk_t)[0]
@@ -297,7 +297,7 @@ def test_replay_failure_disables_runner_and_serves_eager_bit_identical(session_b
     finally:
         # restore the module-scoped session for the remaining tests
         runner.decode_step = orig_decode
-        session._cg_runner = runner
+        session.cg_runner = runner
 
 
 @pytest.mark.skipif(not _HAS_CUDA, reason="needs CUDA + real codec")
@@ -310,7 +310,7 @@ def test_vram_guard_skips_capture_and_falls_back_to_eager(session_bundle):
 
     session, n_vq, vocab, captured = session_bundle
     guarded = MossVocoderCudaGraphRunner(
-        session._codec,
+        session.codec,
         real_state_capacity=STREAM_SLOTS,
         scratch_capacity=STREAM_SLOTS,
         batch_sizes=session.graph_batch_sizes(),
@@ -333,7 +333,7 @@ def test_capture_failure_falls_back_to_eager(session_bundle):
 
     session, n_vq, vocab, captured = session_bundle
     runner = MossVocoderCudaGraphRunner(
-        session._codec,
+        session.codec,
         real_state_capacity=STREAM_SLOTS,
         scratch_capacity=STREAM_SLOTS,
         batch_sizes=session.graph_batch_sizes(),
@@ -349,7 +349,7 @@ def test_capture_failure_falls_back_to_eager(session_bundle):
     assert (
         runner.captured_frames() == []
     ), "capture failures must be caught per-T -> no graphs -> eager"
-    assert runner._sealed, "runner must still seal after capture failures"
+    assert runner.sealed, "runner must still seal after capture failures"
 
 
 if __name__ == "__main__":

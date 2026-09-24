@@ -42,8 +42,8 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
         first_done_first_out_mode=fdfo,
         block_size=block_size,
     )
-    scheduler._rid_to_req_data = {}
-    scheduler._result_adapter = lambda value: value
+    scheduler.rid_to_req_data = {}
+    scheduler.result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
 
@@ -120,13 +120,13 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     batch = SimpleNamespace(output_ids=None)
     forwarded = []
 
-    scheduler._running = True
+    scheduler.running = True
     scheduler.drain_and_purge = lambda: None
     scheduler.schedule_next_batch = lambda: batch
     scheduler.apply_results = lambda *_: None
 
     def stop_after_step(_batch) -> None:
-        scheduler._running = False
+        scheduler.running = False
 
     scheduler.post_step = stop_after_step
     scheduler.tp_worker = SimpleNamespace(
@@ -162,14 +162,14 @@ def test_dllm_staging_admission_uses_dllm_config(
     scheduler.token_to_kv_pool_allocator = object()
     scheduler.req_to_token_pool = object()
     scheduler.model_config = object()
-    scheduler._chunked_prefill_size = 16
-    scheduler._waiting_queue = []
+    scheduler.chunked_prefill_size = 16
+    scheduler.waiting_queue = []
     req = SimpleNamespace(
         rid="req",
         inflight_middle_chunks=0,
         init_next_round_input=lambda: None,
     )
-    scheduler._staging_queue = [req]
+    scheduler.staging_queue = [req]
     created = {}
 
     class _Adder:
@@ -203,7 +203,7 @@ def test_dllm_staging_admission_uses_dllm_config(
 def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     scheduler = _scheduler(fdfo=True)
     req = _ReqDouble()
-    scheduler._staging_queue = [req]
+    scheduler.staging_queue = [req]
     cache_calls = []
     free_calls = []
     scheduler.tree_cache = SimpleNamespace(
@@ -230,7 +230,7 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
     assert req.dllm_algo_state is state
     assert req.output_ids == []
     assert req.accepted_lengths == []
-    assert scheduler._staging_queue == [req]
+    assert scheduler.staging_queue == [req]
     assert cache_calls == []
     assert free_calls == []
     assert req.kv.req_pool_idx == 3

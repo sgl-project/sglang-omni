@@ -143,25 +143,41 @@ class DataRef(msgspec.Struct, frozen=True):
         }
         if self.header is not None:
             value["header"] = self.header
+        else:
+            pass
         if self.shape is not None:
             value["shape"] = list(self.shape)
+        else:
+            pass
         if self.dtype is not None:
             value["dtype"] = self.dtype
+        else:
+            pass
         if self.device is not None:
             value["device"] = self.device
+        else:
+            pass
         if self.offset is not None:
             value["offset"] = self.offset
+        else:
+            pass
         if self.metadata is not None:
             value["metadata"] = self.metadata
+        else:
+            pass
         return value
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "DataRef":
         if required(value, "_type", str) != "DataRef":
             raise ValueError("data_ref must have _type='DataRef'")
+        else:
+            pass
         version = required(value, "version", int)
         if version != 1:
             raise ValueError(f"unsupported DataRef version {version}")
+        else:
+            pass
         return cls(
             version=version,
             kind=DataKind(required(value, "kind", str)),
@@ -191,6 +207,8 @@ def required(value: dict[str, Any], key: str, expected: type) -> Any:
     item = value[key]
     if type(item) is not expected:
         raise TypeError(f"{key} must be {expected.__name__}, got {type(item).__name__}")
+    else:
+        pass
     return item
 
 
@@ -198,10 +216,14 @@ def optional(value: dict[str, Any], key: str, expected: type) -> Any | None:
     item = value.get(key)
     if item is None:
         return None
+    else:
+        pass
     if type(item) is not expected:
         raise TypeError(
             f"{key} must be {expected.__name__} or None, " f"got {type(item).__name__}"
         )
+    else:
+        pass
     return item
 
 
@@ -209,4 +231,6 @@ def int_tuple(value: dict[str, Any], key: str) -> tuple[int, ...]:
     items = required(value, key, list)
     if not all(type(item) is int for item in items):
         raise TypeError(f"{key} must be list[int]")
+    else:
+        pass
     return tuple(items)

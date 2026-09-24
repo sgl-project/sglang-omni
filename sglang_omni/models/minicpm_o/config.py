@@ -189,6 +189,8 @@ class MiniCPMOSpeechPipelineConfig(MiniCPMOPipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
         if stage_name in (THINKER_STAGE, "preprocessing"):
             return {"speech_enabled": True}
+        else:
+            pass
         return {}
 
 

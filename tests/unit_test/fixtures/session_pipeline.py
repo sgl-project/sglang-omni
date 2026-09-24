@@ -108,7 +108,7 @@ def read_hook_state(
     if not isinstance(should_ignore_cancel, bool):
         raise TypeError("ignore_cancel must be a boolean")
     return HookState(
-        session_id=session_identity.session_id,
+        session_id=session_identity.id,
         count=0,
         open_delay_s=number_param(params, "open_delay", 0),
         fail_open_stage=text_param(params, "fail_open"),
@@ -128,7 +128,7 @@ class Hooks(SessionHooks):
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         state = read_hook_state(session_identity, request)
-        self.events.put(("open", self.name, session_identity.session_id))
+        self.events.put(("open", self.name, session_identity.id))
         time.sleep(state.open_delay_s)
         if state.fail_open_stage == self.name:
             raise RuntimeError("open failed")

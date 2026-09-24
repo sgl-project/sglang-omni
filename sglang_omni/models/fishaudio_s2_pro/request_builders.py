@@ -51,10 +51,14 @@ class S2ProSGLangRequestData(SGLangARRequestData):
 def validate_s2pro_top_k(top_k: int) -> None:
     if top_k == -1:
         return
+    else:
+        pass
     if not 1 <= top_k <= _S2PRO_GRAPH_TOP_K:
         raise ValueError(
             f"S2-Pro top_k must be -1 or between 1 and {_S2PRO_GRAPH_TOP_K}; got {top_k}"
         )
+    else:
+        pass
 
 
 def ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
@@ -63,6 +67,8 @@ def ref_vq_fingerprint(vq_parts: list[torch.Tensor] | None) -> str | None:
     # same-cb0 prompts from sharing radix KV across different reference audio.
     if not vq_parts:
         return None
+    else:
+        pass
     digest = hashlib.blake2b(digest_size=16)
     for part in vq_parts:
         codes = part.detach().to(device="cpu", dtype=torch.int32).contiguous()
@@ -91,6 +97,8 @@ def build_sglang_tts_request(
             vq_mask_tokens = vq_mask_tokens.detach().clone().to(dtype=torch.bool)
         else:
             vq_mask_tokens = torch.as_tensor(vq_mask_tokens, dtype=torch.bool)
+    else:
+        pass
 
     vq_parts = state.vq_parts
     if vq_parts is not None:
@@ -98,6 +106,8 @@ def build_sglang_tts_request(
             p.detach().clone() if isinstance(p, torch.Tensor) else torch.as_tensor(p)
             for p in vq_parts
         ]
+    else:
+        pass
 
     # Imports stay in the fallback branch: the cached-invariant path is the
     # per-request hot path and must not pay for them.
@@ -108,18 +118,26 @@ def build_sglang_tts_request(
 
         if not hasattr(tokenizer, "additional_stop_token_ids"):
             attach_additional_stop_token_ids(tokenizer)
+        else:
+            pass
         if im_end_token_id is None:
             from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
                 S2ProTokenizerAdapter,
             )
 
             im_end_token_id = int(S2ProTokenizerAdapter(tokenizer).eos_token_ids[0])
+        else:
+            pass
         if vocab_size is None:
             # note (Gaokai): the semantic tokens live in the added vocab
             # (151678..155773 > tokenizer.vocab_size); Req must carry the full
             # width or upstream update_finish_state's vocab-boundary guard kills
             # every request on its first sampled code.
             vocab_size = len(tokenizer)
+        else:
+            pass
+    else:
+        pass
 
     # Explicit values come from a tokenizer-prepared adapter lifecycle. Keep
     # Req/SamplingParams metadata on native Python scalars for direct callers.
@@ -148,8 +166,8 @@ def build_sglang_tts_request(
         extra_key=ref_vq_fingerprint(vq_parts),
     )
     req.tokenizer = tokenizer
-    req._codec_suppress_tokens = None
-    req._input_embeds_are_projected = False
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     return S2ProSGLangRequestData(
         input_ids=input_ids,
@@ -175,6 +193,8 @@ def apply_tts_result(state: S2ProState, result: S2ProSGLangRequestData) -> None:
         raise ValueError(
             f"Request {result.req.rid}: S2-Pro generated no audio codec tokens"
         )
+    else:
+        pass
     state.output_codes = torch.cat(result.output_codes, dim=1)
     state.completion_tokens = state.output_codes.shape[1]
     state.prompt_tokens = len(result.input_ids) if result.input_ids is not None else 0
@@ -198,10 +218,14 @@ def make_tts_scheduler_adapters(
 
     if not hasattr(tokenizer, "additional_stop_token_ids"):
         attach_additional_stop_token_ids(tokenizer)
+    else:
+        pass
     if im_end_token_id is None:
         from sglang_omni.models.fishaudio_s2_pro.tokenizer import S2ProTokenizerAdapter
 
         im_end_token_id = S2ProTokenizerAdapter(tokenizer).eos_token_ids[0]
+    else:
+        pass
     im_end_token_id = int(im_end_token_id)
     vocab_size = len(tokenizer)
 
@@ -211,6 +235,8 @@ def make_tts_scheduler_adapters(
             state.max_new_tokens = min(
                 int(state.max_new_tokens), int(max_new_tokens_cap)
             )
+        else:
+            pass
         if context_length is not None:
             # note (Gaokai): clamp instead of letting the scheduler's
             # KV-capacity check reject: long-prompt requests kept being served
@@ -219,6 +245,8 @@ def make_tts_scheduler_adapters(
                 int(state.max_new_tokens),
                 max(int(context_length) - 1 - len(state.input_ids), 1),
             )
+        else:
+            pass
         req_data = build_sglang_tts_request(
             state,
             tokenizer=tokenizer,
@@ -236,6 +264,8 @@ def make_tts_scheduler_adapters(
         apply_tts_result(state, data)
         if data.engine_start_s:
             state.engine_time_s = time.perf_counter() - data.engine_start_s
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
@@ -248,9 +278,13 @@ def make_tts_scheduler_adapters(
         del req_output
         if not data.stage_payload.request.params.get("stream"):
             return []
+        else:
+            pass
         codes = data.latest_stream_code_chunk
         if codes is None:
             return []
+        else:
+            pass
         data.latest_stream_code_chunk = None
         return [
             OutgoingMessage(

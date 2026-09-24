@@ -27,6 +27,8 @@ def apply_repetition_penalty(
     penalties (B,) -- one penalty strength per request."""
     if rep_token_ids is None or rep_token_ids.numel() == 0:
         return logits
+    else:
+        pass
     B, C, V = logits.shape
     safe = rep_token_ids.clamp(min=0, max=V - 1).long()
     valid = (rep_token_ids >= 0) & (rep_token_ids < V)
@@ -111,12 +113,18 @@ def sample_tts(
     scores = logits.reshape(B * C, V).float() / safe_temp.unsqueeze(1)
     if top_k_max > 0:
         scores = apply_top_k(scores, _rows(top_k, torch.long), top_k_max)
+    else:
+        pass
     # any_top_p / any_min_p are host-computed flags (params are Python scalars),
     # so no GPU sync. top-p's full-vocab sort is pure waste when no row uses it.
     if any_top_p:
         scores = apply_top_p(scores, _rows(top_p, torch.float32))
+    else:
+        pass
     if any_min_p:
         scores = apply_min_p(scores, _rows(min_p, torch.float32))
+    else:
+        pass
 
     probs = torch.nan_to_num(
         torch.softmax(scores, dim=-1), nan=0.0, posinf=0.0, neginf=0.0

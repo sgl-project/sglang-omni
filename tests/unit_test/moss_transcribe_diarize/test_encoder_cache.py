@@ -62,7 +62,7 @@ def test_disabled_cache_always_encodes() -> None:
     model = _make_model(max_bytes=0)
     calls = _stub_encode(model)
 
-    assert model._encoder_cache is None
+    assert model.encoder_cache is None
     model.get_audio_feature([_item(7)], forward_batch=None)
     model.get_audio_feature([_item(7)], forward_batch=None)
 
@@ -88,14 +88,14 @@ def test_lru_evicts_when_over_budget() -> None:
     model.get_audio_feature([_item(1)], forward_batch=None)
 
     assert calls["count"] == 3
-    assert model._encoder_cache is not None
-    assert model._encoder_cache.eviction_count >= 1
+    assert model.encoder_cache is not None
+    assert model.encoder_cache.eviction_count >= 1
 
 
 def test_entry_count_cap_matches_constant() -> None:
     model = _make_model(max_bytes=1 << 30)
-    assert model._encoder_cache is not None
-    assert model._encoder_cache.max_size == _ENCODER_CACHE_MAX_ENTRIES
+    assert model.encoder_cache is not None
+    assert model.encoder_cache.max_size == _ENCODER_CACHE_MAX_ENTRIES
 
 
 def test_hit_returns_model_device_tensors() -> None:

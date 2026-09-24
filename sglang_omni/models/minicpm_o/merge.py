@@ -22,6 +22,8 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
         for encoder_out in branch.encoder_outs.values():
             if isinstance(encoder_out, dict):
                 model_inputs.update(encoder_out)
+            else:
+                pass
 
     state.thinker_inputs = {"model_inputs": model_inputs}
     state.encoder_inputs = {}
@@ -37,6 +39,8 @@ def thinker_output(state: MiniCPMOPipelineState) -> dict:
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if isinstance(thinker_out, dict):
         return thinker_out
+    else:
+        pass
     return {
         "output_ids": [],
         "step": 0,
@@ -48,11 +52,17 @@ def thinker_output(state: MiniCPMOPipelineState) -> dict:
 def prompt_token_count(state: MiniCPMOPipelineState) -> int:
     if not isinstance(state.prompt, dict):
         return 0
+    else:
+        pass
     input_ids = state.prompt.get("input_ids")
     if input_ids is None:
         return 0
+    else:
+        pass
     if isinstance(input_ids, list):
         return len(input_ids)
+    else:
+        pass
     return int(input_ids.numel())
 
 
@@ -88,11 +98,17 @@ def build_decode_result(
     if events:
         result.update(events[-1]["payload"])
         result.setdefault("modality", "text")
+    else:
+        pass
     if is_streaming:
         result.pop("text", None)
+    else:
+        pass
     finish_reason = thinker_out.get("finish_reason")
     if finish_reason is not None:
         result.setdefault("finish_reason", finish_reason)
+    else:
+        pass
     prompt_tokens = prompt_token_count(state)
     completion_tokens = len(output_ids)
     result.setdefault(

@@ -151,6 +151,8 @@ def create_decode_executor(model_path: str):
                 "output_ids": [],
                 "is_final": True,
             }
+        else:
+            pass
 
         events = decode_events(
             thinker_out=thinker_out,
@@ -162,10 +164,14 @@ def create_decode_executor(model_path: str):
         if events:
             result.update(events[0].payload)
             result.setdefault("modality", events[0].modality)
+        else:
+            pass
 
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
+        else:
+            pass
 
         input_ids = (
             state.prompt.get("input_ids") if isinstance(state.prompt, dict) else None

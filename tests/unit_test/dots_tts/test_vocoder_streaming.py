@@ -19,27 +19,27 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 class _RecordingSlotPool:
     def __init__(self, *, num_slots: int = 4) -> None:
         self.num_slots = num_slots
-        self._free = list(reversed(range(num_slots)))
-        self._in_use: set[int] = set()
+        self.free = list(reversed(range(num_slots)))
+        self.in_use: set[int] = set()
         self.steps: list[dict[int, torch.Tensor]] = []
         self.flushes: list[int] = []
 
     def acquire(self) -> int:
-        if not self._free:
+        if not self.free:
             raise RuntimeError(
                 f"dots.tts streaming vocoder admission failed: ran out of slots "
                 f"(num_slots={self.num_slots})"
             )
-        slot = self._free.pop()
-        self._in_use.add(slot)
+        slot = self.free.pop()
+        self.in_use.add(slot)
         return slot
 
     def release(self, slot: int) -> None:
         slot = int(slot)
-        if slot not in self._in_use:
+        if slot not in self.in_use:
             return
-        self._in_use.remove(slot)
-        self._free.append(slot)
+        self.in_use.remove(slot)
+        self.free.append(slot)
 
     def step(self, slot_latents: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         self.steps.append(
@@ -62,7 +62,7 @@ class _FakeInference:
         )
         self.batch_steps: list[tuple[int, int]] = []
         self._latent_dim = latent_dim
-        self._hop_size = hop_size
+        self.hop_size = hop_size
 
     def init_stream_state(self, *, batch_size: int, chunk_size: int):
         window = torch.zeros(batch_size, self._latent_dim, chunk_size + 4)
@@ -87,7 +87,7 @@ class _FakeInference:
 
     def _decode_stream_window(self, window: torch.Tensor) -> torch.Tensor:
         return torch.zeros(
-            window.size(0), 1, window.size(-1) * self._hop_size, dtype=window.dtype
+            window.size(0), 1, window.size(-1) * self.hop_size, dtype=window.dtype
         )
 
 
@@ -144,13 +144,13 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
     pool.step({s0: older, s1: newer})
     assert inference.batch_steps[-1] == (2, 3)
-    assert pool._total_frames[s0] == 6
-    assert pool._total_frames[s1] == 3
+    assert pool.total_frames[s0] == 6
+    assert pool.total_frames[s1] == 3
 
     pool.release(s0)
     reused = pool.acquire()
     assert reused == s0
-    assert pool._total_frames[reused] == 0
+    assert pool.total_frames[reused] == 0
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
@@ -275,7 +275,7 @@ def test_stream_done_flushes_and_releases_slot() -> None:
     assert waveform is not None
     assert state.slot is None
     assert pool.flushes == [slot]
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_release_stream_resources_returns_slot() -> None:
@@ -290,7 +290,7 @@ def test_release_stream_resources_returns_slot() -> None:
     slot = state.slot
     vocoder.release_stream_resources("req", state)
     assert state.slot is None
-    assert slot not in pool._in_use
+    assert slot not in pool.in_use
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:

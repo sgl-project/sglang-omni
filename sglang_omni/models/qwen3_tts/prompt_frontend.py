@@ -48,7 +48,7 @@ class PromptEmbeddings(nn.Module):
         # Note (Jiaxin Deng): the prompt builders only read this buffer's device
         # and dtype; the talker's real feedback buffer lives in the engine.
         self.register_buffer(
-            "_feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
+            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -126,6 +126,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
             param = params.get(target)
             if param is None:
                 continue
+            else:
+                pass
             param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
             loaded.add(target)
         missing = sorted(set(params) - loaded)
@@ -134,6 +136,8 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
                 f"Qwen3-TTS prompt frontend is missing {len(missing)} weights "
                 f"(e.g. {missing[:3]})"
             )
+        else:
+            pass
 
 
 def iter_checkpoint_tensors(
@@ -160,6 +164,8 @@ def iter_checkpoint_tensors(
             for name in handle.keys():
                 if name in names:
                     yield name, handle.get_tensor(name)
+                else:
+                    pass
 
 
 def load_qwen3_tts_prompt_frontend(

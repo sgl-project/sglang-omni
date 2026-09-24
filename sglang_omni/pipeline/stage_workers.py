@@ -156,12 +156,16 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
+    else:
+        pass
     if len(tp_stages) > 1 or len(spec.stage_specs) > 1:
         raise AssertionError(
             f"Process {spec.process_name!r} mixes a TP stage with other "
             "stages; TP stages must own their OS process exclusively. "
             f"stage_specs={[s.stage_name for s in spec.stage_specs]}"
         )
+    else:
+        pass
     return current_platform.get_stage_process_env(tp_stages[0])
 
 
@@ -179,8 +183,12 @@ def patched_spawn_env(
                     f"Process {spec.process_name!r} has conflicting env default "
                     f"for {key!r}: {existing!r} != {value!r}"
                 )
+            else:
+                pass
             if key not in os.environ:
                 env_default_updates[key] = value
+            else:
+                pass
 
     worker_process_env = get_worker_process_env(spec)
     compat_env_defaults = get_gpu_compat_env_defaults(
@@ -222,12 +230,18 @@ class StageGroup:
             raise ValueError(
                 f"StageGroup requires at least one process spec (group={group_name})"
             )
+        else:
+            pass
         self.group_name = group_name
         self.process_specs = list(process_specs)
-        self._processes: list[multiprocessing.Process] = []
-        self._ready_events: list[multiprocessing.Event] = []
-        self._startup_error_channels: list[object] = []
-        self._process_start_attempts: set[str] = set()
+        self._processes: list[multiprocessing.Process] = (
+            []
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.ready_events: list[multiprocessing.Event] = []
+        self.startup_error_channels: list[object] = []
+        self._process_start_attempts: set[str] = (
+            set()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     @property
     def process_count(self) -> int:
@@ -246,6 +260,8 @@ class StageGroup:
         for spec in self.specs:
             if spec.role in {"single", "leader"}:
                 return spec
+            else:
+                pass
         raise RuntimeError(f"StageGroup {self.group_name} has no leader-owned spec")
 
     @property
@@ -263,11 +279,15 @@ class StageGroup:
 
     @property
     def processes(self) -> list[multiprocessing.Process]:
-        return list(self._processes)
+        return list(
+            self._processes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def process_start_attempts(self) -> set[str]:
         """Return process names whose ``Process.start()`` was called."""
-        return set(self._process_start_attempts)
+        return set(
+            self._process_start_attempts
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def spawn(
         self,
@@ -292,20 +312,28 @@ class StageGroup:
                     else None
                 )
                 with patched_spawn_env(spec, extra_env=extra_env):
-                    self._process_start_attempts.add(spec.process_name)
+                    self._process_start_attempts.add(
+                        spec.process_name
+                    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                     proc.start()
             except Exception:
                 close_queue(startup_error_channel)
                 raise
-            self._processes.append(proc)
-            self._ready_events.append(event)
-            self._startup_error_channels.append(startup_error_channel)
+            self._processes.append(
+                proc
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.ready_events.append(event)
+            self.startup_error_channels.append(startup_error_channel)
 
         logger.info(
             "StageGroup %s: spawned %d process(es) (pids=%s)",
             self.group_name,
-            len(self._processes),
-            [p.pid for p in self._processes],
+            len(
+                self._processes
+            ),  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            [
+                p.pid for p in self._processes
+            ],  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
 
     async def wait_ready(self, timeout: float) -> None:
@@ -313,11 +341,13 @@ class StageGroup:
         loop = asyncio.get_running_loop()
         deadline = time.monotonic() + timeout
 
-        for i, event in enumerate(self._ready_events):
-            proc = self._processes[i]
+        for i, event in enumerate(self.ready_events):
+            proc = self._processes[
+                i
+            ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             spec = self.process_specs[i]
             process_label = spec.process_name
-            startup_error_channel = self._startup_error_channels[i]
+            startup_error_channel = self.startup_error_channels[i]
 
             while not event.is_set():
                 remaining = deadline - time.monotonic()
@@ -333,6 +363,8 @@ class StageGroup:
                         f"Process {process_label} did not become ready "
                         f"within {timeout:.0f}s{details}"
                     )
+                else:
+                    pass
                 if not proc.is_alive():
                     details = ""
                     try:
@@ -345,27 +377,35 @@ class StageGroup:
                         f"Process {process_label} died during startup "
                         f"(exit code {proc.exitcode}){details}"
                     )
+                else:
+                    pass
                 await loop.run_in_executor(None, event.wait, min(remaining, 1.0))
 
             logger.info("Process %s ready", process_label)
 
     def any_dead(self) -> bool:
         """Return True if any process in the group exited while runner is active."""
-        return any(not p.is_alive() for p in self._processes)
+        return any(
+            not p.is_alive() for p in self._processes
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def dead_summary(self) -> str:
         """Human-readable summary of dead processes (for error messages)."""
         parts = []
-        for i, p in enumerate(self._processes):
+        for i, p in enumerate(
+            self._processes
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
                     f"{process_spec.process_name} " f"(pid={p.pid}, exit={p.exitcode})"
                 )
+            else:
+                pass
         return ", ".join(parts) if parts else "(none)"
 
     def close_control_channels(self) -> None:
-        for q in self._startup_error_channels:
+        for q in self.startup_error_channels:
             close_queue(q)
         for stage_spec in self.specs:
             for q in (
@@ -381,7 +421,9 @@ class StageGroup:
         before_signal: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         try:
-            for spec, p in zip(self.process_specs, self._processes):
+            for spec, p in zip(
+                self.process_specs, self._processes
+            ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 p.join(timeout=join_timeout)
                 if p.is_alive():
                     logger.warning(
@@ -391,16 +433,22 @@ class StageGroup:
                     )
                     if before_signal is not None:
                         await before_signal(spec.process_name)
+                    else:
+                        pass
                     p.terminate()
                     p.join(timeout=5)
                     if p.is_alive():
                         p.kill()
                         p.join(timeout=2)
+                    else:
+                        pass
+                else:
+                    pass
         finally:
             self.close_control_channels()
-            self._processes.clear()
-            self._ready_events.clear()
-            self._startup_error_channels.clear()
+            self._processes.clear()  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self.ready_events.clear()
+            self.startup_error_channels.clear()
 
 
 def stage_process_main(
@@ -417,6 +465,8 @@ def stage_process_main(
     logging.getLogger().setLevel(spec.log_level)
     if not spec.stage_specs:
         raise ValueError(f"Process {spec.process_name!r} requires at least one stage")
+    else:
+        pass
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
 
     try:
@@ -450,6 +500,8 @@ def stage_process_main(
         )
         if startup_error_channel is not None:
             startup_error_channel.put(traceback_text)
+        else:
+            pass
         sys.exit(1)
 
 
@@ -493,9 +545,13 @@ def run_process(
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                pass
             for stage in stages:
-                if stage._running:
+                if stage.running:
                     await stage.stop()
+                else:
+                    pass
 
     try:
         for stage_spec in spec.stage_specs:
@@ -529,6 +585,8 @@ def cleanup_constructed_stages(
             len(stages),
             reason,
         )
+    else:
+        pass
     for stage in reversed(stages):
         try:
             asyncio.run(stage.stop())
@@ -560,6 +618,8 @@ def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         if dist.is_available() and dist.is_initialized():
             log.warning("Destroying torch.distributed process group after failure")
             dist.destroy_process_group()
+        else:
+            pass
     except Exception as exc:
         log.warning(
             "torch.distributed cleanup failed after stage process failure: %s",
@@ -577,12 +637,16 @@ def reclaim_process_cuda_memory(
     gpu_id_list = list(gpu_ids)
     if not gpu_id_list:
         return
+    else:
+        pass
     gc.collect()
     try:
         import torch
 
         if not torch.cuda.is_available():
             return
+        else:
+            pass
         log.warning(
             "Reclaiming CUDA memory after %s on gpu_ids=%s",
             reason,
@@ -628,6 +692,8 @@ def construct_stage(
     if gpu_id is not None:
         current_platform.set_device(int(gpu_id))
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
+    else:
+        pass
 
     # --- Build scheduler via factory ---
     log.info(
@@ -642,10 +708,16 @@ def construct_stage(
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:
             return []
+        else:
+            pass
         if isinstance(targets, str):
             return [targets]
+        else:
+            pass
         if isinstance(targets, list):
             return list(targets)
+        else:
+            pass
         raise ValueError(
             f"Dynamic route function for stage {spec.stage_name!r} returned "
             f"unsupported target value {targets!r}"
@@ -654,10 +726,16 @@ def construct_stage(
     def _wait_source_list(sources: str | Iterable[str] | None) -> list[Any] | None:
         if sources is None:
             return None
+        else:
+            pass
         if isinstance(sources, str):
             return [sources]
+        else:
+            pass
         if isinstance(sources, Iterable):
             return list(sources)
+        else:
+            pass
         raise ValueError(
             f"wait_for_fn for stage {spec.stage_name!r} returned unsupported "
             f"source value {sources!r}"
@@ -674,10 +752,14 @@ def construct_stage(
         if not returned_targets:
             if allow_empty:
                 return None
+            else:
+                pass
             raise ValueError(
                 f"{hook_name} for stage {spec.stage_name!r} returned no targets; "
                 "dynamic route functions must return downstream stage(s)"
             )
+        else:
+            pass
         unknown = set(returned_targets) - allowed_targets
         if unknown:
             raise ValueError(
@@ -685,6 +767,8 @@ def construct_stage(
                 f"outside the static topology: {sorted(unknown)}. "
                 f"Allowed targets: {sorted(allowed_targets)}"
             )
+        else:
+            pass
         return returned_targets[0] if isinstance(targets, str) else returned_targets
 
     # --- Build routing ---
@@ -737,6 +821,9 @@ def construct_stage(
                 resolved_sources = _fn(request_id, from_stage, data)
                 return _wait_source_list(resolved_sources)
 
+        else:
+            pass
+
         input_handler = AggregatedInput(
             sources=sources,
             merge=merge_fn,
@@ -773,6 +860,8 @@ def construct_stage(
             follower_abort_queues=spec.follower_abort_queues,
             follower_admin_result_queues=spec.follower_admin_result_queues,
         )
+    else:
+        pass
 
     # --- Construct Stage ---
     stage = Stage(
@@ -805,7 +894,9 @@ def construct_stage(
     )
 
     if spec.is_stream_receiver:
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
+    else:
+        pass
 
     return stage
 
@@ -833,10 +924,14 @@ def apply_total_reserve_cap(
         or gpu_id is None
     ):
         return
+    else:
+        pass
     import torch
 
     if not torch.cuda.is_available():
         return
+    else:
+        pass
     device = int(gpu_id)
     total = torch.cuda.get_device_properties(device).total_memory
     _process_reserve_bytes[device] = (
@@ -882,11 +977,15 @@ def construct_scheduler(
     def _invoke() -> Any:
         if kv_cache_bytes is None:
             return factory(**factory_args)
+        else:
+            pass
         with stage_kv_cache_budget(spec.stage_name, kv_cache_bytes):
             return factory(**factory_args)
 
     if gpu_id is None:
         return _invoke()
+    else:
+        pass
 
     with gpu_startup_lock(int(gpu_id)) as lock_path:
         log.info(f"Acquired GPU startup lock for stage {spec.stage_name}: {lock_path}")
@@ -911,6 +1010,8 @@ def prepare_accelerator_environment(
             # A CPU stage colocated in a GPU-narrowed process keeps its
             # identity; normalizing it would bind it to the local device.
             return
+        else:
+            pass
         mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
         normalize_spec_gpu_id_to_local_device(spec)
         log.info(
@@ -920,10 +1021,14 @@ def prepare_accelerator_environment(
             mapped_gpu,
         )
         return
+    else:
+        pass
 
     env_updates = current_platform.get_stage_process_env(spec)
     if not env_updates:
         return
+    else:
+        pass
 
     for key, value in env_updates.items():
         os.environ[key] = value
@@ -937,6 +1042,8 @@ def prepare_accelerator_environment(
             spec.gpu_id,
         )
         return
+    else:
+        pass
 
     normalize_spec_gpu_id_to_local_device(spec)
     log.info(
@@ -950,6 +1057,8 @@ def prepare_accelerator_environment(
 def normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     if spec.placement_gpu_id is None:
         spec.placement_gpu_id = spec.gpu_id
+    else:
+        pass
     spec.gpu_id = 0
     for kwargs in (
         spec.typed_kwargs,
@@ -958,16 +1067,24 @@ def normalize_spec_gpu_id_to_local_device(spec: StageLaunchConfig) -> None:
     ):
         if kwargs.get("gpu_id") is not None:
             kwargs["gpu_id"] = 0
+        else:
+            pass
 
 
 def process_name(spec: StageWorkerProcessSpec) -> str:
     if len(spec.stage_specs) > 1:
         return f"process-{spec.process_name}"
+    else:
+        pass
     stage_spec = spec.stage_specs[0]
     if stage_spec.role == "single":
         return f"stage-{stage_spec.stage_name}"
+    else:
+        pass
     if stage_spec.role == "leader":
         return f"stage-{stage_spec.stage_name}-leader"
+    else:
+        pass
     return f"stage-{stage_spec.stage_name}-tp{stage_spec.tp_rank}-follower"
 
 
@@ -976,3 +1093,5 @@ def close_queue(q: object) -> None:
     join_thread = getattr(q, "join_thread", None)
     if callable(join_thread):
         join_thread()
+    else:
+        pass

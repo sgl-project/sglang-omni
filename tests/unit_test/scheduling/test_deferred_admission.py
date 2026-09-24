@@ -15,9 +15,9 @@ class _StubScheduler:
     drain_request_admission_results = OmniScheduler.drain_request_admission_results
 
     def __init__(self) -> None:
-        self._request_admission_lock = threading.RLock()
-        self._pending_request_admissions: dict = {}
-        self._aborted_request_ids: set[str] = set()
+        self.request_admission_lock = threading.RLock()
+        self.pending_request_admissions: dict = {}
+        self.aborted_request_ids: set[str] = set()
         self.admitted: list[str] = []
         self.errors: list[tuple[str, Exception]] = []
 
@@ -36,8 +36,8 @@ class _StubScheduler:
         self.errors.append((request_id, exc))
 
     def abort(self, request_id: str) -> None:
-        self._aborted_request_ids.add(request_id)
-        self._pending_request_admissions.pop(request_id, None)
+        self.aborted_request_ids.add(request_id)
+        self.pending_request_admissions.pop(request_id, None)
 
 
 def _deferred(request_id: str):  # noqa: ANN202
@@ -53,12 +53,12 @@ def test_request_waits_outside_lm_queue_until_dependency_completes() -> None:
 
     scheduler.admit_or_defer_built_request(payload, False, deferred)
     assert scheduler.admitted == []
-    assert list(scheduler._pending_request_admissions) == ["r1"]
+    assert list(scheduler.pending_request_admissions) == ["r1"]
 
     future.set_result(None)
     scheduler.drain_request_admission_results()
     assert scheduler.admitted == ["r1"]
-    assert scheduler._pending_request_admissions == {}
+    assert scheduler.pending_request_admissions == {}
 
 
 def test_aborted_deferred_request_is_never_admitted() -> None:
@@ -86,7 +86,7 @@ def test_failed_dependency_emits_error_without_admission() -> None:
     assert len(scheduler.errors) == 1
     assert scheduler.errors[0][0] == "r1"
     assert "encode failed" in str(scheduler.errors[0][1])
-    assert "r1" in scheduler._aborted_request_ids
+    assert "r1" in scheduler.aborted_request_ids
 
 
 class _WaitPolicyScheduler:
@@ -100,11 +100,11 @@ class _WaitPolicyScheduler:
         backlog: int = 0,
         has_executor: bool = True,
     ) -> None:
-        self._request_admission_lock = threading.RLock()
+        self.request_admission_lock = threading.RLock()
         self.request_build_max_workers = workers
-        self._request_build_executor = object() if has_executor else None
-        self._pending_request_builds = {f"p{i}": None for i in range(pending)}
-        self._backlogged_request_build_payloads = [object() for _ in range(backlog)]
+        self.request_build_executor = object() if has_executor else None
+        self.pending_request_builds = {f"p{i}": None for i in range(pending)}
+        self.backlogged_request_build_payloads = [object() for _ in range(backlog)]
 
 
 def test_request_build_queue_fits_workers_when_builds_fit_in_pool() -> None:

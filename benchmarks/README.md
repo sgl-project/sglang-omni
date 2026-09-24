@@ -193,7 +193,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 |--------|------|-------|-----|
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
-| `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni | `/v1/chat/completions` |
+| `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni, MiniCPM-o | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmau.py` | MMAU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmar.py` | MMAR (audio reasoning) | Qwen3-Omni | `/v1/chat/completions` |
@@ -219,7 +219,24 @@ an ASR server to avoid GPU contention with the TTS server. Use `--generate-only`
 payloads: the default `--ref-format flat` sends `ref_audio`/`ref_text`, while
 `--ref-format references` sends `references=[{audio_path, text}]` for Higgs TTS
 and MOSS-TTS. MOSS-TTS additionally supports duration control through
-`--token-count`.
+`--token-count`. `--seed`, `--temperature`, `--top-p`, `--top-k`, and
+`--repetition-penalty` are recorded in the speed results. Reference audio on
+this endpoint is a filesystem path, so it is not client-encoded inside the
+request timer. `--concurrencies 1,16 --repeats 5 --generate-only` repeats each
+level. One repeat keeps the directory `c<level>`; further repeats write
+`c<level>_r<repeat>`. Every row in `concurrency_sweep.json` is an aggregate
+of the same speed metrics as the Omni sweep, with `per_repeat` holding each
+raw summary.
+`--fingerprint` records the client environment and the server `/v1/models`
+identity.
+
+Chat-completion speed runs forward `--seed` on the request when it is set
+(MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
+`--fingerprint`. `benchmark_omni_streaming_ttft.py` uses one `--seed` for
+warmup and every measured repeat, and records talker sampling knobs.
+`benchmark_omni_rollout_stress.py` derives request seed `base + index` from
+`--seed` so rollouts differ but stay reproducible. The realtime ASR client
+base64-encodes packets before the first-send timestamp.
 
 `benchmark_omni_seedtts.py` documents local vs CI GPU usage in its module
 docstring (sequential phases on CI to reduce OOM risk).
@@ -240,6 +257,30 @@ and their wall time are excluded from the main speed results and generated
 audio metadata. Apply the same warmup policy to both benchmark revisions;
 measure startup-to-ready and the first unconditioned request wave separately
 when evaluating production cold starts.
+
+For MiniCPM-o, pass `--voice-clone --reference-audio-field audio.ref_audio`.
+The client encodes every reference WAV once before the timed run so file
+reads stay out of request latency. `--seed` sends one sampler seed with every
+request so generated lengths are reproducible between A/B runs; the seed and
+temperature are recorded in the results config.
+Seeded sampling is not free: SGLang's seeded sampler hashes every vocabulary
+entry per token, which measured about 8% extra latency at concurrency 1 on an
+A6000 with identical output. Use the same seed setting in both arms of an A/B
+comparison and never compare seeded against unseeded absolute numbers.
+`--talker-temperature`, `--talker-top-p`, `--talker-top-k` and
+`--talker-repetition-penalty` pin the talker's sampling and are recorded the
+same way; unset knobs keep the server defaults. `--fingerprint` records the
+client environment and the server's `/v1/models` identity in the results
+config, using the same helpers as the ASR sweeps.
+
+`--concurrencies 1,16 --repeats 5 --generate-only` sweeps concurrency levels,
+writing each run to `<output-dir>/c<level>_r<repeat>/` and one
+`<output-dir>/sweep.json` that aggregates each level's repeats (mean, min,
+max, n per metric) with the raw per-repeat summaries, in the same shape as
+the ASR sweeps. Tail percentiles need at least 100
+measured samples; below that p99 interpolates the two slowest requests and the
+benchmark logs a warning. Without `--warmup-meta` the warmup replays the first
+measured sample, so its server caches are warm when it is timed.
 
 `benchmark_asr_seedtts.py` is a standalone ASR fan-out sweep (issue #646): it
 transcribes the SeedTTS *reference* clips directly against a running Qwen3-ASR

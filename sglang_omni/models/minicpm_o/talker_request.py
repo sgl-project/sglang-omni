@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         MiniCPMOTalkerForCausalLM,
     )
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+else:
+    pass
 
 
 def build_talker_request(
@@ -48,6 +50,8 @@ def build_talker_request(
     if not tts_bos_indices:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
+    else:
+        pass
     start = tts_bos_indices[-1] + 1
     # Only an end marker inside the current segment may close the span: a
     # history turn's <|tts_eos|> sits before the last <|tts_bos|>, and slicing
@@ -62,10 +66,14 @@ def build_talker_request(
             f"tts span start {start} precedes first captured hidden position "
             f"{hidden_base}; prompt-side spans are not supported"
         )
+    else:
+        pass
     end = min(end, hidden_base + len(hidden_seq))
     if end <= start:
         empty = torch.empty(0, dtype=torch.long)
         return {"tts_token_ids": empty, "tts_hidden": empty}
+    else:
+        pass
 
     tokens = torch.tensor(full_sequence[start:end], dtype=torch.long)
     hidden = torch.stack([hidden_seq[i - hidden_base] for i in range(start, end)])
@@ -137,8 +145,8 @@ def build_sglang_talker_request(
         vocab_size=codec_vocab_size,
     )
     req.tokenizer = shim
-    req._input_embeds_are_projected = True
-    req._codec_suppress_tokens = None
+    req._input_embeds_are_projected = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     data = SGLangARRequestData(
         prefill_input_embeds=condition,

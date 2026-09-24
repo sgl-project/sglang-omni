@@ -34,16 +34,16 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         self.fusion = AddFusion(config.duplex)
         embedding = self.llm.get_input_embeddings().weight
         max_batch = get_schedule().max_running_requests
-        self._fusion_buffer = torch.zeros(
+        self.fusion_buffer = torch.zeros(
             max_batch,
             config.hidden_size,
             device=embedding.device,
             dtype=embedding.dtype,
         )
-        self._fusion_mask = torch.zeros(
+        self.fusion_mask = torch.zeros(
             max_batch, dtype=torch.bool, device=embedding.device
         )
-        self._function_ids = torch.zeros(
+        self.function_ids = torch.zeros(
             max_batch, dtype=torch.long, device=embedding.device
         )
 
@@ -57,13 +57,15 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         if input_embeds is None:
             input_embeds = self.llm.get_input_embeddings()(input_ids)
             batch = input_embeds.shape[0]
-            mask = self._fusion_mask[:batch]
+            mask = self.fusion_mask[:batch]
             input_embeds = torch.where(
                 mask.unsqueeze(-1),
-                self._fusion_buffer[:batch].to(input_embeds.dtype),
+                self.fusion_buffer[:batch].to(input_embeds.dtype),
                 input_embeds,
             )
-            self._fusion_mask[:batch] = False
+            self.fusion_mask[:batch] = False
+        else:
+            pass
         hidden = self.llm.model.forward(
             input_ids, positions, forward_batch, None, input_embeds
         )
@@ -76,10 +78,12 @@ class NemotronVoiceChatForCausalLM(nn.Module):
         if forward_batch.forward_mode == ForwardMode.EXTEND:
             last = torch.cumsum(forward_batch.extend_seq_lens, dim=0) - 1
             hidden = hidden[last]
+        else:
+            pass
         logits = self.function_head.quant_method.apply(self.function_head, hidden)
         batch = logits.shape[0]
         # The function id is only sampled at greedy sampling
-        self._function_ids[:batch] = logits.argmax(dim=-1)
+        self.function_ids[:batch] = logits.argmax(dim=-1)
 
     def backbone_weights_stream(self, parameters, weights):
         # Drop RNN weights from the stream.
@@ -88,10 +92,14 @@ class NemotronVoiceChatForCausalLM(nn.Module):
                 parameter = parameters["function_head.weight"]
                 default_weight_loader(parameter, weight)
                 continue
+            else:
+                pass
             for source, target in BACKBONE_RENAMES_MAP:
                 if name.startswith(source):
                     yield target + name[len(source) :], weight
                     break
+                else:
+                    pass
 
     def load_weights(self, weights):
         parameters = dict(self.named_parameters())

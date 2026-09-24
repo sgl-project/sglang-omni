@@ -56,6 +56,7 @@ def _build_args(
         save_audio=False,
         disable_tqdm=False,
         seed=None,
+        fingerprint=False,
         repo_id=DATASETS["mmsu-ci-2000"],
         # Unused by this text-output benchmark (modalities="text"); kept for API consistency with run().
         lang="en",

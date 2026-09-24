@@ -334,8 +334,8 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
 def test_validate_request_batched_gates_prompt_and_span_budget() -> None:
     flow = SimpleNamespace(
         is_batched=True,
-        _batched_nfe=4,
-        _tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
+        batched_nfe=4,
+        tail=SimpleNamespace(spec=SimpleNamespace(patch_capacity=9)),
     )
     validate = DotsTTSFlowHead.validate_request
 
@@ -519,9 +519,9 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
     )
     slot = state.slot
     assert slot is not None
-    tail = flow._tail
+    tail = flow.tail
     fm_seq_len = tail.fm_seq_len(slot)
-    encoder_seq_len = tail._encoder_seq_len[slot]
+    encoder_seq_len = tail.encoder_seq_len[slot]
     rng_state = tail.slot_rng_state(slot)
     assert rng_state is not None
     decoded_patches = state.decoded_patches
@@ -537,7 +537,7 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
             append_hidden=True,
         )
     assert tail.fm_seq_len(slot) == fm_seq_len
-    assert tail._encoder_seq_len[slot] == encoder_seq_len
+    assert tail.encoder_seq_len[slot] == encoder_seq_len
     actual_rng_state = tail.slot_rng_state(slot)
     assert actual_rng_state is not None
     torch.testing.assert_close(actual_rng_state, rng_state, rtol=0, atol=0)
@@ -629,7 +629,7 @@ def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
         append_hidden=False,
     )
     assert flow.resolve_batched_eos() == [False]
-    assert flow._tail._tail_steps == 1
+    assert flow.tail.tail_steps == 1
 
     rng_state = flow.suspend_request(state)
     rematerialized, _ = flow.new_request(
@@ -641,6 +641,6 @@ def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
     )
     flow.replay_feedback(rematerialized, [step.latent_patch])
 
-    assert flow._tail._tail_steps == 1
-    assert flow._tail._graph_misses["meanflow"] == 1
-    assert flow._tail._graph_misses["semantic_encoder"] == 2
+    assert flow.tail.tail_steps == 1
+    assert flow.tail.graph_misses["meanflow"] == 1
+    assert flow.tail.graph_misses["semantic_encoder"] == 2

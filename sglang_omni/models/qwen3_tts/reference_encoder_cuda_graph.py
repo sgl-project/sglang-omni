@@ -30,6 +30,8 @@ def move_conv_padding_to_host(encoder: torch.nn.Module) -> int:
             module.padding_right = module.padding_total // 2
             module.padding_left = module.padding_total - module.padding_right
             count += 1
+        else:
+            pass
     return count
 
 
@@ -58,49 +60,49 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
         bucket_frames: Iterable[int],
         stream: torch.cuda.Stream,
     ) -> None:
-        self._encoder = encoder
-        self._hop = int(hop)
-        self._num_quantizers = int(num_quantizers)
-        self._bucket_frames = tuple(sorted({int(f) for f in bucket_frames}))
-        self._stream = stream
+        self.encoder = encoder
+        self.hop = int(hop)
+        self.num_quantizers = int(num_quantizers)
+        self.bucket_frames = tuple(sorted({int(f) for f in bucket_frames}))
+        self.stream = stream
         param = next(encoder.parameters())
-        self._device = param.device
-        self._dtype = param.dtype
-        self._graphs: dict[int, CapturedEncoderGraph] = {}
-        self._pool: Any | None = None
-        self._disable_reason: str | None = None
-        self._replays = 0
-        self._misses = 0
+        self.device = param.device
+        self.dtype = param.dtype
+        self.graphs: dict[int, CapturedEncoderGraph] = {}
+        self.pool: Any | None = None
+        self.disable_reason: str | None = None
+        self.replays = 0
+        self.misses = 0
 
     def capture(self) -> None:
         graphs: dict[int, CapturedEncoderGraph] = {}
         try:
-            with torch.cuda.device(self._device):
+            with torch.cuda.device(self.device):
                 pool = torch.cuda.graph_pool_handle()
                 # note(ratish): largest first so the shared pool is sized once.
-                for frames in reversed(self._bucket_frames):
+                for frames in reversed(self.bucket_frames):
                     graphs[frames] = self.capture_bucket(frames, pool)
         except Exception as exc:
-            self._disable_reason = f"capture_failed: {type(exc).__name__}: {exc}"
+            self.disable_reason = f"capture_failed: {type(exc).__name__}: {exc}"
             logger.warning(
                 "Qwen3-TTS reference encoder graph capture disabled the runner: %s",
-                self._disable_reason,
+                self.disable_reason,
                 exc_info=True,
             )
             return
-        self._graphs = {frames: graphs[frames] for frames in self._bucket_frames}
-        self._pool = pool
+        self.graphs = {frames: graphs[frames] for frames in self.bucket_frames}
+        self.pool = pool
         logger.info(
             "Qwen3-TTS reference encoder graphs captured for %s frames",
-            list(self._bucket_frames),
+            list(self.bucket_frames),
         )
 
     def capture_bucket(self, frames: int, pool: Any) -> CapturedEncoderGraph:
         static_input = torch.zeros(
-            (1, 1, frames * self._hop), device=self._device, dtype=self._dtype
+            (1, 1, frames * self.hop), device=self.device, dtype=self.dtype
         )
-        self._stream.wait_stream(torch.cuda.current_stream(self._device))
-        with torch.inference_mode(), torch.cuda.stream(self._stream):
+        self.stream.wait_stream(torch.cuda.current_stream(self.device))
+        with torch.inference_mode(), torch.cuda.stream(self.stream):
             for _ in range(2):
                 self._encode(static_input)
         graph = torch.cuda.CUDAGraph()
@@ -109,48 +111,50 @@ class Qwen3TTSReferenceEncoderCudaGraphRunner:
             torch.cuda.graph(
                 graph,
                 pool=pool,
-                stream=self._stream,
+                stream=self.stream,
                 capture_error_mode="thread_local",
             ),
         ):
             static_codes = self._encode(static_input)
-        self._stream.synchronize()
+        self.stream.synchronize()
         return CapturedEncoderGraph(
             graph=graph, static_input=static_input, static_codes=static_codes
         )
 
     def _encode(self, values: torch.Tensor) -> torch.Tensor:
-        return self._encoder.encode(
-            values, num_quantizers=self._num_quantizers, return_dict=True
+        return self.encoder.encode(
+            values, num_quantizers=self.num_quantizers, return_dict=True
         ).audio_codes
 
     def bucket_for(self, frames: int) -> int | None:
-        return smallest_bucket(frames, self._graphs)
+        return smallest_bucket(frames, self.graphs)
 
     def encode(self, waveform: torch.Tensor) -> torch.Tensor | None:
         """Codes (frames, quantizers) of a waveform (samples,); None above the largest bucket."""
         samples = waveform.numel()
-        frames = -(-samples // self._hop)
+        frames = -(-samples // self.hop)
         bucket = self.bucket_for(frames)
         if bucket is None:
-            self._misses += 1
+            self.misses += 1
             return None
-        captured = self._graphs[bucket]
+        else:
+            pass
+        captured = self.graphs[bucket]
         captured.static_input[0, 0, :samples].copy_(waveform)
         captured.static_input[0, 0, samples:].zero_()
         captured.graph.replay()
-        self._replays += 1
+        self.replays += 1
         # note(ratish): the graph rewrites its output on the next replay.
         return captured.static_codes[0, :, :frames].transpose(0, 1).clone()
 
     def stats(self) -> dict[str, Any]:
         return {
-            "enabled": bool(self._graphs),
-            "disable_reason": self._disable_reason,
-            "bucket_frames": list(self._bucket_frames),
-            "captured": list(self._graphs),
-            "replays": self._replays,
-            "misses": self._misses,
+            "enabled": bool(self.graphs),
+            "disable_reason": self.disable_reason,
+            "bucket_frames": list(self.bucket_frames),
+            "captured": list(self.graphs),
+            "replays": self.replays,
+            "misses": self.misses,
         }
 
 

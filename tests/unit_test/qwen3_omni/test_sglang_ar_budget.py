@@ -118,7 +118,7 @@ def test_post_capture_resize_shrinking_a_byte_budget_raises(monkeypatch) -> None
     from sglang.srt.model_executor.model_runner import ModelRunner
 
     runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
-    runner._kv_cache_bytes = 4 * 1024**3
+    runner.kv_cache_bytes = 4 * 1024**3
     runner.max_total_num_tokens = 1000
     runner.gpu_id = 0
     runner.device = "cuda"
@@ -144,7 +144,7 @@ def test_post_capture_resize_without_byte_budget_delegates(monkeypatch) -> None:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
     runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
-    runner._kv_cache_bytes = None
+    runner.kv_cache_bytes = None
     runner.max_total_num_tokens = 1000
     calls: list[str] = []
 
@@ -163,7 +163,7 @@ def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
     from sglang.srt.model_executor.model_runner import ModelRunner
 
     runner = runner_mod.SGLModelRunner.__new__(runner_mod.SGLModelRunner)
-    runner._kv_cache_bytes = 4 * 1024**3
+    runner.kv_cache_bytes = 4 * 1024**3
     runner.max_total_num_tokens = 1000
 
     monkeypatch.setattr(ModelRunner, "post_capture_resize_kv_pool", lambda self: None)

@@ -405,7 +405,7 @@ def test_reference_executor_defaults_to_per_request(
 
     scheduler = stages.create_reference_encode_executor("stub", device="cpu")
     try:
-        encoder = scheduler._fn.__self__
+        encoder = scheduler.fn.__self__
         assert encoder.service.batching_enabled is False
     finally:
         scheduler.stop()
@@ -424,13 +424,13 @@ def test_reference_executor_stop_closes_batch_worker(
     scheduler = stages.create_reference_encode_executor(
         "stub", device="cpu", max_batch_size=2
     )
-    encoder = scheduler._fn.__self__
-    assert encoder.service._batch_thread is not None
-    assert encoder.service._batch_thread.is_alive()
+    encoder = scheduler.fn.__self__
+    assert encoder.service.batch_thread is not None
+    assert encoder.service.batch_thread.is_alive()
 
     scheduler.stop()
 
-    assert not encoder.service._batch_thread.is_alive()
+    assert not encoder.service.batch_thread.is_alive()
 
 
 # --------------------------------------------------------------------------

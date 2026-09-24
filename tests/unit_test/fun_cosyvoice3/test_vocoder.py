@@ -974,12 +974,12 @@ def test_attach_flow_estimator_trt_wraps_module_with_fallback(monkeypatch) -> No
     assert captured["wrap_module"] is True
     assert captured["fallback"] is fallback
     assert isinstance(flow.decoder.estimator, FlowEstimatorTRTModule)
-    assert flow.decoder.estimator._fallback is fallback
+    assert flow.decoder.estimator.fallback is fallback
 
 
 def test_preprocessing_executor_threads_max_concurrency() -> None:
     scheduler = stages.create_preprocessing_executor("model", max_concurrency=11)
-    assert scheduler._max_concurrency == 11
+    assert scheduler.max_concurrency == 11
 
 
 def test_preprocessing_executor_rejects_non_positive_concurrency() -> None:
@@ -1013,7 +1013,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
     )
 
     builder = engine_builder.FunCosyVoice3EngineBuilder(onnx_intra_op_threads=6)
-    builder._checkpoint_root = "/tmp"
+    builder.checkpoint_root = "/tmp"
     builder.before_memory_pool(
         model_worker=SimpleNamespace(
             model_runner=SimpleNamespace(

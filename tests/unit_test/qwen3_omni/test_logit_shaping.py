@@ -72,4 +72,4 @@ def test_suppress_cache_holds_one_entry_across_requests():
             logits_output.next_token_logits, _suppress_reference(logits, requests)
         ), step
 
-    assert len(runner._suppress_tensor_cache) == 1
+    assert len(runner.suppress_tensor_cache) == 1

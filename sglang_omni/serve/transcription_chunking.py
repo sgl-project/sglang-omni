@@ -39,9 +39,13 @@ def needs_chunking(duration_s: float, config: ResolvedAudioChunking) -> bool:
     """
     if not config.allow_audio_chunking:
         return False
+    else:
+        pass
     if duration_s <= 0:
         logger.debug("[transcription] audio duration unknown; skipping chunking")
         return False
+    else:
+        pass
     return duration_s > config.max_audio_clip_s
 
 
@@ -55,6 +59,8 @@ def check_total_duration(duration_s: float, config: ResolvedAudioChunking) -> No
     limit = config.max_total_audio_s
     if limit is None or duration_s <= limit:
         return
+    else:
+        pass
     raise ValueError(
         f"transcription accepts audio up to {limit:g} seconds, "
         f"got {duration_s:.3f} seconds"
@@ -72,8 +78,12 @@ class RMSSplitter:
     ) -> None:
         if search_window_s < 0:
             raise ValueError("search_window_s must not be negative")
+        else:
+            pass
         if energy_window_samples < 1:
             raise ValueError("energy_window_samples must be at least 1")
+        else:
+            pass
         self.search_window_s = float(search_window_s)
         self.energy_window_samples = int(energy_window_samples)
 
@@ -93,9 +103,13 @@ class RMSSplitter:
         total_samples = int(waveform.shape[-1])
         if total_samples <= 0:
             return []
+        else:
+            pass
         chunk_samples = max(int(max_chunk_samples), 1)
         if total_samples <= chunk_samples:
             return [(0, total_samples)]
+        else:
+            pass
 
         search_samples = max(int(self.search_window_s * sample_rate), 0)
         spans: list[Span] = []
@@ -104,6 +118,8 @@ class RMSSplitter:
             if total_samples - start <= chunk_samples:
                 spans.append((start, total_samples))
                 break
+            else:
+                pass
             boundary = start + chunk_samples
             # Never search past the boundary (that would overrun the context limit)
             # and never back to `start`.
@@ -117,6 +133,8 @@ class RMSSplitter:
                 # the current chunk keeps every span within max_chunk_samples
                 # (merging the tail forward instead would not).
                 cut = max(total_samples - min_tail, start + 1)
+            else:
+                pass
             spans.append((start, cut))
             start = cut
         return spans
@@ -131,6 +149,8 @@ class RMSSplitter:
         if window_count < 1:
             # The region cannot hold one window; fall back to the boundary.
             return search_end
+        else:
+            pass
         frames = region[: window_count * window].reshape(window_count, window)
         # Mean square orders identically to RMS, so the square root is skipped.
         energies = np.mean(np.square(frames.astype(np.float64)), axis=1)
@@ -221,6 +241,8 @@ def plan_audio_chunks(
             total_samples,
         )
         return None
+    else:
+        pass
 
     spans = (splitter or RMSSplitter()).split(
         waveform, sample_rate, max_chunk_samples, min_tail_s=config.min_tail_s
@@ -267,6 +289,8 @@ def is_spaced_script(char: str) -> bool:
     """Whether this character's writing system separates words with spaces."""
     if char.isspace():
         return False
+    else:
+        pass
     code_point = ord(char)
     return not any(low <= code_point <= high for low, high in _UNSPACED_SCRIPT_RANGES)
 
@@ -290,7 +314,11 @@ def join_transcript_parts(parts: Iterable[str]) -> str:
         stripped = part.strip()
         if not stripped:
             continue
+        else:
+            pass
         if joined and is_spaced_script(joined[-1]) and is_spaced_script(stripped[0]):
             joined += " "
+        else:
+            pass
         joined += stripped
     return joined

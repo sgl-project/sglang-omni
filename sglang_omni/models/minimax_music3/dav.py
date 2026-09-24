@@ -63,6 +63,8 @@ class ResidualUnit(nn.Module):
         if y.shape[-1] != x.shape[-1]:
             pad = (x.shape[-1] - y.shape[-1]) // 2
             x = x[..., pad : x.shape[-1] - pad]
+        else:
+            pass
         return x + y
 
 

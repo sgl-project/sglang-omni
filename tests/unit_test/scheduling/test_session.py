@@ -44,8 +44,8 @@ class Hooks(SessionHooks):
         self.states: dict[SessionIdentity, RecordedState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.events.put(("open", self.name, session_identity.session_id))
-        self.states[session_identity] = RecordedState(session_identity.session_id)
+        self.events.put(("open", self.name, session_identity.id))
+        self.states[session_identity] = RecordedState(session_identity.id)
 
     def close(self, session_identity: SessionIdentity) -> None:
         state = self.states.pop(session_identity)
@@ -76,7 +76,7 @@ def test_stage_capacity_is_aggregate():
     class SizedHooks(Hooks):
         def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
             self.states[session_identity] = RecordedState(
-                session_identity.session_id, byte_count=2
+                session_identity.id, byte_count=2
             )
 
         def usage(self, session_identity: SessionIdentity) -> ResourceUsage:

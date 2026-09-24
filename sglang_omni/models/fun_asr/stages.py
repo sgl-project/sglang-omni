@@ -40,6 +40,8 @@ def compile_fun_asr_audio_encoder(
         # Note (wilsonzheng0327) Sizes 0/1 are always shape-specialized by
         # Dynamo; warming up with them would not build the symbolic-length graph.
         raise ValueError(f"warmup_lfr_frames must be >= 2, got {warmup_lfr_frames}")
+    else:
+        pass
     set_torch_compile_config()
     model.audio_tower.forward = torch.compile(model.audio_tower.forward, dynamic=True)
     model.multi_modal_projector.forward = torch.compile(
@@ -125,10 +127,14 @@ def create_sglang_fun_asr_executor(
         raise ValueError(
             f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
         )
+    else:
+        pass
     if pre_lm_max_batch_wait_ms < 0:
         raise ValueError(
             f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
         )
+    else:
+        pass
 
     from sglang_omni.models.fun_asr.engine_builder import FunASREngineBuilder
 

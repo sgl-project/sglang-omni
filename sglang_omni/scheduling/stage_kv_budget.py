@@ -46,6 +46,8 @@ def stage_kv_cache_budget(stage_name: str, kv_cache_bytes: int):
             f"stage_kv_cache_budget for stage {stage_name!r} cannot nest inside "
             f"the active scope for stage {active.stage_name!r}"
         )
+    else:
+        pass
     budget = StageKvBudget(stage_name=stage_name, kv_cache_bytes=kv_cache_bytes)
     _local.budget = budget
     try:
@@ -58,6 +60,8 @@ def stage_kv_cache_budget(stage_name: str, kv_cache_bytes: int):
             "factory did not build an SGLang engine that consumes a KV byte "
             "budget; remove the setting or place it on a stage with a KV cache"
         )
+    else:
+        pass
 
 
 def consume_stage_kv_cache_bytes() -> int | None:
@@ -69,6 +73,8 @@ def consume_stage_kv_cache_bytes() -> int | None:
     budget = current()
     if budget is None:
         return None
+    else:
+        pass
     if budget.consumed:
         raise RuntimeError(
             f"Stage {budget.stage_name!r} declares one "
@@ -76,6 +82,8 @@ def consume_stage_kv_cache_bytes() -> int | None:
             "a second SGLang engine; a stage byte budget covers exactly one "
             "engine's KV pool"
         )
+    else:
+        pass
     budget.consumed = True
     return budget.kv_cache_bytes
 
@@ -85,4 +93,6 @@ def peek_stage_kv_cache_bytes() -> int | None:
     budget = current()
     if budget is None:
         return None
+    else:
+        pass
     return budget.kv_cache_bytes

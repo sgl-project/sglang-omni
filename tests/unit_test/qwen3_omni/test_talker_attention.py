@@ -44,8 +44,8 @@ def _build_gqa_talker(device: torch.device, dtype: torch.dtype) -> Qwen3OmniTalk
     if dtype is not torch.float32:
         attn.qkv_proj.to(dtype)
         attn.o_proj.to(dtype)
-        talker._predictor_k_cache = talker._predictor_k_cache.to(dtype)
-        talker._predictor_v_cache = talker._predictor_v_cache.to(dtype)
+        talker.predictor_k_cache = talker.predictor_k_cache.to(dtype)
+        talker.predictor_v_cache = talker.predictor_v_cache.to(dtype)
     return talker
 
 
@@ -106,8 +106,8 @@ def _materialized_kv_cached_attention(
     cache_len: int,
 ) -> torch.Tensor:
     q, _, _ = _project_q_kv(attn, hidden_states)
-    cached_k = talker._predictor_k_cache[0, :batch_size, :, : cache_len + 1, :]
-    cached_v = talker._predictor_v_cache[0, :batch_size, :, : cache_len + 1, :]
+    cached_k = talker.predictor_k_cache[0, :batch_size, :, : cache_len + 1, :]
+    cached_v = talker.predictor_v_cache[0, :batch_size, :, : cache_len + 1, :]
     return _materialized_sdpa(attn, q, cached_k, cached_v, is_causal=False)
 
 

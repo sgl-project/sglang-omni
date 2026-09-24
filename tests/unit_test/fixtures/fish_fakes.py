@@ -116,17 +116,17 @@ class FakeFishReq:
 
 class FakeFishModel:
     def __init__(self) -> None:
-        self._semantic_begin_id = 200
-        self._semantic_end_id = 295
-        self._rep_history_len = 4
-        self._vq_mask = torch.zeros(4, dtype=torch.bool)
-        self._vq_codes = torch.zeros((4, 2), dtype=torch.long)
-        self._output_semantic_ids = torch.tensor([201, 202, 203, 204], dtype=torch.long)
-        self._output_codes = torch.tensor(
+        self.semantic_begin_id = 200
+        self.semantic_end_id = 295
+        self.rep_history_len = 4
+        self.vq_mask = torch.zeros(4, dtype=torch.bool)
+        self.vq_codes = torch.zeros((4, 2), dtype=torch.long)
+        self.output_semantic_ids = torch.tensor([201, 202, 203, 204], dtype=torch.long)
+        self.output_codes = torch.tensor(
             [[201, 1, 2], [202, 3, 4], [203, 5, 6], [204, 7, 8]],
             dtype=torch.long,
         )
-        self._audio_decoder = SimpleNamespace(embed_text_dim=self._embed_text_dim)
+        self.audio_decoder = SimpleNamespace(embed_text_dim=self._embed_text_dim)
 
     def get_embed_tokens(self):
         def _embed(input_ids: torch.Tensor) -> torch.Tensor:
