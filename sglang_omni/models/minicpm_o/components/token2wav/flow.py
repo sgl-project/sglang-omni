@@ -21,6 +21,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
@@ -152,17 +153,34 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         )
         embedding = F.normalize(embedding, dim=1)
         embedding = self.spk_embed_affine_layer(embedding)
+        batch_size = token.shape[0]
+        prompt_token_lens = [int(prompt_token_len[i]) for i in range(batch_size)]
+        token_lens = [int(token_len[i]) for i in range(batch_size)]
+        # Rows may carry references of different lengths, so build each row as
+        # prompt-then-generated and pad the tail. The mask drops that tail, and
+        # each row's prompt mel is written at its own offset below.
+        combined = pad_sequence(
+            [
+                torch.cat(
+                    [
+                        prompt_token[i, : prompt_token_lens[i]],
+                        token[i, : token_lens[i]],
+                    ]
+                )
+                for i in range(batch_size)
+            ],
+            batch_first=True,
+        )
         token_len = prompt_token_len + token_len
-        token = torch.concat([prompt_token, token], dim=1)
         token_mask = (~make_pad_mask(token_len)).unsqueeze(-1).to(embedding)
-        token = self.input_embedding(torch.clamp(token, min=0)) * token_mask
+        token = self.input_embedding(torch.clamp(combined, min=0)) * token_mask
         h, _ = self.encoder.forward(token, token_len)
         frame_mask = (~make_pad_mask(token_len * self.up_rate, h.shape[1])).to(h)
         h = self.encoder_proj(h) * frame_mask.unsqueeze(-1)
-        mel_len1 = prompt_feat.shape[1]
-        mel_len2 = h.shape[1] - prompt_feat.shape[1]
         conds = torch.zeros_like(h)
-        conds[:, :mel_len1] = prompt_feat
+        for i, prompt_len in enumerate(prompt_token_lens):
+            prompt_frames = prompt_len * self.up_rate
+            conds[i, :prompt_frames] = prompt_feat[i, :prompt_frames]
         conds = conds.transpose(1, 2).contiguous()
         feat = self.decoder.forward(
             mu=h.transpose(1, 2).contiguous(),
@@ -171,6 +189,12 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
             cond=conds,
             n_timesteps=n_timesteps,
         )
-        feat = feat[:, :, mel_len1:]
-        assert feat.shape[2] == mel_len2
-        return feat
+        generated = [
+            feat[i, :, prompt_token_lens[i] * self.up_rate :][
+                :, : token_lens[i] * self.up_rate
+            ]
+            for i in range(batch_size)
+        ]
+        return pad_sequence(
+            [row.transpose(0, 1) for row in generated], batch_first=True
+        ).transpose(1, 2)

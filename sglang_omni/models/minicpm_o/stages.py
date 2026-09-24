@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import defaultdict
 from typing import Any
 
 import torch
@@ -26,7 +25,6 @@ from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
-from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
@@ -174,40 +172,26 @@ def create_sglang_talker_executor_from_config(
 def vocode_code2wav_payloads(
     model: MiniCPMOCode2Wav, payloads: list[StagePayload]
 ) -> list[StagePayload]:
-    """Vocode talker payloads, grouping rows that share a speaker reference."""
+    """Vocode talker payloads, one reference per row."""
     codec_tokens: list[list[int]] = []
     references: list[str | bytes] = []
-    groups: dict[str, list[int]] = defaultdict(list)
-    for idx, payload in enumerate(payloads):
+    for payload in payloads:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         tokens = state.engine_outputs[TALKER_STAGE]["codec_tokens"].reshape(-1).tolist()
-        reference = model.resolve_prompt_wav(code2wav_reference_audio(payload))
         codec_tokens.append(tokens)
-        references.append(reference)
-        if isinstance(reference, bytes):
-            group_key = f"bytes:{hash_bytes(reference)}"
-        else:
-            group_key = reference_path_cache_key(reference) or str(reference)
-        groups[group_key].append(idx)
+        references.append(model.resolve_prompt_wav(code2wav_reference_audio(payload)))
 
     logger.info(
-        f"minicpm_code2wav_batch size={len(payloads)} groups={len(groups)} "
+        f"minicpm_code2wav_batch size={len(payloads)} "
         f"max_codec_tokens={max(len(tokens) for tokens in codec_tokens)}"
     )
-    waveforms_by_index = {}
-    for group_indices in groups.values():
-        group_waveforms = model.vocode(
-            [codec_tokens[idx] for idx in group_indices],
-            references[group_indices[0]],
-        )
-        for idx, waveform in zip(group_indices, group_waveforms, strict=True):
-            waveforms_by_index[idx] = waveform
+    waveforms = model.vocode(codec_tokens, references)
 
     outputs: list[StagePayload] = []
-    for idx, payload in enumerate(payloads):
+    for payload, waveform in zip(payloads, waveforms, strict=True):
         payload.data = dict(
             audio_waveform_payload(
-                waveforms_by_index[idx],
+                waveform,
                 sample_rate=model.sample_rate,
                 modality="audio",
                 source_hint="MiniCPM-o",
@@ -227,11 +211,13 @@ def create_code2wav_executor(
     batch_wait_when_idle: bool = False,
     dtype: str | None = None,
     max_batch_cost: int | None = None,
+    enable_flow_variable_length: bool = False,
 ) -> SimpleScheduler:
     model = MiniCPMOCode2Wav(
         model_path,
         device=str(resolve_concrete_device(device, gpu_id)),
         dtype=dtype,
+        enable_flow_variable_length=enable_flow_variable_length,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
@@ -246,6 +232,7 @@ def create_code2wav_executor(
         batch_wait_when_idle=batch_wait_when_idle,
         request_cost_fn=codec_token_cost,
         max_batch_cost=max_batch_cost,
+        shutdown_callback=model.close_reference_pool,
     )
 
 
