@@ -7,6 +7,23 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+import msgspec
+
+
+class DiarizationSegment(msgspec.Struct, frozen=True):
+    """One speaker's active interval, in seconds from the recording start."""
+
+    start: float
+    end: float
+    speaker: str
+
+
+class DiarizationResult(msgspec.Struct, frozen=True):
+    """Standalone speaker activity; overlapping intervals are permitted."""
+
+    duration: float
+    segments: list[DiarizationSegment]
+
 
 @dataclass
 class Message:
@@ -147,9 +164,10 @@ class GenerateChunk:
     language: str | None = None
     audio_data: Any = None
     sample_rate: int | None = None
+    diarization: DiarizationResult | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "request_id": self.request_id,
             "index": self.index,
             "token_ids": list(self.token_ids),
@@ -167,6 +185,9 @@ class GenerateChunk:
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
         }
+        if self.diarization is not None:
+            result["diarization"] = msgspec.to_builtins(self.diarization)
+        return result
 
 
 class AbortLevel(Enum):
@@ -212,6 +233,7 @@ class CompletionResult:
     omni_rollout: dict[str, Any] | None = None
     weight_version: str | None = None
     language: str | None = None
+    diarization: DiarizationResult | None = None
 
 
 @dataclass

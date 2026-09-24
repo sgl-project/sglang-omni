@@ -186,7 +186,10 @@ def test_load_samples_uses_dataset_expected_sample_count(
 
     monkeypatch.setattr(module, "load_movies800_samples", fake_load_movies800_samples)
 
-    module._load_samples(module.parse_args(["--dataset", dataset]))
+    module._load_samples(
+        module.parse_args(["--dataset", dataset, "--dataset-revision", "abc123"])
+    )
+    assert captured_kwargs["revision"] == "abc123"
 
     assert captured_kwargs["max_samples"] is None
     assert captured_kwargs["expected_sample_count"] == expected_sample_count
@@ -584,3 +587,89 @@ def test_concat_filler_cut_aligns_to_reference_boundary(tmp_path) -> None:
     assert "world" not in sample.expected_text
     assert "hello" in sample.expected_text
     assert "[8.00][S02]tail[10.00]" in sample.expected_text
+
+
+@pytest.mark.parametrize(
+    "segments, expected_der, expected_count_error",
+    [
+        ([{"start": 0.0, "end": 2.0, "speaker": "speaker_7"}], 0.0, 0),
+        ([{"start": 0.0, "end": 1.0, "speaker": "speaker_7"}], 0.5, 0),
+        ([], 1.0, 1),
+    ],
+)
+def test_standalone_diarization_scores_intervals_and_all_miss_recordings(
+    segments, expected_der, expected_count_error
+):
+    from benchmarks.tasks.diarization import build_diarization_evaluation
+    from benchmarks.tasks.transcribe_diarize import Movies800Sample
+
+    sample = Movies800Sample("clip", "unused.wav", "[0][S1]speech[2]")
+    result = RequestResult(
+        request_id="clip",
+        is_success=True,
+        audio_duration_s=2.0,
+        latency_s=0.5,
+        rtf=0.25,
+        diarization_segments=segments,
+    )
+    payload = build_diarization_evaluation([sample], [result], 0.5)
+    metrics = payload["diarization_metrics"]
+    assert metrics["der"] == expected_der
+    assert metrics["speaker_count_mae"] == expected_count_error
+    assert metrics["quality_evaluated"] == 1
+    assert payload["summary"]["corpus_wer"] is None
+
+
+def test_standalone_diarization_retains_overlap_and_failed_requests():
+    from benchmarks.tasks.diarization import build_diarization_evaluation
+    from benchmarks.tasks.transcribe_diarize import Movies800Sample
+
+    sample = Movies800Sample("clip", "unused.wav", "[0][S1]one[2][1][S2]two[3]")
+    result = RequestResult(
+        request_id="clip",
+        is_success=True,
+        audio_duration_s=3.0,
+        latency_s=0.5,
+        rtf=1 / 6,
+        diarization_segments=[{"start": 0.0, "end": 2.0, "speaker": "speaker_0"}],
+    )
+    metrics = build_diarization_evaluation([sample], [result], 0.5)[
+        "diarization_metrics"
+    ]
+    assert metrics["reference_speaker_seconds"] == 4.0
+    assert metrics["der"] == 0.5
+    assert metrics["missed_speaker_seconds"] == 2.0
+    failed = build_diarization_evaluation([sample], [], 0.5)
+    assert failed["diarization_metrics"]["der"] == 1.0
+    assert failed["speed"]["failed_requests"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"text": "unsupported transcription"},
+        {
+            "duration": 2.0,
+            "segments": [{"start": 0.0, "end": float("nan"), "speaker": "s"}],
+        },
+        {"duration": 2.0, "segments": [{"start": 1.0, "end": 3.0, "speaker": "s"}]},
+        {"duration": 2.0, "segments": [{"start": 0.0, "end": 1.0, "speaker": ""}]},
+    ],
+)
+def test_standalone_diarization_rejects_invalid_model_outputs(payload):
+    from benchmarks.tasks.diarization import validate_diarization
+
+    with pytest.raises(ValueError):
+        validate_diarization(payload, duration=2.0)
+
+
+def test_diarization_collar_excludes_boundaries_from_speaker_matching():
+    from benchmarks.metrics.transcribe_diarize_metrics import timestamp_der_segments
+
+    result = timestamp_der_segments(
+        [(0.0, 2.0, "a"), (2.0, 4.0, "b")],
+        [(0.0, 0.3, "x"), (1.2, 1.3, "y")],
+        collar=0.4,
+    )
+    assert result["der"] == pytest.approx(23 / 24)
+    assert result["confusion"] == 0.0

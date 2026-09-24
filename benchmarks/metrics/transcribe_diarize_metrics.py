@@ -813,8 +813,24 @@ def _timestamp_der_one(
 ) -> _TimestampDerDetail:
     reference_segments = _parse_timestamped_speaker_segments(reference)
     prediction_segments = _parse_timestamped_speaker_segments(prediction)
-    mapping = _best_hyp_to_ref_mapping(reference_segments, prediction_segments)
+    return timestamp_der_segments(
+        reference_segments, prediction_segments, collar=collar
+    )
+
+
+def timestamp_der_segments(
+    reference_segments: list[tuple[float, float, str]],
+    prediction_segments: list[tuple[float, float, str]],
+    *,
+    collar: float = 0.0,
+) -> _TimestampDerDetail:
+    """Score speaker intervals, retaining empty hypotheses as missed speech."""
+    if not np.isfinite(collar) or collar < 0:
+        raise ValueError("DER collar must be finite and nonnegative")
     collar_regions = _reference_collar_regions(reference_segments, collar)
+    mapping = _best_hyp_to_ref_mapping(
+        reference_segments, prediction_segments, excluded=collar_regions
+    )
     boundaries = sorted(
         {
             point
@@ -871,6 +887,8 @@ def _timestamp_der_one(
 def _best_hyp_to_ref_mapping(
     reference_segments: list[tuple[float, float, str]],
     prediction_segments: list[tuple[float, float, str]],
+    *,
+    excluded: Sequence[tuple[float, float]] = (),
 ) -> dict[str, str]:
     reference_labels = sorted(
         {segment[2] for segment in reference_segments}, key=_speaker_sort_key
@@ -887,6 +905,12 @@ def _best_hyp_to_ref_mapping(
         for prediction_segment in prediction_segments:
             duration = _segment_overlap(reference_segment, prediction_segment)
             if duration > 0.0:
+                start = max(reference_segment[0], prediction_segment[0])
+                end = min(reference_segment[1], prediction_segment[1])
+                duration -= sum(
+                    max(0.0, min(end, right) - max(start, left))
+                    for left, right in excluded
+                )
                 overlap[
                     reference_index[reference_segment[2]],
                     prediction_index[prediction_segment[2]],

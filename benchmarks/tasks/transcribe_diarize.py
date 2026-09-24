@@ -98,11 +98,14 @@ def load_movies800_samples(
     expected_column: str,
     max_samples: int | None = None,
     expected_sample_count: int | None = EXPECTED_SAMPLE_COUNT,
+    revision: str | None = None,
 ) -> list[Movies800Sample]:
     datasets_module = importlib.import_module("datasets")
     audio_type = datasets_module.Audio
     load_dataset = datasets_module.load_dataset
-    dataset = load_dataset(repo_id, split=split)
+    dataset = load_dataset(
+        repo_id, split=split, **({"revision": revision} if revision else {})
+    )
     if expected_column not in dataset.column_names:
         raise ValueError(
             f"Dataset {repo_id}/{split} is missing expected column {expected_column!r}. "

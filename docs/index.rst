@@ -100,6 +100,7 @@ Supported Models
    :caption: Cookbook
 
    cookbook/higgs_tts.md
+   cookbook/nemotron_diarization.md
    cookbook/voxtral_tts.md
    cookbook/fishaudio_s2_pro.md
    cookbook/qwen3_tts.md

@@ -167,6 +167,7 @@ def main() -> None:
             "split": args.split,
             "lang": args.lang,
             "model_path": args.model_path,
+            "task": args.task,
             "declared_model_revision": args.model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),

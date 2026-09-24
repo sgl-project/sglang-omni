@@ -260,6 +260,12 @@ DATASET_CONFIGS: Final[dict[str, DatasetConfig]] = {
 }
 
 
+from benchmarks.tasks.diarization import (
+    build_diarization_evaluation,
+    make_diarization_send_fn,
+)
+
+
 def make_send_fn(
     api_url: str,
     model_path: str,
@@ -375,6 +381,7 @@ async def run_eval(
     request_timeout_s: int,
     max_new_tokens: int | None = None,
     stream: bool = False,
+    task: str = "transcribe",
 ) -> tuple[list[RequestResult], float]:
     runner = BenchmarkRunner(
         RunConfig(
@@ -387,12 +394,20 @@ async def run_eval(
     )
     outputs = await runner.run(
         samples,
-        make_send_fn(
-            api_url=f"{base_url}/v1/audio/transcriptions",
-            model_path=model_path,
-            language=language,
-            max_new_tokens=max_new_tokens,
-            stream=stream,
+        (
+            make_diarization_send_fn(
+                model_path,
+                f"{base_url}/v1/audio/diarizations",
+                stream=stream,
+            )
+            if task == "diarize"
+            else make_send_fn(
+                api_url=f"{base_url}/v1/audio/transcriptions",
+                model_path=model_path,
+                language=language,
+                max_new_tokens=max_new_tokens,
+                stream=stream,
+            )
         ),
     )
     return outputs, runner.wall_clock_s
@@ -414,6 +429,14 @@ def parse_args(
     _add_request_args(parser)
     _add_server_args(parser)
     args = parser.parse_args(argv)
+    if args.task == "diarize":
+        if not args.use_existing_server and not args.reuse_asr_results:
+            parser.error("Diarization requires --use-existing-server")
+        if args.language:
+            parser.error("Diarization does not accept --language")
+        args.max_new_tokens = None
+        if not math.isfinite(args.der_collar) or args.der_collar < 0:
+            parser.error("--der-collar must be finite and nonnegative")
     if args.reuse_asr_results and args.profile_events:
         parser.error("--profile-events cannot be used with --reuse-asr-results")
     return args
@@ -471,6 +494,7 @@ def _add_dataset_args(
         help="Dataset preset to evaluate.",
     )
     parser.add_argument("--repo-id", default=dataset_config.repo_id)
+    parser.add_argument("--dataset-revision", default=None)
     parser.add_argument("--split", default=dataset_config.split)
     parser.add_argument("--audio-column", default=dataset_config.audio_column)
     parser.add_argument("--expected-column", default=dataset_config.expected_column)
@@ -484,6 +508,10 @@ def _add_dataset_args(
 
 
 def _add_request_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--task", choices=["transcribe", "diarize"], default="transcribe"
+    )
+    parser.add_argument("--der-collar", type=float, default=0.0)
     parser.add_argument("--model-path", default=MODEL_PATH)
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--language")
@@ -513,7 +541,7 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
         "--stream",
         action="store_true",
         help=(
-            "Use SSE streaming transcription (stream=true). Fills the "
+            "Use SSE for transcription or PCM16 WebSocket replay for diarization. Fills the "
             "text_ttft_* and inter_chunk_* speed metrics; accuracy metrics "
             "are computed on the final transcript as usual."
         ),
@@ -618,6 +646,11 @@ def _load_samples(args: argparse.Namespace) -> list[Movies800Sample]:
         expected_column=args.expected_column,
         max_samples=args.max_samples,
         expected_sample_count=dataset_config.expected_sample_count,
+        **(
+            {"revision": args.dataset_revision}
+            if getattr(args, "dataset_revision", None)
+            else {}
+        ),
     )
 
 
@@ -662,6 +695,7 @@ def _run_requests_and_save(
             request_timeout_s=args.request_timeout_s,
             max_new_tokens=args.max_new_tokens,
             stream=args.stream,
+            task=getattr(args, "task", "transcribe"),
         )
     )
     _save_asr_results(args, samples, outputs, wall_clock_s)
@@ -713,6 +747,7 @@ async def _run_profiled_pass(
             request_timeout_s=args.request_timeout_s,
             max_new_tokens=args.max_new_tokens,
             stream=args.stream,
+            task=getattr(args, "task", "transcribe"),
         )
         pass_metrics = compute_speed_metrics(outputs, wall_clock_s=wall_clock_s)
         pass_metrics["wall_clock_s"] = wall_clock_s
@@ -737,16 +772,21 @@ def _run_from_asr_results(args: argparse.Namespace) -> tuple[EvaluationPayload, 
         wall_clock_s,
         config_override=config,
     )
-    payload = build_evaluation_payload(
-        samples=samples,
-        outputs=outputs,
-        wall_clock_s=wall_clock_s,
-        model_path=str(config.get("model_path", args.model_path)),
-        concurrency=int(config.get("concurrency", args.concurrency)),
-        repo_id=str(config.get("repo_id", args.repo_id)),
-        split=str(config.get("split", args.split)),
-        dataset=str(config.get("dataset", args.dataset)),
-    )
+    if config.get("task", getattr(args, "task", "transcribe")) == "diarize":
+        args.task = "diarize"
+        args.der_collar = float(config.get("der_collar", args.der_collar))
+        payload = _build_payload(args, samples, outputs, wall_clock_s)
+    else:
+        payload = build_evaluation_payload(
+            samples=samples,
+            outputs=outputs,
+            wall_clock_s=wall_clock_s,
+            model_path=str(config.get("model_path", args.model_path)),
+            concurrency=int(config.get("concurrency", args.concurrency)),
+            repo_id=str(config.get("repo_id", args.repo_id)),
+            split=str(config.get("split", args.split)),
+            dataset=str(config.get("dataset", args.dataset)),
+        )
     output_path = _save_payload(args, payload)
     return payload, output_path
 
@@ -797,6 +837,15 @@ def _build_payload(
     outputs: list[RequestResult],
     wall_clock_s: float,
 ) -> EvaluationPayload:
+    if getattr(args, "task", "transcribe") == "diarize":
+        payload = build_diarization_evaluation(
+            samples,
+            outputs,
+            wall_clock_s,
+            collar=args.der_collar,
+        )
+        payload["config"] = _asr_results_config(args, wall_clock_s)
+        return payload
     return build_evaluation_payload(
         samples=samples,
         outputs=outputs,
@@ -880,7 +929,11 @@ def _build_speed_payload(
         else _asr_results_config(args, wall_clock_s)
     )
     config["wall_clock_s"] = wall_clock_s
-    config["timing_scope"] = "asr_requests_only"
+    config["timing_scope"] = (
+        "diarization_requests_only"
+        if config.get("task") == "diarize"
+        else "asr_requests_only"
+    )
     speed = {
         key: value
         for key, value in compute_speed_metrics(
@@ -915,7 +968,12 @@ def _print_speed_results(
     print(
         f"  {'Concurrency:':<{SPEED_LABEL_WIDTH}} {config.get('concurrency', args.concurrency)}"
     )
-    print(f"  {'Timing:':<{SPEED_LABEL_WIDTH}} ASR requests only")
+    timing_label = (
+        "Diarization requests only"
+        if config.get("task") == "diarize"
+        else "ASR requests only"
+    )
+    print(f"  {'Timing:':<{SPEED_LABEL_WIDTH}} {timing_label}")
     print(f"  {'Output:':<{SPEED_LABEL_WIDTH}} {output_path}")
     print(f"{'=' * SPEED_LINE_WIDTH}")
     print(_build_metrics_section("speed", speed, SPEED_ORDER))
@@ -926,6 +984,9 @@ def _asr_results_config(
     wall_clock_s: float,
 ) -> dict[str, object]:
     return {
+        "task": getattr(args, "task", "transcribe"),
+        "dataset_revision": getattr(args, "dataset_revision", None),
+        "der_collar": getattr(args, "der_collar", 0.0),
         "dataset": getattr(args, "dataset", "custom"),
         "repo_id": args.repo_id,
         "split": args.split,
@@ -940,7 +1001,12 @@ def _asr_results_config(
         "max_new_tokens": args.max_new_tokens,
         "max_samples": args.max_samples,
         "wall_clock_s": wall_clock_s,
-        "timing_scope": "asr_requests_only",
+        "timing_scope": (
+            "diarization_requests_only"
+            if getattr(args, "task", "transcribe") == "diarize"
+            else "asr_requests_only"
+        ),
+        "stream": getattr(args, "stream", False),
     }
 
 
@@ -1009,7 +1075,12 @@ def _print_results(
 ) -> None:
     dataset_config = DATASET_CONFIGS[args.dataset]
     print(f"\n{'=' * SPEED_LINE_WIDTH}")
-    print(f"{'ASR Eval Result':^{SPEED_LINE_WIDTH}}")
+    title = (
+        "Diarization Eval Result"
+        if payload.get("task") == "diarize"
+        else "ASR Eval Result"
+    )
+    print(f"{title:^{SPEED_LINE_WIDTH}}")
     print(f"{'=' * SPEED_LINE_WIDTH}")
     print(f"  {'Dataset:':<{SPEED_LABEL_WIDTH}} {args.dataset}")
     print(f"  {'Model:':<{SPEED_LABEL_WIDTH}} {args.model_path}")
@@ -1019,7 +1090,11 @@ def _print_results(
     print(
         _build_key_metrics_section(
             payload["diarization_metrics_percent"],
-            dataset_config.key_metrics_order,
+            (
+                ("der", "speaker_count_accuracy", "speaker_count_mae")
+                if payload.get("task") == "diarize"
+                else dataset_config.key_metrics_order
+            ),
         )
     )
     print(_build_metrics_section("summary", payload["summary"], SUMMARY_ORDER))
@@ -1034,7 +1109,10 @@ def _print_results(
 
 
 def _failed_request_count(payload: EvaluationPayload) -> int:
-    return int(payload["speed"].get("failed_requests", 0) or 0)
+    failed = int(payload["speed"].get("failed_requests", 0) or 0)
+    if payload.get("task") == "diarize":
+        failed += int(payload["diarization_metrics"].get("invalid_references", 0))
+    return failed
 
 
 def _build_metrics_section(

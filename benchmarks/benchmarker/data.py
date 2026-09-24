@@ -27,3 +27,6 @@ class RequestResult:
     text_ttft_s: float | None = None
     audio_chunk_count: int = 0
     first_audio_payload_bytes: int = 0
+    diarization_segments: list[dict[str, float | str]] | None = None
+    diarization_first_update_s: float | None = None
+    diarization_ack_latency_s: list[float] = field(default_factory=list)
