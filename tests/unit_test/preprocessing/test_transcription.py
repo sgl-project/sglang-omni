@@ -184,6 +184,7 @@ def test_resolve_audio_source_wraps_declared_g711_bytes() -> None:
         _payload({"audio_bytes": raw, "content_type": "audio/basic"})
     )
 
+    assert isinstance(wrapped, bytes)
     assert wrapped[:4] == b"RIFF"
     assert wrapped.endswith(raw)
 

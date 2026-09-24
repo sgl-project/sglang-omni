@@ -102,7 +102,7 @@ async def ensure_image_list_async(
     # Collect coroutines for URL items
     coroutines: list[asyncio.Task[Image.Image]] = []
     url_indices: list[int] = []
-    normalized: list[Any] = []
+    normalized: list[object] = []
 
     # First pass: identify URL items and create coroutines
     for idx, item in enumerate(items):

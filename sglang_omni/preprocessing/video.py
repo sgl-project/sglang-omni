@@ -174,7 +174,7 @@ async def ensure_video_list_async(
         items = videos
     else:
         items = [videos]
-    normalized: list[Any] = []
+    normalized: list[object] = []
     sample_fps_list: list[float] = []
     extracted_audios: list[npt.NDArray[np.float32] | None] = [] if extract_audio else []
     all_paths = True

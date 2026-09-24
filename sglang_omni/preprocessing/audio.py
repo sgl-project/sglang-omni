@@ -8,7 +8,7 @@ import base64
 import struct
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import numpy as np
 import numpy.typing as npt
@@ -206,7 +206,7 @@ async def ensure_audio_list_async(
     *,
     target_sr: int = 16000,
     resource_connector: MultiModalResourceConnector | None = None,
-) -> list[Any]:
+) -> list[object]:
     """Asynchronously normalize audio inputs into a list.
 
     Args:
@@ -231,7 +231,7 @@ async def ensure_audio_list_async(
     # Collect coroutines for URL items
     coroutines: list[asyncio.Task[tuple[npt.NDArray[np.float32], float]]] = []
     url_indices: list[int] = []
-    normalized: list[Any] = []
+    normalized: list[object] = []
 
     # First pass: identify URL items and create coroutines
     for idx, item in enumerate(items):

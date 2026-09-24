@@ -269,7 +269,7 @@ def decode_audio_data_uri(value: str) -> bytes | None:
 
 
 def load_audio(
-    source: str | bytes | bytearray | memoryview,
+    source: object,
     source_name: str = "audio",
     target_sample_rate: int = 16000,
     mono: bool = True,

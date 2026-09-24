@@ -15,7 +15,7 @@ sources beyond the default payload keys (e.g. MOSS-Transcribe-Diarize).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -34,7 +34,7 @@ _BYTES_SOURCE_KEYS = ("audio_bytes", "bytes", "file")
 _PATH_SOURCE_KEYS = ("audio_path", "path", "url")
 
 
-def resolve_audio_source(payload: StagePayload) -> Any:
+def resolve_audio_source(payload: StagePayload) -> object:
     """Default source resolver shared by the ASR request builders."""
     inputs = payload.request.inputs
     if isinstance(inputs, dict):
@@ -75,7 +75,7 @@ def prepare_audio(
     *,
     source_name: str,
     target_sample_rate: int = DEFAULT_TARGET_SAMPLE_RATE,
-    source_resolver: Callable[[StagePayload], Any] = resolve_audio_source,
+    source_resolver: Callable[[StagePayload], object] = resolve_audio_source,
     max_duration_s: float | None = None,
     max_duration_message: str | None = None,
 ) -> PreparedAudio:
