@@ -64,6 +64,7 @@ def _install_fake_events(
         created.append(event)
         return event
 
+    monkeypatch.setattr(torch.cpu, "Event", factory)
     monkeypatch.setattr(torch.cuda, "Event", factory)
     return created
 
@@ -158,6 +159,20 @@ def test_pinned_transfer_slot_reuses_one_event(monkeypatch):
     assert slot.view(16).numel() == 16
 
 
+def test_cpu_platform_keeps_cpu_transfer_slots_synchronous(monkeypatch):
+    from sglang_omni.platforms.cpu import CPUOmniPlatform
+
+    monkeypatch.setattr(cuda_staging, "current_platform", CPUOmniPlatform())
+    created = _install_fake_events(monkeypatch)
+    slot = PinnedTransferSlot("cpu", torch.float32)
+
+    slot.record(object())
+    slot.synchronize()
+
+    assert slot.device == torch.device("cpu")
+    assert len(created) == 1
+
+
 def test_pinned_transfer_slot_query_probes_completion_without_blocking(monkeypatch):
     created = _install_fake_events(monkeypatch)
     _install_fake_pinned_alloc(monkeypatch)
@@ -227,13 +242,13 @@ def test_pinned_transfer_slot_event_construction_failure_rejects_completion_read
     _install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32)
     init_error = RuntimeError("event init failed")
-    factory = torch.cuda.Event
+    factory = torch.cpu.Event
 
     def exploding_once():
-        monkeypatch.setattr(torch.cuda, "Event", factory)
+        monkeypatch.setattr(torch.cpu, "Event", factory)
         raise init_error
 
-    monkeypatch.setattr(torch.cuda, "Event", exploding_once)
+    monkeypatch.setattr(torch.cpu, "Event", exploding_once)
     with pytest.raises(RuntimeError) as init_info:
         slot.record(object())
     assert init_info.value is init_error
@@ -317,6 +332,9 @@ def test_pinned_transfer_slot_propagates_errors_and_rejects_foreign_stream(
         guards.append(torch.device(device))
         yield
 
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
+
+    monkeypatch.setattr(cuda_staging, "current_platform", CUDAOmniPlatform())
     monkeypatch.setattr(torch.cuda, "device", fake_device_guard)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     cuda_slot = PinnedTransferSlot("cuda", torch.float32)

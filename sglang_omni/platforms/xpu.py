@@ -26,6 +26,7 @@ class XPUOmniPlatform(OmniPlatform):
     _enum: PlatformEnum = PlatformEnum.XPU
     device_name: str = "xpu"
     device_type: str = "xpu"
+    has_async_device_streams = True
 
     def get_device(self, local_rank: int) -> "torch.device":
         return torch.device("xpu", local_rank)

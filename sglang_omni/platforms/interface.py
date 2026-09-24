@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.device_mixin import DeviceMixin
@@ -43,6 +43,7 @@ class JointRopeInplaceKernel(Protocol):
 
 class OmniPlatform(DeviceMixin):
     _omni_platform_qualname: str | None = None
+    has_async_device_streams: ClassVar[bool] = False
 
     @classmethod
     def is_float64_supported(cls) -> bool:
@@ -109,6 +110,10 @@ class OmniPlatform(DeviceMixin):
 
     def _get_device_graph_backend(self) -> DeviceGraphBackend | None:
         return None
+
+    def supports_async_streams(self, device: torch.device) -> bool:
+        """Whether this platform provides stream and event APIs for the device."""
+        return self.has_async_device_streams and device.type == self.device_type
 
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
