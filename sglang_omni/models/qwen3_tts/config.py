@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from sglang_omni.config import (
     CustomVoiceConfig,
@@ -19,6 +19,7 @@ from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
 )
+from sglang_omni.utils.json import JsonValue
 
 _PKG = "sglang_omni.models.qwen3_tts"
 _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
@@ -40,7 +41,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     }
 
     @classmethod
-    def generation_admission_defaults(cls) -> dict[str, Any]:
+    def generation_admission_defaults(cls) -> dict[str, int]:
         from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
         defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
@@ -151,7 +152,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
         return None
 
 
-def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, Any]:
+def _load_qwen3_tts_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
     checkpoint_dir = Path(model_path).expanduser()
     if checkpoint_dir.is_dir():
         config_path = checkpoint_dir / "config.json"

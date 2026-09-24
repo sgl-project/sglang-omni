@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
 import numpy as np
@@ -12,6 +12,9 @@ import numpy as np
 from .model import SPEECH_TOKEN_SIZE
 
 if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.kv_cache.attention_kv_cache import (
+        ContiguousAttentionKVCache,
+    )
     from sglang.srt.hardware_backend.mlx.model_runner import (
         MlxModelRunner,
         MlxPendingDecode,
@@ -74,7 +77,7 @@ class FunCosyVoice3MlxModelRunner:
         self,
         logits: mx.array,
         req_ids: list[str],
-        caches: list[list[Any]],
+        caches: list[list[ContiguousAttentionKVCache]],
         *,
         initial: bool = False,
         pending_tokens: mx.array | None = None,
@@ -277,7 +280,7 @@ class FunCosyVoice3MlxModelRunner:
         self,
         last_logits: mx.array,
         req_ids: list[str],
-        caches: list[list[Any]],
+        caches: list[list[ContiguousAttentionKVCache]],
         edit_rows: mx.array | None = None,
         logprob_spec: MlxLogprobSpec | None = None,
     ) -> tuple[mx.array, MlxLazyLogprobs | None]:

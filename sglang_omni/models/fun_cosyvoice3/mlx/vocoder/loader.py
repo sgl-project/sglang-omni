@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import mlx.core as mx
 import numpy as np
@@ -73,7 +72,7 @@ def _map_hift_weight(name: str) -> str:
 
 
 def _as_batch(
-    value: Any,
+    value: object,
     *,
     name: str,
     dtype: mx.Dtype,
@@ -214,10 +213,10 @@ class FunCosyVoice3MlxVocoder:
     def decode_mx(
         self,
         *,
-        token: Any,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        token: object,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> mx.array:
         """Decode one request to a rank-one MLX waveform."""
         token = _as_batch(token, name="token", dtype=mx.int32)
@@ -268,10 +267,10 @@ class FunCosyVoice3MlxVocoder:
     def decode(
         self,
         *,
-        token: Any,
-        prompt_token: Any,
-        prompt_feat: Any,
-        embedding: Any,
+        token: object,
+        prompt_token: object,
+        prompt_feat: object,
+        embedding: object,
     ) -> np.ndarray[tuple[int, ...], np.dtype[np.float32]]:
         """Decode one request and return a contiguous float32 NumPy waveform."""
         waveform = np.asarray(

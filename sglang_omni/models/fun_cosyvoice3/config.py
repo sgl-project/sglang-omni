@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -207,7 +207,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
         # Note (yexiaodong): The converted artifact contains the speech-token
         # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
         engine_factory = self.stage_named("tts_engine").factory
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, str] = {}
         if engine_factory.mlx_model_path is not None:
             kwargs["mlx_model_path"] = engine_factory.mlx_model_path
         if engine_factory.mlx_model_revision is not None:

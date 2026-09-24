@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -169,7 +169,9 @@ class MossTTSLocalPipelineConfig(PipelineConfig):
     ref_audio_cache_max_items: int = _REF_AUDIO_CACHE_MAX_ITEMS
     ref_audio_cache_max_bytes: int = _REF_AUDIO_CACHE_MAX_BYTES
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    def stage_factory_kwargs(
+        self, stage_name: str
+    ) -> dict[str, bool | int | float | list[int] | None]:
         if stage_name == "preprocessing":
             return {
                 "ref_audio_cache": self.ref_audio_cache,

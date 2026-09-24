@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -31,7 +32,7 @@ _MLX_QUANTIZATION_PRESETS: dict[str, tuple[int, int]] = {
 }
 
 
-def _qwen2_args(config: dict[str, Any]) -> ModelArgs:
+def _qwen2_args(config: Mapping[str, object]) -> ModelArgs:
     """Build the fixed 0.5B Qwen2 shape used by Fun-CosyVoice3."""
     # Note (yexiaodong): The converted artifact has Flow/HiFT config at its
     # root, so validate the nested Qwen2 architecture before loading weights.

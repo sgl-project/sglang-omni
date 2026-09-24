@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -253,7 +253,7 @@ class FunAsrNanoProcessor:
         return fun_asr_low_frame_rate_length(input_lengths)
 
     def __call__(self, text=None, audio=None, audio_kwargs=None, **kwargs):
-        inputs: dict[str, Any] = {}
+        inputs: dict[str, object] = {}
         if audio is not None:
             audio_kwargs = audio_kwargs or {}
             audio_inputs = self.feature_extractor(

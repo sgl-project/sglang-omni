@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
 
 
 @dataclass
@@ -31,7 +31,7 @@ class AudioEncoderConfig:
     downsample_hidden_size: int = 480
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> AudioEncoderConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> AudioEncoderConfig:
         return cls(
             **{
                 k: v
@@ -65,7 +65,7 @@ class TextConfig:
     attention_dropout: float = 0.0
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> TextConfig:
+    def from_dict(cls, params: Mapping[str, object]) -> TextConfig:
         return cls(
             **{
                 k: v
@@ -100,7 +100,7 @@ class ModelConfig:
             self.text_config = TextConfig.from_dict(self.text_config)
 
     @classmethod
-    def from_dict(cls, params: dict[str, Any]) -> ModelConfig:
+    def from_dict(cls, params: dict[str, object]) -> ModelConfig:
         params = params.copy()
 
         if "thinker_config" in params:
