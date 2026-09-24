@@ -136,6 +136,8 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
                     hidden_states
                 )
                 deepstack_feature_lists.append(deepstack_feature)
+            else:
+                pass
 
         merged_hidden_states = self.merger(hidden_states)
 

@@ -127,7 +127,7 @@ def test_resource_monitor_requires_explicit_gpu_process_targets() -> None:
         nvmlDeviceGetPowerUsage=lambda _handle: 1000,
     )
     monitor._psutil = SimpleNamespace(cpu_percent=lambda interval=None: 10.0)
-    monitor._handle = object()
+    monitor.handle = object()
     monitor._started_at = time.perf_counter()
 
     monitor._sample_once()
@@ -161,7 +161,7 @@ def test_resource_monitor_filters_targets_and_reports_pid_namespace() -> None:
         NoSuchProcess=NoSuchProcess,
         AccessDenied=PermissionError,
     )
-    monitor._handle = object()
+    monitor.handle = object()
     monitor._started_at = time.perf_counter()
 
     monitor._sample_once()

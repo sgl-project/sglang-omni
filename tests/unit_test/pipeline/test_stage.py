@@ -142,7 +142,7 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
             scheduler=scheduler,
             control_plane=control_plane,
         )
-        stage_obj._active_requests.add("req-1")
+        stage_obj.active_requests.add("req-1")
         scheduler.outbox.put(make_stream_message("req-1", data=torch.tensor([7])))
         scheduler.outbox.put(make_result_message("req-1", data={"answer": 1}))
 
@@ -162,14 +162,14 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         )
         assert stream_msg.chunk_id == 0
 
-        stage_obj._stream_queue = StreamQueue()
-        stage_obj._stream_queue.open("req-1")
+        stage_obj.stream_queue = StreamQueue()
+        stage_obj.stream_queue.open("req-1")
         stage_obj.on_abort("req-1")
 
-        assert "req-1" in stage_obj._aborted
+        assert "req-1" in stage_obj.aborted
         assert relay.cleaned[-1] == "req-1"
         assert scheduler.aborted == ["req-1"]
-        assert not stage_obj._stream_queue.has("req-1")
+        assert not stage_obj.stream_queue.has("req-1")
 
     asyncio.run(_run())
 
@@ -282,13 +282,13 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
-        scheduler._prefill_start_done = {"req-active"}
-        scheduler._prefill_end_done = set()
-        scheduler._request_build_executor = None
-        scheduler._request_admission_lock = threading.RLock()
-        scheduler._pending_request_admissions = {}
-        scheduler._shutdown_lock = threading.Lock()
-        scheduler._shutdown_callback = None
+        scheduler.prefill_start_done = {"req-active"}
+        scheduler.prefill_end_done = set()
+        scheduler.request_build_executor = None
+        scheduler.request_admission_lock = threading.RLock()
+        scheduler.pending_request_admissions = {}
+        scheduler.shutdown_lock = threading.Lock()
+        scheduler.shutdown_callback = None
 
         def run_loop() -> None:
             entered.set()
@@ -315,8 +315,8 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         release.set()
         await asyncio.wait_for(stop_task, timeout=1.0)
 
-        assert stage_obj._scheduler_thread is None
-        assert scheduler._prefill_start_done == set()
+        assert stage_obj.scheduler_thread is None
+        assert scheduler.prefill_start_done == set()
         assert model_path_ends == [("req-active", "aborted")]
 
     asyncio.run(_run())
@@ -331,13 +331,13 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler = object.__new__(OmniScheduler)
         scheduler.enable_async_decode = False
         scheduler.enable_overlap = False
-        scheduler._prefill_start_done = set()
-        scheduler._prefill_end_done = set()
-        scheduler._request_build_executor = None
-        scheduler._request_admission_lock = threading.RLock()
-        scheduler._pending_request_admissions = {}
-        scheduler._shutdown_lock = threading.Lock()
-        scheduler._shutdown_callback = None
+        scheduler.prefill_start_done = set()
+        scheduler.prefill_end_done = set()
+        scheduler.request_build_executor = None
+        scheduler.request_admission_lock = threading.RLock()
+        scheduler.pending_request_admissions = {}
+        scheduler.shutdown_lock = threading.Lock()
+        scheduler.shutdown_callback = None
 
         def run_loop() -> None:
             entered.set()
@@ -360,12 +360,12 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             with caplog.at_level(logging.WARNING):
                 await stage_obj.stop()
             assert "scheduler thread did not stop within" in caplog.text
-            assert stage_obj._scheduler_thread is not None
-            assert stage_obj._scheduler_thread.is_alive()
+            assert stage_obj.scheduler_thread is not None
+            assert stage_obj.scheduler_thread.is_alive()
         finally:
             release.set()
-            if stage_obj._scheduler_thread is not None:
-                await asyncio.to_thread(stage_obj._scheduler_thread.join, 1.0)
+            if stage_obj.scheduler_thread is not None:
+                await asyncio.to_thread(stage_obj.scheduler_thread.join, 1.0)
 
     asyncio.run(_run())
 
@@ -499,7 +499,7 @@ def test_stage_uses_dynamic_route_and_stream_done_targets() -> None:
         payload = make_stage_payload(request_id="req-1")
         payload.request.metadata["next"] = "decode"
         payload.request.metadata["stream_targets"] = ["decode"]
-        stage_obj._active_requests.add("req-1")
+        stage_obj.active_requests.add("req-1")
 
         await stage_obj.route_result("req-1", payload)
 
@@ -978,7 +978,7 @@ def test_stage_sends_same_process_stream_chunk_as_local_object(monkeypatch) -> N
             scheduler=receiver_scheduler,
             can_accept_stream_before_payload=True,
         )
-        receiver._stream_queue = StreamQueue()
+        receiver.stream_queue = StreamQueue()
         sender = make_stage(
             name="thinker",
             endpoints={"talker": "inproc://talker"},
@@ -1297,7 +1297,7 @@ def test_stage_sends_same_process_stream_done_and_final_payload_locally() -> Non
             scheduler=receiver_scheduler,
             can_accept_stream_before_payload=True,
         )
-        receiver._stream_queue = StreamQueue()
+        receiver.stream_queue = StreamQueue()
         sender = make_stage(
             name="thinker",
             get_next=lambda request_id, output: "decode",
@@ -1442,7 +1442,7 @@ def test_local_dispatch_propagates_replica_bindings_to_receiver() -> None:
             allow_local_object=True,
         )
 
-        assert receiver._replica_bindings["req-local"] == {"decode": 1}
+        assert receiver.replica_bindings["req-local"] == {"decode": 1}
         assert receiver.resolve_target_instance("req-local", "decode") == "decode@r1"
 
     asyncio.run(_run())
@@ -1474,7 +1474,7 @@ def test_completed_request_id_can_record_new_replica_bindings() -> None:
             )
         )
 
-        assert stage._replica_bindings["req-1"] == {"decode": 1}
+        assert stage.replica_bindings["req-1"] == {"decode": 1}
         assert stage.resolve_target_instance("req-1", "decode") == "decode@r1"
 
     asyncio.run(_run())
@@ -1487,7 +1487,7 @@ def test_replica_bindings_not_recorded_after_abort() -> None:
     )
     stage.record_aborted_request_id("req-1")
     stage.record_replica_bindings("req-1", {"decode": 1})
-    assert "req-1" not in stage._replica_bindings
+    assert "req-1" not in stage.replica_bindings
 
 
 @pytest.mark.accelerator

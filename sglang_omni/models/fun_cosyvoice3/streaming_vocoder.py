@@ -33,7 +33,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming import (
     pad_flow_prompt_to_hop,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -407,6 +407,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 )
                 if delta.numel() > 0:
                     decoded[request_id] = delta
+                else:
+                    pass
             now = self.clock()
             for request_id, state in participants:
                 state.token_offset += state.hop_len
@@ -417,6 +419,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 )
                 if request_id in decoded and state.first_emit_at is None:
                     state.first_emit_at = now
+                else:
+                    pass
                 if state.next_decode() != "wait":
                     state.ready_since = now
                 else:

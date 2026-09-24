@@ -93,6 +93,7 @@ def _build_args(
         save_audio=True,
         disable_tqdm=False,
         seed=None,
+        fingerprint=False,
         lang="en",
         asr_device=ASR_DEVICE,
         asr_concurrency=QWEN3_ASR_WER_CONCURRENCY,

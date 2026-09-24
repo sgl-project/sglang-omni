@@ -76,14 +76,20 @@ class ConvPositionEmbedding(nn.Module):
     ) -> torch.Tensor:
         if mask is not None:
             mask = mask.unsqueeze(1)
+        else:
+            pass
         x = x.permute(0, 2, 1)
 
         if mask is not None:
             x = x.masked_fill(~mask, 0.0)
+        else:
+            pass
         for i, block in enumerate(self.conv1d):
             x = block(x)
             if mask is not None and i in self.layer_need_mask_idx:
                 x = x.masked_fill(~mask, 0.0)
+            else:
+                pass
 
         return x.permute(0, 2, 1)
 
@@ -189,6 +195,8 @@ class Attention(nn.Module):
             self.c_q_norm = nn.RMSNorm(dim_head, elementwise_affine=True)
             self.c_k_norm = nn.RMSNorm(dim_head, elementwise_affine=True)
             self.to_out_c = nn.Linear(self.inner_dim, context_dim)
+        else:
+            pass
 
         self.to_out = nn.ModuleList(
             [nn.Linear(self.inner_dim, dim), nn.Dropout(dropout)]
@@ -223,6 +231,8 @@ class Attention(nn.Module):
     def norm_rope(self, q, k, q_norm, k_norm, rope: Rope | None):
         if self.qk_fusion is not None and rope is not None:
             return self.qk_fusion(q, k, q_norm, k_norm, rope)
+        else:
+            pass
         q, k = q_norm(q), k_norm(k)
         return self.apply_rope(q, k, rope) if rope is not None else (q, k)
 
@@ -238,6 +248,8 @@ class Attention(nn.Module):
     ):
         if c is None:
             return self.forward_self(x, mask=mask, rope=rope, bias=bias)
+        else:
+            pass
 
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
@@ -269,8 +281,12 @@ class Attention(nn.Module):
 
         if audio_mask is not None:
             x_out = x_out.masked_fill(~audio_mask.unsqueeze(-1), 0.0)
+        else:
+            pass
         if c_mask is not None:
             c_out = c_out.masked_fill(~c_mask.unsqueeze(-1), 0.0)
+        else:
+            pass
         return x_out, c_out
 
     def forward_self(
@@ -292,6 +308,8 @@ class Attention(nn.Module):
         out = self.to_out[1](self.to_out[0](out))
         if mask is not None:
             out = out.masked_fill(~mask.unsqueeze(-1), 0.0)
+        else:
+            pass
         return out
 
 
@@ -344,6 +362,8 @@ class MMDiTBlock(nn.Module):
         super().__init__()
         if context_dim is None:
             context_dim = dim
+        else:
+            pass
 
         self.attn_norm_c = AdaLayerNorm(context_dim)
         self.attn_norm_x = AdaLayerNorm(dim)
@@ -419,8 +439,12 @@ class AudioPromptEmbedding(nn.Module):
         x_emb = self.embed(x, mask=mask)
         if ref is None:
             return x_emb
+        else:
+            pass
         if drop_audio_cond:
             ref = torch.zeros_like(ref)
+        else:
+            pass
         return x_emb, self.embed(ref, mask=ref_mask)
 
 
@@ -564,6 +588,8 @@ class AuKDit(nn.Module):
         )
         if self.qk_fusion is None:
             return Rope(freqs, scale)
+        else:
+            pass
         return Rope(freqs, scale, freqs.cos(), freqs.sin())
 
     def embed_audio(
@@ -577,6 +603,8 @@ class AuKDit(nn.Module):
         if ref is not None and ref.shape[1] == 0:
             ref = None
             ref_mask = None
+        else:
+            pass
 
         if ref is None:
             return (
@@ -584,6 +612,8 @@ class AuKDit(nn.Module):
                 mask,
                 0,
             )
+        else:
+            pass
 
         x_emb, ref_emb = self.audio_embed(
             x,
@@ -598,10 +628,14 @@ class AuKDit(nn.Module):
         batch, n = x_emb.shape[:2]
         if mask is None:
             mask = torch.ones(batch, n, dtype=torch.bool, device=x_emb.device)
+        else:
+            pass
         if ref_mask is None:
             ref_mask = torch.ones(
                 batch, prompt_len, dtype=torch.bool, device=ref_emb.device
             )
+        else:
+            pass
         return audio, torch.cat([ref_mask, mask], dim=1), prompt_len
 
     def forward(
@@ -623,10 +657,14 @@ class AuKDit(nn.Module):
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
+        else:
+            pass
         t = self.time_embed(time)
 
         if c_mask is None:
             c_mask = text.abs().sum(-1) > 0
+        else:
+            pass
 
         if cfg_infer:
             if cache and self.text_cond is not None:
@@ -635,6 +673,8 @@ class AuKDit(nn.Module):
                 c_cond = self.project_text(text, drop_text=False)
                 if cache:
                     self.text_cond = c_cond
+                else:
+                    pass
             x_cond, a_mask_cond, prompt_len = self.embed_audio(
                 x, ref, drop_audio_cond=False, mask=mask, ref_mask=ref_mask
             )
@@ -645,6 +685,8 @@ class AuKDit(nn.Module):
                 c_uncond = self.project_text(text, drop_text=True)
                 if cache:
                     self.text_uncond = c_uncond
+                else:
+                    pass
             x_uncond, a_mask_uncond, _ = self.embed_audio(
                 x, ref, drop_audio_cond=True, mask=mask, ref_mask=ref_mask
             )
@@ -661,6 +703,8 @@ class AuKDit(nn.Module):
             if audio_positions is not None:
                 audio_positions = audio_positions.repeat(2, 1)
                 joint_positions = joint_positions.repeat(2, 1)
+            else:
+                pass
         else:
             c = self.project_text(text, drop_text=drop_text)
             x, audio_mask, prompt_len = self.embed_audio(
@@ -680,6 +724,10 @@ class AuKDit(nn.Module):
                     torch.cat([audio_mask, c_mask], dim=1), x.dtype
                 )
                 single_bias = attention_bias(single_mask, x.dtype)
+            else:
+                pass
+        else:
+            pass
 
         for block in self.transformer_blocks:
             c, x = block(

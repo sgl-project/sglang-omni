@@ -41,6 +41,8 @@ def clear_auk_preprocessing_context() -> None:
 def get_context() -> AuKPreprocessingContext:
     if _CONTEXT is None:
         raise RuntimeError("AuK preprocessing context is not initialized")
+    else:
+        pass
     return _CONTEXT
 
 
@@ -48,16 +50,26 @@ def normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | None
     """Accept flat text, a dict payload, or a structured references list."""
     if isinstance(inputs, str):
         return inputs, [], None
+    else:
+        pass
     if not isinstance(inputs, dict):
         return (str(inputs) if inputs is not None else ""), [], None
+    else:
+        pass
 
     raw_references = inputs.get("references") or []
     if not isinstance(raw_references, list):
         raise ValueError("AuK references must be a list")
+    else:
+        pass
     if any(not isinstance(reference, dict) for reference in raw_references):
         raise ValueError("AuK references must be objects")
+    else:
+        pass
     if len(raw_references) > 1:
         raise ValueError("AuK accepts at most one reference audio clip")
+    else:
+        pass
     references = raw_references
 
     text = str(
@@ -72,8 +84,12 @@ def resolve_reference(
 ) -> Any | None:
     if fallback is not None:
         return fallback
+    else:
+        pass
     if not references:
         return None
+    else:
+        pass
     reference = references[0]
     return (
         reference.get("audio_path")
@@ -86,20 +102,28 @@ def resolve_reference(
 def resolve_float(raw: Any, default: float | None) -> float | None:
     if raw is None:
         return default
+    else:
+        pass
     try:
         value = float(raw)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"AuK expected a number, got {raw!r}") from exc
     if not np.isfinite(value):
         raise ValueError(f"AuK expected a finite number, got {raw!r}")
+    else:
+        pass
     return value
 
 
 def resolve_seed(raw: Any) -> int | None:
     if raw is None:
         return None
+    else:
+        pass
     if isinstance(raw, bool):
         raise ValueError("AuK seed must be an integer")
+    else:
+        pass
     try:
         return int(raw)
     except (TypeError, ValueError) as exc:
@@ -121,6 +145,10 @@ def load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarra
             source = response.content
         elif source.startswith("file://"):
             source = unquote(urlparse(source).path)
+        else:
+            pass
+    else:
+        pass
     vae_audio = load_audio(source, source_name="AuK", target_sample_rate=sample_rate)
     qwen_audio, _ = librosa.load(
         io.BytesIO(source) if isinstance(source, bytes) else source,
@@ -138,12 +166,16 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    else:
+        pass
     stage_params = params.get("stage_params") or {}
     engine_params = stage_params.get("auk_engine") or {}
     for source in (tts_params, params, engine_params):
         for name in ("nfe", "cfg_strength", "sway_sampling_coef", "max_seconds"):
             if source.get(name) is not None:
                 raise ValueError(f"AuK {name} is a server-level setting")
+            else:
+                pass
 
     text, references, inline_ref = normalize_inputs(inputs)
     ref_source = resolve_reference(references, inline_ref) or tts_params.get(
@@ -153,6 +185,8 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     if is_speech:
         if not text.strip():
             raise ValueError("AuK speech requires nonempty input text")
+        else:
+            pass
         if ref_source is not None:
             instruction = f'Say the following with the same voice: "{text}"'
         else:
@@ -166,6 +200,8 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
         instruction = str(params.get("instruction") or text).strip()
         if not instruction:
             raise ValueError("AuK requires a natural-language instruction")
+        else:
+            pass
 
     gen_seconds = resolve_float(
         engine_params.get(
@@ -175,6 +211,8 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     )
     if gen_seconds is not None and gen_seconds <= 0:
         raise ValueError(f"AuK gen_seconds must be positive, got {gen_seconds}")
+    else:
+        pass
 
     clip_seconds = get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
 
@@ -184,19 +222,27 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     if ref_source is not None:
         ref_audio, qwen_audio = load_reference(ref_source, config.sample_rate)
         ref_seconds = ref_audio.shape[-1] / float(config.sample_rate)
+    else:
+        pass
 
     if gen_seconds is None and is_speech:
         ref_text = tts_params.get("ref_text")
         if references and inline_ref is None:
             ref_text = references[0].get("text") or ref_text
+        else:
+            pass
         if not ref_text or ref_seconds <= 0:
             raise ValueError(
                 "AuK speech requires stage_params.auk_engine.gen_seconds "
                 "or reference audio with ref_text"
             )
+        else:
+            pass
         gen_seconds = (
             ref_seconds * len(text.encode("utf-8")) / len(ref_text.encode("utf-8"))
         )
+    else:
+        pass
 
     if gen_seconds is None:
         gen_frames = (

@@ -23,12 +23,16 @@ def cast_tensor(
 ) -> torch.Tensor | None:
     if value is None:
         return None
+    else:
+        pass
     return value.to(dtype=dtype) if dtype is not None else value
 
 
 def non_empty(value: Any) -> bool:
     if isinstance(value, torch.Tensor):
         return value.numel() > 0
+    else:
+        pass
     return False
 
 
@@ -39,14 +43,20 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     encoder_outs: dict[str, Any] = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
+    else:
+        pass
 
     for stage_name, payload in payloads.items():
         stage_state = Qwen3OmniPipelineState.from_dict(payload.data)
         if stage_name in stage_state.encoder_outs:
             encoder_outs[stage_name] = stage_state.encoder_outs[stage_name]
             continue
+        else:
+            pass
         if stage_name in stage_state.engine_outputs:
             encoder_outs[stage_name] = stage_state.engine_outputs[stage_name]
+        else:
+            pass
 
     thinker_inputs = build_thinker_inputs(state, encoder_outs)
 
@@ -117,8 +127,12 @@ def build_thinker_inputs(
     has_video = non_empty(video_embeds)
     if has_image:
         thinker_model_inputs["image_embeds"] = image_embeds
+    else:
+        pass
     if has_video:
         thinker_model_inputs["video_embeds"] = video_embeds
+    else:
+        pass
     if (
         has_image
         and image_deepstack_visual_embeds
@@ -135,20 +149,36 @@ def build_thinker_inputs(
         thinker_model_inputs["deepstack_visual_embeds"] = image_deepstack_visual_embeds
     elif has_video and video_deepstack_visual_embeds:
         thinker_model_inputs["deepstack_visual_embeds"] = video_deepstack_visual_embeds
+    else:
+        pass
     if non_empty(audio_embeds):
         thinker_model_inputs["audio_embeds"] = audio_embeds
+    else:
+        pass
     if non_empty(image_grid_thw):
         thinker_model_inputs["image_grid_thw"] = image_grid_thw
+    else:
+        pass
     if non_empty(video_grid_thw):
         thinker_model_inputs["video_grid_thw"] = video_grid_thw
+    else:
+        pass
     if non_empty(feature_attention_mask):
         thinker_model_inputs["feature_attention_mask"] = feature_attention_mask
+    else:
+        pass
     if non_empty(audio_feature_lengths):
         thinker_model_inputs["audio_feature_lengths"] = audio_feature_lengths
+    else:
+        pass
     if non_empty(video_second_per_grid):
         thinker_model_inputs["video_second_per_grid"] = video_second_per_grid
+    else:
+        pass
     if mm_video.get("use_audio_in_video") is True:
         thinker_model_inputs["use_audio_in_video"] = True
+    else:
+        pass
 
     media_cache_keys: dict[str, str] = {}
     encoder_inputs = state.encoder_inputs or {}
@@ -159,12 +189,18 @@ def build_thinker_inputs(
         # Note (Xuesong): Image and video share the same encoder cache key, so prefix them
         # differently to avoid hashed pad-value collisions across modalities.
         media_cache_keys["video"] = f"video:{image_ck}"
+    else:
+        pass
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"
+    else:
+        pass
 
     result: dict[str, Any] = {"model_inputs": thinker_model_inputs}
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
+    else:
+        pass
     return result
 
 
@@ -233,10 +269,14 @@ def decode_events(
     output_ids = thinker_out.get("output_ids", [])
     if not output_ids:
         return []
+    else:
+        pass
 
     stream_state = state.stream_state
     if not stream_state:
         stream_state.update({"token_ids": [], "text": "", "emitted_text": ""})
+    else:
+        pass
     token_ids = stream_state.setdefault("token_ids", [])
     stream_state.setdefault("text", "")
     stream_state.setdefault("emitted_text", "")
@@ -260,6 +300,8 @@ def decode_events(
                 is_final=True,
             )
         ]
+    else:
+        pass
 
     token_id = int(output_ids[-1])
     if eos_token_id is not None and token_id == int(eos_token_id):
@@ -272,6 +314,8 @@ def decode_events(
                 is_final=True,
             )
         ]
+    else:
+        pass
 
     token_ids.append(token_id)
     decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
@@ -280,11 +324,15 @@ def decode_events(
     # Skip incomplete multi-byte characters (replacement char).
     if "\ufffd" in decoded:
         return []
+    else:
+        pass
 
     emitted_text = str(stream_state.get("emitted_text", ""))
     delta = decoded[len(emitted_text) :]
     if not delta:
         return []
+    else:
+        pass
     stream_state["emitted_text"] = decoded
     return [
         Qwen3OmniEvent(

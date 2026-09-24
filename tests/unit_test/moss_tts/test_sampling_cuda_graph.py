@@ -180,8 +180,8 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
 
     runner = MossTTSModelRunner.__new__(MossTTSModelRunner)
     runner.model = FakeModel()
-    runner._pending_rows = None
-    runner._pending_embeds = None
+    runner.pending_rows = None
+    runner.pending_embeds = None
     profile = _sampling_data(profile="default")
     data = SimpleNamespace(
         is_audio=True,
@@ -214,7 +214,7 @@ def test_model_runner_routes_supported_audio_batch_to_sampling_graph() -> None:
 
     assert len(calls) == 1
     assert result.next_token_ids.tolist() == [12]
-    assert runner._pending_rows.tolist() == [[12, 2, 4]]
+    assert runner.pending_rows.tolist() == [[12, 2, 4]]
     assert data.delay_state.tolist() == [2, _INT64_MAX, 1]
 
 
@@ -242,7 +242,7 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
     )
 
     assert runner.graphs == {}
-    assert runner._inputs is None
+    assert runner.inputs is None
     assert not runner.can_replay(1)
 
 

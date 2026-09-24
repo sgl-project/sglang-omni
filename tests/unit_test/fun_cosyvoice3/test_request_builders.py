@@ -29,7 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     set_cosyvoice3_preprocessing_context,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 
@@ -508,7 +508,7 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
 
     class _TrackingLock:
         def __init__(self) -> None:
-            self._lock = threading.Lock()
+            self.lock = threading.Lock()
             self._attempt_lock = threading.Lock()
             self.attempt_count = 0
             self.second_attempted = threading.Event()
@@ -518,12 +518,12 @@ def test_preprocessing_overlaps_reference_encoding_but_serializes_finalization(
                 self.attempt_count += 1
                 if self.attempt_count == 2:
                     self.second_attempted.set()
-            self._lock.acquire()
+            self.lock.acquire()
             return self
 
         def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
             del exc_type, exc, traceback
-            self._lock.release()
+            self.lock.release()
 
     tracking_lock = _TrackingLock()
     monkeypatch.setattr(

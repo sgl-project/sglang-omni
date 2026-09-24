@@ -39,8 +39,10 @@ def configure_optimized_kernels() -> None:
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
     set_torch_compile_config()
-    inference_utils._COMPILE_OPTIONS["mode"] = os.environ.get(
-        "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+    inference_utils._COMPILE_OPTIONS["mode"] = (
+        os.environ.get(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            "SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs"
+        )
     )
     os.environ.setdefault("DOTS_TTS_DELAYED_DIT_BACKEND", "sdpa")
     compile_module_forward = dit_inference.compile_module_forward
@@ -53,6 +55,8 @@ def configure_optimized_kernels() -> None:
             (dit_inference.FirstPatchStep, dit_inference.KvPrefillStep),
         ):
             return module
+        else:
+            pass
         return compile_module_forward(module)
 
     dit_inference.compile_module_forward = _compile_dit_step
@@ -69,14 +73,20 @@ def as_dict(value: Any) -> dict[str, Any]:
 def inputs(value: Any) -> dict[str, Any]:
     if isinstance(value, str):
         return {"text": value}
+    else:
+        pass
     return as_dict(value)
 
 
 def reference_path(value: Any) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, str):
         return value
+    else:
+        pass
     if isinstance(value, dict):
         path = (
             value.get("audio_path")
@@ -84,6 +94,8 @@ def reference_path(value: Any) -> str | None:
             or audio_data_uri_from_reference(value)
         )
         return str(path) if path else None
+    else:
+        pass
     raise TypeError("dots.tts reference audio must be a path")
 
 
@@ -125,6 +137,8 @@ def preprocess_dots_tts_payload(
     references = request_inputs.get("references")
     if isinstance(references, list) and len(references) > 1:
         raise ValueError("dots.tts accepts at most one reference audio")
+    else:
+        pass
     reference = (
         references[0]
         if isinstance(references, list)
@@ -140,6 +154,8 @@ def preprocess_dots_tts_payload(
     )
     if not text.strip():
         raise ValueError("dots.tts requires non-empty input text")
+    else:
+        pass
     prompt_audio = first_not_none(
         reference_path(request_inputs.get("prompt_audio_path")),
         reference_path(request_inputs.get("prompt_audio")),
@@ -156,6 +172,8 @@ def preprocess_dots_tts_payload(
     prompt_text = None if prompt_text_value is None else str(prompt_text_value)
     if prompt_text and not prompt_audio:
         raise ValueError("dots.tts prompt_text requires prompt audio")
+    else:
+        pass
 
     template_name = str(
         first_not_none(
@@ -175,6 +193,8 @@ def preprocess_dots_tts_payload(
     )
     if template_name == "Base":
         template_name = "tts"
+    else:
+        pass
     templates = {
         "tts": DEFAULT_TRAIN_TEMPLATE,
         "instruction_tts": DEFAULT_INSTRUCTION_TTS_TEMPLATE,
@@ -184,6 +204,8 @@ def preprocess_dots_tts_payload(
         raise ValueError(
             f"dots.tts base support accepts template_name in {sorted(templates)}"
         )
+    else:
+        pass
 
     normalize = bool(
         first_not_none(
@@ -207,6 +229,10 @@ def preprocess_dots_tts_payload(
         )
         if raw_language and raw_language.lower() != "none" and language is None:
             raise ValueError(f"unsupported dots.tts language {raw_language!r}")
+        else:
+            pass
+    else:
+        pass
     normalized_prompt_text = ""
     if prompt_text and prompt_text.strip():
         normalized_prompt_text = prompt_text.strip() + "\n"
@@ -214,8 +240,12 @@ def preprocess_dots_tts_payload(
             normalized_prompt_text = attach_language_tag(
                 normalized_prompt_text, language
             )
+        else:
+            pass
     elif language is not None:
         text = attach_language_tag(text, language)
+    else:
+        pass
 
     request_limit = int(
         first_not_none(
@@ -230,6 +260,8 @@ def preprocess_dots_tts_payload(
         raise ValueError(
             f"dots.tts max_generate_length must be in [1, {max_generate_length}]"
         )
+    else:
+        pass
     schedule_spec = build_generation_schedule(
         text=f"{normalized_prompt_text}{text}",
         tokenizer=tokenizer,
@@ -241,14 +273,20 @@ def preprocess_dots_tts_payload(
         raise ValueError(
             f"dots.tts schedule exceeds context length {max_sequence_length}"
         )
+    else:
+        pass
 
     if audio_span_token_ids is None:
         audio_span_token_ids = (
             require_token_id(tokenizer, AUDIO_GEN_SPAN_TOKEN),
             require_token_id(tokenizer, AUDIO_COMP_SPAN_TOKEN),
         )
+    else:
+        pass
     if vocab_size is None:
         vocab_size = len(tokenizer)
+    else:
+        pass
 
     state = DotsTTSState(
         sample_rate=int(model_config.vocoder.sample_rate),
@@ -327,11 +365,15 @@ def preprocess_dots_tts_payload(
     )
     if state.num_steps <= 0:
         raise ValueError("dots.tts num_steps must be positive")
+    else:
+        pass
     if not all(
         math.isfinite(value)
         for value in (state.speaker_scale, state.guidance_scale, state.eos_threshold)
     ):
         raise ValueError("dots.tts floating-point parameters must be finite")
+    else:
+        pass
     payload.data = state.to_dict()
     return payload
 
@@ -403,6 +445,8 @@ def create_reference_encode_executor(
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
+    else:
+        pass
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     encoder = DotsReferenceEncoder(
         codec,
@@ -432,6 +476,8 @@ def create_sglang_latent_engine_executor(
 
     if not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
+    else:
+        pass
     return DotsTTSEngineBuilder(
         optimize=optimize,
         num_steps=num_steps,
@@ -460,6 +506,8 @@ def create_vocoder_executor(
 
     if not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
+    else:
+        pass
     codec = load_dots_audio_codec(
         model_path, device=str(resolve_concrete_device(device, gpu_id))
     )
@@ -482,7 +530,7 @@ def create_vocoder_executor(
         vocoder.merge_steps,
         vocoder.stream_slots,
         max_batch_size,
-        vocoder._stream_chunk_batch_max,
+        vocoder._stream_chunk_batch_max,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         max_batch_wait_ms,
     )
     return vocoder

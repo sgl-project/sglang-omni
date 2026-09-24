@@ -401,7 +401,7 @@ def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
     ).model
 
     assert isinstance(loaded.decoder, MossAudioTokenizerVocoderDecoder)
-    assert loaded.quantizer._decode_cache is not None
+    assert loaded.quantizer.decode_cache is not None
     _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
     assert all(
         not is_parametrized(module, "weight") for module in loaded.quantizer.modules()
@@ -430,7 +430,7 @@ def test_vocoder_streaming_rope_budget_tracks_decoder_stage_rates() -> None:
     # note (Zhang Yiyang): Thirty minutes at 12.5, 25 and 50 frames/second.
     for decoder in (model.decoder, decoder_view):
         budgets = [
-            stage.transformer._packed_rope_cache.streaming_max_positions
+            stage.transformer.packed_rope_cache.streaming_max_positions
             for stage in decoder
             if stage.module_type == "Transformer"
         ]
@@ -639,7 +639,7 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
     stage = model.encoder[1]
     state_dict = stage.state_dict()
 
-    assert model._uses_moss_audio_tokenizer_v1_weights
+    assert model.uses_moss_audio_tokenizer_v1_weights
     assert model.compute_dtype is torch.bfloat16
     assert list(state_dict) == [
         "input_proj.weight",

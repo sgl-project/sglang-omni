@@ -337,7 +337,7 @@ def test_moss_tts_vocoder_uses_standalone_codec_without_packed_flash(
 
     results = asyncio.run(scheduler.batch_fn(payloads))
 
-    assert scheduler._vocoder._nonstream_decoder is None
+    assert scheduler.vocoder.nonstream_decoder is None
     assert audio_vocoder.model.quantizer.codebook.dtype is torch.bfloat16
     assert audio_vocoder.decode_calls == 2
     assert audio_vocoder.decode_shapes == [[(2, 2)], [(2, 2)]]
@@ -509,7 +509,7 @@ def test_moss_tts_vocoder_falls_back_after_packed_batch_failure(
     assert quantizer.autocast_enabled == [False]
     assert quantizer.codebook.dtype is torch.float32
     assert released_markers == [True]
-    assert scheduler._vocoder._nonstream_decoder is None
+    assert scheduler.vocoder.nonstream_decoder is None
     assert audio_vocoder.decode_calls == 3
     assert audio_vocoder.decode_shapes == [[(2, 2)], [(2, 2)], [(2, 2)]]
     assert np.frombuffer(

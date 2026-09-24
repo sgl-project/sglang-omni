@@ -40,6 +40,8 @@ def get_dac(device: str):
                 # Modules without weight normalization raise here.
                 pass
         _dac_cache = (device, dac_model)
+    else:
+        pass
     return _dac_cache[1]
 
 
@@ -54,6 +56,8 @@ def shear_up(codes: torch.Tensor, pad_id: int = _AUDIO_PAD_ID) -> torch.Tensor:
     for j in range(W):
         if H > j:
             out[..., : H - j, j] = codes[..., j:, j]
+        else:
+            pass
     return out
 
 
@@ -66,7 +70,7 @@ class Zonos2DACVocoder:
         self.sample_rate = ZONOS2_SAMPLE_RATE
         self.hop_length = DAC_HOP_LENGTH
         self.audio_pad_id = _AUDIO_PAD_ID
-        self._dac = get_dac(device)
+        self.dac = get_dac(device)
 
     @torch.inference_mode()
     def decode(
@@ -85,6 +89,8 @@ class Zonos2DACVocoder:
             raise ValueError(
                 f"audio_codes must be [T, 9] or [B, T, 9], got shape {tuple(codes.shape)}"
             )
+        else:
+            pass
 
         codes = shear_up(codes, self.audio_pad_id)
 
@@ -92,9 +98,13 @@ class Zonos2DACVocoder:
         valid = codes.shape[1] - (self.n_codebooks - 1)
         if eos_frame is not None:
             valid = min(valid, max(0, int(eos_frame)))
+        else:
+            pass
 
         if valid <= 0:
             return torch.zeros(0, dtype=torch.float32)
+        else:
+            pass
         codes = codes[:, :valid, :]
 
         codes = torch.clamp(codes, max=_MAX_VALID_CODE)
@@ -103,8 +113,8 @@ class Zonos2DACVocoder:
         codes = codes.permute(0, 2, 1).contiguous()
 
         # float32: bf16 ConvTranspose is numerically unstable.
-        z = self._dac.quantizer.from_codes(codes)[0]
-        audio = self._dac.decode(z).float().squeeze(1).cpu()
+        z = self.dac.quantizer.from_codes(codes)[0]
+        audio = self.dac.decode(z).float().squeeze(1).cpu()
 
         return audio[0].contiguous()
 
@@ -123,6 +133,8 @@ class Zonos2DACVocoder:
         """
         if len(audio_codes_list) != len(eos_frames):
             raise ValueError("audio_codes_list and eos_frames length mismatch")
+        else:
+            pass
         results: list[torch.Tensor] = [
             torch.zeros(0, dtype=torch.float32) for _ in audio_codes_list
         ]
@@ -136,18 +148,26 @@ class Zonos2DACVocoder:
                     f"each audio_codes entry must be [T, 9], got shape "
                     f"{tuple(codes.shape)}"
                 )
+            else:
+                pass
             codes = shear_up(codes, self.audio_pad_id)
             valid = codes.shape[0] - (self.n_codebooks - 1)
             if eos_frame is not None:
                 valid = min(valid, max(0, int(eos_frame)))
+            else:
+                pass
             if valid <= 0:
                 continue
+            else:
+                pass
             sheared.append(codes[:valid, :])
             valids.append(valid)
             keep.append(i)
 
         if not keep:
             return results
+        else:
+            pass
 
         t_max = max(valids)
         batch = torch.full(
@@ -162,8 +182,8 @@ class Zonos2DACVocoder:
 
         # DAC expects (batch, codebooks, seq); float32 for stable ConvTranspose.
         batch = batch.permute(0, 2, 1).contiguous()
-        z = self._dac.quantizer.from_codes(batch)[0]
-        audio = self._dac.decode(z).float().squeeze(1).cpu()
+        z = self.dac.quantizer.from_codes(batch)[0]
+        audio = self.dac.decode(z).float().squeeze(1).cpu()
 
         for j, i in enumerate(keep):
             results[i] = audio[j, : valids[j] * self.hop_length].contiguous()

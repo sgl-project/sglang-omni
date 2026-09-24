@@ -27,10 +27,10 @@ TEXT = 7
 def _runner() -> ThinkerModelRunner:
     torch.manual_seed(0)
     r = object.__new__(ThinkerModelRunner)
-    r._embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
-    r._image_token_id = IMAGE_ID
-    r._video_token_id = VIDEO_ID
-    r._audio_token_id = AUDIO_ID
+    r.embed_tokens = torch.nn.Embedding(VOCAB, HIDDEN)
+    r.image_token_id = IMAGE_ID
+    r.video_token_id = VIDEO_ID
+    r.audio_token_id = AUDIO_ID
     return r
 
 
@@ -88,7 +88,7 @@ def _batches(reqs, chunk_ids=None, prefix_lens=None):
 
 def _base_embeds(runner, forward_batch):
     ids = forward_batch.input_ids.clamp(0, VOCAB - 1)
-    return runner._embed_tokens(ids).detach().clone()
+    return runner.embed_tokens(ids).detach().clone()
 
 
 def _rand(n):

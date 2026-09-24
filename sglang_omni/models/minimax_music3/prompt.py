@@ -28,6 +28,8 @@ def strip_markdown_residuals(text: str) -> str:
 
     if not text:
         return text
+    else:
+        pass
     lines_out: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line
@@ -38,6 +40,8 @@ def strip_markdown_residuals(text: str) -> str:
             updated = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
             if updated == line:
                 break
+            else:
+                pass
             line = updated
         line = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", line)
         lines_out.append(line.rstrip())
@@ -70,6 +74,8 @@ def strip_text_after_leading_tags(text: str) -> str:
 
     if not text:
         return text
+    else:
+        pass
     output: list[str] = []
     for line in text.split("\n"):
         match = _LEADING_TAGS_RE.match(line)
@@ -108,6 +114,8 @@ def validate_tokenizer_ids(tokenizer: Any) -> None:
                 f"MiniMax Music 3 tokenizer mismatch for {token}: "
                 f"expected {expected}, got {token_id}"
             )
+        else:
+            pass
 
 
 __all__ = [

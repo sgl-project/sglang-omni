@@ -34,16 +34,24 @@ class DataReadyMessage:
         require_bool(self.is_done, "is_done")
         if self.is_done and self.error is not None:
             raise ValueError("stream signal cannot be both done and error")
+        else:
+            pass
         if self.is_done or self.error is not None:
             if self.data_ref is not None:
                 raise ValueError("stream signal must not carry data_ref")
+            else:
+                pass
             if self.chunk_id is not None:
                 raise ValueError("stream signal must not carry chunk_id")
+            else:
+                pass
         elif not isinstance(self.data_ref, dict):
             raise TypeError(
                 "DataReadyMessage.data_ref must be dict for data messages, got "
                 f"{type(self.data_ref).__name__}"
             )
+        else:
+            pass
         d = {
             "type": "data_ready",
             "request_id": self.request_id,
@@ -52,16 +60,26 @@ class DataReadyMessage:
         }
         if self.data_ref is not None:
             d["data_ref"] = self.data_ref.copy()
+        else:
+            pass
         if self.chunk_id is not None:
             require_non_negative_int(self.chunk_id, "chunk_id")
             d["chunk_id"] = self.chunk_id
+        else:
+            pass
         if self.is_done:
             d["is_done"] = True
+        else:
+            pass
         if self.error is not None:
             require_str(self.error, "error")
             d["error"] = self.error
+        else:
+            pass
         if self.replica_bindings:
             d["replica_bindings"] = dict(self.replica_bindings)
+        else:
+            pass
         return d
 
     @classmethod
@@ -75,21 +93,33 @@ class DataReadyMessage:
         error = d.get("error")
         if error is not None:
             error = require_str(error, "error")
+        else:
+            pass
         if is_done and error is not None:
             raise ValueError("stream signal cannot be both done and error")
+        else:
+            pass
         if is_done or error is not None:
             if data_ref is not None:
                 raise ValueError("stream signal must not carry data_ref")
+            else:
+                pass
             if "chunk_id" in d:
                 raise ValueError("stream signal must not carry chunk_id")
+            else:
+                pass
         elif not isinstance(data_ref, dict):
             raise TypeError(
                 "data_ready data_ref must be dict for data messages, got "
                 f"{type(data_ref).__name__}"
             )
+        else:
+            pass
         chunk_id = d.get("chunk_id")
         if chunk_id is not None:
             require_non_negative_int(chunk_id, "chunk_id")
+        else:
+            pass
 
         return cls(
             request_id=request_id,
@@ -120,9 +150,13 @@ class DataAckMessage(msgspec.Struct):
         require_str(self.object_id, "object_id")
         if not isinstance(self.success, bool):
             raise TypeError("success must be bool")
+        else:
+            pass
         if self.success:
             if self.error is not None:
                 raise ValueError("successful data ack must not carry error")
+            else:
+                pass
         else:
             require_str(self.error, "error")
         d: dict[str, Any] = {
@@ -135,6 +169,8 @@ class DataAckMessage(msgspec.Struct):
         }
         if self.error is not None:
             d["error"] = self.error
+        else:
+            pass
         return d
 
     @classmethod
@@ -142,10 +178,14 @@ class DataAckMessage(msgspec.Struct):
         success = d.get("success")
         if not isinstance(success, bool):
             raise TypeError("data_ack success must be bool")
+        else:
+            pass
         error = d.get("error")
         if success:
             if error is not None:
                 raise ValueError("successful data_ack must not carry error")
+            else:
+                pass
         else:
             error = require_str(error, "error")
         return cls(
@@ -227,6 +267,8 @@ class StreamMessage:
         }
         if self.chunk_id is not None:
             d["chunk_id"] = self.chunk_id
+        else:
+            pass
         return d
 
     @classmethod
@@ -254,9 +296,13 @@ class SubmitMessage:
         data = self.data
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
+        else:
+            pass
         d = {"type": "submit", "request_id": self.request_id, "data": data}
         if self.replica_bindings:
             d["replica_bindings"] = dict(self.replica_bindings)
+        else:
+            pass
         return d
 
     @classmethod
@@ -264,6 +310,8 @@ class SubmitMessage:
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
+        else:
+            pass
         return cls(
             request_id=d["request_id"],
             data=data,
@@ -405,16 +453,22 @@ def parse_message(
 def require_str(value: Any, name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise TypeError(f"{name} must be a non-empty str")
+    else:
+        pass
     return value
 
 
 def require_bool(value: Any, name: str) -> bool:
     if type(value) is not bool:
         raise TypeError(f"{name} must be bool")
+    else:
+        pass
     return value
 
 
 def require_non_negative_int(value: Any, name: str) -> int:
     if type(value) is not int or value < 0:
         raise TypeError(f"{name} must be a non-negative int")
+    else:
+        pass
     return value

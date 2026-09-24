@@ -20,7 +20,7 @@ from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage
+from sglang_omni.scheduling.message import IncomingMessage
 
 
 class _FakeCodec:
@@ -345,7 +345,7 @@ def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> N
         assert data["finish_reason"] == "length"
         assert "audio_data" not in data
         assert "audio_waveform" not in data
-        assert len(scheduler._codec.calls) == 2
+        assert len(scheduler.codec.calls) == 2
     finally:
         _stop_scheduler(scheduler, thread)
 
@@ -368,7 +368,7 @@ def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
             "modality": "audio",
             "sample_rate": 44100,
         }
-        assert scheduler._codec.calls == [(1, 10, 4)]
+        assert scheduler.codec.calls == [(1, 10, 4)]
     finally:
         _stop_scheduler(scheduler, thread)
 
@@ -422,7 +422,7 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
     )
     thread = threading.Thread(target=scheduler.start, daemon=True)
     try:
-        scheduler._payloads["req"] = _payload("req")
+        scheduler.payloads["req"] = _payload("req")
         scheduler.pending_done.add("req")
         scheduler.handle_stream_chunk("req", _chunk(1))
         scheduler.pending_messages.append(IncomingMessage("req", "stream_done"))
@@ -432,7 +432,7 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         scheduler.abort("req")
         thread.start()
 
-        assert "req" not in scheduler._payloads
+        assert "req" not in scheduler.payloads
         assert "req" not in scheduler.stream_states
         assert "req" not in scheduler.pending_done
         assert "req" in scheduler.aborted_request_ids
@@ -525,7 +525,7 @@ def test_non_streaming_vocoder_rejects_missing_output_codes() -> None:
     assert output.type == "error"
     assert isinstance(output.data, ValueError)
     assert "req-empty" in str(output.data)
-    assert scheduler._codec.calls == []
+    assert scheduler.codec.calls == []
 
 
 def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None:
@@ -542,7 +542,7 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
                 _zero_length_payload("req-zero"),
             ]
         )
-    assert scheduler._codec.calls == []
+    assert scheduler.codec.calls == []
 
 
 def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
@@ -568,7 +568,7 @@ def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
     assert by_request["req-zero"].type == "error"
     assert isinstance(by_request["req-zero"].data, ValueError)
     assert by_request["req-good"].type == "result"
-    assert scheduler._codec.calls == [(1, 10, 4)]
+    assert scheduler.codec.calls == [(1, 10, 4)]
 
 
 def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:

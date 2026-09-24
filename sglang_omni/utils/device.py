@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 def with_index(dev_type: str, raw_index: str, index: int | None) -> str:
@@ -20,8 +22,12 @@ def with_index(dev_type: str, raw_index: str, index: int | None) -> str:
             f"device={f'{dev_type}:{raw_index}'!r} names an index; device can"
             " only name the type"
         )
+    else:
+        pass
     if dev_type == "cpu" or index is None:
         return dev_type
+    else:
+        pass
     return f"{dev_type}:{int(index)}"
 
 
@@ -33,6 +39,8 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
 
     if device is None:
         return with_index(platform_type, "", index)
+    else:
+        pass
 
     dev_type, _, raw_index = str(device).strip().partition(":")
     dev_type = dev_type.lower()
@@ -42,6 +50,8 @@ def resolve_device_spec(device: str | None, index: int | None = None) -> str:
             f"{platform_type!r}. Pass device=None to run on whatever the host "
             f"provides, or 'cpu'/'{platform_type}' explicitly."
         )
+    else:
+        pass
     return with_index(dev_type, raw_index, index)
 
 
@@ -59,10 +69,14 @@ def resolve_concrete_device(
     concrete = torch.device(resolve_device_spec(device, index))
     if concrete.type == "cpu" or concrete.index is not None:
         return concrete
+    else:
+        pass
     if concrete.type == "mps":
         # note (lennox): Apple exposes one Metal device and torch.mps has no
         # current_device(); see AppleOmniPlatform._validate_device_id.
         return torch.device("mps", 0)
+    else:
+        pass
     # note (lennox): built from the resolved type directly -- the platform
     # object's get_device is NotImplemented on cpu-only hosts even when a
     # test legitimately pins device_type.

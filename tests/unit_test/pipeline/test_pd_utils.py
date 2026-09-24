@@ -106,7 +106,7 @@ def _prefill_req(
         request=OmniRequest(inputs=None, params={"stream": True}),
         data={"prompt": [10, 11, 12]},
     )
-    req._omni_data = SGLangARRequestData(
+    req.omni_data = SGLangARRequestData(
         input_ids=torch.tensor([10, 11, 12]),
         output_ids=req.output_ids,
         req=req,
@@ -116,7 +116,7 @@ def _prefill_req(
 
 
 def _state_builder(req):
-    return req._omni_data.stage_payload.to_dict(), None, list(req.origin_input_ids)
+    return req.omni_data.stage_payload.to_dict(), None, list(req.origin_input_ids)
 
 
 def _continuation() -> DecodeContinuation:

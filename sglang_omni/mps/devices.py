@@ -20,6 +20,8 @@ class MpsPhysicalDevice:
 def check_cuda(status: Any, operation: str) -> None:
     if int(status) == 0:
         return
+    else:
+        pass
     detail = getattr(status, "name", str(int(status)))
     raise RuntimeError(f"{operation} failed with {detail}")
 
@@ -33,8 +35,12 @@ def resolve_cuda_device_uuids(
     ordinals = tuple(sorted(set(gpu_ids)))
     if any(ordinal < 0 for ordinal in ordinals):
         raise ValueError(f"CUDA device ordinals must be non-negative: {ordinals}")
+    else:
+        pass
     if driver is None:
         from cuda.bindings import driver
+    else:
+        pass
 
     (status,) = driver.cuInit(0)
     check_cuda(status, "cuInit")
@@ -53,6 +59,8 @@ def resolve_cuda_device_uuids(
                     f"cuDeviceGetUuid({ordinal}) returned {len(raw_uuid)} bytes, "
                     "expected 16"
                 )
+            else:
+                pass
             resolved[ordinal] = f"GPU-{uuid.UUID(bytes=raw_uuid)}"
         except Exception as exc:
             errors[ordinal] = str(exc)
@@ -66,6 +74,8 @@ class NvmlDeviceInfo:
         ordinals = tuple(sorted(set(gpu_ids)))
         if not ordinals:
             return {}
+        else:
+            pass
         try:
             uuid_by_ordinal, cuda_errors = resolve_cuda_device_uuids(ordinals)
         except (ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -86,6 +96,8 @@ class NvmlDeviceInfo:
         }
         if not uuid_by_ordinal:
             return devices
+        else:
+            pass
 
         try:
             import pynvml
@@ -129,6 +141,8 @@ class NvmlDeviceInfo:
                         "SGLang Omni",
                     )
                     continue
+                else:
+                    pass
                 major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
                 if (major, minor) < _MIN_COMPUTE_CAPABILITY:
                     devices[ordinal] = MpsPhysicalDevice(
@@ -139,6 +153,8 @@ class NvmlDeviceInfo:
                         ),
                     )
                     continue
+                else:
+                    pass
                 try:
                     mig_current, _ = pynvml.nvmlDeviceGetMigMode(handle)
                     if mig_current == pynvml.NVML_DEVICE_MIG_ENABLE:
@@ -151,6 +167,8 @@ class NvmlDeviceInfo:
                             ),
                         )
                         continue
+                    else:
+                        pass
                 except pynvml.NVMLError_NotSupported:
                     pass
                 devices[ordinal] = MpsPhysicalDevice(gpu_uuid)

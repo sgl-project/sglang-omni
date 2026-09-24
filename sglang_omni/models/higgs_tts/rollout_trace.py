@@ -39,11 +39,15 @@ def build_omni_rollout_trace(
         raise ValueError(
             f"delayed_codes must be 2-D [L, N], got shape {tuple(delayed_codes.shape)}"
         )
+    else:
+        pass
     L, N = delayed_codes.shape
     if N != num_codebooks:
         raise ValueError(
             f"delayed_codes has {N} codebooks but num_codebooks={num_codebooks}"
         )
+    else:
+        pass
 
     action_mask = delay_pattern_action_mask(delayed_codes)  # [L, N] bool
 
@@ -53,6 +57,8 @@ def build_omni_rollout_trace(
                 f"delayed_logprobs shape {tuple(delayed_logprobs.shape)} != "
                 f"codes shape {(L, N)}"
             )
+        else:
+            pass
         # Every trainable action must carry a finite logprob.
         action_logprobs = delayed_logprobs[action_mask]
         if action_logprobs.numel() and not bool(torch.isfinite(action_logprobs).all()):
@@ -60,6 +66,10 @@ def build_omni_rollout_trace(
                 "non-finite logprob at a trainable action position; "
                 "rollout logprob capture is inconsistent with the action mask"
             )
+        else:
+            pass
+    else:
+        pass
 
     stream: dict[str, Any] = {
         "name": stream_name,

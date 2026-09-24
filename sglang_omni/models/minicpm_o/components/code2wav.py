@@ -42,6 +42,8 @@ class MiniCPMOCode2Wav(nn.Module):
         dev = torch.device(device)
         if dev.type != "cuda":
             raise ValueError(f"Token2wav requires a CUDA device, got {device}")
+        else:
+            pass
         self.device_context = torch.cuda.device(dev.index or 0)
 
         model_dir = str(resolve_model_path(model_path))
@@ -51,6 +53,8 @@ class MiniCPMOCode2Wav(nn.Module):
                 f"token2wav assets not found at {asset_dir}; copy the "
                 "checkpoint's assets/token2wav directory next to the weights"
             )
+        else:
+            pass
         if dtype is None:
             torch_dtype = torch.float32
         elif isinstance(dtype, torch.dtype):
@@ -61,6 +65,8 @@ class MiniCPMOCode2Wav(nn.Module):
             raise ValueError(
                 f"Code2Wav dtype must be float32, float16, or bfloat16, got {dtype}"
             )
+        else:
+            pass
         with self.device_context:
             self.token2wav = Token2Wav(
                 Path(asset_dir), device=dev, dtype=torch_dtype, n_timesteps=n_timesteps
@@ -69,6 +75,8 @@ class MiniCPMOCode2Wav(nn.Module):
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
             prompt_wav = default_wav if os.path.isfile(default_wav) else None
+        else:
+            pass
         self.default_prompt_wav = prompt_wav
         self.prompt_cache_key: str | None = None
         self.sample_rate = OUTPUT_SAMPLE_RATE
@@ -124,6 +132,8 @@ class MiniCPMOCode2Wav(nn.Module):
                 prompt = self.token2wav.prepare_prompt(prompt_wav)
             self.token2wav.cache = prompt
             self.prompt_cache_key = prompt_key
+        else:
+            pass
         return self.token2wav.cache
 
     def vocode(

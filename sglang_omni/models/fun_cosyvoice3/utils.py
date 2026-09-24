@@ -30,6 +30,8 @@ class CosyVoice3Tokenizer:
     def decode(self, tokens: list[int] | torch.Tensor) -> str:
         if isinstance(tokens, list):
             tokens = torch.tensor(tokens, dtype=torch.int64)
+        else:
+            pass
         return self.tokenizer.batch_decode(
             [tokens], skip_special_tokens=self.skip_special_tokens
         )[0]
@@ -78,14 +80,20 @@ class SpeechTokenizerV3:
             raise ValueError(
                 f"Speech tokenizer expects 16kHz audio, got {sample_rate}Hz"
             )
+        else:
+            pass
 
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
+        else:
+            pass
 
         if audio.shape[1] / sample_rate > 30:
             raise ValueError(
                 "Audio longer than 30s is not supported for speech token extraction"
             )
+        else:
+            pass
 
         feat = whisper.log_mel_spectrogram(torch.from_numpy(audio), n_mels=128)
         feat_len = feat.shape[2]
@@ -128,6 +136,8 @@ class SpeakerEncoder:
 
         if audio.ndim == 1:
             audio = audio.reshape(1, -1)
+        else:
+            pass
 
         speech = torch.from_numpy(audio)
         feat = kaldi.fbank(
@@ -174,14 +184,20 @@ def extract_prompt_speech_feat(
         raise ValueError(
             f"CosyVoice3 prompt mel extraction expects 24000Hz audio, got {sample_rate}Hz"
         )
+    else:
+        pass
 
     audio_array = np.asarray(audio, dtype=np.float32)
     if audio_array.ndim == 1:
         audio_array = audio_array.reshape(1, -1)
+    else:
+        pass
     if audio_array.ndim != 2:
         raise ValueError(
             "CosyVoice3 prompt audio must have shape [samples] or [channels, samples]"
         )
+    else:
+        pass
 
     waveform = torch.from_numpy(audio_array)
     mel = run_cosyvoice3_mel_spectrogram(waveform)
@@ -189,6 +205,8 @@ def extract_prompt_speech_feat(
         raise RuntimeError(
             f"CosyVoice3 mel extractor returned an unexpected shape: {tuple(mel.shape)}"
         )
+    else:
+        pass
     return mel.transpose(1, 2).contiguous()
 
 

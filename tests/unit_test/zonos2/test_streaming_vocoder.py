@@ -91,7 +91,7 @@ def _scheduler(steady=32, initial=5, overlap=2):
 
 def test_model_default_initial_chunk_is_continuity_safe():
     sch = Zonos2StreamingVocoderScheduler(device="cpu")
-    assert sch._default_initial_chunk_frames == _STREAM_INITIAL_CHUNK_FRAMES == 40
+    assert sch.default_initial_chunk_frames == _STREAM_INITIAL_CHUNK_FRAMES == 40
 
 
 def test_request_initial_chunk_zero_overrides_model_default():
@@ -120,9 +120,9 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
         _stream_emit_idx=0,
     )
     runner = SimpleNamespace(
-        _outbox=queue.Queue(),
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
+        outbox=queue.Queue(),
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
     )
     scheduler_output = SimpleNamespace(
         requests=[SimpleNamespace(request_id="req", data=data)]
@@ -130,11 +130,11 @@ def test_default_producer_flush_immediately_unlocks_first_vocoder_chunk():
 
     callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
     with pytest.raises(queue.Empty):
-        runner._outbox.get_nowait()
+        runner.outbox.get_nowait()
 
     data.output_codes.append(_codes(1)[0])
     callbacks.extract_zonos2_output(runner, None, scheduler_output, None)
-    producer_message = runner._outbox.get_nowait()
+    producer_message = runner.outbox.get_nowait()
     assert producer_message.data.shape == (
         DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
         N_CODEBOOKS,
@@ -182,9 +182,9 @@ def _run_producer_callback(
     )
     outbox = queue.Queue()
     runner = SimpleNamespace(
-        _outbox=outbox,
-        _stream_emit_chunk_frames=32,
-        _stream_emit_first_chunk_frames=configured_first_rows,
+        outbox=outbox,
+        stream_emit_chunk_frames=32,
+        stream_emit_first_chunk_frames=configured_first_rows,
     )
     callbacks.extract_zonos2_output(
         runner,

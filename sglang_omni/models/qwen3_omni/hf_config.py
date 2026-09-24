@@ -16,10 +16,14 @@ def normalize_rope_scaling(
 ) -> dict[str, Any] | None:
     if rope_scaling is None:
         return None
+    else:
+        pass
 
     normalized = dict(rope_scaling)
     if "type" in normalized and "rope_type" not in normalized:
         normalized["rope_type"] = normalized["type"]
+    else:
+        pass
 
     if _MROPE_ROPE_SCALING_KEYS.intersection(normalized.keys()):
         # SGLang selects MRotaryEmbedding from rope_type/type="default"
@@ -28,9 +32,15 @@ def normalize_rope_scaling(
         rope_type = normalized.get("rope_type", normalized.get("type", "default"))
         if rope_type == "mrope":
             rope_type = "default"
+        else:
+            pass
         normalized["rope_type"] = rope_type
         if "type" in normalized:
             normalized["type"] = rope_type
+        else:
+            pass
+    else:
+        pass
     return normalized
 
 
@@ -103,6 +113,8 @@ class Qwen3OmniMoeVisionEncoderConfig(PretrainedConfig):
 
         if deepstack_visual_indexes is ...:
             deepstack_visual_indexes = DEFAULT_DEEPSTACK_VISUAL_INDEXES
+        else:
+            pass
 
         self.depth = depth
         self.hidden_size = hidden_size
@@ -218,18 +230,24 @@ class Qwen3OmniMoeThinkerConfig(PretrainedConfig):
             vision_config = Qwen3OmniMoeVisionEncoderConfig(**vision_config)
         elif vision_config is None:
             vision_config = Qwen3OmniMoeVisionEncoderConfig()
+        else:
+            pass
         self.vision_config = vision_config
 
         if isinstance(audio_config, dict):
             audio_config = Qwen3OmniMoeAudioEncoderConfig(**audio_config)
         elif audio_config is None:
             audio_config = Qwen3OmniMoeAudioEncoderConfig()
+        else:
+            pass
         self.audio_config = audio_config
 
         if isinstance(text_config, dict):
             text_config = Qwen3OmniMoeTextConfig(**text_config)
         elif text_config is None:
             text_config = Qwen3OmniMoeTextConfig()
+        else:
+            pass
         self.text_config = text_config
         self.audio_token_id = audio_token_id
         self.image_token_id = image_token_id

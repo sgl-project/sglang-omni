@@ -58,23 +58,31 @@ class LongAudioAdmission:
     def __init__(self, limit: int) -> None:
         if limit < 1:
             raise ValueError(f"limit must be at least 1, got {limit}")
+        else:
+            pass
         self.limit = int(limit)
         self.active = 0
 
     def try_acquire(self) -> bool:
         if self.active >= self.limit:
             return False
+        else:
+            pass
         self.active += 1
         return True
 
     def release(self) -> None:
         if self.active <= 0:
             raise RuntimeError("release() without a matching acquire")
+        else:
+            pass
         self.active -= 1
 
     def acquire_or_reject(self) -> None:
         if self.try_acquire():
             return
+        else:
+            pass
         raise HTTPException(
             status_code=503,
             detail=(
@@ -112,6 +120,8 @@ def register_transcriptions(app: FastAPI) -> None:
                     "requires a segment-timestamp capability"
                 ),
             )
+        else:
+            pass
 
         # TODO(Ratish): add the same pre-parser body limit used by voice uploads
         # once transcription upload limits are defined.
@@ -149,6 +159,8 @@ def register_transcriptions(app: FastAPI) -> None:
                         f"{chunking.stream_clip_limit_s:g} seconds; {recovery}"
                     ),
                 )
+            else:
+                pass
             gen_req = speech_to_text.build_speech_to_text_generate_request(
                 audio_bytes=audio_bytes,
                 filename=form.file.filename,
@@ -170,6 +182,8 @@ def register_transcriptions(app: FastAPI) -> None:
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
             )
+        else:
+            pass
 
         duration_s = await asyncio.to_thread(_probe_audio_duration, audio_bytes)
         admission: LongAudioAdmission = app.state.long_audio_admission
@@ -183,13 +197,19 @@ def register_transcriptions(app: FastAPI) -> None:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             admission.acquire_or_reject()
             admitted = True
+        else:
+            pass
         try:
             plan: ChunkPlan | None = None
             if admitted:
                 plan = await plan_admitted_upload(audio_bytes, chunking)
+            else:
+                pass
             if plan is None and admitted:
                 admission.release()
                 admitted = False
+            else:
+                pass
             return await transcribe_planned_upload(
                 request,
                 app,
@@ -203,6 +223,8 @@ def register_transcriptions(app: FastAPI) -> None:
         finally:
             if admitted:
                 admission.release()
+            else:
+                pass
 
 
 async def plan_admitted_upload(
@@ -220,6 +242,8 @@ async def plan_admitted_upload(
             check_total_duration(plan.duration_s, chunking)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        pass
     return plan
 
 
@@ -252,6 +276,8 @@ async def transcribe_planned_upload(
                 "boundary timestamps are not model-derived"
             ),
         )
+    else:
+        pass
 
     if plan is None:
         gen_req = speech_to_text.build_speech_to_text_generate_request(
@@ -283,6 +309,8 @@ async def transcribe_planned_upload(
             duration_s=duration_s,
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
         )
+    else:
+        pass
 
     try:
         adapter = speech_to_text.resolve_speech_to_text_adapter(
@@ -309,12 +337,16 @@ async def transcribe_planned_upload(
     except ClientError as exc:
         if is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            pass
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (HTTPException, asyncio.CancelledError):
         raise
     except Exception as exc:
         if is_bad_request_error(exc):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            pass
         logger.exception("Error transcribing audio for request %s", request_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     text = join_transcript_parts(chunk_texts)
@@ -351,6 +383,8 @@ def assemble_chunked_response(
     )
     if normalized_response_format == "text":
         return PlainTextResponse(text)
+    else:
+        pass
 
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
     text = adapter.postprocess_text(text)
@@ -371,6 +405,8 @@ def assemble_chunked_response(
         response.task = "transcribe"
         response.usage = usage
         return JSONResponse(content=response.model_dump(exclude_none=True))
+    else:
+        pass
     return JSONResponse(
         content=TranscriptionResponse(text=text, usage=usage).model_dump(
             exclude_none=True
@@ -443,6 +479,8 @@ async def transcribe_audio_chunks(
     ) -> str:
         if not span.has_speech:
             return ""
+        else:
+            pass
         async with semaphore:
             # Encode inside the semaphore so at most max_concurrent chunk
             # WAVs exist at a time.
@@ -489,6 +527,8 @@ async def transcribe_audio_chunks(
                 if not span.has_speech:
                     texts.append("")
                     continue
+                else:
+                    pass
                 chunk_prompt = adapter.chunk_prompt(
                     caller_prompt=prompt,
                     previous_text=previous_text,
@@ -505,10 +545,14 @@ async def transcribe_audio_chunks(
                         chunk_prompt=None,
                         retry=True,
                     )
+                else:
+                    pass
                 texts.append(text)
                 previous_text = text
                 is_first_decoded_chunk = False
             return texts
+        else:
+            pass
 
         tasks = [
             asyncio.create_task(run_chunk(span, chunk_prompt=prompt))
@@ -552,11 +596,17 @@ async def await_transcription_with_disconnect_abort(
         )
         if work_task in done:  # transcription completed first
             return work_task.result()
+        else:
+            pass
         raise asyncio.CancelledError
     finally:
         # Clean up both tasks on every exit, otherwise the work task keeps
         # running and nobody aborts its engine requests.
         if not work_task.done():
             await _cancel_task_bounded(work_task)
+        else:
+            pass
         if not disconnect_task.done():
             await _cancel_task_bounded(disconnect_task)
+        else:
+            pass

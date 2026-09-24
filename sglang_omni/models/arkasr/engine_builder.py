@@ -57,14 +57,20 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             raise ValueError(
                 f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
             )
+        else:
+            pass
         if pre_lm_max_batch_wait_ms < 0:
             raise ValueError(
                 f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
             )
+        else:
+            pass
         if pre_lm_max_pending < 1:
             raise ValueError(
                 f"pre_lm_max_pending must be >= 1, got {pre_lm_max_pending}"
             )
+        else:
+            pass
         self.max_running_requests = max_running_requests
         self.encoder_max_batch_size = encoder_max_batch_size
         self.max_new_tokens = max_new_tokens
@@ -129,6 +135,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
             sm_version = get_visible_gpu_sm_version(self.gpu_id)
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
+            else:
+                pass
         return defaults
 
     def setup_model_resources(
@@ -156,6 +164,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
                 "ARK-ASR encoder CUDA graphs enabled (working-set precapture, max_batch=%d)",
                 self.encoder_max_batch_size,
             )
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
         if self.enable_pre_lm_encoder:
             # note (guozhihao-224): constructed after generation CUDA graphs so the
@@ -176,6 +186,8 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
                 max_queue_size=self.pre_lm_max_pending,
             )
+        else:
+            pass
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         del model
@@ -191,12 +203,16 @@ class ArkasrEngineBuilder(AsrEngineBuilder):
     def extra_scheduler_callbacks(self) -> dict[str, Any]:
         if self.audio_encoder_service is None:
             return {}
+        else:
+            pass
         return {"shutdown_callback": self.audio_encoder_service.close}
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
             self.audio_encoder_service = None
+        else:
+            pass
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {

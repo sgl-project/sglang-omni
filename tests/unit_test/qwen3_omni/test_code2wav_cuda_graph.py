@@ -43,7 +43,7 @@ class _FakeGraph:
         *,
         corrupt: bool,
     ) -> None:
-        self._model = model
+        self.model = model
         self.static_input = static_input
         self.static_output = static_output
         self.corrupt = corrupt
@@ -54,7 +54,7 @@ class _FakeGraph:
         if self.fail_replay is not None:
             raise self.fail_replay
         self.replay_inputs.append(self.static_input.clone())
-        output = self._model(self.static_input)
+        output = self.model(self.static_input)
         if self.corrupt:
             output = output + 1
         self.static_output.copy_(output)
@@ -529,9 +529,9 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
             left_context_size=25,
             enable_output_overlap=overlap,
             enable_cuda_graph=True,
-            _cuda_graph_runner=runner,
+            cuda_graph_runner=runner,
         )
-        assert scheduler._pipeline_active is overlap
+        assert scheduler.pipeline_active is overlap
         scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
         scheduler.get_or_create_stream_state("req-1")
         for i in range(21):

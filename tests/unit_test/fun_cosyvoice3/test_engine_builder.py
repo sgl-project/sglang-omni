@@ -82,7 +82,7 @@ def test_mlx_engine_passes_distinct_native_checkpoint(
         mlx_model_path="mlx-org/model",
         mlx_model_revision="mlx-revision",
     )
-    builder._checkpoint_root = "/official/model"
+    builder.checkpoint_root = "/official/model"
 
     assert builder.infra_kwargs() == {
         "mlx_model_path": "mlx-org/model",

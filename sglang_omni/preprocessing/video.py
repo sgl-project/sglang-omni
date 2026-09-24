@@ -159,6 +159,8 @@ async def ensure_video_list_async(
     """
     if videos is None:
         return [], None, None
+    else:
+        pass
     if isinstance(videos, list):
         items = videos
     else:
@@ -173,6 +175,8 @@ async def ensure_video_list_async(
         from .resource_connector import get_global_resource_connector
 
         resource_connector = get_global_resource_connector()
+    else:
+        pass
 
     async def _load_video_with_audio(
         video_item: str | Path, is_url: bool
@@ -247,6 +251,8 @@ async def ensure_video_list_async(
                 sample_fps_list.append(0.0)  # Placeholder for fps
                 if extract_audio:
                     extracted_audios.append(None)  # Placeholder for audio
+                else:
+                    pass
             elif Path(video_item).exists():
                 # Load from local path with optional audio extraction
                 coro = _load_video_with_audio(video_item, is_url=False)
@@ -257,18 +263,24 @@ async def ensure_video_list_async(
                 sample_fps_list.append(0.0)  # Placeholder for fps
                 if extract_audio:
                     extracted_audios.append(None)  # Placeholder for audio
+                else:
+                    pass
             else:
                 # Path doesn't exist, treat as already processed
                 normalized.append(video_item)
                 all_paths = False
                 if extract_audio:
                     extracted_audios.append(None)
+                else:
+                    pass
         else:
             # Already processed (torch Tensor, etc.)
             normalized.append(video_item)
             all_paths = False
             if extract_audio:
                 extracted_audios.append(None)
+            else:
+                pass
 
     # Wait for all loads to complete
     if coroutines:
@@ -279,6 +291,10 @@ async def ensure_video_list_async(
             sample_fps_list[url_idx] = sample_fps
             if extract_audio:
                 extracted_audios[url_idx] = audio
+            else:
+                pass
+    else:
+        pass
 
     if all_paths:
         return (
@@ -286,6 +302,8 @@ async def ensure_video_list_async(
             sample_fps_list,
             extracted_audios if extract_audio else None,
         )
+    else:
+        pass
     return normalized, None, extracted_audios if extract_audio else None
 
 
@@ -295,6 +313,8 @@ def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | No
         with av.open(str(video_path)) as container:
             if not container.streams.audio:
                 return None
+            else:
+                pass
             stream = container.streams.audio[0]
             sample_rate = stream.rate
             # note (MayDomine): convert packed/integer PCM before channel averaging.
@@ -309,6 +329,8 @@ def extract_audio_from_path(video_path: Path, target_sr: int) -> np.ndarray | No
             frames.extend(output.to_ndarray() for output in converter.resample(None))
         if not frames:
             return None
+        else:
+            pass
         audio = librosa.to_mono(np.concatenate(frames, axis=1))
         return librosa.resample(audio, orig_sr=sample_rate, target_sr=target_sr)
     except (av.FFmpegError, ValueError) as exc:
@@ -329,14 +351,24 @@ def load_video_path(
     ele: dict[str, Any] = {"video": str(path)}
     if fps is not None:
         ele["fps"] = float(fps)
+    else:
+        pass
     if max_frames is not None:
         ele["max_frames"] = int(max_frames)
+    else:
+        pass
     if min_pixels is not None:
         ele["min_pixels"] = int(min_pixels)
+    else:
+        pass
     if max_pixels is not None:
         ele["max_pixels"] = int(max_pixels)
+    else:
+        pass
     if total_pixels is not None:
         ele["total_pixels"] = int(total_pixels)
+    else:
+        pass
     backend = qwen_vision.get_video_reader_backend()
     try:
         video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
@@ -346,6 +378,8 @@ def load_video_path(
                 f"Failed to decode video path={path}; torchvision failed with "
                 f"{type(backend_exc).__name__}: {backend_exc}"
             ) from backend_exc
+        else:
+            pass
         logger.warning(f"Video reader {backend} failed, falling back to torchvision")
         try:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS["torchvision"](ele)
@@ -419,6 +453,8 @@ def compute_video_cache_key(
     base = compute_media_cache_key(videos, prefix="video")
     if base is None:
         return None
+    else:
+        pass
     decode_sig = (
         f"|fps={fps}|max_frames={max_frames}"
         f"|min_px={min_pixels}|max_px={max_pixels}|total_px={total_pixels}"

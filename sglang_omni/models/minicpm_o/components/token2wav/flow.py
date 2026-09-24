@@ -73,6 +73,8 @@ class CausalConditionalCFM(torch.nn.Module):
             t = t + dt
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t_span[step]
+            else:
+                pass
         return x
 
     @torch.inference_mode()
@@ -87,10 +89,14 @@ class CausalConditionalCFM(torch.nn.Module):
     ) -> torch.Tensor:
         if n_timesteps <= 0:
             raise ValueError("n_timesteps must be positive")
+        else:
+            pass
         if mu.size(2) > self.rand_noise.size(2):
             raise ValueError(
                 "Combined reference and generated audio exceed 600 seconds"
             )
+        else:
+            pass
         z = (
             self.rand_noise[:, :, : mu.size(2)].expand(mu.size(0), -1, -1).clone()
             * temperature
@@ -115,6 +121,8 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         super().__init__()
         if output_type != "mel":
             raise ValueError("MiniCPM-o flow output must be mel")
+        else:
+            pass
         self.input_size = input_size
         self.output_size = output_size
         self.vocab_size = vocab_size

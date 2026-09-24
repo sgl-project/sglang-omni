@@ -445,7 +445,7 @@ def test_reference_encoder_builds_prompt_and_caches(
             ),
             request_id=request_id,
         )
-        return AudarTTSState.from_dict(scheduler._fn(payload).data)
+        return AudarTTSState.from_dict(scheduler.fn(payload).data)
 
     first = encode("first")
     second = encode("second")
@@ -497,7 +497,7 @@ def test_reference_encoder_singleflights_same_reference(
             ),
             request_id=request_id,
         )
-        return AudarTTSState.from_dict(scheduler._fn(payload).data)
+        return AudarTTSState.from_dict(scheduler.fn(payload).data)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(encode, "first")
@@ -507,7 +507,7 @@ def test_reference_encoder_singleflights_same_reference(
         release_encode.set()
         results = [first.result(timeout=2), second.result(timeout=2)]
 
-    assert scheduler._max_concurrency == 2
+    assert scheduler.max_concurrency == 2
     assert codec.encode_calls == 1
     assert results[0].prompt == results[1].prompt
 
@@ -544,7 +544,7 @@ def test_reference_encoder_serializes_codec_for_different_references(
             ),
             request_id=request_id,
         )
-        return AudarTTSState.from_dict(scheduler._fn(payload).data)
+        return AudarTTSState.from_dict(scheduler.fn(payload).data)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
@@ -829,7 +829,7 @@ def test_llama_cpp_stage_matches_official_generation_loop(
     scheduler = stages.create_tts_engine_executor(
         "audarai/Audar-TTS-V1-Turbo", gpu_id=2
     )
-    result = AudarTTSState.from_dict(scheduler._fn(payload).data)
+    result = AudarTTSState.from_dict(scheduler.fn(payload).data)
 
     assert result.audio_codes == [123, 456]
     assert result.prompt is None
@@ -844,7 +844,7 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         "top_p": 0.9,
         "repeat_penalty": 1.1,
     }
-    assert scheduler._max_concurrency == 1
+    assert scheduler.max_concurrency == 1
 
 
 def test_vocoder_emits_24khz_audio_payload(
@@ -862,7 +862,7 @@ def test_vocoder_emits_24khz_audio_payload(
         )
     )
 
-    result = asyncio.run(scheduler._fn(payload))
+    result = asyncio.run(scheduler.fn(payload))
 
     assert codec.decode_calls == 1
     assert result.data["audio_waveform_shape"] == [3]
@@ -885,5 +885,5 @@ def test_vocoder_does_not_claim_batching_without_tensor_batch_decode(
     monkeypatch.setattr(stages, "load_codec", lambda *args, **kwargs: codec)
     scheduler = stages.create_vocoder_executor(gpu_id=None)
 
-    assert scheduler._batch_fn is None
-    assert scheduler._max_batch_size == 1
+    assert scheduler.batch_fn is None
+    assert scheduler.max_batch_size == 1

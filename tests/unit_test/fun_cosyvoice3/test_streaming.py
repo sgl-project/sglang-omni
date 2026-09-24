@@ -32,7 +32,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import _FakeFlow as _PackedFlow
 
 AR_INITIAL_FLUSH_TOKENS = TOKEN_HOP_LEN + PRE_LOOKAHEAD_LEN
@@ -172,10 +172,10 @@ def _window_frames(tokens: int) -> int:
 
 def _model_runner() -> FunCosyVoice3ModelRunner:
     runner = object.__new__(FunCosyVoice3ModelRunner)
-    runner._token_hop_len = TOKEN_HOP_LEN
-    runner._ar_followup_flush_tokens = AR_FOLLOWUP_FLUSH_TOKENS
-    runner._outbox = Queue()
-    runner._vocoder_target = "vocoder"
+    runner.token_hop_len = TOKEN_HOP_LEN
+    runner.ar_followup_flush_tokens = AR_FOLLOWUP_FLUSH_TOKENS
+    runner.outbox = Queue()
+    runner.vocoder_target = "vocoder"
     return runner
 
 
@@ -287,7 +287,7 @@ def test_model_runner_flushes_speech_tokens_and_skips_control_ids() -> None:
             None,
             [request],
         )
-    assert runner._outbox.empty()
+    assert runner.outbox.empty()
 
     runner.collect_tokens(
         SimpleNamespace(next_token_ids=torch.tensor([EOS_ID])),
@@ -295,7 +295,7 @@ def test_model_runner_flushes_speech_tokens_and_skips_control_ids() -> None:
         None,
         [request],
     )
-    assert runner._outbox.empty()
+    assert runner.outbox.empty()
     assert all(code.item() < VOCAB_SIZE for code in data.output_codes)
 
     runner.collect_tokens(
@@ -304,7 +304,7 @@ def test_model_runner_flushes_speech_tokens_and_skips_control_ids() -> None:
         None,
         [request],
     )
-    message = runner._outbox.get_nowait()
+    message = runner.outbox.get_nowait()
     assert message.type == "stream"
     assert message.target == "vocoder"
     assert message.metadata["stream"] is True
@@ -317,7 +317,7 @@ def test_model_runner_flushes_speech_tokens_and_skips_control_ids() -> None:
     )
 
     runner.on_request_finished("req-ar", data)
-    assert runner._outbox.empty()
+    assert runner.outbox.empty()
 
 
 def test_model_runner_first_flush_ignores_prompt_pad() -> None:
@@ -358,7 +358,7 @@ def _feed_tokens(
     messages: list[OutgoingMessage] = []
     while True:
         try:
-            messages.append(runner._outbox.get_nowait())
+            messages.append(runner.outbox.get_nowait())
         except Empty:
             return messages
 

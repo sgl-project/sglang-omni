@@ -31,32 +31,36 @@ class Connection:
     def __init__(self, engine_id: str, num_threads: int = 2):
         self.name = engine_id
         config = nixl_agent_config(num_threads=num_threads)
-        self._nixl = NixlAgent(str(uuid.uuid4()), config)
-        self._remote_agents: Dict[str, str] = {}
+        self.nixl = NixlAgent(str(uuid.uuid4()), config)
+        self.remote_agents: Dict[str, str] = {}
 
     def get_agent_metadata(self) -> bytes:
-        return self._nixl.get_agent_metadata()
+        return self.nixl.get_agent_metadata()
 
     def ensure_remote_agent(
         self, remote_engine_id: str, remote_meta_bytes: bytes
     ) -> str:
-        if remote_engine_id not in self._remote_agents:
-            agent_name = self._nixl.add_remote_agent(remote_meta_bytes)
-            self._remote_agents[remote_engine_id] = agent_name
-        return self._remote_agents[remote_engine_id]
+        if remote_engine_id not in self.remote_agents:
+            agent_name = self.nixl.add_remote_agent(remote_meta_bytes)
+            self.remote_agents[remote_engine_id] = agent_name
+        else:
+            pass
+        return self.remote_agents[remote_engine_id]
 
 
 class NixlOperation(RelayOperation):
     """Base class for async operations."""
 
     def __init__(self, connection: Connection, metadata: Any = None):
-        self._conn = connection
-        self._metadata = metadata
-        self._completed = False
+        self.conn = connection
+        self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.completed = False
 
     @property
     def metadata(self) -> Any:
-        return self._metadata
+        return (
+            self._metadata
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 class PutOperation(NixlOperation):
@@ -74,39 +78,47 @@ class PutOperation(NixlOperation):
         on_completion_cb: Callable[[], None],
     ):
         super().__init__(connection, metadata)
-        self._expected_notification = expected_notification
-        self._on_completion_cb = on_completion_cb
+        self.expected_notification = expected_notification
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
 
         start = time.time()
         try:
             while True:
-                notifs = self._conn._nixl.get_new_notifs()
+                notifs = self.conn.nixl.get_new_notifs()
                 found = False
                 for msgs in notifs.values():
-                    if self._expected_notification in msgs:
+                    if self.expected_notification in msgs:
                         found = True
                         break
+                    else:
+                        pass
 
                 if found:
                     break
+                else:
+                    pass
 
                 if time.time() - start > timeout:
                     raise TimeoutError(
-                        f"PutOperation timed out waiting for {self._expected_notification}"
+                        f"PutOperation timed out waiting for {self.expected_notification}"
                     )
+                else:
+                    pass
 
                 # Non-blocking wait
                 await asyncio.sleep(0.0001)
         finally:
             # Regardless of success or timeout, we mark complete.
             # In a real system, you might want distinct handling for timeout vs success.
-            self._completed = True
+            self.completed = True
             # Release the credit so new puts can happen
-            self._on_completion_cb()
+            self.on_completion_cb()
 
 
 class GetOperation(NixlOperation):
@@ -128,42 +140,46 @@ class GetOperation(NixlOperation):
         super().__init__(
             connection, metadata=None
         )  # Get usually doesn't return metadata
-        self._handle = handle
-        self._src_pool_tensor = src_pool_tensor
-        self._dest_tensor = dest_tensor
-        self._copy_size = copy_size
-        self._on_completion_cb = on_completion_cb
+        self.handle = handle
+        self.src_pool_tensor = src_pool_tensor
+        self.dest_tensor = dest_tensor
+        self.copy_size = copy_size
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
 
         try:
             # 1. Wait for RDMA Transfer
             while True:
-                state = self._conn._nixl.check_xfer_state(self._handle)
+                state = self.conn.nixl.check_xfer_state(self.handle)
                 if state == "DONE":
                     break
                 elif state != "PROC":
                     raise RuntimeError(f"Transfer failed with state: {state}")
+                else:
+                    pass
 
                 await asyncio.sleep(0.00001)
 
             # 2. Cleanup Handle
-            self._conn._nixl.release_xfer_handle(self._handle)
-            self._handle = None
+            self.conn.nixl.release_xfer_handle(self.handle)
+            self.handle = None
 
             # 3. Perform Copy (Pool -> Dest)
             # This ensures data is valid before the user gets control back
             # Note: This is a GPU-GPU copy (fast), but conceptually blocking the stream.
-            src_view = self._src_pool_tensor[: self._copy_size]
-            dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+            src_view = self.src_pool_tensor[: self.copy_size]
+            dest_view = self.dest_tensor.view(torch.uint8).reshape(-1)
             dest_view.copy_(src_view)
 
         finally:
-            self._completed = True
+            self.completed = True
             # 4. Release Local Credit (Buffer is now free)
-            self._on_completion_cb()
+            self.on_completion_cb()
 
 
 # ==========================================
@@ -191,6 +207,8 @@ class NixlRelay(Relay):
                 self.device_id = int(device.split(":")[1])
             except ValueError:
                 self.device_id = 0
+        else:
+            pass
 
         # 2. Initialize memory pool
         slot_bytes = slot_size_mb * 1024 * 1024
@@ -212,7 +230,7 @@ class NixlRelay(Relay):
         if NIXL_AVAILABLE:
             mem_type = "VRAM" if "cuda" in device else "DRAM"
             reg_list = [(self.pool_ptr, total_pool_bytes, self.device_id, mem_type)]
-            self.pool_handle = self.connection._nixl.register_memory(reg_list, mem_type)
+            self.pool_handle = self.connection.nixl.register_memory(reg_list, mem_type)
         else:
             self.pool_handle = 1
 
@@ -229,6 +247,8 @@ class NixlRelay(Relay):
         size_bytes = tensor.numel() * tensor.element_size()
         if size_bytes > self.allocator.slot_size:
             raise ValueError(f"Tensor size {size_bytes} exceeds slot size")
+        else:
+            pass
 
         # 1. Async Wait for Credit
         offset = await self.allocator.acquire_async()
@@ -287,6 +307,8 @@ class NixlRelay(Relay):
 
         if data_size > self.allocator.slot_size:
             raise ValueError("Data size exceeds local slot size")
+        else:
+            pass
 
         # 1. Async Wait for Local Credit (Buffer)
         local_offset = await self.allocator.acquire_async()
@@ -300,23 +322,23 @@ class NixlRelay(Relay):
 
             # 2. Prepare RDMA
             local_phys_addr = self.pool_ptr + local_offset
-            local_descs = self.connection._nixl.get_xfer_descs(
+            local_descs = self.connection.nixl.get_xfer_descs(
                 [(local_phys_addr, data_size, self.device_id)], mem_type
             )
-            local_handle = self.connection._nixl.prep_xfer_dlist(
+            local_handle = self.connection.nixl.prep_xfer_dlist(
                 "NIXL_INIT_AGENT", local_descs
             )
 
-            remote_descs = self.connection._nixl.get_xfer_descs(
+            remote_descs = self.connection.nixl.get_xfer_descs(
                 [(remote_ptr, data_size, remote_device_id)], remote_mem_type
             )
-            remote_handle = self.connection._nixl.prep_xfer_dlist(
+            remote_handle = self.connection.nixl.prep_xfer_dlist(
                 remote_agent_name, remote_descs
             )
 
             # 3. Trigger Transfer
             indices = np.arange(1, dtype=np.int64)
-            xfer_handle = self.connection._nixl.make_prepped_xfer(
+            xfer_handle = self.connection.nixl.make_prepped_xfer(
                 "READ",
                 local_handle,
                 indices,
@@ -324,7 +346,7 @@ class NixlRelay(Relay):
                 indices,
                 notif_msg=f"done".encode(),
             )
-            self.connection._nixl.transfer(xfer_handle)
+            self.connection.nixl.transfer(xfer_handle)
 
             # 4. Create Operation
             # Pass the pool slice (buffer) so the Operation can copy it out later
@@ -349,6 +371,8 @@ class NixlRelay(Relay):
     def close(self):
         if NIXL_AVAILABLE:
             try:
-                self.connection._nixl.deregister_memory(self.pool_handle)
+                self.connection.nixl.deregister_memory(self.pool_handle)
             except Exception:
                 logger.exception("Failed to deregister NIXL memory pool")
+        else:
+            pass

@@ -21,10 +21,14 @@ def build_text_config(raw: Any) -> transformers.PretrainedConfig:
     """Realise a text-backbone sub-config into a concrete ``PretrainedConfig``."""
     if isinstance(raw, transformers.PretrainedConfig):
         return raw
+    else:
+        pass
     cfg = dict(raw or {})
     model_type = cfg.get("model_type", "qwen3")
     if model_type == "qwen3" and cfg.get("rope_theta") is None:
         cfg["rope_theta"] = _QWEN3_ROPE_THETA
+    else:
+        pass
     try:
         cfg_cls = transformers.CONFIG_MAPPING[model_type]
     except KeyError as exc:

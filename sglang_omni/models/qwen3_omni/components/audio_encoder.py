@@ -61,6 +61,8 @@ def pack_padded_audio_features(
             .permute(1, 0)
             .contiguous()
         )
+    else:
+        pass
 
     return torch.cat(
         [row[:, :length] for row, length in zip(input_features, lengths.tolist())],
@@ -78,11 +80,17 @@ class SegmentSplits:
 
 
 def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
-    splits = self._omni_segment_splits.value
+    splits = (
+        self._omni_segment_splits.value
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if splits is None or sum(splits) != hidden_states.shape[0]:
         # Note (wenyao): a stale or mismatched split would silently corrupt
         # attention rather than fail, so fall back instead of trusting it.
-        return self._omni_unshared_forward(hidden_states, cu_seqlens, **kwargs)
+        return self._omni_unshared_forward(
+            hidden_states, cu_seqlens, **kwargs
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    else:
+        pass
 
     seq_length, _ = hidden_states.size()
     query_states = self.q_proj(hidden_states).reshape(seq_length, self.num_heads, -1)
@@ -93,7 +101,8 @@ def forward_with_shared_segments(self, hidden_states, cu_seqlens, **kwargs):
     value_states = value_states.transpose(0, 1).unsqueeze(0)
 
     attention_interface = hf_modeling.ALL_ATTENTION_FUNCTIONS.get_interface(
-        self.config._attn_implementation, hf_modeling.eager_attention_forward
+        self.config._attn_implementation,
+        hf_modeling.eager_attention_forward,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     )
     qkv_splits = [
         torch.split(tensor, splits, dim=2)
@@ -123,8 +132,10 @@ def share_segment_splits(tower: nn.Module, splits: SegmentSplits) -> None:
     # value; that sync is also what makes the stack uncapturable.
     for layer in tower.layers:
         attention = layer.self_attn
-        attention._omni_segment_splits = splits
-        attention._omni_unshared_forward = attention.forward
+        attention._omni_segment_splits = splits  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        attention._omni_unshared_forward = (
+            attention.forward
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         attention.forward = MethodType(forward_with_shared_segments, attention)
 
 
@@ -133,9 +144,9 @@ class GraphedLayerStack(nn.Module):
 
     def __init__(self, layers: nn.ModuleList, runner, splits: SegmentSplits) -> None:
         super().__init__()
-        self._layers = layers
-        self._runner = runner
-        self._splits = splits
+        self.layers = layers
+        self.runner = runner
+        self.splits = splits
 
     def __iter__(self):
         yield self
@@ -144,12 +155,16 @@ class GraphedLayerStack(nn.Module):
         return 1
 
     def forward(self, hidden_states, cu_seqlens, **kwargs):
-        segments = self._splits.value
+        segments = self.splits.value
         if segments is not None:
-            replayed = self._runner.maybe_replay(hidden_states, cu_seqlens, segments)
+            replayed = self.runner.maybe_replay(hidden_states, cu_seqlens, segments)
             if replayed is not None:
                 return (replayed,)
-        for layer in self._layers:
+            else:
+                pass
+        else:
+            pass
+        for layer in self.layers:
             hidden_states = layer(hidden_states, cu_seqlens, **kwargs)[0]
         return (hidden_states,)
 
@@ -168,33 +183,39 @@ class Qwen3OmniAudioEncoder(nn.Module):
         super().__init__()
         torch_dtype = resolve_dtype(dtype)
         thinker_cfg = load_thinker_config(model_path)
-        self._device = torch.device(device)
+        self.device = torch.device(device)
         self.audio_tower = build_audio_tower(
             model_path,
             thinker_cfg=thinker_cfg,
             torch_dtype=torch_dtype,
             device=device,
         )
-        self._downsample_lengths = hf_modeling._get_feat_extract_output_lengths
-        self._segment_splits = SegmentSplits()
-        share_segment_splits(self.audio_tower, self._segment_splits)
-        self._layer_graph_runner = None
-        if enable_layer_cuda_graph and self._device.type == "cuda":
+        self.downsample_lengths = (
+            hf_modeling._get_feat_extract_output_lengths
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.segment_splits = SegmentSplits()
+        share_segment_splits(self.audio_tower, self.segment_splits)
+        self.layer_graph_runner = None
+        if enable_layer_cuda_graph and self.device.type == "cuda":
             self.enable_layer_cuda_graph()
+        else:
+            pass
 
     def enable_layer_cuda_graph(self) -> None:
         tower = self.audio_tower
         chunk_tokens = int(
-            self._downsample_lengths(torch.tensor([tower.n_window * 2])).item()
+            self.downsample_lengths(torch.tensor([tower.n_window * 2])).item()
         )
         window = chunk_tokens * (tower.n_window_infer // (tower.n_window * 2))
-        runner = AudioLayerGraphRunner(tower, device=self._device, window=window)
+        runner = AudioLayerGraphRunner(tower, device=self.device, window=window)
         runner.capture_all()
         if not runner.has_graphs:
             logger.warning("audio layer CUDA graphs unavailable; staying eager")
             return
-        self._layer_graph_runner = runner
-        tower.layers = GraphedLayerStack(tower.layers, runner, self._segment_splits)
+        else:
+            pass
+        self.layer_graph_runner = runner
+        tower.layers = GraphedLayerStack(tower.layers, runner, self.segment_splits)
 
     def forward(
         self,
@@ -206,19 +227,23 @@ class Qwen3OmniAudioEncoder(nn.Module):
         if feature_attention_mask is not None:
             audio_feature_lengths = torch.sum(feature_attention_mask, dim=1)
             input_features = pack_padded_audio_features(
-                input_features.to(device=self._device, dtype=self.audio_tower.dtype),
+                input_features.to(device=self.device, dtype=self.audio_tower.dtype),
                 feature_attention_mask,
                 audio_feature_lengths,
             )
+        else:
+            pass
         if audio_feature_lengths is None:
             raise ValueError(
                 "audio_feature_lengths or feature_attention_mask is required"
             )
+        else:
+            pass
 
         lengths_cpu = audio_feature_lengths.to("cpu", dtype=torch.long)
-        audio_feature_lengths = lengths_cpu.to(self._device, non_blocking=True)
+        audio_feature_lengths = lengths_cpu.to(self.device, non_blocking=True)
         input_features = input_features.to(
-            device=self._device, dtype=self.audio_tower.dtype
+            device=self.device, dtype=self.audio_tower.dtype
         )
         tower = self.audio_tower
         padded_feature, chunk_lengths = hf_modeling.chunk_and_pad_features(
@@ -231,9 +256,9 @@ class Qwen3OmniAudioEncoder(nn.Module):
             tower.n_window_infer,
             tower.n_window,
         )
-        self._segment_splits.value = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
-        valid_indices = valid_indices.to(self._device, non_blocking=True)
-        cu_seqlens = cu_seqlens.to(self._device, non_blocking=True)
+        self.segment_splits.value = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        valid_indices = valid_indices.to(self.device, non_blocking=True)
+        cu_seqlens = cu_seqlens.to(self.device, non_blocking=True)
         try:
             outputs = tower(
                 input_features,
@@ -244,9 +269,9 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 cu_seqlens=cu_seqlens,
             )
         finally:
-            self._segment_splits.value = None
+            self.segment_splits.value = None
         audio_embeds = outputs.last_hidden_state
-        audio_output_lengths = self._downsample_lengths(audio_feature_lengths)
+        audio_output_lengths = self.downsample_lengths(audio_feature_lengths)
         return {
             "audio_embeds": audio_embeds,
             "audio_feature_lengths": audio_feature_lengths,

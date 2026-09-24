@@ -58,8 +58,8 @@ class _Worker:
 class _Runner(MlxSchedulerModelRunner):
     def __init__(self, worker):
         self.tp_worker = worker
-        self._last_mlx_pending = None
-        self._execution_bridge = None
+        self.last_mlx_pending = None
+        self.execution_bridge = None
         self.finalized = []
 
     @staticmethod
@@ -102,9 +102,9 @@ def test_mlx_scheduler_runner_launches_then_chains_before_resolve() -> None:
 
     assert worker.calls[:2] == [("fresh", ["req"]), ("chained", "decode-1")]
     assert runner.execute_resolve(first) == "resolved"
-    assert runner._last_mlx_pending is second
+    assert runner.last_mlx_pending is second
     assert runner.execute_resolve(second) == "resolved"
-    assert runner._last_mlx_pending is None
+    assert runner.last_mlx_pending is None
     assert worker.calls[2:] == [
         ("finalize", "decode-1", ["req"]),
         ("finalize", "decode-2", ["req"]),
@@ -119,9 +119,9 @@ def test_mlx_scheduler_runner_rejects_changed_chained_batch() -> None:
         runner.execute_launch(_scheduler_output("req-b"))
 
     # A failed successor launch must not orphan the scheduler-owned lazy step.
-    assert runner._last_mlx_pending is previous
+    assert runner.last_mlx_pending is previous
     assert runner.execute_resolve(previous) == "resolved"
-    assert runner._last_mlx_pending is None
+    assert runner.last_mlx_pending is None
 
     runner.execute_launch(_scheduler_output("req-b"))
     assert runner.tp_worker.calls[-1] == ("fresh", ["req-b"])
@@ -162,7 +162,7 @@ def test_mlx_scheduler_runner_clears_chain_after_resolve_failure() -> None:
     with pytest.raises(RuntimeError, match="failed finalize"):
         runner.execute_resolve(pending)
 
-    assert runner._last_mlx_pending is None
+    assert runner.last_mlx_pending is None
 
 
 def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
@@ -190,7 +190,7 @@ def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
 def test_mlx_scheduler_stream_is_valid_on_its_execution_thread() -> None:
     mx = pytest.importorskip("mlx.core")
     runner = object.__new__(MlxSchedulerModelRunner)
-    runner._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
+    runner.mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
     source = mx.arange(4)
     mx.eval(source)
     observed = []
@@ -226,7 +226,7 @@ def test_mlx_scheduler_runner_uses_future_map_bridge(monkeypatch) -> None:
         lambda batch, future_map: resolved.append((batch, future_map)),
     )
     runner = _Runner(_Worker(next_token_ids="token-ids"))
-    runner._execution_bridge = bridge
+    runner.execution_bridge = bridge
     scheduler_output = _scheduler_output("req")
 
     pending = runner.execute_launch(scheduler_output)

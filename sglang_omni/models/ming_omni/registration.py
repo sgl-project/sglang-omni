@@ -11,6 +11,8 @@ def register_ming_hf_config() -> None:
     global _ming_hf_config_registered
     if _ming_hf_config_registered:
         return
+    else:
+        pass
 
     from transformers import AutoConfig
 

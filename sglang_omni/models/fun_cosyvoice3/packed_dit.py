@@ -222,6 +222,8 @@ class PackedDiT:
                 heads=attention.heads,
                 head_dim=attention.inner_dim // attention.heads,
             )
+        else:
+            pass
         return RowAttention(rows, chunk_size=chunk_size, heads=attention.heads)
 
     def forward(
@@ -251,6 +253,8 @@ class PackedDiT:
             h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
+        else:
+            pass
         h = dit.norm_out(h, t)
         return dit.proj_out(h)
 
@@ -337,4 +341,6 @@ def solve_flow_euler_packed(
         t = t + dt
         if step < len(time_span) - 1:
             dt = time_span[step + 1] - t
+        else:
+            pass
     return x.float()
