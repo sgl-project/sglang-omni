@@ -79,6 +79,44 @@ all-reduce initialization when comparing TP performance. The existing
 custom all-reduce for a separate comparison; this pipeline does not change
 the global communication default.
 
+### Optional H20 TP2 MoE Tuning
+
+For LLaDA2.0-Uni BF16 on NVIDIA H20-3e with TP2, SGLang 0.5.20 and
+Triton 3.7.1, this checkout includes tuned gate/up and down-projection
+configurations in `examples/tuning/llada2_uni/h20_tp2`. Enable them explicitly
+when starting the server from the repository root:
+
+```bash
+SGLANG_MOE_CONFIG_DIR="$PWD/examples/tuning/llada2_uni/h20_tp2" \
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
+  --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
+```
+
+The TP workers inherit the environment variable. SGLang's existing MoE
+loader reads `configs/triton_3_7_1/` beneath that directory; do not point the
+variable at the `configs` subdirectory. Both JSON files are needed: the
+`_down.json` configuration enables the existing down-projection TMA path.
+No SGLang installation files or kernel implementations need changing.
+Startup or first-forward logs should report `Using MoE kernel config from`
+paths inside this checkout for both files.
+
+The configurations were tuned with SGLang's fused-MoE benchmark for
+32/64/96/128 input-token rows, covering common DLLM block and CFG shapes.
+`N=256` is the per-rank expert intermediate width, not the GEMM tile width.
+SGLang chooses the nearest token-count entry for other shapes; larger
+prefill shapes were not separately tuned.
+
+This environment variable replaces the entire MoE configuration search
+root, rather than extending the installed configuration library. Omit it
+for TP1, other models, quantized weights, or other hardware/software
+combinations unless they have their own validated configurations. Set it
+before launching workers and restart the server when changing files because
+SGLang caches loaded configurations. The regular TP command above remains
+available without this optional tuning.
+
 ## Image Generation and Editing
 
 Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
