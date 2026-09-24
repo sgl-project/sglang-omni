@@ -1580,3 +1580,9 @@ lane 的核上没有外来负载(`[cpuset-contention]` 均值 0.06 核),但同�
   (两个中位数的 worst 都不来自它),而且这是 CI 的真实环境,所以保留,不补跑。
 - CustomVoice 在 runner 上比 eval-h100 快(1 rps 中位数 20 到 22 对 24 到 25),Base 在负载下反而更慢、尾部更重;两台机器的数据分开存,不混用。
 - 原始日志行在 `docs/benchmarks/data/2026-09-24-qwen3-tts-latency-ci-runner-obs.txt`。
+
+**最终 CI 验证(2026-09-24 02:11 PT,#2293 `6be93d0c`)**:Base 臂(`TTS_CI_MODEL: qwen3-tts`,lane `48-63,112-127`)延迟阶段通过:
+1 rps 中位数 60.9 ms(gate 74.5)、20 rps 中位数 106.3 ms(gate 152.6)、20 rps p95 189.6 ms(只打印)。1 rps 的 60.9 又比五次参照的最大值
+59.6 高一点,正是"第六次超过前五次最大值"的情形,余量把它接住了。中间一次 CI(`36bcafe2`)ASR stage 1 失败,原因在 main:
+合并基点 `6307e2fa` 里 #2338 把读取处改成 `_pending_chunked_abort_req` 而初始化仍是 `pending_chunked_abort_req`,MOSS-TD 的调度线程启动即崩;
+main 的 `d290c100` 已修,推一个空提交让 CI 以新 main 重建合并引用后通过。#2293 等 review(已请 yxs、FrankLeeeee、JiaxinD、zhaochenyang20、Hayden727)。
