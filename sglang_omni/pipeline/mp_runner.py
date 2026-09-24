@@ -53,7 +53,11 @@ def resolve_coordinator_max_in_flight(
     *,
     logical_process_plan: LogicalProcessPlan,
 ) -> int | None:
-    """Return total generation running+queued capacity across replicas."""
+    """Return an explicit request cap or native generation admission capacity."""
+    if config.max_in_flight is not None:
+        return config.max_in_flight
+    else:
+        pass
     config_cls = type(config)
     stage = next(
         (
@@ -152,11 +156,16 @@ def build_stage_groups(
         # injects signature-dependent args after importing the factory it
         # must construct anyway.
         base_factory_kwargs = resolve_stage_factory_kwargs(stage_cfg, config)
+        if stage_cfg.runtime_gpu_ids is not None:
+            base_factory_kwargs["runtime_gpu_ids"] = list(gpu_ids)
+        else:
+            pass
         typed_kwargs = resolve_stage_typed_kwargs(stage_cfg)
 
         stage_kwargs = dict(
             stage_name=stage_cfg.name,
             factory=stage_cfg.factory_path,
+            allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
             route_fn=stage_cfg.route_fn,
             is_terminal=stage_cfg.terminal,
@@ -744,7 +753,7 @@ class MultiProcessPipelineRunner:
             else:
                 pass
             try:
-                await self.cleanup_on_failure()
+                await finish_despite_cancellation(self.cleanup_on_failure())
             finally:
                 if self.mps is not None:
                     try:
@@ -969,6 +978,29 @@ class MultiProcessPipelineRunner:
     async def cleanup_on_failure(self) -> None:
         """Best-effort cleanup after a failed start()."""
         for group in [g for wave in self.shutdown_waves() for g in wave]:
+            if (
+                group.is_ready and self._coordinator is not None
+            ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                # Routes are registered only after all groups start successfully.
+                # Ready stages must stop their schedulers and process finalizers.
+                for name, endpoint in group.stage_control_endpoints.items():
+                    try:
+                        await asyncio.wait_for(
+                            self._coordinator.control_plane.send_shutdown(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                                name, endpoint
+                            ),
+                            timeout=1.0,
+                        )
+                    except Exception as exc:
+                        logger.warning("Startup shutdown for %s failed: %s", name, exc)
+                await group.shutdown(
+                    before_signal=(
+                        self.retire_mps_clients if self.mps is not None else None
+                    )
+                )
+                continue
+            else:
+                pass
             for spec, p in zip(group.process_specs, group.processes):
                 if p.is_alive():
                     if self.mps is not None:

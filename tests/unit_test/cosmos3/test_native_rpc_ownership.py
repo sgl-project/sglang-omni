@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+
+from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig
+from sglang_omni.models.cosmos3.stages import native_server_kwargs
+from sglang_omni.serve.native_media import resolve_native_media_frontend
+
+
+@pytest.mark.parametrize("overrides", [None, {"scheduler_rpc_timeout": None}])
+def test_generation_keeps_native_request_open_until_work_settles(overrides):
+    kwargs = native_server_kwargs("checkpoint", 0, overrides)
+    assert kwargs.get("scheduler_rpc_timeout") is None
+
+
+@pytest.mark.parametrize("timeout", [1, 600])
+def test_finite_rpc_deadline_is_rejected_before_native_startup(timeout):
+    with pytest.raises(ValueError, match="before work settles"):
+        native_server_kwargs("checkpoint", 0, {"scheduler_rpc_timeout": timeout})
+
+
+def test_native_http_app_and_generation_share_no_rpc_deadline(monkeypatch):
+    http_server = ModuleType("sglang.multimodal_gen.runtime.entrypoints.http_server")
+    server_args = ModuleType("sglang.multimodal_gen.runtime.server_args")
+    app = FastAPI()
+    captured = []
+    http_server.create_app = lambda args: captured.append(args) or app
+    server_args.ServerArgs = SimpleNamespace(
+        from_kwargs=lambda **kwargs: SimpleNamespace(
+            **({"scheduler_rpc_timeout": None} | kwargs)
+        )
+    )
+    server_args.set_global_server_args = lambda args: None
+    monkeypatch.setitem(sys.modules, http_server.__name__, http_server)
+    monkeypatch.setitem(sys.modules, server_args.__name__, server_args)
+    scheduler_client = ModuleType("sglang.multimodal_gen.runtime.scheduler_client")
+
+    def initialize(self, server_args, *, worker_failure=None):
+        pass
+
+    scheduler_client.AsyncSchedulerClient = SimpleNamespace(initialize=initialize)
+    monkeypatch.setitem(sys.modules, scheduler_client.__name__, scheduler_client)
+    from sglang_omni.models.cosmos3 import media
+
+    def available_port(excluded):
+        return next(
+            port
+            for port in range(19001, 19020)
+            if port not in excluded and port + 1 not in excluded
+        )
+
+    monkeypatch.setattr(media, "unused_port", available_port)
+    config = Cosmos3PipelineConfig(model_path="checkpoint")
+    config.stages[0].gpu = 0
+    frontend = resolve_native_media_frontend(config, host="127.0.0.1", port=19000)
+    assert frontend() is app
+    assert captured[0].scheduler_rpc_timeout is None
+    assert captured[0].scheduler_port not in {19000, 19001}
+    assert captured[0].master_port not in {19000, 19001}
+    assert captured[0].nccl_port not in {19000, 19001}
+    assert (
+        config.stages[0].factory.server_args_overrides.get("scheduler_rpc_timeout")
+        is None
+    )

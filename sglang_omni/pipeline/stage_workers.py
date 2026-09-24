@@ -1,19 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
+import atexit
 import gc
 import logging
 import multiprocessing
 import os
 import queue
+import signal
 import sys
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Sequence, get_args
 
 from sglang_omni.config.runtime import (
     apply_typed_stage_kwargs,
@@ -25,7 +28,9 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
+from sglang_omni.pipeline.umm import route_umm
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.proto.continuation import ContinuationPhase
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -67,6 +72,7 @@ class StageLaunchConfig:
     typed_kwargs: dict[str, Any] = field(default_factory=dict)
     factory_arg_defaults: dict[str, Any] = field(default_factory=dict)
     require_factory_gpu_id: bool = False
+    allow_child_processes: bool = False
     env_defaults: dict[str, str] = field(default_factory=dict)
     # Note (Jiaxin Deng): the byte budgets are first-class fields, never
     # factory kwargs, so no factory signature can accidentally absorb them.
@@ -153,6 +159,14 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug.
     """
+    if len(spec.stage_specs) > 1 and any(
+        s.allow_child_processes for s in spec.stage_specs
+    ):
+        raise ValueError(
+            "A stage that owns native child processes must own its OS process"
+        )
+    else:
+        pass
     tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
     if not tp_stages:
         return {}
@@ -283,6 +297,13 @@ class StageGroup:
             self._processes
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
+    @property
+    def is_ready(self) -> bool:
+        """Every planned process has completed stage startup."""
+        return len(self.ready_events) == self.process_count and all(
+            event.is_set() for event in self.ready_events
+        )
+
     def process_start_attempts(self) -> set[str]:
         """Return process names whose ``Process.start()`` was called."""
         return set(
@@ -303,7 +324,7 @@ class StageGroup:
                 target=stage_process_main,
                 args=(spec, event, startup_error_channel),
                 name=proc_name,
-                daemon=True,
+                daemon=not any(s.allow_child_processes for s in spec.stage_specs),
             )
             try:
                 extra_env = (
@@ -451,6 +472,10 @@ class StageGroup:
             self.startup_error_channels.clear()
 
 
+def exit_on_sigterm(signum, frame) -> None:
+    raise SystemExit(128 + signum)
+
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: multiprocessing.Event,
@@ -468,8 +493,19 @@ def stage_process_main(
     else:
         pass
     log = logging.getLogger(f"stage_workers.{spec.process_name}")
+    # Interpreter shutdown otherwise spends its final collections walking
+    # every tracked object of the stage import graph after its children
+    # are already joined. Freezing them right before finalization keeps
+    # every atexit handler unchanged and skips redundant collection passes.
+    atexit.register(gc.freeze)
 
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
     try:
+        if previous_sigterm == signal.SIG_DFL:
+            # Startup rollback must run registered native process finalizers.
+            signal.signal(signal.SIGTERM, exit_on_sigterm)
+        else:
+            pass
         for stage_spec in spec.stage_specs:
             prepare_accelerator_environment(stage_spec, log)
         apply_gpu_compat_env_defaults()
@@ -478,7 +514,7 @@ def stage_process_main(
     except (KeyboardInterrupt, SystemExit):
         destroy_torch_distributed_process_group(log)
         reclaim_process_cuda_memory(
-            stage_gpu_ids(spec.stage_specs),
+            stage_gpu_ids(host_owned_stage_specs(spec)),
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
@@ -494,7 +530,7 @@ def stage_process_main(
         log.error("Stage process %s failed\n%s", spec.process_name, traceback_text)
         destroy_torch_distributed_process_group(log)
         reclaim_process_cuda_memory(
-            stage_gpu_ids(spec.stage_specs),
+            stage_gpu_ids(host_owned_stage_specs(spec)),
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
@@ -503,6 +539,11 @@ def stage_process_main(
         else:
             pass
         sys.exit(1)
+    finally:
+        if signal.getsignal(signal.SIGTERM) is exit_on_sigterm:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        else:
+            pass
 
 
 def run_process(
@@ -601,6 +642,15 @@ def cleanup_constructed_stages(
             stage.scheduler = None
 
 
+def host_owned_stage_specs(spec: StageWorkerProcessSpec) -> list[StageLaunchConfig]:
+    """Stages whose device work runs in this host process.
+
+    A stage whose native engine owns subprocesses keeps its device state in
+    those children, so the host has nothing to pin or reclaim for it.
+    """
+    return [s for s in spec.stage_specs if not s.allow_child_processes]
+
+
 def stage_gpu_ids(stage_specs: Iterable[StageLaunchConfig]) -> list[int]:
     return sorted(
         {
@@ -647,6 +697,13 @@ def reclaim_process_cuda_memory(
             return
         else:
             pass
+        # A process that never initialized CUDA holds no allocator state to
+        # reclaim, and touching the device here would only create a context
+        # on the way out.
+        if not torch.cuda.is_initialized():
+            return
+        else:
+            pass
         log.warning(
             "Reclaiming CUDA memory after %s on gpu_ids=%s",
             reason,
@@ -689,7 +746,11 @@ def construct_stage(
     local_dispatcher: LocalStageDispatcher | None = None,
 ) -> Stage:
     gpu_id = spec.gpu_id
-    if gpu_id is not None:
+    # A stage whose native engine owns subprocesses never computes in this
+    # host process. Pinning the device here would only create an unused
+    # CUDA context that costs device memory and shutdown time. The engine
+    # receives its devices through the factory arguments instead.
+    if gpu_id is not None and not spec.allow_child_processes:
         current_platform.set_device(int(gpu_id))
         log.info("Set current device to %s for stage %s", gpu_id, spec.stage_name)
     else:
@@ -772,20 +833,37 @@ def construct_stage(
         return returned_targets[0] if isinstance(targets, str) else returned_targets
 
     # --- Build routing ---
-    if spec.is_terminal:
-        get_next = lambda request_id, output: None
-    elif spec.route_fn:
+    if spec.route_fn:
         route_fn = import_string(spec.route_fn)
         allowed_route_targets = set(_target_list(spec.next_stages))
+        umm_phase_stages = set(get_args(ContinuationPhase))
+        if route_fn is route_umm and not spec.is_terminal:
+            raise ValueError(
+                f"Stage {spec.stage_name!r} routes with route_umm, so it must be "
+                "terminal. Its final decision completes the request"
+            )
+        else:
+            pass
+        if route_fn is route_umm and allowed_route_targets != umm_phase_stages:
+            raise ValueError(
+                f"Stage {spec.stage_name!r} routes with route_umm, so next must "
+                f"name exactly the UMM phase stages {sorted(umm_phase_stages)}, "
+                f"not {sorted(allowed_route_targets)}. Name the understanding "
+                "stage reasoner and the generation stage generation"
+            )
+        else:
+            pass
 
         def get_next(request_id, output, _fn=route_fn):
             return _target_result(
                 _fn(request_id, output),
                 allowed_targets=allowed_route_targets,
-                allow_empty=False,
+                allow_empty=spec.is_terminal,
                 hook_name="route_fn",
             )
 
+    elif spec.is_terminal:
+        get_next = lambda request_id, output: None
     else:
         target = spec.next_stages
         if isinstance(target, str):
@@ -891,6 +969,7 @@ def construct_stage(
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
         replica_topology=spec.replica_topology or None,
+        allow_child_processes=spec.allow_child_processes,
     )
 
     if spec.is_stream_receiver:

@@ -669,6 +669,7 @@ def _bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     s.owns_external_io = owns_io
     s.aborted = set()
     s.active_requests = set()
+    s.request_arrivals = {}
     s.replica_bindings = {}
     s.stream_queue = None
     s.stream_chunk_counters = {}

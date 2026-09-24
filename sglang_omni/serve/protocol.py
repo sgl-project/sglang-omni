@@ -39,9 +39,9 @@ class ChatCompletionAudio(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible chat completion request."""
+    """OpenAI-compatible chat request with backend-validated extensions."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     model: str | None = None
     messages: list[ChatMessage]
@@ -102,6 +102,19 @@ class ChatCompletionRequest(BaseModel):
     def effective_max_tokens(self) -> int | None:
         return self.max_completion_tokens or self.max_tokens
 
+    @model_validator(mode="after")
+    def refuse_length_alias(self) -> ChatCompletionRequest:
+        # Backend options pass through as extra fields. The internal name of
+        # the declared length would silently replace or bypass it.
+        if "max_new_tokens" in (self.model_extra or {}):
+            raise ValueError(
+                "Set the completion length with max_tokens or "
+                "max_completion_tokens, not max_new_tokens"
+            )
+        else:
+            pass
+        return self
+
 
 class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
@@ -128,6 +141,7 @@ class ChatCompletionStreamDelta(BaseModel):
     role: str | None = None
     content: str | None = None
     audio: ChatCompletionAudio | None = None
+    segment: dict[str, Any] | None = None
 
 
 class ChatCompletionStreamChoice(BaseModel):
@@ -291,6 +305,8 @@ class GenerateResponse(BaseModel):
 
     text: str = ""
     audio: GenerateAudio | None = None
+    media: list[dict[str, Any]] | None = None
+    segments: list[dict[str, Any]] | None = None
     meta_info: GenerateMetaInfo
 
 

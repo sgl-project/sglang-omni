@@ -241,6 +241,8 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.join_count += 1
 
     class FakeGroup:
+        is_ready = False
+
         def __init__(self, stage_name: str, *, fail_spawn: bool = False) -> None:
             self.stage_name = stage_name
             self.fail_spawn = fail_spawn
@@ -316,11 +318,15 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("max_in_flight", [None, 2])
 async def test_mp_runner_stop_cleans_runtime_dir(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    max_in_flight: int | None,
 ) -> None:
     """Preserves IPC runtime directory cleanup when the runner stops."""
+
+    expected_max_in_flight = max_in_flight
 
     class FakeCoordinator:
         def __init__(
@@ -334,6 +340,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             logical_process_plan=None,
             max_in_flight=None,
         ) -> None:
+            assert max_in_flight == expected_max_in_flight
             del (
                 abort_endpoint,
                 entry_stage,
@@ -393,7 +400,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
     monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: [group])
 
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    config = _make_config(tmp_path)
+    config.max_in_flight = max_in_flight
+    runner = mp_runner.MultiProcessPipelineRunner(config)
     await runner.start()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
 

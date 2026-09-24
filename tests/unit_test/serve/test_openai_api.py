@@ -583,6 +583,30 @@ class AdminClient:
         return {"success": True, "message": "ok", "results": []}
 
 
+@pytest.mark.parametrize("route", ["/generate", "/v1/chat/completions"])
+@pytest.mark.parametrize(
+    ("message", "status"),
+    [
+        (QueueFullError.MESSAGE, 503),
+        ("Request qualification-duplicate already exists", 409),
+        ("Request id with spaces already exists", 409),
+        ("cache file already exists", 500),
+        ("Request backend failed unexpectedly", 500),
+        ("max_new_tokens must be positive", 400),
+    ],
+)
+def test_generation_admission_http_status(route, message, status):
+    client = TestClient(create_app(_fault_client("qwen3-omni", message)))
+    payload = (
+        {"prompt": "hello", "return_logprob": False}
+        if route == "/generate"
+        else {"messages": [{"role": "user", "content": "hello"}]}
+    )
+    response = client.post(route, json=payload)
+    assert response.status_code == status
+    assert message in response.json()["detail"]
+
+
 @pytest.mark.parametrize("model_name", MODEL_FAMILIES)
 def test_non_streaming_http_faults_return_500(model_name: str) -> None:
     client = TestClient(create_app(_fault_client(model_name), model_name=model_name))

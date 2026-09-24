@@ -48,7 +48,9 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
             model_path="model",
             stages=[stage("tp", gpu=[0], tp_size=2, terminal=True)],
         )
-    with pytest.raises(ValueError, match="route_fn on a terminal stage"):
+    with pytest.raises(
+        ValueError, match="dynamic routing requires declared next stages"
+    ):
         PipelineConfig(
             model_path="model",
             stages=[
