@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import io
 from functools import lru_cache
 from pathlib import Path
 
@@ -145,11 +146,11 @@ class Token2Wav(torch.nn.Module):
             strict=True,
         )
         self.hift.to(device).eval()
-        self.cache: SpeakerPrompt | None = None
 
     @torch.inference_mode()
-    def prepare_prompt(self, path: str) -> SpeakerPrompt:
-        audio, sample_rate = torchaudio.load(path)
+    def prepare_prompt(self, source: str | bytes | io.BytesIO) -> SpeakerPrompt:
+        # In-memory sources avoid spilling HTTP-supplied references to disk.
+        audio, sample_rate = torchaudio.load(source)
         if sample_rate != 16000:
             speech = torchaudio.transforms.Resample(sample_rate, 16000)(audio)
         else:
