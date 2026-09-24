@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 from urllib.parse import unquote, urlparse
 
 import numpy as np
@@ -341,7 +341,7 @@ class _CosyVoice3ReferenceEncodeHook(
         }
 
     def load_artifact(
-        self, stored: dict[str, Any] | CosyVoice3StoredReference
+        self, stored: Mapping[str, object]
     ) -> _CosyVoice3ReferenceArtifact:
         if stored.get("artifact_type") != "fun_cosyvoice3_reference_conditioning":
             raise RuntimeError("CosyVoice3 reference cache entry is invalid")
@@ -611,10 +611,10 @@ def _align_flow_prompt(
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
-    tts_params: dict[str, Any],
-) -> dict[str, Any]:
+    tts_params: Mapping[str, object],
+) -> dict[str, object]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
         explicit_fields = {str(field) for field in explicit_generation_params}
@@ -637,7 +637,7 @@ def build_generation_kwargs(
     # tokens are honored) from the target text length; build_sglang_
     # cosyvoice3_request only falls back to _DEFAULT_MAX_NEW_TOKENS when
     # neither the caller nor the contract provides a bound.
-    generation_kwargs: dict[str, Any] = {}
+    generation_kwargs: dict[str, object] = {}
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation_kwargs["max_new_tokens"] = int(max_new_tokens)

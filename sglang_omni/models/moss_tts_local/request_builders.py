@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 from transformers import PretrainedConfig
@@ -185,9 +185,9 @@ def build_moss_tts_local_state(payload: StagePayload) -> MossTTSLocalState:
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
-    tts_params: dict[str, Any],
+    tts_params: Mapping[str, object],
 ) -> dict[str, int | float]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
@@ -214,7 +214,7 @@ def build_generation_kwargs(
             f"got {max_new_tokens}"
         )
 
-    generation_kwargs: dict[str, Any] = {
+    generation_kwargs: dict[str, object] = {
         "max_new_tokens": max_new_tokens,
         "text_temperature": 1.0,
         "audio_temperature": 1.7,

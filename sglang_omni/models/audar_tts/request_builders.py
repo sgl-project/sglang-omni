@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from sglang_omni.models.audar_tts.payload_types import AudarTTSState
 from sglang_omni.proto import StagePayload
@@ -57,7 +56,7 @@ def build_audar_state(payload: StagePayload) -> AudarTTSState:
 
 
 def build_generation_kwargs(
-    params: dict[str, Any], *, tts_params: dict[str, Any]
+    params: Mapping[str, object], *, tts_params: Mapping[str, object]
 ) -> dict[str, int | float]:
     generation = dict(_DEFAULT_GENERATION)
     explicit = tts_params.get("explicit_generation_params")
@@ -114,7 +113,7 @@ def _reference_from_value(value: object) -> dict[str, object]:
     return {"audio_path": str(value)}
 
 
-def _normalize_reference_audio(reference: dict[str, Any]) -> dict[str, object]:
+def _normalize_reference_audio(reference: Mapping[str, object]) -> dict[str, object]:
     if reference.get("audio_path") is not None:
         return {"audio_path": str(reference["audio_path"])}
     for key in ("ref_audio", "audio"):

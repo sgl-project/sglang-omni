@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Literal, TypedDict, TypeVar
 
 import torch
 
@@ -128,7 +128,7 @@ class SubtalkerSampling:
     top_k: int
 
 
-def resolve_subtalker_sampling(gen_kwargs: dict[str, Any]) -> SubtalkerSampling:
+def resolve_subtalker_sampling(gen_kwargs: Mapping[str, object]) -> SubtalkerSampling:
     """Subtalker sampling from merged generate kwargs, with the fallbacks used
     when the checkpoint ships no generation config."""
     return SubtalkerSampling(
@@ -174,7 +174,7 @@ class Qwen3TTSPreparedRequest:
     ref_code: torch.Tensor | None
     prompt_input_embeds: torch.Tensor
     tts_pad_embed: torch.Tensor
-    gen_kwargs: dict[str, Any]
+    gen_kwargs: Mapping[str, object]
     ready_event: torch.cuda.Event | None = None
 
 
@@ -649,7 +649,7 @@ def build_generation_kwargs(
     else:
         explicit_fields = set()
 
-    selected_fields: dict[str, Any] = {}
+    selected_fields: dict[str, object] = {}
     for field in _GENERATION_FIELDS:
         stage_value = tts_engine_params.get(field)
         if stage_value is not None:
@@ -751,7 +751,7 @@ class CachedVoicePrompt(OptionalCachedVoicePrompt):
 
 
 def _cacheable_qwen3_tts_voice_prompt(
-    voice_clone_prompt: dict[str, Any] | VoicePrompt,
+    voice_clone_prompt: Mapping[str, Sequence[object]] | VoicePrompt,
     *,
     ref_text: str | None,
 ) -> CachedVoicePrompt:
@@ -777,7 +777,7 @@ def _cacheable_qwen3_tts_tensor(value: torch.Tensor) -> torch.Tensor:
 
 
 def _qwen3_tts_voice_prompt_from_cache(
-    artifact: dict[str, Any] | CachedVoicePrompt,
+    artifact: Mapping[str, object],
 ) -> tuple[dict[str, list[object]], str | None] | None:
     if artifact.get("artifact_type") != "qwen3_tts_voice_clone_prompt":
         return None
@@ -1078,7 +1078,7 @@ class _Qwen3TTSAdhocReferenceHook(
         )
 
     def load_artifact(
-        self, stored: dict[str, Any] | CachedVoicePrompt
+        self, stored: Mapping[str, object]
     ) -> tuple[dict[str, list[object]], str | None]:
         cached_prompt = _qwen3_tts_voice_prompt_from_cache(stored)
         if cached_prompt is None:

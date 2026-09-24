@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -255,8 +255,8 @@ def _resolve_optional_text(value: object) -> str | None:
 
 def _resolve_token_count(
     text: str,
-    params: dict[str, Any],
-    tts_params: dict[str, Any],
+    params: Mapping[str, object],
+    tts_params: Mapping[str, object],
 ) -> tuple[str, int | None]:
     """Resolve the duration token count and return ``(clean_text, count)``.
 
@@ -321,9 +321,9 @@ def build_moss_tts_state(payload: StagePayload) -> MossTTSState:
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
-    tts_params: dict[str, Any],
+    tts_params: Mapping[str, object],
 ) -> dict[str, int | float]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
@@ -341,7 +341,7 @@ def build_generation_kwargs(
     else:
         max_new_tokens = int(raw_max_new_tokens)
 
-    generation_kwargs: dict[str, Any] = {
+    generation_kwargs: dict[str, object] = {
         "max_new_tokens": max_new_tokens,
         # note (chenyang): the checkpoint's own generate() defaults; greedy
         # (temperature=0) collapses the codec LM into copying the reference
@@ -398,7 +398,7 @@ def build_generation_kwargs(
     return generation_kwargs
 
 
-def _validate_moss_tts_generation_kwargs(kwargs: dict[str, Any]) -> None:
+def _validate_moss_tts_generation_kwargs(kwargs: Mapping[str, object]) -> None:
     """Validate public sampling fields (MOSS uses a custom sampler that bypasses
     SGLang's SamplingParams.verify), raising ValueError on out-of-range values."""
     if int(kwargs["max_new_tokens"]) <= 0:
