@@ -40,5 +40,4 @@ long as the label remains. Use `/tag-and-rerun-ci higgs` or
 `/tag-and-rerun-ci qwen3-omni` or `/tag-and-rerun-ci minicpmo` to select
 the Omni CI model (Qwen3-Omni by default). One selector from each family
 can be combined, for example `/tag-and-rerun-ci moss fun-asr minicpmo`.
-Model selection does not skip other CI stages.
 Draft PRs are skipped even if labeled.

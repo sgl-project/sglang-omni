@@ -299,7 +299,7 @@ family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
 `run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
 with `/tag-and-rerun-ci <selectors>`, for example
 `/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
-Qwen3-Omni; selecting MiniCPM-o does not skip ASR or TTS CI. The
+Qwen3-Omni. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
 
