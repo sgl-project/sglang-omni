@@ -114,7 +114,7 @@ def make_arkasr_scheduler_adapters(
     audio_token_id: int = 151663,
     audio_encoder_service: "ArkasrPreLMEncoderService | None" = None,
 ) -> tuple[
-    Callable[[StagePayload], ArkASRRequestData | DeferredAdmission],
+    Callable[[StagePayload], ArkASRRequestData | DeferredAdmission[ArkASRRequestData]],
     Callable[[ArkASRRequestData], StagePayload],
 ]:
     if feature_extractor is None:
@@ -142,7 +142,7 @@ def make_arkasr_scheduler_adapters(
 
     def request_builder(
         payload: StagePayload,
-    ) -> ArkASRRequestData | DeferredAdmission:
+    ) -> ArkASRRequestData | DeferredAdmission[ArkASRRequestData]:
         params = payload.request.params or {}
         prepared = prepare_audio(
             payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE

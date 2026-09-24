@@ -227,7 +227,8 @@ class OmniScheduler(Generic[RequestDataT]):
         *,
         model_runner: "ModelRunner[RequestDataT] | None" = None,
         request_builder: (
-            Callable[[StagePayload], RequestDataT | DeferredAdmission] | None
+            Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]]
+            | None
         ) = None,
         result_adapter: Callable | None = None,
         stream_output_builder: Callable | None = None,
@@ -298,10 +299,15 @@ class OmniScheduler(Generic[RequestDataT]):
             self._request_build_backlog_limit = 0
             self._request_build_executor = None
         self._pending_request_builds: dict[
-            str, tuple[StagePayload, bool, Future[RequestDataT | DeferredAdmission]]
+            str,
+            tuple[
+                StagePayload,
+                bool,
+                Future[RequestDataT | DeferredAdmission[RequestDataT]],
+            ],
         ] = {}
         self._pending_request_admissions: dict[
-            str, tuple[StagePayload, bool, DeferredAdmission]
+            str, tuple[StagePayload, bool, DeferredAdmission[RequestDataT]]
         ] = {}
         self._backlogged_request_build_payloads: deque[StagePayload] = deque()
         self._request_build_max_pending_observed = 0
@@ -997,7 +1003,7 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def _run_request_builder(
         self, payload: StagePayload, active_stage: str | None
-    ) -> RequestDataT | DeferredAdmission:
+    ) -> RequestDataT | DeferredAdmission[RequestDataT]:
         req_id = payload.request_id
         _emit_event(
             request_id=req_id,
@@ -1166,7 +1172,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self,
         payload: StagePayload,
         pending_stream_done: bool,
-        result: RequestDataT | DeferredAdmission,
+        result: RequestDataT | DeferredAdmission[RequestDataT],
         *,
         request_admission_lock_held: bool = False,
     ) -> None:

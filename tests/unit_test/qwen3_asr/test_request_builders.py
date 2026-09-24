@@ -38,7 +38,7 @@ _EXPECTED_QWEN3_ASR_PROMPT_PREFIX = (
 
 
 def _unwrap_built(
-    result: Qwen3ASRRequestData | DeferredAdmission,
+    result: Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData],
 ) -> Qwen3ASRRequestData:
     if isinstance(result, DeferredAdmission):
         result.ready.result(timeout=5)

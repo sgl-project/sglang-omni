@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, Protocol, SupportsIndex, SupportsInt
 
 from typing_extensions import TypeVar
 
@@ -31,10 +30,19 @@ class SchedulerRequest:
     finish_time: float | None = None
 
 
+ValueT = TypeVar("ValueT", default=object)
+
+
+class CompletionFuture(Protocol):
+    def done(self) -> bool: ...
+
+    def result(self, timeout: float | None = None) -> object: ...
+
+
 @dataclass(slots=True)
-class DeferredAdmission:
-    value: Any
-    ready: Future[Any]
+class DeferredAdmission(Generic[ValueT]):
+    value: ValueT
+    ready: CompletionFuture
 
 
 @dataclass
@@ -51,7 +59,7 @@ class SchedulerOutput:
 @dataclass
 class RequestOutput:
     request_id: str
-    data: Any = None
+    data: str | bytes | bytearray | SupportsInt | SupportsIndex | None = None
     finished: bool = False
     extra: dict[str, Any] | None = None
 

@@ -190,7 +190,9 @@ class ArkasrEngineBuilder(AsrEngineBuilder["ArkASRRequestData"]):
             )
 
     def make_adapters(self, model: object) -> tuple[
-        Callable[[StagePayload], ArkASRRequestData | DeferredAdmission],
+        Callable[
+            [StagePayload], ArkASRRequestData | DeferredAdmission[ArkASRRequestData]
+        ],
         Callable[[ArkASRRequestData], StagePayload],
     ]:
         del model

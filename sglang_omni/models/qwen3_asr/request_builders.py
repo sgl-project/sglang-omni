@@ -152,7 +152,9 @@ def make_qwen3_asr_scheduler_adapters(
     should_wait_for_encode: Callable[[], bool] | None = None,
     greedy_only: bool = False,
 ) -> tuple[
-    Callable[[StagePayload], Qwen3ASRRequestData | DeferredAdmission],
+    Callable[
+        [StagePayload], Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData]
+    ],
     Callable[[Qwen3ASRRequestData], StagePayload],
 ]:
     if feature_extractor is None:
@@ -225,7 +227,7 @@ def make_qwen3_asr_scheduler_adapters(
 
     def request_builder(
         payload: StagePayload,
-    ) -> Qwen3ASRRequestData | DeferredAdmission:
+    ) -> Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData]:
         params = payload.request.params or {}
         is_streaming_refresh = params.get("_asr_streaming") is True
         streaming_prefix = params.get("_asr_streaming_prefix_text")

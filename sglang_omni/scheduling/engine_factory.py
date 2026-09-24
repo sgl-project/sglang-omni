@@ -357,7 +357,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
 
     @abstractmethod
     def make_adapters(self, model: Any) -> tuple[
-        Callable[[StagePayload], RequestDataT | DeferredAdmission] | None,
+        Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]] | None,
         Callable[[RequestDataT], object] | None,
     ]:
         raise NotImplementedError
@@ -417,7 +417,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         model_config: ModelConfig,
         model_runner: "ModelRunner[RequestDataT]",
         request_builder: (
-            Callable[[StagePayload], RequestDataT | DeferredAdmission] | None
+            Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]]
+            | None
         ),
         result_adapter: Callable[[RequestDataT], object] | None,
         extra_scheduler_kwargs: Mapping[str, object],
@@ -522,7 +523,8 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
         model_config: ModelConfig,
         model_runner: "ModelRunner[RequestDataT]",
         request_builder: (
-            Callable[[StagePayload], RequestDataT | DeferredAdmission] | None
+            Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]]
+            | None
         ),
         result_adapter: Callable[[RequestDataT], object] | None,
     ) -> "OmniScheduler[RequestDataT]":

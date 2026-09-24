@@ -410,7 +410,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder["Qwen3ASRRequestData"]):
         )
 
     def make_adapters(self, model: object) -> tuple[
-        Callable[[StagePayload], Qwen3ASRRequestData | DeferredAdmission],
+        Callable[
+            [StagePayload], Qwen3ASRRequestData | DeferredAdmission[Qwen3ASRRequestData]
+        ],
         Callable[[Qwen3ASRRequestData], StagePayload],
     ]:
         del model
