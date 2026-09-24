@@ -600,7 +600,7 @@ def _timeout_or_default(timeout_s: float | None, default: float) -> float:
     return default if timeout_s is None else timeout_s
 
 
-def _request_payload(req: AdminRequestBase) -> dict[str, Any]:
+def _request_payload(req: AdminRequestBase) -> dict[str, object]:
     return req.model_dump(exclude={"stages", "timeout_s"}, exclude_none=True)
 
 
@@ -610,7 +610,7 @@ def _admin_response(result: dict[str, ValueT] | AdminResponse) -> JSONResponse:
     return JSONResponse(content=result)
 
 
-def _model_info_response(result: dict[str, Any] | AdminResponse) -> JSONResponse:
+def _model_info_response(result: dict[str, ValueT] | AdminResponse) -> JSONResponse:
     if not result.get("success", False):
         raise HTTPException(status_code=400, detail=result)
 
@@ -621,7 +621,7 @@ def _model_info_response(result: dict[str, Any] | AdminResponse) -> JSONResponse
         "weight_version",
         mixed_status_code=409,
     )
-    payload = dict(result)
+    payload: dict[str, object] = dict(result)
     payload.update(
         {
             "weight_version": weight_version,
@@ -635,8 +635,8 @@ def _model_info_response(result: dict[str, Any] | AdminResponse) -> JSONResponse
 
 def _extract_model_info_stage_data(
     result: dict[str, Any] | AdminResponse,
-) -> list[dict[str, Any]]:
-    infos: list[dict[str, Any]] = []
+) -> list[dict[str, object]]:
+    infos: list[dict[str, object]] = []
     for item in result.get("results", []) or []:
         if not isinstance(item, dict):
             continue
@@ -982,7 +982,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         videos = req.videos
 
     # Merge audio config, audios, images, and videos into metadata
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, object] = {}
     if req.audio:
         metadata["audio_config"] = req.audio
     if audios:
