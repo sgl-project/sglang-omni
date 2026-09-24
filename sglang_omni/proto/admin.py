@@ -23,7 +23,7 @@ class SerializedAdminResult(TypedDict):
     action: str
     success: bool
     message: str
-    data: dict[str, Any]
+    data: dict[str, object]
     error: object
     rank: object
     role: object
@@ -77,7 +77,7 @@ class AdminResult:
     action: str
     success: bool
     message: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
+    data: dict[str, object] = field(default_factory=dict)
     error: str | None = None
     rank: int | None = None
     role: str | None = None

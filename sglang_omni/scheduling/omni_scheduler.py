@@ -20,7 +20,7 @@ import time
 import types
 from array import array
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypedDict, TypeVar
@@ -98,7 +98,7 @@ class RequiredAdminActionResult(TypedDict):
 
 
 class AdminActionResult(RequiredAdminActionResult, total=False):
-    data: dict[str, Any] | WeightCheckResult
+    data: dict[str, object] | WeightCheckResult
     error: str | None
 
 
@@ -2099,7 +2099,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self,
         payload: dict[str, PayloadValue],
         update_fn,
-        result_data: dict[str, Any],
+        result_data: Mapping[str, object],
         *,
         keep_pause_on_failure: bool = False,
     ) -> AdminActionResult:
@@ -2163,7 +2163,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 else:
                     self._engine_paused = previous_pause_state
 
-        data = {
+        data: dict[str, object] = {
             "num_paused_requests": num_paused,
             "flush_cache": payload.get("flush_cache", True),
             "flush_success": flush_success,
