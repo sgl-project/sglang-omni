@@ -408,7 +408,9 @@ class OmniScheduler:
         else:
             pass
         self.chunked_req = None
-        self.pending_chunked_abort_req = None
+        self._pending_chunked_abort_req = (
+            None  # noqa: leading-underscore - SGLang abort state
+        )
         self.is_mixed_chunk = (
             self.chunked_prefill_size is not None and get_schedule().enable_mixed_chunk
         )
@@ -682,7 +684,7 @@ class OmniScheduler:
         self.total_prefill_uncached_tokens = 0
         self.total_prefill_busy_us = 0
         self.decode_moment_totals: list[float] = [0.0] * 6
-        self.prev_step = None
+        self._prev_step = None  # noqa: leading-underscore - SGLang step timing state
         self.sched_idled = False
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
