@@ -6,8 +6,9 @@ dedicated worker thread and CUDA stream. Request building submits encode
 and admits only after the future completes with the LM-ready embedding
 attached.
 
-A cache hit is still resolved before mel extraction in the request builder,
-so repeated audio never enters this queue.
+A cache hit is resolved before mel extraction in the request builder. On NPU,
+its device transfer is queued on the encoder worker so graph submission and
+transfer have one owner; other backends retain the direct cache-hit path.
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 from sglang.srt.utils import create_device_stream, device_stream_context
 
+from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
+    EncoderGraphUnrecoverableError,
+)
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -55,6 +59,12 @@ _FRONTEND_CONFIG_FIELDS = (
 class DetachedFailure:
     exception: Exception
     formatted_traceback: str
+
+
+@dataclass(frozen=True)
+class CachedEmbeddingTransfer:
+    item: Any
+    embedding: torch.Tensor
 
 
 def build_cache_namespace(
@@ -204,10 +214,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             getattr(item, "audio_fingerprint", None), expected_tokens
         )
         if cached is not None:
-            self.attach_embedding(item, cached)
-            done: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
-            done.set_result(cached)
-            return done
+            return self.submit_cached_embedding(item, cached)
         else:
             pass
 
@@ -231,12 +238,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                 self.merged += 1
                 follower_of = future
         if cached is not None:
-            self.attach_embedding(item, cached)
-            completed: concurrent.futures.Future[torch.Tensor] = (
-                concurrent.futures.Future()
-            )
-            completed.set_result(cached)
-            return completed
+            return self.submit_cached_embedding(item, cached)
         else:
             pass
         if leader:
@@ -271,13 +273,47 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
                     )
                 else:
                     pass
-                self.attach_embedding(item, embedding)
-                completion.set_result(embedding)
+                # The leader completed device work and registered the consumer
+                # stream before resolving its future. A late callback may run
+                # on the caller: publish metadata only, never submit device work.
+                self.set_precomputed_embedding(item, embedding)
+                if not completion.done():
+                    completion.set_result(embedding)
+                else:
+                    pass
             except Exception as exc:
-                completion.set_exception(exc)
+                if not completion.done():
+                    completion.set_exception(exc)
+                else:
+                    pass
 
         follower_of.add_done_callback(attach_follower)
         return self.count_failed(completion)
+
+    def submit_cached_embedding(
+        self, item: Any, embedding: torch.Tensor
+    ) -> concurrent.futures.Future[torch.Tensor]:
+        """Attach a cached embedding without re-encoding.
+
+        NPU transfers run on the encoder worker and resolve after its stream
+        synchronizes. The queue entry retains the CPU source even if the cache
+        evicts it. Other backends keep the original caller-thread path.
+        """
+        expected = expected_audio_tokens(item)
+        if expected is None or not self.is_valid(embedding, expected):
+            raise ValueError("Qwen3-ASR cached embedding does not match the item")
+        else:
+            pass
+        if self.device.type == "npu":
+            return self.count_failed(
+                self.submit(CachedEmbeddingTransfer(item, embedding))
+            )
+        else:
+            pass
+        self.attach_embedding(item, embedding)
+        completed: concurrent.futures.Future[torch.Tensor] = concurrent.futures.Future()
+        completed.set_result(embedding)
+        return completed
 
     def encode_item(self, item: Any) -> None:
         """Block until the item holds the LM-ready embedding.
@@ -397,6 +433,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             embedding.record_stream(device_module.default_stream(embedding.device))
         else:
             pass
+        self.set_precomputed_embedding(item, embedding)
+
+    @staticmethod
+    def set_precomputed_embedding(item: Any, embedding: torch.Tensor) -> None:
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -449,6 +489,37 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
         return self.model.get_audio_feature(items)
+
+    def execute_batch(self, items: list[Any]) -> list[torch.Tensor]:
+        if self.device.type != "npu":
+            return super().execute_batch(items)
+        else:
+            pass
+        encode_items = [
+            item for item in items if not isinstance(item, CachedEmbeddingTransfer)
+        ]
+        results: list[torch.Tensor] = []
+        transfers = [
+            item for item in items if isinstance(item, CachedEmbeddingTransfer)
+        ]
+        if transfers:
+            # NPU queue entries keep sources alive through synchronization.
+            # Futures complete only after this entire method returns.
+            with self.batch_context():
+                for transfer in transfers:
+                    self.attach_embedding(transfer.item, transfer.embedding)
+            self.synchronize_batch()
+        else:
+            pass
+        # Transfer failures must not force already encoded items (whose mel
+        # inputs have been cleared) through the per-item retry path.
+        encoded = iter(super().execute_batch(encode_items) if encode_items else [])
+        for item in items:
+            if isinstance(item, CachedEmbeddingTransfer):
+                results.append(item.item.precomputed_embeddings)
+            else:
+                results.append(next(encoded))
+        return results
 
     def split_embeddings(
         self,
@@ -517,20 +588,28 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self.detach_failure(exc)
-        if len(batch) == 1:
+        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
+            # Let the base worker fail current/queued futures and stop. An
+            # incomplete graph handshake is not safe for OOM cleanup or retry.
             logger.error(
-                "Qwen3-ASR audio encode failed:\n%s",
-                failure.formatted_traceback,
+                f"Terminal encoder graph failure:\n{failure.formatted_traceback}"
             )
+            raise failure.exception
         else:
-            logger.error(
-                "Qwen3-ASR batched audio encode failed for %d items; "
-                "retrying per item:\n%s",
-                len(batch),
-                failure.formatted_traceback,
-            )
-        self.recover_after_failure(failure.exception)
-        return failure.exception
+            if len(batch) == 1:
+                logger.error(
+                    "Qwen3-ASR audio encode failed:\n%s",
+                    failure.formatted_traceback,
+                )
+            else:
+                logger.error(
+                    "Qwen3-ASR batched audio encode failed for %d items; "
+                    "retrying per item:\n%s",
+                    len(batch),
+                    failure.formatted_traceback,
+                )
+            self.recover_after_failure(failure.exception)
+            return failure.exception
 
     def handle_item_failure(
         self,
@@ -538,12 +617,18 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc: Exception,
     ) -> Exception:
         failure = self.detach_failure(exc)
-        logger.error(
-            "Qwen3-ASR per-item audio encode retry failed:\n%s",
-            failure.formatted_traceback,
-        )
-        self.recover_after_failure(failure.exception)
-        return failure.exception
+        if isinstance(failure.exception, EncoderGraphUnrecoverableError):
+            logger.error(
+                f"Terminal encoder graph failure:\n{failure.formatted_traceback}"
+            )
+            raise failure.exception
+        else:
+            logger.error(
+                "Qwen3-ASR per-item audio encode retry failed:\n%s",
+                failure.formatted_traceback,
+            )
+            self.recover_after_failure(failure.exception)
+            return failure.exception
 
     @staticmethod
     def detach_failure(exc: Exception) -> DetachedFailure:
@@ -556,8 +641,10 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         exc.__traceback__ = None
         exc.__cause__ = None
         exc.__context__ = None
-        if isinstance(exc, torch.OutOfMemoryError):
-            detached: Exception = torch.OutOfMemoryError(message)
+        if isinstance(exc, EncoderGraphUnrecoverableError):
+            detached: Exception = EncoderGraphUnrecoverableError(message)
+        elif isinstance(exc, torch.OutOfMemoryError):
+            detached = torch.OutOfMemoryError(message)
         elif isinstance(exc, ValueError):
             detached = ValueError(message)
         else:

@@ -448,11 +448,6 @@ def make_qwen3_asr_scheduler_adapters(
         )
         sampling_params.normalize(tokenizer=None)
 
-        if audio_encoder_service is not None and cached_embedding is not None:
-            audio_encoder_service.attach_embedding(audio_item, cached_embedding)
-        else:
-            pass
-
         req = Req(
             rid=payload.request_id,
             origin_input_text="",
@@ -476,8 +471,23 @@ def make_qwen3_asr_scheduler_adapters(
             streaming_prefix_text=retained_prefix_text,
             stage_payload=payload,
         )
-        if audio_encoder_service is None or cached_embedding is not None:
+        if audio_encoder_service is None:
             return req_data
+        else:
+            pass
+        if cached_embedding is not None:
+            ready = audio_encoder_service.submit_cached_embedding(
+                audio_item, cached_embedding
+            )
+            if ready.done():
+                ready.result()
+                return req_data
+            else:
+                pass
+            return DeferredAdmission(
+                value=req_data,
+                ready=ready,
+            )
         else:
             pass
         # note (guozhihao-224): a request is only admitted with its complete

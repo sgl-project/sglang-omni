@@ -707,7 +707,10 @@ def test_qwen3_asr_rejects_full_context_before_mel_extraction(
         request_builder(payload)
 
 
-def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None:
+@pytest.mark.parametrize("ready_immediately", [False, True])
+def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(
+    monkeypatch, ready_immediately: bool
+) -> None:
     class _UnexpectedFeatureExtractor:
         hop_length = 160
 
@@ -718,6 +721,8 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
         def __init__(self) -> None:
             self.lookup: tuple[str, int] | None = None
             self.embedding = torch.zeros((13, 4))
+            self.ready = concurrent.futures.Future()
+            self.item = None
 
         def lookup_cached_embedding(
             self, audio_fingerprint: str, expected_tokens: int
@@ -725,9 +730,13 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
             self.lookup = (audio_fingerprint, expected_tokens)
             return self.embedding
 
-        def attach_embedding(self, item, embedding: torch.Tensor) -> None:
-            item.precomputed_embeddings = embedding
-            item.feature = None
+        def submit_cached_embedding(self, item, embedding: torch.Tensor):
+            assert embedding is self.embedding
+            self.item = item
+            if ready_immediately:
+                item.precomputed_embeddings = embedding
+                self.ready.set_result(embedding)
+            return self.ready
 
         def encode_item(self, item) -> None:
             raise AssertionError("encoder should not be called on a cache hit")
@@ -753,13 +762,26 @@ def test_qwen3_asr_embedding_cache_hit_skips_mel_extraction(monkeypatch) -> None
         data={},
     )
 
-    data = request_builder(payload)
-
-    assert isinstance(data, Qwen3ASRRequestData)
+    result = request_builder(payload)
+    if ready_immediately:
+        assert isinstance(result, Qwen3ASRRequestData)
+        data = result
+    else:
+        assert isinstance(result, DeferredAdmission)
+        assert result.ready is encoder_service.ready
+        assert not result.ready.done()
+        data = result.value
     item = data.req.multimodal_inputs.mm_items[0]
     assert encoder_service.lookup == (data.req.extra_key, 13)
     assert item.feature is None
-    assert item.precomputed_embeddings is encoder_service.embedding
+    assert item is encoder_service.item
+    if ready_immediately:
+        assert item.precomputed_embeddings is encoder_service.embedding
+    else:
+        assert item.precomputed_embeddings is None
+        item.precomputed_embeddings = encoder_service.embedding
+        encoder_service.ready.set_result(encoder_service.embedding)
+        assert result.ready.result() is encoder_service.embedding
     assert item.num_audio_tokens == 13
 
 
