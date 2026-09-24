@@ -9,14 +9,17 @@ choice belongs on the platform rather than in a per-model branch.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 import torch
 
 
 class DeviceGraphBackend(Protocol):
     """Records a model-owned graph on one accelerator."""
+
+    supports_graph_task_update = False
 
     def capture(
         self,
@@ -28,8 +31,15 @@ class DeviceGraphBackend(Protocol):
         """Open a capture and yield the graph it records into."""
         ...
 
+    def replay(
+        self,
+        graph: Any,
+    ) -> None:
+        """Replay a recorded graph."""
+        graph.replay()
 
-class CudaDeviceGraphBackend:
+
+class CudaDeviceGraphBackend(DeviceGraphBackend):
     """CUDA, and the backends that present through torch.cuda: HIP and MUSA."""
 
     @contextmanager
@@ -58,8 +68,10 @@ class CudaDeviceGraphBackend:
             yield graph
 
 
-class NpuDeviceGraphBackend:
+class NpuDeviceGraphBackend(DeviceGraphBackend):
     """Ascend NPU."""
+
+    supports_graph_task_update = True
 
     @contextmanager
     def capture(
@@ -87,7 +99,7 @@ class NpuDeviceGraphBackend:
             yield graph
 
 
-class XpuDeviceGraphBackend:
+class XpuDeviceGraphBackend(DeviceGraphBackend):
     """Intel XPU."""
 
     @contextmanager

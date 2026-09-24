@@ -12,6 +12,9 @@ import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Modality, MultimodalDataItem
 
+from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
+    EncoderGraphUnrecoverableError,
+)
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
@@ -163,6 +166,165 @@ def test_submit_returns_before_encoding_completes() -> None:
     gate.set()
     future.result(timeout=2)
     assert item.precomputed_embeddings.shape == (3, _HIDDEN_SIZE)
+
+
+def test_terminal_graph_failure_stops_worker_and_fails_pending(monkeypatch) -> None:
+    service = _make_service(max_batch_size=1)
+    service.device = SimpleNamespace(type="npu")
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def encode(items):
+        calls.append("encode")
+        entered.set()
+        assert release.wait(timeout=3)
+        raise EncoderGraphUnrecoverableError("restart encoder process")
+
+    def forbidden_recovery(exc):
+        pytest.fail("terminal graph failure must not synchronize or empty cache")
+
+    monkeypatch.setattr(service, "encode_batch", encode)
+    monkeypatch.setattr(service, "recover_after_failure", forbidden_recovery)
+    first = service.submit_item(_item(1, 3))
+    try:
+        assert entered.wait(timeout=2)
+        follower = service.submit_item(_item(1, 3))
+        pending = service.submit_cached_embedding(
+            _item(2, 3, with_feature=False), torch.ones(3, _HIDDEN_SIZE)
+        )
+    finally:
+        release.set()
+    for future in (first, follower, pending):
+        with pytest.raises(EncoderGraphUnrecoverableError, match="restart"):
+            future.result(timeout=2)
+    service.thread.join(timeout=2)
+    assert not service.thread.is_alive()
+    assert calls == ["encode"]
+    with pytest.raises(RuntimeError, match="worker has failed"):
+        service.submit_cached_embedding(
+            _item(3, 3, with_feature=False), torch.ones(3, _HIDDEN_SIZE)
+        )
+
+
+def test_terminal_graph_failure_during_item_retry_skips_recovery(monkeypatch):
+    service = _make_service()
+    recovery = []
+    monkeypatch.setattr(
+        service, "recover_after_failure", lambda exc: recovery.append(exc)
+    )
+    try:
+        raise EncoderGraphUnrecoverableError("restart encoder process")
+    except EncoderGraphUnrecoverableError as error:
+        with pytest.raises(EncoderGraphUnrecoverableError):
+            service.handle_item_failure(SimpleNamespace(), error)
+    assert recovery == []
+
+
+def test_cached_transfer_failure_rejects_admission(monkeypatch) -> None:
+    service = _make_service()
+    service.device = SimpleNamespace(type="npu")
+
+    def fail():
+        raise RuntimeError("transfer sync failed")
+
+    monkeypatch.setattr(service, "attach_embedding", service.set_precomputed_embedding)
+    monkeypatch.setattr(service, "synchronize_batch", fail)
+    future = service.submit_cached_embedding(_item(7, 3), torch.ones((3, _HIDDEN_SIZE)))
+    with pytest.raises(RuntimeError, match="transfer sync failed"):
+        future.result(timeout=2)
+    assert service.model.encode_calls == 0
+
+
+def test_cached_transfer_enters_owned_stream_before_copy(monkeypatch) -> None:
+    service = _make_service()
+    service.device = SimpleNamespace(type="npu")
+    target = _item(7, 3, with_feature=False)
+    source = torch.ones((3, _HIDDEN_SIZE))
+    reached, release = threading.Event(), threading.Event()
+    active = threading.local()
+    calls = []
+    worker_threads = []
+    consumer_stream = object()
+
+    def synchronize():
+        assert getattr(active, "stream", None) is None
+        calls.append("synchronize")
+        reached.set()
+        assert release.wait(timeout=3)
+
+    owned_stream = SimpleNamespace(device=torch.device("cpu"), synchronize=synchronize)
+    service.stream = owned_stream
+
+    @contextlib.contextmanager
+    def stream_context(stream):
+        assert stream is owned_stream
+        active.stream = stream
+        calls.append("enter")
+        try:
+            yield
+        finally:
+            active.stream = None
+            calls.append("exit")
+
+    module = SimpleNamespace(
+        stream=stream_context, default_stream=lambda _: consumer_stream
+    )
+    monkeypatch.setattr(torch, "get_device_module", lambda _device=None: module)
+    original_to = torch.Tensor.to
+
+    def copy(tensor, *args, **kwargs):
+        if tensor is source:
+            assert active.stream is owned_stream
+            assert kwargs["non_blocking"] is True
+            calls.append("copy")
+            worker_threads.append(threading.current_thread().name)
+            return tensor.clone()
+        return original_to(tensor, *args, **kwargs)
+
+    def record_stream(tensor, stream):
+        assert active.stream is owned_stream
+        assert stream is consumer_stream
+        calls.append("record_lifetime")
+
+    monkeypatch.setattr(torch.Tensor, "to", copy)
+    monkeypatch.setattr(torch.Tensor, "record_stream", record_stream)
+    future = service.submit_cached_embedding(target, source)
+    try:
+        assert reached.wait(timeout=2)
+        assert not future.done()
+        assert calls == ["enter", "copy", "record_lifetime", "exit", "synchronize"]
+    finally:
+        release.set()
+    assert future.result(timeout=2) is target.precomputed_embeddings
+    assert worker_threads == ["qwen3-asr-audio-encode"]
+    assert service.model.encode_calls == 0
+
+
+def test_cached_transfer_stays_on_caller_for_non_npu(monkeypatch) -> None:
+    service = _make_service()
+    target = _item(7, 3, with_feature=False)
+    source = torch.ones((3, _HIDDEN_SIZE))
+    attached = source.clone()
+    caller = threading.current_thread().name
+    threads = []
+
+    def attach(item, embedding):
+        assert embedding is source
+        threads.append(threading.current_thread().name)
+        service.set_precomputed_embedding(item, attached)
+
+    def forbid_submit(_item):
+        pytest.fail("non-NPU cache hits must not enter the encoder worker queue")
+
+    monkeypatch.setattr(service, "attach_embedding", attach)
+    monkeypatch.setattr(service, "submit", forbid_submit)
+
+    future = service.submit_cached_embedding(target, source)
+
+    assert future.done()
+    assert future.result() is source
+    assert target.precomputed_embeddings is attached
+    assert threads == [caller]
 
 
 def test_async_submissions_form_full_batch_without_blocked_callers() -> None:
