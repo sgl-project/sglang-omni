@@ -10,7 +10,7 @@ import json
 import queue
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 
@@ -638,11 +638,11 @@ def resolve_x_vector_only_mode(
 
 
 def build_generation_kwargs(
-    params: dict[str, Any],
+    params: Mapping[str, object],
     *,
     tts_params: dict[str, TTSParamValueT],
-    tts_engine_params: dict[str, Any],
-) -> dict[str, Any]:
+    tts_engine_params: Mapping[str, object],
+) -> dict[str, object]:
     explicit_generation_params = tts_params.get("explicit_generation_params")
     if isinstance(explicit_generation_params, (list, tuple, set)):
         explicit_fields = {str(field) for field in explicit_generation_params}
@@ -666,7 +666,7 @@ def build_generation_kwargs(
     max_new_tokens = selected_fields.get("max_new_tokens")
     if max_new_tokens is None:
         max_new_tokens = QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS
-    generation_kwargs: dict[str, Any] = {"max_new_tokens": int(max_new_tokens)}
+    generation_kwargs: dict[str, object] = {"max_new_tokens": int(max_new_tokens)}
     for field in _GENERATION_FIELDS:
         if field == "max_new_tokens":
             continue
