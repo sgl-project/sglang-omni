@@ -19,8 +19,7 @@ from __future__ import annotations
 import logging
 import queue as _queue_mod
 import time
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 from sglang_omni.models.ming_omni.components.streaming_text import (
     SegmenterConfig,
@@ -53,7 +52,6 @@ class _RequestState:
     aborted: bool = False
     segment_count: int = 0
     first_text_ms: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class MingStreamingSegmenterScheduler:

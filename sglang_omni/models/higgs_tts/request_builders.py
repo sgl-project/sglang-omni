@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypedDict
+from typing import Callable, TypedDict
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -51,7 +51,7 @@ class HiggsSGLangRequestData(SGLangARRequestData):
     return_omni_rollout: bool = False
     generation_done: bool = False
     engine_start_s: float = 0.0
-    stream_metadata: dict[str, Any] | None = None
+    stream_metadata: dict[str, str | int | bool] | None = None
     stream_code_buffer: list[torch.Tensor] = field(default_factory=list)
     stream_code_first_flush_done: bool = False
     stream_code_seen_rows: int = 0
