@@ -11,8 +11,9 @@ The code branch starts from main at
 `6307e2fac13739bd77aa93f3696267906e411746`; the measurements remain tied to
 `73e443bbacd5972235003ccd382d762529bb5bc4`.
 
-The pull request is a **draft pending final recovery audit and acceptance**. Sampling
-is complete; that does not imply every quality observation passed. The
+Sampling and the evidence/recovery audit are complete. The 118 selected reference
+updates are accepted for this historical run; that does not imply every quality
+observation passed. The
 [complete candidate inventory](h100_ci_calibration_20260923.csv) records all 255
 mappings, original/candidate references, actual gates, and whether this patch
 includes each field. Candidate references in deferred rows are not applied.
@@ -137,9 +138,9 @@ The earlier Qwen3-TTS 163.84-second repetitive output remains recorded separatel
 All 72 TTS mappings are reported in the inventory, but none is applied here.
 Production environment alignment and quality disposition require separate work.
 
-## Validation and remaining audit
+## Validation and limitations
 
-Completed evidence at the time of this draft:
+Completed validation:
 
 - Native full-scope status and strict readiness: ASR 17/17, TTS 34/34, Omni 47/47.
 - Original native observations and numerical assertion failures retained;
@@ -151,7 +152,8 @@ Completed evidence at the time of this draft:
 - Changed-file pre-commit hooks pass, including formatting and Python AST checks.
   The all-files run passed its non-Rust checks after formatting one changed file;
   the Rust formatting hook could not run because local cargo is unavailable. No
-  Rust files are changed.
+  Rust files are changed. GitHub lint, documentation build and test-layout checks
+  passed on the initial PR revision.
 - Selected patch values match all 118 corresponding native candidate values;
   source AST is unchanged after masking numeric literals. Deferred and fixed
   fields remain at their original values.
@@ -164,14 +166,20 @@ Completed evidence at the time of this draft:
   Invalid samples remain recorded: ASR 122/3,265, archived partial TTS 79/1,259,
   fresh TTS 199/4,637 and Omni 199/3,483. Process/thread read gaps prevent a
   claim of continuous observation or zero foreign load.
+- Recovery partition and bootstrap checks pass: 3,228 original archive entries,
+  57 stop-snapshot entries, and three bootstrap archives containing 24, 84 and
+  48 entries all match their manifests. Original ASR observations are preserved;
+  fresh TTS and Omni observations do not reference the discarded partial cohort.
+- Native status, strict audit and apply-plan agree on the measured commit,
+  tool identity and all 98 stages, each with at least five clean full-sample
+  observations. Terminal records confirm idle calibration GPUs, released lane
+  reservation and no cleanup errors.
 
-Pending before this draft is declared ready for merge:
-
-- Finish recovery partition/bootstrap-manifest and terminal-command checks.
-  Full media download is separate from the completed remote evidence audit.
-- Complete final acceptance of the selected references after the remaining
-  recovery audit. Full-scope sampling is not described as all pytest jobs
-  passing.
+The acceptance covers the 118 selected historical references only. TTS environment
+alignment and the disclosed quality issues remain separate work. The full media
+backup download is separate from the completed remote hash and archive audit.
+Full-scope sampling is not described as all pytest jobs passing, and GPU CI on
+the newer main revision is a separate validation.
 
 No quality anomaly or excluded observation has been removed to obtain a green
 report. Later code changes can be calibrated in a separate run; they are not
