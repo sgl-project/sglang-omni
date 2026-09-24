@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import os
 import subprocess
 import sys
@@ -19,16 +20,87 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     SAMPLES_PER_CODEC_TOKEN,
     MiniCPMOCode2Wav,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    MiniCPMOReferenceEncodeHook,
+    resolve_token2wav_assets,
+)
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
-from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.payload_types import (
+    MiniCPMOPipelineState,
+    SpeakerPromptInputs,
+)
 from sglang_omni.models.minicpm_o.routing import (
-    code2wav_reference_audio,
+    project_preprocessing_to_thinker,
     project_talker_to_code2wav,
+    project_thinker_to_decode,
+    project_thinker_to_talker,
+    speaker_reference_audio,
 )
 from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("frequency_size", [255, 256])
+def test_timestep_embedding_matches_reference(
+    dtype: torch.dtype, frequency_size: int
+) -> None:
+    model = TimestepEmbedder(16, frequency_size)
+    model = model.to(dtype)
+    model.eval()
+    t = torch.linspace(0, 1, 11, dtype=dtype)
+    half = frequency_size // 2
+    frequencies = torch.exp(-math.log(10000) * torch.arange(half) / half)
+    frequencies = frequencies.to(t)
+    scaled_timesteps = t * 1000
+    angles = scaled_timesteps[:, None] * frequencies[None, :]
+    embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
+    if frequency_size % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    torch.testing.assert_close(model(t), model.mlp(embedding), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_timestep_embedding_autocast_preserves_frequencies(dtype: torch.dtype) -> None:
+    model = TimestepEmbedder(16)
+    model = model.to(device="cuda", dtype=dtype)
+    model.eval()
+    t = torch.linspace(0, 1, 11, device="cuda", dtype=torch.float32)
+    frequencies = torch.exp(-math.log(10000) * torch.arange(128) / 128)
+    frequencies = frequencies.to(t)
+    scaled_timesteps = t * 1000
+    angles = scaled_timesteps[:, None] * frequencies[None, :]
+    embedding = torch.cat([angles.cos(), angles.sin()], dim=-1)
+    with torch.inference_mode(), torch.amp.autocast("cuda", dtype=dtype):
+        torch.testing.assert_close(model(t), model.mlp(embedding), rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_timestep_embedding_cuda_graph_replays_new_inputs() -> None:
+    model = TimestepEmbedder(16)
+    model = model.cuda()
+    model.eval()
+    t = torch.zeros(2, device="cuda")
+    with torch.inference_mode():
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                model(t)
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = model(t)
+        t.fill_(0.25)
+        expected = model(t)
+        graph.replay()
+        torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
 
 def test_native_vocoder_import_does_not_require_legacy_packages() -> None:
@@ -75,14 +147,41 @@ def _checkpoint_dir() -> Path | None:
     return None
 
 
+def _default_speaker_prompt(checkpoint: Path) -> SpeakerPromptInputs:
+    asset_dir, default_reference = resolve_token2wav_assets(str(checkpoint))
+    hook = MiniCPMOReferenceEncodeHook(
+        asset_dir,
+        device=torch.device("cuda:0"),
+        default_reference=default_reference,
+        onnx_intra_op_threads=16,
+    )
+    return hook.encode_one(None)
+
+
+def _speaker_prompt(
+    prompt_len: int, *, mel_frames: int | None = None
+) -> SpeakerPromptInputs:
+    return {
+        "speech_tokens": torch.zeros(1, prompt_len, dtype=torch.int32),
+        "speech_token_len": torch.tensor([prompt_len], dtype=torch.int32),
+        "speaker_embedding": torch.zeros(1, 4),
+        "prompt_mel": torch.zeros(1, mel_frames or prompt_len * 2, 80),
+    }
+
+
 @pytest.mark.accelerator
 def test_native_vocoder_with_checkpoint() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
     tokens = [1498, 1734, 3732, 3726, 3645]
-    output = model(codec_tokens=torch.tensor(tokens))
+    output = model(
+        codec_tokens=torch.tensor(tokens),
+        speaker_prompt=_default_speaker_prompt(checkpoint),
+    )
     waveform = output["waveform"]
     assert output["sample_rate"] == 24000
     assert waveform.dtype == np.float32
@@ -97,12 +196,17 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
+    prompt = _default_speaker_prompt(checkpoint)
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
-    batched = model.vocode([tokens_a, tokens_b], None)
-    single_a = model.vocode([tokens_a], None)[0]
-    single_b = model.vocode([tokens_b], None)[0]
+    batched = model.vocode([tokens_a, tokens_b], [prompt, prompt])
+    decoded_a = model.vocode([tokens_a], [prompt])
+    decoded_b = model.vocode([tokens_b], [prompt])
+    single_a = decoded_a[0]
+    single_b = decoded_b[0]
     assert (
         batched[0].shape == single_a.shape == (len(tokens_a) * SAMPLES_PER_CODEC_TOKEN,)
     )
@@ -122,12 +226,14 @@ def _payload(
     tokens: list[int] | None = None,
     params: dict[str, object] | None = None,
     metadata: dict[str, object] | None = None,
+    speaker_prompt: SpeakerPromptInputs | None = None,
 ) -> StagePayload:
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs=None, params=params or {}, metadata=metadata or {}),
         data=MiniCPMOPipelineState(
-            engine_outputs={"talker": {"codec_tokens": torch.tensor(tokens or [1, 2])}}
+            engine_outputs={"talker": {"codec_tokens": torch.tensor(tokens or [1, 2])}},
+            speaker_prompt=speaker_prompt,
         ).to_dict(),
     )
 
@@ -150,13 +256,57 @@ def test_chat_api_forwards_reference_to_vocoder() -> None:
     payload = _payload(
         params=build_params(generate_request), metadata=generate_request.metadata
     )
-    assert code2wav_reference_audio(project_talker_to_code2wav(payload)) == b"reference"
+    assert speaker_reference_audio(payload) == b"reference"
 
 
 def test_invalid_reference_does_not_silently_use_default() -> None:
     payload = _payload(params={"ref_audio": "/tmp/ref.wav"})
     with pytest.raises(ValueError, match="inline audio"):
-        code2wav_reference_audio(payload)
+        speaker_reference_audio(payload)
+
+
+def test_speaker_prompt_reaches_code2wav_but_not_decode() -> None:
+    prompt = _speaker_prompt(3)
+    payload = StagePayload(
+        request_id="speaker",
+        request=OmniRequest(inputs=None, params={}, metadata={}),
+        data=MiniCPMOPipelineState(
+            prompt={"prompt_text": "", "input_ids": torch.tensor([1])},
+            speaker_prompt=prompt,
+        ).to_dict(),
+    )
+    thinker = project_preprocessing_to_thinker(payload)
+    thinker_state = MiniCPMOPipelineState.from_dict(thinker.data)
+    thinker_state.thinker_out = {"output_ids": [1]}
+    thinker.data = thinker_state.to_dict()
+    talker = project_thinker_to_talker(thinker)
+    talker_state = MiniCPMOPipelineState.from_dict(talker.data)
+    talker_state.engine_outputs["talker"] = {"codec_tokens": torch.tensor([1])}
+    talker.data = talker_state.to_dict()
+    code2wav = project_talker_to_code2wav(talker)
+    assert MiniCPMOPipelineState.from_dict(code2wav.data).speaker_prompt is prompt
+    decode = project_thinker_to_decode(thinker)
+    assert "speaker_prompt" not in decode.data
+
+
+def test_reference_service_reuses_references_across_calls() -> None:
+    hook = object.__new__(MiniCPMOReferenceEncodeHook)
+    hook.default_reference = None
+    hook.model_revision = "test"
+    hook.encoder_config_hash = "test"
+    hook.extract = MagicMock(return_value=_speaker_prompt(2))
+    service = ReferenceEncodeService(hook, max_items=2)
+    first = service.get_or_encode(b"a")
+    first["speech_tokens"].add_(7)
+    cached_prompt = service.get_or_encode(b"a")
+    cached_tokens_are_zero = cached_prompt["speech_tokens"].eq(0)
+    assert cached_tokens_are_zero.all()
+    # note(liuqihao): inserting c evicts a, so the final lookup must encode it again.
+    for reference in (b"b", b"c", b"a"):
+        service.get_or_encode(reference)
+    assert hook.extract.call_count == 4
+    with pytest.raises(ValueError, match="No speaker-reference"):
+        service.get_or_encode(None)
 
 
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
@@ -165,28 +315,44 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.max_batch_size == 8
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
+    assert code2wav.factory.hift_max_padding_waste == 1.5
 
 
-def test_vocode_slices_waveforms_to_token_lengths() -> None:
+def test_vocode_rejects_mismatched_speaker_prompt_count() -> None:
+    model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    with pytest.raises(ValueError, match="does not match"):
+        model.vocode([[1], [2]], [_speaker_prompt(1)])
+
+
+def _batch_model() -> MiniCPMOCode2Wav:
     class FakeFlow:
         up_rate = 2
 
         def inference(
             self,
             speech_tokens: torch.Tensor,
-            speech_tokens_lens: torch.Tensor,
-            *args: object,
+            speech_tokens_lens: list[int],
+            prompt_tokens: torch.Tensor,
+            prompt_tokens_lens: list[int],
+            prompt_mels: torch.Tensor,
+            speaker_embedding: torch.Tensor,
+            n_timesteps: int,
         ) -> torch.Tensor:
-            frames = speech_tokens.shape[1] * self.up_rate
-            return torch.zeros(speech_tokens.shape[0], 80, frames)
+            frames = max(speech_tokens_lens) * self.up_rate
+            first_token = speech_tokens[:, :1, None].float()
+            return first_token.expand(-1, 80, frames)
 
     class FakeHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
-            samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
-            wav = speech_feat.new_ones(speech_feat.shape[0], 1, samples)
-            return wav, None
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
+            waveform = speech_feat[:, :1].repeat_interleave(
+                SAMPLES_PER_CODEC_TOKEN // 2, dim=-1
+            )
+            return waveform, None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    model.hift_max_padding_waste = 1.5
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
         dtype=torch.float32,
@@ -194,33 +360,136 @@ def test_vocode_slices_waveforms_to_token_lengths() -> None:
         flow=FakeFlow(),
         hift=FakeHiFT(),
     )
-    model.speaker_prompt = lambda prompt_wav: (
-        torch.zeros(1, 1, dtype=torch.int32),
-        torch.tensor([1], dtype=torch.int32),
-        torch.zeros(1, 4),
-        torch.zeros(1, 1, 80),
+    return model
+
+
+def test_vocode_mixed_references_and_lengths_share_one_batch() -> None:
+    model = _batch_model()
+    prompts = [_speaker_prompt(1), _speaker_prompt(3, mel_frames=5), _speaker_prompt(2)]
+    for index, prompt in enumerate(prompts):
+        prompt["speech_tokens"].fill_(index + 1)
+        prompt["speaker_embedding"].fill_(index + 2)
+        prompt["prompt_mel"].fill_(index + 3)
+    flow = model.token2wav.flow
+    flow.inference = MagicMock(wraps=flow.inference)
+    waveforms = model.vocode([[1, 2], [3, 4, 5], [6]], prompts)
+    flow.inference.assert_called_once()
+    tokens, lengths, references, reference_lengths, mels, embeddings, _ = (
+        flow.inference.call_args.args
     )
-    waveforms = model.vocode([[1, 2], [3, 4, 5]], b"ref")
+    torch.testing.assert_close(
+        tokens, torch.tensor([[1, 2, 0], [3, 4, 5], [6, 0, 0]], dtype=torch.int32)
+    )
+    assert lengths == [2, 3, 1]
+    assert reference_lengths == [1, 3, 2]
+    for row, length in enumerate(reference_lengths):
+        torch.testing.assert_close(
+            references[row, :length], prompts[row]["speech_tokens"][0]
+        )
+        torch.testing.assert_close(
+            embeddings[row], prompts[row]["speaker_embedding"][0]
+        )
+        mel_matches_prompt = mels[row, : length * 2].eq(row + 3)
+        assert mel_matches_prompt.all()
     assert [wave.shape for wave in waveforms] == [
         (2 * SAMPLES_PER_CODEC_TOKEN,),
         (3 * SAMPLES_PER_CODEC_TOKEN,),
+        (SAMPLES_PER_CODEC_TOKEN,),
     ]
+
+    for waveform, value in zip(waveforms, [1, 3, 6], strict=True):
+        np.testing.assert_array_equal(waveform, np.full_like(waveform, value))
+
+
+def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
+    class BoundarySensitiveHiFT:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
+            self.batch_sizes.append(speech_feat.shape[0])
+            positions = torch.arange(speech_feat.shape[-1])
+            valid_positions = positions < torch.tensor(mel_lengths)[:, None]
+            mask = valid_positions.unsqueeze(1)
+            kernel = speech_feat.new_ones(1, 1, 3)
+            hidden = (
+                torch.nn.functional.conv1d(speech_feat[:, :1], kernel, padding=1) + 1
+            ) * mask
+            samples = torch.nn.functional.conv1d(hidden, kernel, padding=1)
+            waveform = samples.repeat_interleave(SAMPLES_PER_CODEC_TOKEN // 2, dim=-1)
+            return waveform, None
+
+    model = _batch_model()
+    hift = BoundarySensitiveHiFT()
+    model.token2wav.hift = hift
+    sequences = [[1, 2], [3, 4, 5], [6, 7]]
+    prompt = _speaker_prompt(1)
+    batched = model.vocode(sequences, [prompt] * len(sequences))
+    assert hift.batch_sizes == [3]
+    for tokens, waveform in zip(sequences, batched, strict=True):
+        decoded = model.vocode([tokens], [prompt])
+        reference = decoded[0]
+        np.testing.assert_array_equal(waveform, reference)
+
+
+def test_vocode_splits_hift_batch_past_padding_budget() -> None:
+    model = _batch_model()
+    model.hift_max_padding_waste = 1.0
+    calls: list[list[int]] = []
+    fake_hift = model.token2wav.hift
+
+    def record(
+        speech_feat: torch.Tensor, mel_lengths: list[int]
+    ) -> tuple[torch.Tensor, None]:
+        calls.append(mel_lengths)
+        return fake_hift(speech_feat, mel_lengths)
+
+    model.token2wav.hift = record
+    model.vocode([[1, 2], [3, 4, 5], [6, 7]], [_speaker_prompt(1)] * 3)
+    assert calls == [[4, 4], [6]]
+
+
+def test_hift_padded_batch_matches_single_rows(monkeypatch) -> None:
+    # note(liuqihao): disable random excitation to isolate padding boundary errors.
+    monkeypatch.setattr(torch, "rand", torch.zeros)
+    monkeypatch.setattr(torch, "randn_like", torch.zeros_like)
+    torch.manual_seed(0)
+    hift = HiFTGenerator().eval()
+    mel_lengths = [14, 9, 6]
+    mel = torch.randn(len(mel_lengths), 80, max(mel_lengths))
+    for row, length in enumerate(mel_lengths):
+        mel[row, :, length:] = 0
+
+    padded, _ = hift(speech_feat=mel, mel_lengths=mel_lengths)
+    unmasked, _ = hift(speech_feat=mel)
+    samples_per_frame = SAMPLES_PER_CODEC_TOKEN // 2
+    short_row = len(mel_lengths) - 1
+    for row, length in enumerate(mel_lengths):
+        single, _ = hift(speech_feat=mel[row : row + 1, :, :length])
+        torch.testing.assert_close(
+            padded[row, : length * samples_per_frame],
+            single[0],
+            rtol=1e-4,
+            atol=1e-5,
+        )
+        if row == short_row:
+            tail_error = (unmasked[row, : length * samples_per_frame] - single[0]).abs()
+            assert tail_error.max() > 1e-3
 
 
 def test_vocode_rejects_empty_sequences() -> None:
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
-    assert model.vocode([], b"ref") == []
+    assert model.vocode([], []) == []
     with pytest.raises(ValueError, match="non-empty"):
-        model.vocode([[1], []], b"ref")
+        model.vocode([[1], []], [_speaker_prompt(1)] * 2)
 
 
 def _fake_code2wav_model() -> MagicMock:
     fake = MagicMock()
     fake.sample_rate = 24000
-    fake.resolve_prompt_wav.side_effect = lambda reference: (
-        b"default" if reference is None else reference
-    )
-    fake.vocode.side_effect = lambda sequences, reference: [
+    fake.vocode.side_effect = lambda sequences, speaker_prompts: [
         np.full(
             len(tokens) * SAMPLES_PER_CODEC_TOKEN,
             float(len(tokens)),
@@ -231,47 +500,28 @@ def _fake_code2wav_model() -> MagicMock:
     return fake
 
 
-def test_vocode_payloads_uses_one_batch_path() -> None:
+def test_vocode_payloads_uses_preprocessed_speaker_prompts() -> None:
     fake = _fake_code2wav_model()
-    output = vocode_code2wav_payloads(fake, [_payload(tokens=[7, 8, 9])])[0]
-    fake.vocode.assert_called_once_with([[7, 8, 9]], b"default")
-    assert output.data["sample_rate"] == 24000
-    assert output.data["audio_waveform_shape"] == [3 * SAMPLES_PER_CODEC_TOKEN]
-
-
-def test_vocode_payloads_groups_by_resolved_reference() -> None:
-    fake = _fake_code2wav_model()
+    prompts = [_speaker_prompt(1), _speaker_prompt(3), _speaker_prompt(2)]
     outputs = vocode_code2wav_payloads(
         fake,
         [
-            _payload(
-                request_id="a", tokens=[1, 2], params={"ref_audio": _data_uri(b"spk-a")}
-            ),
-            _payload(
-                request_id="b", tokens=[3], params={"ref_audio": _data_uri(b"spk-b")}
-            ),
-            _payload(
-                request_id="c",
-                tokens=[4, 5, 6],
-                params={"ref_audio": _data_uri(b"spk-a")},
-            ),
+            _payload(request_id="a", tokens=[1, 2], speaker_prompt=prompts[0]),
+            _payload(request_id="b", tokens=[3], speaker_prompt=prompts[1]),
+            _payload(request_id="c", tokens=[4, 5, 6], speaker_prompt=prompts[2]),
         ],
     )
-    assert fake.vocode.call_count == 2
-    batched_calls = {call.args[1]: call.args[0] for call in fake.vocode.call_args_list}
-    assert batched_calls[b"spk-a"] == [[1, 2], [4, 5, 6]]
-    assert batched_calls[b"spk-b"] == [[3]]
+    sequences, speaker_prompts = fake.vocode.call_args.args
+    assert sequences == [[1, 2], [3], [4, 5, 6]]
+    assert all(a is b for a, b in zip(speaker_prompts, prompts, strict=True))
     assert [out.data["audio_waveform_shape"][0] for out in outputs] == [
         2 * SAMPLES_PER_CODEC_TOKEN,
         SAMPLES_PER_CODEC_TOKEN,
         3 * SAMPLES_PER_CODEC_TOKEN,
     ]
+    assert outputs[0].data["sample_rate"] == 24000
 
 
-def test_vocode_payloads_resolves_default_reference_before_grouping() -> None:
-    fake = _fake_code2wav_model()
-    vocode_code2wav_payloads(
-        fake,
-        [_payload(request_id="a", tokens=[1]), _payload(request_id="b", tokens=[2, 3])],
-    )
-    fake.vocode.assert_called_once_with([[1], [2, 3]], b"default")
+def test_vocode_payloads_rejects_missing_speaker_prompt() -> None:
+    with pytest.raises(RuntimeError, match="without speaker conditioning"):
+        vocode_code2wav_payloads(_fake_code2wav_model(), [_payload(tokens=[1])])

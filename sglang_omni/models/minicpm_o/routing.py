@@ -44,7 +44,7 @@ def should_generate_audio_output(
     return modalities is None or "audio" in modalities
 
 
-def code2wav_reference_audio(payload: StagePayload) -> bytes | None:
+def speaker_reference_audio(payload: StagePayload) -> bytes | None:
     """Read an explicit, inline speaker reference from request parameters."""
     from sglang_omni.utils.audio import decode_audio_data_uri
     from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
@@ -132,6 +132,7 @@ def project_preprocessing_to_thinker(payload: StagePayload) -> StagePayload:
         mm_inputs=dict(state.mm_inputs),
         encoder_inputs=project_encoder_input_metadata(state.encoder_inputs),
         stream_state=dict(state.stream_state),
+        speaker_prompt=state.speaker_prompt,
     )
     return payload_with_state(payload, projected)
 
@@ -182,6 +183,7 @@ def project_thinker_to_talker(payload: StagePayload) -> StagePayload:
                 "hidden_states_seq": extra.get("hidden_states_seq") or [],
             },
         },
+        speaker_prompt=state.speaker_prompt,
     )
     return payload_with_state(payload, projected)
 
@@ -190,6 +192,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
     state = MiniCPMOPipelineState.from_dict(payload.data)
     projected = MiniCPMOPipelineState(
         engine_outputs={TALKER_STAGE: state.engine_outputs.get(TALKER_STAGE) or {}},
+        speaker_prompt=state.speaker_prompt,
     )
     return payload_with_state(payload, projected)
 
@@ -198,6 +201,7 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     """Keep decode payload focused on text detokenization state."""
     state = MiniCPMOPipelineState.from_dict(payload.data)
     state.thinker_inputs = {}
+    state.speaker_prompt = None
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -62,6 +63,8 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = fake_processor
     preprocessor.speech_enabled = False
+    preprocessor.reference_service = None
+    preprocessor.prompt_lock = threading.Lock()
     preprocessor.tokenizer = SimpleNamespace()
     monkeypatch.setattr(
         preprocessor,
@@ -158,6 +161,8 @@ def test_minicpm_video_options_preserve_other_media(
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = fake_processor
     preprocessor.speech_enabled = False
+    preprocessor.reference_service = None
+    preprocessor.prompt_lock = threading.Lock()
     monkeypatch.setattr(
         preprocessor, "render_chat_template", lambda messages, **_: str(messages)
     )

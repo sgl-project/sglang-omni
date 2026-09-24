@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Modifications: retain MiniCPM-o inference only; local imports and typing.
-"""Dit for MiniCPM-o."""
+"""Diffusion transformer and timestep embeddings for MiniCPM-o mel generation."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
+
+TIMESTEP_MAX_PERIOD = 10000
 
 
 class MLP(torch.nn.Module):
@@ -118,29 +120,36 @@ class TimestepEmbedder(nn.Module):
         )
         self.frequency_embedding_size = frequency_embedding_size
         self.scale = 1000
+        half = frequency_embedding_size // 2
+        # note(liuqihao): keep source frequencies in FP32 when autocast lowers weight precision.
+        self.frequencies = torch.exp(
+            -math.log(TIMESTEP_MAX_PERIOD) * torch.arange(half) / half
+        )
+        self.frequency_cache: torch.Tensor | None = None
 
-    @staticmethod
-    def timestep_embedding(
-        t: torch.Tensor, dim: int, max_period: int = 10000
-    ) -> torch.Tensor:
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
-        ).to(t)
-        args = t[:, None] * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if dim % 2:
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        cached_frequencies = self.frequency_cache
+        if (
+            cached_frequencies is None
+            or cached_frequencies.device != t.device
+            or cached_frequencies.dtype != t.dtype
+        ):
+            frequencies = self.frequencies.to(t)
+            self.frequency_cache = frequencies
+        else:
+            frequencies = cached_frequencies
+        scaled_timesteps = t * self.scale
+        phase_angles = scaled_timesteps[:, None] * frequencies[None, :]
+        embedding = torch.cat(
+            [torch.cos(phase_angles), torch.sin(phase_angles)], dim=-1
+        )
+        if self.frequency_embedding_size % 2:
             embedding = torch.cat(
                 [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
             )
         else:
             pass
-        return embedding
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        t_freq = self.timestep_embedding(t * self.scale, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq)
-        return t_emb
+        return self.mlp(embedding)
 
 
 class Transpose(torch.nn.Module):
