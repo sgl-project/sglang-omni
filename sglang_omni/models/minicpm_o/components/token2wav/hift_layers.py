@@ -17,6 +17,11 @@ def get_padding(kernel_size: int, dilation: int = 1) -> int:
     return int((kernel_size * dilation - dilation) / 2)
 
 
+def masked(x: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+    """Zero padded positions so each row sees the zero padding of a lone decode."""
+    return x if mask is None else x * mask
+
+
 def init_weights(m: nn.Module, mean: float = 0.0, std: float = 0.01) -> None:
     classname = m.__class__.__name__
     if classname.find("Conv") != -1:
@@ -99,12 +104,14 @@ class ResBlock(torch.nn.Module):
             [Snake(channels, alpha_logscale=False) for _ in range(len(self.convs2))]
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
         for idx in range(len(self.convs1)):
             xt = self.activations1[idx](x)
-            xt = self.convs1[idx](xt)
+            xt = masked(self.convs1[idx](xt), mask)
             xt = self.activations2[idx](xt)
-            xt = self.convs2[idx](xt)
+            xt = masked(self.convs2[idx](xt), mask)
             x = xt + x
         return x
 

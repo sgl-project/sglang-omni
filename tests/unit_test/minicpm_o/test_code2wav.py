@@ -22,6 +22,7 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
     MiniCPMOCode2Wav,
 )
 from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
+from sglang_omni.models.minicpm_o.components.token2wav.hift import HiFTGenerator
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -131,7 +132,9 @@ def test_native_vocoder_with_checkpoint() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
     tokens = [1498, 1734, 3732, 3726, 3645]
     output = model(codec_tokens=torch.tensor(tokens))
     waveform = output["waveform"]
@@ -148,7 +151,9 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     checkpoint = _checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
-    model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
+    model = MiniCPMOCode2Wav(
+        str(checkpoint), device="cuda:0", hift_max_padding_waste=1.5
+    )
     tokens_a = [1498, 1734, 3732, 3726, 3645]
     tokens_b = tokens_a + [3645, 3726]
     batched = model.vocode([tokens_a, tokens_b], None)
@@ -216,6 +221,7 @@ def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:
     assert code2wav.factory.max_batch_size == 8
     assert code2wav.factory.max_batch_wait_ms == 0.0
     assert code2wav.factory.batch_wait_when_idle is False
+    assert code2wav.factory.hift_max_padding_waste == 1.5
 
 
 def test_vocode_slices_waveforms_to_token_lengths() -> None:
@@ -232,12 +238,15 @@ def test_vocode_slices_waveforms_to_token_lengths() -> None:
             return torch.zeros(speech_tokens.shape[0], 80, frames)
 
     class FakeHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
             samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
             wav = speech_feat.new_ones(speech_feat.shape[0], 1, samples)
             return wav, None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    model.hift_max_padding_waste = 1.5
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
         dtype=torch.float32,
@@ -299,11 +308,14 @@ def _batch_model() -> MiniCPMOCode2Wav:
             return torch.zeros(speech_tokens.shape[0], 80, frames)
 
     class FakeHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
             samples = speech_feat.shape[-1] * (SAMPLES_PER_CODEC_TOKEN // 2)
             return speech_feat.new_ones(speech_feat.shape[0], 1, samples), None
 
     model = MiniCPMOCode2Wav.__new__(MiniCPMOCode2Wav)
+    model.hift_max_padding_waste = 1.5
     model.token2wav = SimpleNamespace(
         device=torch.device("cpu"),
         dtype=torch.float32,
@@ -337,22 +349,77 @@ def test_vocode_mixed_references_and_lengths_share_one_batch() -> None:
 
 def test_vocode_mixed_lengths_preserve_hift_boundaries() -> None:
     class BoundarySensitiveHiFT:
-        def __call__(self, speech_feat: torch.Tensor) -> tuple[torch.Tensor, None]:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def __call__(
+            self, speech_feat: torch.Tensor, mel_lengths: list[int]
+        ) -> tuple[torch.Tensor, None]:
+            self.batch_sizes.append(speech_feat.shape[0])
+            positions = torch.arange(speech_feat.shape[-1])
+            mask = (positions < torch.tensor(mel_lengths)[:, None]).unsqueeze(1)
             kernel = speech_feat.new_ones(1, 1, 3)
             hidden = (
                 torch.nn.functional.conv1d(speech_feat[:, :1], kernel, padding=1) + 1
-            )
+            ) * mask
             samples = torch.nn.functional.conv1d(hidden, kernel, padding=1)
             waveform = samples.repeat_interleave(SAMPLES_PER_CODEC_TOKEN // 2, dim=-1)
             return waveform, None
 
     model = _batch_model()
-    model.token2wav.hift = BoundarySensitiveHiFT()
+    hift = BoundarySensitiveHiFT()
+    model.token2wav.hift = hift
     sequences = [[1, 2], [3, 4, 5], [6, 7]]
     batched = model.vocode(sequences, b"ref")
+    assert hift.batch_sizes == [3]
     for tokens, waveform in zip(sequences, batched, strict=True):
         reference = model.vocode([tokens], b"ref")[0]
         np.testing.assert_array_equal(waveform, reference)
+
+
+def test_vocode_splits_hift_batch_past_padding_budget() -> None:
+    model = _batch_model()
+    model.hift_max_padding_waste = 1.0
+    calls: list[list[int]] = []
+    fake_hift = model.token2wav.hift
+
+    def record(
+        speech_feat: torch.Tensor, mel_lengths: list[int]
+    ) -> tuple[torch.Tensor, None]:
+        calls.append(mel_lengths)
+        return fake_hift(speech_feat, mel_lengths)
+
+    model.token2wav.hift = record
+    model.vocode([[1, 2], [3, 4, 5], [6, 7]], b"ref")
+    assert calls == [[4, 4], [6]]
+
+
+def test_hift_padded_batch_matches_single_rows(monkeypatch) -> None:
+    # Remove the random excitation phase and noise so rows are comparable.
+    monkeypatch.setattr(torch, "rand", torch.zeros)
+    monkeypatch.setattr(torch, "randn_like", torch.zeros_like)
+    torch.manual_seed(0)
+    hift = HiFTGenerator().eval()
+    mel_lengths = [14, 9, 6]
+    mel = torch.randn(len(mel_lengths), 80, max(mel_lengths))
+    for row, length in enumerate(mel_lengths):
+        mel[row, :, length:] = 0
+
+    padded, _ = hift(speech_feat=mel, mel_lengths=mel_lengths)
+    unmasked, _ = hift(speech_feat=mel)
+    samples_per_frame = SAMPLES_PER_CODEC_TOKEN // 2
+    short_row = len(mel_lengths) - 1
+    for row, length in enumerate(mel_lengths):
+        single, _ = hift(speech_feat=mel[row : row + 1, :, :length])
+        torch.testing.assert_close(
+            padded[row, : length * samples_per_frame],
+            single[0],
+            rtol=1e-4,
+            atol=1e-5,
+        )
+        if row == short_row:
+            tail_error = (unmasked[row, : length * samples_per_frame] - single[0]).abs()
+            assert tail_error.max() > 1e-3
 
 
 def test_vocode_rejects_empty_sequences() -> None:

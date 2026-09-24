@@ -16,6 +16,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
+from sglang_omni.scheduling.vocoder_base import group_by_padding_waste
 
 FLOW_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
 
@@ -35,8 +36,13 @@ class MiniCPMOCode2Wav(nn.Module):
         dtype: str | torch.dtype | None = None,
         n_timesteps: int = 10,
         prompt_wav: str | None = None,
+        hift_max_padding_waste: float,
     ) -> None:
         super().__init__()
+        if hift_max_padding_waste < 1.0:
+            raise ValueError("hift_max_padding_waste must be at least 1.0")
+        else:
+            pass
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
 
         dev = torch.device(device)
@@ -82,6 +88,7 @@ class MiniCPMOCode2Wav(nn.Module):
         self.prompt_cache: OrderedDict[str, tuple] = OrderedDict()
         self.prompt_cache_capacity = 32
         self.sample_rate = OUTPUT_SAMPLE_RATE
+        self.hift_max_padding_waste = hift_max_padding_waste
         self.eval()
 
     @torch.inference_mode()
@@ -242,19 +249,17 @@ class MiniCPMOCode2Wav(nn.Module):
                 self.token2wav.n_timesteps,
             )
 
-        up_rate = self.token2wav.flow.up_rate
-        length_groups: dict[int, list[int]] = {}
-        for idx, token_len in enumerate(token_lens):
-            length_groups.setdefault(token_len, []).append(idx)
-
+        mel_lens = [token_len * self.token2wav.flow.up_rate for token_len in token_lens]
         waveform_rows: dict[int, torch.Tensor] = {}
-        # note (MayDomine): padding changes HiFT's noncausal convolution boundaries.
-        for token_len, indices in length_groups.items():
-            speech_feat = mel[indices, :, : token_len * up_rate].float().contiguous()
-            wav, _ = self.token2wav.hift(speech_feat=speech_feat)
+        for indices in group_by_padding_waste(mel_lens, self.hift_max_padding_waste):
+            group_mel_lens = [mel_lens[idx] for idx in indices]
+            speech_feat = mel[indices, :, : max(group_mel_lens)].float().contiguous()
+            wav, _ = self.token2wav.hift(
+                speech_feat=speech_feat, mel_lengths=group_mel_lens
+            )
             for row, idx in enumerate(indices):
                 waveform_rows[idx] = wav[row].reshape(-1)[
-                    : token_len * SAMPLES_PER_CODEC_TOKEN
+                    : token_lens[idx] * SAMPLES_PER_CODEC_TOKEN
                 ]
         wav = (
             pad_sequence(
