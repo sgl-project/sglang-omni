@@ -68,6 +68,9 @@ class XPUOmniPlatform(OmniPlatform):
 
         return Backend.FULL
 
+    def get_qwen3_tts_attention_backend(self) -> str | None:
+        return "intel_xpu"
+
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
         """Efficient attention is left out: XPU reaches math before its
         unsupported efficient branch, so naming it changes nothing."""
