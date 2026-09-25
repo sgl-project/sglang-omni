@@ -13,7 +13,7 @@ from sglang_omni.models.whisper_asr.sglang_model import (
 )
 
 
-def _config() -> WhisperConfig:
+def make_config() -> WhisperConfig:
     return WhisperConfig(
         d_model=8,
         encoder_layers=1,
@@ -29,7 +29,7 @@ def _config() -> WhisperConfig:
 
 
 def test_flashinfer_layer_norm_is_decoder_only() -> None:
-    config = _config()
+    config = make_config()
     encoder = WhisperEncoder(config)
     decoder = WhisperDecoder(config)
     decoder_layer = decoder.layers[0]
@@ -87,7 +87,7 @@ def test_decoder_layer_norm_falls_back_for_cuda_norm_backend(
     monkeypatch.setattr(
         sglang_model,
         "flashinfer_layer_norm",
-        lambda *_args: pytest.fail("incompatible FlashInfer CUDA norm was called"),
+        lambda *args: pytest.fail("incompatible FlashInfer CUDA norm was called"),
     )
 
     actual = layer_norm(hidden_states)

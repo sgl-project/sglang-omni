@@ -8,7 +8,7 @@ import torch
 import sglang_omni.models.qwen3_tts.vocoder_kernels as vocoder_kernels
 
 
-class _StubSnakeBeta(torch.nn.Module):
+class StubSnakeBeta(torch.nn.Module):
     """Stand-in with the qwen-tts SnakeBeta attribute layout."""
 
     def __init__(self, channels: int) -> None:
@@ -26,20 +26,20 @@ class _StubSnakeBeta(torch.nn.Module):
         )
 
 
-_StubSnakeBeta.__name__ = "SnakeBeta"
+StubSnakeBeta.__name__ = "SnakeBeta"
 
 
 def test_fuse_vocoder_decoder_keeps_originals_on_prewarm_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = _StubSnakeBeta(4)
-    second = _StubSnakeBeta(4)
+    first = StubSnakeBeta(4)
+    second = StubSnakeBeta(4)
     decoder = torch.nn.Sequential(first, torch.nn.Sequential(second))
 
     monkeypatch.setattr(vocoder_kernels, "HAS_TRITON", True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
 
-    def fail_prewarm(*_args: object, **_kwargs: object) -> None:
+    def fail_prewarm(*args: object, **_kwargs: object) -> None:
         raise RuntimeError("prewarm failed")
 
     monkeypatch.setattr(vocoder_kernels, "prewarm_replacements", fail_prewarm)
@@ -75,7 +75,7 @@ def test_fused_snake_beta_cuda_parity_uses_kernel(
 
     torch.manual_seed(0)
     device = torch.device("cuda")
-    original = _StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16)
+    original = StubSnakeBeta(channels).to(device=device, dtype=torch.bfloat16)
     x = torch.randn(
         (batch, channels, frames),
         device=device,
@@ -110,7 +110,7 @@ def test_fused_snake_beta_survives_a_fullgraph_compile() -> None:
     """A fullgraph compile of a fused decoder raised Unsupported on the launch."""
     torch.manual_seed(0)
     device = torch.device("cuda")
-    original = _StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
+    original = StubSnakeBeta(96).to(device=device, dtype=torch.bfloat16)
     decoder = torch.nn.Sequential(original)
     x = torch.randn((2, 96, 320), device=device, dtype=torch.bfloat16)
     with torch.inference_mode():

@@ -21,15 +21,15 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import RequestOutput
 
 
-class _FakeAudioTokenizer:
+class FakeAudioTokenizer:
     sample_rate = 24000
 
-    class _Model:
+    class Model:
         class config:
             hop_length = 4
 
     def __init__(self) -> None:
-        self.model = self._Model()
+        self.model = self.Model()
         self.decode_inputs: list[torch.Tensor] = []
 
     def decode_codes(self, segments: list[torch.Tensor]) -> list[torch.Tensor]:
@@ -44,13 +44,13 @@ class _FakeAudioTokenizer:
         return decoded
 
 
-def _make_scheduler(
+def make_scheduler(
     *,
     stream_stride: int = 3,
     stream_followup_stride: int = 2,
     stream_overlap_tokens: int = 1,
     stream_holdback_tokens: int = 0,
-) -> tuple[MossStreamingVocoderScheduler, _FakeAudioTokenizer, MossTTSVocoder]:
+) -> tuple[MossStreamingVocoderScheduler, FakeAudioTokenizer, MossTTSVocoder]:
     processor = SimpleNamespace(
         model_config=SimpleNamespace(
             n_vq=3,
@@ -58,7 +58,7 @@ def _make_scheduler(
             sampling_rate=24000,
         )
     )
-    tokenizer = _FakeAudioTokenizer()
+    tokenizer = FakeAudioTokenizer()
     vocoder = MossTTSVocoder(processor, tokenizer, "cpu")
     scheduler = MossStreamingVocoderScheduler(
         vocoder,
@@ -70,7 +70,7 @@ def _make_scheduler(
     return scheduler, tokenizer, vocoder
 
 
-def _apply_delay_pattern(raw_codes: torch.Tensor, pad_code: int = 99) -> torch.Tensor:
+def apply_delay_pattern(raw_codes: torch.Tensor, pad_code: int = 99) -> torch.Tensor:
     frames, n_vq = raw_codes.shape
     delayed = torch.full(
         (frames + n_vq - 1, n_vq),
@@ -82,7 +82,7 @@ def _apply_delay_pattern(raw_codes: torch.Tensor, pad_code: int = 99) -> torch.T
     return delayed
 
 
-def _payload(request_id: str, delayed: torch.Tensor) -> StagePayload:
+def make_payload(request_id: str, delayed: torch.Tensor) -> StagePayload:
     state = MossTTSState(
         delayed_audio_codes=delayed,
         prompt_tokens=2,
@@ -95,7 +95,7 @@ def _payload(request_id: str, delayed: torch.Tensor) -> StagePayload:
     )
 
 
-def _item(data: torch.Tensor, chunk_id: int = 0) -> StreamItem:
+def item(data: torch.Tensor, chunk_id: int = 0) -> StreamItem:
     return StreamItem(
         chunk_id=chunk_id,
         data=data,
@@ -110,7 +110,7 @@ def _item(data: torch.Tensor, chunk_id: int = 0) -> StreamItem:
     )
 
 
-def _drain(scheduler: MossStreamingVocoderScheduler) -> list:
+def drain(scheduler: MossStreamingVocoderScheduler) -> list:
     messages = []
     while True:
         try:
@@ -121,7 +121,7 @@ def _drain(scheduler: MossStreamingVocoderScheduler) -> list:
 
 def test_zero_overlap_is_rejected() -> None:
     with pytest.raises(ValueError, match="stream overlap must be > 0"):
-        _make_scheduler(stream_overlap_tokens=0)
+        make_scheduler(stream_overlap_tokens=0)
 
 
 def test_stream_builder_emits_prefix_and_only_new_audio_rows() -> None:
@@ -181,18 +181,18 @@ def test_streaming_matches_full_decode_across_segments() -> None:
         ],
         dtype=torch.long,
     )
-    delayed = _apply_delay_pattern(raw_codes)
-    scheduler, tokenizer, vocoder = _make_scheduler()
-    payload = _payload("req", delayed)
+    delayed = apply_delay_pattern(raw_codes)
+    scheduler, tokenizer, vocoder = make_scheduler()
+    payload = make_payload("req", delayed)
     full_state, full_delayed = vocoder.prepare_item(payload)
     full, _ = vocoder.decode_audio(full_state, full_delayed)
 
     scheduler.handle_streaming_new_request("req", payload)
-    scheduler.handle_stream_chunk("req", _item(delayed[:5], 0))
-    scheduler.handle_stream_chunk("req", _item(delayed[5:], 1))
+    scheduler.handle_stream_chunk("req", item(delayed[:5], 0))
+    scheduler.handle_stream_chunk("req", item(delayed[5:], 1))
     scheduler.handle_stream_done("req")
 
-    messages = _drain(scheduler)
+    messages = drain(scheduler)
     chunks = [
         np.frombuffer(message.data["audio_waveform"], dtype=np.float32).copy()
         for message in messages
@@ -208,20 +208,20 @@ def test_streaming_matches_full_decode_across_segments() -> None:
 def test_streaming_path_does_not_call_nonstream_batch_decoder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    delayed = _apply_delay_pattern(
+    delayed = apply_delay_pattern(
         torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=torch.long)
     )
-    scheduler, tokenizer, vocoder = _make_scheduler()
+    scheduler, tokenizer, vocoder = make_scheduler()
 
-    async def fail_decode_batch(*_args, **_kwargs):
+    async def fail_decode_batch(*args, **_kwargs):
         pytest.fail("streaming requests must not use the non-streaming batch decoder")
 
     monkeypatch.setattr(vocoder, "decode_batch", fail_decode_batch)
-    scheduler.handle_streaming_new_request("req", _payload("req", delayed))
-    scheduler.handle_stream_chunk("req", _item(delayed))
+    scheduler.handle_streaming_new_request("req", make_payload("req", delayed))
+    scheduler.handle_stream_chunk("req", item(delayed))
     scheduler.handle_stream_done("req")
 
-    messages = _drain(scheduler)
+    messages = drain(scheduler)
 
     assert tokenizer.decode_inputs
     assert any(message.type == "stream" for message in messages)
@@ -233,18 +233,18 @@ def test_chunks_and_done_before_payload_preserve_final_tail() -> None:
         [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]],
         dtype=torch.long,
     )
-    delayed = _apply_delay_pattern(raw_codes)
-    scheduler, _, vocoder = _make_scheduler(stream_holdback_tokens=1)
-    payload = _payload("req", delayed)
+    delayed = apply_delay_pattern(raw_codes)
+    scheduler, _, vocoder = make_scheduler(stream_holdback_tokens=1)
+    payload = make_payload("req", delayed)
     full_state, full_delayed = vocoder.prepare_item(payload)
     full, _ = vocoder.decode_audio(full_state, full_delayed)
 
-    scheduler.handle_stream_chunk("req", _item(delayed))
+    scheduler.handle_stream_chunk("req", item(delayed))
     scheduler.handle_stream_done("req")
     assert "req" in scheduler.pending_done
     scheduler.handle_streaming_new_request("req", payload)
 
-    messages = _drain(scheduler)
+    messages = drain(scheduler)
     chunks = [
         np.frombuffer(message.data["audio_waveform"], dtype=np.float32).copy()
         for message in messages
@@ -256,15 +256,15 @@ def test_chunks_and_done_before_payload_preserve_final_tail() -> None:
 
 
 def test_abort_drops_state_and_late_chunks() -> None:
-    delayed = _apply_delay_pattern(
+    delayed = apply_delay_pattern(
         torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.long)
     )
-    scheduler, _, _ = _make_scheduler()
-    scheduler.handle_stream_chunk("req", _item(delayed[:2]))
+    scheduler, _, _ = make_scheduler()
+    scheduler.handle_stream_chunk("req", item(delayed[:2]))
     assert "req" in scheduler.stream_states
 
     scheduler.abort("req")
-    scheduler.handle_stream_chunk("req", _item(delayed[2:]))
+    scheduler.handle_stream_chunk("req", item(delayed[2:]))
 
     assert "req" not in scheduler.stream_states
-    assert _drain(scheduler) == []
+    assert drain(scheduler) == []

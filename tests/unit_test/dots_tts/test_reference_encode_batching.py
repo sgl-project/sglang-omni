@@ -23,7 +23,7 @@ LATENT_DIM = 3
 SAMPLES_PER_PATCH = HOP_SIZE * PATCH_SIZE
 
 
-class _PaddingSensitiveSpeaker:
+class PaddingSensitiveSpeaker:
     """Padding-sensitive speaker stub; accepts but ignores ``audio_lengths``."""
 
     max_audio_seconds = 0.0
@@ -38,7 +38,7 @@ class _PaddingSensitiveSpeaker:
         )
 
 
-class _RandomCroppingSpeaker(_PaddingSensitiveSpeaker):
+class RandomCroppingSpeaker(PaddingSensitiveSpeaker):
     """Mirrors upstream random crop beyond the duration cap."""
 
     def __init__(self, max_audio_seconds: float = 1.0, sample_rate: int = 48000):
@@ -56,7 +56,7 @@ class _RandomCroppingSpeaker(_PaddingSensitiveSpeaker):
         return super().__call__(audio, audio_lengths)
 
 
-class _PaddingSensitiveLatents:
+class PaddingSensitiveLatents:
     """Padding-sensitive latent stub that perturbs all frames."""
 
     def extract_latents(self, audio: torch.Tensor) -> torch.Tensor:
@@ -68,10 +68,10 @@ class _PaddingSensitiveLatents:
         return causal.unsqueeze(1) * scales.reshape(1, -1, 1)
 
 
-def _make_codec() -> DotsAudioCodec:
+def make_codec() -> DotsAudioCodec:
     codec = object.__new__(DotsAudioCodec)
-    codec.speaker = _PaddingSensitiveSpeaker()
-    codec.inference = _PaddingSensitiveLatents()
+    codec.speaker = PaddingSensitiveSpeaker()
+    codec.inference = PaddingSensitiveLatents()
     codec.vocoder = None
     codec.patch_size = PATCH_SIZE
     codec.latent_dim = LATENT_DIM
@@ -82,23 +82,21 @@ def _make_codec() -> DotsAudioCodec:
     return codec
 
 
-def _waveform(patches: int, seed: int) -> torch.Tensor:
+def make_waveform(patches: int, seed: int) -> torch.Tensor:
     generator = torch.Generator().manual_seed(seed)
     return torch.randn(1, patches * SAMPLES_PER_PATCH, generator=generator)
 
 
-def _install_waveforms(
+def install_waveforms(
     monkeypatch: pytest.MonkeyPatch, waveforms: dict[str, torch.Tensor]
 ) -> None:
-    def _fake_load_audio(path: str, **_: object):
+    def fake_load_audio(path: str, **_: object):
         return waveforms[path].reshape(-1).numpy()
 
-    monkeypatch.setattr(
-        "sglang_omni.models.dots_tts.codec.load_audio", _fake_load_audio
-    )
+    monkeypatch.setattr("sglang_omni.models.dots_tts.codec.load_audio", fake_load_audio)
 
 
-def _set_tf32(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
+def set_tf32(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", enabled)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", enabled)
 
@@ -106,9 +104,9 @@ def _set_tf32(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
 def test_batch_of_one_is_identical_to_the_unbatched_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codec = _make_codec()
-    waveform = _waveform(6, seed=1)
-    _install_waveforms(monkeypatch, {"a.wav": waveform})
+    codec = make_codec()
+    waveform = make_waveform(6, seed=1)
+    install_waveforms(monkeypatch, {"a.wav": waveform})
 
     single = codec.encode_reference("a.wav")
     batched = codec.encode_waveforms([waveform])[0]
@@ -121,13 +119,13 @@ def test_equal_length_batch_is_bit_identical_to_encoding_each_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The whole point: same length in a batch changes nothing at all."""
-    codec = _make_codec()
+    codec = make_codec()
     waveforms = {
-        "a.wav": _waveform(5, seed=2),
-        "b.wav": _waveform(5, seed=3),
-        "c.wav": _waveform(5, seed=4),
+        "a.wav": make_waveform(5, seed=2),
+        "b.wav": make_waveform(5, seed=3),
+        "c.wav": make_waveform(5, seed=4),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     singles = [codec.encode_reference(name) for name in waveforms]
     batched = codec.encode_reference_batch(list(waveforms))
@@ -144,15 +142,15 @@ def test_mixed_lengths_still_match_the_unbatched_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Parity check: mixed-length batches must never mix lengths in a group."""
-    codec = _make_codec()
+    codec = make_codec()
     waveforms = {
-        "a.wav": _waveform(3, seed=5),
-        "b.wav": _waveform(11, seed=6),
-        "c.wav": _waveform(3, seed=7),
-        "d.wav": _waveform(7, seed=8),
-        "e.wav": _waveform(11, seed=9),
+        "a.wav": make_waveform(3, seed=5),
+        "b.wav": make_waveform(11, seed=6),
+        "c.wav": make_waveform(3, seed=7),
+        "d.wav": make_waveform(7, seed=8),
+        "e.wav": make_waveform(11, seed=9),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     singles = [codec.encode_reference(name) for name in waveforms]
     batched = codec.encode_reference_batch(list(waveforms))
@@ -168,8 +166,8 @@ def test_mixed_lengths_still_match_the_unbatched_path(
 
 def test_stub_actually_detects_padding_so_parity_tests_are_not_vacuous() -> None:
     """Guard check: padding must change stub output or parity tests are vacuous."""
-    codec = _make_codec()
-    short = _waveform(3, seed=10)
+    codec = make_codec()
+    short = make_waveform(3, seed=10)
     padded = torch.zeros(1, 11 * SAMPLES_PER_PATCH)
     padded[0, : short.shape[-1]] = short.reshape(-1)
 
@@ -187,21 +185,21 @@ def test_stub_actually_detects_padding_so_parity_tests_are_not_vacuous() -> None
 
 
 def test_unequal_lengths_are_rejected_by_the_batched_forward() -> None:
-    codec = _make_codec()
+    codec = make_codec()
     with pytest.raises(ValueError, match="equal-length"):
-        codec.encode_waveforms([_waveform(3, seed=11), _waveform(4, seed=12)])
+        codec.encode_waveforms([make_waveform(3, seed=11), make_waveform(4, seed=12)])
 
 
 def test_latents_have_each_items_true_frame_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codec = _make_codec()
+    codec = make_codec()
     waveforms = {
-        "a.wav": _waveform(2, seed=13),
-        "b.wav": _waveform(9, seed=14),
-        "c.wav": _waveform(2, seed=15),
+        "a.wav": make_waveform(2, seed=13),
+        "b.wav": make_waveform(9, seed=14),
+        "c.wav": make_waveform(2, seed=15),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     batched = codec.encode_reference_batch(list(waveforms))
 
@@ -217,12 +215,12 @@ def test_latents_have_each_items_true_frame_count(
 def test_consumed_prompt_latents_are_identical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codec = _make_codec()
+    codec = make_codec()
     waveforms = {
-        "a.wav": _waveform(6, seed=16),
-        "b.wav": _waveform(6, seed=17),
+        "a.wav": make_waveform(6, seed=16),
+        "b.wav": make_waveform(6, seed=17),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     singles = [codec.encode_reference(name) for name in waveforms]
     batched = codec.encode_reference_batch(list(waveforms))
@@ -254,19 +252,19 @@ def test_length_groups_preserve_every_index() -> None:
 
 
 def test_empty_batch_returns_empty() -> None:
-    codec = _make_codec()
+    codec = make_codec()
     assert codec.encode_reference_batch([]) == []
     assert codec.encode_waveforms([]) == []
 
 
 def test_batch_preserves_input_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    codec = _make_codec()
+    codec = make_codec()
     waveforms = {
-        "long.wav": _waveform(12, seed=18),
-        "short.wav": _waveform(2, seed=19),
-        "mid.wav": _waveform(12, seed=20),
+        "long.wav": make_waveform(12, seed=18),
+        "short.wav": make_waveform(2, seed=19),
+        "mid.wav": make_waveform(12, seed=20),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     names = list(waveforms)
     batched = codec.encode_reference_batch(names)
@@ -279,16 +277,16 @@ def test_batch_preserves_input_order(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_hop_misaligned_latents_are_rejected() -> None:
-    codec = _make_codec()
+    codec = make_codec()
 
-    class _WrongRate:
+    class WrongRate:
         def extract_latents(self, audio: torch.Tensor) -> torch.Tensor:
             frames = audio.shape[-1] // HOP_SIZE
             return torch.zeros(audio.shape[0], 2 * LATENT_DIM, frames + 1)
 
-    codec.inference = _WrongRate()
+    codec.inference = WrongRate()
     with pytest.raises(RuntimeError, match="hop-aligned"):
-        codec.encode_waveforms([_waveform(3, seed=21)])
+        codec.encode_waveforms([make_waveform(3, seed=21)])
 
 
 def test_encoder_coalesces_equal_length_references_into_one_forward(
@@ -298,22 +296,22 @@ def test_encoder_coalesces_equal_length_references_into_one_forward(
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    _set_tf32(monkeypatch, enabled=False)
-    codec = _make_codec()
+    set_tf32(monkeypatch, enabled=False)
+    codec = make_codec()
     # Same duration, different content: the case batching can actually help.
     waveforms = {
-        f"ref-{index}.wav": _waveform(4, seed=30 + index) for index in range(4)
+        f"ref-{index}.wav": make_waveform(4, seed=30 + index) for index in range(4)
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     calls: list[int] = []
     original = codec.encode_waveforms
 
-    def _counting(batch):
+    def counting(batch):
         calls.append(len(batch))
         return original(batch)
 
-    codec.encode_waveforms = _counting  # type: ignore[method-assign]
+    codec.encode_waveforms = counting  # type: ignore[method-assign]
 
     encoder = DotsReferenceEncoder(
         codec,
@@ -345,12 +343,13 @@ def test_encoder_handles_all_distinct_lengths_without_padding(
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    _set_tf32(monkeypatch, enabled=False)
-    codec = _make_codec()
+    set_tf32(monkeypatch, enabled=False)
+    codec = make_codec()
     waveforms = {
-        f"ref-{index}.wav": _waveform(4 + index, seed=40 + index) for index in range(4)
+        f"ref-{index}.wav": make_waveform(4 + index, seed=40 + index)
+        for index in range(4)
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     expected = {name: codec.encode_reference(name) for name in waveforms}
 
@@ -381,9 +380,9 @@ def test_cuda_reference_batching_is_disabled_with_default_cudnn_tf32(
 ) -> None:
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    _set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, enabled=False)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", True)
-    codec = _make_codec()
+    codec = make_codec()
     codec.device = torch.device("cuda")
     encoder = DotsReferenceEncoder(codec, model_id="stub", max_batch_size=8)
     try:
@@ -397,11 +396,9 @@ def test_reference_executor_defaults_to_per_request(
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    _set_tf32(monkeypatch, enabled=False)
-    codec = _make_codec()
-    monkeypatch.setattr(
-        stages, "load_dots_audio_codec", lambda *_args, **_kwargs: codec
-    )
+    set_tf32(monkeypatch, enabled=False)
+    codec = make_codec()
+    monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
 
     scheduler = stages.create_reference_encode_executor("stub", device="cpu")
     try:
@@ -416,11 +413,9 @@ def test_reference_executor_stop_closes_batch_worker(
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    _set_tf32(monkeypatch, enabled=False)
-    codec = _make_codec()
-    monkeypatch.setattr(
-        stages, "load_dots_audio_codec", lambda *_args, **_kwargs: codec
-    )
+    set_tf32(monkeypatch, enabled=False)
+    codec = make_codec()
+    monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
     scheduler = stages.create_reference_encode_executor(
         "stub", device="cpu", max_batch_size=2
     )
@@ -436,23 +431,23 @@ def test_reference_executor_stop_closes_batch_worker(
 # --------------------------------------------------------------------------
 # Deterministic speaker cropping (upstream _crop_audio non-determinism)
 # --------------------------------------------------------------------------
-def _cropping_codec(max_audio_seconds: float = 1.0) -> DotsAudioCodec:
-    codec = _make_codec()
-    codec.speaker = _RandomCroppingSpeaker(
+def cropping_codec(max_audio_seconds: float = 1.0) -> DotsAudioCodec:
+    codec = make_codec()
+    codec.speaker = RandomCroppingSpeaker(
         max_audio_seconds=max_audio_seconds, sample_rate=codec.sample_rate
     )
     return codec
 
 
-def _seconds_to_patches(codec: DotsAudioCodec, seconds: float) -> int:
+def seconds_to_patches(codec: DotsAudioCodec, seconds: float) -> int:
     samples = int(seconds * codec.sample_rate)
     return max(1, math.ceil(samples / SAMPLES_PER_PATCH))
 
 
 def test_stub_reproduces_upstream_random_crop() -> None:
     """Guard check: without the fix, this stub must vary or tests become vacuous."""
-    codec = _cropping_codec()
-    long_ref = _waveform(_seconds_to_patches(codec, 3.0), seed=50)
+    codec = cropping_codec()
+    long_ref = make_waveform(seconds_to_patches(codec, 3.0), seed=50)
     batch = long_ref.reshape(1, 1, -1)
     lengths = torch.tensor([batch.shape[-1]])
 
@@ -468,9 +463,9 @@ def test_long_references_encode_deterministically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The fix: repeated encodes of a >max_audio_seconds reference must match."""
-    codec = _cropping_codec()
-    long_ref = _waveform(_seconds_to_patches(codec, 3.0), seed=51)
-    _install_waveforms(monkeypatch, {"long.wav": long_ref})
+    codec = cropping_codec()
+    long_ref = make_waveform(seconds_to_patches(codec, 3.0), seed=51)
+    install_waveforms(monkeypatch, {"long.wav": long_ref})
 
     baseline = codec.encode_reference("long.wav")
     for _ in range(20):
@@ -484,9 +479,9 @@ def test_long_reference_is_unaffected_by_global_random_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Concurrent requests reseeding `random` must not change the embedding."""
-    codec = _cropping_codec()
-    long_ref = _waveform(_seconds_to_patches(codec, 3.0), seed=52)
-    _install_waveforms(monkeypatch, {"long.wav": long_ref})
+    codec = cropping_codec()
+    long_ref = make_waveform(seconds_to_patches(codec, 3.0), seed=52)
+    install_waveforms(monkeypatch, {"long.wav": long_ref})
 
     random.seed(0)
     baseline = codec.encode_reference("long.wav")
@@ -500,11 +495,11 @@ def test_long_reference_is_unaffected_by_global_random_state(
 
 def test_speaker_sees_the_leading_window_only() -> None:
     """Pre-crop must be the leading window, matching upstream's start=0 draw."""
-    codec = _cropping_codec()
+    codec = cropping_codec()
     limit = codec.speaker_sample_limit()
     assert limit == codec.sample_rate
 
-    long_ref = _waveform(_seconds_to_patches(codec, 3.0), seed=53)
+    long_ref = make_waveform(seconds_to_patches(codec, 3.0), seed=53)
     batch = long_ref.reshape(1, 1, -1)
     lengths = torch.tensor([batch.shape[-1]])
     cropped, cropped_lengths = codec.speaker_input(batch, lengths)
@@ -516,8 +511,8 @@ def test_speaker_sees_the_leading_window_only() -> None:
 
 def test_short_references_are_passed_through_untouched() -> None:
     """Below the cap there is nothing to crop, so the tensor must be identical."""
-    codec = _cropping_codec()
-    short = _waveform(_seconds_to_patches(codec, 0.5), seed=54)
+    codec = cropping_codec()
+    short = make_waveform(seconds_to_patches(codec, 0.5), seed=54)
     batch = short.reshape(1, 1, -1)
     lengths = torch.tensor([batch.shape[-1]])
 
@@ -530,10 +525,10 @@ def test_audiovae_still_receives_the_full_length_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only the speaker view is truncated; latents must cover the whole file."""
-    codec = _cropping_codec()
-    patches = _seconds_to_patches(codec, 3.0)
-    long_ref = _waveform(patches, seed=55)
-    _install_waveforms(monkeypatch, {"long.wav": long_ref})
+    codec = cropping_codec()
+    patches = seconds_to_patches(codec, 3.0)
+    long_ref = make_waveform(patches, seed=55)
+    install_waveforms(monkeypatch, {"long.wav": long_ref})
 
     artifact = codec.encode_reference("long.wav")
     expected_frames = long_ref.shape[-1] // HOP_SIZE
@@ -541,10 +536,10 @@ def test_audiovae_still_receives_the_full_length_audio(
 
 
 def test_no_cropping_when_encoder_has_no_duration_cap() -> None:
-    codec = _make_codec()  # max_audio_seconds = 0.0
+    codec = make_codec()  # max_audio_seconds = 0.0
     assert codec.speaker_sample_limit() is None
 
-    audio = _waveform(8, seed=56).reshape(1, 1, -1)
+    audio = make_waveform(8, seed=56).reshape(1, 1, -1)
     lengths = torch.tensor([audio.shape[-1]])
     cropped, cropped_lengths = codec.speaker_input(audio, lengths)
     assert cropped is audio
@@ -553,7 +548,7 @@ def test_no_cropping_when_encoder_has_no_duration_cap() -> None:
 
 def test_cropping_limit_uses_the_encoders_own_sample_rate() -> None:
     """`_crop_audio` measures against the encoder's rate, not the codec's."""
-    codec = _cropping_codec()
+    codec = cropping_codec()
     codec.speaker.sample_rate = 16000
     codec.speaker.max_audio_seconds = 10.0
     assert codec.speaker_sample_limit() == 160000
@@ -563,13 +558,13 @@ def test_cropping_limit_uses_the_encoders_own_sample_rate() -> None:
 def test_batched_long_references_are_also_deterministic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    codec = _cropping_codec()
-    patches = _seconds_to_patches(codec, 3.0)
+    codec = cropping_codec()
+    patches = seconds_to_patches(codec, 3.0)
     waveforms = {
-        "a.wav": _waveform(patches, seed=57),
-        "b.wav": _waveform(patches, seed=58),
+        "a.wav": make_waveform(patches, seed=57),
+        "b.wav": make_waveform(patches, seed=58),
     }
-    _install_waveforms(monkeypatch, waveforms)
+    install_waveforms(monkeypatch, waveforms)
 
     baseline = codec.encode_reference_batch(list(waveforms))
     for seed in (3, 17, 2024):

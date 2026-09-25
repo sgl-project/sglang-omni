@@ -13,7 +13,7 @@ from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreproc
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-def _payload(inputs: dict) -> StagePayload:
+def make_payload(inputs: dict) -> StagePayload:
     return StagePayload(
         request_id="video-test",
         request=OmniRequest(inputs=inputs),
@@ -21,7 +21,7 @@ def _payload(inputs: dict) -> StagePayload:
     )
 
 
-class _FakeProcessor:
+class FakeProcessor:
     def __init__(self) -> None:
         self.images = None
         self.audios = None
@@ -43,11 +43,11 @@ class _FakeProcessor:
         }
 
 
-async def _empty_images(_images):
+async def empty_images(images):
     return []
 
 
-async def _explicit_audios(_audios, *, target_sr):
+async def explicit_audios(_audios, *, target_sr):
     return [np.array([0.25, 0.5], dtype=np.float32)] if _audios else []
 
 
@@ -58,9 +58,11 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
     use_audio_in_video,
     explicit_audio,
 ) -> None:
-    fake_processor = _FakeProcessor()
+    fake_processor = FakeProcessor()
     preprocessor = object.__new__(MiniCPMOPreprocessor)
-    preprocessor._processor = fake_processor
+    preprocessor._processor = (
+        fake_processor  # noqa: leading-underscore  # production name
+    )
     preprocessor.speech_enabled = False
     preprocessor.tokenizer = SimpleNamespace()
     monkeypatch.setattr(
@@ -77,7 +79,7 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
     )
     captured_video_kwargs = {}
 
-    async def _videos(_videos, **kwargs):
+    async def videos(videos, **kwargs):
         captured_video_kwargs.update(kwargs)
         audio = (
             [np.array([1.0, 2.0], dtype=np.float32)]
@@ -86,16 +88,16 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
         )
         return [video], [2.0], audio
 
-    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", _empty_images)
-    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", _explicit_audios)
-    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", _videos)
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", empty_images)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", explicit_audios)
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", videos)
     monkeypatch.setattr(
         preprocessor_mod,
         "compute_video_cache_key",
-        lambda *_args, **_kwargs: "video-cache",
+        lambda *args, **_kwargs: "video-cache",
     )
 
-    payload = _payload(
+    payload = make_payload(
         {
             "messages": [{"role": "user", "content": "What happens?"}],
             "videos": ["clip.mp4"],
@@ -154,9 +156,11 @@ def test_minicpm_preprocessor_uses_only_requested_video_audio(
 def test_minicpm_video_options_preserve_other_media(
     monkeypatch, with_image, with_audio, with_video
 ) -> None:
-    fake_processor = _FakeProcessor()
+    fake_processor = FakeProcessor()
     preprocessor = object.__new__(MiniCPMOPreprocessor)
-    preprocessor._processor = fake_processor
+    preprocessor._processor = (
+        fake_processor  # noqa: leading-underscore  # production name
+    )
     preprocessor.speech_enabled = False
     monkeypatch.setattr(
         preprocessor, "render_chat_template", lambda messages, **_: str(messages)
@@ -164,18 +168,18 @@ def test_minicpm_video_options_preserve_other_media(
     image = Image.new("RGB", (2, 2), color="red")
     frame = Image.new("RGB", (2, 2), color="blue")
 
-    async def _images(raw_images):
+    async def images(raw_images):
         return [image] if raw_images else []
 
-    async def _videos(raw_videos, **kwargs):
+    async def videos(raw_videos, **kwargs):
         return [[frame]], [1.0], None
 
-    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", _images)
-    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", _explicit_audios)
-    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", _videos)
+    monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", images)
+    monkeypatch.setattr(preprocessor_mod, "ensure_audio_list_async", explicit_audios)
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", videos)
     result = asyncio.run(
         preprocessor(
-            _payload(
+            make_payload(
                 {
                     "messages": [{"role": "user", "content": "Describe this."}],
                     "images": [image] if with_image else None,

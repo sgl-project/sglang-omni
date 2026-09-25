@@ -22,7 +22,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
 )
 
 
-class _ExecuteTRT:
+class ExecuteTRT:
     def __init__(self, max_batch: int) -> None:
         self.max_batch = max_batch
         self.calls: list[torch.Tensor] = []
@@ -113,11 +113,11 @@ def test_execute_flow_estimator_rejects_odd_cfg_batch() -> None:
     t = torch.zeros(3)
     spks = torch.zeros(3, 4)
     with pytest.raises(ValueError, match="even and >= 2"):
-        execute_flow_estimator(_ExecuteTRT(2), x, dummy, dummy, t, spks, dummy)
+        execute_flow_estimator(ExecuteTRT(2), x, dummy, dummy, t, spks, dummy)
 
 
 def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
-    estimator = _ExecuteTRT(max_batch=2)
+    estimator = ExecuteTRT(max_batch=2)
     x = torch.tensor([[[1.0]], [[-1.0]]])
     mask = torch.ones_like(x)
     mu = torch.zeros_like(x)
@@ -132,7 +132,7 @@ def test_execute_flow_estimator_expands_broadcast_timestep() -> None:
 
 
 def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
-    estimator = _ExecuteTRT(max_batch=2)
+    estimator = ExecuteTRT(max_batch=2)
     x = torch.tensor(
         [
             [[10.0]],
@@ -160,7 +160,7 @@ def test_execute_flow_estimator_chunks_cfg_pairs_not_raw_rows() -> None:
 
 
 def test_execute_flow_estimator_skips_chunking_when_engine_fits() -> None:
-    estimator = _ExecuteTRT(max_batch=8)
+    estimator = ExecuteTRT(max_batch=8)
     x = torch.arange(8, dtype=torch.float32).reshape(8, 1, 1)
     mask = torch.ones_like(x)
     mu = torch.zeros_like(x)
@@ -176,28 +176,28 @@ def test_execute_flow_estimator_skips_chunking_when_engine_fits() -> None:
 
 
 def test_is_flow_estimator_trt_accepts_execute_wrapper() -> None:
-    class _Execute:
+    class Execute:
         def execute(self, *args, **kwargs):
             del args, kwargs
             return None
 
-    assert is_flow_estimator_trt(_Execute()) is True
+    assert is_flow_estimator_trt(Execute()) is True
     assert is_flow_estimator_trt(object()) is False
     assert is_flow_estimator_trt(torch.nn.Linear(1, 1)) is False
 
 
-class _FakeTRTEngine:
+class FakeTRTEngine:
     max_batch = 2
 
 
-class _FallbackDiT(torch.nn.Module):
+class FallbackDiT(torch.nn.Module):
     def forward(self, x, mask, mu, t, spks, cond, streaming=False):
         del mask, mu, t, spks, cond, streaming
         return x * 2.0
 
 
 def test_is_flow_estimator_trt_accepts_module_wrapper() -> None:
-    module = FlowEstimatorTRTModule(_FakeTRTEngine())
+    module = FlowEstimatorTRTModule(FakeTRTEngine())
     assert is_flow_estimator_trt(module) is True
     assert isinstance(module, torch.nn.Module)
 
@@ -213,7 +213,7 @@ def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
         return x + 1.0
 
     monkeypatch.setattr(trt_mod, "execute_flow_estimator", fake_execute)
-    engine = _FakeTRTEngine()
+    engine = FakeTRTEngine()
     module = FlowEstimatorTRTModule(engine)
     frames = 16
     x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
@@ -231,8 +231,8 @@ def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
 
 def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
     module = FlowEstimatorTRTModule(
-        _FakeTRTEngine(),
-        fallback=_FallbackDiT(),
+        FakeTRTEngine(),
+        fallback=FallbackDiT(),
         min_time=4,
         max_time=10,
     )
@@ -250,7 +250,7 @@ def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
 
 
 def test_flow_estimator_trt_module_raises_without_fallback() -> None:
-    module = FlowEstimatorTRTModule(_FakeTRTEngine(), min_time=4, max_time=10)
+    module = FlowEstimatorTRTModule(FakeTRTEngine(), min_time=4, max_time=10)
     frames = 20
     x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
     mask = torch.ones(_CFG_BATCH, 1, frames)
@@ -266,7 +266,7 @@ def test_flow_estimator_trt_module_raises_without_fallback() -> None:
 
 
 def test_execute_flow_estimator_requires_max_batch() -> None:
-    class _NoBatch:
+    class NoBatch:
         def execute(self, *args, **kwargs):
             del args, kwargs
             raise AssertionError("must fail on max_batch")
@@ -275,5 +275,5 @@ def test_execute_flow_estimator_requires_max_batch() -> None:
     dummy = torch.zeros_like(x)
     with pytest.raises(AttributeError, match="max_batch"):
         execute_flow_estimator(
-            _NoBatch(), x, dummy, dummy, torch.zeros(2), torch.zeros(2, 1), dummy
+            NoBatch(), x, dummy, dummy, torch.zeros(2), torch.zeros(2, 1), dummy
         )

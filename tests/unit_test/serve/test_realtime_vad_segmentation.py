@@ -35,7 +35,7 @@ class StopStartVAD:
     def __init__(self) -> None:
         self.reset_calls = 0
 
-    def process(self, _pcm: bytes) -> list[Emit]:
+    def process(self, pcm: bytes) -> list[Emit]:
         return [
             Emit(VADEvent.SPEECH_STOPPED, 512),
             Emit(VADEvent.SPEECH_STARTED, 1024),
@@ -50,7 +50,7 @@ async def test_stop_then_start_in_one_append_retains_the_next_utterance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     vad = StopStartVAD()
-    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: vad)
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda config: vad)
     websocket = RecordingWebSocket()
     session = RealtimeSession(
         websocket,  # type: ignore[arg-type]
@@ -63,7 +63,7 @@ async def test_stop_then_start_in_one_append_retains_the_next_utterance(
     session.utterance_item_id = "first-item"
     response_started = asyncio.Event()
 
-    async def run_turn(_item_id: str, _payload: str) -> None:
+    async def run_turn(_item_id: str, payload: str) -> None:
         response_started.set()
 
     session.run_turn = AsyncMock(side_effect=run_turn)  # type: ignore[method-assign]

@@ -28,7 +28,7 @@ POSITION_ID_PER_SECONDS = 25
 SPATIAL_MERGE_SIZE = 2
 
 
-def _oracle_and_fast(
+def oracle_and_fast(
     input_ids: torch.Tensor,
     *,
     image_grid_thw: torch.Tensor | None = None,
@@ -61,7 +61,7 @@ def _oracle_and_fast(
     )
 
 
-def _assert_bit_identical(
+def assert_bit_identical(
     oracle: tuple[torch.Tensor, torch.Tensor],
     fast: tuple[torch.Tensor, torch.Tensor],
 ) -> None:
@@ -78,7 +78,7 @@ def _assert_bit_identical(
     ), f"delta mismatch: oracle={o_delta} fast={f_delta}"
 
 
-def _image_span(grid_thw: list[int]) -> list[int]:
+def image_span(grid_thw: list[int]) -> list[int]:
     t, h, w = grid_thw
     image_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
     return (
@@ -86,7 +86,7 @@ def _image_span(grid_thw: list[int]) -> list[int]:
     )
 
 
-def _video_span(grid_thw: list[int]) -> list[int]:
+def video_span(grid_thw: list[int]) -> list[int]:
     t, h, w = grid_thw
     video_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
     return (
@@ -94,12 +94,12 @@ def _video_span(grid_thw: list[int]) -> list[int]:
     )
 
 
-def _audio_span(audio_seqlen: int) -> list[int]:
+def audio_span(audio_seqlen: int) -> list[int]:
     audio_len = feat_extract_output_lengths(audio_seqlen)
     return [AUDIO_START_TOKEN_ID] + [AUDIO_TOKEN_ID] * audio_len + [AUDIO_END_TOKEN_ID]
 
 
-def _audio_in_video_span(grid_thw: list[int], audio_seqlen: int) -> list[int]:
+def audio_in_video_span(grid_thw: list[int], audio_seqlen: int) -> list[int]:
     t, h, w = grid_thw
     video_len = (t * h * w) // (SPATIAL_MERGE_SIZE**2)
     audio_len = feat_extract_output_lengths(audio_seqlen)
@@ -126,86 +126,86 @@ def test_feat_extract_lengths_matches_sglang() -> None:
 
 def test_text_only_no_grids_falls_back_to_arange() -> None:
     ids = torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(ids)
-    _assert_bit_identical(oracle, fast)
+    oracle, fast = oracle_and_fast(ids)
+    assert_bit_identical(oracle, fast)
 
 
 def test_single_image() -> None:
     grid = [1, 4, 4]
-    tokens = [10, 11] + _image_span(grid) + [12, 13]
+    tokens = [10, 11] + image_span(grid) + [12, 13]
     ids = torch.tensor([tokens], dtype=torch.long)
     image_grid = torch.tensor([grid], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(ids, image_grid_thw=image_grid)
-    _assert_bit_identical(oracle, fast)
+    oracle, fast = oracle_and_fast(ids, image_grid_thw=image_grid)
+    assert_bit_identical(oracle, fast)
 
 
 def test_single_video() -> None:
     grid = [2, 4, 4]
-    tokens = [10] + _video_span(grid) + [11]
+    tokens = [10] + video_span(grid) + [11]
     ids = torch.tensor([tokens], dtype=torch.long)
     video_grid = torch.tensor([grid], dtype=torch.long)
     seconds = torch.tensor([0.5], dtype=torch.float)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids, video_grid_thw=video_grid, second_per_grid_ts=seconds
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_image_then_audio() -> None:
     grid = [1, 8, 8]
     audio_seqlen = 200
-    tokens = [1, 2] + _image_span(grid) + [3] + _audio_span(audio_seqlen) + [4]
+    tokens = [1, 2] + image_span(grid) + [3] + audio_span(audio_seqlen) + [4]
     ids = torch.tensor([tokens], dtype=torch.long)
     image_grid = torch.tensor([grid], dtype=torch.long)
     audio_seqlens = torch.tensor([audio_seqlen], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids, image_grid_thw=image_grid, audio_seqlens=audio_seqlens
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_audio_then_video() -> None:
     grid = [3, 4, 4]
     audio_seqlen = 150
-    tokens = _audio_span(audio_seqlen) + _video_span(grid) + [99]
+    tokens = audio_span(audio_seqlen) + video_span(grid) + [99]
     ids = torch.tensor([tokens], dtype=torch.long)
     video_grid = torch.tensor([grid], dtype=torch.long)
     seconds = torch.tensor([1.0], dtype=torch.float)
     audio_seqlens = torch.tensor([audio_seqlen], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         video_grid_thw=video_grid,
         second_per_grid_ts=seconds,
         audio_seqlens=audio_seqlens,
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_two_images() -> None:
     g0, g1 = [1, 4, 4], [1, 6, 6]
-    tokens = [0] + _image_span(g0) + [1, 2] + _image_span(g1) + [3]
+    tokens = [0] + image_span(g0) + [1, 2] + image_span(g1) + [3]
     ids = torch.tensor([tokens], dtype=torch.long)
     image_grid = torch.tensor([g0, g1], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(ids, image_grid_thw=image_grid)
-    _assert_bit_identical(oracle, fast)
+    oracle, fast = oracle_and_fast(ids, image_grid_thw=image_grid)
+    assert_bit_identical(oracle, fast)
 
 
 def test_audio_in_video_interleaved() -> None:
     grid = [4, 4, 4]
     audio_seqlen = 300
-    tokens = [7, 8] + _audio_in_video_span(grid, audio_seqlen) + [9]
+    tokens = [7, 8] + audio_in_video_span(grid, audio_seqlen) + [9]
     ids = torch.tensor([tokens], dtype=torch.long)
     video_grid = torch.tensor([grid], dtype=torch.long)
     seconds = torch.tensor([0.25], dtype=torch.float)
     audio_seqlens = torch.tensor([audio_seqlen], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         video_grid_thw=video_grid,
         second_per_grid_ts=seconds,
         audio_seqlens=audio_seqlens,
         use_audio_in_video=True,
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_mixed_image_video_audio_in_video() -> None:
@@ -213,14 +213,14 @@ def test_mixed_image_video_audio_in_video() -> None:
     vid = [2, 4, 4]
     audio_seqlen = 180
     tokens = (
-        [1] + _image_span(img) + [2] + _audio_in_video_span(vid, audio_seqlen) + [3, 4]
+        [1] + image_span(img) + [2] + audio_in_video_span(vid, audio_seqlen) + [3, 4]
     )
     ids = torch.tensor([tokens], dtype=torch.long)
     image_grid = torch.tensor([img], dtype=torch.long)
     video_grid = torch.tensor([vid], dtype=torch.long)
     seconds = torch.tensor([0.5], dtype=torch.float)
     audio_seqlens = torch.tensor([audio_seqlen], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         image_grid_thw=image_grid,
         video_grid_thw=video_grid,
@@ -228,7 +228,7 @@ def test_mixed_image_video_audio_in_video() -> None:
         audio_seqlens=audio_seqlens,
         use_audio_in_video=True,
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 @pytest.mark.parametrize(
@@ -242,45 +242,45 @@ def test_mixed_image_video_audio_in_video() -> None:
 def test_audio_in_video_parametrized(
     grid: list[int], audio_seqlen: int, seconds: float
 ) -> None:
-    tokens = _audio_in_video_span(grid, audio_seqlen)
+    tokens = audio_in_video_span(grid, audio_seqlen)
     ids = torch.tensor([tokens], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         video_grid_thw=torch.tensor([grid], dtype=torch.long),
         second_per_grid_ts=torch.tensor([seconds], dtype=torch.float),
         audio_seqlens=torch.tensor([audio_seqlen], dtype=torch.long),
         use_audio_in_video=True,
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_video_non_integer_timescale_25fps() -> None:
     """(arange * sec) * pps order must match oracle (25 FPS)."""
     grid = [12, 4, 4]
-    tokens = [1] + _video_span(grid) + [2]
+    tokens = [1] + video_span(grid) + [2]
     ids = torch.tensor([tokens], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         video_grid_thw=torch.tensor([grid], dtype=torch.long),
         second_per_grid_ts=torch.tensor([1.0 / 25.0], dtype=torch.float),
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_audio_in_video_eos_uses_last_emitted_column() -> None:
     """AIV eos st_idx follows last emitted column, not max(merged)."""
     grid = [1, 56, 56]
     audio_seqlen = 100
-    tokens = [1] + _audio_in_video_span(grid, audio_seqlen) + [2]
+    tokens = [1] + audio_in_video_span(grid, audio_seqlen) + [2]
     ids = torch.tensor([tokens], dtype=torch.long)
-    oracle, fast = _oracle_and_fast(
+    oracle, fast = oracle_and_fast(
         ids,
         video_grid_thw=torch.tensor([grid], dtype=torch.long),
         second_per_grid_ts=torch.tensor([1.0], dtype=torch.float),
         audio_seqlens=torch.tensor([audio_seqlen], dtype=torch.long),
         use_audio_in_video=True,
     )
-    _assert_bit_identical(oracle, fast)
+    assert_bit_identical(oracle, fast)
 
 
 def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
@@ -293,14 +293,14 @@ def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
     real_vectorized = mp.get_rope_index_qwen3_omni_vectorized
     calls: list[int] = []
 
-    def _spy(*args, **kwargs):
+    def spy(*args, **kwargs):
         calls.append(1)
         return real_vectorized(*args, **kwargs)
 
-    monkeypatch.setattr(mp, "get_rope_index_qwen3_omni_vectorized", _spy)
+    monkeypatch.setattr(mp, "get_rope_index_qwen3_omni_vectorized", spy)
 
     grid = [1, 4, 4]
-    tokens = [10] + _image_span(grid) + [11]
+    tokens = [10] + image_span(grid) + [11]
     input_ids = torch.tensor(tokens, dtype=torch.long)
     model_inputs = {"image_grid_thw": torch.tensor([grid], dtype=torch.long)}
     thinker_config = SimpleNamespace(
@@ -340,7 +340,7 @@ def test_compute_mrope_positions_wires_vectorized_path(monkeypatch) -> None:
 # Part B: talker linearization equivalence
 
 
-def _thinker_config_ns():
+def thinker_config_ns():
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -354,7 +354,7 @@ def _thinker_config_ns():
     )
 
 
-def _decode_pos_from_delta(delta: torch.Tensor, seq_len: int) -> float:
+def decode_pos_from_delta(delta: torch.Tensor, seq_len: int) -> float:
     """(delta - 1) + seq_len (ForwardBatch._expand_mrope_from_input)."""
     return float(delta.reshape(-1)[0].item()) - 1.0 + float(seq_len)
 
@@ -368,7 +368,7 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
     )
 
     grid = [1, 8, 8]
-    user = [151644, 872] + _image_span(grid) + [198, 151645]
+    user = [151644, 872] + image_span(grid) + [198, 151645]
     assistant = [151675] * 20
     tokens = user + assistant
     ids = torch.tensor([tokens], dtype=torch.long)
@@ -399,11 +399,11 @@ def test_talker_mm_prompt_not_equivalent_to_linear() -> None:
     assert not torch.equal(mm_delta.float(), lin_delta.float())
 
     seq_after_prefill = len(tokens) + 1
-    assert _decode_pos_from_delta(
-        mm_delta, seq_after_prefill
-    ) != _decode_pos_from_delta(lin_delta, seq_after_prefill)
+    assert decode_pos_from_delta(mm_delta, seq_after_prefill) != decode_pos_from_delta(
+        lin_delta, seq_after_prefill
+    )
 
-    cfg = _thinker_config_ns()
+    cfg = thinker_config_ns()
     assert talker_can_use_linear_mrope(ids.view(-1), model_inputs, cfg) is False
 
 
@@ -418,7 +418,7 @@ def test_talker_text_only_can_use_linear_and_matches_full_path() -> None:
     tokens = list(range(100, 140))
     ids = torch.tensor([tokens], dtype=torch.long)
     model_inputs: dict = {}
-    cfg = _thinker_config_ns()
+    cfg = thinker_config_ns()
     assert talker_can_use_linear_mrope(ids.view(-1), model_inputs, cfg) is True
 
     full_pos, full_delta = get_rope_index_qwen3_omni_vectorized(
@@ -454,7 +454,7 @@ def test_talker_grids_without_mm_markers_can_use_linear() -> None:
     tokens = [1, 2, 3, 4, 5]
     ids = torch.tensor([tokens], dtype=torch.long)
     model_inputs = {"image_grid_thw": torch.tensor([[1, 4, 4]], dtype=torch.long)}
-    cfg = _thinker_config_ns()
+    cfg = thinker_config_ns()
     assert talker_can_use_linear_mrope(ids.view(-1), model_inputs, cfg) is True
 
     full_pos, full_delta = get_rope_index_qwen3_omni_vectorized(
@@ -488,11 +488,11 @@ def test_build_talker_request_keeps_mm_mrope_for_image_prompt(monkeypatch) -> No
     )
 
     grid = [1, 4, 4]
-    tokens = [10] + _image_span(grid) + [11] + [151675] * 4
+    tokens = [10] + image_span(grid) + [11] + [151675] * 4
     input_ids = torch.tensor(tokens, dtype=torch.long)
     embeds = torch.zeros(len(tokens), 8)
     model_inputs = {"image_grid_thw": torch.tensor([grid], dtype=torch.long)}
-    cfg = _thinker_config_ns()
+    cfg = thinker_config_ns()
 
     # Avoid importing heavy sglang Req machinery beyond MultimodalInputs.
     fake_req = MagicMock()
@@ -558,7 +558,7 @@ def test_build_talker_request_uses_linear_mrope_without_mm_markers(
     input_ids = torch.tensor(tokens, dtype=torch.long)
     embeds = torch.zeros(len(tokens), 8)
     model_inputs = {"image_grid_thw": torch.tensor([[1, 4, 4]], dtype=torch.long)}
-    cfg = _thinker_config_ns()
+    cfg = thinker_config_ns()
 
     fake_req = MagicMock()
     fake_req.output_ids = []
@@ -574,10 +574,10 @@ def test_build_talker_request_uses_linear_mrope_without_mm_markers(
     fake_sampling.normalize = MagicMock()
     fake_sampling.verify = MagicMock()
 
-    def _fail_compute(*args, **kwargs):
+    def fail_compute(*args, **kwargs):
         raise AssertionError("linear gate must skip _compute_mrope_positions")
 
-    monkeypatch.setattr(rb, "compute_mrope_positions", _fail_compute)
+    monkeypatch.setattr(rb, "compute_mrope_positions", fail_compute)
 
     data = rb.build_sglang_talker_request(
         thinker_hidden_states=torch.empty(0),

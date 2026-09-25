@@ -25,7 +25,7 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm  # noqa: E402
 from sglang_omni.model_runner.model_worker import ModelWorker  # noqa: E402
 
 
-def _qwen3_omni_engine_config():
+def qwen3_omni_engine_config():
     thinker_text = SimpleNamespace(
         num_hidden_layers=48,
         num_attention_heads=32,
@@ -61,7 +61,7 @@ def _qwen3_omni_engine_config():
     )
 
 
-def _pool_layers(config) -> int:
+def pool_layers(config) -> int:
     return resolve_layer_indices(
         model=object(),
         model_config=config,
@@ -71,15 +71,15 @@ def _pool_layers(config) -> int:
 
 
 def test_talker_pool_is_sized_from_the_talker_layers() -> None:
-    config = _qwen3_omni_engine_config()
-    assert _pool_layers(config) == 48
+    config = qwen3_omni_engine_config()
+    assert pool_layers(config) == 48
     ModelWorker.apply_arch_override(config, "Qwen3OmniTalker")
-    assert _pool_layers(config) == 20
+    assert pool_layers(config) == 20
     assert config.num_key_value_heads == 2
 
 
 def test_thinker_pool_keeps_the_thinker_layers() -> None:
-    config = _qwen3_omni_engine_config()
+    config = qwen3_omni_engine_config()
     ModelWorker.apply_arch_override(config, "Qwen3OmniThinkerForCausalLM")
-    assert _pool_layers(config) == 48
+    assert pool_layers(config) == 48
     assert config.num_key_value_heads == 4

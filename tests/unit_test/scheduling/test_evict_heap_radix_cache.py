@@ -16,7 +16,7 @@ from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
 )
 
 
-class _MockAllocator:
+class MockAllocator:
     device = "cpu"
 
     def free(self, value):
@@ -29,13 +29,13 @@ class _MockAllocator:
         return 1 << 30
 
 
-def _make(cache_cls, eviction_policy="lru"):
+def make(cache_cls, eviction_policy="lru"):
     """Simulated-cache builder; create_simulated hardcodes RadixCache."""
     return cache_cls(
         CacheInitParams(
             disable=False,
             req_to_token_pool=None,
-            token_to_kv_pool_allocator=_MockAllocator(),
+            token_to_kv_pool_allocator=MockAllocator(),
             page_size=1,
             enable_kv_cache_events=False,
             eviction_policy=eviction_policy,
@@ -43,11 +43,11 @@ def _make(cache_cls, eviction_policy="lru"):
     )
 
 
-def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
+def run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
     """Drive an identical insert/lock/unlock/evict trace; return eviction order."""
     order = []
-    orig_delete = cache._delete_leaf
-    cache._delete_leaf = lambda node: (
+    orig_delete = cache._delete_leaf  # noqa: leading-underscore  # upstream name
+    cache._delete_leaf = lambda node: (  # noqa: leading-underscore  # upstream name
         order.append((node.key.extra_key, tuple(node.key.token_ids))),
         orig_delete(node),
     )[1]
@@ -81,10 +81,10 @@ def _run_trace(cache, seed: int, steps: int = 4000, drain: bool = True) -> list:
 
 def test_eviction_trace_matches_stock():
     for seed in (1234, 99, 2026):
-        stock = _make(RadixCache)
-        patched = _make(EvictHeapRadixCache)
-        stock_order = _run_trace(stock, seed)
-        patched_order = _run_trace(patched, seed)
+        stock = make(RadixCache)
+        patched = make(EvictHeapRadixCache)
+        stock_order = run_trace(stock, seed)
+        patched_order = run_trace(patched, seed)
         assert patched_order == stock_order
         assert len(patched.evictable_leaves) == len(stock.evictable_leaves)
 
@@ -100,7 +100,7 @@ def test_factory_selects_evict_heap_only_for_lru():
             chunked_prefill_size=None,
             radix_eviction_policy=policy,
         ):
-            return create_tree_cache(None, _MockAllocator(), 1)
+            return create_tree_cache(None, MockAllocator(), 1)
 
     assert type(build("lru")) is EvictHeapRadixCache
     for policy in ("mru", "priority", "lfu", "fifo", "filo"):
@@ -125,14 +125,14 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy():
         radix_eviction_policy="slru",
         radix_eviction_policy_config={"protected_threshold": 4},
     ):
-        cache = create_tree_cache(None, _MockAllocator(), 1)
+        cache = create_tree_cache(None, MockAllocator(), 1)
 
     assert cache.eviction_strategy.protected_threshold == 4
 
 
 def test_heap_stays_bounded_and_recovers():
-    cache = _make(EvictHeapRadixCache)
-    _run_trace(cache, seed=7, steps=2000, drain=False)
+    cache = make(EvictHeapRadixCache)
+    run_trace(cache, seed=7, steps=2000, drain=False)
     assert cache.evictable_leaves
     assert len(cache.evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
     cache.evict(EvictParams(num_tokens=1 << 20))
@@ -145,7 +145,7 @@ def test_heap_stays_bounded_and_recovers():
 
 
 def test_reset_then_reuse():
-    cache = _make(EvictHeapRadixCache)
+    cache = make(EvictHeapRadixCache)
     cache.insert(
         InsertParams(
             key=RadixKey(token_ids=[5, 6, 7], extra_key="r"), value=torch.arange(3)

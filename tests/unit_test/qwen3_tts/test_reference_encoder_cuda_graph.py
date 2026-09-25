@@ -23,7 +23,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
 HOP = 16
 
 
-def _small_mimi_config() -> MimiConfig:
+def small_mimi_config() -> MimiConfig:
     """Ratios 4 and 2 with the stride 2 downsample conv: 16 samples per frame."""
     return MimiConfig(
         hidden_size=16,
@@ -47,7 +47,7 @@ def _small_mimi_config() -> MimiConfig:
 
 def test_move_conv_padding_to_host_keeps_the_conv_arithmetic() -> None:
     torch.manual_seed(3)
-    config = _small_mimi_config()
+    config = small_mimi_config()
     conv = MimiConv1d(config, 4, 4, kernel_size=7, stride=2)
     values = torch.randn(1, 4, 21)
     before = conv(values)
@@ -63,7 +63,7 @@ def test_move_conv_padding_to_host_keeps_the_conv_arithmetic() -> None:
 def test_speech_tokenizer_loader_moves_the_encoder_padding_to_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _small_mimi_config()
+    config = small_mimi_config()
 
     class FakeQwen3TTSTokenizer:
         @classmethod
@@ -105,7 +105,7 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
 ):
     torch.manual_seed(11)
     device = torch.device("cuda", torch.cuda.current_device())
-    config = _small_mimi_config()
+    config = small_mimi_config()
     model = MimiModel(config)
     for module in model.modules():
         if isinstance(module, MimiEuclideanCodebook):
@@ -159,7 +159,7 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
 def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest() -> None:
     torch.manual_seed(5)
     device = torch.device("cuda", torch.cuda.current_device())
-    config = _small_mimi_config()
+    config = small_mimi_config()
     model = MimiModel(config).to(device).eval()
     move_conv_padding_to_host(model)
     tokenizer = SimpleNamespace(

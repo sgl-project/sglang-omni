@@ -416,7 +416,7 @@ class TestPerStageTypedGroup:
     treatment to a field declared on the shared group, scoped to one stage."""
 
     @staticmethod
-    def _pipeline_cls():
+    def pipeline_cls():
         from typing import ClassVar
 
         from pydantic import Field
@@ -447,7 +447,7 @@ class TestPerStageTypedGroup:
         return TypedGroupPipelineConfig
 
     def test_the_declared_range_is_enforced_at_resolution(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         with pytest.raises(ValueError, match="stream_slots"):
             ConfigManager(config).merge_config(
@@ -455,7 +455,7 @@ class TestPerStageTypedGroup:
             )
 
     def test_the_lossless_conversion_rule_applies(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         with pytest.raises(ConfigPathError, match="got a boolean"):
             ConfigManager(config).merge_config(
@@ -463,7 +463,7 @@ class TestPerStageTypedGroup:
             )
 
     def test_a_legal_value_lands_on_the_typed_field(self):
-        cls = self._pipeline_cls()
+        cls = self.pipeline_cls()
         config = cls(model_path="dummy")
         merged = ConfigManager(config).merge_config(
             [("vocoder.factory.stream_slots", "8")]

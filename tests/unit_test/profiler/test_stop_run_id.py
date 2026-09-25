@@ -26,7 +26,7 @@ from sglang_omni.proto.messages import ProfilerStopMessage
 
 
 @pytest.fixture(autouse=True)
-def _reset_recorder():
+def reset_recorder():
     rec = get_recorder()
     if rec.is_active():
         rec.stop()

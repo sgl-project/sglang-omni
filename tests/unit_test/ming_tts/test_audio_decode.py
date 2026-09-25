@@ -28,7 +28,7 @@ from sglang_omni.models.ming_tts.payload_types import MingTTSState
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-class _FakeAudioVAE(torch.nn.Module):
+class FakeAudioVAE(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.anchor = torch.nn.Parameter(torch.empty(()))
@@ -49,7 +49,7 @@ class _FakeAudioVAE(torch.nn.Module):
         return action.reshape(1, 1, -1), (None, None, None), None
 
 
-class _FakeTransition:
+class BaseFakeTransition:
     def __init__(
         self,
         decoder: object,
@@ -76,10 +76,10 @@ class _FakeTransition:
             raise self.reset_all_error
 
 
-class _FakeRunner:
+class BaseFakeRunner:
     def __init__(
         self,
-        transition: _FakeTransition,
+        transition: BaseFakeTransition,
         *,
         cuda_graph_required: bool,
     ) -> None:
@@ -119,17 +119,17 @@ class _FakeRunner:
         self.close_calls += 1
 
 
-def _make_facade(
+def make_facade(
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[MingAudioDecoder, _FakeAudioVAE, _FakeTransition, _FakeRunner]:
+) -> tuple[MingAudioDecoder, FakeAudioVAE, BaseFakeTransition, BaseFakeRunner]:
     created: dict[str, object] = {}
 
-    class FakeTransition(_FakeTransition):
+    class FakeTransition(BaseFakeTransition):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             created["transition"] = self
 
-    class FakeRunner(_FakeRunner):
+    class FakeRunner(BaseFakeRunner):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             created["runner"] = self
@@ -144,7 +144,7 @@ def _make_facade(
         "MingAudioStreamingRunner",
         FakeRunner,
     )
-    audio_vae = _FakeAudioVAE()
+    audio_vae = FakeAudioVAE()
     decoder = MingAudioDecoder(
         audio_vae,
         stream_capacity=2,
@@ -159,7 +159,7 @@ def _make_facade(
     )
 
 
-def _run_one_streaming_step(decoder: MingAudioDecoder):
+def run_one_streaming_step(decoder: MingAudioDecoder):
     return decoder.run_streaming(
         slot_ids=(0,),
         patch_groups=((torch.ones((2, 3), dtype=torch.float32),),),
@@ -170,7 +170,7 @@ def _run_one_streaming_step(decoder: MingAudioDecoder):
 def test_full_empty_latents_skip_audio_vae(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decoder, audio_vae, _transition, _runner = _make_facade(monkeypatch)
+    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
 
     waveform = decoder.decode_full(torch.empty((0, 2, 3), dtype=torch.float32))
 
@@ -183,24 +183,24 @@ def test_full_empty_latents_skip_audio_vae(
 def test_streaming_error_does_not_gate_future_calls_after_owner_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decoder, audio_vae, transition, runner = _make_facade(monkeypatch)
+    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
     latents = torch.ones((1, 2, 3), dtype=torch.float32)
     runner.actions.append(RuntimeError("stream transaction failed"))
 
     with pytest.raises(RuntimeError, match="stream transaction failed"):
-        _run_one_streaming_step(decoder)
+        run_one_streaming_step(decoder)
 
     decoder.reset_stream_rows((0,))
     assert transition.reset_rows_calls == [(0,)]
     runner.actions.append((torch.tensor([0.5]),))
-    assert _run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
+    assert run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
     assert decoder.decode_full(latents).numel() == 2
 
 
 def test_full_error_does_not_gate_streaming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decoder, audio_vae, _transition, runner = _make_facade(monkeypatch)
+    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
     latents = torch.ones((1, 2, 3), dtype=torch.float32)
     audio_vae.decode_actions.append(RuntimeError("full device failed"))
 
@@ -208,10 +208,10 @@ def test_full_error_does_not_gate_streaming(
         decoder.decode_full(latents)
 
     runner.actions.append((torch.tensor([0.5]),))
-    assert _run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
+    assert run_one_streaming_step(decoder)[0].item() == pytest.approx(0.5)
 
 
-class _ScriptedGraph:
+class ScriptedGraph:
     def __init__(self) -> None:
         self.replay_error: Exception | None = None
         self.replay_calls = 0
@@ -226,7 +226,7 @@ class _ScriptedGraph:
         self.reset_calls += 1
 
 
-class _ScriptedCudaStream:
+class ScriptedCudaStream:
     def __init__(self) -> None:
         self.synchronize_error: Exception | None = None
         self.synchronize_calls = 0
@@ -239,7 +239,7 @@ class _ScriptedCudaStream:
             raise error
 
 
-class _ScriptedRunnerTransition:
+class ScriptedRunnerTransition:
     capacity = 2
     max_step_latents = 2
     latent_dim = 3
@@ -251,7 +251,7 @@ class _ScriptedRunnerTransition:
         self.decode_actions: deque[AudioVAEFixedStreamingOutput | Exception] = deque()
         self.decode_calls = 0
 
-    def decode(self, *_args, **_kwargs) -> AudioVAEFixedStreamingOutput:
+    def decode(self, *args, **_kwargs) -> AudioVAEFixedStreamingOutput:
         self.decode_calls += 1
         action = self.decode_actions.popleft()
         if isinstance(action, Exception):
@@ -259,7 +259,7 @@ class _ScriptedRunnerTransition:
         return action
 
 
-def _runner_output(
+def runner_output(
     *, sample_lengths: tuple[int, int] = (2, 1)
 ) -> AudioVAEFixedStreamingOutput:
     return AudioVAEFixedStreamingOutput(
@@ -271,22 +271,22 @@ def _runner_output(
     )
 
 
-def _make_scripted_runner(
+def make_scripted_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[
     MingAudioStreamingRunner,
-    _ScriptedRunnerTransition,
-    _ScriptedGraph,
-    _ScriptedCudaStream,
+    ScriptedRunnerTransition,
+    ScriptedGraph,
+    ScriptedCudaStream,
 ]:
-    transition = _ScriptedRunnerTransition()
-    graph = _ScriptedGraph()
-    stream = _ScriptedCudaStream()
+    transition = ScriptedRunnerTransition()
+    graph = ScriptedGraph()
+    stream = ScriptedCudaStream()
     runner = MingAudioStreamingRunner.__new__(MingAudioStreamingRunner)
     runner.transition = transition
     runner.cuda_graph_required_at_startup = True
     runner.startup_prepared = True
-    runner.captured_graph = CapturedAudioVAEGraph(graph=graph, output=_runner_output())
+    runner.captured_graph = CapturedAudioVAEGraph(graph=graph, output=runner_output())
     runner.host_latents = torch.empty((2, 2, 3), dtype=torch.float32)
     runner.host_latent_lengths = torch.empty(2, dtype=torch.long)
     runner.host_exec_mask = torch.empty(2, dtype=torch.bool)
@@ -302,7 +302,7 @@ def _make_scripted_runner(
     return runner, transition, graph, stream
 
 
-def _run_scripted_runner(
+def run_scripted_runner(
     runner: MingAudioStreamingRunner,
 ) -> tuple[torch.Tensor, ...]:
     return runner.run(
@@ -317,22 +317,22 @@ def test_runtime_graph_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
     fault_phase: str,
 ) -> None:
-    runner, transition, graph, stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
     if fault_phase == "replay":
         graph.replay_error = RuntimeError("replay failed")
     else:
         stream.synchronize_error = RuntimeError("deferred graph failure")
 
     with pytest.raises(RuntimeError):
-        _run_scripted_runner(runner)
+        run_scripted_runner(runner)
 
     assert runner.is_ready
     assert runner.captured_graph is None
     assert graph.replay_calls == 1
     assert transition.decode_calls == 0
 
-    transition.decode_actions.append(_runner_output())
-    (waveform,) = _run_scripted_runner(runner)
+    transition.decode_actions.append(runner_output())
+    (waveform,) = run_scripted_runner(runner)
 
     assert transition.decode_calls == 1
     assert graph.replay_calls == 1
@@ -342,7 +342,7 @@ def test_runtime_graph_failure_drops_graph_and_next_call_runs_eager(
 def test_host_staging_error_does_not_disable_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, transition, graph, _stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
     captured = runner.captured_graph
 
     with pytest.raises(RuntimeError):
@@ -360,22 +360,22 @@ def test_host_staging_error_does_not_disable_graph(
 def test_graph_output_validation_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, transition, graph, _stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
     captured = CapturedAudioVAEGraph(
         graph=graph,
-        output=_runner_output(sample_lengths=(5, 0)),
+        output=runner_output(sample_lengths=(5, 0)),
     )
     runner.captured_graph = captured
 
     with pytest.raises(RuntimeError, match="invalid sample length"):
-        _run_scripted_runner(runner)
+        run_scripted_runner(runner)
 
     assert runner.is_ready
     assert runner.captured_graph is None
     assert graph.replay_calls == 1
 
-    transition.decode_actions.append(_runner_output())
-    (waveform,) = _run_scripted_runner(runner)
+    transition.decode_actions.append(runner_output())
+    (waveform,) = run_scripted_runner(runner)
 
     assert transition.decode_calls == 1
     assert graph.replay_calls == 1
@@ -390,7 +390,7 @@ def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch: pytest.MonkeyPatch,
     host_buffer_name: str,
 ) -> None:
-    runner, transition, graph, _stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
     target = getattr(runner, host_buffer_name)
     original_copy = torch.Tensor.copy_
     failed = False
@@ -410,15 +410,15 @@ def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
     monkeypatch.setattr(torch.Tensor, "copy_", fail_target_once)
 
     with pytest.raises(RuntimeError, match="copy failed"):
-        _run_scripted_runner(runner)
+        run_scripted_runner(runner)
 
     assert runner.is_ready
     assert runner.captured_graph is None
     assert graph.replay_calls == 1
     assert transition.decode_calls == 0
 
-    transition.decode_actions.append(_runner_output())
-    (waveform,) = _run_scripted_runner(runner)
+    transition.decode_actions.append(runner_output())
+    (waveform,) = run_scripted_runner(runner)
 
     assert transition.decode_calls == 1
     assert graph.replay_calls == 1
@@ -428,16 +428,16 @@ def test_graph_output_copy_failure_drops_graph_and_next_call_runs_eager(
 def test_owned_waveform_clone_failure_does_not_disable_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, _transition, graph, _stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
     captured = runner.captured_graph
 
-    def fail_clone(_tensor: torch.Tensor) -> torch.Tensor:
+    def fail_clone(tensor: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("owned waveform clone failed")
 
     monkeypatch.setattr(torch.Tensor, "clone", fail_clone)
 
     with pytest.raises(RuntimeError, match="owned waveform clone failed"):
-        _run_scripted_runner(runner)
+        run_scripted_runner(runner)
 
     assert runner.is_ready
     assert runner.captured_graph is captured
@@ -447,7 +447,7 @@ def test_owned_waveform_clone_failure_does_not_disable_graph(
 def test_runner_close_invalidates_startup_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, _transition, graph, stream = _make_scripted_runner(monkeypatch)
+    runner, transition, graph, stream = make_scripted_runner(monkeypatch)
 
     runner.close()
 
@@ -456,10 +456,10 @@ def test_runner_close_invalidates_startup_readiness(
     assert graph.reset_calls == 1
     assert stream.synchronize_calls == 1
     with pytest.raises(RuntimeError, match="not prepared"):
-        _run_scripted_runner(runner)
+        run_scripted_runner(runner)
 
 
-def _make_tiny_audio_vae() -> AudioVAE:
+def make_tiny_audio_vae() -> AudioVAE:
     backbone = {
         "_attn_implementation": "sdpa",
         "attention_dropout": 0.0,
@@ -496,7 +496,7 @@ def _make_tiny_audio_vae() -> AudioVAE:
     return AudioVAE(config).eval()
 
 
-def _decode_first_fixed_row_on_cpu(
+def decode_first_fixed_row_on_cpu(
     transition: AudioVAEFixedStreamingTransition,
     latents: torch.Tensor,
     *,
@@ -525,7 +525,7 @@ def _decode_first_fixed_row_on_cpu(
     return output.waveform[0, : int(output.sample_lengths[0])].clone()
 
 
-def _snapshot_fixed_slot_state(
+def snapshot_fixed_slot_state(
     transition: AudioVAEFixedStreamingTransition,
     slot: int,
 ) -> dict[str, torch.Tensor]:
@@ -535,7 +535,7 @@ def _snapshot_fixed_slot_state(
     }
 
 
-def _dynamic_stream_parts(
+def dynamic_stream_parts(
     audio_vae: AudioVAE,
     latents: torch.Tensor,
     chunk_patches: tuple[int, ...],
@@ -565,10 +565,10 @@ def test_fixed_streaming_transition_matches_dynamic_audio_vae_on_cpu(
 ) -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(0)
-        audio_vae = _make_tiny_audio_vae()
+        audio_vae = make_tiny_audio_vae()
         latents = torch.randn(sum(chunk_patches), 4, 4)
 
-    dynamic_parts = _dynamic_stream_parts(audio_vae, latents, chunk_patches)
+    dynamic_parts = dynamic_stream_parts(audio_vae, latents, chunk_patches)
     max_step_latents = max(chunk_patches) * 4
     zero_tail = AudioVAEFixedStreamingTransition(
         audio_vae.decoder,
@@ -623,13 +623,13 @@ def test_fixed_streaming_transition_matches_independent_heterogeneous_slots() ->
     chunk_schedules = ((2, 4, 4), (1, 1), (2,))
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(3)
-        audio_vae = _make_tiny_audio_vae()
+        audio_vae = make_tiny_audio_vae()
         slot_latents = tuple(
             torch.randn(sum(schedule), 4, 4) for schedule in chunk_schedules
         )
 
     dynamic_parts = tuple(
-        _dynamic_stream_parts(audio_vae, latents, schedule)
+        dynamic_stream_parts(audio_vae, latents, schedule)
         for latents, schedule in zip(slot_latents, chunk_schedules, strict=True)
     )
     transition = AudioVAEFixedStreamingTransition(
@@ -686,7 +686,7 @@ def test_fixed_streaming_transition_matches_independent_heterogeneous_slots() ->
 def test_fixed_terminal_transition_cleans_row_for_reuse_on_cpu() -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(1)
-        audio_vae = _make_tiny_audio_vae()
+        audio_vae = make_tiny_audio_vae()
         opening = torch.randn(4, 4)
         continuation = torch.randn(4, 4)
         terminal = torch.randn(4, 4)
@@ -703,19 +703,19 @@ def test_fixed_terminal_transition_cleans_row_for_reuse_on_cpu() -> None:
         max_step_latents=4,
     )
 
-    _decode_first_fixed_row_on_cpu(transition, opening, terminal=False)
-    _decode_first_fixed_row_on_cpu(transition, continuation, terminal=False)
-    _decode_first_fixed_row_on_cpu(transition, terminal, terminal=True)
+    decode_first_fixed_row_on_cpu(transition, opening, terminal=False)
+    decode_first_fixed_row_on_cpu(transition, continuation, terminal=False)
+    decode_first_fixed_row_on_cpu(transition, terminal, terminal=True)
 
-    reused = _decode_first_fixed_row_on_cpu(transition, reuse, terminal=True)
-    expected = _decode_first_fixed_row_on_cpu(fresh, reuse, terminal=True)
+    reused = decode_first_fixed_row_on_cpu(transition, reuse, terminal=True)
+    expected = decode_first_fixed_row_on_cpu(fresh, reuse, terminal=True)
     torch.testing.assert_close(reused, expected, rtol=1e-4, atol=1e-6)
 
 
 def test_fixed_transition_keeps_inactive_row_state_unchanged_on_cpu() -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(1)
-        audio_vae = _make_tiny_audio_vae()
+        audio_vae = make_tiny_audio_vae()
         opening = torch.randn(4, 4)
         continuation = torch.randn(4, 4)
         terminal = torch.randn(4, 4)
@@ -745,7 +745,7 @@ def test_fixed_transition_keeps_inactive_row_state_unchanged_on_cpu() -> None:
         torch.tensor([True, False]),
         torch.tensor([False, False]),
     )
-    inactive_before = _snapshot_fixed_slot_state(transition, 0)
+    inactive_before = snapshot_fixed_slot_state(transition, 0)
 
     envelope.fill_(0.25)
     envelope[1].copy_(terminal)
@@ -771,7 +771,7 @@ def test_fixed_transition_keeps_inactive_row_state_unchanged_on_cpu() -> None:
         rtol=1e-4,
         atol=1e-6,
     )
-    inactive_after = _snapshot_fixed_slot_state(transition, 0)
+    inactive_after = snapshot_fixed_slot_state(transition, 0)
     assert inactive_after.keys() == inactive_before.keys()
     for name, expected in inactive_before.items():
         assert torch.equal(inactive_after[name], expected), name
@@ -780,7 +780,7 @@ def test_fixed_transition_keeps_inactive_row_state_unchanged_on_cpu() -> None:
 def test_fixed_transition_reset_clears_only_selected_row_and_allows_reuse() -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(2)
-        audio_vae = _make_tiny_audio_vae()
+        audio_vae = make_tiny_audio_vae()
         reuse = torch.randn(4, 4)
 
     transition = AudioVAEFixedStreamingTransition(
@@ -799,28 +799,28 @@ def test_fixed_transition_reset_clears_only_selected_row_and_allows_reuse() -> N
         )
         tensor.select(row_dim, 0).fill_(selected_value)
         tensor.select(row_dim, 1).fill_(neighbor_value)
-    selected_before = _snapshot_fixed_slot_state(transition, 0)
-    neighbor_before = _snapshot_fixed_slot_state(transition, 1)
+    selected_before = snapshot_fixed_slot_state(transition, 0)
+    neighbor_before = snapshot_fixed_slot_state(transition, 1)
     for name, value in selected_before.items():
         assert torch.count_nonzero(value).item() == value.numel(), name
 
     transition.reset_rows((0,))
-    selected_after = _snapshot_fixed_slot_state(transition, 0)
-    neighbor_after = _snapshot_fixed_slot_state(transition, 1)
+    selected_after = snapshot_fixed_slot_state(transition, 0)
+    neighbor_after = snapshot_fixed_slot_state(transition, 1)
     for name, value in selected_after.items():
         assert torch.count_nonzero(value).item() == 0, name
     for name, expected in neighbor_before.items():
         assert torch.equal(neighbor_after[name], expected), name
 
-    reused = _decode_first_fixed_row_on_cpu(transition, reuse, terminal=True)
-    expected = _decode_first_fixed_row_on_cpu(fresh, reuse, terminal=True)
+    reused = decode_first_fixed_row_on_cpu(transition, reuse, terminal=True)
+    expected = decode_first_fixed_row_on_cpu(fresh, reuse, terminal=True)
     torch.testing.assert_close(reused, expected, rtol=1e-4, atol=1e-6)
-    neighbor_after_reuse = _snapshot_fixed_slot_state(transition, 1)
+    neighbor_after_reuse = snapshot_fixed_slot_state(transition, 1)
     for name, expected_state in neighbor_before.items():
         assert torch.equal(neighbor_after_reuse[name], expected_state), name
 
 
-class _RecordingPayloadDecoder:
+class RecordingPayloadDecoder:
     sample_rate = 44100
 
     def __init__(self, waveform: torch.Tensor) -> None:
@@ -847,7 +847,7 @@ def test_ming_tts_full_payload_decodes_once(keep_latents: bool) -> None:
         data=state.to_dict(),
     )
     waveform = torch.tensor([0.25, -0.5, 0.75, -1.0], dtype=torch.float32)
-    decoder = _RecordingPayloadDecoder(waveform)
+    decoder = RecordingPayloadDecoder(waveform)
 
     result = decode_ming_tts_audio_payload(
         payload,
