@@ -33,6 +33,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferSlot
+from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
 logger = logging.getLogger(__name__)
 DEFAULT_QWEN3_TTS_STREAM_STRIDE = 16
@@ -678,14 +679,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         if fused_snake_activation:
-            from sglang_omni.models.qwen3_tts.vocoder_kernels import (
-                fuse_vocoder_decoder,
-            )
-
-            logger.info(
-                "Qwen3-TTS vocoder fused SnakeBeta modules: %d",
-                fuse_vocoder_decoder(self.decoder),
-            )
+            replaced = fuse_vocoder_decoder(self.decoder)
+            logger.info(f"Qwen3-TTS vocoder fused SnakeBeta modules: {replaced}")
         else:
             pass
         tokenizer_config = getattr(tokenizer.model, "config", None)

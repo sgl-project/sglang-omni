@@ -35,8 +35,10 @@ apply_qwen_tts_transformers_compatibility_patches()
 from qwen_tts import Qwen3TTSModel, Qwen3TTSTokenizer
 import dac
 from neucodec import NeuCodec
+from cosyvoice.cli.cosyvoice import CosyVoice3
+from matcha.models.components.flow_matching import BASECFM
 assert shutil.which('sox'), 'Qwen3-TTS requires the system sox executable'
-" 2>/dev/null; then
+"; then
   echo "::error::${VENV_NAME} import probe failed at ${OMNI_CI_HOME}/${VENV_NAME}" >&2
   exit 1
 fi
