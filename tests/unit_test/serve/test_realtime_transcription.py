@@ -545,7 +545,9 @@ def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]
 @pytest.mark.asyncio
 async def test_model_without_server_vad_starts_in_manual_mode() -> None:
     session, websocket = _no_vad_session()
-    await session.send(session.initial_event())
+    await session.send(
+        session_module.TranscriptionSessionCreated(session=session.session_object())
+    )
 
     assert websocket.events[-1]["session"]["turn_detection"] is None
     assert session.vad is None
