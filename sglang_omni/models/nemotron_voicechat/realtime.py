@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from sglang_omni.client.client import Client
 from sglang_omni.models.nemotron_voicechat.duplex_config import STAGES
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import OutputChunk, SessionIdentity
+from sglang_omni.proto.session import OutputChunk, SessionIdentity, SessionLimits
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import (
@@ -19,7 +19,7 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.schema import SessionConfiguration
-from sglang_omni.serve.realtime.types import Capabilities
+from sglang_omni.serve.realtime.types import Capabilities, RuntimeLimits
 
 
 class VoiceChatOutput:
@@ -70,7 +70,9 @@ class VoiceChatOutput:
             pass
 
 
-def make_adapter(client: Client) -> CoordinatorAdapter:
+def make_adapter(
+    client: Client, limits: SessionLimits | None = None
+) -> CoordinatorAdapter:
     def request(config: SessionConfiguration) -> OmniRequest:
         if config.get("instructions"):
             raise ValueError("VoiceChat currently uses its checkpoint system prompt")
@@ -83,10 +85,13 @@ def make_adapter(client: Client) -> CoordinatorAdapter:
         request_builder=request,
         output_converter=VoiceChatOutput(),
         atomic_consumption=True,
+        limits=limits,
     )
 
 
-def deployment(client: Client) -> RealtimeDeployment:
+def deployment(
+    client: Client, *, session_limits: SessionLimits | None = None
+) -> RealtimeDeployment:
     return RealtimeDeployment(
         Capabilities(
             interaction="native",
@@ -96,6 +101,11 @@ def deployment(client: Client) -> RealtimeDeployment:
             native_unit_ms=80,
             tail_policy="pad",
         ),
-        lambda: make_adapter(client),
+        lambda: make_adapter(client, session_limits),
+        limits=(
+            RuntimeLimits(cleanup_timeout_s=session_limits.operation_timeout_s)
+            if session_limits is not None
+            else RuntimeLimits()
+        ),
         max_connections=1,
     )

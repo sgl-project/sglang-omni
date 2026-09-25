@@ -39,7 +39,9 @@ Open **http://localhost:8097** after the server prints `VoiceChat UI`.
 The example serves its HTML, CSS and JavaScript directly; no frontend build or
 npm installation is required. Startup captures the fixed-size codec graph and runs two silent frames to warm
 first-frame and continuation kernels, including the speech sampler graph, before
-opening the port (`--no-warmup` skips the silent session).
+opening the port (`--no-warmup` skips the silent session). File-input runs also
+warm up first. The warmup session allows 120 seconds per unit for cold kernel
+compilation; live sessions retain the standard operation timeout.
 
 1. Click **开始对话** and allow microphone access. Headphones help avoid acoustic feedback.
 2. Speak naturally. The browser sends continuous 80 ms PCM frames and plays

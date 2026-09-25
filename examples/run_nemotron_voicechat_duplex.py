@@ -11,6 +11,8 @@ import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+WARMUP_TIMEOUT_S = 120
+
 
 def mount_example_ui(app):
     """Keep the demo and its WebSocket on the same origin (no CORS setup)."""
@@ -64,7 +66,7 @@ async def warmup_realtime(dep):
         await runtime.update({"output_modalities": ["audio"]}, "warmup-configure")
         await runtime.append(b"\0\0" * 2560, 0, None, "warmup-audio")
         await runtime.end("warmup-end")
-        await asyncio.wait_for(task, 90)
+        await asyncio.wait_for(task, WARMUP_TIMEOUT_S)
     finally:
         await runtime.close("warmup_finished")
         task.cancel()
@@ -80,6 +82,7 @@ async def run(args):
     )
     from sglang_omni.models.nemotron_voicechat.realtime import deployment
     from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+    from sglang_omni.proto.session import SessionLimits
     from sglang_omni.serve.realtime.control import Drained, Failure
     from sglang_omni.serve.realtime.output import AudioDelta, TextDelta
     from sglang_omni.serve.realtime.runtime import SessionRuntime
@@ -92,18 +95,20 @@ async def run(args):
     await runner.start(timeout=900)
     try:
         client = Client(runner.coordinator)
+        if not args.no_warmup:
+            print("Warming up VoiceChat kernels...", flush=True)
+            await warmup_realtime(
+                deployment(
+                    client,
+                    session_limits=SessionLimits(operation_timeout_s=WARMUP_TIMEOUT_S),
+                )
+            )
         dep = deployment(client)
         if args.serve:
             import uvicorn
 
             from sglang_omni.serve.openai_api import create_app
 
-            if not args.no_warmup:
-                print(
-                    "Warming up VoiceChat before opening the microphone UI...",
-                    flush=True,
-                )
-                await warmup_realtime(dep)
             app = create_app(
                 client, model_name="nemotron-voicechat", realtime_deployment=dep
             )
@@ -196,7 +201,9 @@ if __name__ == "__main__":
         help="serve the microphone UI and WebSocket on localhost",
     )
     parser.add_argument(
-        "--no-warmup", action="store_true", help="skip startup warmup when serving"
+        "--no-warmup",
+        action="store_true",
+        help="skip startup warmup (requires populated kernel caches)",
     )
     parser.add_argument("--port", type=int, default=8097)
     parser.add_argument("--talker-attention", choices=["triton", "torch_native"])
