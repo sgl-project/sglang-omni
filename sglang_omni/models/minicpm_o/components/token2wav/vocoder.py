@@ -20,8 +20,12 @@ from librosa.filters import mel as librosa_mel
 from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
 )
-from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
+from sglang_omni.models.minicpm_o.components.token2wav.dit import (
+    DiT,
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+    SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES,
     CausalConditionalCFM,
     CausalMaskedDiffWithXvec,
     FlowCudaGraphRunner,
@@ -108,7 +112,8 @@ class Token2Wav(torch.nn.Module):
         enable_flow_variable_length: bool = False,
         enable_dit_torch_compile: bool = True,
         enable_flow_cuda_graph: bool = True,
-        flow_cuda_graph_capture_shapes: tuple[tuple[int, ...], ...] | None = None,
+        flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
+        packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     ) -> None:
         super().__init__()
         if n_timesteps <= 0:
@@ -163,17 +168,32 @@ class Token2Wav(torch.nn.Module):
                 if flow_cuda_graph_capture_shapes is None
                 else flow_cuda_graph_capture_shapes
             )
-            if enable_flow_variable_length:
-                capture_shapes = tuple(
-                    shape
-                    for shape in capture_shapes
-                    if shape[0] == 1 or len(shape) == 3
-                )
+            if capture_shapes:
+                runner = FlowCudaGraphRunner(self.flow.decoder, device=device)
+                runner.capture(capture_shapes)
+                self.flow.decoder.graph_runner = runner
             else:
                 pass
-            runner = FlowCudaGraphRunner(self.flow.decoder, device=device)
-            runner.capture(capture_shapes)
-            self.flow.decoder.graph_runner = runner
+            packed_shapes = (
+                SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES
+                if packed_dit_cuda_graph_capture_shapes is None
+                else packed_dit_cuda_graph_capture_shapes
+            )
+            if packed_shapes and enable_flow_variable_length:
+                packed_runner = PackedDiTCudaGraphRunner(
+                    self.flow.decoder.estimator, device=device
+                )
+                packed_runner.capture(packed_shapes)
+                self.flow.decoder.estimator.packed_graph_runner = packed_runner
+            elif packed_shapes and packed_dit_cuda_graph_capture_shapes is not None:
+                if not enable_flow_variable_length:
+                    raise ValueError(
+                        "Packed DiT CUDA graph shapes require variable-length Flow"
+                    )
+                else:
+                    pass
+            else:
+                pass
         else:
             pass
 

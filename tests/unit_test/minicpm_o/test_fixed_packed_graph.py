@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 
-from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
+from sglang_omni.models.minicpm_o.components.token2wav.dit import (
+    DiT,
+    PackedDiTCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
     build_fixed_packed_layout,
     pack_fixed_capacity,
@@ -36,6 +41,17 @@ def test_fixed_packing_preserves_valid_rows() -> None:
     torch.testing.assert_close(restored[0], source[0])
     torch.testing.assert_close(restored[1, :2], source[1, :2])
     torch.testing.assert_close(restored[1, 2:], torch.zeros_like(source[1, 2:]))
+
+
+def test_packed_graph_capacity_fit_is_independent_of_mel_width() -> None:
+    dit = DiT(in_channels=16, out_channels=4, depth=1, hidden_size=32)
+    runner = PackedDiTCudaGraphRunner(dit, device=torch.device("cuda:0"))
+    runner.graphs = {(2, 128): MagicMock(), (2, 160): MagicMock()}
+    assert runner.fit(2, 32, 102) == 128
+    assert runner.fit(2, 48, 122) == 128
+    assert runner.fit(2, 16, 146) == 160
+    assert runner.fit(2, 5, 122) is None
+    assert runner.fit(2, 1025, 122) is None
 
 
 @pytest.mark.accelerator
@@ -162,17 +178,21 @@ def test_flow_runner_replays_packed_batch_with_changed_lengths() -> None:
         .eval()
         .requires_grad_(False)
     )
-    runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
-    runner.capture(((2, 32, 128),))
-    assert set(runner.graphs) == {(2, 32, 128)}
+    runner = PackedDiTCudaGraphRunner(dit, device=torch.device("cuda:0"))
+    runner.capture(((2, 128),))
+    assert set(runner.graphs) == {(2, 128)}
+    flow_runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
+    flow_runner.capture(((2, 32), (2, 48)))
+    assert set(flow_runner.epilogues) == {(2, 32), (2, 48)}
 
-    mu = torch.randn(2, 4, 32, device="cuda", dtype=torch.bfloat16)
     spks = torch.randn(2, 4, device="cuda", dtype=torch.bfloat16)
-    cond = torch.randn_like(mu)
-    for profile in ((32, 19), (32, 25)):
+    for profile in ((32, 19), (36, 25)):
+        frames = max(profile)
+        mu = torch.randn(2, 4, frames, device="cuda", dtype=torch.bfloat16)
+        cond = torch.randn_like(mu)
         widths = torch.tensor(profile, device="cuda")
         mask = (
-            torch.arange(32, device="cuda")[None, None, :] < widths[:, None, None]
+            torch.arange(frames, device="cuda")[None, None, :] < widths[:, None, None]
         ).to(mu)
         packed_valid_frames = 2 * sum(profile)
         eager = decoder(
@@ -182,7 +202,8 @@ def test_flow_runner_replays_packed_batch_with_changed_lengths() -> None:
             cond,
             packed_valid_frames=packed_valid_frames,
         )
-        decoder.graph_runner = runner
+        dit.packed_graph_runner = runner
+        decoder.graph_runner = flow_runner
         actual = decoder(
             mu,
             mask,
@@ -190,7 +211,10 @@ def test_flow_runner_replays_packed_batch_with_changed_lengths() -> None:
             cond,
             packed_valid_frames=packed_valid_frames,
         )
+        dit.packed_graph_runner = None
         decoder.graph_runner = None
         torch.testing.assert_close(actual, eager, atol=0.03, rtol=0.03)
     assert runner.graph_replays == 20
     assert runner.graph_misses == 0
+    assert flow_runner.graph_replays == 20
+    assert flow_runner.graph_misses == 0

@@ -50,8 +50,9 @@ new preparation calls.
 
 ## Flow execution options
 
-The Code2Wav stage compiles the DiT blocks and captures one Flow Euler step
-by default. The graph table covers batch size 1 and mel-frame lengths
+The Code2Wav stage compiles the DiT blocks and enables separate Flow and
+packed DiT CUDA graph tables by default. The batch-1 Flow table spans
+mel-frame lengths
 `128..1024`, every 16 frames from 272 through 720 and at most 32 frames
 apart elsewhere:
 
@@ -60,27 +61,38 @@ apart elsewhere:
 --code2wav.factory.enable_flow_cuda_graph false
 ```
 
-Compile runs before graph capture when both options are enabled. Graph shapes
-are `(batch size, mel frames)` and must have a frame count divisible by 16.
-They are captured at startup; each Euler step replays the smallest resident
-graph with the same batch size that covers the request's 16-frame rounded
-length. Other shapes run the eager solver without request-time capture. A
-capture that fails or would leave less than 3 GiB free is skipped while the
-remaining buckets stay usable.
-Resident graphs consume GPU memory even when requests do not hit them.
-Override `flow_cuda_graph_capture_shapes` when a measured serving workload has
-different resident shapes. With variable-length DiT enabled, only batch-1
-shapes are captured by default; larger batches use packed DiT eagerly. An
-experimental packed graph shape can be specified as `(batch, mel frames,
-packed capacity)`. The capacity must be 16-aligned and leave one or more
-dummy frames after the CFG-doubled valid frames, with no more than one mel
-frame width of dummy tokens. Requests outside the captured capacity run packed
-DiT eagerly.
+Compile runs before graph capture when both options are enabled. Two
+independent CUDA graph tables are configurable at startup:
 
-An opt-in SeedTTS English H100 capture table is available as
-`SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES` in
-`sglang_omni.models.minicpm_o.components.token2wav.flow`. It combines six
-batch-1 shapes with 12 packed shapes and can be supplied through
-`code2wav.factory.flow_cuda_graph_capture_shapes`. It is not a default: the
-measured packed-graph replays did not establish a serving throughput gain over
-restart noise, and resident graph memory depends on the deployment.
+- `code2wav.factory.flow_cuda_graph_capture_shapes` is keyed by
+  `(batch, mel_frames)`. Batch-1 keys capture complete Euler steps;
+  variable-length batches larger than one capture the Euler epilogue
+  after DiT instead. The default has 44 batch-1 buckets and 97 B2-B8
+  mel buckets derived from the timed SeedTTS English fits. Frames must
+  be divisible by 16.
+- `code2wav.factory.packed_dit_cuda_graph_capture_shapes` captures only
+  the fixed-capacity packed DiT blocks, keyed by `(batch, capacity)`.
+  The mel-width-dependent projection, packing, and unpacking remain
+  outside this graph. The default has 46 B2-B8 capacities derived from
+  the timed SeedTTS English fits. A fit requires
+  capacity greater than the CFG-doubled valid frames, with no more than
+  one mel-frame width of dummy tokens. The fixed attention maximum is
+  1024 frames; longer requests use packed eager DiT.
+
+Both tables are enabled by default when Flow CUDA graphs are enabled;
+`None` selects their built-in tables, while `[]` disables an individual
+table. Failed captures and requests outside the captured buckets fall
+back to eager execution. Captures may be skipped when less than 3 GiB
+of GPU memory remains.
+
+The packed-capacity presets
+`SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES` (12 keys) and
+`SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES` (46 default keys) live in
+`sglang_omni.models.minicpm_o.components.token2wav.flow`. The earlier
+H100 experiment captured *different*, whole-Euler-step three-dimensional
+graphs; its performance and quality results do not validate these new
+packed DiT graphs. Offline application of the two default tables to that
+experiment's 294 timed packed fits finds a mel bucket and a capacity for
+all 294, with 3.56% mean dummy/valid token ratio. This is *shape-fit*
+coverage, not measured capture, replay, performance, or output quality
+for the new implementation.

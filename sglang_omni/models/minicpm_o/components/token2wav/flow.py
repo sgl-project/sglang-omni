@@ -41,33 +41,101 @@ FLOW_CUDA_GRAPH_FRAME_BUCKETS = (
     *range(752, 1009, 32),
     1024,
 )
-FlowCudaGraphShape = tuple[int, int] | tuple[int, int, int]
-# note (wirybeaver): Opt-in H100 SeedTTS EN shape table from the 2026-09-24 census.
-SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES: tuple[FlowCudaGraphShape, ...] = (
-    (1, 272),
-    (1, 384),
-    (1, 512),
-    (1, 640),
-    (1, 720),
-    (1, 1024),
-    (2, 672, 2144),
-    (3, 784, 3088),
-    (4, 848, 3936),
-    (6, 672, 5680),
-    (8, 752, 7616),
-    (5, 624, 4944),
-    (7, 880, 6384),
-    (5, 480, 4192),
-    (8, 576, 6832),
-    (7, 720, 7136),
-    (2, 640, 2448),
-    (6, 656, 6464),
-)
+# note (wirybeaver): B2-B8 buckets cover 294 timed SeedTTS EN packed fits.
+FLOW_CUDA_GRAPH_PACKED_FRAME_BUCKETS: dict[int, tuple[int, ...]] = {
+    2: (
+        336,
+        384,
+        400,
+        416,
+        432,
+        448,
+        464,
+        480,
+        496,
+        512,
+        528,
+        544,
+        560,
+        576,
+        592,
+        608,
+        624,
+        640,
+    ),
+    3: (400, 416, 448, 464, 480, 496, 512, 528, 544, 560, 576, 608, 640, 656, 672),
+    4: (432, 448, 464, 480, 496, 512, 528, 576, 592, 608, 624),
+    5: (416, 432, 448, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624),
+    6: (464, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 640, 656),
+    7: (480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 656, 672, 720, 736),
+    8: (480, 496, 528, 544, 560, 576, 592, 608, 624, 640, 656, 672, 784),
+}
 
 
 def build_default_flow_cuda_graph_shapes() -> tuple[tuple[int, int], ...]:
-    """Build the default batch/frame graph grid."""
-    return tuple((1, frames) for frames in FLOW_CUDA_GRAPH_FRAME_BUCKETS)
+    """Build the default batch/mel-frame graph grid."""
+    return (
+        *((1, frames) for frames in FLOW_CUDA_GRAPH_FRAME_BUCKETS),
+        *(
+            (batch, frames)
+            for batch, frame_buckets in FLOW_CUDA_GRAPH_PACKED_FRAME_BUCKETS.items()
+            for frames in frame_buckets
+        ),
+    )
+
+
+SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES: tuple[tuple[int, int], ...] = (
+    (2, 2144),
+    (3, 3088),
+    (4, 3936),
+    (6, 5680),
+    (8, 7616),
+    (5, 4944),
+    (7, 6384),
+    (5, 4192),
+    (8, 6832),
+    (7, 7136),
+    (2, 2448),
+    (6, 6464),
+)
+# note (wirybeaver): Capacities projected from the September 2026 SeedTTS EN census.
+SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES: tuple[tuple[int, int], ...] = (
+    *SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES,
+    (2, 1744),
+    (2, 1936),
+    (2, 1616),
+    (2, 2080),
+    (3, 2688),
+    (3, 3392),
+    (3, 3072),
+    (3, 2496),
+    (4, 3520),
+    (4, 4048),
+    (4, 3216),
+    (4, 4432),
+    (5, 4128),
+    (5, 5376),
+    (5, 4592),
+    (5, 3760),
+    (6, 5376),
+    (6, 5888),
+    (6, 5248),
+    (6, 5424),
+    (7, 6032),
+    (7, 6448),
+    (7, 4944),
+    (7, 6736),
+    (8, 7760),
+    (8, 8416),
+    (8, 7440),
+    (8, 6352),
+    (3, 2000),
+    (5, 3216),
+    (2, 1280),
+    (7, 5520),
+    (7, 5552),
+    (8, 6896),
+)
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -103,9 +171,12 @@ class CausalConditionalCFM(torch.nn.Module):
         spks_in = torch.cat([spks, torch.zeros_like(spks)], dim=0)
         cond_in = torch.cat([cond, torch.zeros_like(cond)], dim=0)
         graph_runner = self.graph_runner
-        graph_key = (
-            graph_runner.fit(x, packed_valid_frames)
-            if graph_runner is not None
+        packed_runner = self.estimator.packed_graph_runner
+        is_packed = self.estimator.enable_variable_length and x.shape[0] > 1
+        graph_key = graph_runner.fit(x) if graph_runner is not None else None
+        packed_capacity = (
+            packed_runner.fit(x.shape[0], x.shape[2], packed_valid_frames)
+            if packed_runner is not None and is_packed
             else None
         )
         for step in range(1, len(t_span)):
@@ -113,11 +184,21 @@ class CausalConditionalCFM(torch.nn.Module):
                 graph_runner.run_step(
                     graph_key, x, t, dt, mu_in, mask_in, spks_in, cond_in
                 )
-                if graph_key is not None
+                if graph_key is not None and not is_packed
                 else None
             )
             x = (
-                self.euler_step(x, t, dt, mu_in, mask_in, spks_in, cond_in)
+                self.euler_step(
+                    x,
+                    t,
+                    dt,
+                    mu_in,
+                    mask_in,
+                    spks_in,
+                    cond_in,
+                    packed_capacity=packed_capacity,
+                    epilogue_key=graph_key if is_packed else None,
+                )
                 if graphed is None
                 else graphed
             )
@@ -139,6 +220,7 @@ class CausalConditionalCFM(torch.nn.Module):
         cond_in: torch.Tensor,
         *,
         packed_capacity: int | None = None,
+        epilogue_key: tuple[int, int] | None = None,
     ) -> torch.Tensor:
         dphi_dt = self.estimator.forward(
             torch.cat([x, x], dim=0),
@@ -149,6 +231,16 @@ class CausalConditionalCFM(torch.nn.Module):
             cond_in,
             packed_capacity=packed_capacity,
         )
+        graphed = (
+            self.graph_runner.run_epilogue(epilogue_key, x, dt, dphi_dt)
+            if epilogue_key is not None and self.graph_runner is not None
+            else None
+        )
+        return self.euler_finish(x, dt, dphi_dt) if graphed is None else graphed
+
+    def euler_finish(
+        self, x: torch.Tensor, dt: torch.Tensor, dphi_dt: torch.Tensor
+    ) -> torch.Tensor:
         conditional, unconditional = dphi_dt.chunk(2, dim=0)
         velocity = (
             1.0 + self.inference_cfg_rate
@@ -200,6 +292,13 @@ class CapturedFlowGraph:
     output: torch.Tensor
 
 
+@dataclass
+class CapturedFlowEpilogue:
+    graph: torch.cuda.CUDAGraph
+    inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    output: torch.Tensor
+
+
 class FlowCudaGraphRunner:
     """Replay one Euler step from startup-captured batch/frame shapes."""
 
@@ -221,44 +320,29 @@ class FlowCudaGraphRunner:
         )
         self.dtype = next(decoder.parameters()).dtype
         self.min_free_bytes = int(min_free_gb * 1024**3)
-        self.graphs: dict[FlowCudaGraphShape, CapturedFlowGraph] = {}
+        self.graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
+        self.epilogues: dict[tuple[int, int], CapturedFlowEpilogue] = {}
         self.pool: tuple[int, int] | None = None
         self.lock = Lock()
         self.graph_replays = 0
         self.graph_misses = 0
 
     @torch.inference_mode()
-    def capture(self, shapes: tuple[FlowCudaGraphShape, ...]) -> None:
+    def capture(self, shapes: tuple[tuple[int, int], ...]) -> None:
         if not shapes or len(set(shapes)) != len(shapes):
             raise ValueError("Flow CUDA graph shapes must be nonempty and unique")
         else:
             pass
         if any(
-            len(shape) not in (2, 3)
+            len(shape) != 2
             or shape[0] <= 0
             or shape[1] <= 0
             or shape[1] % FLOW_CUDA_GRAPH_FRAME_BUCKET != 0
             or shape[1] > self.decoder.rand_noise.shape[2]
-            or (
-                len(shape) == 2
-                and shape[0] > 1
-                and self.decoder.estimator.enable_variable_length
-            )
-            or (
-                len(shape) == 3
-                and (
-                    not self.decoder.estimator.enable_variable_length
-                    or shape[0] == 1
-                    or shape[2] <= 2 * shape[0]
-                    or shape[2] > 2 * shape[0] * shape[1] + shape[1]
-                    or shape[2] % FLOW_CUDA_GRAPH_FRAME_BUCKET != 0
-                )
-            )
             for shape in shapes
         ):
             raise ValueError(
-                "Flow CUDA graph shapes need positive batches, 16-aligned "
-                "frames and capacities, and a capacity within the packed limit"
+                "Flow CUDA graph shapes need positive batches and 16-aligned mel frames"
             )
         else:
             pass
@@ -266,18 +350,14 @@ class FlowCudaGraphRunner:
         current_stream = torch.cuda.current_stream(self.device)
         stream = torch.cuda.Stream(device=self.device)
         stream.wait_stream(current_stream)
-        graphs: dict[FlowCudaGraphShape, CapturedFlowGraph] = {}
+        graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
+        epilogues: dict[tuple[int, int], CapturedFlowEpilogue] = {}
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
             self.pool = torch.cuda.graph_pool_handle()
-            for shape in sorted(
-                shapes,
-                key=lambda value: value[0]
-                * value[1]
-                * (value[2] if len(value) == 3 else 1),
-                reverse=True,
+            for batch_size, frames in sorted(
+                shapes, key=lambda value: value[0] * value[1], reverse=True
             ):
-                batch_size, frames = shape[:2]
-                packed_capacity = shape[2] if len(shape) == 3 else None
+                shape = (batch_size, frames)
                 free, _ = torch.cuda.mem_get_info(self.device)
                 if free < self.min_free_bytes:
                     logger.warning(
@@ -294,61 +374,18 @@ class FlowCudaGraphRunner:
                         .expand(batch_size, -1, -1)
                         .clone()
                     )
-                    t = torch.zeros(batch_size, device=self.device, dtype=self.dtype)
                     dt = torch.tensor(0.1, device=self.device, dtype=self.dtype)
-                    mu_in = torch.zeros(
-                        2 * batch_size,
-                        self.decoder.out_channels,
-                        frames,
-                        device=self.device,
-                        dtype=self.dtype,
-                    )
-                    if packed_capacity is None:
-                        mask_in = torch.ones(
+                    if batch_size > 1 and self.decoder.estimator.enable_variable_length:
+                        dphi_dt = torch.zeros(
                             2 * batch_size,
-                            1,
+                            self.decoder.out_channels,
                             frames,
                             device=self.device,
-                            dtype=self.dtype,
+                            dtype=torch.bfloat16,
                         )
-                    else:
-                        valid_total = min(
-                            batch_size * frames, (packed_capacity - 2) // 2
-                        )
-                        remaining = batch_size * frames - valid_total
-                        lengths = [frames] * batch_size
-                        for index in reversed(range(batch_size)):
-                            removed = min(remaining, frames - 1)
-                            lengths[index] -= removed
-                            remaining -= removed
-                        if remaining or packed_capacity - 2 * sum(lengths) > frames:
-                            raise ValueError(f"Invalid packed graph shape {shape}")
-                        else:
-                            pass
-                        row_mask = (
-                            torch.arange(frames, device=self.device)[None, :]
-                            < torch.tensor(lengths, device=self.device)[:, None]
-                        )
-                        mask_in = (
-                            torch.cat((row_mask, row_mask), dim=0)
-                            .unsqueeze(1)
-                            .to(self.dtype)
-                        )
-                    spks_in = torch.zeros(
-                        2 * batch_size,
-                        self.decoder.out_channels,
-                        device=self.device,
-                        dtype=self.dtype,
-                    )
-                    cond_in = torch.zeros_like(mu_in)
-                    inputs = (x, t, dt, mu_in, mask_in, spks_in, cond_in)
-                    with torch.autocast(
-                        "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
-                    ):
+                        epilogue_inputs = (x, dt, dphi_dt)
                         for _ in range(3):
-                            self.decoder.euler_step(
-                                *inputs, packed_capacity=packed_capacity
-                            )
+                            self.decoder.euler_finish(*epilogue_inputs)
                         graph = torch.cuda.CUDAGraph()
                         with torch.cuda.graph(
                             cuda_graph=graph,
@@ -356,10 +393,52 @@ class FlowCudaGraphRunner:
                             stream=stream,
                             capture_error_mode="thread_local",
                         ):
-                            output = self.decoder.euler_step(
-                                *inputs, packed_capacity=packed_capacity
-                            )
-                    graphs[shape] = CapturedFlowGraph(graph, inputs, output)
+                            output = self.decoder.euler_finish(*epilogue_inputs)
+                        epilogues[shape] = CapturedFlowEpilogue(
+                            graph, epilogue_inputs, output
+                        )
+                    else:
+                        t = torch.zeros(
+                            batch_size, device=self.device, dtype=self.dtype
+                        )
+                        mu_in = torch.zeros(
+                            2 * batch_size,
+                            self.decoder.out_channels,
+                            frames,
+                            device=self.device,
+                            dtype=self.dtype,
+                        )
+                        mask_in = torch.ones(
+                            2 * batch_size,
+                            1,
+                            frames,
+                            device=self.device,
+                            dtype=self.dtype,
+                        )
+                        spks_in = torch.zeros(
+                            2 * batch_size,
+                            self.decoder.out_channels,
+                            device=self.device,
+                            dtype=self.dtype,
+                        )
+                        cond_in = torch.zeros_like(mu_in)
+                        inputs = (x, t, dt, mu_in, mask_in, spks_in, cond_in)
+                        with torch.autocast(
+                            "cuda",
+                            dtype=self.dtype,
+                            enabled=self.dtype != torch.float32,
+                        ):
+                            for _ in range(3):
+                                self.decoder.euler_step(*inputs)
+                            graph = torch.cuda.CUDAGraph()
+                            with torch.cuda.graph(
+                                cuda_graph=graph,
+                                pool=self.pool,
+                                stream=stream,
+                                capture_error_mode="thread_local",
+                            ):
+                                output = self.decoder.euler_step(*inputs)
+                        graphs[shape] = CapturedFlowGraph(graph, inputs, output)
                 except Exception as exc:
                     logger.warning(
                         f"MiniCPM-o Flow CUDA graph capture failed for "
@@ -367,41 +446,31 @@ class FlowCudaGraphRunner:
                     )
         current_stream.wait_stream(stream)
         self.graphs = graphs
-        logger.info(f"Captured {len(graphs)} MiniCPM-o Flow step CUDA graph shapes")
+        self.epilogues = epilogues
+        logger.info(
+            f"Captured {len(graphs)} MiniCPM-o Flow step and "
+            f"{len(epilogues)} Flow epilogue CUDA graph shapes"
+        )
 
-    def fit(
-        self, x: torch.Tensor, packed_valid_frames: int | None = None
-    ) -> FlowCudaGraphShape | None:
+    def fit(self, x: torch.Tensor) -> tuple[int, int] | None:
         actual_frames = x.shape[2]
         bucket_frames = (
             (actual_frames + FLOW_CUDA_GRAPH_FRAME_BUCKET - 1)
             // FLOW_CUDA_GRAPH_FRAME_BUCKET
             * FLOW_CUDA_GRAPH_FRAME_BUCKET
         )
-        is_packed = self.decoder.estimator.enable_variable_length and x.shape[0] > 1
-        if is_packed:
-            candidates = (
-                key
-                for key in self.graphs
-                if len(key) == 3
-                and key[0] == x.shape[0]
-                and key[1] >= bucket_frames
-                and packed_valid_frames is not None
-                and key[2] > packed_valid_frames
-                and key[2] - packed_valid_frames <= key[1]
-            )
-        else:
-            candidates = (
-                key
-                for key in self.graphs
-                if len(key) == 2 and key[0] == x.shape[0] and key[1] >= bucket_frames
-            )
+        candidates = (
+            self.epilogues
+            if x.shape[0] > 1 and self.decoder.estimator.enable_variable_length
+            else self.graphs
+        )
         key = min(
-            candidates,
-            key=lambda value: (
-                value[0] * value[1] * (value[2] if len(value) == 3 else 1),
-                value,
+            (
+                key
+                for key in candidates
+                if key[0] == x.shape[0] and key[1] >= bucket_frames
             ),
+            key=lambda value: value[1],
             default=None,
         )
         if x.device != self.device or x.dtype != self.dtype or key is None:
@@ -413,7 +482,7 @@ class FlowCudaGraphRunner:
 
     def run_step(
         self,
-        key: FlowCudaGraphShape,
+        key: tuple[int, int],
         x: torch.Tensor,
         t: torch.Tensor,
         dt: torch.Tensor,
@@ -448,11 +517,45 @@ class FlowCudaGraphRunner:
                 captured.graph.replay()
             except RuntimeError:
                 self.graphs.clear()
+                self.epilogues.clear()
                 self.pool = None
                 logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
                 raise
             self.graph_replays += 1
             return captured.output[: x.shape[0], :, :actual_frames].clone()
+
+    def run_epilogue(
+        self,
+        key: tuple[int, int],
+        x: torch.Tensor,
+        dt: torch.Tensor,
+        dphi_dt: torch.Tensor,
+    ) -> torch.Tensor | None:
+        actual_frames = x.shape[2]
+        with self.lock:
+            captured = self.epilogues.get(key)
+            if captured is None:
+                self.graph_misses += 1
+                return None
+            else:
+                pass
+            for target, source in zip(captured.inputs, (x, dt, dphi_dt), strict=True):
+                value = (
+                    F.pad(source, (0, key[1] - actual_frames))
+                    if source.ndim == 3 and source.shape[-1] != key[1]
+                    else source
+                )
+                target.copy_(value)
+            try:
+                captured.graph.replay()
+            except RuntimeError:
+                self.graphs.clear()
+                self.epilogues.clear()
+                self.pool = None
+                logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
+                raise
+            self.graph_replays += 1
+            return captured.output[:, :, :actual_frames].clone()
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):

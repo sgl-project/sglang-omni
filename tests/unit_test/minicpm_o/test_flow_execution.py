@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -55,11 +57,27 @@ def test_compiled_blocks_share_one_forward(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_default_graph_shapes_cover_dense_region_and_sparse_tails() -> None:
     shapes = build_default_flow_cuda_graph_shapes()
-    assert len(shapes) == 44
+    singleton = [shape for shape in shapes if shape[0] == 1]
+    assert len(shapes) == 141
+    assert len(singleton) == 44
     assert shapes[0] == (1, 128)
-    assert shapes[-1] == (1, 1024)
+    assert singleton[-1] == (1, 1024)
     assert all((1, frames) in shapes for frames in range(272, 721, 16))
-    assert max(right[1] - left[1] for left, right in zip(shapes, shapes[1:])) == 32
+    assert (
+        max(right[1] - left[1] for left, right in zip(singleton, singleton[1:])) == 32
+    )
+    assert (2, 336) in shapes and (8, 784) in shapes
+
+
+def test_flow_graph_fit_uses_mel_table_for_packed_epilogue() -> None:
+    decoder = small_decoder()
+    decoder.estimator.enable_variable_length = True
+    runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
+    runner.device = torch.device("cpu")
+    runner.graphs = {(1, 32): MagicMock()}
+    runner.epilogues = {(2, 32): MagicMock()}
+    assert runner.fit(torch.zeros(1, 4, 31)) == (1, 32)
+    assert runner.fit(torch.zeros(2, 4, 31)) == (2, 32)
 
 
 def test_right_padding_preserves_valid_flow_frames() -> None:
