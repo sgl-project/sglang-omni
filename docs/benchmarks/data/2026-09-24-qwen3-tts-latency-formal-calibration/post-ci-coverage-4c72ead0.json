@@ -1,0 +1,98 @@
+{
+  "ok": true,
+  "errors": [],
+  "workflow_tests": [
+    "tests/test_ci/test_tts_mps_dp2.py",
+    "tests/test_model/test_asr_ci_multi_speaker.py",
+    "tests/test_model/test_asr_ci_seedtts.py",
+    "tests/test_model/test_qwen3_omni_mmmu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmmu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_process_replicas.py",
+    "tests/test_model/test_qwen3_omni_thinker_length.py",
+    "tests/test_model/test_qwen3_omni_tts_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_talker_ci.py",
+    "tests/test_model/test_tts_ci.py",
+    "tests/test_model/test_tts_consistency_artifacts.py",
+    "tests/test_model/test_tts_latency_ci.py",
+    "tests/test_model/test_tts_serving_ci.py"
+  ],
+  "calibrated_tests": [
+    "tests/test_ci/test_tts_mps_dp2.py",
+    "tests/test_model/test_asr_ci_multi_speaker.py",
+    "tests/test_model/test_asr_ci_seedtts.py",
+    "tests/test_model/test_qwen3_omni_mmmu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmmu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_tts_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_talker_ci.py",
+    "tests/test_model/test_tts_ci.py",
+    "tests/test_model/test_tts_latency_ci.py",
+    "tests/test_model/test_tts_serving_ci.py"
+  ],
+  "exclusions": {
+    "tests/test_model/test_qwen3_omni_process_replicas.py": "Replica registration, round-robin, and fixed PCM-equivalence correctness smoke; no calibrated threshold.",
+    "tests/test_model/test_qwen3_omni_thinker_length.py": "HTTP error and finish-reason semantics; no calibrated performance/quality threshold.",
+    "tests/test_model/test_tts_consistency_artifacts.py": "Cross-stage streaming artifact consistency; no independently calibrated threshold."
+  },
+  "declared_tests": [
+    "tests/test_ci/test_tts_mps_dp2.py",
+    "tests/test_model/test_asr_ci_multi_speaker.py",
+    "tests/test_model/test_asr_ci_seedtts.py",
+    "tests/test_model/test_qwen3_omni_mmmu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmmu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_ci.py",
+    "tests/test_model/test_qwen3_omni_mmsu_talker_ci.py",
+    "tests/test_model/test_qwen3_omni_tts_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_ci.py",
+    "tests/test_model/test_qwen3_omni_videoamme_talker_tp2_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_ci.py",
+    "tests/test_model/test_qwen3_omni_videomme_talker_ci.py",
+    "tests/test_model/test_tts_ci.py",
+    "tests/test_model/test_tts_latency_ci.py",
+    "tests/test_model/test_tts_serving_ci.py"
+  ],
+  "preset_registries": {
+    "ASR_CI_MODEL": {
+      "path": "tests/test_model/asr_ci_config.py",
+      "symbol": "ASR_CI_PRESETS",
+      "test": "tests/test_model/test_asr_ci_seedtts.py"
+    },
+    "OMNI_CI_MODEL": {
+      "path": "tests/test_model/omni_ci_config.py",
+      "symbol": "OMNI_CI_PRESETS",
+      "test": "tests/test_model/test_qwen3_omni_mmmu_ci.py"
+    },
+    "TTS_CI_MODEL": {
+      "path": "tests/test_model/tts_ci_config.py",
+      "symbol": "TTS_CI_PRESETS",
+      "test": "tests/test_model/test_tts_ci.py"
+    }
+  },
+  "preset_keys": {
+    "ASR_CI_MODEL": [
+      "fun",
+      "qwen3",
+      "whisper"
+    ],
+    "OMNI_CI_MODEL": [
+      "minicpmo",
+      "qwen3-omni"
+    ],
+    "TTS_CI_MODEL": [
+      "cosyvoice3",
+      "higgs",
+      "moss",
+      "qwen3-tts",
+      "qwen3-tts-custom-voice"
+    ]
+  }
+}

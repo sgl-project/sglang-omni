@@ -1,0 +1,27 @@
+{
+  "model": "tts",
+  "stages": [
+    "tts_latency_qwen3-tts_r1_speed",
+    "tts_latency_qwen3-tts_r20_speed",
+    "tts_latency_qwen3-tts-custom-voice_r1_speed",
+    "tts_latency_qwen3-tts-custom-voice_r20_speed"
+  ],
+  "repeats": 5,
+  "timestamp": "2026-09-25T01:59:03Z",
+  "calibration_started_at": "2026-09-25T01:59:03Z",
+  "calibration_git_sha": "8521cf6865686ad28b858f338e96d323caac4c60",
+  "git_sha": "8521cf6865686ad28b858f338e96d323caac4c60",
+  "git_branch": "HEAD",
+  "dirty": false,
+  "venv_python": "/github/home/calibration/omni/bin/python",
+  "venv_source": "flag",
+  "tune_version": "0.8.0",
+  "tool_identity": {
+    "tune.py": "58b8eb5bab6148689f28b03baa7faa889a5c36882867f61c07ba838728b5c11d",
+    "check_ci_coverage.py": "e1e3caaf14aae6cf2d1f85f261bd4acff1a7cab4cb3623f666d1f2df92bbecf6",
+    "models/asr/config.yaml": "3e641d075c339664997919474f43948837fd352dae81128edcbfb563bad7870c",
+    "models/omni/config.yaml": "e3bbded94e3d9208335fa0abc534b0a30a981ee77bb5aad6fda50903e3c1193c",
+    "models/tts/config.yaml": "af75cead120b261cc1f42011287a5dee279f91615471b7069985361fbbc9c83b"
+  },
+  "stages_yaml": "/data/tools/calibrate-h100-ci-dda3c7c/calibration/models/tts/stages.yaml"
+}

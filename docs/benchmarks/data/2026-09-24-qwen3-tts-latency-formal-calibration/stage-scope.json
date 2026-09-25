@@ -1,0 +1,82 @@
+{
+  "target_sha": "8521cf6865686ad28b858f338e96d323caac4c60",
+  "tools_revision": "dda3c7c278fafcb74cd814a1b19db71130a63ad6",
+  "suites": {
+    "asr": {
+      "selector": "SKIP",
+      "stages": []
+    },
+    "omni": {
+      "selector": "SKIP",
+      "stages": []
+    },
+    "tts": {
+      "selector": "tts_latency_qwen3-tts_r1_speed,tts_latency_qwen3-tts_r20_speed,tts_latency_qwen3-tts-custom-voice_r1_speed,tts_latency_qwen3-tts-custom-voice_r20_speed",
+      "stages": [
+        {
+          "key": "tts_latency_qwen3-tts_r1_speed",
+          "test": "tests/test_model/test_tts_latency_ci.py",
+          "preset": "qwen3-tts",
+          "extra_env": {
+            "TTS_CI_MODEL": "qwen3-tts"
+          },
+          "expected_samples": 60,
+          "metrics": {
+            "ttfp_median_s": "QWEN3_TTS_LATENCY_VC_R1_TTFP_MEDIAN_REF_S"
+          },
+          "execution_unit": "test_tts_latency_ci.py x qwen3-tts",
+          "repeats": 5
+        },
+        {
+          "key": "tts_latency_qwen3-tts_r20_speed",
+          "test": "tests/test_model/test_tts_latency_ci.py",
+          "preset": "qwen3-tts",
+          "extra_env": {
+            "TTS_CI_MODEL": "qwen3-tts"
+          },
+          "expected_samples": 1088,
+          "metrics": {
+            "ttfp_median_s": "QWEN3_TTS_LATENCY_VC_R20_TTFP_MEDIAN_REF_S",
+            "ttfp_p95_s": "QWEN3_TTS_LATENCY_VC_R20_TTFP_P95_REF_S",
+            "c50_pct": "QWEN3_TTS_LATENCY_VC_R20_C50_REF_PCT"
+          },
+          "execution_unit": "test_tts_latency_ci.py x qwen3-tts",
+          "repeats": 5
+        },
+        {
+          "key": "tts_latency_qwen3-tts-custom-voice_r1_speed",
+          "test": "tests/test_model/test_tts_latency_ci.py",
+          "preset": "qwen3-tts-custom-voice",
+          "extra_env": {
+            "TTS_CI_MODEL": "qwen3-tts-custom-voice"
+          },
+          "expected_samples": 60,
+          "metrics": {
+            "ttfp_median_s": "QWEN3_TTS_LATENCY_CUSTOM_VOICE_R1_TTFP_MEDIAN_REF_S"
+          },
+          "execution_unit": "test_tts_latency_ci.py x qwen3-tts-custom-voice",
+          "repeats": 5
+        },
+        {
+          "key": "tts_latency_qwen3-tts-custom-voice_r20_speed",
+          "test": "tests/test_model/test_tts_latency_ci.py",
+          "preset": "qwen3-tts-custom-voice",
+          "extra_env": {
+            "TTS_CI_MODEL": "qwen3-tts-custom-voice"
+          },
+          "expected_samples": 1088,
+          "metrics": {
+            "ttfp_median_s": "QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_MEDIAN_REF_S",
+            "ttfp_p95_s": "QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_TTFP_P95_REF_S",
+            "c50_pct": "QWEN3_TTS_LATENCY_CUSTOM_VOICE_R20_C50_REF_PCT"
+          },
+          "execution_unit": "test_tts_latency_ci.py x qwen3-tts-custom-voice",
+          "repeats": 5
+        }
+      ],
+      "execution_units": 2,
+      "minimum_stage_observations": 20,
+      "sibling_executions": "none: the r1 and r20 stages of a preset share one pytest invocation of test_tts_latency_ci.py, which runs nothing else"
+    }
+  }
+}

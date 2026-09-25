@@ -1602,3 +1602,90 @@ driver 作为容器初始命令(用了另一台机器、`sleep infinity` 加 exe
   补 CustomVoice preset,按 main + #2293 重生成 TTS/ASR schema;覆盖检查只剩 Omni 的 23 个旧错误,原因是 #2252 把 Omni 阈值
   挪进 `omni_ci_config.py` 改了名,工具的 Omni 配置没跟上,不在本次范围)。
 - 现在 #2293 里的数字仍是手动重跑 CI job 得到的,等能借到 CI lane 时用原生 `tune.py` 正式校准替换。
+
+## 第三十八轮:按手册在 CI 主机上正式校准 #2293 的延迟阶段(2026-09-24 18:35-20:20 PT)
+
+**背景**:第三十六轮的参照是手动重跑 CI job 得到的,没按校准手册走。这一轮用原生 `tune.py` 在 CI 主机
+`host-85-234-79-221` 上重做,并先把 #2293 的三条已知局限修掉:到达时间用固定种子(`arrival_seed`,每轮到达序列相同)、
+记录计划到达与实际发送的时间差(`dispatch_lateness_s`)、首帧从计划到达时刻算起(`audio_ttfp_from_arrival_*`,逐请求相加后
+再取分位数)。这三处改动在 #2293 的 `8521cf68`(main `329ef4cd` 之上),标定就以它为目标。
+
+**做法**
+- 租约:Radix `01M3B3307N6SRH0B0VR71AKXQY`,GPU 0,1,lane cpuset `2-15,66-79`(驱动用 `taskset` 绑核,因为 rootless Podman
+  没有下放 cpuset 控制器,`--cpuset-cpus` 起不来),CI 镜像按 digest `hongccc/sglang-omni@sha256:ebe4239e…`。
+  luojiaxuan 批准了在 CI 主机上租 2 卡 4 小时。
+- 工具:zhaochenyang20/sglang-omni-calibration#1 的 `tts-latency-stage` 分支。驱动作为容器初始命令(`entrypoint.sh`),依次做
+  源码 SHA 核对、CI 自己的 venv reconcile、router 构建、CUDA 冒烟、目标单元测试(66 项)、资产下载、attempt 留存验收、
+  覆盖检查、`tune.py --model tts run --stages <4 个 stage> --repeats 5`,最后出 status、strict-audit、report、apply-plan。
+- 范围:`tts_latency_qwen3-tts_{r1,r20}_speed` 与 `tts_latency_qwen3-tts-custom-voice_{r1,r20}_speed`,两个执行单元
+  (每个 preset 一次 pytest 同时跑 1 rps 与 20 rps),ASR 与 Omni 跳过。
+
+**前两次启动在采样前就退出,没占用 GPU**
+- 第一次(18:42 PT):`tune.py run` 开头做全仓库的覆盖检查,Omni 的 schema 过期(#2252 把 Omni 阈值挪进 `omni_ci_config.py`
+  并加了 MiniCPM-o 预设,工具的 Omni discover 一个常量都找不到)。我之前把这 23 个 Omni 错误当"范围外"放过去了,这不对:
+  runbook 1.1 写明缩小 stage 范围不豁免这项检查。修法是工具 `dda3c7c`:每个 Omni 测试从 `omni_ci_config.py` 读参照,按
+  `qwen3-omni` 与 `minicpmo` 两个预设各展开一套 stage(共 47 个),覆盖检查全绿。我先试过"只拦被标定模型的错误",
+  因为违反手册撤掉了。
+- 第二次(18:54 PT):工具的主机档案把 `HF_HOME` 设成 CI runner 的 `/root/.cache/huggingface`,我的驱动把缓存放在别处,
+  原生 precheck 报资产缺失。驱动改为把 `/root/.cache/huggingface` 链到同一份缓存。
+- 两次的日志与报告按手册留在 `attempts/driver01`、`attempts/driver02`,原因写进节点上的 handoff。
+
+**结果**(18:59-19:48 PT,ms,从计划到达起算;每轮 1 rps 60/60、20 rps 1088/1088 完成,客户端排队 0,
+发送延迟 p99 2 到 5 ms;无破坏性轮次,strict-audit 与 git 来源 READY)
+
+| 臂 | 点 | r1 | r2 | r3 | r4 | r5 | worst | gate(× 1.25) |
+|---|---|---|---|---|---|---|---|---|
+| Base | 1 rps 中位数 | 58.1 | 57.5 | 57.3 | 58.0 | 57.7 | 58.1 | 72.6 |
+| Base | 20 rps 中位数 | 102.9 | 103.7 | 103.1 | 103.0 | 104.1 | 104.1 | 130.1 |
+| Base | 20 rps p95 | 185.2 | 176.0 | 181.6 | 178.2 | 173.9 | 185.2 | 只打印 |
+| Base | 20 rps c50 % | 99.72 | 99.36 | 99.54 | 99.72 | 99.45 | 99.36 | 只打印 |
+| CustomVoice | 1 rps 中位数 | 21.2 | 21.2 | 21.5 | 21.8 | 21.3 | 21.8 | 27.3 |
+| CustomVoice | 20 rps 中位数 | 33.3 | 33.3 | 35.5 | 33.3 | 33.3 | 35.5 | 44.4 |
+| CustomVoice | 20 rps p95 | 47.7 | 46.6 | 48.7 | 47.5 | 47.5 | 48.7 | 60.9 |
+| CustomVoice | 20 rps c50 % | 100 | 100 | 100 | 100 | 100 | 100 | 只打印 |
+
+**读法**
+- 固定种子之后非常稳:各指标五轮的相对极差 1% 到 7%(CustomVoice 20 rps 中位数那一次 35.5 对其余四次 33.3 是最大的 6.6%),
+  远低于手册"20% 到 30% 算噪声阶段"的线。第三十六轮在 eval-h100 上是 5% 到 7%,runner 上 Base p95 是双峰。
+- 与第三十六轮的 CI runner 数据(旧代码)对照:Base 20 rps 中位数 104 到 122 ms、CustomVoice 20 rps p95 49 到 59 ms,全在
+  新 gate 之内;Base 20 rps p95 的 256、308 ms 则远超 185 × 1.25 = 231 ms。
+- 标定时 221 除本任务外空闲;CI runner 这段时间都在 eval-h100(`radix machines list` 显示那台 8 卡全被占、4 卡在跑)。
+  所以这批参照是"空闲 lane"的数字,中位数迁移有 runner 历史作证,尾部没有。
+
+**决策四件套**(发审前的判断与外审全文在 `docs/reviews/2026-09-24-qwen3-tts-latency-calibration-transfer.md`)
+- 问题一:Base 20 rps p95 要不要 gate。默认:不 gate,只打印。理由:同一指标在第三十六轮就发生过"空闲机器标得紧、
+  第一次 CI 就误报",空闲 lane 的五轮不能证明它在 CI 共载下成立;Base 在 TTS CI 的随机轮换里,误报会打到无关 PR。
+  回滚:在 CI 共载下(借一条正在跑别的 job 的 runner lane)用 `tune.py` 重标这一项,再把 `ttfp_p95_max_s` 加回 Base 的 20 rps 点。
+- 问题二:c50 要不要 gate。默认:不 gate,只打印。理由:`THRESHOLD_SLACK_HIGHER` × 成功率在 99.4% 附近给出 74.5%,
+  等于放行约 40 倍的坏流;改成坏流占比 × 1.25 会被 3 到 7 条的计数噪声打爆。回滚:做一个按计数建模的 gate
+  (例如以 worst 占比为参数的二项上分位数),那需要单独设计并做敏感度扫描,记为后续。
+- 问题三:CustomVoice 20 rps p95 要不要 gate。默认:gate(60.9 ms)。理由:runner 历史 5 次都在其内,且它只在打了专门标签
+  的 PR 上跑。回滚:删掉该点的 `ttfp_p95_max_s`。
+- 外审(ChatGPT 6 Pro,思考 6m 39s):问题一、二它反对我原来的"先上 gate、CI 验证越线再撤",我改判;问题三它的迁移担忧
+  同样适用,我凭 runner 历史保留;它要求核实的"逐请求相加再取分位数"已核实无误。
+
+**写入与复核**:按手册先只写数字:#2293 的 `0e99d8ad` 照 apply-plan 写入全部 8 个原值(包括随后不 gate 的两项),
+在节点上用这个提交重跑 apply-plan,8 项都是 `equal`;覆盖检查通过;目标单元测试 66 项全过(`4c72ead0`)。
+然后 `4c72ead0` 单独去掉 Base p95 与两个 c50 的 gate 及其常量。工具侧 `91df4f6` 删掉 `c50_pct` 指标并重生成 schema。
+复核时发现暂存到节点的工具包里有 macOS 打包带进去的 `._*` AppleDouble 文件,没设 `TUNE_HOST` 时工具会读到
+`hosts/._sglang-h100-ci.yaml` 而崩溃,已删除并记进 `/radix-gpu-nodes` 的已知坑(打包前 `COPYFILE_DISABLE=1`)。
+
+**rebase**:标定期间 main 前进到 `9fc7d820`,其中 #2365 把测试里带前导下划线的名字全部改成公开名,并加了 lint;#2293 与之冲突。
+改为从新 main 重放:`8502659a` 是 `8521cf68` 的净改动加上新名字,`59551641` 与 `e06c8d84` 分别对应 `0e99d8ad` 与 `4c72ead0`。
+benchmark runner、指标汇总、benchmark 配置与 workflow 与标定提交逐字节相同;main 这三个提交在运行时代码里只给
+`sglang_omni/vendor/sglang/layers.py` 加了一行 `noqa` 注释。原提交链保留在 `luojiaxuan/sglang-omni` 的
+`calib-qwen3-tts-latency-20260925T0135Z` 分支。工具按新 main 重生成三套 schema(`a53be90`,stage 与指标数不变),并把
+cpuset 测试里的 `_samples` 改成 `samples`。
+
+**数据与收尾**
+- 轻量证据:`docs/benchmarks/data/2026-09-24-qwen3-tts-latency-formal-calibration/`(report、status、strict-audit、apply-plan、
+  post-apply 复核、每轮 `run{k}.json`、stage-scope、events、handoff、fingerprint、驱动脚本)。
+- 完整证据(含每个请求的 `speed_results.json`,不含生成的 wav):HF 私有数据集
+  `gavinlaw/sglang-omni-qwen3-tts-latency-ci-calibration`,revision `7f34693a6e06c3ec036fa5a854c024f5775780f9`,
+  文件 `qwen3-tts-latency-calibration-20260925T0135Z.tgz`,2,907,292 字节,sha256 `f1432fc1…0391`(上传后远端大小与 LFS sha256 核对一致)。
+- 节点清理:删除 `/data/luojiaxuan/calibrations/20260925T0135Z`(含 2.4 GB wav、3 GB 校准 venv、源码与工具副本)与三份工具目录;
+  正本见上一条的 HF revision 与本仓库提交。保留 CI 镜像(40 GB)、HF 模型缓存(9.1 GB)与 pip 缓存,供在 CI 共载下补标 Base p95 时复用;
+  `/data/luojiaxuan/tmp` 下还有约 0.5 MB 的空临时文件,下次持租约时删。容器已删、map 已清,租约 20:00 PT 释放,
+  `radix machines mine` 为空。
+- #2293 已推 `e06c8d84` 并更新正文;这次推送带 `run-qwen3-tts` 标签,CI 会跑一次 Base 臂的延迟阶段,之后换
+  `run-qwen3-tts-custom-voice` 标签再跑一次 CustomVoice 臂。

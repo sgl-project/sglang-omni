@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-09-25T01:59:03Z",
+  "model": "tts",
+  "venv_python": "/github/home/calibration/omni/bin/python",
+  "venv_source": "flag",
+  "versions": {
+    "sglang": "0.5.20",
+    "torch": "2.13.0+cu130"
+  },
+  "pins": {
+    "sglang": "0.5.20",
+    "torch": "2.13.0"
+  },
+  "rust_router": {
+    "path": "/data/calibrations/20260925T0135Z/home/rust-router/bin/47e2af025919a3639898db17447cc549b4c3f612/sgl-omni-router",
+    "version": "sgl-omni-router 0.1.0"
+  },
+  "git": {
+    "sha": "8521cf6865686ad28b858f338e96d323caac4c60",
+    "branch": "HEAD",
+    "dirty": false
+  },
+  "nvidia_smi_L": "GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-3c577b63-edee-57e0-9d7d-3ab8f50acfa4)\nGPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-7555d5bc-276c-c8d3-a70a-fa1327b62700)",
+  "gpu_summary": "2\u00d7 NVIDIA H100 80GB HBM3",
+  "cpuset": {
+    "gpu_group": [
+      0,
+      1
+    ],
+    "cpuset": "2-15,66-79",
+    "busy_fraction": 0.0,
+    "busy_threshold": 0.2,
+    "status": "idle"
+  },
+  "environment_fingerprint": "environment-fingerprint.json",
+  "comparability": "core-pins-and-image-identity-recorded"
+}

@@ -1,0 +1,43 @@
+{
+  "status": "ok",
+  "reason": "",
+  "metrics": {
+    "ttfp_median_s": 0.0215
+  },
+  "sample_counts": {
+    "total": 60,
+    "ok": 60
+  },
+  "duration_s": 269.09,
+  "attempts": 1,
+  "attempt_history": [
+    {
+      "attempt": 1,
+      "status": "ok",
+      "reason": "",
+      "duration_s": 269.09,
+      "pytest_rc": 0,
+      "gpu_indices": [
+        0
+      ],
+      "cpuset": "2-15,66-79",
+      "cpuset_busy_prelaunch": 0.0,
+      "foreign_peak_cores": 0.101984360516305,
+      "foreign_mean_cores": 0.005567598452942742,
+      "session_summary_peak_cores": 0.02
+    }
+  ],
+  "gpu_indices": [
+    0
+  ],
+  "seed": {
+    "calibration": null,
+    "python_hash": null,
+    "policy": "test-default/unset"
+  },
+  "git_sha": "8521cf6865686ad28b858f338e96d323caac4c60",
+  "recorded_at": "2026-09-25T02:38:47Z",
+  "pytest_log": "/data/calibrations/20260925T0135Z/run_tts/_pytest/test_tts_latency_ci__qwen3-tts-custom-voice/run3.log",
+  "basetemp": "/data/calibrations/20260925T0135Z/run_tts/_pytest/test_tts_latency_ci__qwen3-tts-custom-voice/basetemp_run3",
+  "pytest_rc": 0
+}
