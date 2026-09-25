@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, TypedDict, TypeVar
+from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import (
@@ -434,7 +434,9 @@ class ModelWorker:
             )
         return self._call_optional_weight_method("update_weights_from_tensor", payload)
 
-    def init_weights_update_group(self, payload: dict[str, Any]) -> tuple[bool, str]:
+    def init_weights_update_group(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str]:
         init = self.model_runner.init_weights_update_group
         master_address = payload.get("master_address")
         master_port = payload.get("master_port")
@@ -465,7 +467,7 @@ class ModelWorker:
         return bool(success), str(message)
 
     def update_weights_from_distributed(
-        self, payload: dict[str, Any]
+        self, payload: Mapping[str, object]
     ) -> tuple[bool, str]:
         update = self.model_runner.update_weights_from_distributed
         names = payload.get("names")

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 import torch
 
@@ -37,8 +37,10 @@ class DeviceGraphBackend(Protocol):
     def capture(
         self,
         *,
-        pool: Any | None = None,
-        stream: Any | None = None,
+        pool: (
+            torch.cuda._POOL_HANDLE | torch.xpu._POOL_HANDLE | tuple[int, int] | None
+        ) = None,
+        stream: torch.cuda.Stream | torch.xpu.Stream | torch.Stream | None = None,
         thread_local_errors: bool = False,
     ) -> AbstractContextManager[ReplayableGraph]:
         """Open a capture and yield the graph it records into."""

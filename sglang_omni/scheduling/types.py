@@ -5,12 +5,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Generic, Protocol, SupportsIndex, SupportsInt
+from typing import TYPE_CHECKING, Generic, Protocol, SupportsIndex, SupportsInt
 
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
     import torch
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+
+    from sglang_omni.scheduling.sglang_backend.output_processor import AuxHiddenExtra
 
 
 class SchedulerStatus(Enum):
@@ -24,7 +27,7 @@ class SchedulerStatus(Enum):
 class SchedulerRequest:
     request_id: str
     status: SchedulerStatus = SchedulerStatus.WAITING
-    data: Any = None
+    data: ARRequestData | None = None
     error: Exception | None = None
     arrival_time: float = 0.0
     finish_time: float | None = None
@@ -48,7 +51,7 @@ class DeferredAdmission(Generic[ValueT]):
 @dataclass
 class SchedulerOutput:
     requests: list[SchedulerRequest]
-    batch_data: Any
+    batch_data: ScheduleBatch | None
     step_id: int = 0
 
     @property
@@ -61,7 +64,7 @@ class RequestOutput:
     request_id: str
     data: str | bytes | bytearray | SupportsInt | SupportsIndex | None = None
     finished: bool = False
-    extra: dict[str, Any] | None = None
+    extra: AuxHiddenExtra | dict[str, dict[object, torch.Tensor]] | None = None
 
 
 @dataclass
@@ -104,7 +107,7 @@ class ARRequestData:
 RequestDataT = TypeVar("RequestDataT", bound=ARRequestData, default=ARRequestData)
 
 
-def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:
+def sampled_logprobs_to_list(next_token_logprobs: object) -> list[float] | None:
     """Convert sampler-produced per-row selected-token logprobs to a list.
 
     The sampler owns logprob semantics such as temperature and original-logprob

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang_omni.scheduling.types import ARRequestData
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     import torch
     from sglang.srt.managers.schedule_batch import Req
 
+    from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
     from sglang_omni.proto import StagePayload
 
 
@@ -29,11 +30,17 @@ class SGLangARRequestData(ARRequestData):
     repetition_penalty: float = 1.0
     input_embeds_are_projected: bool = False
     stage_payload: StagePayload | None = None
-    talker_model_inputs: dict[str, Any] = field(default_factory=dict)
+    talker_model_inputs: dict[str, object] = field(default_factory=dict)
     pending_feedback_queue: collections.deque[torch.Tensor] | list[torch.Tensor] = (
         field(default_factory=collections.deque)
     )
-    pending_text_queue: Any = field(default_factory=collections.deque)
+    pending_text_queue: (
+        collections.deque[int]
+        | collections.deque[torch.Tensor]
+        | list[torch.Tensor]
+        | PendingTextTensorQueue
+        | None
+    ) = field(default_factory=collections.deque)
     pending_codec_rows: list["torch.Tensor"] = field(default_factory=list)
     codec_first_flush_done: bool = False
     codec_frames_seen: int = 0

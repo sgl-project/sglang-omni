@@ -18,7 +18,7 @@ import threading
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import replace
-from typing import Any, Awaitable, Callable, Literal, TypeVar
+from typing import Awaitable, Callable, Literal, TypeVar
 
 import torch
 
@@ -72,8 +72,8 @@ CommConfigValueT = TypeVar("CommConfigValueT")
 AdminDataValueT = TypeVar("AdminDataValueT")
 TaskResultT = TypeVar("TaskResultT")
 
-GetNextFn = Callable[[str, Any], str | list[str] | None]
-GetStreamDoneTargetsFn = Callable[[str, Any], str | list[str] | None]
+GetNextFn = Callable[[str, object], str | list[str] | None]
+GetStreamDoneTargetsFn = Callable[[str, object], str | list[str] | None]
 
 
 def _error_text(exc: BaseException) -> str:

@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, ClassVar, Generic
+from typing import TYPE_CHECKING, ClassVar, Generic
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from typing_extensions import NotRequired, TypedDict
@@ -338,26 +338,26 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     ) -> None:
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
-    def get_model_buffer_bs(self, model: Any) -> int | None:
+    def get_model_buffer_bs(self, model: object) -> int | None:
         del model
         return None
 
-    def compile_model(self, model: Any, server_args: ServerArgs) -> None:
+    def compile_model(self, model: object, server_args: ServerArgs) -> None:
         del model, server_args
 
-    def post_cuda_graph_setup(self, model: Any, server_args: ServerArgs) -> None:
+    def post_cuda_graph_setup(self, model: object, server_args: ServerArgs) -> None:
         del model, server_args
 
     def setup_model_resources(
         self,
-        model: Any,
+        model: object,
         server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
         del model, server_args, generation_cuda_graph_enabled
 
-    def setup_runtime_resources(self, model: Any, server_args: ServerArgs) -> None:
+    def setup_runtime_resources(self, model: object, server_args: ServerArgs) -> None:
         del model, server_args
 
     @abstractmethod
@@ -369,7 +369,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         raise NotImplementedError
 
     @abstractmethod
-    def make_adapters(self, model: Any) -> tuple[
+    def make_adapters(self, model: object) -> tuple[
         Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]] | None,
         Callable[[RequestDataT], object] | None,
     ]:

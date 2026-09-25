@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Generic, Protocol
+from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias
 
 import torch
 from typing_extensions import TypeVar
@@ -32,6 +32,7 @@ from sglang_omni.scheduling.types import (
 )
 
 if TYPE_CHECKING:
+    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -41,9 +42,21 @@ if TYPE_CHECKING:
     )
     from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 
+    from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+    from sglang_omni.models.dots_tts.model_runner import _DotsFlowLaunchBuf
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
+    )
+
+    DecodeLaunchBuffer: TypeAlias = (
+        torch.Tensor
+        | tuple[torch.Tensor, torch.Tensor | None]
+        | tuple[
+            list[SchedulerRequest], torch.Tensor, int, torch.Tensor, torch.cuda.Event
+        ]
+        | _DotsFlowLaunchBuf
+        | None
     )
 
 
@@ -109,7 +122,9 @@ class _PendingStep:
     """
 
     event: CompletionEvent  # device Event, recorded after post_decode_launch publishes
-    launch_buf: Any  # post_decode_launch return: device snapshot or host staging
+    launch_buf: (
+        DecodeLaunchBuffer  # post_decode_launch return: device snapshot or host staging
+    )
     scheduler_output: (
         SchedulerOutput  # this step's SchedulerOutput (routing + output proc)
     )
@@ -138,7 +153,7 @@ class ModelRunner(Generic[FinishedRequestDataT]):
 
     def __init__(
         self,
-        tp_worker: Any,
+        tp_worker: ModelWorker | MlxTpModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
         self.tp_worker = tp_worker
@@ -847,7 +862,7 @@ class ModelRunner(Generic[FinishedRequestDataT]):
         result: GenerationBatchResult,
         forward_batch: ForwardBatch | None,
         requests: list[SchedulerRequest],
-    ) -> Any:
+    ) -> DecodeLaunchBuffer:
         """Async-decode GPU half of ``post_decode``: sample now, publish
         ``result.next_token_ids``, and return the resolve payload (``launch_buf``);
         the caller records a device event right after.
@@ -871,7 +886,7 @@ class ModelRunner(Generic[FinishedRequestDataT]):
 
     def post_decode_resolve(
         self,
-        launch_buf: Any,
+        launch_buf: DecodeLaunchBuffer,
         result: GenerationBatchResult,
         forward_batch: ForwardBatch | None,
         schedule_batch: ScheduleBatch,
