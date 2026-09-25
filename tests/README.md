@@ -207,6 +207,8 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
+    ├── moss_tts_nano/
+    │   └── test_pipeline.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -786,6 +788,11 @@ that happened to contain an older version of the test.
   - streaming vocoder session lifecycle, per-request chunk-threshold and
     coalescing contracts, decode-failure isolation, and non-streaming full-sequence
     decode through the codec path.
+
+- `unit_test/moss_tts_nano/`: MOSS-TTS Nano unit tests:
+  - CPU-first pipeline registration and capability contracts
+  - request/reference lowering and checkpoint sampling defaults
+  - explicit rejection of streaming and multiple references.
 
 - `unit_test/zonos2/`: ZONOS2 unit tests:
   - pipeline configuration, text normalization, and speaker/component caches
