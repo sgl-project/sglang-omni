@@ -1696,3 +1696,7 @@ cpuset 测试里的 `_samples` 改成 `samples`。
 同一轮里 Qwen3-Omni stage 6(MMSU Talker)在 lane `16-31,80-95` 上三次重试都没过速度 gate(吞吐 1.573 对 1.662、延迟 9.59 对 8.72 s 等,
 差 5% 到 10%);本 PR 不碰这条路径,当天别的 PR 上这个 stage 通过。09:57 PT 把标签换成 `run-qwen3-tts-custom-voice`,
 新一轮(run `36164091993`)跑 CustomVoice 臂,Omni 各 stage 也随之重跑。
+  这一轮(runner `omni-runner-h100-2`,lane `48-63,112-127`,`TTS_CI_MODEL: qwen3-tts-custom-voice`)全部通过:延迟阶段 1 rps 中位数
+  23.3 ms(gate 27.3)、20 rps 中位数 34.3 ms(gate 44.4)、20 rps p95 50.4 ms(gate 60.9)、c50 99.72%,1088/1088,排队 0;
+  Omni stage 6 这次也过了,ASR、Omni、TTS 各 stage 全绿。和 Base 一样,1 rps 中位数(23.3)比五轮标定最大值(21.8)高约 7%,
+  两个臂都是 1 rps 在这条 lane 上偏高,20 rps 与标定吻合;余量都还有 4 到 9 ms,暂记为观察项。
