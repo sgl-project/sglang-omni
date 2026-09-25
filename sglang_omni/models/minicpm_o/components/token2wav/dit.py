@@ -391,7 +391,8 @@ class DiT(nn.Module):
         x = x.transpose(1, 2)
         attn_mask = mask.bool() if mask is not None else None
         x = self.in_proj(x)
-        next_cnn, next_attention = [], []
+        next_cnn: list[torch.Tensor] = []
+        next_attention: list[torch.Tensor] = []
         for index, block in enumerate(self.blocks):
             if cache is None:
                 x, _ = block(x, t, attn_mask)

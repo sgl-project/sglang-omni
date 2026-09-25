@@ -5,16 +5,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 import numpy as np
 import torch
 from transformers import PreTrainedTokenizerBase
 
-from sglang_omni.models.minicpm_o.components.audio_encoder import (
-    AudioEncoderState,
-    MiniCPMOAudioEncoder,
-)
+from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioEncoder
+from sglang_omni.models.minicpm_o.components.whisper_encoder import AudioEncoderState
 from sglang_omni.preprocessing.audio import load_audio_path
 from sglang_omni.proto.session import ResourceUsage
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
@@ -69,7 +67,7 @@ class ProcessorFactory(Protocol):
 
 
 class EmbeddingSpanPlan(TypedDict):
-    modality: str
+    modality: Literal["audio"]
     token_start: int
     token_end: int
     embed_start: int
@@ -80,7 +78,7 @@ class PerceptionStepPlan(TypedDict):
     token_ids: list[int]
     input_embeds: torch.Tensor
     embedding_spans: list[EmbeddingSpanPlan]
-    prefill_schema: list[tuple[str, int]]
+    prefill_schema: list[tuple[Literal["tok", "audio"], int]]
     decode_budget: int
 
 
@@ -122,7 +120,9 @@ class MiniCPMOPerceptionState:
     audio_encoder_state: AudioEncoderState | None = None
     prefix_token_ids: list[int] = field(default_factory=list)
     prefix_embeds: torch.Tensor | None = None
-    prefix_schema: list[tuple[str, int]] = field(default_factory=list)
+    prefix_schema: list[tuple[Literal["tok", "audio"], int]] = field(
+        default_factory=list
+    )
     is_open: bool = True
 
     @classmethod
@@ -270,7 +270,7 @@ class MiniCPMOPerceptionState:
                 )
             )
 
-        # note (Junnan Li): The reference implementation prefills the system prefix apart from the first unit; it enters this plan while prefill_schema reports only the unit, so oracle comparison keeps that boundary.
+        # note (Junnan Li): The system prefix is included in prefill but excluded from the unit schema.
         if self.audio_chunk_idx == 1 and self.prefix_token_ids:
             cursor = 0
             embed_cursor = 0

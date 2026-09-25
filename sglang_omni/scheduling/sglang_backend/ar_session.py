@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 from array import array
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Iterable, Protocol
+from typing import Protocol
 
 from sglang.srt.managers.io_struct import (
     CloseSessionReqInput,
@@ -175,7 +175,7 @@ class SessionUnit:
     # from earlier turns, and binds it to the streaming session.
     session_request: Req | None = None
     is_enqueued: bool = False
-    # Bound to the native sequence in create_session_request; committed to the session on complete.
+    # note (Junnan Li): Only completed units commit their spans to retained history.
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
 
 
@@ -183,7 +183,7 @@ class SessionUnit:
 class BridgeSession:
     session_identity: SessionIdentity
     unit: SessionUnit | None = None
-    # Spans of every completed unit, replayed when the native KV is rebuilt.
+    # note (Junnan Li): KV rebuilds need embeddings from every completed unit.
     embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
 
 
@@ -367,7 +367,7 @@ class ARSessionBridge:
         else:
             pass
         unit.session_request = session_request
-        # create_req joins the retained turns ahead of this unit's token ids.
+        # note (Junnan Li): Native requests prepend retained turns to this unit's ids.
         offset = len(session_request.origin_input_ids) - len(
             adapter_request.origin_input_ids
         )

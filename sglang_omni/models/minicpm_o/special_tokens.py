@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+
+from transformers import PreTrainedTokenizerBase
 
 REQUIRED_SPECIAL_TOKENS = (
     "<unit>",
@@ -50,7 +51,7 @@ class MiniCPMOSpecialTokenIds:
 
 
 def resolve_special_token_ids(
-    tokenizer: Any, bad_token_ids: tuple[int, ...] = ()
+    tokenizer: PreTrainedTokenizerBase, bad_token_ids: tuple[int, ...] = ()
 ) -> MiniCPMOSpecialTokenIds:
     """Resolve the duplex vocabulary and reject incomplete tokenizers."""
 

@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Stage placement and deployment configuration for native duplex inference."""
+
 from typing import ClassVar
 
 from pydantic import Field

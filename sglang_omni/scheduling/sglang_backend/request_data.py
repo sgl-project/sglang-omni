@@ -21,8 +21,7 @@ class EmbeddingSpan:
     input_embeds: torch.Tensor
 
     def __post_init__(self) -> None:
-        # A unit-relative start may be negative: it then covers retained output
-        # tokens that the native session re-feeds ahead of this unit's ids.
+        # note (Junnan Li): Negative starts cover retained tokens re-fed before this unit.
         if self.end <= self.start:
             raise ValueError(f"invalid embedding span [{self.start}, {self.end})")
         else:
@@ -65,9 +64,7 @@ class SGLangARRequestData(ARRequestData):
     """Per-request state for SGLang-backed AR stages."""
 
     req: Any = None
-    # The adapter sets unit spans relative to the unit's own token ids; the AR
-    # session bridge binds them to the native sequence and exposes the retained
-    # session history plus this unit as session_embedding_spans.
+    # note (Junnan Li): The bridge binds unit-relative spans to retained session history.
     unit_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     session_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     synced: bool = False

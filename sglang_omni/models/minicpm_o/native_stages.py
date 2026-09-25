@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from pydantic import JsonValue
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import MiniCPMOAudioEncoder
@@ -144,15 +145,15 @@ class SpeechHooks(SessionHooks):
 
 
 def create_perception_scheduler(
-    model_path,
+    model_path: str,
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype="bfloat16",
-    reference_audio=None,
-    **kwargs,
-):
-
+    dtype: str = "bfloat16",
+    reference_audio: str | None = None,
+    **kwargs: JsonValue,
+) -> SessionScheduler:
+    """Build perception; extra factory options follow the stage loader contract."""
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
@@ -173,8 +174,8 @@ def create_thinker_scheduler(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    server_args_overrides: dict[str, object] | None = None,
-):
+    server_args_overrides: dict[str, JsonValue] | None = None,
+) -> OmniScheduler:
     return MiniCPMOThinkerEngineBuilder().build(
         model_path,
         device=device,
@@ -185,15 +186,15 @@ def create_thinker_scheduler(
 
 
 def create_speech_scheduler(
-    model_path,
+    model_path: str,
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype="bfloat16",
-    reference_audio=None,
-    **kwargs,
-):
-
+    dtype: str = "bfloat16",
+    reference_audio: str | None = None,
+    **kwargs: JsonValue,
+) -> SessionScheduler:
+    """Build speech; dtype and extra options follow the stage loader contract."""
     device = str(resolve_concrete_device(device, gpu_id))
     codec = MiniCPMOCode2Wav(model_path, device=device, prompt_wav=reference_audio)
     runtime = MiniCPMOVocoderRuntime(codec.token2wav)
@@ -211,7 +212,7 @@ def create_talker_scheduler(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    server_args_overrides: dict[str, object] | None = None,
+    server_args_overrides: dict[str, JsonValue] | None = None,
 ) -> OmniScheduler:
     return create_sglang_talker_executor_from_config(
         model_path,

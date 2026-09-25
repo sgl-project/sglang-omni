@@ -64,7 +64,7 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         omni_prefill_rids: list[str] | tuple[str, ...] | None = None,
         **kwargs: object,
     ) -> LogitsProcessorOutput:
-        del omni_prefill_rids
+        # note (Junnan Li): The prefill interface includes request ids; this text wrapper needs only embeddings.
         return self.language_model(
             input_ids,
             positions,

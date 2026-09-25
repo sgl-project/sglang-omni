@@ -18,12 +18,14 @@ import torch
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
-    MiniCPMWhisperEncoder,
     MultiModalProjector,
     chunked_causal_mask,
     feature_lens_after_pooling,
     fuse_qkv,
     min_mel_frames,
+)
+from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    MiniCPMWhisperEncoder,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

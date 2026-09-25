@@ -6,15 +6,28 @@ from array import array
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.client.client import Client
-from sglang_omni.models.minicpm_o.special_tokens import resolve_special_token_ids
+from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    PerceptionStepPlan,
+)
+from sglang_omni.models.minicpm_o.special_tokens import (
+    MiniCPMOSpecialTokenIds,
+    resolve_special_token_ids,
+)
 from sglang_omni.models.minicpm_o.thinker_state import (
+    DuplexSamplingConfig,
     DuplexUnitRequestData,
     MiniCPMOThinkerSessionState,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.proto.session import SessionIdentity, SessionLimits, TimedChunk
+from sglang_omni.proto.session import (
+    OutputChunk,
+    SessionIdentity,
+    SessionLimits,
+    TimedChunk,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
 from sglang_omni.scheduling.sglang_backend.request_data import EmbeddingSpan
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -22,6 +35,7 @@ from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    OutputEvent,
     ResponseFinished,
     ResponseStarted,
     TextDelta,
@@ -31,10 +45,10 @@ from sglang_omni.serve.realtime.types import Capabilities
 
 
 class ThinkerAdapter(ARSessionAdapter):
-    def __init__(self, tokenizer, vocab_size):
-        self.tokenizer = tokenizer
-        self.vocab_size = vocab_size
-        self.special = resolve_special_token_ids(tokenizer)
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, vocab_size: int) -> None:
+        self.tokenizer: PreTrainedTokenizerBase = tokenizer
+        self.vocab_size: int = vocab_size
+        self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(tokenizer)
         self.states: dict[SessionIdentity, MiniCPMOThinkerSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -56,7 +70,7 @@ class ThinkerAdapter(ARSessionAdapter):
         payload: StagePayload,
     ) -> DuplexUnitRequestData:
         state = self.states[session_identity]
-        plan = payload.data
+        plan: PerceptionStepPlan = payload.data
         prefix = [] if state.prefix_pending else [self.special.unit_end]
         ids = [*prefix, *plan["token_ids"]]
         spans = [
@@ -85,7 +99,7 @@ class ThinkerAdapter(ARSessionAdapter):
         )
         req.tokenizer = self.tokenizer
         req.return_hidden_states = True
-        cfg = dict(payload.request.params)
+        sampling_config: DuplexSamplingConfig = dict(payload.request.params)
         return DuplexUnitRequestData(
             req=req,
             input_ids=torch.tensor(ids),
@@ -93,8 +107,9 @@ class ThinkerAdapter(ARSessionAdapter):
             stage_payload=payload,
             thinker_state=state,
             unit_embedding_spans=spans,
-            sampling_config=cfg,
-            forced_listen=state.force_listen_counter < cfg.get("force_listen_count", 0),
+            sampling_config=sampling_config,
+            forced_listen=state.force_listen_counter
+            < sampling_config.get("force_listen_count", 0),
             prefill_schema=plan["prefill_schema"],
         )
 
@@ -118,18 +133,20 @@ class ThinkerAdapter(ARSessionAdapter):
 
 
 class OutputConverter:
-    def __init__(self):
-        self.response_id = None
-        self.item_id = None
-        self.text = ""
-        self.audio = False
-        self.serial = 0
+    def __init__(self) -> None:
+        self.response_id: str | None = None
+        self.item_id: str | None = None
+        self.text: str = ""
+        self.audio: bool = False
+        self.serial: int = 0
 
-    def finish(self):
+    def finish(self) -> list[OutputEvent]:
         if self.response_id is None:
             return []
         else:
-            events = [TextFinished(self.response_id, self.item_id, self.text)]
+            events: list[OutputEvent] = [
+                TextFinished(self.response_id, self.item_id, self.text)
+            ]
             if self.audio:
                 events.append(AudioFinished(self.response_id, self.item_id))
             else:
@@ -149,9 +166,9 @@ class OutputConverter:
             self.audio = False
             return events
 
-    def __call__(self, output):
+    def __call__(self, output: OutputChunk) -> list[OutputEvent]:
         value = output.payload
-        events = []
+        events: list[OutputEvent] = []
         if value["text"] or value["pcm"]:
             if self.response_id is None:
                 self.response_id = (
@@ -183,7 +200,7 @@ class OutputConverter:
 
 def build_realtime_deployment(client: Client) -> RealtimeDeployment:
 
-    def factory():
+    def factory() -> CoordinatorAdapter:
         return CoordinatorAdapter(
             client,
             stages=["perception", "thinker", "talker", "speech"],
