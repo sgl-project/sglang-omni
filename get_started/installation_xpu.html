@@ -536,7 +536,7 @@ XPU wheel index.</p>
 <p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> resolves the CUDA <a class="reference download internal" download="" href="../_downloads/079962c730e6e61f3f9971f670e9cf70/pyproject.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></span></a>, whose torch
 family and CUDA-only wheels would replace the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> stack.
 <a class="reference download internal" download="" href="../_downloads/e6282636738987ea324fd398b24bcb06/pyproject_xpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></span></a> encodes the XPU replacements.</p>
-<p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+<p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni and MiniCPM-o) plus the API server;
 <code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tooling and <code class="docutils literal notranslate"><span class="pre">[all]</span></code> aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.</p>
 <blockquote>
@@ -590,6 +590,8 @@ scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </spa
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cp<span class="w"> </span>pyproject.toml<span class="w"> </span>.pyproject.cuda.bak
 cp<span class="w"> </span>pyproject_xpu.toml<span class="w"> </span>pyproject.toml
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-build-isolation<span class="w"> </span>--extra-index-url<span class="w"> </span>https://download.pytorch.org/whl/xpu
+<span class="c1"># torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.</span>
+pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span>openai-whisper<span class="o">==</span><span class="m">20250625</span>
 cp<span class="w"> </span>-f<span class="w"> </span>.pyproject.cuda.bak<span class="w"> </span>pyproject.toml<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>rm<span class="w"> </span>.pyproject.cuda.bak<span class="w">   </span><span class="c1"># restore CUDA pyproject</span>
 </pre></div>
 </div>
@@ -655,7 +657,7 @@ would replace this project’s 5.12.1, and resolving <code class="docutils liter
 <code class="docutils literal notranslate"><span class="pre">numba==0.65.1</span></code> ceiling. See
 <a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">docs/cookbook/qwen3_tts.md</span></a>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>sox<span class="w">   </span><span class="c1"># the Python sox package shells out to it</span>
-pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span>sox<span class="w"> </span>einops
+pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span>sox
 pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span>qwen-tts<span class="o">==</span><span class="m">0</span>.1.1
 </pre></div>
 </div>
@@ -693,8 +695,8 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 — those CUDA-only transfer backends are omitted; tensors move through the <code class="docutils literal notranslate"><span class="pre">shm</span></code> relay instead.</p>
 </div></blockquote>
 <blockquote>
-<div><p>✅ Support status: <strong>Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on Intel XPU</strong>
-(ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
+<div><p>✅ Support status: <strong>Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, and MiniCPM-o all serve end-to-end on Intel XPU</strong>
+(ASR, TTS, and MiniCPM-o single-card; Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 </div></blockquote>
 </section>
 </section>
