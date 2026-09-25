@@ -1,48 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
-import json
-import sys
-from dataclasses import asdict, replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import asdict
 from pathlib import Path
-from threading import Thread
-from types import SimpleNamespace
 
 import pytest
-from aiohttp import web
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import (
-    JUDGE_MAX_TOKENS,
-    JUDGE_PARSE_ATTEMPTS,
-    JudgeSpec,
-    build_judge_prompt,
-    build_level1_result_records,
-    build_response_prompt,
-    build_when_prompt,
-    judge_payload,
-    load_judge_config,
-    model_payload,
-    parse_choice,
-    parse_judge_score,
-    parse_when,
-    request_chat_completion,
-    run_judges,
-    run_level2_model,
-)
-
-
-
-
+from benchmarks.tasks.socialomni import JUDGE_PARSE_ATTEMPTS, JudgeSpec, run_judges
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
+
 
 def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
@@ -56,6 +29,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
         "private reference response",
         "private reference transcript",
     )
+
 
 def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
@@ -74,6 +48,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values.update(overrides)
     return entrypoint.SocialOmniEvalConfig(**values)
 
+
 class _Response:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
@@ -88,6 +63,7 @@ class _Response:
     async def text(self) -> str:
         return self.body
 
+
 class _Session:
     def __init__(self, *responses: _Response):
         self.responses = list(responses) or [_Response()]
@@ -97,6 +73,7 @@ class _Session:
         response = self.responses[self.calls]
         self.calls += 1
         return response
+
 
 async def test_judges_preserve_failure_phase_and_error(
     monkeypatch, request_failed
@@ -151,6 +128,7 @@ async def test_judges_preserve_failure_phase_and_error(
         assert "invalid judge score" in result["error"]
         assert calls == JUDGE_PARSE_ATTEMPTS
 
+
 async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     sample = _level2()
     record = {
@@ -202,6 +180,7 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     assert [attempt["completion_tokens"] for attempt in attempts] == [1, 1]
     assert [attempt["engine_time_s"] for attempt in attempts] == [0.1, 0.1]
     assert len({attempt["request_id"] for attempt in attempts}) == 2
+
 
 async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
     samples = [_level2(index) for index in range(209)]
@@ -291,6 +270,7 @@ async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
     assert speed["failed_requests"] == 1
     assert any(f["request_id"] == "bad:prefix" for f in result["failures"])
 
+
 async def test_invalid_judge_config_fails_before_level2_requests(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -308,6 +288,7 @@ async def test_invalid_judge_config_fails_before_level2_requests(
     with pytest.raises(ValueError, match="exactly three judges"):
         await entrypoint.run_socialomni(config)
     assert not called
+
 
 async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
     samples = [_level2(index) for index in range(209)]
@@ -367,6 +348,7 @@ async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
 
     assert result["summary"]["status"] == "complete"
 
+
 def test_paper_core_judge_completeness_is_independent() -> None:
     scores = {name: 75 for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")}
     records = [
@@ -381,6 +363,7 @@ def test_paper_core_judge_completeness_is_independent() -> None:
     records[-1]["gold_judge_scores"].pop("gpt-4o")
     assert entrypoint._judges_complete(records[:200], True)
     assert not entrypoint._judges_complete(records, True)
+
 
 def test_invalid_score_is_not_judge_complete() -> None:
     record = {

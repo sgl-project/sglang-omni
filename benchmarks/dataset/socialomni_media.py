@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .socialomni import PREFIX_ENCODING, _source_digest
 
+
 def resolve_ffmpeg_executable() -> str | None:
     system = shutil.which("ffmpeg")
     if system:
