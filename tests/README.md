@@ -19,7 +19,9 @@ tests/
     │   ├── test_runtime_metrics.py
     │   ├── test_socialomni_dataset.py
     │   ├── test_socialomni_metrics.py
-    │   └── test_socialomni_protocol.py
+    │   ├── test_socialomni_protocol_core.py
+    │   ├── test_socialomni_protocol_http.py
+    │   └── test_socialomni_protocol_judges.py
     ├── ci/
     │   ├── test_cpu_contention.py
     │   ├── test_cpuset_pinning.py
