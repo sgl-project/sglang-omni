@@ -4,6 +4,11 @@ Benchmark suite for SGLang Omni, covering performance (latency, throughput, RTF)
 and accuracy (WER, MMSU, MMMU, Video-MME, Video-AMME) across supported modality
 combinations.
 
+For CPU-only router verification and synthetic load without models, use the
+[Rust mock fleet](../sglang_omni_router/rust/examples/mock_fleet/README.md).
+It launches configurable modality workers and the real Rust router, checks
+routing and protocol behavior, and reports direct-worker versus routed timings.
+
 ## Directory Structure
 
 ```

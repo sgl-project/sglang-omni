@@ -1,0 +1,180 @@
+schema_version = 1
+
+[server]
+listen = "127.0.0.1:30000"
+max_connections = 256
+
+[shutdown]
+drain_timeout_ms = 2000
+
+[logging]
+format = "json"
+filter = "warn"
+
+[router]
+strategy = "round_robin"
+voice_owner_worker_id = "tts-1"
+
+[admission]
+global = 64
+generation_http = 32
+speech_http = 16
+speech_batch = 16
+transcription_http = 16
+speech_websocket = 8
+realtime_websocket = 8
+
+[health]
+interval_ms = 100
+timeout_ms = 100
+success_threshold = 1
+failure_threshold = 1
+
+[http_generation]
+trust_domain = "local"
+buffered_request_max_bytes = 65536
+streamed_request_max_bytes = 65536
+request_timeout_ms = 10000
+
+[http_media]
+routes = ["speech", "speech_batch", "transcription", "translation"]
+trust_domain = "local"
+buffered_request_max_bytes = 65536
+streamed_request_max_bytes = 65536
+request_timeout_ms = 10000
+
+[websocket.speech]
+trust_domain = "local"
+
+[websocket.realtime]
+trust_domain = "local"
+
+[[workers]]
+worker_id = "text-1"
+trust_domain = "local"
+default_model_id = "text"
+[workers.mock]
+chunk_bytes = 128
+chunks = 4
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["text", "shared"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["typed_parts"]
+input_modalities = ["text"]
+output_modalities = ["text"]
+chat_audio_formats = []
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers]]
+worker_id = "text-2"
+trust_domain = "local"
+default_model_id = "text"
+[workers.mock]
+chunk_bytes = 128
+chunks = 4
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["text", "shared"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["typed_parts"]
+input_modalities = ["text"]
+output_modalities = ["text"]
+chat_audio_formats = []
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers]]
+worker_id = "vision-1"
+trust_domain = "local"
+default_model_id = "vision"
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["vision", "shared"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["top_level", "typed_parts"]
+input_modalities = ["text", "image"]
+output_modalities = ["text"]
+chat_audio_formats = []
+stream_modes = ["non_streaming", "streaming"]
+
+[[workers]]
+worker_id = "omni-1"
+trust_domain = "local"
+default_model_id = "omni"
+[workers.capacity]
+realtime_websocket = 8
+[workers.mock]
+first_packet_delay_ms = 2
+chunk_interval_ms = 1
+[[workers.service_profiles]]
+service = "generation_http"
+model_ids = ["omni", "shared"]
+message_content_forms = ["string", "typed_parts"]
+media_placements = ["top_level", "typed_parts"]
+input_modalities = ["text", "image", "audio", "video"]
+output_modalities = ["text", "audio"]
+chat_audio_formats = ["pcm", "wav"]
+stream_modes = ["non_streaming", "streaming"]
+[[workers.service_profiles]]
+service = "realtime_websocket"
+
+[[workers]]
+worker_id = "tts-1"
+trust_domain = "local"
+default_model_id = "tts"
+[workers.capacity]
+speech_websocket = 8
+[workers.mock]
+first_packet_delay_ms = 5
+chunk_interval_ms = 2
+chunks = 4
+chunk_bytes = 4096
+[[workers.service_profiles]]
+service = "speech_http"
+model_ids = ["tts"]
+response_formats = ["pcm"]
+stream_modes = ["non_streaming", "streaming"]
+tasks = ["text_to_speech", "voice_clone"]
+reference_forms = ["none", "direct", "list"]
+voice_name_policy = "uploaded"
+[[workers.service_profiles]]
+service = "speech_http"
+model_ids = ["tts"]
+response_formats = ["wav"]
+stream_modes = ["non_streaming"]
+tasks = ["text_to_speech", "voice_clone"]
+reference_forms = ["none", "direct", "list"]
+voice_name_policy = "uploaded"
+[[workers.service_profiles]]
+service = "speech_batch"
+model_ids = ["tts"]
+response_formats = ["pcm", "wav"]
+tasks = ["text_to_speech", "voice_clone"]
+reference_forms = ["none", "direct", "list"]
+voice_name_policy = "uploaded"
+max_batch_size = 8
+[[workers.service_profiles]]
+service = "speech_websocket"
+model_ids = ["tts"]
+response_formats = ["pcm"]
+stream_modes = ["streaming"]
+tasks = ["text_to_speech"]
+reference_forms = ["none"]
+voice_name_policy = "uploaded"
+
+[[workers]]
+worker_id = "asr-1"
+trust_domain = "local"
+default_model_id = "asr"
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr"]
+task = "transcribe"
+response_formats = ["json", "text", "verbose_json", "sse"]
+stream_modes = ["non_streaming", "streaming"]
+[[workers.service_profiles]]
+service = "transcription_http"
+model_ids = ["asr"]
+task = "translate"
+response_formats = ["json", "text", "sse"]
+stream_modes = ["non_streaming", "streaming"]
