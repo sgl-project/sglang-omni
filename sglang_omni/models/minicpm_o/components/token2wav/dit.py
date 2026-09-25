@@ -424,7 +424,8 @@ class DiT(nn.Module):
         spks: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
         *,
-        packed_capacity: int | None = None,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
@@ -438,21 +439,20 @@ class DiT(nn.Module):
         else:
             pass
         x = x.transpose(1, 2)
-        attn_mask = mask.bool()
-        lengths = attn_mask.squeeze(1).sum(dim=1, dtype=torch.int32)
         if self.enable_variable_length and x.shape[0] > 2:
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 packed_input = self.in_proj(x).to(torch.bfloat16)
                 conditioning = t.to(torch.bfloat16)
-                if packed_capacity is not None:
+                if packed_layout is not None:
                     return self.forward_packed_fixed(
-                        packed_input, conditioning, lengths, packed_capacity
+                        packed_input, conditioning, packed_layout, packed_graph
                     )
                 else:
-                    pass
-                return self.forward_packed(packed_input, conditioning, lengths)
+                    lengths = mask.bool().squeeze(1).sum(dim=1, dtype=torch.int32)
+                    return self.forward_packed(packed_input, conditioning, lengths)
         else:
             pass
+        attn_mask = mask.bool()
         x = self.in_proj(x)
         for block in self.blocks:
             x = block(x, t, attn_mask)
@@ -503,30 +503,30 @@ class DiT(nn.Module):
         self,
         x: torch.Tensor,
         conditioning: torch.Tensor,
-        lengths: torch.Tensor,
-        capacity: int,
+        layout: FixedPackedLayout,
+        captured_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
         """Run packed DiT blocks with static tensor shapes for graph replay."""
         padded_length = x.shape[1]
-        layout = build_fixed_packed_layout(
-            lengths, padded_length, capacity, self.blocks[0].conv.kernel_size - 1
+        packed = pack_fixed_capacity(
+            x,
+            layout,
+            out=captured_graph.inputs[0] if captured_graph is not None else None,
         )
-        packed = pack_fixed_capacity(x, layout)
-        conditioning_rows = torch.cat(
-            (
-                conditioning.squeeze(1),
-                conditioning.new_zeros((1, conditioning.shape[-1])),
-            ),
-            dim=0,
-        )
-        runner = self.packed_graph_runner
-        packed_output = (
-            runner.replay(capacity, packed, conditioning_rows, layout)
-            if runner is not None
-            else None
-        )
-        packed = (
-            self.run_packed_blocks(
+        if captured_graph is not None:
+            assert self.packed_graph_runner is not None
+            packed = self.packed_graph_runner.replay(
+                captured_graph, conditioning.squeeze(1)
+            )
+        else:
+            conditioning_rows = torch.cat(
+                (
+                    conditioning.squeeze(1),
+                    conditioning.new_zeros((1, conditioning.shape[-1])),
+                ),
+                dim=0,
+            )
+            packed = self.run_packed_blocks(
                 packed,
                 conditioning_rows,
                 layout.row_ids,
@@ -535,9 +535,6 @@ class DiT(nn.Module):
                 layout.conv_positions,
                 layout.conv_valid,
             )
-            if packed_output is None
-            else packed_output
-        )
         return unpack_fixed_capacity(packed, layout).transpose(1, 2)
 
     def run_packed_blocks(
@@ -718,33 +715,29 @@ class PackedDiTCudaGraphRunner:
             pass
         return packed_capacity
 
+    def prepare(self, layout: FixedPackedLayout) -> CapturedPackedDiTGraph:
+        """Install trajectory-invariant metadata while the solver holds the lock."""
+        captured = self.graphs[(layout.padding_mask.shape[0] // 2, layout.capacity)]
+        for target, source in zip(
+            captured.inputs[2:],
+            (
+                layout.row_ids,
+                layout.cu_seqlens,
+                layout.conv_positions,
+                layout.conv_valid,
+            ),
+            strict=True,
+        ):
+            target.copy_(source)
+        return captured
+
     def replay(
         self,
-        packed_capacity: int,
-        packed: torch.Tensor,
+        captured: CapturedPackedDiTGraph,
         conditioning: torch.Tensor,
-        layout: FixedPackedLayout,
-    ) -> torch.Tensor | None:
-        with self.lock:
-            captured = self.graphs.get((layout.valid.shape[0] // 2, packed_capacity))
-            if captured is None:
-                self.graph_misses += 1
-                return None
-            else:
-                pass
-            for target, source in zip(
-                captured.inputs,
-                (
-                    packed,
-                    conditioning,
-                    layout.row_ids,
-                    layout.cu_seqlens,
-                    layout.conv_positions,
-                    layout.conv_valid,
-                ),
-                strict=True,
-            ):
-                target.copy_(source)
-            captured.graph.replay()
-            self.graph_replays += 1
-            return captured.output.clone()
+    ) -> torch.Tensor:
+        """Replay within the solver's graph lock."""
+        captured.inputs[1][:-1].copy_(conditioning)
+        captured.graph.replay()
+        self.graph_replays += 1
+        return captured.output

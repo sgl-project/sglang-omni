@@ -305,10 +305,11 @@ def test_variable_length_option_reaches_dit(
 ) -> None:
     (tmp_path / "assets" / "token2wav").mkdir(parents=True)
     token2wav = MagicMock()
-    monkeypatch.setattr(vocoder, "Token2Wav", lambda *args, **kwargs: token2wav)
+    constructor = MagicMock(return_value=token2wav)
+    monkeypatch.setattr(vocoder, "Token2Wav", constructor)
     monkeypatch.setattr(torch.cuda, "device", lambda device: nullcontext())
     MiniCPMOCode2Wav(str(tmp_path), enable_flow_variable_length=enabled)
-    assert token2wav.flow.decoder.estimator.enable_variable_length is enabled
+    assert constructor.call_args.kwargs["enable_flow_variable_length"] is enabled
 
 
 def test_speech_pipeline_enables_code2wav_batching_by_default() -> None:

@@ -10,8 +10,10 @@ import torch
 
 @dataclass(kw_only=True)
 class FixedPackedLayout:
-    valid: torch.Tensor
+    padding_mask: torch.Tensor
     positions: torch.Tensor
+    source_positions: torch.Tensor
+    packed_padding_mask: torch.Tensor
     row_ids: torch.Tensor
     cu_seqlens: torch.Tensor
     conv_positions: torch.Tensor
@@ -28,7 +30,6 @@ def build_fixed_packed_layout(
     valid = (
         torch.arange(padded_length, device=lengths.device)[None, :] < lengths[:, None]
     )
-    positions = valid.flatten().to(torch.int64).cumsum(0) - 1
     cu_seqlens = torch.cat(
         (
             lengths.new_zeros(1),
@@ -36,11 +37,28 @@ def build_fixed_packed_layout(
             lengths.new_full((1,), capacity),
         )
     )
+    positions = (
+        torch.where(
+            valid,
+            cu_seqlens[:rows, None]
+            + torch.arange(padded_length, device=lengths.device)[None, :],
+            0,
+        )
+        .flatten()
+        .long()
+    )
+    packed_positions = torch.arange(capacity, device=lengths.device, dtype=torch.int32)
     row_ids = torch.searchsorted(
         cu_seqlens[1:],
-        torch.arange(capacity, device=lengths.device, dtype=torch.int32),
+        packed_positions,
         right=True,
     )
+    packed_valid = packed_positions < cu_seqlens[-2]
+    source_positions = torch.where(
+        packed_valid,
+        row_ids * padded_length + packed_positions - cu_seqlens[row_ids],
+        0,
+    ).long()
     conv_positions = (
         torch.arange(capacity, device=lengths.device) + (row_ids + 1) * guard_width
     )
@@ -53,8 +71,10 @@ def build_fixed_packed_layout(
         0, conv_positions, torch.ones_like(conv_positions, dtype=torch.bool)
     )
     return FixedPackedLayout(
-        valid=valid,
+        padding_mask=~valid,
         positions=positions,
+        source_positions=source_positions,
+        packed_padding_mask=~packed_valid,
         row_ids=row_ids,
         cu_seqlens=cu_seqlens,
         conv_positions=conv_positions,
@@ -63,20 +83,16 @@ def build_fixed_packed_layout(
     )
 
 
-def pack_fixed_capacity(x: torch.Tensor, layout: FixedPackedLayout) -> torch.Tensor:
-    """Pack valid rows into a static capacity without dynamic indexing."""
-    flat = x.flatten(0, 1)
-    valid = layout.valid.flatten()
-    destination = torch.where(valid, layout.positions, layout.capacity).long()
-    source = torch.where(valid[:, None], flat, torch.zeros_like(flat))
-    packed = x.new_zeros(layout.capacity + 1, flat.shape[1])
-    packed.index_add_(0, destination, source)
-    return packed[: layout.capacity]
+def pack_fixed_capacity(
+    x: torch.Tensor, layout: FixedPackedLayout, *, out: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Gather valid rows without reducing padded rows into a shared sink."""
+    packed = torch.index_select(x.flatten(0, 1), 0, layout.source_positions, out=out)
+    return packed.masked_fill_(layout.packed_padding_mask[:, None], 0)
 
 
 def unpack_fixed_capacity(x: torch.Tensor, layout: FixedPackedLayout) -> torch.Tensor:
     """Restore packed outputs to their padded row positions."""
-    valid = layout.valid.flatten()
-    source = x[torch.where(valid, layout.positions, 0).long()]
-    dense = torch.where(valid[:, None], source, torch.zeros_like(source))
-    return dense.reshape(*layout.valid.shape, x.shape[-1])
+    source = x[layout.positions]
+    source.masked_fill_(layout.padding_mask.flatten()[:, None], 0)
+    return source.reshape(*layout.padding_mask.shape, x.shape[-1])

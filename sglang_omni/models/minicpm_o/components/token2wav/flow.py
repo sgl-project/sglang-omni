@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from threading import Lock
 from typing import Literal
@@ -30,7 +31,14 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
     make_pad_mask,
 )
-from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
+from sglang_omni.models.minicpm_o.components.token2wav.dit import (
+    CapturedPackedDiTGraph,
+    DiT,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.fixed_packed import (
+    FixedPackedLayout,
+    build_fixed_packed_layout,
+)
 
 logger = logging.getLogger(__name__)
 FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
@@ -71,41 +79,66 @@ class CausalConditionalCFM(torch.nn.Module):
         graph_runner = self.graph_runner
         packed_runner = self.estimator.packed_graph_runner
         is_packed = self.estimator.enable_variable_length and x.shape[0] > 1
-        graph_key = graph_runner.fit(x) if graph_runner is not None else None
+        graph_key = (
+            graph_runner.fit(x) if graph_runner is not None and not is_packed else None
+        )
         packed_capacity = (
             packed_runner.fit(x.shape[0], x.shape[2], packed_valid_frames)
             if packed_runner is not None and is_packed
             else None
         )
-        for step in range(1, len(t_span)):
-            graphed = (
-                graph_runner.run_step(
-                    graph_key, x, t, dt, mu_in, mask_in, spks_in, cond_in
-                )
-                if graph_key is not None and not is_packed
+        packed_layout = (
+            build_fixed_packed_layout(
+                mask_in.bool().squeeze(1).sum(dim=1, dtype=torch.int32),
+                x.shape[2],
+                packed_capacity,
+                self.estimator.blocks[0].conv.kernel_size - 1,
+            )
+            if packed_capacity is not None
+            else None
+        )
+        if graph_key is not None:
+            active_runner = graph_runner
+        elif packed_layout is not None:
+            active_runner = packed_runner
+        else:
+            active_runner = None
+        with active_runner.lock if active_runner is not None else nullcontext():
+            captured_flow = (
+                graph_runner.prepare(graph_key, x, mu_in, mask_in, spks_in, cond_in)
+                if graph_key is not None
                 else None
             )
-            x = (
-                self.euler_step(
-                    x,
-                    t,
-                    dt,
-                    mu_in,
-                    mask_in,
-                    spks_in,
-                    cond_in,
-                    packed_capacity=packed_capacity,
-                    epilogue_key=graph_key if is_packed else None,
-                )
-                if graphed is None
-                else graphed
+            captured_packed = (
+                packed_runner.prepare(packed_layout)
+                if packed_layout is not None
+                else None
             )
-            t = t + dt
-            if step < len(t_span) - 1:
-                dt = t_span[step + 1] - t_span[step]
-            else:
-                pass
-        return x
+            for step in range(1, len(t_span)):
+                if captured_flow is not None:
+                    graph_runner.run_step(captured_flow, t, dt)
+                else:
+                    x = self.euler_step(
+                        x,
+                        t,
+                        dt,
+                        mu_in,
+                        mask_in,
+                        spks_in,
+                        cond_in,
+                        packed_layout=packed_layout,
+                        packed_graph=captured_packed,
+                    )
+                t = t + dt
+                if step < len(t_span) - 1:
+                    dt = t_span[step + 1] - t_span[step]
+                else:
+                    pass
+            return (
+                captured_flow.output[:, :, : x.shape[2]].clone()
+                if captured_flow is not None
+                else x
+            )
 
     def euler_step(
         self,
@@ -117,8 +150,8 @@ class CausalConditionalCFM(torch.nn.Module):
         spks_in: torch.Tensor,
         cond_in: torch.Tensor,
         *,
-        packed_capacity: int | None = None,
-        epilogue_key: tuple[int, int] | None = None,
+        packed_layout: FixedPackedLayout | None = None,
+        packed_graph: CapturedPackedDiTGraph | None = None,
     ) -> torch.Tensor:
         dphi_dt = self.estimator.forward(
             torch.cat([x, x], dim=0),
@@ -127,18 +160,9 @@ class CausalConditionalCFM(torch.nn.Module):
             torch.cat([t, t], dim=0),
             spks_in,
             cond_in,
-            packed_capacity=packed_capacity,
+            packed_layout=packed_layout,
+            packed_graph=packed_graph,
         )
-        graphed = (
-            self.graph_runner.run_epilogue(epilogue_key, x, dt, dphi_dt)
-            if epilogue_key is not None and self.graph_runner is not None
-            else None
-        )
-        return self.euler_finish(x, dt, dphi_dt) if graphed is None else graphed
-
-    def euler_finish(
-        self, x: torch.Tensor, dt: torch.Tensor, dphi_dt: torch.Tensor
-    ) -> torch.Tensor:
         conditional, unconditional = dphi_dt.chunk(2, dim=0)
         velocity = (
             1.0 + self.inference_cfg_rate
@@ -190,15 +214,8 @@ class CapturedFlowGraph:
     output: torch.Tensor
 
 
-@dataclass(kw_only=True)
-class CapturedFlowEpilogue:
-    graph: torch.cuda.CUDAGraph
-    inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    output: torch.Tensor
-
-
 class FlowCudaGraphRunner:
-    """Replay startup-captured Flow steps or packed-batch epilogues."""
+    """Replay startup-captured non-packed Flow trajectories."""
 
     def __init__(
         self,
@@ -219,7 +236,6 @@ class FlowCudaGraphRunner:
         self.dtype: torch.dtype = next(decoder.parameters()).dtype
         self.min_free_bytes: int = int(min_free_gb * 1024**3)
         self.graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
-        self.epilogues: dict[tuple[int, int], CapturedFlowEpilogue] = {}
         self.pool: tuple[int, int] | None = None
         self.lock: Lock = Lock()
         self.graph_replays: int = 0
@@ -249,12 +265,15 @@ class FlowCudaGraphRunner:
         stream = torch.cuda.Stream(device=self.device)
         stream.wait_stream(current_stream)
         graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
-        epilogues: dict[tuple[int, int], CapturedFlowEpilogue] = {}
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
             self.pool = torch.cuda.graph_pool_handle()
             for batch_size, frames in sorted(
                 shapes, key=lambda value: value[0] * value[1], reverse=True
             ):
+                if batch_size > 1 and self.decoder.estimator.enable_variable_length:
+                    continue
+                else:
+                    pass
                 shape = (batch_size, frames)
                 free, _ = torch.cuda.mem_get_info(self.device)
                 if free < self.min_free_bytes:
@@ -273,17 +292,36 @@ class FlowCudaGraphRunner:
                         .clone()
                     )
                     dt = torch.tensor(0.1, device=self.device, dtype=self.dtype)
-                    if batch_size > 1 and self.decoder.estimator.enable_variable_length:
-                        dphi_dt = torch.zeros(
-                            2 * batch_size,
-                            self.decoder.out_channels,
-                            frames,
-                            device=self.device,
-                            dtype=torch.bfloat16,
-                        )
-                        epilogue_inputs = (x, dt, dphi_dt)
+                    t = torch.zeros(batch_size, device=self.device, dtype=self.dtype)
+                    mu_in = torch.zeros(
+                        2 * batch_size,
+                        self.decoder.out_channels,
+                        frames,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    mask_in = torch.ones(
+                        2 * batch_size,
+                        1,
+                        frames,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    spks_in = torch.zeros(
+                        2 * batch_size,
+                        self.decoder.out_channels,
+                        device=self.device,
+                        dtype=self.dtype,
+                    )
+                    cond_in = torch.zeros_like(mu_in)
+                    inputs = (x, t, dt, mu_in, mask_in, spks_in, cond_in)
+                    with torch.autocast(
+                        "cuda",
+                        dtype=self.dtype,
+                        enabled=self.dtype != torch.float32,
+                    ):
                         for _ in range(3):
-                            self.decoder.euler_finish(*epilogue_inputs)
+                            self.decoder.euler_step(*inputs)
                         graph = torch.cuda.CUDAGraph()
                         with torch.cuda.graph(
                             cuda_graph=graph,
@@ -291,54 +329,10 @@ class FlowCudaGraphRunner:
                             stream=stream,
                             capture_error_mode="thread_local",
                         ):
-                            output = self.decoder.euler_finish(*epilogue_inputs)
-                        epilogues[shape] = CapturedFlowEpilogue(
-                            graph=graph, inputs=epilogue_inputs, output=output
-                        )
-                    else:
-                        t = torch.zeros(
-                            batch_size, device=self.device, dtype=self.dtype
-                        )
-                        mu_in = torch.zeros(
-                            2 * batch_size,
-                            self.decoder.out_channels,
-                            frames,
-                            device=self.device,
-                            dtype=self.dtype,
-                        )
-                        mask_in = torch.ones(
-                            2 * batch_size,
-                            1,
-                            frames,
-                            device=self.device,
-                            dtype=self.dtype,
-                        )
-                        spks_in = torch.zeros(
-                            2 * batch_size,
-                            self.decoder.out_channels,
-                            device=self.device,
-                            dtype=self.dtype,
-                        )
-                        cond_in = torch.zeros_like(mu_in)
-                        inputs = (x, t, dt, mu_in, mask_in, spks_in, cond_in)
-                        with torch.autocast(
-                            "cuda",
-                            dtype=self.dtype,
-                            enabled=self.dtype != torch.float32,
-                        ):
-                            for _ in range(3):
-                                self.decoder.euler_step(*inputs)
-                            graph = torch.cuda.CUDAGraph()
-                            with torch.cuda.graph(
-                                cuda_graph=graph,
-                                pool=self.pool,
-                                stream=stream,
-                                capture_error_mode="thread_local",
-                            ):
-                                output = self.decoder.euler_step(*inputs)
-                        graphs[shape] = CapturedFlowGraph(
-                            graph=graph, inputs=inputs, output=output
-                        )
+                            x.copy_(self.decoder.euler_step(*inputs))
+                    graphs[shape] = CapturedFlowGraph(
+                        graph=graph, inputs=inputs, output=x
+                    )
                 except Exception as exc:
                     logger.warning(
                         f"MiniCPM-o Flow CUDA graph capture failed for "
@@ -346,11 +340,7 @@ class FlowCudaGraphRunner:
                     )
         current_stream.wait_stream(stream)
         self.graphs = graphs
-        self.epilogues = epilogues
-        logger.info(
-            f"Captured {len(graphs)} MiniCPM-o Flow step and "
-            f"{len(epilogues)} Flow epilogue CUDA graph shapes"
-        )
+        logger.info(f"Captured {len(graphs)} MiniCPM-o Flow step CUDA graph shapes")
 
     def fit(self, x: torch.Tensor) -> tuple[int, int] | None:
         actual_frames = x.shape[2]
@@ -359,15 +349,10 @@ class FlowCudaGraphRunner:
             // FLOW_CUDA_GRAPH_FRAME_BUCKET
             * FLOW_CUDA_GRAPH_FRAME_BUCKET
         )
-        candidates = (
-            self.epilogues
-            if x.shape[0] > 1 and self.decoder.estimator.enable_variable_length
-            else self.graphs
-        )
         key = min(
             (
                 key
-                for key in candidates
+                for key in self.graphs
                 if key[0] == x.shape[0] and key[1] >= bucket_frames
             ),
             key=lambda value: value[1],
@@ -380,82 +365,48 @@ class FlowCudaGraphRunner:
             pass
         return key
 
-    def run_step(
+    def prepare(
         self,
         key: tuple[int, int],
         x: torch.Tensor,
-        t: torch.Tensor,
-        dt: torch.Tensor,
         mu_in: torch.Tensor,
         mask_in: torch.Tensor,
         spks_in: torch.Tensor,
         cond_in: torch.Tensor,
-    ) -> torch.Tensor | None:
+    ) -> CapturedFlowGraph:
+        """Initialize state and conditioning once while the solver holds the lock."""
         actual_frames = x.shape[2]
-        with self.lock:
-            captured = self.graphs.get(key)
-            if captured is None:
-                self.graph_misses += 1
-                return None
-            else:
-                pass
-            for target, source in zip(
-                captured.inputs,
-                (x, t, dt, mu_in, mask_in, spks_in, cond_in),
-                strict=True,
-            ):
-                if source.ndim in (2, 3):
-                    value = source
-                    if source.ndim == 3 and source.shape[-1] != key[1]:
-                        value = F.pad(source, (0, key[1] - actual_frames))
-                    else:
-                        pass
-                    target.copy_(value)
-                else:
-                    target.copy_(source)
-            try:
-                captured.graph.replay()
-            except RuntimeError:
-                self.graphs.clear()
-                self.epilogues.clear()
-                self.pool = None
-                logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
-                raise
-            self.graph_replays += 1
-            return captured.output[: x.shape[0], :, :actual_frames].clone()
+        captured = self.graphs[key]
+        for target, source in zip(
+            (captured.inputs[0], *captured.inputs[3:]),
+            (x, mu_in, mask_in, spks_in, cond_in),
+            strict=True,
+        ):
+            value = (
+                F.pad(source, (0, key[1] - actual_frames))
+                if source.ndim == 3 and source.shape[-1] != key[1]
+                else source
+            )
+            target.copy_(value)
+        return captured
 
-    def run_epilogue(
+    def run_step(
         self,
-        key: tuple[int, int],
-        x: torch.Tensor,
+        captured: CapturedFlowGraph,
+        t: torch.Tensor,
         dt: torch.Tensor,
-        dphi_dt: torch.Tensor,
-    ) -> torch.Tensor | None:
-        actual_frames = x.shape[2]
-        with self.lock:
-            captured = self.epilogues.get(key)
-            if captured is None:
-                self.graph_misses += 1
-                return None
-            else:
-                pass
-            for target, source in zip(captured.inputs, (x, dt, dphi_dt), strict=True):
-                value = (
-                    F.pad(source, (0, key[1] - actual_frames))
-                    if source.ndim == 3 and source.shape[-1] != key[1]
-                    else source
-                )
-                target.copy_(value)
-            try:
-                captured.graph.replay()
-            except RuntimeError:
-                self.graphs.clear()
-                self.epilogues.clear()
-                self.pool = None
-                logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
-                raise
-            self.graph_replays += 1
-            return captured.output[:, :, :actual_frames].clone()
+    ) -> None:
+        """Update time inputs and advance graph-owned state."""
+        captured.inputs[1].copy_(t)
+        captured.inputs[2].copy_(dt)
+        try:
+            captured.graph.replay()
+        except RuntimeError:
+            self.graphs.clear()
+            self.pool = None
+            logger.exception("MiniCPM-o Flow CUDA graph replay disabled the runner")
+            raise
+        self.graph_replays += 1
 
 
 class CausalMaskedDiffWithXvec(torch.nn.Module):

@@ -63,11 +63,10 @@ apart elsewhere:
 Two independent CUDA graph tables are configurable at startup:
 
 - `code2wav.factory.flow_cuda_graph_capture_shapes` is keyed by
-  `(batch, mel_frames)`. Batch-1 keys capture complete Euler steps;
-  variable-length batches larger than one capture the Euler epilogue
-  after DiT instead. The default has 44 batch-1 buckets and 97 B2-B8
-  mel buckets derived from the timed SeedTTS English fits. Frames must
-  be divisible by 16.
+  `(batch, mel_frames)` and captures complete non-packed Euler steps.
+  The default has 44 batch-1 buckets and 97 B2-B8 mel buckets derived
+  from the timed SeedTTS English fits. With variable-length Flow enabled,
+  B2-B8 use the packed DiT table instead. Frames must be divisible by 16.
 - `code2wav.factory.packed_dit_cuda_graph_capture_shapes` captures only
   the fixed-capacity packed DiT blocks, keyed by `(batch, capacity)`.
   The mel-width-dependent projection, packing, and unpacking remain
@@ -76,6 +75,13 @@ Two independent CUDA graph tables are configurable at startup:
   capacity greater than the CFG-doubled valid frames, with no more than
   one mel-frame width of dummy tokens. The fixed attention maximum is
   1024 frames; longer requests use packed eager DiT.
+
+Graph preparation is per Flow solve, not per Euler step. Dense trajectories
+keep solver state in graph-owned buffers and copy out only the final result.
+Packed trajectories build and install their layout once, gather directly
+into fixed-capacity tensors without atomic reductions, and update only
+activations and timestep conditioning per replay. The small Flow epilogue
+runs directly rather than through a separate copy-in/copy-out graph.
 
 Both tables are enabled by default when Flow CUDA graphs are enabled;
 `None` selects their built-in tables, while `[]` disables an individual

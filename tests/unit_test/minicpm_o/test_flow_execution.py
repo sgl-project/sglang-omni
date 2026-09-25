@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+    CapturedFlowGraph,
     CausalConditionalCFM,
     FlowCudaGraphRunner,
 )
@@ -57,15 +58,14 @@ def test_default_graph_shapes_cover_dense_region_and_sparse_tails() -> None:
     assert (2, 336) in shapes and (8, 784) in shapes
 
 
-def test_flow_graph_fit_uses_mel_table_for_packed_epilogue() -> None:
+def test_flow_graph_fit_uses_nearest_mel_bucket() -> None:
     decoder = small_decoder()
-    decoder.estimator.enable_variable_length = True
     runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
     runner.device = torch.device("cpu")
-    runner.graphs = {(1, 32): MagicMock()}
-    runner.epilogues = {(2, 32): MagicMock()}
+    runner.graphs = {(1, 32): MagicMock(), (2, 32): MagicMock()}
     assert runner.fit(torch.zeros(1, 4, 31)) == (1, 32)
     assert runner.fit(torch.zeros(2, 4, 31)) == (2, 32)
+    assert runner.fit(torch.zeros(1, 4, 33)) is None
 
 
 def test_right_padding_preserves_valid_flow_frames() -> None:
@@ -82,20 +82,62 @@ def test_right_padding_preserves_valid_flow_frames() -> None:
     torch.testing.assert_close(padded, eager, atol=1e-5, rtol=1e-5)
 
 
+def test_flow_graph_state_is_reset_and_outputs_remain_independent() -> None:
+    torch.manual_seed(13)
+    decoder = small_decoder()
+    static_inputs = (
+        torch.zeros(1, 4, 16),
+        torch.zeros(1),
+        torch.tensor(0.1),
+        torch.zeros(2, 4, 16),
+        torch.ones(2, 1, 16),
+        torch.zeros(2, 4),
+        torch.zeros(2, 4, 16),
+    )
+    graph = MagicMock()
+    graph.replay.side_effect = lambda: static_inputs[0].copy_(
+        decoder.euler_step(*static_inputs)
+    )
+    runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
+    runner.device = torch.device("cpu")
+    runner.graphs = {
+        (1, 16): CapturedFlowGraph(
+            graph=graph, inputs=static_inputs, output=static_inputs[0]
+        )
+    }
+    previous: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for frames in (13, 16, 13):
+        inputs = flow_inputs("cpu", frames)
+        expected = decoder(*inputs)
+        decoder.graph_runner = runner
+        actual = decoder(*inputs)
+        decoder.graph_runner = None
+        previous.append((actual, expected))
+    for actual, expected in previous:
+        torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+    assert runner.graph_replays == 30
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_flow_graph_replays_changed_inputs_and_falls_back() -> None:
     torch.manual_seed(11)
     decoder = small_decoder("cuda")
+    decoder.estimator.enable_variable_length = True
     runner = FlowCudaGraphRunner(decoder, device=torch.device("cuda:0"))
-    runner.capture(((1, 16),))
+    runner.capture(((1, 16), (2, 32)))
+    assert set(runner.graphs) == {(1, 16)}
 
-    for frames in (13, 16, 17):
+    previous: list[tuple[torch.Tensor, torch.Tensor]] = []
+    for frames in (13, 16, 13, 17):
         inputs = flow_inputs("cuda", frames)
         eager = decoder(*inputs)
         decoder.graph_runner = runner
         actual = decoder(*inputs)
         decoder.graph_runner = None
         torch.testing.assert_close(actual, eager, atol=1e-4, rtol=1e-4)
-    assert runner.graph_replays == 20
+        previous.append((actual, eager))
+    for actual, expected in previous:
+        torch.testing.assert_close(actual, expected, atol=1e-4, rtol=1e-4)
+    assert runner.graph_replays == 30
     assert runner.graph_misses == 1
