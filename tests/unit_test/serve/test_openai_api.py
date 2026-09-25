@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from typing import Any
 
@@ -893,7 +894,7 @@ def test_admin_routes_forward_to_client() -> None:
     ]
 
 
-def test_chat_stream_failure_closes_without_done_sentinel() -> None:
+def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     chunks: list[str] = []
     client = fault_client("qwen3-omni")
     req = ChatCompletionRequest(
@@ -915,11 +916,15 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
         ):
             chunks.append(chunk)
 
-    with pytest.raises(RuntimeError, match="cuda out of memory"):
-        asyncio.run(drive())
+    asyncio.run(drive())
 
     assert chunks
-    assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert json.loads(chunks[-2][6:])["error"] == {
+        "message": "cuda out of memory",
+        "type": "server_error",
+        "code": 500,
+    }
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
