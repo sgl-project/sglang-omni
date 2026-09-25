@@ -135,7 +135,8 @@ def cuda_device() -> torch.device:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
     else:
-        return torch.device("cuda")
+        pass
+    return torch.device("cuda")
 
 
 ALL_KEYS = [
