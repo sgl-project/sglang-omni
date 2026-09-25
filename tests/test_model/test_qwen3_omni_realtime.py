@@ -72,11 +72,11 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     stop_server(proc)
 
 
-def _ws_url(port: int) -> str:
+def ws_url(port: int) -> str:
     return f"ws://localhost:{port}/v1/realtime"
 
 
-def _load_pcm16_16k_mono(path: Path) -> bytes:
+def load_pcm16_16k_mono(path: Path) -> bytes:
     with wave.open(str(path)) as wf:
         assert wf.getnchannels() == 1, "fixture must be mono"
         assert wf.getframerate() == 16000, "fixture must be 16 kHz"
@@ -84,19 +84,19 @@ def _load_pcm16_16k_mono(path: Path) -> bytes:
         return wf.readframes(wf.getnframes())
 
 
-def _wav_with_silence_trailer() -> bytes:
+def wav_with_silence_trailer() -> bytes:
     """Load fixture + 1 s trailing silence so VAD reliably fires speech_stopped."""
-    return _load_pcm16_16k_mono(AUDIO_FIXTURE) + b"\x00\x00" * 16000
+    return load_pcm16_16k_mono(AUDIO_FIXTURE) + b"\x00\x00" * 16000
 
 
-async def _recv_event(ws) -> dict:
+async def recv_event(ws) -> dict:
     return json.loads(await asyncio.wait_for(ws.recv(), timeout=WS_TIMEOUT))
 
 
-async def _recv_until(ws, terminal_type: str, *, limit: int = 300) -> list[dict]:
+async def recv_until(ws, terminal_type: str, *, limit: int = 300) -> list[dict]:
     events: list[dict] = []
     for _ in range(limit):
-        evt = await _recv_event(ws)
+        evt = await recv_event(ws)
         events.append(evt)
         if evt.get("type") == terminal_type:
             return events
@@ -106,7 +106,7 @@ async def _recv_until(ws, terminal_type: str, *, limit: int = 300) -> list[dict]
     )
 
 
-async def _stream_audio(ws, pcm: bytes, chunk_ms: int = 200) -> None:
+async def stream_audio(ws, pcm: bytes, chunk_ms: int = 200) -> None:
     """Stream PCM16 to the server in fixed-duration chunks."""
     chunk_bytes = 16000 * chunk_ms // 1000 * 2
     for i in range(0, len(pcm), chunk_bytes):
@@ -132,14 +132,14 @@ async def test_vad_audio_emits_response_then_transcription(
 ) -> None:
     """VAD auto-commit drives full lifecycle: VAD → response.* → transcription.*."""
     port: int = server_process.port  # type: ignore[attr-defined]
-    pcm = _wav_with_silence_trailer()
+    pcm = wav_with_silence_trailer()
 
     with disable_proxy():
-        async with websockets.connect(_ws_url(port)) as ws:
-            await _recv_event(ws)  # session.created
-            await _stream_audio(ws, pcm)
+        async with websockets.connect(ws_url(port)) as ws:
+            await recv_event(ws)  # session.created
+            await stream_audio(ws, pcm)
             # transcription.completed is the last event in the per-turn sequence.
-            events = await _recv_until(
+            events = await recv_until(
                 ws, "conversation.item.input_audio_transcription.completed"
             )
 
@@ -189,21 +189,21 @@ async def test_disconnect_during_response_keeps_server_healthy(
 ) -> None:
     """Mid-flight disconnect must not leak tasks — /health stays up and a fresh WS works."""
     port: int = server_process.port  # type: ignore[attr-defined]
-    pcm = _wav_with_silence_trailer()
+    pcm = wav_with_silence_trailer()
 
     with disable_proxy():
-        async with websockets.connect(_ws_url(port)) as ws:
-            await _recv_event(ws)  # session.created
-            await _stream_audio(ws, pcm)
+        async with websockets.connect(ws_url(port)) as ws:
+            await recv_event(ws)  # session.created
+            await stream_audio(ws, pcm)
             # Take a few events to confirm the response task is alive on the
             # server, then close abruptly without draining the rest.
             for _ in range(5):
-                await _recv_event(ws)
+                await recv_event(ws)
         # Context manager exit closes the WebSocket.
 
         resp = requests.get(f"http://localhost:{port}/health", timeout=10)
         assert resp.status_code == 200, resp.text
 
-        async with websockets.connect(_ws_url(port)) as ws:
-            evt = await _recv_event(ws)
+        async with websockets.connect(ws_url(port)) as ws:
+            evt = await recv_event(ws)
             assert evt["type"] == "session.created", evt

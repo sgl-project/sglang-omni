@@ -42,16 +42,16 @@ def test_encoder_microbatch_limit_must_be_positive() -> None:
         BatchedAudioEncoderService(object(), max_batch_size=0)
 
 
-class _FailingStream:
+class FailingStream:
     def synchronize(self) -> None:
         raise torch.OutOfMemoryError("test encoder OOM")
 
 
-class _EncoderIntermediate:
+class EncoderIntermediate:
     pass
 
 
-class _StopWorker(BaseException):
+class StopWorker(BaseException):
     pass
 
 
@@ -59,7 +59,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service.stream = _FailingStream()
+    service.stream = FailingStream()
     service.model = SimpleNamespace(
         get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
     )
@@ -101,19 +101,19 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
     calls: list[list[object]] = []
-    retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
+    retained_intermediates: list[weakref.ReferenceType[EncoderIntermediate]] = []
     poisoned = False
     failed_item = MultimodalDataItem(modality=Modality.AUDIO, feature=object())
     healthy_item = MultimodalDataItem(modality=Modality.AUDIO, feature=object())
     stop_item = object()
 
-    def _execute_batch(items: list[object]) -> list[object]:
+    def execute_batch(items: list[object]) -> list[object]:
         nonlocal poisoned
         if items == [stop_item]:
-            raise _StopWorker
+            raise StopWorker
         calls.append(items)
         if items == [failed_item]:
-            intermediate = _EncoderIntermediate()
+            intermediate = EncoderIntermediate()
             retained_intermediates.append(weakref.ref(intermediate))
             poisoned = True
             raise torch.OutOfMemoryError("test encoder OOM")
@@ -123,11 +123,11 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
         items[0].feature = None
         return [items[0].precomputed_embeddings]
 
-    def _cuda_device(device: str) -> contextlib.AbstractContextManager:
+    def cuda_device(device: str) -> contextlib.AbstractContextManager:
         selected_devices.append(device)
         return contextlib.nullcontext()
 
-    def _empty_cache() -> None:
+    def empty_cache() -> None:
         nonlocal poisoned
         cleanup_steps.append("empty_cache")
         poisoned = False
@@ -135,17 +135,17 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     service.stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
-    monkeypatch.setattr(service, "execute_batch", _execute_batch)
-    monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
-    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
+    monkeypatch.setattr(service, "execute_batch", execute_batch)
+    monkeypatch.setattr(encoder_service.torch.cuda, "device", cuda_device)
+    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", empty_cache)
 
-    def _run_worker() -> None:
+    def run_worker() -> None:
         try:
             service.worker()
-        except _StopWorker:
+        except StopWorker:
             pass
 
-    service.thread = threading.Thread(target=_run_worker, daemon=True)
+    service.thread = threading.Thread(target=run_worker, daemon=True)
     service.thread.start()
 
     try:
@@ -190,7 +190,7 @@ def test_batched_oom_falls_back_to_per_item_encoding(
     calls: list[list[object]] = []
     items = [object(), object()]
 
-    def _execute_batch(batch: list[object]) -> list[object]:
+    def execute_batch(batch: list[object]) -> list[object]:
         nonlocal poisoned
         calls.append(batch)
         if len(batch) > 1:
@@ -200,18 +200,18 @@ def test_batched_oom_falls_back_to_per_item_encoding(
             raise RuntimeError("allocator remained poisoned after OOM")
         return [object()]
 
-    def _cuda_device(device: str) -> contextlib.AbstractContextManager:
+    def cuda_device(device: str) -> contextlib.AbstractContextManager:
         selected_devices.append(device)
         return contextlib.nullcontext()
 
-    def _empty_cache() -> None:
+    def empty_cache() -> None:
         nonlocal poisoned
         cleanup_steps.append("empty_cache")
         poisoned = False
 
-    monkeypatch.setattr(service, "execute_batch", _execute_batch)
-    monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
-    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
+    monkeypatch.setattr(service, "execute_batch", execute_batch)
+    monkeypatch.setattr(encoder_service.torch.cuda, "device", cuda_device)
+    monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", empty_cache)
     entries = [QueueEntry(item, concurrent.futures.Future()) for item in items]
     batches = iter([(entries, False), ([], True)])
     service.next_batch = lambda: next(batches)
@@ -233,14 +233,14 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     service = object.__new__(BatchedAudioEncoderService)
     service.worker_state_lock = threading.Lock()
     service.worker_error = None
-    retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
+    retained_intermediates: list[weakref.ReferenceType[EncoderIntermediate]] = []
 
-    def _raise_non_oom_encoder_failure(_items: list[object]) -> list[object]:
-        intermediate = _EncoderIntermediate()
+    def raise_non_oom_encoder_failure(_items: list[object]) -> list[object]:
+        intermediate = EncoderIntermediate()
         retained_intermediates.append(weakref.ref(intermediate))
         raise ValueError("unexpected encoder shape")
 
-    monkeypatch.setattr(service, "execute_batch", _raise_non_oom_encoder_failure)
+    monkeypatch.setattr(service, "execute_batch", raise_non_oom_encoder_failure)
     entry = QueueEntry(object(), concurrent.futures.Future())
     batches = iter([([entry], False), ([], True)])
     service.next_batch = lambda: next(batches)
@@ -257,7 +257,7 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     assert retained_intermediates[0]() is None
     message = "\n".join(record.getMessage() for record in caplog.records)
     assert "Traceback (most recent call last):" in message
-    assert "_raise_non_oom_encoder_failure" in message
+    assert "raise_non_oom_encoder_failure" in message
     assert "ValueError: unexpected encoder shape" in message
     assert all(record.exc_info is None for record in caplog.records)
     assert all(

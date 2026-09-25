@@ -11,7 +11,7 @@ from sglang_omni.models.zonos2.components import audio_codec, streaming_vocoder
 def test_dac_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -> None:
     created = []
 
-    class _FakeDAC:
+    class FakeDAC:
         def eval(self):
             return self
 
@@ -22,13 +22,13 @@ def test_dac_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -> No
         def modules(self):
             return []
 
-    def _load(_checkpoint):
-        model = _FakeDAC()
+    def load(_checkpoint):
+        model = FakeDAC()
         created.append(model)
         return model
 
     dac_module = SimpleNamespace(
-        DAC=SimpleNamespace(load=_load),
+        DAC=SimpleNamespace(load=load),
         utils=SimpleNamespace(download=lambda **_kwargs: "checkpoint"),
     )
     monkeypatch.setitem(sys.modules, "dac", dac_module)
@@ -43,12 +43,12 @@ def test_dac_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -> No
 def test_vocoder_cache_reuses_device_and_reloads_on_device_change(monkeypatch) -> None:
     created = []
 
-    class _FakeVocoder:
+    class FakeVocoder:
         def __init__(self, device):
             self.device = device
             created.append(self)
 
-    monkeypatch.setattr(streaming_vocoder, "Zonos2DACVocoder", _FakeVocoder)
+    monkeypatch.setattr(streaming_vocoder, "Zonos2DACVocoder", FakeVocoder)
     monkeypatch.setattr(streaming_vocoder, "_vocoder_cache", None)
 
     first = streaming_vocoder.get_vocoder("cuda:0")

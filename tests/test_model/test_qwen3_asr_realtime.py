@@ -60,11 +60,11 @@ def server_process(tmp_path_factory: pytest.TempPathFactory):
     stop_server(proc)
 
 
-def _ws_url(port: int) -> str:
+def ws_url(port: int) -> str:
     return f"ws://localhost:{port}/v1/realtime?intent=transcription"
 
 
-def _load_pcm16_16k_mono(path: Path) -> bytes:
+def load_pcm16_16k_mono(path: Path) -> bytes:
     with wave.open(str(path)) as wav_file:
         assert wav_file.getnchannels() == 1, "fixture must be mono"
         assert wav_file.getframerate() == SAMPLE_RATE, "fixture must be 16 kHz"
@@ -72,18 +72,18 @@ def _load_pcm16_16k_mono(path: Path) -> bytes:
         return wav_file.readframes(wav_file.getnframes())
 
 
-def _seconds_to_bytes(seconds: float) -> int:
+def seconds_to_bytes(seconds: float) -> int:
     return int(seconds * SAMPLE_RATE) * 2
 
 
-async def _recv_event(websocket) -> dict:
+async def recv_event(websocket) -> dict:
     return json.loads(await asyncio.wait_for(websocket.recv(), timeout=WS_TIMEOUT))
 
 
-async def _recv_until(websocket, terminal_type: str, *, limit: int = 300) -> list[dict]:
+async def recv_until(websocket, terminal_type: str, *, limit: int = 300) -> list[dict]:
     events: list[dict] = []
     for _ in range(limit):
-        event = await _recv_event(websocket)
+        event = await recv_event(websocket)
         events.append(event)
         if event.get("type") == terminal_type:
             return events
@@ -93,24 +93,24 @@ async def _recv_until(websocket, terminal_type: str, *, limit: int = 300) -> lis
     )
 
 
-async def _recv_partial(websocket) -> list[dict]:
+async def recv_partial(websocket) -> list[dict]:
     events: list[dict] = []
     for _ in range(300):
-        event = await _recv_event(websocket)
+        event = await recv_event(websocket)
         events.append(event)
         if event.get("type") == "transcription.segment" and not event.get("is_final"):
             return events
     raise AssertionError("did not receive a partial transcription segment")
 
 
-async def _send_event(websocket, event: dict) -> None:
+async def send_event(websocket, event: dict) -> None:
     await websocket.send(json.dumps(event))
 
 
-async def _stream_audio(websocket, pcm: bytes, *, chunk_ms: int = 200) -> None:
+async def stream_audio(websocket, pcm: bytes, *, chunk_ms: int = 200) -> None:
     chunk_bytes = SAMPLE_RATE * chunk_ms // 1000 * 2
     for offset in range(0, len(pcm), chunk_bytes):
-        await _send_event(
+        await send_event(
             websocket,
             {
                 "type": "input_audio_buffer.append",
@@ -119,12 +119,12 @@ async def _stream_audio(websocket, pcm: bytes, *, chunk_ms: int = 200) -> None:
         )
 
 
-def _assert_no_errors(events: list[dict]) -> None:
+def assert_no_errors(events: list[dict]) -> None:
     errors = [event for event in events if event.get("type") == "error"]
     assert not errors, errors
 
 
-def _assert_ordered_event_indexes(events: list[dict]) -> None:
+def assert_ordered_event_indexes(events: list[dict]) -> None:
     indexes = [event["event_index"] for event in events]
     assert indexes == sorted(indexes)
     assert len(indexes) == len(set(indexes))
@@ -136,29 +136,29 @@ async def test_manual_commit_exercises_three_refreshes_and_rollback(
     server_process: subprocess.Popen,
 ) -> None:
     port: int = server_process.port  # type: ignore[attr-defined]
-    fixture_pcm = _load_pcm16_16k_mono(AUDIO_FIXTURE)
-    pcm = (fixture_pcm * 2)[: _seconds_to_bytes(6.2)]
-    boundaries = [_seconds_to_bytes(seconds) for seconds in (2.1, 4.1, 6.1)]
+    fixture_pcm = load_pcm16_16k_mono(AUDIO_FIXTURE)
+    pcm = (fixture_pcm * 2)[: seconds_to_bytes(6.2)]
+    boundaries = [seconds_to_bytes(seconds) for seconds in (2.1, 4.1, 6.1)]
 
     with disable_proxy():
-        async with websockets.connect(_ws_url(port)) as websocket:
-            created = await _recv_event(websocket)
+        async with websockets.connect(ws_url(port)) as websocket:
+            created = await recv_event(websocket)
             assert created["type"] == "session.created", created
-            await _send_event(
+            await send_event(
                 websocket,
                 {"type": "session.update", "session": {"turn_detection": None}},
             )
-            events = await _recv_until(websocket, "session.updated")
+            events = await recv_until(websocket, "session.updated")
 
             start = 0
             for boundary in boundaries:
-                await _stream_audio(websocket, pcm[start:boundary])
-                events.extend(await _recv_partial(websocket))
+                await stream_audio(websocket, pcm[start:boundary])
+                events.extend(await recv_partial(websocket))
                 start = boundary
 
-            await _send_event(websocket, {"type": "input_audio_buffer.commit"})
-            await _send_event(websocket, {"type": "transcription.done"})
-            events.extend(await _recv_until(websocket, "transcription.completed"))
+            await send_event(websocket, {"type": "input_audio_buffer.commit"})
+            await send_event(websocket, {"type": "transcription.done"})
+            events.extend(await recv_until(websocket, "transcription.completed"))
 
     partials = [
         event
@@ -179,8 +179,8 @@ async def test_manual_commit_exercises_three_refreshes_and_rollback(
     assert finals[0]["segment_id"] == 0
     assert finals[0]["text"].strip()
     assert completed["text"] == finals[0]["text"].strip()
-    _assert_no_errors(events)
-    _assert_ordered_event_indexes(events)
+    assert_no_errors(events)
+    assert_ordered_event_indexes(events)
 
 
 @pytest.mark.benchmark
@@ -189,15 +189,15 @@ async def test_server_vad_finalizes_without_manual_commit(
     server_process: subprocess.Popen,
 ) -> None:
     port: int = server_process.port  # type: ignore[attr-defined]
-    pcm = _load_pcm16_16k_mono(AUDIO_FIXTURE) + b"\x00\x00" * SAMPLE_RATE
+    pcm = load_pcm16_16k_mono(AUDIO_FIXTURE) + b"\x00\x00" * SAMPLE_RATE
 
     with disable_proxy():
-        async with websockets.connect(_ws_url(port)) as websocket:
-            created = await _recv_event(websocket)
+        async with websockets.connect(ws_url(port)) as websocket:
+            created = await recv_event(websocket)
             assert created["type"] == "session.created", created
-            await _stream_audio(websocket, pcm)
-            await _send_event(websocket, {"type": "transcription.done"})
-            events = await _recv_until(websocket, "transcription.completed")
+            await stream_audio(websocket, pcm)
+            await send_event(websocket, {"type": "transcription.done"})
+            events = await recv_until(websocket, "transcription.completed")
 
     event_types = [event["type"] for event in events]
     finals = [
@@ -220,8 +220,8 @@ async def test_server_vad_finalizes_without_manual_commit(
     assert [event["segment_id"] for event in finals] == list(range(len(finals)))
     assert all(event["text"].strip() for event in finals)
     assert completed["text"] == join_transcript_parts(event["text"] for event in finals)
-    _assert_no_errors(events)
-    _assert_ordered_event_indexes(events)
+    assert_no_errors(events)
+    assert_ordered_event_indexes(events)
 
 
 @pytest.mark.benchmark
@@ -230,36 +230,36 @@ async def test_disconnect_then_new_session_recovers(
     server_process: subprocess.Popen,
 ) -> None:
     port: int = server_process.port  # type: ignore[attr-defined]
-    pcm = _load_pcm16_16k_mono(AUDIO_FIXTURE)
+    pcm = load_pcm16_16k_mono(AUDIO_FIXTURE)
 
     with disable_proxy():
-        async with websockets.connect(_ws_url(port)) as websocket:
-            created = await _recv_event(websocket)
+        async with websockets.connect(ws_url(port)) as websocket:
+            created = await recv_event(websocket)
             assert created["type"] == "session.created", created
-            await _send_event(
+            await send_event(
                 websocket,
                 {"type": "session.update", "session": {"turn_detection": None}},
             )
-            await _recv_until(websocket, "session.updated")
-            await _stream_audio(websocket, pcm[: _seconds_to_bytes(2.1)])
+            await recv_until(websocket, "session.updated")
+            await stream_audio(websocket, pcm[: seconds_to_bytes(2.1)])
 
         response = await asyncio.to_thread(
             requests.get, f"http://localhost:{port}/health", timeout=10
         )
         assert response.status_code == 200, response.text
 
-        async with websockets.connect(_ws_url(port)) as websocket:
-            created = await _recv_event(websocket)
+        async with websockets.connect(ws_url(port)) as websocket:
+            created = await recv_event(websocket)
             assert created["type"] == "session.created", created
-            await _send_event(
+            await send_event(
                 websocket,
                 {"type": "session.update", "session": {"turn_detection": None}},
             )
-            events = await _recv_until(websocket, "session.updated")
-            await _stream_audio(websocket, pcm[: _seconds_to_bytes(2.1)])
-            await _send_event(websocket, {"type": "input_audio_buffer.commit"})
-            await _send_event(websocket, {"type": "transcription.done"})
-            events.extend(await _recv_until(websocket, "transcription.completed"))
+            events = await recv_until(websocket, "session.updated")
+            await stream_audio(websocket, pcm[: seconds_to_bytes(2.1)])
+            await send_event(websocket, {"type": "input_audio_buffer.commit"})
+            await send_event(websocket, {"type": "transcription.done"})
+            events.extend(await recv_until(websocket, "transcription.completed"))
 
     finals = [
         event
@@ -272,5 +272,5 @@ async def test_disconnect_then_new_session_recovers(
     assert len(finals) == 1, finals
     assert finals[0]["text"].strip()
     assert completed["text"] == finals[0]["text"].strip()
-    _assert_no_errors(events)
-    _assert_ordered_event_indexes(events)
+    assert_no_errors(events)
+    assert_ordered_event_indexes(events)

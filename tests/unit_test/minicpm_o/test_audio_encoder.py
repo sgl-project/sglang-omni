@@ -29,7 +29,7 @@ from sglang_omni.models.minicpm_o.components.audio_encoder import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _checkpoint_dir() -> Path | None:
+def checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     candidates = [Path(env)] if env else []
     candidates += [REPO_ROOT / "MiniCPM-o-4_6", REPO_ROOT / "MiniCPM-o-4_5"]
@@ -39,7 +39,7 @@ def _checkpoint_dir() -> Path | None:
     return None
 
 
-def _small_whisper_config():
+def small_whisper_config():
     from transformers import WhisperConfig
 
     return WhisperConfig(
@@ -53,17 +53,17 @@ def _small_whisper_config():
     )
 
 
-def _native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:
+def native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:
     return fuse_qkv(dict(encoder.state_dict()))
 
 
-def _build_remote_encoder(checkpoint: Path, config):
+def build_remote_encoder(checkpoint: Path, config):
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
     remote_cls = get_class_from_dynamic_module(
         "modeling_minicpmo.MiniCPMWhisperEncoder", str(checkpoint)
     )
-    config._attn_implementation = "sdpa"
+    config._attn_implementation = "sdpa"  # noqa: leading-underscore  # production name
     remote = remote_cls(config).eval()
     # transformers v5 attention returns (out, weights); the remote layer
     # unpacks a v4-era 3-tuple. Pad the return for the golden run.
@@ -71,28 +71,28 @@ def _build_remote_encoder(checkpoint: Path, config):
         attn = layer.self_attn
         orig_forward = attn.forward
 
-        def _forward(*args, _orig=orig_forward, **kwargs):
+        def forward(*args, _orig=orig_forward, **kwargs):
             out = _orig(*args, **kwargs)
             if isinstance(out, tuple) and len(out) == 2:
                 return (*out, None)
             return out
 
-        attn.forward = _forward
+        attn.forward = forward
     return remote
 
 
 @pytest.mark.parametrize("lens", [[3000, 2000, 137], [700]])
 def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
-    checkpoint = _checkpoint_dir()
+    checkpoint = checkpoint_dir()
     if checkpoint is None:
         pytest.skip("no MiniCPM-o checkpoint with remote modeling files")
 
     torch.manual_seed(0)
-    config = _small_whisper_config()
-    remote = _build_remote_encoder(checkpoint, config)
+    config = small_whisper_config()
+    remote = build_remote_encoder(checkpoint, config)
 
     native = MiniCPMWhisperEncoder(config).eval()
-    native.load_state_dict(_native_state_from_hf(remote), strict=True)
+    native.load_state_dict(native_state_from_hf(remote), strict=True)
 
     batch = len(lens)
     max_mel = max(lens)
@@ -132,10 +132,10 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
         )
 
 
-def _tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
+def tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
     """A MiniCPMOAudioEncoder with random weights and no checkpoint I/O."""
     torch.manual_seed(0)
-    config = _small_whisper_config()
+    config = small_whisper_config()
     encoder = object.__new__(MiniCPMOAudioEncoder)
     torch.nn.Module.__init__(encoder)
     encoder.device = torch.device("cpu")
@@ -154,7 +154,7 @@ def _tiny_audio_encoder(pool_step: int = 2) -> MiniCPMOAudioEncoder:
 @pytest.mark.parametrize("padding", ["random", "nan"])
 def test_padding_content_does_not_change_valid_output(padding: str) -> None:
     """Padding must affect neither valid embeddings nor the caller's input."""
-    encoder = _tiny_audio_encoder()
+    encoder = tiny_audio_encoder()
     short_len, long_len = 137, 3000
 
     torch.manual_seed(1)
@@ -196,7 +196,7 @@ def test_padding_content_does_not_change_valid_output(padding: str) -> None:
 def test_short_audio_is_rejected_before_pooling() -> None:
     """A clip too short for one pooling window must raise a typed error."""
     pool_step = 5
-    encoder = _tiny_audio_encoder(pool_step=pool_step)
+    encoder = tiny_audio_encoder(pool_step=pool_step)
     too_short = min_mel_frames(pool_step) - 1
     mel = torch.randn(1, 80, too_short).to(encoder.dtype)
     lens = torch.tensor([too_short])
@@ -208,7 +208,7 @@ def test_short_audio_is_rejected_before_pooling() -> None:
 
 def test_sub_pooling_tail_keeps_long_audio_embeddings() -> None:
     """A partial final segment contributes no tokens without rejecting its clip."""
-    encoder = _tiny_audio_encoder(pool_step=5)
+    encoder = tiny_audio_encoder(pool_step=5)
     mel = torch.randn(2, 80, 3000)
     mel[1, :, 5:] = 0
 
@@ -226,7 +226,7 @@ def test_sub_pooling_tail_keeps_long_audio_embeddings() -> None:
 def test_minimum_length_audio_still_encodes() -> None:
     """The shortest accepted clip yields exactly one pooled frame."""
     pool_step = 5
-    encoder = _tiny_audio_encoder(pool_step=pool_step)
+    encoder = tiny_audio_encoder(pool_step=pool_step)
     shortest = min_mel_frames(pool_step)
     mel = torch.randn(1, 80, shortest).to(encoder.dtype)
     lens = torch.tensor([shortest])

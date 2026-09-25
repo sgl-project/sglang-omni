@@ -29,8 +29,10 @@ from tests.utils import QWEN3_ASR_WER_CONCURRENCY, assert_wer_partitioned
 )
 def test_cli_defaults_follow_checkpoint_name(monkeypatch, model, is_auk):
     monkeypatch.setattr(sys, "argv", ["benchmark", "--model", model])
-    args, profile = tts._parse_args(tts._build_arg_parser())
-    config = tts._config_from_args(args)
+    args, profile = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
     assert profile.forward_sglang_engine is not is_auk
     if is_auk:
         assert config.concurrency == config.warmup == 1
@@ -130,8 +132,10 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
         ],
     )
 
-    args, _ = tts._parse_args(tts._build_arg_parser())
-    config = tts._config_from_args(args)
+    args, _ = tts._parse_args(
+        tts._build_arg_parser()
+    )  # noqa: leading-underscore  # production name
+    config = tts._config_from_args(args)  # noqa: leading-underscore  # production name
     assert config.concurrency == 3
     assert config.warmup == 0
     assert config.seed == 7
@@ -158,7 +162,7 @@ def test_wer_fanout_preserves_all_twenty_samples_at_long_audio_admission_cap(
             response = requests.Response()
             response.url = url
             response.status_code = 200 if admitted else 503
-            response._content = json.dumps(
+            response._content = json.dumps(  # noqa: leading-underscore  # upstream name
                 {"text": "hello world"}
                 if admitted
                 else {

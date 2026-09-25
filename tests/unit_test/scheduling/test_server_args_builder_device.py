@@ -13,7 +13,7 @@ import sglang_omni.platforms as platforms
 from sglang_omni.scheduling.sglang_backend import server_args_builder
 
 
-class _CapturedServerArgs:
+class CapturedServerArgs:
     """Stands in for ServerArgs so no HF checkpoint is needed."""
 
     def __init__(self, **kwargs: Any) -> None:
@@ -23,14 +23,14 @@ class _CapturedServerArgs:
         self.enable_symm_mem = kwargs.get("enable_symm_mem", False)
         self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
         self.weight_cache_mode = kwargs.get("weight_cache_mode", "off")
-        self._resolution_finished = False
+        self._resolution_finished = False  # noqa: leading-underscore  # upstream name
 
     def resolve_once(self) -> None:
-        self._resolution_finished = True
+        self._resolution_finished = True  # noqa: leading-underscore  # upstream name
 
 
-def _build(monkeypatch, **extra: Any) -> dict[str, Any]:
-    monkeypatch.setattr(server_args_builder, "ServerArgs", _CapturedServerArgs)
+def build(monkeypatch, **extra: Any) -> dict[str, Any]:
+    monkeypatch.setattr(server_args_builder, "ServerArgs", CapturedServerArgs)
     built = server_args_builder.build_sglang_server_args(
         "model", context_length=128, **extra
     )
@@ -38,19 +38,19 @@ def _build(monkeypatch, **extra: Any) -> dict[str, Any]:
 
 
 def test_unset_device_falls_back_to_the_resolved_platform(monkeypatch) -> None:
-    assert _build(monkeypatch)["device"] == platforms.current_platform.device_type
+    assert build(monkeypatch)["device"] == platforms.current_platform.device_type
 
 
 def test_pinned_platform_reaches_server_args(monkeypatch) -> None:
     """A pinned platform must win over SGLang's own detection."""
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
-    assert _build(monkeypatch)["device"] == "xpu"
+    assert build(monkeypatch)["device"] == "xpu"
 
 
 def test_caller_resolved_device_is_not_overwritten(monkeypatch) -> None:
     """A cpu stage on an accelerator host keeps cpu, index-free."""
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
-    assert _build(monkeypatch, device="cpu")["device"] == "cpu"
+    assert build(monkeypatch, device="cpu")["device"] == "cpu"
 
 
 def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
@@ -60,7 +60,7 @@ def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
     import pytest
 
     with pytest.raises(ValueError, match="startup_weight_load_mode"):
-        _build(monkeypatch, startup_weight_load_mode="overlap")
+        build(monkeypatch, startup_weight_load_mode="overlap")
 
 
 def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
@@ -71,21 +71,21 @@ def test_ipc_weight_cache_modes_are_rejected(monkeypatch) -> None:
 
     for mode in ("client", "daemon"):
         with pytest.raises(ValueError, match="weight_cache_mode"):
-            _build(monkeypatch, weight_cache_mode=mode)
+            build(monkeypatch, weight_cache_mode=mode)
 
-    assert _build(monkeypatch, weight_cache_mode="off")["weight_cache_mode"] == "off"
+    assert build(monkeypatch, weight_cache_mode="off")["weight_cache_mode"] == "off"
 
 
 def test_nvls_and_symmetric_memory_engine_flags_are_rejected(monkeypatch) -> None:
     import pytest
 
     with pytest.raises(ValueError, match="enable_nccl_nvls"):
-        _build(monkeypatch, enable_nccl_nvls=True)
+        build(monkeypatch, enable_nccl_nvls=True)
     with pytest.raises(ValueError, match="enable_symm_mem"):
-        _build(monkeypatch, enable_symm_mem=True)
+        build(monkeypatch, enable_symm_mem=True)
 
 
-def _drive_build(monkeypatch, *, overrides, gpu_id=0):
+def drive_build(monkeypatch, *, overrides, gpu_id=0):
     """Run SGLangGenerationEngineBuilder.build() far enough to reach the device
     reconciliation, then stop. Returns the device handed to SGLang.
     """
@@ -95,19 +95,19 @@ def _drive_build(monkeypatch, *, overrides, gpu_id=0):
 
     captured: dict[str, Any] = {}
 
-    class _Stop(Exception):
+    class Stop(Exception):
         pass
 
     def fake_server_args(_checkpoint, **kwargs):
         captured.update(kwargs)
-        raise _Stop
+        raise Stop
 
     # build() imports sglang_backend locally, so patch the source module.
     from sglang_omni.scheduling import sglang_backend
 
     monkeypatch.setattr(sglang_backend, "build_sglang_server_args", fake_server_args)
 
-    class _Builder(engine_factory.SGLangGenerationEngineBuilder):
+    class Builder(engine_factory.SGLangGenerationEngineBuilder):
         model_name = "probe"
         context_length = 16
 
@@ -121,8 +121,8 @@ def _drive_build(monkeypatch, *, overrides, gpu_id=0):
         def make_model_runner(self, *args, **kwargs):
             raise NotImplementedError
 
-    builder = _Builder()
-    with pytest.raises((_Stop, ValueError)) as raised:
+    builder = Builder()
+    with pytest.raises((Stop, ValueError)) as raised:
         builder.build(
             "unused", device=None, gpu_id=gpu_id, server_args_overrides=overrides
         )
@@ -136,7 +136,7 @@ def test_an_operator_device_that_agrees_with_placement_is_passed_through(
 ) -> None:
     resolved = platforms.current_platform.device_type
 
-    assert _drive_build(monkeypatch, overrides={"device": resolved}) == resolved
+    assert drive_build(monkeypatch, overrides={"device": resolved}) == resolved
 
 
 def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) -> None:
@@ -149,16 +149,16 @@ def test_an_operator_device_that_contradicts_placement_is_rejected(monkeypatch) 
     other = "cuda" if resolved != "cuda" else "xpu"
 
     with pytest.raises(ValueError, match="stage placement"):
-        _drive_build(monkeypatch, overrides={"device": other})
+        drive_build(monkeypatch, overrides={"device": other})
 
 
 def test_placement_supplies_the_device_when_no_override_is_given(monkeypatch) -> None:
     resolved = platforms.current_platform.device_type
 
-    assert _drive_build(monkeypatch, overrides=None) == resolved
+    assert drive_build(monkeypatch, overrides=None) == resolved
 
 
-def _with_decode_backend(monkeypatch, backend: str | None) -> None:
+def with_decode_backend(monkeypatch, backend: str | None) -> None:
     monkeypatch.setattr(
         platforms.current_platform,
         "get_decode_cuda_graph_backend",
@@ -167,23 +167,23 @@ def _with_decode_backend(monkeypatch, backend: str | None) -> None:
 
 
 def test_the_platform_decode_graph_backend_reaches_server_args(monkeypatch) -> None:
-    _with_decode_backend(monkeypatch, "full")
-    assert _build(monkeypatch)["cuda_graph_backend_decode"] == "full"
+    with_decode_backend(monkeypatch, "full")
+    assert build(monkeypatch)["cuda_graph_backend_decode"] == "full"
 
 
 def test_a_platform_with_no_preference_leaves_the_decode_backend_alone(
     monkeypatch,
 ) -> None:
     """Byte-identical to the arguments built before these gates existed."""
-    _with_decode_backend(monkeypatch, None)
-    gated = _build(monkeypatch)
+    with_decode_backend(monkeypatch, None)
+    gated = build(monkeypatch)
 
     monkeypatch.setattr(
         server_args_builder,
         "apply_platform_decode_cuda_graph_backend",
         lambda kwargs: None,
     )
-    ungated = _build(monkeypatch)
+    ungated = build(monkeypatch)
 
     assert gated == ungated
 
@@ -192,21 +192,21 @@ def test_a_stage_that_named_cpu_gets_no_accelerator_decode_backend(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(platforms.current_platform, "device_type", "xpu", raising=False)
-    _with_decode_backend(monkeypatch, "full")
+    with_decode_backend(monkeypatch, "full")
 
-    kwargs = _build(monkeypatch, device="cpu")
+    kwargs = build(monkeypatch, device="cpu")
 
     assert kwargs["device"] == "cpu"
     assert "cuda_graph_backend_decode" not in kwargs
 
 
 def test_an_engine_that_asked_for_eager_decode_keeps_it(monkeypatch) -> None:
-    _with_decode_backend(monkeypatch, "full")
+    with_decode_backend(monkeypatch, "full")
 
     for opt_out in ("disable_cuda_graph", "disable_decode_cuda_graph"):
-        kwargs = _build(monkeypatch, **{opt_out: True})
+        kwargs = build(monkeypatch, **{opt_out: True})
         assert "cuda_graph_backend_decode" not in kwargs, opt_out
 
     # An engine naming its own backend keeps that too.
-    pinned = _build(monkeypatch, cuda_graph_backend_decode="disabled")
+    pinned = build(monkeypatch, cuda_graph_backend_decode="disabled")
     assert pinned["cuda_graph_backend_decode"] == "disabled"

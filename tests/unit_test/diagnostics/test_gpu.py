@@ -13,7 +13,7 @@ import sglang_omni.diagnostics.gpu as gpu_diagnostics
 from sglang_omni.cli import app
 
 
-class _FakeCuda:
+class FakeCuda:
     def __init__(self) -> None:
         self.properties = [
             SimpleNamespace(
@@ -42,15 +42,15 @@ class _FakeCuda:
         return self.properties[index]
 
 
-class _FakeTorch:
+class FakeTorch:
     __version__ = "2.11.0+cu130"
     version = SimpleNamespace(cuda="13.0")
 
     def __init__(self) -> None:
-        self.cuda = _FakeCuda()
+        self.cuda = FakeCuda()
 
 
-class _FakeNVML(ModuleType):
+class FakeNVML(ModuleType):
     def __init__(self) -> None:
         super().__init__("pynvml")
         self.shutdown_called = False
@@ -96,8 +96,8 @@ class _FakeNVML(ModuleType):
 def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
     monkeypatch,
 ) -> None:
-    fake_nvml = _FakeNVML()
-    fake_torch = _FakeTorch()
+    fake_nvml = FakeNVML()
+    fake_torch = FakeTorch()
     fake_torch.cuda.properties.reverse()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
@@ -130,7 +130,7 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
 def test_nvml_inventory_failure_is_isolated_per_physical_device(
     monkeypatch,
 ) -> None:
-    class _PartiallyFailingNVML(_FakeNVML):
+    class PartiallyFailingNVML(FakeNVML):
         def nvmlDeviceGetCount(self) -> int:
             return 3
 
@@ -139,8 +139,8 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
                 raise RuntimeError("device is temporarily unavailable")
             return super().nvmlDeviceGetHandleByIndex(index)
 
-    fake_nvml = _PartiallyFailingNVML()
-    fake_torch = _FakeTorch()
+    fake_nvml = PartiallyFailingNVML()
+    fake_torch = FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
@@ -159,14 +159,14 @@ def test_nvml_inventory_failure_is_isolated_per_physical_device(
 
 
 def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> None:
-    class _PartiallyFailingNVML(_FakeNVML):
+    class PartiallyFailingNVML(FakeNVML):
         def nvmlDeviceGetPciInfo(self, handle: str) -> SimpleNamespace:
             if handle == "handle:0":
                 raise RuntimeError("PCI information is unavailable")
             return super().nvmlDeviceGetPciInfo(handle)
 
-    fake_nvml = _PartiallyFailingNVML()
-    fake_torch = _FakeTorch()
+    fake_nvml = PartiallyFailingNVML()
+    fake_torch = FakeTorch()
     monkeypatch.setattr(gpu_diagnostics, "cuda_runtime_version", lambda: "13.3")
     monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
 
@@ -189,8 +189,8 @@ def test_nvml_inventory_failure_is_isolated_per_device_field(monkeypatch) -> Non
 
 
 def test_mig_visible_device_emits_unsupported_mapping_warning(monkeypatch) -> None:
-    fake_nvml = _FakeNVML()
-    fake_torch = _FakeTorch()
+    fake_nvml = FakeNVML()
+    fake_torch = FakeTorch()
     fake_torch.cuda.properties = [
         SimpleNamespace(
             name="MIG Device",

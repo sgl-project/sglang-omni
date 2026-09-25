@@ -159,7 +159,7 @@ def test_ming_talker_skips_text_only_requests(monkeypatch) -> None:
             delattr(parent, "talker_executor")
 
 
-def _waveform_payload(values: np.ndarray) -> dict:
+def waveform_payload(values: np.ndarray) -> dict:
     return {
         "audio_waveform": values.tobytes(),
         "audio_waveform_dtype": str(values.dtype),
@@ -181,7 +181,7 @@ def test_default_result_builder_merges_decode_and_talker_audio() -> None:
                 "finish_reason": "length",
                 "usage": {"prompt_tokens": 2, "completion_tokens": 1},
             },
-            "talker": _waveform_payload(waveform),
+            "talker": waveform_payload(waveform),
         },
     )
 
@@ -227,7 +227,7 @@ def test_default_result_builder_still_merges_decode_and_code2wav_audio() -> None
         {
             "decode": {"text": "hello"},
             "code2wav": {
-                **_waveform_payload(waveform),
+                **waveform_payload(waveform),
                 "usage": {"prompt_tokens": 5, "completion_tokens": 7},
             },
         },

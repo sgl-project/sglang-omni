@@ -27,10 +27,10 @@ CLI_FLAG = ConfigSource(SourceKind.CLI_FLAG, "--mem-fraction-static")
 def patch(pipeline_config):
     root = type(pipeline_config)
 
-    def _patch(path, value, source, **kwargs):
+    def patch(path, value, source, **kwargs):
         return ConfigPatch.create(path, value, source, root=root, **kwargs)
 
-    return _patch
+    return patch
 
 
 class TestConstruction:

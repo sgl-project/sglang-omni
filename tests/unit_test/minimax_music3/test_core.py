@@ -382,7 +382,7 @@ def test_rvq_cuda_graph_declines_a_batch_larger_than_every_bucket() -> None:
     assert runner(oversized, zeros, zeros, zeros, forced, replay) is None
 
 
-class _TinyCacheBlock(torch.nn.Module):
+class TinyCacheBlock(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.proj = torch.nn.Linear(16, 16)
@@ -391,10 +391,10 @@ class _TinyCacheBlock(torch.nn.Module):
         return x + self.proj(x) * scale
 
 
-class _TinyCacheTransformer(torch.nn.Module):
+class TinyCacheTransformer(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.layers = torch.nn.ModuleList([_TinyCacheBlock() for _ in range(4)])
+        self.layers = torch.nn.ModuleList([TinyCacheBlock() for _ in range(4)])
 
     def forward(self, x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
@@ -402,10 +402,10 @@ class _TinyCacheTransformer(torch.nn.Module):
         return x
 
 
-class _TinyCacheDiffusion(torch.nn.Module):
+class TinyCacheDiffusion(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.transformer = _TinyCacheTransformer()
+        self.transformer = TinyCacheTransformer()
 
 
 @pytest.mark.accelerator
@@ -413,7 +413,7 @@ class _TinyCacheDiffusion(torch.nn.Module):
 def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
     model = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(model)
-    model.diffusion_transformer = _TinyCacheDiffusion().cuda().eval()
+    model.diffusion_transformer = TinyCacheDiffusion().cuda().eval()
     model.enable_cache_dit(
         num_steps=4,
         fn_compute_blocks=1,
@@ -432,28 +432,28 @@ def test_cache_dit_block_adapter_runs_hidden_only_pattern() -> None:
     assert torch.isfinite(x).all()
 
 
-class _ZeroDiffusionTransformer(torch.nn.Module):
+class ZeroDiffusionTransformer(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.calls = 0
 
-    def _transformer(
-        self, x: torch.Tensor, _t: torch.Tensor, _condition: torch.Tensor
+    def _transformer(  # noqa: leading-underscore  # production name
+        self, x: torch.Tensor, _t: torch.Tensor, condition: torch.Tensor
     ) -> torch.Tensor:
         self.calls += 1
         return torch.zeros_like(x)
 
 
-def _tiny_dit() -> MiniMaxMusic3DIT:
+def tiny_dit() -> MiniMaxMusic3DIT:
     dit = MiniMaxMusic3DIT.__new__(MiniMaxMusic3DIT)
     torch.nn.Module.__init__(dit)
-    dit.diffusion_transformer = _ZeroDiffusionTransformer()
+    dit.diffusion_transformer = ZeroDiffusionTransformer()
     dit.bcg_runner = None
     return dit
 
 
 def test_dit_step_count_is_configurable_without_changing_shape() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     align = torch.zeros((1, 2048, 3))
 
     latent = dit(
@@ -468,7 +468,7 @@ def test_dit_step_count_is_configurable_without_changing_shape() -> None:
 
 
 def test_dit_aligned_mel_length_matches_full_window_contract() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     dit.sr_input = 24_000
     dit.sr_output = 44_100
     dit.hop_size_input = 960
@@ -479,7 +479,7 @@ def test_dit_aligned_mel_length_matches_full_window_contract() -> None:
 
 
 def test_dit_abort_stops_before_the_next_euler_step() -> None:
-    dit = _tiny_dit()
+    dit = tiny_dit()
     checks = iter((False, False, True))
 
     with pytest.raises(InterruptedError, match="aborted"):
@@ -512,7 +512,7 @@ def test_acoustic_scheduler_rejects_malformed_hidden_before_decode() -> None:
         scheduler.on_stream_chunk("req", item)
 
 
-class _FakeAcousticDecoder:
+class FakeAcousticDecoder:
     def __init__(self) -> None:
         self.hidden_shape: tuple[int, ...] | None = None
 
@@ -524,7 +524,7 @@ class _FakeAcousticDecoder:
 
 
 def test_acoustic_scheduler_accepts_the_relay_tensor_shape() -> None:
-    decoder = _FakeAcousticDecoder()
+    decoder = FakeAcousticDecoder()
     scheduler = MiniMaxMusic3AcousticScheduler(decoder=decoder)  # type: ignore[arg-type]
     item = StreamItem(
         chunk_id=0,

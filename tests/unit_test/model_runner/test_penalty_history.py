@@ -17,12 +17,12 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang_omni.model_runner.base import ModelRunner
 
 
-class _Batch(SimpleNamespace):
+class Batch(SimpleNamespace):
     # SimpleNamespace instances cannot be weakly referenced; the orchestrator holds a weakref to its batch.
     pass
 
 
-def _sampling(batch):
+def sampling(batch):
     n = len(batch.reqs)
     return SamplingBatchInfo(
         temperatures=torch.ones(n, 1),
@@ -48,8 +48,8 @@ def _sampling(batch):
     )
 
 
-def _batch(rows):
-    batch = _Batch(reqs=[], device="cpu")
+def make_batch(rows):
+    batch = Batch(reqs=[], device="cpu")
     batch.forward_mode = SimpleNamespace(is_extend=lambda: True)
     for history, rp, freq, presence in rows:
         batch.reqs.append(
@@ -62,11 +62,11 @@ def _batch(rows):
                 ),
             )
         )
-    batch.sampling_info = _sampling(batch)
+    batch.sampling_info = sampling(batch)
     return batch
 
 
-def _forward(batch):
+def forward(batch):
     def forward_context(batch, *, isolate_sampling):
         assert isolate_sampling
         return contextlib.nullcontext(batch.sampling_info.copy_for_forward())
@@ -77,17 +77,19 @@ def _forward(batch):
         return snapshot
 
 
-def _logits(snapshot):
+def make_logits(snapshot):
     logits = torch.tensor([[2.6, -2, 2.6, -2, 2.6, -2, 2.6, -2]]).repeat(
         len(snapshot), 1
     )
-    with torch._dynamo.config.patch(disable=True):
+    with torch._dynamo.config.patch(
+        disable=True
+    ):  # noqa: leading-underscore  # production name
         snapshot.apply_logits_bias(logits)
     return logits
 
 
 def test_mixed_restore_and_forward_snapshot_isolation():
-    batch = _batch(
+    batch = make_batch(
         [
             ([2, 2, 5, -1, 8], 1.3, 0.25, -0.5),
             ([2, 5, 5], 2.0, 0.5, 0.25),
@@ -95,48 +97,50 @@ def test_mixed_restore_and_forward_snapshot_isolation():
             ([], 1.1, -0.25, 0.5),
         ]
     )
-    snapshot = _forward(batch)
+    snapshot = forward(batch)
     expected = torch.tensor([[2.6, -2, 2.6, -2, 2.6, -2, 2.6, -2]]).repeat(4, 1)
     expected[0, 2], expected[0, 5] = 2.0, -2.275
     expected[1, 2], expected[1, 5] = 0.925, -6.5
     # Additive first: (-2 - 0.25 + 0.5) * 1.3 = -2.275.
-    torch.testing.assert_close(_logits(snapshot), expected)
-    torch.testing.assert_close(_logits(_forward(batch)), expected)  # Idempotent.
+    torch.testing.assert_close(make_logits(snapshot), expected)
+    torch.testing.assert_close(make_logits(forward(batch)), expected)  # Idempotent.
 
     batch.sampling_info.penalizer_orchestrator.cumulate_output_tokens(
         torch.tensor([3, 3, 3, 3])
     )
     changed = expected.clone()
     changed[:, 3] = torch.tensor([-2.275, -5.5, -2.0, -2.475])
-    torch.testing.assert_close(_logits(batch.sampling_info.copy_for_forward()), changed)
-    torch.testing.assert_close(_logits(snapshot), expected)
+    torch.testing.assert_close(
+        make_logits(batch.sampling_info.copy_for_forward()), changed
+    )
+    torch.testing.assert_close(make_logits(snapshot), expected)
 
 
 def test_chunked_reprefill_rebuild_then_one_committed_decode():
-    batch = _batch([([2, 2, 5], 1.3, 0.25, -0.5)])
+    batch = make_batch([([2, 2, 5], 1.3, 0.25, -0.5)])
     for _ in range(3):
         previous = batch.sampling_info
-        batch.sampling_info = _sampling(batch)
+        batch.sampling_info = sampling(batch)
         assert (
             batch.sampling_info.penalizer_orchestrator
             is not previous.penalizer_orchestrator
         )
         torch.testing.assert_close(
-            _logits(_forward(batch))[0, [2, 5]], torch.tensor([2.0, -2.275])
+            make_logits(forward(batch))[0, [2, 5]], torch.tensor([2.0, -2.275])
         )
     batch.reqs[0].output_ids.append(2)
     batch.sampling_info.penalizer_orchestrator.cumulate_output_tokens(torch.tensor([2]))
     batch.forward_mode.is_extend = lambda: False
     torch.testing.assert_close(
-        _logits(_forward(batch))[0, [2, 5]], torch.tensor([2.35 / 1.3, -2.275])
+        make_logits(forward(batch))[0, [2, 5]], torch.tensor([2.35 / 1.3, -2.275])
     )
 
 
 def test_sampling_batch_filter_merge_preserves_row_behavior():
-    batch = _batch([([2, 2], 1.3, 0.25, -0.5), ([5], 2.0, 0.5, 0.25)])
-    other = _batch([([3, 3, 3], 1.0, 0.0, 0.0), ([5, 5], 1.3, 0.25, -0.5)])
-    _forward(batch)
-    _forward(other)
+    batch = make_batch([([2, 2], 1.3, 0.25, -0.5), ([5], 2.0, 0.5, 0.25)])
+    other = make_batch([([3, 3, 3], 1.0, 0.0, 0.0), ([5, 5], 1.3, 0.25, -0.5)])
+    forward(batch)
+    forward(other)
     batch.reqs = [batch.reqs[1]]
     batch.sampling_info.filter_batch([1], torch.tensor([1]))
     batch.sampling_info.merge_batch(other.sampling_info)
@@ -146,5 +150,5 @@ def test_sampling_batch_filter_merge_preserves_row_behavior():
     expected = torch.tensor([[2.6, -2, 2.6, -2, 2.6, -2, 2.6, -2]]).repeat(3, 1)
     expected[0, 5], expected[2, 5] = -5.5, -2.6
     torch.testing.assert_close(
-        _logits(batch.sampling_info.copy_for_forward()), expected
+        make_logits(batch.sampling_info.copy_for_forward()), expected
     )

@@ -29,7 +29,7 @@ CHUNK = 4
 CPU = torch.device("cpu")
 
 
-def _tiny_dit() -> torch.nn.Module:
+def tiny_dit() -> torch.nn.Module:
     torch.manual_seed(0)
     dit = cosyvoice_dit.DiT(
         dim=32,
@@ -51,7 +51,7 @@ def _tiny_dit() -> torch.nn.Module:
     return dit.eval()
 
 
-def _padded_inputs() -> dict[str, torch.Tensor]:
+def padded_inputs() -> dict[str, torch.Tensor]:
     torch.manual_seed(1)
     rows, width = len(LENGTHS), max(LENGTHS)
     mask = torch.arange(width).unsqueeze(0) < torch.tensor(LENGTHS).unsqueeze(1)
@@ -65,7 +65,7 @@ def _padded_inputs() -> dict[str, torch.Tensor]:
     }
 
 
-def _packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     rows = pack_rows(LENGTHS, CPU)
     return {
         "x": gather_rows(padded["x"].transpose(1, 2), rows),
@@ -77,7 +77,7 @@ def _packed_inputs(padded: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     }
 
 
-def _valid(padded: torch.Tensor) -> list[torch.Tensor]:
+def valid(padded: torch.Tensor) -> list[torch.Tensor]:
     return [padded[index, :, :length] for index, length in enumerate(LENGTHS)]
 
 
@@ -141,9 +141,9 @@ def test_row_attention_matches_dense_attention_per_row(chunk_size: int | None) -
 
 @pytest.mark.parametrize("streaming", [True, False])
 def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():
@@ -170,15 +170,15 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
-    for actual, reference in zip(_valid(out), _valid(expected), strict=True):
+    for actual, reference in zip(valid(out), valid(expected), strict=True):
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
 
 
 @pytest.mark.parametrize("streaming", [True, False])
 def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     decoder = SimpleNamespace(
         estimator=dit,
         inference_cfg_rate=0.7,
@@ -214,14 +214,14 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
         )
     out = scatter_rows(out, packed["rows"], 19).transpose(1, 2)
 
-    for actual, reference in zip(_valid(out), _valid(expected), strict=True):
+    for actual, reference in zip(valid(out), valid(expected), strict=True):
         torch.testing.assert_close(actual, reference, rtol=1e-9, atol=1e-9)
 
 
 def test_a_wide_row_does_not_change_the_rows_packed_beside_it() -> None:
-    dit = _tiny_dit()
-    padded = _padded_inputs()
-    packed = _packed_inputs(padded)
+    dit = tiny_dit()
+    padded = padded_inputs()
+    packed = packed_inputs(padded)
     estimator = PackedDiT(dit, device=CPU)
 
     with torch.inference_mode():

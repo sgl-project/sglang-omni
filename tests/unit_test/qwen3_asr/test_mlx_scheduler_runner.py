@@ -12,28 +12,28 @@ from sglang_omni.model_runner.mlx_model_worker import MlxSchedulerModelRunner
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
 
-class _DecodeMode:
+class DecodeMode:
     @staticmethod
     def is_decode() -> bool:
         return True
 
 
-class _Batch:
+class Batch:
     def __init__(self, request_ids: list[str]):
-        self.forward_mode = _DecodeMode()
+        self.forward_mode = DecodeMode()
         self.reqs = [SimpleNamespace(rid=request_id) for request_id in request_ids]
 
     def copy(self):
-        return _Batch([req.rid for req in self.reqs])
+        return Batch([req.rid for req in self.reqs])
 
 
-class _Worker:
+class Worker:
     def __init__(self, next_token_ids=None):
         self.calls = []
         self.next_token_ids = next_token_ids
 
     @staticmethod
-    def _launch(lazy_tokens, decode):
+    def launch(lazy_tokens, decode):
         return SimpleNamespace(
             lazy_tokens=lazy_tokens,
             prefills=[],
@@ -44,18 +44,18 @@ class _Worker:
 
     def async_forward_batch_generation_mlx(self, batch):
         self.calls.append(("fresh", [req.rid for req in batch.reqs]))
-        return self._launch("lazy-1", "decode-1")
+        return self.launch("lazy-1", "decode-1")
 
     def async_chained_decode_mlx(self, previous):
         self.calls.append(("chained", previous))
-        return self._launch("lazy-2", "decode-2")
+        return self.launch("lazy-2", "decode-2")
 
     def finalize_mlx_result(self, launch, reqs):
         self.calls.append(("finalize", launch.decode, [req.rid for req in reqs]))
         return SimpleNamespace(next_token_ids=self.next_token_ids)
 
 
-class _Runner(MlxSchedulerModelRunner):
+class Runner(MlxSchedulerModelRunner):
     def __init__(self, worker):
         self.tp_worker = worker
         self.last_mlx_pending = None
@@ -79,7 +79,7 @@ class _Runner(MlxSchedulerModelRunner):
         return "resolved"
 
 
-def _scheduler_output(request_id: str) -> SchedulerOutput:
+def make_scheduler_output(request_id: str) -> SchedulerOutput:
     req = SimpleNamespace(finished=lambda: False, is_retracted=False)
     return SchedulerOutput(
         requests=[
@@ -88,14 +88,14 @@ def _scheduler_output(request_id: str) -> SchedulerOutput:
                 data=SimpleNamespace(req=req),
             )
         ],
-        batch_data=_Batch([request_id]),
+        batch_data=Batch([request_id]),
     )
 
 
 def test_mlx_scheduler_runner_launches_then_chains_before_resolve() -> None:
-    worker = _Worker()
-    runner = _Runner(worker)
-    scheduler_output = _scheduler_output("req")
+    worker = Worker()
+    runner = Runner(worker)
+    scheduler_output = make_scheduler_output("req")
 
     first = runner.execute_launch(scheduler_output)
     second = runner.execute_launch(scheduler_output)
@@ -112,24 +112,24 @@ def test_mlx_scheduler_runner_launches_then_chains_before_resolve() -> None:
 
 
 def test_mlx_scheduler_runner_rejects_changed_chained_batch() -> None:
-    runner = _Runner(_Worker())
-    previous = runner.execute_launch(_scheduler_output("req-a"))
+    runner = Runner(Worker())
+    previous = runner.execute_launch(make_scheduler_output("req-a"))
 
     with pytest.raises(RuntimeError, match="unchanged request batch"):
-        runner.execute_launch(_scheduler_output("req-b"))
+        runner.execute_launch(make_scheduler_output("req-b"))
 
     # A failed successor launch must not orphan the scheduler-owned lazy step.
     assert runner.last_mlx_pending is previous
     assert runner.execute_resolve(previous) == "resolved"
     assert runner.last_mlx_pending is None
 
-    runner.execute_launch(_scheduler_output("req-b"))
+    runner.execute_launch(make_scheduler_output("req-b"))
     assert runner.tp_worker.calls[-1] == ("fresh", ["req-b"])
 
 
 def test_mlx_scheduler_runner_drains_before_changed_chain() -> None:
-    runner = _Runner(_Worker())
-    runner.execute_launch(_scheduler_output("req-a"))
+    runner = Runner(Worker())
+    runner.execute_launch(make_scheduler_output("req-a"))
     sampling_params = SimpleNamespace(
         repetition_penalty=1.0,
         frequency_penalty=0.0,
@@ -150,9 +150,9 @@ def test_mlx_scheduler_runner_drains_before_changed_chain() -> None:
 
 
 def test_mlx_scheduler_runner_clears_chain_after_resolve_failure() -> None:
-    worker = _Worker()
-    runner = _Runner(worker)
-    pending = runner.execute_launch(_scheduler_output("req"))
+    worker = Worker()
+    runner = Runner(worker)
+    pending = runner.execute_launch(make_scheduler_output("req"))
 
     def fail_finalize(*args, **kwargs):
         del args, kwargs
@@ -166,7 +166,7 @@ def test_mlx_scheduler_runner_clears_chain_after_resolve_failure() -> None:
 
 
 def test_mlx_scheduler_runner_limits_lookahead_to_concurrency_one() -> None:
-    runner = _Runner(_Worker())
+    runner = Runner(Worker())
     sampling_params = SimpleNamespace(
         repetition_penalty=1.0,
         frequency_penalty=0.0,
@@ -225,9 +225,9 @@ def test_mlx_scheduler_runner_uses_future_map_bridge(monkeypatch) -> None:
         "resolve_forward_inputs",
         lambda batch, future_map: resolved.append((batch, future_map)),
     )
-    runner = _Runner(_Worker(next_token_ids="token-ids"))
+    runner = Runner(Worker(next_token_ids="token-ids"))
     runner.execution_bridge = bridge
-    scheduler_output = _scheduler_output("req")
+    scheduler_output = make_scheduler_output("req")
 
     pending = runner.execute_launch(scheduler_output)
     runner.execute_resolve(pending)
@@ -252,7 +252,9 @@ def test_native_mlx_runners_override_sglang_load_hook():
         make_fun_cosyvoice3_mlx_runner_class,
     ):
         runner_class = make_runner_class()
-        assert runner_class._load_model is not base._load_model, (
+        assert (
+            runner_class._load_model is not base._load_model
+        ), (  # noqa: leading-underscore  # production name
             f"{runner_class.__name__} no longer overrides SGLang's _load_model hook; "
             "the native MLX model would silently not load"
         )

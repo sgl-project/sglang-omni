@@ -25,7 +25,7 @@ from tests.unit_test.fixtures.qwen_fakes import (
 )
 
 
-def _patch_sampling_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+def patch_sampling_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "sglang.srt.sampling.sampling_params.SamplingParams.normalize",
         lambda self, tokenizer: None,
@@ -37,7 +37,7 @@ def _patch_sampling_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
-    _patch_sampling_validation(monkeypatch)
+    patch_sampling_validation(monkeypatch)
     merged = merge_for_thinker({"preprocessing": make_qwen_payload(make_qwen_state())})
     state = Qwen3OmniPipelineState.from_dict(merged.data)
     assert state.thinker_inputs == {"model_inputs": {}}
@@ -61,12 +61,14 @@ def test_empty_model_inputs_are_not_replaced_by_the_flat_state(monkeypatch):
     assert sglang_request.model_inputs == {}
     assert sglang_request.req.omni_model_inputs is None
     assert getattr(sglang_request.req, "multimodal_inputs", None) is None
-    assert getattr(sglang_request.req, "_omni_mm_positions", None) is None
+    assert (
+        getattr(sglang_request.req, "_omni_mm_positions", None) is None
+    )  # noqa: leading-underscore  # production name
 
 
 @pytest.mark.parametrize("entrypoint", ["generic", "sglang"])
 def test_nested_non_dict_model_inputs_fail_loudly(monkeypatch, entrypoint):
-    _patch_sampling_validation(monkeypatch)
+    patch_sampling_validation(monkeypatch)
     state = make_qwen_state(thinker_inputs={"model_inputs": ["malformed"]})
 
     with pytest.raises(
@@ -117,7 +119,7 @@ def test_pure_text_qwen_mrope_is_ordinary_sequential_positions():
         position_id_per_seconds=25,
     )
 
-    positions, _delta = compute_mrope_positions(
+    positions, delta = compute_mrope_positions(
         torch.arange(sequence_length, dtype=torch.long),
         {},
         config,

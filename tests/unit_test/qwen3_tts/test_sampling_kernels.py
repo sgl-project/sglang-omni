@@ -192,7 +192,7 @@ def test_seeded_small_k_sampler_falls_back_for_cpu() -> None:
     )
 
 
-def _build_sampling_talker(
+def build_sampling_talker(
     temperatures: torch.Tensor,
     top_ks: torch.Tensor,
     top_ps: torch.Tensor,
@@ -216,7 +216,7 @@ def _build_sampling_talker(
     return talker
 
 
-def _production_seeded_tokens(
+def production_seeded_tokens(
     talker: Qwen3TTSTalker,
     logits: torch.Tensor,
     *,
@@ -229,7 +229,7 @@ def _production_seeded_tokens(
     )
 
 
-def _reference_seeded_tokens(
+def reference_seeded_tokens(
     talker: Qwen3TTSTalker,
     logits: torch.Tensor,
     *,
@@ -241,7 +241,7 @@ def _reference_seeded_tokens(
         "sample_from_logits_with_seed_top_k_top_p",
         return_value=None,
     ):
-        return _production_seeded_tokens(
+        return production_seeded_tokens(
             talker,
             logits,
             layer_idx=layer_idx,
@@ -249,7 +249,7 @@ def _reference_seeded_tokens(
         )
 
 
-def _fused_seeded_tokens(
+def fused_seeded_tokens(
     talker: Qwen3TTSTalker,
     logits: torch.Tensor,
     *,
@@ -318,7 +318,7 @@ def test_fused_raw_logit_sampler_matches_reference(
     top_ps = torch.full((batch_size,), top_p, device="cuda", dtype=torch.float32)
     seeds = torch.arange(500, 500 + batch_size, device="cuda", dtype=torch.long)
     positions = torch.arange(17, 17 + batch_size, device="cuda", dtype=torch.long)
-    talker = _build_sampling_talker(
+    talker = build_sampling_talker(
         temperatures,
         top_ks,
         top_ps,
@@ -326,13 +326,13 @@ def test_fused_raw_logit_sampler_matches_reference(
         max_top_k=max_top_k,
     )
 
-    expected = _reference_seeded_tokens(
+    expected = reference_seeded_tokens(
         talker,
         logits,
         layer_idx=3,
         semantic_positions=positions,
     )
-    actual = _fused_seeded_tokens(
+    actual = fused_seeded_tokens(
         talker,
         logits,
         layer_idx=3,
@@ -354,20 +354,20 @@ def test_fused_raw_logit_sampler_matches_reference_for_equal_logits(
 
     for seed_value in range(32):
         seeds = torch.tensor([seed_value], device="cuda", dtype=torch.long)
-        talker = _build_sampling_talker(
+        talker = build_sampling_talker(
             temperatures,
             top_ks,
             top_ps,
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _reference_seeded_tokens(
+        expected = reference_seeded_tokens(
             talker,
             logits,
             layer_idx=2,
             semantic_positions=positions,
         )
-        actual = _fused_seeded_tokens(
+        actual = fused_seeded_tokens(
             talker,
             logits,
             layer_idx=2,
@@ -406,20 +406,20 @@ def test_fused_raw_logit_sampler_matches_reference_for_threshold_ties(
             device="cuda",
             dtype=torch.long,
         )
-        talker = _build_sampling_talker(
+        talker = build_sampling_talker(
             temperatures,
             top_ks,
             top_ps,
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _reference_seeded_tokens(
+        expected = reference_seeded_tokens(
             talker,
             logits,
             layer_idx=5,
             semantic_positions=positions,
         )
-        actual = _fused_seeded_tokens(
+        actual = fused_seeded_tokens(
             talker,
             logits,
             layer_idx=5,
@@ -462,20 +462,20 @@ def test_fused_raw_logit_sampler_matches_reference_for_signed_zero_order(
             device="cuda",
             dtype=torch.long,
         )
-        talker = _build_sampling_talker(
+        talker = build_sampling_talker(
             temperatures,
             top_ks,
             top_ps,
             seeds,
             max_top_k=max_top_k,
         )
-        expected = _reference_seeded_tokens(
+        expected = reference_seeded_tokens(
             talker,
             logits,
             layer_idx=6,
             semantic_positions=positions,
         )
-        actual = _fused_seeded_tokens(
+        actual = fused_seeded_tokens(
             talker,
             logits,
             layer_idx=6,
@@ -501,7 +501,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     top_ps = torch.full((batch_size,), 0.8, device="cuda", dtype=torch.float32)
     seeds = torch.arange(700, 700 + batch_size, device="cuda", dtype=torch.long)
     positions = torch.arange(30, 30 + batch_size, device="cuda", dtype=torch.long)
-    talker = _build_sampling_talker(
+    talker = build_sampling_talker(
         temperatures,
         top_ks,
         top_ps,
@@ -509,13 +509,13 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
         max_top_k=32,
     )
 
-    expected = _reference_seeded_tokens(
+    expected = reference_seeded_tokens(
         talker,
         logits,
         layer_idx=4,
         semantic_positions=positions,
     )
-    _fused_seeded_tokens(
+    fused_seeded_tokens(
         talker,
         logits,
         layer_idx=4,
@@ -530,7 +530,7 @@ def test_fused_raw_logit_sampler_captures_without_reference_top_k(
     graph = torch.cuda.CUDAGraph()
     torch.cuda.synchronize()
     with torch.cuda.graph(graph):
-        captured = _production_seeded_tokens(
+        captured = production_seeded_tokens(
             talker,
             logits,
             layer_idx=4,
@@ -560,14 +560,14 @@ def test_fused_raw_logit_sampler_capture_falls_back_without_triton_gather(
     top_ps = torch.full((batch_size,), 0.8, device="cuda", dtype=torch.float32)
     seeds = torch.arange(800, 800 + batch_size, device="cuda", dtype=torch.long)
     positions = torch.arange(40, 40 + batch_size, device="cuda", dtype=torch.long)
-    talker = _build_sampling_talker(
+    talker = build_sampling_talker(
         temperatures,
         top_ks,
         top_ps,
         seeds,
         max_top_k=32,
     )
-    expected = _reference_seeded_tokens(
+    expected = reference_seeded_tokens(
         talker,
         logits,
         layer_idx=5,
@@ -586,7 +586,7 @@ def test_fused_raw_logit_sampler_capture_falls_back_without_triton_gather(
     graph = torch.cuda.CUDAGraph()
     torch.cuda.synchronize()
     with torch.cuda.graph(graph):
-        captured = _production_seeded_tokens(
+        captured = production_seeded_tokens(
             talker,
             logits,
             layer_idx=5,

@@ -11,7 +11,7 @@ from sglang_omni.models.zonos2.components import text_frontend
 from sglang_omni.models.zonos2.components.text_frontend import normalize_text
 
 
-class _CountingNormalizer:
+class CountingNormalizer:
     def __init__(self) -> None:
         self.calls = 0
 
@@ -20,15 +20,15 @@ class _CountingNormalizer:
         return f"NORM[{text}]"
 
 
-def _install(monkeypatch):
-    text_frontend._NORMALIZE_CACHE.clear()
-    norm = _CountingNormalizer()
+def install(monkeypatch):
+    text_frontend._NORMALIZE_CACHE.clear()  # noqa: leading-underscore  # production name
+    norm = CountingNormalizer()
     monkeypatch.setattr(text_frontend, "get_normalizer", lambda: norm)
     return norm
 
 
 def test_repeated_text_hits_cache(monkeypatch) -> None:
-    norm = _install(monkeypatch)
+    norm = install(monkeypatch)
     out1 = normalize_text("hello world", "en_us")
     out2 = normalize_text("hello world", "en_us")
     assert out1 == out2 == "NORM[hello world]"
@@ -36,14 +36,14 @@ def test_repeated_text_hits_cache(monkeypatch) -> None:
 
 
 def test_distinct_text_misses(monkeypatch) -> None:
-    norm = _install(monkeypatch)
+    norm = install(monkeypatch)
     normalize_text("one", "en_us")
     normalize_text("two", "en_us")
     assert norm.calls == 2
 
 
 def test_unsupported_language_bypasses_normalizer(monkeypatch) -> None:
-    norm = _install(monkeypatch)
+    norm = install(monkeypatch)
     # Unknown server language / None returns text unchanged, normalizer untouched.
     assert normalize_text("hello", "xx") == "hello"
     assert normalize_text("hello", None) == "hello"

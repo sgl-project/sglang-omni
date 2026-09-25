@@ -61,7 +61,7 @@ SIMILARITY_TIMEOUT = 600
 UTMOS_TIMEOUT = 600
 
 
-def _thinker_prefill_graph_info(worker_port: int) -> dict:
+def thinker_prefill_graph_info(worker_port: int) -> dict:
     with requests.Session() as session:
         session.trust_env = False
         response = session.post(
@@ -86,7 +86,7 @@ SEEDTTS_50_DATASET_LABEL = format_benchmark_dataset_label(
 )
 
 
-def _run_benchmark(
+def run_benchmark(
     omni_ci_model: OmniCiModelPreset,
     port: int,
     meta: str,
@@ -112,7 +112,7 @@ def _run_benchmark(
     return speed_results
 
 
-def _run_wer_transcribe(
+def run_wer_transcribe(
     omni_ci_model: OmniCiModelPreset,
     meta: str,
     output_dir: str,
@@ -163,7 +163,7 @@ def _run_wer_transcribe(
     return wer_results
 
 
-def _run_similarity(
+def run_similarity(
     omni_ci_model: OmniCiModelPreset,
     meta: str,
     output_dir: str,
@@ -224,7 +224,7 @@ def _run_similarity(
     return similarity_results
 
 
-def _assert_similarity_results(
+def assert_similarity_results(
     results: dict,
     min_mean: float,
     *,
@@ -246,7 +246,7 @@ def _assert_similarity_results(
         checks.assert_all()
 
 
-def _run_utmos(
+def run_utmos(
     omni_ci_model: OmniCiModelPreset, output_dir: str, *, device: str = "cuda:0"
 ) -> dict:
     cmd = [
@@ -286,7 +286,7 @@ def _run_utmos(
         return json.load(f)
 
 
-def _assert_utmos_results(
+def assert_utmos_results(
     results: dict,
     threshold: float,
     *,
@@ -329,7 +329,7 @@ def similarity_checkpoint() -> str | None:
 
 
 @dataclass
-class _SpeedArtifacts:
+class SpeedArtifacts:
     """Outputs from the voice-clone speed benchmark.
 
     Speed-threshold assertions are deliberately NOT made here so that a
@@ -349,7 +349,7 @@ def speed_artifacts(
     omni_ci_server: ManagedRouterHandle,
     dataset_repo: str,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _SpeedArtifacts:
+) -> SpeedArtifacts:
     """Run the speed benchmark once and expose its artifacts."""
     output_dir = str(tmp_path_factory.mktemp("vc_nonstream"))
     try:
@@ -362,7 +362,7 @@ def speed_artifacts(
         models = router_get_json(omni_ci_server.port, "/v1/models")
         assert {card["id"] for card in models["data"]} == {omni_ci_model.name}
 
-        results = _run_benchmark(
+        results = run_benchmark(
             omni_ci_model,
             omni_ci_server.port,
             dataset_repo,
@@ -371,7 +371,7 @@ def speed_artifacts(
     except Exception:
         print_router_diagnostics(omni_ci_server)
         raise
-    return _SpeedArtifacts(
+    return SpeedArtifacts(
         output_dir=output_dir,
         summary=results["summary"],
         per_request=results["per_request"],
@@ -382,7 +382,7 @@ def speed_artifacts(
 @pytest.fixture(scope="module")
 def wer_audio_dir(
     omni_ci_server: ManagedRouterHandle,
-    speed_artifacts: _SpeedArtifacts,
+    speed_artifacts: SpeedArtifacts,
 ) -> str:
     """Reuse speed-benchmark audio for WER after freeing the TTS server GPU."""
     omni_ci_server.stop()
@@ -396,7 +396,7 @@ def wer_audio_dir(
 def test_voice_cloning_non_streaming(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
-    speed_artifacts: _SpeedArtifacts,
+    speed_artifacts: SpeedArtifacts,
 ) -> None:
     """Print speed summary and assert metrics meet thresholds."""
     try:
@@ -447,7 +447,7 @@ def test_speech_prefill_graph_replays_in_existing_tts_stage(
     if omni_ci_model.name != "qwen3-omni":
         pytest.skip("Speech prefill CUDA graph replay is Qwen3-Omni-specific")
     for worker_port in omni_ci_server.worker_ports:
-        info = _thinker_prefill_graph_info(worker_port)
+        info = thinker_prefill_graph_info(worker_port)
         assert info["backend"] == "breakable"
         assert info["runner"] == "PrefillCudaGraphRunner"
         assert info["backend_runner"] == "BreakableCudaGraphBackend"
@@ -462,7 +462,7 @@ def test_voice_cloning_wer(
     dataset_repo: str,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
-    results = _run_wer_transcribe(
+    results = run_wer_transcribe(
         omni_ci_model,
         dataset_repo,
         wer_audio_dir,
@@ -496,7 +496,7 @@ def test_voice_cloning_similarity(
     similarity_checkpoint: str | None,
 ) -> None:
     """Score saved audio; Qwen3-Omni's similarity gate remains disabled by #483."""
-    results = _run_similarity(
+    results = run_similarity(
         omni_ci_model,
         dataset_repo,
         wer_audio_dir,
@@ -518,7 +518,7 @@ def test_voice_cloning_similarity(
         f"speaker similarity: {summary.get('skipped')} skipped samples != 0",
     )
     if omni_ci_model.name == "minicpmo" and thresholds.calibrated:
-        _assert_similarity_results(results, thresholds.similarity, collector=checks)
+        assert_similarity_results(results, thresholds.similarity, collector=checks)
     thresholds.require_calibrated(omni_ci_model.name, "tts", checks)
     checks.assert_all()
 
@@ -527,10 +527,10 @@ def test_voice_cloning_similarity(
 def test_voice_cloning_utmos(
     omni_ci_model: OmniCiModelPreset, wer_audio_dir: str
 ) -> None:
-    results = _run_utmos(omni_ci_model, wer_audio_dir)
+    results = run_utmos(omni_ci_model, wer_audio_dir)
     thresholds = omni_ci_model.thresholds["tts"]
     checks = MetricCheckCollector(f"{omni_ci_model.name} voice-cloning UTMOS")
-    _assert_utmos_results(
+    assert_utmos_results(
         results,
         thresholds.utmos if thresholds.calibrated else float("-inf"),
         collector=checks,

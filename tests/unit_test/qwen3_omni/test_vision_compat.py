@@ -9,7 +9,7 @@ from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_mod
 from sglang_omni.models.qwen3_omni.components import vision_compat
 
 
-def _make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
+def make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
     encoder = vision_compat.Qwen3OmniMoeVisionEncoderCompat.__new__(
         vision_compat.Qwen3OmniMoeVisionEncoderCompat
     )
@@ -30,7 +30,7 @@ def _make_encoder() -> vision_compat.Qwen3OmniMoeVisionEncoderCompat:
     return encoder
 
 
-def _transformers_5_6_pos_embed_interpolate(
+def transformers_5_6_pos_embed_interpolate(
     encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
     grid_thw: torch.Tensor,
 ) -> torch.Tensor:
@@ -117,10 +117,10 @@ def _transformers_5_6_pos_embed_interpolate(
     ids=["image", "video", "mixed-grid", "upsampling"],
 )
 def test_interpolation_is_bit_exact_to_transformers_5_6(grid_thw) -> None:
-    encoder = _make_encoder()
+    encoder = make_encoder()
     grid = torch.tensor(grid_thw, dtype=torch.long)
 
-    expected = _transformers_5_6_pos_embed_interpolate(encoder, grid)
+    expected = transformers_5_6_pos_embed_interpolate(encoder, grid)
     actual = encoder.legacy_pos_embed_interpolate(grid)
 
     assert torch.equal(actual, expected)

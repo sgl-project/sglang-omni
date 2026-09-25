@@ -30,14 +30,14 @@ from sglang_omni.scheduling.pd_utils import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from tests.unit_test.pipeline.helpers import make_stage
 from tests.unit_test.pipeline.test_pd_utils import (
-    _allocation,
-    _continuation,
-    _KVAllocator,
-    _message,
-    _prefill_req,
-    _receiver,
-    _ReqPool,
-    _state_builder,
+    KVAllocator,
+    ReqPool,
+    make_allocation,
+    make_continuation,
+    make_message,
+    make_receiver,
+    prefill_req,
+    state_builder,
 )
 
 
@@ -121,14 +121,14 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     assert scheduler.is_fully_idle() is True
 
 
-def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
+def prefill_scheduler_for_handoff(*, request_finished_callback=None):
     scheduler = object.__new__(OmniPrefillScheduler)
-    scheduler.pd_state_builder = _state_builder
+    scheduler.pd_state_builder = state_builder
     scheduler.pd_pool_id = "prefill:kv"
     scheduler.pd_partner_stage = "decode"
     scheduler.pd_due_releases = queue.SimpleQueue()
     scheduler.pd_outstanding_releases = set()
-    scheduler.req_to_token_pool = _ReqPool()
+    scheduler.req_to_token_pool = ReqPool()
     scheduler.outbox = queue.Queue()
     scheduler.is_entry_rank = True
     scheduler.request_finished_callback = request_finished_callback
@@ -144,8 +144,8 @@ def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
     return scheduler
 
 
-def _prefill_handoff_batch(scheduler):
-    req = _prefill_req()
+def prefill_handoff_batch(scheduler):
+    req = prefill_req()
     scheduler.req_to_token_pool.alloc([req])
     scheduler.req_to_token_pool.req_to_token[req.kv.req_pool_idx, :3] = torch.tensor(
         [1, 2, 3]
@@ -167,10 +167,10 @@ def test_prefill_handoff_runs_terminal_cleanup_and_closes_bookkeeping(
     )
     monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, **kwargs: True)
     finished_callback = Mock()
-    scheduler = _prefill_scheduler_for_handoff(
+    scheduler = prefill_scheduler_for_handoff(
         request_finished_callback=finished_callback
     )
-    req, batch = _prefill_handoff_batch(scheduler)
+    req, batch = prefill_handoff_batch(scheduler)
 
     scheduler.handoff_prefilled_requests(batch, {id(req)})
 
@@ -202,10 +202,10 @@ def test_prefill_handoff_cleanup_failure_emits_error_and_releases_kv(
     monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, **kwargs: True)
     cleanup_error = RuntimeError("terminal cleanup failed")
     finished_callback = Mock(side_effect=cleanup_error)
-    scheduler = _prefill_scheduler_for_handoff(
+    scheduler = prefill_scheduler_for_handoff(
         request_finished_callback=finished_callback
     )
-    req, batch = _prefill_handoff_batch(scheduler)
+    req, batch = prefill_handoff_batch(scheduler)
 
     scheduler.handoff_prefilled_requests(batch, {id(req)})
 
@@ -228,7 +228,7 @@ def test_prefill_handoff_cleanup_failure_emits_error_and_releases_kv(
 
 
 def test_a_failing_release_does_not_strand_the_rest_of_the_queue(monkeypatch):
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
     released = []
     monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, **kwargs: True)
 
@@ -249,8 +249,8 @@ def test_a_failing_release_does_not_strand_the_rest_of_the_queue(monkeypatch):
 
 @pytest.mark.parametrize("finish", ["commit", "abort"])
 def test_receiver_close_retains_copy_pages_until_comm_finishes(finish):
-    receiver = _receiver()
-    message = _message()
+    receiver = make_receiver()
+    message = make_message()
     destination = receiver.reserve(message)
     receiver.close()
     assert receiver.allocator.freed == []
@@ -266,14 +266,14 @@ def test_receiver_close_retains_copy_pages_until_comm_finishes(finish):
 
 
 def test_receiver_rejects_mismatched_pages_and_bounds_finished_ids(monkeypatch):
-    receiver = _receiver()
-    message = _message()
+    receiver = make_receiver()
+    message = make_message()
     with pytest.raises(ValueError, match="per prompt token"):
         receiver.reserve(replace(message, source_page_indices=(1,)))
     assert receiver.allocator.next_slot == 7
     monkeypatch.setattr(pd_utils, "_TRANSFER_TOMBSTONE_LIMIT", 2)
     for index in range(3):
-        continuation = replace(_continuation(), transfer_id=f"transfer-{index}")
+        continuation = replace(make_continuation(), transfer_id=f"transfer-{index}")
         message = replace(
             message,
             transfer_id=continuation.transfer_id,
@@ -287,7 +287,7 @@ def test_receiver_rejects_mismatched_pages_and_bounds_finished_ids(monkeypatch):
     assert receiver.allocator.freed == []
 
 
-def _decode_scheduler():
+def decode_scheduler():
     scheduler = object.__new__(OmniDecodeScheduler)
     scheduler.pd_admissions = queue.SimpleQueue()
     scheduler.pd_due_releases = queue.SimpleQueue()
@@ -296,8 +296,8 @@ def _decode_scheduler():
     scheduler.pd_lifecycle_lock = threading.RLock()
     scheduler.pd_state_restorer = lambda *args: None
     scheduler.aborted_request_ids = set()
-    scheduler.req_to_token_pool = _ReqPool()
-    scheduler.token_to_kv_pool_allocator = _KVAllocator()
+    scheduler.req_to_token_pool = ReqPool()
+    scheduler.token_to_kv_pool_allocator = KVAllocator()
     scheduler.waiting_queue = []
     scheduler.outbox = queue.Queue()
     scheduler.pd_receiver = DecodeKVReceiver(
@@ -311,7 +311,7 @@ def _decode_scheduler():
 
 
 def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
     scheduler.req_to_token_pool.capacity = 0
     released = []
     scheduler.release_request_kv_cache = lambda req: released.append(
@@ -340,7 +340,7 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
     )
 
     assert scheduler.is_fully_idle() is True
-    message = _message()
+    message = make_message()
     destination = scheduler.pd_receiver.reserve(message)
     assert scheduler.is_fully_idle() is False
     assert scheduler.is_fully_idle(for_health_check=True) is True
@@ -369,11 +369,11 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
 
 
 def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
     req = SimpleNamespace(rid="request-1")
     scheduler.waiting_queue = [req]
     scheduler.release_request_kv_cache = Mock()
-    message = _message()
+    message = make_message()
 
     def abort(self, request_id, **kwargs):
         self.waiting_queue = [
@@ -397,7 +397,7 @@ def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
 
 
 def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
 
     def run_update(self, payload, update_fn, result_data, **kwargs):
         success, message = update_fn(payload)
@@ -405,7 +405,7 @@ def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
 
     monkeypatch.setattr(OmniScheduler, "run_weight_update_with_lifecycle", run_update)
     update = Mock(return_value=(True, "updated"))
-    held_message = _message()
+    held_message = make_message()
     held_destination = scheduler.pd_receiver.reserve(held_message)
     result = scheduler.run_weight_update_with_lifecycle({}, update, {})
     assert result == {"success": False, "message": "PD-owned KV is still in flight"}
@@ -414,7 +414,7 @@ def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
     scheduler.pd_receiver.abort(
         held_message, held_destination, RuntimeError("test cleanup")
     )
-    message = _message(transfer_id="transfer-2")
+    message = make_message(transfer_id="transfer-2")
 
     def gated_update(payload):
         with pytest.raises(RuntimeError, match="not accepting reservations"):
@@ -428,9 +428,9 @@ def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
 
 
 def test_deferred_admission_abort_frees_committed_pages_once():
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
     scheduler.req_to_token_pool.capacity = 0
-    scheduler.pd_admissions.put(DecodeAdmission(_continuation(), _allocation()))
+    scheduler.pd_admissions.put(DecodeAdmission(make_continuation(), make_allocation()))
     scheduler.drain_decode_admissions()
     assert scheduler.pd_deferred_admission is not None
     assert scheduler.token_to_kv_pool_allocator.freed == []
@@ -442,18 +442,18 @@ def test_deferred_admission_abort_frees_committed_pages_once():
 
 
 def test_stop_string_requires_and_uses_model_tokenizer():
-    req = _prefill_req()
+    req = prefill_req()
     req.sampling_params.stop_strs = ["END"]
     req.sampling_params.stop_str_max_len = 3
     continuation = replace(
-        _continuation(),
+        make_continuation(),
         sampling_params=pd_utils.sampling_params_to_dict(req.sampling_params),
     )
-    pool = _ReqPool()
+    pool = ReqPool()
     with pytest.raises(ValueError, match="tokenizer"):
         req_from_continuation(
             continuation,
-            _allocation(),
+            make_allocation(),
             req_to_token_pool=pool,
             state_restorer=lambda *args: None,
         )
@@ -463,7 +463,7 @@ def test_stop_string_requires_and_uses_model_tokenizer():
     )
     restored = req_from_continuation(
         continuation,
-        _allocation(),
+        make_allocation(),
         req_to_token_pool=pool,
         state_restorer=lambda req, *_: setattr(req, "tokenizer", tokenizer),
     )
@@ -471,7 +471,7 @@ def test_stop_string_requires_and_uses_model_tokenizer():
     assert restored.finished_reason.to_json()["type"] == "stop"
 
 
-def _transfer(request_id="request-1", **updates):
+def make_transfer(request_id="request-1", **updates):
     return KVPageTransfer(
         **{
             "request_id": request_id,
@@ -487,7 +487,7 @@ def _transfer(request_id="request-1", **updates):
 
 
 def test_discarded_stage_transfer_releases_source_lease():
-    transfer = _transfer()
+    transfer = make_transfer()
 
     make_stage().discard_kv_transfer(transfer)
 
@@ -512,7 +512,7 @@ def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
         stage.comm.send_kv_pages = send_kv_pages
         from sglang_omni.scheduling.message import OutgoingMessage
 
-        transfers = [_transfer("slow"), _transfer("fast")]
+        transfers = [make_transfer("slow"), make_transfer("fast")]
         for transfer in transfers:
             stage.active_requests.add(transfer.request_id)
             stage.scheduler.outbox.put(
@@ -526,7 +526,7 @@ def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
             await asyncio.gather(*tuple(stage.receive_tasks))
             for transfer in transfers:
                 transfer.lease.release.assert_called_once()
-            cancelled = _transfer("cancelled")
+            cancelled = make_transfer("cancelled")
             stage.launch_kv_transfer(cancelled)
             task = next(iter(stage.receive_tasks))
             task.cancel()
@@ -543,7 +543,7 @@ def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
 def test_missing_binding_releases_before_comm_takes_ownership():
     async def run():
         stage = make_stage(replica_topology={"decode": ["decode@r0", "decode@r1"]})
-        transfer = _transfer()
+        transfer = make_transfer()
         stage.active_requests.add(transfer.request_id)
         await stage.send_kv_transfer(transfer)
         transfer.lease.release.assert_called_once()
@@ -556,7 +556,7 @@ def test_missing_binding_releases_before_comm_takes_ownership():
 def test_memory_pressure_fails_one_request_without_upstream_rebootstrap():
     from sglang.srt.disaggregation.utils import DisaggregationMode
 
-    scheduler = _decode_scheduler()
+    scheduler = decode_scheduler()
     scheduler.disaggregation_mode = DisaggregationMode.DECODE
     scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.5)
     scheduler.tree_cache = SimpleNamespace(req_to_token_pool=SimpleNamespace())
@@ -589,7 +589,7 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
     import sglang_omni.platforms as platforms
     from sglang_omni.comm.data_ref import TransportKind
     from sglang_omni.scheduling.message import OutgoingMessage
-    from tests.unit_test.pipeline.test_kv_transfer import _pool, _start_pair
+    from tests.unit_test.pipeline.test_kv_transfer import make_pool, start_pair
 
     monkeypatch.setattr(
         platforms.current_platform,
@@ -598,8 +598,8 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
     )
 
     async def run():
-        _, source, destination = await _start_pair()
-        scheduler = _decode_scheduler()
+        _, source, destination = await start_pair()
+        scheduler = decode_scheduler()
         receiver = DecodeKVReceiver(
             pool_id="decode:kv",
             allocator=scheduler.token_to_kv_pool_allocator,
@@ -607,8 +607,8 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
             resume_schema="test-v1",
         )
         receiver.allocator.next_slot = 0
-        source.register_kv_pool(_pool("prefill:kv"))
-        destination.register_kv_pool(_pool("decode:kv"))
+        source.register_kv_pool(make_pool("prefill:kv"))
+        destination.register_kv_pool(make_pool("decode:kv"))
         destination.register_kv_receiver("decode:kv", receiver)
         topology = {"post": ["post@r0", "post@r1"]}
         prefill = make_stage(name="source", replica_topology=topology)
@@ -631,8 +631,8 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
         )
         drain = None
         try:
-            continuation = _continuation()
-            transfer = _transfer(
+            continuation = make_continuation()
+            transfer = make_transfer(
                 transfer_id=continuation.transfer_id,
                 to_stage="destination",
                 metadata={"decode_continuation": continuation.encode()},
@@ -668,7 +668,7 @@ def test_replicated_decode_target_uses_bound_instance_and_pool():
     async def run():
         stage = make_stage(replica_topology={"decode": ["decode@r0", "decode@r1"]})
         stage.record_replica_bindings("request-1", {"decode": 1})
-        transfer = _transfer()
+        transfer = make_transfer()
 
         async def send(**kwargs):
             kwargs["lease"].release()

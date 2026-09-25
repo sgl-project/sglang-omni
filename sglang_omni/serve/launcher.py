@@ -47,12 +47,14 @@ from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recor
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.utils.gpu_compat import apply_gpu_compat_env_defaults
 from sglang_omni.utils.gpu_memory import (
     GpuDeviceInfo,
     format_bytes_gib,
     get_gpu_device_info,
 )
+from sglang_omni.utils.imports import import_string
 
 logger = logging.getLogger(__name__)
 
@@ -447,6 +449,13 @@ async def run_server(
     try:
         cl_kwargs = client_kwargs or {}
         client = Client(coordinator, **cl_kwargs)
+        deployment_factory = type(pipeline_config).realtime_deployment_factory
+        if enable_realtime and deployment_factory is not None:
+            realtime_deployment: RealtimeDeployment | None = import_string(
+                deployment_factory
+            )(client)
+        else:
+            realtime_deployment = None
         app = create_app(
             client,
             model_name=model_name or pipeline_config.name,
@@ -470,6 +479,7 @@ async def run_server(
             additional_speech_languages=pipeline_config.additional_speech_languages,
             max_speech_input_chars=pipeline_config.max_speech_input_chars,
             enable_realtime=enable_realtime,
+            realtime_deployment=realtime_deployment,
             supports_realtime_audio_output=(
                 type(pipeline_config).code2wav_stage() is not None
             ),

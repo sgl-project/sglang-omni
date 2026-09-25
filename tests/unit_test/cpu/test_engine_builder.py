@@ -14,7 +14,7 @@ from typing import Any
 from sglang_omni import platforms
 
 
-def _build_on(monkeypatch, device: str) -> dict[str, Any]:
+def build_on(monkeypatch, device: str) -> dict[str, Any]:
     """Run the shared builder against fakes and return the server-args kwargs."""
     from sglang_omni.scheduling import bootstrap, sglang_backend
     from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
@@ -126,7 +126,7 @@ def test_cpu_placement_forces_graph_capture_off(monkeypatch):
     """generation_defaults() asks for disable_cuda_graph=False; on CPU the
     builder's decision has to win over that stage default, not merely fill a gap.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
     assert build_kwargs["disable_cuda_graph"] is True
     assert build_kwargs["device"] == "cpu"
@@ -136,7 +136,7 @@ def test_cpu_placement_skips_the_capture_phases(monkeypatch):
     """Skipping capture entirely, rather than running it against a disabled
     config, is what keeps the failure at configuration time.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
     assert build_kwargs["_defer_capture"] is False
     assert "init_graphs" not in build_kwargs["_events"]
@@ -213,7 +213,7 @@ def test_a_cpu_stage_drops_its_placement_index(monkeypatch):
     """gpu_id=2 is handed in, but a CPU device carries no index, so the builder
     must fall back to 0 rather than build 'cpu:2'.
     """
-    build_kwargs = _build_on(monkeypatch, device="cpu")
+    build_kwargs = build_on(monkeypatch, device="cpu")
 
     assert build_kwargs["device"] == "cpu"
     assert build_kwargs["_gpu_id"] == 0
