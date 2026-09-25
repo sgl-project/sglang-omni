@@ -370,3 +370,22 @@ def load_socialomni_level2_samples(
     if mini:
         samples = _mini(samples, ("YES", "NO"), lambda sample: sample.gold_when)
     return _limit(samples, max_samples)
+
+
+from .socialomni_media import (  # noqa: E402
+    build_ffmpeg_prefix_command,
+    create_video_prefix,
+    resolve_ffmpeg_executable,
+)
+
+__all__ = [
+    "SocialOmniLevel1Sample",
+    "SocialOmniLevel2Sample",
+    "build_ffmpeg_prefix_command",
+    "create_video_prefix",
+    "inspect_socialomni_dataset",
+    "load_socialomni_level1_samples",
+    "load_socialomni_level2_samples",
+    "parse_socialomni_timestamp",
+    "resolve_ffmpeg_executable",
+]
