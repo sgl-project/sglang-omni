@@ -373,11 +373,12 @@ def load_socialomni_level2_samples(
     return _limit(samples, max_samples)
 
 
-from .socialomni_media import (  # noqa: E402
-    build_ffmpeg_prefix_command,
-    create_video_prefix,
-    resolve_ffmpeg_executable,
-)
+from . import socialomni_media  # noqa: E402
+
+socialomni_media.shutil = shutil
+build_ffmpeg_prefix_command = socialomni_media.build_ffmpeg_prefix_command
+create_video_prefix = socialomni_media.create_video_prefix
+resolve_ffmpeg_executable = socialomni_media.resolve_ffmpeg_executable
 
 __all__ = [
     "SocialOmniLevel1Sample",
