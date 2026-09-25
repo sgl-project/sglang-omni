@@ -55,7 +55,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     captured: dict[str, dict[str, object]] = {}
 
     class Backbone(torch.nn.Module):
-        def __init__(self, *_args, **_kwargs) -> None:
+        def __init__(self, *args, **_kwargs) -> None:
             super().__init__()
             self.word_embeddings = torch.nn.Embedding(
                 16,
@@ -399,7 +399,7 @@ def test_ming_decoder_scopes_mlp_collective_flags(
     communicator = FakeCommunicator()
     layer = SimpleNamespace(
         layer_communicator=communicator,
-        attention=lambda _positions, hidden_states, _forward_batch: hidden_states,
+        attention=lambda positions, hidden_states, forward_batch: hidden_states,
         mlp=mlp,
     )
     hidden_states = torch.ones((1, 2))
@@ -420,6 +420,8 @@ def test_ming_decoder_scopes_mlp_collective_flags(
 
     assert seen_flags == [(fuse_mlp_allreduce, mlp_reduce_scatter)]
     assert communicator.postprocess_calls == postprocess_calls
-    assert getattr(output, "_sglang_needs_allreduce_fusion", False) is (
+    assert getattr(
+        output, "_sglang_needs_allreduce_fusion", False
+    ) is (  # noqa: leading-underscore  # production name
         fuse_mlp_allreduce
     )

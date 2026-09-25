@@ -212,9 +212,12 @@ checks every exact pin in `pyproject.toml` against what is installed.
 
 The image also installs Qwen-TTS without its conflicting dependencies, system
 SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
-project's dependency overrides when resolving these packages. The CI import
-gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
-and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+project's dependency overrides when resolving these packages. CosyVoice itself
+has no package release, so the CI venv setup clones it at the commit the
+Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
+the venv through a `.pth` file. The CI import gate checks Qwen-TTS after the
+compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
+SoX executable. It imports llama.cpp before Torch to catch system NCCL
 conflicts; the image prioritizes Torch's NCCL library. A package listing alone
 does not prove a usable runtime.
 
@@ -293,9 +296,13 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-GPU CI needs the `run-ci` label plus one selector per family (`run-higgs`,
-`run-moss`, `run-qwen3-tts`, `run-cosyvoice3`; `run-fun-asr`, `run-qwen3-asr`,
-`run-whisper-asr`), applied with `/tag-and-rerun-ci <selectors>`. The
+GPU CI needs the `run-ci` label. Model selectors choose presets within each
+family: TTS (`run-higgs`, `run-moss`, `run-qwen3-tts`, `run-cosyvoice3`,
+`run-qwen3-tts-custom-voice`), ASR (`run-fun-asr`, `run-qwen3-asr`,
+`run-whisper-asr`), and Omni (`run-qwen3-omni`, `run-minicpmo`). Apply them
+with `/tag-and-rerun-ci <selectors>`, for example
+`/tag-and-rerun-ci moss fun-asr minicpmo`. The Omni model defaults to
+Qwen3-Omni. The
 selectors within a family are exclusive, so each preset gets its own run on
 the new image before merge.
 

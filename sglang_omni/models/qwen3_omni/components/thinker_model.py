@@ -488,6 +488,8 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
 
 
 class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
+    sparse_moe_block_cls = Qwen3OmniMoeThinkerTextSparseMoeBlock
+
     def __init__(
         self,
         config: Qwen3OmniMoeTextConfig,
@@ -543,7 +545,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         )
 
         if self.is_layer_sparse:
-            self.mlp = Qwen3OmniMoeThinkerTextSparseMoeBlock(
+            self.mlp = self.sparse_moe_block_cls(
                 layer_id=self.layer_id,
                 config=config,
                 quant_config=quant_config,

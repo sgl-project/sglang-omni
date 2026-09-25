@@ -70,7 +70,7 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
     suspended = []
     restored_rng = []
 
-    class _Flow:
+    class Flow:
         def suspend_request(self, state):
             suspended.append(state)
             return torch.tensor([7], dtype=torch.uint8)
@@ -80,11 +80,11 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
             prompt = torch.full((1, 1, 4), speaker_scale)
             return object(), prompt
 
-        def replay_feedback(self, _state, decoded_latent_patches):
+        def replay_feedback(self, state, decoded_latent_patches):
             return torch.full((len(decoded_latent_patches), 4), 33.0)
 
     model = SimpleNamespace(
-        flow=_Flow(),
+        flow=Flow(),
         get_input_embeddings=lambda: nn.Embedding.from_pretrained(
             torch.arange(40, dtype=torch.float32).reshape(10, 4)
         ),
@@ -92,7 +92,7 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = model
 
-    def _request(request_id: str, speaker_scale: float):
+    def request(request_id: str, speaker_scale: float):
         retracted = request_id == "a"
         data = SimpleNamespace(
             flow_state=old_flow_state if retracted else None,
@@ -117,7 +117,7 @@ def test_dots_prefill_batches_request_embeddings_in_scheduler_order() -> None:
         )
         return SimpleNamespace(request_id=request_id, data=data)
 
-    requests = [_request("a", 11.0), _request("b", 22.0)]
+    requests = [request("a", 11.0), request("b", 22.0)]
     runner.request_data = {"a": requests[0].data}
     forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1, 2, 3, 1, 2, 3]), input_embeds=None
@@ -138,7 +138,7 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
     flow_state = object()
     released = []
 
-    class _Flow:
+    class Flow:
         calls = 0
 
         def new_request(self, **_kwargs):
@@ -151,12 +151,12 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
 
     runner = object.__new__(DotsTTSModelRunner)
     runner.model = SimpleNamespace(
-        flow=_Flow(),
+        flow=Flow(),
         get_input_embeddings=lambda: nn.Embedding(10, 4),
     )
     runner.request_data = {}
 
-    def _request(request_id: str):
+    def request(request_id: str):
         data = SimpleNamespace(
             flow_state=None,
             generation_schedule=torch.tensor([[1, 2, 3]]),
@@ -180,7 +180,7 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
         )
         return SimpleNamespace(request_id=request_id, data=data)
 
-    requests = [_request("a"), _request("b")]
+    requests = [request("a"), request("b")]
     forward_batch = SimpleNamespace(
         input_ids=torch.tensor([1, 2, 3, 1, 2, 3]), input_embeds=None
     )
@@ -193,7 +193,7 @@ def test_dots_prefill_failure_releases_materialized_slots() -> None:
     assert requests[0].data.flow_state is None
 
 
-def _decode_request(request_id: str, fill: float):
+def decode_request(request_id: str, fill: float):
     feedback = torch.full((1, 4), fill)
     return SimpleNamespace(
         request_id=request_id,
@@ -221,7 +221,7 @@ def test_dots_before_decode_writes_graph_feedback_buffer_in_batch_order(
     forward_batch = SimpleNamespace(input_ids=torch.tensor([0, 0]), input_embeds=None)
 
     runner.before_decode(
-        forward_batch, object(), [_decode_request("a", 5.0), _decode_request("b", 6.0)]
+        forward_batch, object(), [decode_request("a", 5.0), decode_request("b", 6.0)]
     )
 
     torch.testing.assert_close(buffer[0], torch.full((4,), 5.0))
@@ -240,7 +240,7 @@ def test_dots_before_decode_without_buffer_sets_forward_batch_embeds() -> None:
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([0]), input_embeds=None)
 
-    runner.before_decode(forward_batch, object(), [_decode_request("a", 9.0)])
+    runner.before_decode(forward_batch, object(), [decode_request("a", 9.0)])
 
     torch.testing.assert_close(forward_batch.input_embeds, torch.full((1, 4), 9.0))
 
@@ -248,10 +248,10 @@ def test_dots_before_decode_without_buffer_sets_forward_batch_embeds() -> None:
 def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
     finished_token = object()
 
-    class _Flow:
+    class Flow:
         is_batched = True
 
-        def decode_batch(self, *_args, **_kwargs):
+        def decode_batch(self, *args, **_kwargs):
             return [
                 SimpleNamespace(
                     feedback_embedding=torch.zeros(4),
@@ -271,9 +271,9 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
             return [False, True]
 
     runner = object.__new__(DotsTTSModelRunner)
-    runner.model = SimpleNamespace(flow=_Flow())
+    runner.model = SimpleNamespace(flow=Flow())
 
-    def _request(request_id: str, control_token_id: int):
+    def request(request_id: str, control_token_id: int):
         return SimpleNamespace(
             request_id=request_id,
             data=SimpleNamespace(
@@ -293,7 +293,7 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
             ),
         )
 
-    requests = [_request("a", 7), _request("b", 9)]
+    requests = [request("a", 7), request("b", 9)]
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(2, 4)),
         next_token_ids=None,
@@ -316,10 +316,10 @@ def test_dots_post_decode_resolve_applies_batched_eos_finish() -> None:
 def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> None:
     finished_token = object()
 
-    class _Flow:
+    class Flow:
         is_batched = False
 
-        def decode_batch(self, *_args, **_kwargs):
+        def decode_batch(self, *args, **_kwargs):
             return [
                 SimpleNamespace(
                     feedback_embedding=torch.zeros(4),
@@ -333,7 +333,7 @@ def test_dots_post_decode_resolve_uses_step_finished_for_single_request() -> Non
             raise AssertionError("single-request path must not resolve batched EOS")
 
     runner = object.__new__(DotsTTSModelRunner)
-    runner.model = SimpleNamespace(flow=_Flow())
+    runner.model = SimpleNamespace(flow=Flow())
     request = SimpleNamespace(
         request_id="a",
         data=SimpleNamespace(

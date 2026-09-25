@@ -72,7 +72,7 @@ MMMU_TALKER_WER_DATASET_LABEL = format_benchmark_dataset_label(
 
 
 @dataclass
-class _TalkerEvalArtifacts:
+class TalkerEvalArtifacts:
     summary: dict
     speed: dict
     per_sample: list
@@ -85,7 +85,7 @@ def talker_eval_artifacts(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _TalkerEvalArtifacts:
+) -> TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("mmmu_audio"))
     config = MMMUEvalConfig(
         model=omni_ci_model.name,
@@ -109,7 +109,7 @@ def talker_eval_artifacts(
         router_guard.assert_served(
             min_total_requests=results["summary"].get("total_samples", 0)
         )
-    return _TalkerEvalArtifacts(
+    return TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
         per_sample=results["per_sample"],
@@ -121,8 +121,8 @@ def talker_eval_artifacts(
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
     omni_ci_server: ManagedRouterHandle,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
-) -> _TalkerEvalArtifacts:
+    talker_eval_artifacts: TalkerEvalArtifacts,
+) -> TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     omni_ci_server.stop()
     wait_for_gpu_memory_release()
@@ -132,7 +132,7 @@ def wer_eval_artifacts(
 @pytest.mark.benchmark
 def test_mmmu_talker_accuracy_and_speed(
     omni_ci_model: OmniCiModelPreset,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
+    talker_eval_artifacts: TalkerEvalArtifacts,
 ) -> None:
     """Run MMMU eval with audio and assert accuracy and speed meet thresholds."""
     summary = talker_eval_artifacts.summary
@@ -180,7 +180,7 @@ def test_mmmu_talker_accuracy_and_speed(
 @pytest.mark.benchmark
 def test_mmmu_talker_wer(
     omni_ci_model: OmniCiModelPreset,
-    wer_eval_artifacts: _TalkerEvalArtifacts,
+    wer_eval_artifacts: TalkerEvalArtifacts,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""

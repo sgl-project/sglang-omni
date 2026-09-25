@@ -18,16 +18,16 @@ from tests.unit_test.fixtures.pipeline_fakes import (
 )
 
 
-class _AckedOp:
+class AckedOp:
     def __init__(self, metadata: dict[str, Any]) -> None:
-        self._metadata = metadata
+        self.metadata_value = metadata
         self.acked = False
         self.waited = False
         self.failed: BaseException | None = None
 
     @property
     def metadata(self) -> dict[str, Any]:
-        return self._metadata
+        return self.metadata_value
 
     def mark_receiver_done(self) -> None:
         self.acked = True
@@ -44,12 +44,12 @@ class _AckedOp:
             raise RuntimeError("waited before receiver ack")
 
 
-class _AckedRelay:
+class AckedRelay:
     device = "cpu"
 
     def __init__(self) -> None:
         self.storage: dict[str, torch.Tensor] = {}
-        self.ops: list[_AckedOp] = []
+        self.ops: list[AckedOp] = []
         self.receiver_ids: list[str | None] = []
 
     async def put_async(
@@ -58,12 +58,12 @@ class _AckedRelay:
         request_id: str | None = None,
         dst_rank: int | None = None,
         receiver_id: str | None = None,
-    ) -> _AckedOp:
+    ) -> AckedOp:
         del dst_rank
         self.receiver_ids.append(receiver_id)
         key = str(request_id)
         self.storage[key] = tensor.detach().clone()
-        op = _AckedOp({"transfer_info": {"size": int(tensor.numel())}, "key": key})
+        op = AckedOp({"transfer_info": {"size": int(tensor.numel())}, "key": key})
         self.ops.append(op)
         return op
 
@@ -72,11 +72,11 @@ class _AckedRelay:
         metadata: dict[str, Any],
         dest_tensor: torch.Tensor,
         request_id: str | None = None,
-    ) -> _AckedOp:
+    ) -> AckedOp:
         key = str(metadata.get("key", request_id))
         stored = self.storage[key]
         dest_tensor.reshape(-1)[: stored.numel()].copy_(stored.reshape(-1))
-        return _AckedOp(metadata)
+        return AckedOp(metadata)
 
     def cleanup(self, request_id: str) -> None:
         del request_id
@@ -85,7 +85,7 @@ class _AckedRelay:
         pass
 
 
-async def _wait_until(predicate, timeout: float = 1.0) -> None:
+async def wait_until(predicate, timeout: float = 1.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
@@ -93,12 +93,12 @@ async def _wait_until(predicate, timeout: float = 1.0) -> None:
         await asyncio.sleep(0)
 
 
-def _consume_task_exception(task: asyncio.Task, _label: str) -> None:
+def consume_task_exception(task: asyncio.Task, _label: str) -> None:
     if not task.cancelled():
         task.exception()
 
 
-def _stream_ack(
+def stream_ack(
     *,
     request_id: str,
     object_id: str,
@@ -111,9 +111,9 @@ def _stream_ack(
     )
 
 
-async def _send_stream_for_ack_test(
+async def send_stream_for_ack_test(
     engine: CommEngine,
-    relay: _AckedRelay,
+    relay: AckedRelay,
     control_plane: RecordingStageControlPlane,
     *,
     request_id: str,
@@ -136,8 +136,8 @@ async def _send_stream_for_ack_test(
 
 @pytest.mark.parametrize("ack_success", [True, False])
 def test_comm_engine_releases_sender_op_after_data_ack(ack_success: bool) -> None:
-    async def _run() -> None:
-        relay = _AckedRelay()
+    async def run() -> None:
+        relay = AckedRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -179,18 +179,18 @@ def test_comm_engine_releases_sender_op_after_data_ack(ack_success: bool) -> Non
                 error=None if ack_success else "payload read failed",
             )
         )
-        await _wait_until(lambda: op.waited)
+        await wait_until(lambda: op.waited)
         assert op.acked == ack_success
         if not ack_success:
             assert type(op.failed) is RuntimeError
             assert str(op.failed) == "payload read failed"
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
-    async def _run() -> None:
-        relay = _AckedRelay()
+    async def run() -> None:
+        relay = AckedRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -201,18 +201,18 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
                 comm_config={"ack_timeout_s": 1.0},
                 injected_relay=relay,
             ),
-            task_done_callback=_consume_task_exception,
+            task_done_callback=consume_task_exception,
         )
 
         metadata = {"embedding": torch.ones(1)}
-        data_ref_a = await _send_stream_for_ack_test(
+        data_ref_a = await send_stream_for_ack_test(
             engine,
             relay,
             control_plane,
             request_id="req-reused",
             metadata=metadata,
         )
-        data_ref_b = await _send_stream_for_ack_test(
+        data_ref_b = await send_stream_for_ack_test(
             engine,
             relay,
             control_plane,
@@ -234,9 +234,9 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
         ops_a = relay.ops[:2]
         ops_b = relay.ops[2:]
         engine.ack_transfer(
-            _stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
+            stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
-        await _wait_until(
+        await wait_until(
             lambda: data_ref_a.object_id not in engine.pending
             and all(op.waited for op in ops_a)
         )
@@ -245,20 +245,20 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
         assert not any(op.acked or op.waited for op in ops_b)
 
         engine.ack_transfer(
-            _stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
+            stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
         )
-        await _wait_until(
+        await wait_until(
             lambda: data_ref_b.object_id not in engine.pending
             and all(op.waited for op in ops_b)
         )
         assert all(op.acked for op in ops_b)
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_stream_stale_ack_does_not_complete_reused_send() -> None:
-    async def _run() -> None:
-        relay = _AckedRelay()
+    async def run() -> None:
+        relay = AckedRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -269,10 +269,10 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
                 comm_config={"ack_timeout_s": 0.05},
                 injected_relay=relay,
             ),
-            task_done_callback=_consume_task_exception,
+            task_done_callback=consume_task_exception,
         )
 
-        data_ref_a = await _send_stream_for_ack_test(
+        data_ref_a = await send_stream_for_ack_test(
             engine,
             relay,
             control_plane,
@@ -281,7 +281,7 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         pending_a = engine.pending[data_ref_a.object_id]
         assert pending_a.task is not None
 
-        await _wait_until(
+        await wait_until(
             lambda: data_ref_a.object_id not in engine.pending
             and pending_a.task.done(),
             timeout=5.0,
@@ -291,7 +291,7 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         assert relay.ops[0].failed is not None
 
         engine.ack_timeout_s = 1.0
-        data_ref_b = await _send_stream_for_ack_test(
+        data_ref_b = await send_stream_for_ack_test(
             engine,
             relay,
             control_plane,
@@ -302,7 +302,7 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         op_b = relay.ops[1]
 
         engine.ack_transfer(
-            _stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
+            stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
         assert data_ref_b.object_id in engine.pending
         assert not pending_b.ack.done()
@@ -311,14 +311,14 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         assert data_ref_a.object_id != data_ref_b.object_id
 
         engine.ack_transfer(
-            _stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
+            stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
         )
-        await _wait_until(
+        await wait_until(
             lambda: data_ref_b.object_id not in engine.pending and op_b.waited
         )
         assert op_b.acked
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_comm_engine_ignores_unknown_data_ack() -> None:
@@ -342,8 +342,8 @@ def test_comm_engine_ignores_unknown_data_ack() -> None:
 
 
 def test_comm_engine_ignores_duplicate_data_ack() -> None:
-    async def _run() -> None:
-        relay = _AckedRelay()
+    async def run() -> None:
+        relay = AckedRelay()
         control_plane = RecordingStageControlPlane()
         engine = CommEngine(
             CommRouter(
@@ -374,11 +374,11 @@ def test_comm_engine_ignores_duplicate_data_ack() -> None:
         )
 
         engine.ack_transfer(ack)
-        await _wait_until(lambda: relay.ops[0].waited)
+        await wait_until(lambda: relay.ops[0].waited)
 
         engine.ack_transfer(ack)
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_data_messages_reject_missing_data_ref() -> None:

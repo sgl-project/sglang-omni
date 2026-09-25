@@ -11,7 +11,7 @@ import torch
 from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
 
 
-def _make_stub(rows: int = 8, hidden: int = 4, n_audio: int = 3) -> SimpleNamespace:
+def make_stub(rows: int = 8, hidden: int = 4, n_audio: int = 3) -> SimpleNamespace:
     stacked = torch.randn(n_audio * rows, hidden)
     heads = [SimpleNamespace(weight=torch.randn(2, hidden))]  # text head
     for index in range(n_audio):
@@ -36,13 +36,13 @@ def _make_stub(rows: int = 8, hidden: int = 4, n_audio: int = 3) -> SimpleNamesp
 
 
 def test_fused_audio_heads_ready_when_aliased() -> None:
-    stub = _make_stub()
+    stub = make_stub()
     assert stub.fused_audio_heads_ready() is True
 
 
 @pytest.mark.parametrize("replaced_index", [1, 2, 3])
 def test_replacing_any_audio_head_disables_fused_path(replaced_index: int) -> None:
-    stub = _make_stub()
+    stub = make_stub()
     stub.lm_heads[replaced_index].weight = torch.randn_like(
         stub.lm_heads[replaced_index].weight
     )
@@ -64,7 +64,7 @@ def test_ready_never_stacks_lazily() -> None:
     assert stub.fused_audio_heads_ready() is False
 
 
-def _plain_mode_stub(n_audio: int = 2) -> SimpleNamespace:
+def plain_mode_stub(n_audio: int = 2) -> SimpleNamespace:
     heads = [SimpleNamespace(weight=torch.randn(2, 4))]
     heads.extend(SimpleNamespace(weight=torch.randn(8, 4)) for _ in range(n_audio))
     processors = [
@@ -79,23 +79,23 @@ def _plain_mode_stub(n_audio: int = 2) -> SimpleNamespace:
 
 
 def test_plain_mode_gate_accepts_default_configuration() -> None:
-    assert _plain_mode_stub().audio_heads_use_plain_lm_head() is True
+    assert plain_mode_stub().audio_heads_use_plain_lm_head() is True
 
 
 def test_plain_mode_gate_rejects_fp32_lm_head() -> None:
-    stub = _plain_mode_stub()
+    stub = plain_mode_stub()
     stub.logits_processors[1].use_fp32_lm_head = True
     assert stub.audio_heads_use_plain_lm_head() is False
 
 
 def test_plain_mode_gate_rejects_rl_on_policy_target() -> None:
-    stub = _plain_mode_stub()
+    stub = plain_mode_stub()
     stub.logits_processors[2].rl_on_policy_target = "actor"
     assert stub.audio_heads_use_plain_lm_head() is False
 
 
 def test_plain_mode_gate_rejects_lora_wrapped_head() -> None:
-    stub = _plain_mode_stub()
+    stub = plain_mode_stub()
     stub.lm_heads[1].set_lora = lambda *a: None
     stub.lm_heads[1].apply_lora = lambda *a: None
     assert stub.audio_heads_use_plain_lm_head() is False
@@ -108,7 +108,7 @@ class ParallelLMHead:
         self.weight = weight
 
 
-def _share_stub(
+def share_stub(
     monkeypatch,
     rows: int = 8,
     hidden: int = 4,
@@ -161,7 +161,7 @@ def _share_stub(
 
 
 def test_weight_share_attach_adopts_the_shared_stack(monkeypatch) -> None:
-    stub, shared = _share_stub(monkeypatch)
+    stub, shared = share_stub(monkeypatch)
 
     stub.on_weight_share_attached()
 
@@ -175,14 +175,14 @@ def test_weight_share_attach_adopts_the_shared_stack(monkeypatch) -> None:
 def test_weight_share_attach_fails_closed_when_heads_are_not_one_block(
     monkeypatch,
 ) -> None:
-    stub, _ = _share_stub(monkeypatch, one_block=False)
+    stub, _ = share_stub(monkeypatch, one_block=False)
 
     with pytest.raises(RuntimeError, match="contiguous"):
         stub.on_weight_share_attached()
 
 
 def test_weight_share_attach_honors_the_disable_switch(monkeypatch) -> None:
-    stub, _ = _share_stub(monkeypatch, one_block=False)
+    stub, _ = share_stub(monkeypatch, one_block=False)
     monkeypatch.setenv("MOSS_DELAY_FUSED_AUDIO_HEADS", "0")
 
     stub.on_weight_share_attached()

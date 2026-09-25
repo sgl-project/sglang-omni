@@ -82,7 +82,7 @@ def test_ming_tts_audio_decode_factory_rejects_batch_config_before_checkpoint(
         stages.create_audio_decode_executor("unused", **factory_args)
 
 
-def _patch_audio_decode_factory_dependencies(
+def patch_audio_decode_factory_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     *,
     warmup_error: Exception | None = None,
@@ -140,7 +140,7 @@ def _patch_audio_decode_factory_dependencies(
     monkeypatch.setattr(
         stages,
         "resolve_ming_tts_audio_vae_config",
-        lambda *_args, **_kwargs: SimpleNamespace(dec_kwargs={"latent_dim": 4}),
+        lambda *args, **_kwargs: SimpleNamespace(dec_kwargs={"latent_dim": 4}),
     )
     monkeypatch.setattr(stages, "load_ming_tts_audio_vae", lambda *_a, **_k: object())
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ def _patch_audio_decode_factory_dependencies(
 def test_ming_tts_audio_decode_factory_binds_the_placed_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+    stages, decoder_calls, schedulers = patch_audio_decode_factory_dependencies(
         monkeypatch
     )
     import torch
@@ -182,7 +182,7 @@ def test_ming_tts_audio_decode_factory_binds_the_placed_gpu(
 def test_ming_tts_audio_decode_factory_rejects_a_device_it_cannot_serve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stages, _decoder_calls, _schedulers = _patch_audio_decode_factory_dependencies(
+    stages, decoder_calls, schedulers = patch_audio_decode_factory_dependencies(
         monkeypatch
     )
     from sglang_omni.platforms import current_platform
@@ -202,7 +202,7 @@ def test_ming_tts_audio_decode_factory_forwards_backend_and_warms_up(
     streaming_cuda_graph: bool,
     process_fraction: float | None,
 ) -> None:
-    stages, decoder_calls, schedulers = _patch_audio_decode_factory_dependencies(
+    stages, decoder_calls, schedulers = patch_audio_decode_factory_dependencies(
         monkeypatch
     )
 
@@ -225,7 +225,7 @@ def test_ming_tts_audio_decode_factory_forwards_backend_and_warms_up(
 def test_ming_tts_audio_decode_factory_stops_scheduler_when_warmup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stages, _decoder_calls, schedulers = _patch_audio_decode_factory_dependencies(
+    stages, decoder_calls, schedulers = patch_audio_decode_factory_dependencies(
         monkeypatch,
         warmup_error=RuntimeError("warmup failed"),
     )

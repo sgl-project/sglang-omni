@@ -84,7 +84,7 @@ def test_pipeline_schema_keeps_topology_and_validation_contracts() -> None:
         )
 
 
-class _KwargSeedingPipelineConfig(PipelineConfig):
+class KwargSeedingPipelineConfig(PipelineConfig):
     """Seeds an author constructor kwarg, so both channels appear in specs."""
 
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
@@ -95,7 +95,7 @@ class _KwargSeedingPipelineConfig(PipelineConfig):
 
 def test_runner_specs_wire_routes_overrides_aggregation_and_streams(tmp_path) -> None:
     """Preserves config-to-runtime wiring for routes, overrides, fan-in, and streams."""
-    config = _KwargSeedingPipelineConfig(
+    config = KwargSeedingPipelineConfig(
         model_path="global-model",
         name="contract",
         endpoints=EndpointsConfig(base_path=str(tmp_path)),

@@ -21,7 +21,7 @@ from sglang_omni.profiler.event_recorder import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_recorder():
+def reset_recorder():
     """Make sure the process-global recorder is closed before every test."""
     rec = get_recorder()
     if rec.is_active():
@@ -33,7 +33,7 @@ def _reset_recorder():
         rec.stop()
 
 
-def _read_events(path: str) -> list[dict]:
+def read_events(path: str) -> list[dict]:
     with open(path, "r", encoding="utf-8") as fp:
         return [json.loads(line) for line in fp if line.strip()]
 
@@ -85,7 +85,7 @@ def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
     finally:
         rec.stop()
 
-    events = _read_events(path)
+    events = read_events(path)
     assert len(events) == 2
     assert events[0]["event_name"] == "encoder_start"
     assert events[0]["run_id"] == "r0"
@@ -102,7 +102,7 @@ def test_default_stage_falls_back_to_active(tmp_path: Path) -> None:
         path = rec.active_path()
         rec.stop()
     assert path is not None
-    events = _read_events(path)
+    events = read_events(path)
     assert events[0]["stage"] == "thinker"
 
 
@@ -139,7 +139,7 @@ def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
         t.join()
     rec.stop()
 
-    events = _read_events(path)
+    events = read_events(path)
     assert len(events) == n_threads * n_per_thread
     # Every line must be valid JSON with required fields
     for ev in events:
@@ -153,7 +153,7 @@ def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
     path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="coord")
     emit(request_id="r1", stage=None, event_name="request_admission")
     rec.stop()
-    events = _read_events(path)
+    events = read_events(path)
     assert any(e["event_name"] == "request_admission" for e in events)
 
 
@@ -178,7 +178,7 @@ def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
     rec.emit(request_id="r1", stage="thinker", event_name="stage_dispatch")
     rec.stop()
 
-    events = _read_events(p1)
+    events = read_events(p1)
     stages = {e["stage"] for e in events}
     assert stages == {"preprocessing", "image_encoder", "thinker"}
 
@@ -207,15 +207,15 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
     emit(request_id="r1", stage=None, event_name="from_main")
 
     # Worker threads: each binds its own active stage, then emits.
-    def _worker(stage_name: str) -> None:
+    def worker(stage_name: str) -> None:
         set_active_stage(stage_name)
         try:
             emit(request_id="r1", stage=None, event_name=f"from_{stage_name}")
         finally:
             reset_active_stage(None)
 
-    t_thinker = threading.Thread(target=_worker, args=("thinker",))
-    t_decode = threading.Thread(target=_worker, args=("decode",))
+    t_thinker = threading.Thread(target=worker, args=("thinker",))
+    t_decode = threading.Thread(target=worker, args=("decode",))
     t_thinker.start()
     t_decode.start()
     t_thinker.join()
@@ -223,7 +223,7 @@ def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
 
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     by_event = {e["event_name"]: e["stage"] for e in events}
     assert (
         by_event["from_main"] == "preprocessing"
@@ -254,21 +254,21 @@ def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
 
     seen: dict[str, str | None] = {}
 
-    def _compute() -> None:
+    def compute() -> None:
         # Simulate what SimpleScheduler's worker does after stage binding.
         emit(request_id="r1", stage=None, event_name="from_executor")
 
-    async def _run() -> None:
+    async def run() -> None:
         set_active_stage("encoder")
         try:
-            await asyncio.to_thread(_compute)
+            await asyncio.to_thread(compute)
         finally:
             reset_active_stage(None)
 
-    asyncio.run(_run())
+    asyncio.run(run())
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     by_event = {e["event_name"]: e["stage"] for e in events}
     seen.update(by_event)
     assert (
@@ -349,7 +349,7 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
     )
     rec.stop()
 
-    events = _read_events(p)
+    events = read_events(p)
     assert len(events) == 1
     summary = events[0]["metadata"]["hidden_states"]
     assert summary["__tensor_summary__"] is True
@@ -376,16 +376,23 @@ def test_reset_active_stage_without_token_clears_both_thread_local_and_contextva
 
     set_active_stage("leaks")
     # Sanity: both backends are bound.
-    assert event_recorder._active_stage_cv.get() == "leaks"
-    assert getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
+    assert (
+        event_recorder._active_stage_cv.get() == "leaks"
+    )  # noqa: leading-underscore  # production name
+    assert (
+        getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
+    )  # noqa: leading-underscore  # production name
 
     reset_active_stage(None)
 
     # Both must now be empty.
     assert (
-        event_recorder._active_stage_cv.get() is None
+        event_recorder._active_stage_cv.get()
+        is None  # noqa: leading-underscore  # production name
     ), "contextvar still bound after reset_active_stage(None)"
-    assert getattr(event_recorder._thread_active_stage, "stage", None) is None
+    assert (
+        getattr(event_recorder._thread_active_stage, "stage", None) is None
+    )  # noqa: leading-underscore  # production name
     # And the public accessor agrees.
     from sglang_omni.profiler.event_recorder import get_active_stage
 

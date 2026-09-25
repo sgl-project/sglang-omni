@@ -32,7 +32,9 @@ def test_builder_record_is_resolved_with_the_cuda_graph_config_declared(
         write_mini_llama_checkpoint(tmp_path), context_length=2048, device="cuda"
     )
 
-    assert server_args._resolution_finished is True
+    assert (
+        server_args._resolution_finished is True
+    )  # noqa: leading-underscore  # upstream name
     assert server_args.cuda_graph_config is None
     cuda_graph_config = resolution_result(server_args, "cuda_graph_config")
     assert cuda_graph_config.prefill.backend == Backend.DISABLED

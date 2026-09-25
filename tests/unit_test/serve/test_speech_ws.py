@@ -238,7 +238,7 @@ class CompletedSpeechClient:
         self.aborted.append(request_id)
 
 
-def _session_config(**overrides: Any) -> dict[str, Any]:
+def session_config(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "type": "session.config",
         "model": "tts",
@@ -342,7 +342,7 @@ def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="pcm", stream_audio=True))
+        websocket.send_json(session_config(response_format="pcm", stream_audio=True))
         assert websocket.receive_json()["type"] == "session.configured"
 
         websocket.send_json({"type": "input.text", "text": "First segment."})
@@ -457,7 +457,7 @@ def test_speech_websocket_rejects_binary_client_frames() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="pcm"))
+        websocket.send_json(session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
 
         websocket.send_bytes(b"not-json-text")
@@ -500,7 +500,7 @@ def test_speech_websocket_stream_audio_defaults_to_non_streaming() -> None:
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="wav"))
+        websocket.send_json(session_config(response_format="wav"))
         configured = websocket.receive_json()
         assert configured["type"] == "session.configured"
         assert configured["stream_audio"] is False
@@ -517,7 +517,7 @@ def test_speech_websocket_unknown_message_type_is_recoverable() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="pcm"))
+        websocket.send_json(session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "unexpected"})
         event = websocket.receive_json()
@@ -701,7 +701,7 @@ def test_speech_websocket_rejects_oversized_sentence_before_generation() -> None
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="pcm"))
+        websocket.send_json(session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json(
             {
@@ -748,7 +748,7 @@ def test_speech_websocket_non_streaming_start_uses_result_sample_rate() -> None:
     )
 
     with client.websocket_connect("/v1/audio/speech/stream") as websocket:
-        websocket.send_json(_session_config(response_format="pcm"))
+        websocket.send_json(session_config(response_format="pcm"))
         assert websocket.receive_json()["type"] == "session.configured"
         websocket.send_json({"type": "input.text", "text": "Hello."})
         start = websocket.receive_json()
@@ -1033,7 +1033,7 @@ def test_speech_websocket_disconnect_watch_preserves_client_frames() -> None:
 
         task = asyncio.create_task(session.generate_sentence("Hello."))
         await client_impl.started.wait()
-        await asyncio.wait_for(_wait_for_buffered_receive(session), timeout=1.0)
+        await asyncio.wait_for(wait_for_buffered_receive(session), timeout=1.0)
         client_impl.release.set()
         await task
 
@@ -1156,6 +1156,6 @@ def test_speech_websocket_disconnect_watch_aborts_on_buffered_byte_cap(
     asyncio.run(run())
 
 
-async def _wait_for_buffered_receive(session: SpeechWebSocketSession) -> None:
+async def wait_for_buffered_receive(session: SpeechWebSocketSession) -> None:
     while not session.buffered_receive_messages:
         await asyncio.sleep(0)

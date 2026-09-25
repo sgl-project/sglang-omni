@@ -107,7 +107,9 @@ def test_real_qwen_config_drives_prefill_positions(
         mrope_positions=mrope_positions,
     )
 
-    selected = runner._get_layer_model_positions(forward_batch)
+    selected = runner._get_layer_model_positions(
+        forward_batch
+    )  # noqa: leading-underscore  # upstream name
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 

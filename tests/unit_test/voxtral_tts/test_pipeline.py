@@ -98,7 +98,7 @@ def test_voxtral_stage_factories_preserve_generation_placement_and_resolve_vocod
     monkeypatch.setattr(
         stages,
         "load_audio_tokenizer",
-        lambda _checkpoint, _config, device: (
+        lambda _checkpoint, config, device: (
             seen_devices.append(device) or SimpleNamespace()
         ),
     )

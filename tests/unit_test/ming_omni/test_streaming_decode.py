@@ -26,18 +26,18 @@ from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 # ---------------------------------------------------------------------------
 
 
-class _SimpleTokenizer:
+class SimpleTokenizer:
     """Token id → fixed string; no special tokens."""
 
     def __init__(self, vocab: dict[int, str], eos_token_id: int | None = None):
-        self._vocab = vocab
+        self.vocab = vocab
         self.eos_token_id = eos_token_id
 
     def decode(self, ids, skip_special_tokens: bool = False) -> str:
-        return "".join(self._vocab.get(i, "") for i in ids)
+        return "".join(self.vocab.get(i, "") for i in ids)
 
 
-class _ByteTokenizer:
+class ByteTokenizer:
     """Token id → fixed bytes; UTF-8 decode with errors='replace'."""
 
     def __init__(
@@ -46,27 +46,27 @@ class _ByteTokenizer:
         special_token_ids: set[int] | None = None,
         eos_token_id: int | None = None,
     ):
-        self._vocab = vocab
-        self._special = special_token_ids or set()
+        self.vocab = vocab
+        self.special = special_token_ids or set()
         self.eos_token_id = eos_token_id
 
     def decode(self, ids, skip_special_tokens: bool = False) -> str:
         chunks: list[bytes] = []
         for tid in ids:
-            if skip_special_tokens and tid in self._special:
+            if skip_special_tokens and tid in self.special:
                 continue
-            chunks.append(self._vocab[tid])
+            chunks.append(self.vocab[tid])
         return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 @dataclass
-class _StreamItem:
+class StreamItem:
     """Mimics the StreamItem the runtime wraps stream_chunk data in."""
 
     data: Any
 
 
-def _make_payload(
+def make_payload(
     request_id: str,
     *,
     stream: bool,
@@ -98,24 +98,24 @@ def _make_payload(
     )
 
 
-def _drain_outbox(scheduler: MingStreamingDetokenizeScheduler) -> list[OutgoingMessage]:
+def drain_outbox(scheduler: MingStreamingDetokenizeScheduler) -> list[OutgoingMessage]:
     msgs = []
     while not scheduler.outbox.empty():
         msgs.append(scheduler.outbox.get_nowait())
     return msgs
 
 
-def _run_scheduler(scheduler: MingStreamingDetokenizeScheduler) -> threading.Thread:
+def run_scheduler(scheduler: MingStreamingDetokenizeScheduler) -> threading.Thread:
     t = threading.Thread(target=scheduler.start, daemon=True)
     t.start()
     return t
 
 
-def _send(scheduler, msg: IncomingMessage) -> None:
+def send(scheduler, msg: IncomingMessage) -> None:
     scheduler.inbox.put(msg)
 
 
-def _collect(
+def collect(
     scheduler: MingStreamingDetokenizeScheduler, *, expect: int, timeout: float = 2.0
 ) -> list[OutgoingMessage]:
     """Blocking-get the expected number of outbox messages (no sleeps)."""
@@ -130,14 +130,14 @@ def _collect(
 def test_streaming_emits_text_deltas():
     """stream=true: every stream_chunk produces its own delta, then the result."""
     vocab = {1: "A", 2: "B", 3: "C"}
-    tok = _SimpleTokenizer(vocab, eos_token_id=0)
+    tok = SimpleTokenizer(vocab, eos_token_id=0)
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=0)
-    t = _run_scheduler(sched)
+    t = run_scheduler(sched)
 
     rid = "req-1"
     try:
         for token_id in [1, 2, 3]:
-            _send(
+            send(
                 sched,
                 IncomingMessage(
                     request_id=rid,
@@ -147,16 +147,16 @@ def test_streaming_emits_text_deltas():
                     ),
                 ),
             )
-        _send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
-        _send(
+        send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
+        send(
             sched,
             IncomingMessage(
                 request_id=rid,
                 type="new_request",
-                data=_make_payload(rid, stream=True, output_ids=[1, 2, 3]),
+                data=make_payload(rid, stream=True, output_ids=[1, 2, 3]),
             ),
         )
-        msgs = _collect(sched, expect=4)
+        msgs = collect(sched, expect=4)
     finally:
         sched.stop()
         t.join(timeout=2.0)
@@ -177,22 +177,22 @@ def test_streaming_emits_text_deltas():
 def test_non_streaming_emits_single_result():
     """stream=false: no stream messages, one result with full text."""
     vocab = {1: "H", 2: "i"}
-    tok = _SimpleTokenizer(vocab, eos_token_id=0)
+    tok = SimpleTokenizer(vocab, eos_token_id=0)
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=0)
-    t = _run_scheduler(sched)
+    t = run_scheduler(sched)
 
     rid = "req-2"
     try:
-        _send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
-        _send(
+        send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
+        send(
             sched,
             IncomingMessage(
                 request_id=rid,
                 type="new_request",
-                data=_make_payload(rid, stream=False, output_ids=[1, 2]),
+                data=make_payload(rid, stream=False, output_ids=[1, 2]),
             ),
         )
-        msgs = _collect(sched, expect=1)
+        msgs = collect(sched, expect=1)
     finally:
         sched.stop()
         t.join(timeout=2.0)
@@ -201,19 +201,19 @@ def test_non_streaming_emits_single_result():
     # First (and only) message is the result — no stream messages preceded it.
     assert msgs[0].type == "result"
     assert msgs[0].data.data.get("text") == "Hi"
-    assert _drain_outbox(sched) == []
+    assert drain_outbox(sched) == []
 
 
 def test_stream_done_before_new_request():
     """stream_done arrives before new_request — must still finalize correctly."""
     vocab = {5: "X"}
-    tok = _SimpleTokenizer(vocab)
+    tok = SimpleTokenizer(vocab)
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
-    t = _run_scheduler(sched)
+    t = run_scheduler(sched)
 
     rid = "req-3"
     try:
-        _send(
+        send(
             sched,
             IncomingMessage(
                 request_id=rid,
@@ -222,16 +222,16 @@ def test_stream_done_before_new_request():
             ),
         )
         # stream_done arrives BEFORE new_request (the normal runtime order)
-        _send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
-        _send(
+        send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
+        send(
             sched,
             IncomingMessage(
                 request_id=rid,
                 type="new_request",
-                data=_make_payload(rid, stream=True, output_ids=[5]),
+                data=make_payload(rid, stream=True, output_ids=[5]),
             ),
         )
-        msgs = _collect(sched, expect=2)
+        msgs = collect(sched, expect=2)
     finally:
         sched.stop()
         t.join(timeout=2.0)
@@ -243,22 +243,22 @@ def test_stream_done_before_new_request():
 def test_stream_done_before_new_request_without_token_chunks_finalizes():
     """decode must finalize when runtime sends only stream_done before payload."""
     vocab = {1: "A", 2: "B"}
-    tok = _SimpleTokenizer(vocab)
+    tok = SimpleTokenizer(vocab)
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
-    t = _run_scheduler(sched)
+    t = run_scheduler(sched)
 
     rid = "req-speech-done-only"
     try:
-        _send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
-        _send(
+        send(sched, IncomingMessage(request_id=rid, type="stream_done", data=None))
+        send(
             sched,
             IncomingMessage(
                 request_id=rid,
                 type="new_request",
-                data=_make_payload(rid, stream=True, output_ids=[1, 2]),
+                data=make_payload(rid, stream=True, output_ids=[1, 2]),
             ),
         )
-        msgs = _collect(sched, expect=1)
+        msgs = collect(sched, expect=1)
     finally:
         sched.stop()
         t.join(timeout=2.0)
@@ -273,7 +273,7 @@ def test_failure_isolation():
 
     call_count = 0
 
-    class _ErrorOnFirst:
+    class ErrorOnFirst:
         def decode(self, ids, skip_special_tokens=False):
             nonlocal call_count
             call_count += 1
@@ -281,14 +281,14 @@ def test_failure_isolation():
                 raise ValueError("simulated tokenizer error")
             return "ok"
 
-    sched = MingStreamingDetokenizeScheduler(_ErrorOnFirst(), eos_token_id=None)
-    t = _run_scheduler(sched)
+    sched = MingStreamingDetokenizeScheduler(ErrorOnFirst(), eos_token_id=None)
+    t = run_scheduler(sched)
 
     rid_bad = "req-bad"
     rid_good = "req-good"
     try:
         # Bad request: tokenizer raises on first call
-        _send(
+        send(
             sched,
             IncomingMessage(
                 request_id=rid_bad,
@@ -303,15 +303,13 @@ def test_failure_isolation():
         assert t.is_alive()
 
         # Good request: should still be processed after the bad one
-        _send(
-            sched, IncomingMessage(request_id=rid_good, type="stream_done", data=None)
-        )
-        _send(
+        send(sched, IncomingMessage(request_id=rid_good, type="stream_done", data=None))
+        send(
             sched,
             IncomingMessage(
                 request_id=rid_good,
                 type="new_request",
-                data=_make_payload(rid_good, stream=False, output_ids=[2]),
+                data=make_payload(rid_good, stream=False, output_ids=[2]),
             ),
         )
         ok = sched.outbox.get(timeout=2.0)
@@ -331,33 +329,33 @@ def test_failure_isolation():
 def test_utf8_multibyte_hold_then_emit():
     """A 3-byte CJK char split across 3 tokens must hold until complete."""
     # "你" is U+4F60 → b'\xe4\xbd\xa0'. Split byte-per-token.
-    tok = _ByteTokenizer(vocab={1: b"\xe4", 2: b"\xbd", 3: b"\xa0", 99: b"hello"})
+    tok = ByteTokenizer(vocab={1: b"\xe4", 2: b"\xbd", 3: b"\xa0", 99: b"hello"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=1))
-    sched.on_stream_chunk("req-1", _StreamItem(data=2))
-    assert _drain_outbox(sched) == [], "should hold until UTF-8 char completes"
+    sched.on_stream_chunk("req-1", StreamItem(data=1))
+    sched.on_stream_chunk("req-1", StreamItem(data=2))
+    assert drain_outbox(sched) == [], "should hold until UTF-8 char completes"
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=3))
-    out = _drain_outbox(sched)
+    sched.on_stream_chunk("req-1", StreamItem(data=3))
+    out = drain_outbox(sched)
     assert len(out) == 1
     assert out[0].type == "stream"
     assert out[0].target is None  # → Coordinator
     assert out[0].data["text"] == "你"
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=99))
-    out = _drain_outbox(sched)
+    sched.on_stream_chunk("req-1", StreamItem(data=99))
+    out = drain_outbox(sched)
     assert [m.data["text"] for m in out] == ["hello"]
 
 
 def test_special_tokens_emit_no_delta():
     """A token skipped by skip_special_tokens must not produce a stream chunk."""
-    tok = _ByteTokenizer(vocab={1: b"hi", 2: b"<eos>"}, special_token_ids={2})
+    tok = ByteTokenizer(vocab={1: b"hi", 2: b"<eos>"}, special_token_ids={2})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=2)
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=1))
-    sched.on_stream_chunk("req-1", _StreamItem(data=2))
-    out = _drain_outbox(sched)
+    sched.on_stream_chunk("req-1", StreamItem(data=1))
+    sched.on_stream_chunk("req-1", StreamItem(data=2))
+    out = drain_outbox(sched)
     assert len(out) == 1
     assert out[0].data["text"] == "hi"
 
@@ -365,31 +363,31 @@ def test_special_tokens_emit_no_delta():
 def test_interior_replacement_char_does_not_stall_stream():
     """Only a TRAILING U+FFFD is held; an interior one must flush normally."""
     # 0x80 is a lone continuation byte → decodes to a permanent U+FFFD.
-    tok = _ByteTokenizer(vocab={1: b"\x80", 2: b"ok"})
+    tok = ByteTokenizer(vocab={1: b"\x80", 2: b"ok"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=1))
+    sched.on_stream_chunk("req-1", StreamItem(data=1))
     # Trailing U+FFFD: indistinguishable from an incomplete char — held.
-    assert _drain_outbox(sched) == []
+    assert drain_outbox(sched) == []
 
-    sched.on_stream_chunk("req-1", _StreamItem(data=2))
-    out = _drain_outbox(sched)
+    sched.on_stream_chunk("req-1", StreamItem(data=2))
+    out = drain_outbox(sched)
     assert [m.data["text"] for m in out] == ["�ok"]
 
 
 def test_finalize_flushes_held_utf8_leftover():
     """Pending tokens held at stream end are flushed exactly once on finalize."""
-    tok = _ByteTokenizer(vocab={1: b"\xe4", 2: b"\xbd"})
+    tok = ByteTokenizer(vocab={1: b"\xe4", 2: b"\xbd"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
     rid = "req-1"
-    sched.on_stream_chunk(rid, _StreamItem(data=1))
-    sched.on_stream_chunk(rid, _StreamItem(data=2))
-    assert _drain_outbox(sched) == []
+    sched.on_stream_chunk(rid, StreamItem(data=1))
+    sched.on_stream_chunk(rid, StreamItem(data=2))
+    assert drain_outbox(sched) == []
 
     sched.on_stream_done(rid)
-    sched.on_new_request(rid, _make_payload(rid, stream=True, output_ids=[1, 2]))
-    out = _drain_outbox(sched)
+    sched.on_new_request(rid, make_payload(rid, stream=True, output_ids=[1, 2]))
+    out = drain_outbox(sched)
 
     leftover = b"\xe4\xbd".decode("utf-8", errors="replace")
     stream_msgs = [m for m in out if m.type == "stream"]
@@ -401,13 +399,13 @@ def test_finalize_flushes_held_utf8_leftover():
 
 def test_interleaved_requests_attribute_deltas_correctly():
     """Two concurrent requests through one loop keep per-request state isolated."""
-    tok = _SimpleTokenizer({1: "A", 2: "B"})
+    tok = SimpleTokenizer({1: "A", 2: "B"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
-    sched.on_stream_chunk("r1", _StreamItem(data=1))
-    sched.on_stream_chunk("r2", _StreamItem(data=2))
-    sched.on_stream_chunk("r1", _StreamItem(data=1))
-    out = _drain_outbox(sched)
+    sched.on_stream_chunk("r1", StreamItem(data=1))
+    sched.on_stream_chunk("r2", StreamItem(data=2))
+    sched.on_stream_chunk("r1", StreamItem(data=1))
+    out = drain_outbox(sched)
     assert [(m.request_id, m.data["text"]) for m in out] == [
         ("r1", "A"),
         ("r2", "B"),
@@ -417,14 +415,14 @@ def test_interleaved_requests_attribute_deltas_correctly():
 
 def test_late_stream_done_after_finalize_does_not_recreate_state():
     """A late duplicate done must not allocate a new _RequestState row."""
-    tok = _SimpleTokenizer({1: "A"})
+    tok = SimpleTokenizer({1: "A"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
     rid = "req-1"
-    sched.on_stream_chunk(rid, _StreamItem(data=1))
+    sched.on_stream_chunk(rid, StreamItem(data=1))
     sched.on_stream_done(rid)
-    sched.on_new_request(rid, _make_payload(rid, stream=True, output_ids=[1]))
-    _drain_outbox(sched)
+    sched.on_new_request(rid, make_payload(rid, stream=True, output_ids=[1]))
+    drain_outbox(sched)
     assert rid not in sched.state
     assert rid not in sched.done_seen
 
@@ -434,10 +432,10 @@ def test_late_stream_done_after_finalize_does_not_recreate_state():
 
 def test_abort_clears_state_and_done_seen():
     """abort() removes both the request state and any done latch."""
-    tok = _SimpleTokenizer({1: "A"})
+    tok = SimpleTokenizer({1: "A"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
-    sched.on_stream_chunk("r1", _StreamItem(data=1))
+    sched.on_stream_chunk("r1", StreamItem(data=1))
     assert "r1" in sched.state
     sched.abort("r1")
     assert "r1" not in sched.state
@@ -450,7 +448,7 @@ def test_abort_clears_state_and_done_seen():
 
 def test_eviction_spares_live_and_done_entries():
     """Over-cap eviction drops only idle orphans — never live or done entries."""
-    sched = MingStreamingDetokenizeScheduler(_SimpleTokenizer({}), eos_token_id=None)
+    sched = MingStreamingDetokenizeScheduler(SimpleTokenizer({}), eos_token_id=None)
 
     for i in range(_STATE_MAX):
         sched.ensure_state(f"r{i}")
@@ -473,16 +471,16 @@ def test_eviction_spares_live_and_done_entries():
 
 def test_streaming_audio_only_request_keeps_text_in_final():
     """No deltas are emitted for audio-only requests, so the final keeps text."""
-    tok = _SimpleTokenizer({1: "H", 2: "i"})
+    tok = SimpleTokenizer({1: "H", 2: "i"})
     sched = MingStreamingDetokenizeScheduler(tok, eos_token_id=None)
 
     rid = "req-1"
     sched.on_stream_done(rid)
     sched.on_new_request(
         rid,
-        _make_payload(rid, stream=True, output_ids=[1, 2], output_modalities=["audio"]),
+        make_payload(rid, stream=True, output_ids=[1, 2], output_modalities=["audio"]),
     )
-    out = _drain_outbox(sched)
+    out = drain_outbox(sched)
     result_msgs = [m for m in out if m.type == "result"]
     assert len(result_msgs) == 1
     assert result_msgs[0].data.data.get("text") == "Hi"
@@ -499,7 +497,7 @@ def test_create_decode_executor_returns_streaming_scheduler(monkeypatch):
     monkeypatch.setattr(
         common,
         "load_ming_tokenizer",
-        lambda path: _SimpleTokenizer({1: "A"}, eos_token_id=0),
+        lambda path: SimpleTokenizer({1: "A"}, eos_token_id=0),
     )
     from sglang_omni.models.ming_omni.stages import create_decode_executor
 
@@ -514,15 +512,15 @@ def test_select_stream_output_builder_branches():
     from sglang_omni.models.ming_omni.bootstrap import select_stream_output_builder
 
     text_only = select_stream_output_builder(
-        False, tokenizer=_SimpleTokenizer({}), eos_token_id=None
+        False, tokenizer=SimpleTokenizer({}), eos_token_id=None
     )
-    msgs = text_only("req-1", _make_req_data(stream=True), _make_req_output(7))
+    msgs = text_only("req-1", make_req_data(stream=True), make_req_output(7))
     assert [m.target for m in msgs] == ["decode"]
 
     combined = select_stream_output_builder(
-        True, tokenizer=_SimpleTokenizer({1: "A"}), eos_token_id=None
+        True, tokenizer=SimpleTokenizer({1: "A"}), eos_token_id=None
     )
-    msgs = combined("req-1", _make_req_data(stream=True), _make_req_output(1))
+    msgs = combined("req-1", make_req_data(stream=True), make_req_output(1))
     assert "decode" in [m.target for m in msgs]
 
 
@@ -531,7 +529,7 @@ def test_select_stream_output_builder_branches():
 # ---------------------------------------------------------------------------
 
 
-def _make_req_data(*, stream: bool) -> Any:
+def make_req_data(*, stream: bool) -> Any:
     """Minimal req_data as OmniScheduler would pass to stream_output_builder."""
     payload = OmniRequest(inputs={"text": "hi"}, params={"stream": stream})
     stage_payload = StagePayload(request_id="r", request=payload, data={})
@@ -540,13 +538,13 @@ def _make_req_data(*, stream: bool) -> Any:
     return rd
 
 
-def _make_req_output(token_id: int) -> Any:
+def make_req_output(token_id: int) -> Any:
     return SimpleNamespace(data=token_id)
 
 
 def test_text_stream_builder_emits_when_streaming():
     builder = make_text_stream_output_builder()
-    msgs = builder("req-1", _make_req_data(stream=True), _make_req_output(42))
+    msgs = builder("req-1", make_req_data(stream=True), make_req_output(42))
     assert len(msgs) == 1
     assert msgs[0].type == "stream"
     assert msgs[0].target == "decode"
@@ -555,7 +553,7 @@ def test_text_stream_builder_emits_when_streaming():
 
 def test_text_stream_builder_silent_when_not_streaming():
     builder = make_text_stream_output_builder()
-    msgs = builder("req-1", _make_req_data(stream=False), _make_req_output(42))
+    msgs = builder("req-1", make_req_data(stream=False), make_req_output(42))
     assert msgs == []
 
 
@@ -565,7 +563,7 @@ def test_text_stream_builder_silent_during_chunked_prefill():
     stage_payload = StagePayload(request_id="r", request=payload, data={})
     req = SimpleNamespace(inflight_middle_chunks=1)  # chunked prefill in progress
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
-    msgs = builder("req-1", rd, _make_req_output(42))
+    msgs = builder("req-1", rd, make_req_output(42))
     assert msgs == []
 
 
@@ -580,7 +578,7 @@ def test_text_stream_builder_silent_when_audio_only_modality():
     stage_payload = StagePayload(request_id="r", request=payload, data={})
     req = SimpleNamespace(inflight_middle_chunks=0)
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
-    msgs = builder("req-1", rd, _make_req_output(42))
+    msgs = builder("req-1", rd, make_req_output(42))
     assert msgs == [], "Should not emit text chunks when only audio is requested"
 
 
@@ -595,6 +593,6 @@ def test_text_stream_builder_emits_when_text_in_modalities():
     stage_payload = StagePayload(request_id="r", request=payload, data={})
     req = SimpleNamespace(inflight_middle_chunks=0)
     rd = SimpleNamespace(req=req, stage_payload=stage_payload)
-    msgs = builder("req-1", rd, _make_req_output(42))
+    msgs = builder("req-1", rd, make_req_output(42))
     assert len(msgs) == 1
     assert int(msgs[0].data.item()) == 42

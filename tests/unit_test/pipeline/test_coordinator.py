@@ -20,7 +20,7 @@ from tests.unit_test.pipeline.helpers import stage
 def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
     """Preserves multi-terminal completion and abort cancellation semantics."""
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -51,11 +51,11 @@ def test_coordinator_multi_terminal_completion_and_abort_contracts() -> None:
         with pytest.raises(asyncio.CancelledError):
             await future
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         def terminal_stages(request: OmniRequest) -> list[str]:
             assert isinstance(request, OmniRequest)
             if request.metadata.get("audio"):
@@ -110,11 +110,11 @@ def test_coordinator_resolves_active_terminal_subset_per_request() -> None:
             "code2wav": {"audio": "ok"},
         }
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_rejects_invalid_resolved_terminal_subset() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         for resolved, error in (
             ([], "no terminal stages"),
             (["decode", "missing"], "outside the static terminal stages"),
@@ -135,11 +135,11 @@ def test_coordinator_rejects_invalid_resolved_terminal_subset() -> None:
             assert coordinator.requests == {}
             assert coordinator.control_plane.submitted == []
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_cleans_queue_when_terminal_resolver_rejects() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -159,11 +159,11 @@ def test_coordinator_stream_cleans_queue_when_terminal_resolver_rejects() -> Non
         assert coordinator.completion_futures == {}
         assert coordinator.control_plane.submitted == []
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -176,11 +176,11 @@ def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None
 
         events = []
 
-        async def _consume() -> None:
+        async def consume() -> None:
             async for event in coordinator.stream("req-1", OmniRequest(inputs="hello")):
                 events.append(event)
 
-        task = asyncio.create_task(_consume())
+        task = asyncio.create_task(consume())
         for _ in range(10):
             if "req-1" in coordinator.requests:
                 break
@@ -192,7 +192,7 @@ def test_coordinator_stream_uses_request_terminal_subset_after_cleanup() -> None
 
         assert [event.from_stage for event in events] == ["decode"]
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> None:
@@ -202,7 +202,7 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
         lambda **kwargs: events.append(kwargs),
     )
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -225,7 +225,7 @@ def test_coordinator_stream_received_event_pairs_terminal_chunk(monkeypatch) -> 
         routed = queue.get_nowait()
         assert routed.chunk_id == 1
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
     receive_events = [
         event
@@ -259,7 +259,7 @@ def test_stream_message_round_trips_terminal_chunk_id() -> None:
 def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
     """Preserves fail-fast behavior and cleanup after any terminal failure."""
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -287,11 +287,11 @@ def test_coordinator_failure_completion_fails_fast_and_cleans_state() -> None:
         assert "req-1" not in coordinator.partial_results
         assert control_plane.aborts[-1].request_id == "req-1"
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -311,22 +311,22 @@ def test_coordinator_fail_pending_requests_resolves_waiters() -> None:
         assert coordinator.requests == {}
         assert coordinator.partial_results == {}
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
-async def _drive_stream_until_registered(coordinator: Coordinator, request_id: str):
+async def drive_stream_until_registered(coordinator: Coordinator, request_id: str):
     """Start consuming a stream and return (task, error_sink, future) once the
     request's completion future has been created."""
     error_sink: list[str] = []
 
-    async def _consume() -> None:
+    async def consume() -> None:
         try:
             async for _msg in coordinator.stream(request_id, "hello"):
                 pass
         except RuntimeError as exc:
             error_sink.append(str(exc))
 
-    task = asyncio.create_task(_consume())
+    task = asyncio.create_task(consume())
     for _ in range(100):
         if request_id in coordinator.completion_futures:
             break
@@ -336,7 +336,7 @@ async def _drive_stream_until_registered(coordinator: Coordinator, request_id: s
 
 
 def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -369,11 +369,11 @@ def test_coordinator_stream_early_close_aborts_and_cleans_state() -> None:
         assert "req-1" not in coordinator.stream_queues
         assert "req-1" not in coordinator.completion_futures
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_stream_close_after_one_terminal_aborts_remaining_terminal_work() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -404,11 +404,11 @@ def test_stream_close_after_one_terminal_aborts_remaining_terminal_work() -> Non
         assert coordinator.completion_futures == {}
         assert coordinator.stream_queues == {}
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_natural_completion_does_not_abort() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -419,7 +419,7 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
         coordinator.control_plane = control_plane
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        async def _consume() -> list[CompleteMessage | StreamMessage]:
+        async def consume() -> list[CompleteMessage | StreamMessage]:
             return [
                 message
                 async for message in coordinator.stream(
@@ -427,7 +427,7 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
                 )
             ]
 
-        task = asyncio.create_task(_consume())
+        task = asyncio.create_task(consume())
         for _ in range(100):
             if "req-1" in coordinator.requests:
                 break
@@ -448,11 +448,11 @@ def test_coordinator_stream_natural_completion_does_not_abort() -> None:
         assert "req-1" not in coordinator.stream_queues
         assert "req-1" not in coordinator.completion_futures
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -480,11 +480,11 @@ def test_duplicate_stream_preserves_existing_non_stream_request() -> None:
         with pytest.raises(asyncio.CancelledError):
             await original_future
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -521,7 +521,7 @@ def test_completed_stream_allows_request_id_reuse_after_owner_closes() -> None:
         await coordinator.submit_request("req-1", "replacement")
         assert coordinator.requests["req-1"].request_id == "req-1"
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None:
@@ -536,7 +536,7 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
             self.abort_started.set()
             await self.release_abort.wait()
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -581,11 +581,11 @@ def test_stream_abort_reserves_request_id_while_broadcast_is_in_flight() -> None
         assert coordinator.completion_futures == {}
         assert coordinator.stream_queues == {}
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -612,7 +612,7 @@ def test_stream_cancellation_is_preserved_after_abort_cleanup() -> None:
         assert coordinator.stream_queues == {}
         assert coordinator.abort_tasks == {}
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_abort_failure_is_logged(
@@ -623,7 +623,7 @@ def test_coordinator_stream_abort_failure_is_logged(
             self.aborts.append(msg)
             raise RuntimeError("abort transport unavailable")
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -655,7 +655,7 @@ def test_coordinator_stream_abort_failure_is_logged(
         assert "req-1" not in coordinator.completion_futures
 
     with caplog.at_level("WARNING"):
-        asyncio.run(_run())
+        asyncio.run(run())
     assert "Failed to abort request req-1" in caplog.text
 
 
@@ -666,7 +666,7 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
     setting an exception no one retrieves, so the event loop never reports a
     'Future exception was never retrieved' error."""
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -682,7 +682,7 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
             lambda _loop, context: handler_contexts.append(context)
         )
 
-        task, error_sink, future = await _drive_stream_until_registered(
+        task, error_sink, future = await drive_stream_until_registered(
             coordinator, "req-1"
         )
 
@@ -702,14 +702,14 @@ def test_coordinator_stream_abort_cancels_future_without_unretrieved_exception()
             "never retrieved" in str(ctx.get("message", "")) for ctx in handler_contexts
         )
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
     """A coordinator failure reaches the stream without leaving an exception
     on its unused completion future."""
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -725,7 +725,7 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
             lambda _loop, context: handler_contexts.append(context)
         )
 
-        task, error_sink, future = await _drive_stream_until_registered(
+        task, error_sink, future = await drive_stream_until_registered(
             coordinator, "req-1"
         )
 
@@ -742,7 +742,7 @@ def test_coordinator_stream_fail_pending_requests_cancels_future() -> None:
             "never retrieved" in str(ctx.get("message", "")) for ctx in handler_contexts
         )
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_stream_stage_failure_cancels_future() -> None:
@@ -750,7 +750,7 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
     (which the stream consumer never awaits) rather than setting an exception
     that would be reported as never retrieved."""
 
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -760,7 +760,7 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         coordinator.control_plane = RecordingCoordinatorControlPlane()
         coordinator.register_stage("preprocess", "inproc://preprocess")
 
-        task, error_sink, future = await _drive_stream_until_registered(
+        task, error_sink, future = await drive_stream_until_registered(
             coordinator, "req-1"
         )
 
@@ -773,11 +773,11 @@ def test_coordinator_stream_stage_failure_cancels_future() -> None:
         assert future.cancelled() is True
         assert "req-1" not in coordinator.completion_futures
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
-    async def _run() -> None:
+    async def run() -> None:
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -804,7 +804,7 @@ def test_coordinator_rejects_submit_when_in_flight_cap_is_reached() -> None:
             "req-2",
         ]
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
@@ -838,8 +838,8 @@ def test_admin_resolves_logical_replica_target_to_all_instances() -> None:
 
 
 def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
-    async def _run() -> None:
-        logical_plan, replica_topology = _multi_terminal_replica_runtime()
+    async def run() -> None:
+        logical_plan, replica_topology = multi_terminal_replica_runtime()
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -870,15 +870,15 @@ def test_coordinator_normalizes_replica_instance_name_on_stream_chunk() -> None:
         assert routed.from_stage == "code2wav"
         assert routed.stage_name == "code2wav"
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("success", [True, False])
 def test_coordinator_normalizes_replica_instance_name_on_completion(
     success: bool,
 ) -> None:
-    async def _run() -> None:
-        logical_plan, replica_topology = _multi_terminal_replica_runtime()
+    async def run() -> None:
+        logical_plan, replica_topology = multi_terminal_replica_runtime()
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -907,10 +907,10 @@ def test_coordinator_normalizes_replica_instance_name_on_completion(
 
         assert queue.get_nowait().from_stage == "code2wav"
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
-def _compile_replica_runtime(stages, **replicas: int):
+def compile_replica_runtime(stages, **replicas: int):
     config = PipelineConfig(
         stages=stages,
         model_path="dummy",
@@ -925,8 +925,8 @@ def _compile_replica_runtime(stages, **replicas: int):
     return logical_plan, replica_topology
 
 
-def _linear_replica_runtime(**replicas: int):
-    return _compile_replica_runtime(
+def linear_replica_runtime(**replicas: int):
+    return compile_replica_runtime(
         [
             stage("normalize", process="front", next="decode"),
             stage("decode", process="tail", next="postprocess"),
@@ -936,8 +936,8 @@ def _linear_replica_runtime(**replicas: int):
     )
 
 
-def _multi_terminal_replica_runtime():
-    return _compile_replica_runtime(
+def multi_terminal_replica_runtime():
+    return compile_replica_runtime(
         [
             stage(
                 "preprocess",
@@ -954,8 +954,8 @@ def _multi_terminal_replica_runtime():
 def test_coordinator_projects_one_process_choice_onto_member_stages(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    async def _run() -> None:
-        logical_plan, replica_topology = _linear_replica_runtime(tail=2)
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(tail=2)
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -983,7 +983,7 @@ def test_coordinator_projects_one_process_choice_onto_member_stages(
         ]
 
     with caplog.at_level("DEBUG", logger="sglang_omni.pipeline.coordinator"):
-        asyncio.run(_run())
+        asyncio.run(run())
     assert "Coordinator submitted req=req-0" in caplog.text
     assert "bindings={'decode': 1, 'postprocess': 1}" in caplog.text
 
@@ -998,8 +998,8 @@ def test_binding_validation_precedes_request_registration() -> None:
             self.calls += 1
             return num_replicas if self.calls == 1 else 0
 
-    async def _run() -> None:
-        logical_plan, replica_topology = _linear_replica_runtime(tail=2)
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(tail=2)
         policy = FailOnceBindingPolicy()
         coordinator = Coordinator(
             "inproc://complete",
@@ -1025,12 +1025,12 @@ def test_binding_validation_precedes_request_registration() -> None:
             "postprocess": 0,
         }
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_submits_to_the_bound_entry_replica() -> None:
-    async def _run() -> None:
-        logical_plan, replica_topology = _linear_replica_runtime(front=2)
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime(front=2)
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -1055,12 +1055,12 @@ def test_coordinator_submits_to_the_bound_entry_replica() -> None:
             "inproc://n1",
         ]
 
-    asyncio.run(_run())
+    asyncio.run(run())
 
 
 def test_coordinator_without_replicas_sends_no_bindings() -> None:
-    async def _run() -> None:
-        logical_plan, replica_topology = _linear_replica_runtime()
+    async def run() -> None:
+        logical_plan, replica_topology = linear_replica_runtime()
         coordinator = Coordinator(
             "inproc://complete",
             "inproc://abort",
@@ -1076,4 +1076,4 @@ def test_coordinator_without_replicas_sends_no_bindings() -> None:
 
         assert control_plane.submitted[0][2].replica_bindings is None
 
-    asyncio.run(_run())
+    asyncio.run(run())

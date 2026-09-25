@@ -81,7 +81,7 @@ class FakeTalkerProjectionModel(nn.Module):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(1, dtype=torch.float32))
         self.config = SimpleNamespace(codec_eos_token_id=2150)
-        self._codec_embedding = FakeCodecEmbedding(hidden_size)
+        self.codec_embedding = FakeCodecEmbedding(hidden_size)
 
     def text_projection(self, tensor: torch.Tensor) -> torch.Tensor:
         return tensor + 100.0
@@ -90,7 +90,7 @@ class FakeTalkerProjectionModel(nn.Module):
         return tensor + 200.0
 
     def get_input_embeddings(self) -> FakeCodecEmbedding:
-        return self._codec_embedding
+        return self.codec_embedding
 
 
 class FakeImageEncoderModel:
@@ -155,6 +155,7 @@ class FakeAudioEncoderModel:
 
 class FakeCode2WavModel:
     def __init__(self, *, total_upsample: int = 2, output_deficit: int = 0) -> None:
+        self.decoder = torch.nn.Module()
         self.total_upsample = total_upsample
         self.output_deficit = output_deficit
         self.calls: list[tuple[int, ...]] = []

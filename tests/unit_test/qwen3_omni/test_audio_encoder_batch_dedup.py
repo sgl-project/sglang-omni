@@ -16,7 +16,7 @@ from sglang_omni.models.qwen3_omni.stages import (
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-class _FakeAudioEncoder:
+class FakeAudioEncoder:
     def __init__(self) -> None:
         self.calls: list[int] = []
 
@@ -43,7 +43,7 @@ def test_encoder_batch_wait_falls_back_to_zero(
     assert encoder_batch_wait_ms() == 0
 
 
-def _payload(request_id: str, cache_key: str, time_steps: int) -> StagePayload:
+def make_payload(request_id: str, cache_key: str, time_steps: int) -> StagePayload:
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs="hi"),
@@ -60,11 +60,11 @@ def _payload(request_id: str, cache_key: str, time_steps: int) -> StagePayload:
 
 
 def test_audio_encoder_batch_dedups_same_cache_key() -> None:
-    model = _FakeAudioEncoder()
+    model = FakeAudioEncoder()
     payloads = [
-        _payload("req-a1", "spk-a", 3),
-        _payload("req-b", "spk-b", 5),
-        _payload("req-a2", "spk-a", 3),
+        make_payload("req-a1", "spk-a", 3),
+        make_payload("req-b", "spk-b", 5),
+        make_payload("req-a2", "spk-a", 3),
     ]
 
     out = batch_audio_encoder_payloads(payloads, model=model, cache=None)
@@ -78,8 +78,8 @@ def test_audio_encoder_batch_dedups_same_cache_key() -> None:
 
 
 def test_audio_encoder_batch_without_cache_keys_runs_every_request() -> None:
-    model = _FakeAudioEncoder()
-    payloads = [_payload("req-1", "k1", 3), _payload("req-2", "k2", 3)]
+    model = FakeAudioEncoder()
+    payloads = [make_payload("req-1", "k1", 3), make_payload("req-2", "k2", 3)]
     for payload in payloads:
         payload.data["encoder_inputs"]["audio_encoder"].pop("cache_key")
 
@@ -92,15 +92,23 @@ def test_audio_encoder_batch_without_cache_keys_runs_every_request() -> None:
 def test_audio_encoder_cache_preserves_hits_in_mixed_batch():
     from sglang_omni.scheduling.stage_cache import StageOutputCache
 
-    model = _FakeAudioEncoder()
+    model = FakeAudioEncoder()
     cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
     first = batch_audio_encoder_payloads(
-        [_payload("a1", "a", 3), _payload("b1", "b", 5), _payload("a2", "a", 3)],
+        [
+            make_payload("a1", "a", 3),
+            make_payload("b1", "b", 5),
+            make_payload("a2", "a", 3),
+        ],
         model=model,
         cache=cache,
     )
     second = batch_audio_encoder_payloads(
-        [_payload("b2", "b", 5), _payload("c", "c", 2), _payload("a3", "a", 3)],
+        [
+            make_payload("b2", "b", 5),
+            make_payload("c", "c", 2),
+            make_payload("a3", "a", 3),
+        ],
         model=model,
         cache=cache,
     )
@@ -144,7 +152,7 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
     model = ReusedOutputEncoder()
     cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
     first = batch_audio_encoder_payloads(
-        [_payload("a1", "a", 3)], model=model, cache=cache
+        [make_payload("a1", "a", 3)], model=model, cache=cache
     )
     expected = {
         key: value.cpu().clone()
@@ -152,9 +160,9 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
         .encoder_outs["audio_encoder"]
         .items()
     }
-    batch_audio_encoder_payloads([_payload("b", "b", 5)], model=model, cache=cache)
+    batch_audio_encoder_payloads([make_payload("b", "b", 5)], model=model, cache=cache)
     again = batch_audio_encoder_payloads(
-        [_payload("a2", "a", 3)], model=model, cache=cache
+        [make_payload("a2", "a", 3)], model=model, cache=cache
     )
     assert model.calls == 2
     actual = Qwen3OmniPipelineState.from_dict(again[0].data).encoder_outs[

@@ -129,7 +129,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
     sampling_info = SimpleNamespace(sampling_seed=None, is_all_greedy=True)
     sampled_with = []
 
-    class _Runner(FunCosyVoice3ModelRunner):
+    class Runner(FunCosyVoice3ModelRunner):
         def apply_repetition_penalty(self, logits_output, requests):
             del logits_output, requests
 
@@ -140,7 +140,7 @@ def test_cosyvoice3_torch_mps_seed_avoids_float64_sampler(
             del requests
             forward_batch.sampling_info.sampling_seed = torch.tensor([7])
 
-    runner = object.__new__(_Runner)
+    runner = object.__new__(Runner)
     runner.cosyvoice3_recent_tokens = {}
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(

@@ -27,7 +27,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 )
 
 
-def _tiny_config() -> dict:
+def tiny_config() -> dict:
     return {
         "architectures": ["RemoteCodeMustNotBeImported"],
         "auto_map": {"AutoModel": "missing_remote_module.Model"},
@@ -90,15 +90,15 @@ def _tiny_config() -> dict:
     }
 
 
-def _tiny_moss_audio_tokenizer_v1_config() -> dict:
-    config = _tiny_config()
+def tiny_moss_audio_tokenizer_v1_config() -> dict:
+    config = tiny_config()
     config.pop("number_channels")
     config.pop("enable_channel_interleave")
     config.pop("compute_dtype")
     return config
 
 
-def _assert_quantizer_weights_match(expected, actual) -> None:
+def assert_quantizer_weights_match(expected, actual) -> None:
     for name, expected_module in expected.named_modules():
         if not isinstance(expected_module, torch.nn.Conv1d):
             continue
@@ -113,7 +113,7 @@ def _assert_quantizer_weights_match(expected, actual) -> None:
 
 def test_repository_encoder_cpu_fallback_preserves_batch_lengths() -> None:
     model = MossAudioTokenizerEncoder(
-        _tiny_config(),
+        tiny_config(),
         parameter_device="cpu",
     ).eval()
 
@@ -132,7 +132,7 @@ def test_repository_encoder_cpu_fallback_preserves_batch_lengths() -> None:
 
 
 def test_repository_encoder_defaults_missing_compute_dtype_to_bfloat16() -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config.pop("compute_dtype")
 
     model = MossAudioTokenizerEncoder(config, parameter_device="cpu")
@@ -143,7 +143,7 @@ def test_repository_encoder_defaults_missing_compute_dtype_to_bfloat16() -> None
 
 def test_repository_encoder_uses_shared_packed_attention_wrapper() -> None:
     model = MossAudioTokenizerEncoder(
-        _tiny_config(),
+        tiny_config(),
         parameter_device="cpu",
     )
     stage = model.encoder[1]
@@ -154,7 +154,7 @@ def test_repository_encoder_uses_shared_packed_attention_wrapper() -> None:
 
 
 def test_repository_encoder_uses_configured_attention_implementation() -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["attention_implementation"] = "sdpa"
     model = MossAudioTokenizerEncoder(
         config,
@@ -166,7 +166,7 @@ def test_repository_encoder_uses_configured_attention_implementation() -> None:
 
 
 def test_repository_vocoder_uses_configured_attention_implementation() -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["attention_implementation"] = "sdpa"
     model = MossAudioTokenizerVocoder(
         config,
@@ -209,7 +209,7 @@ def test_repository_attention_backend_selection_rejects_unknown_implementation()
 
 
 def test_repository_encoder_loads_local_weights_without_remote_code(tmp_path) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     expected_model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
@@ -236,7 +236,7 @@ def test_repository_encoder_loads_local_weights_without_remote_code(tmp_path) ->
         torch.testing.assert_close(
             actual_encoder[name], expected_encoder[name], rtol=0, atol=0
         )
-    _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
+    assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
     assert any(
         is_parametrized(module, "weight")
         for module in expected_model.quantizer.modules()
@@ -251,7 +251,7 @@ def test_repository_encoder_strict_flash_fails_before_loading_weights(
     tmp_path,
 ) -> None:
     with (tmp_path / "config.json").open("w", encoding="utf-8") as config_file:
-        json.dump(_tiny_config(), config_file)
+        json.dump(tiny_config(), config_file)
 
     with pytest.raises(
         RuntimeError,
@@ -266,7 +266,7 @@ def test_repository_encoder_strict_flash_fails_before_loading_weights(
 
 
 def test_repository_encoder_materializes_compute_dtype_at_load(tmp_path) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["compute_dtype"] = "bfloat16"
     config["encoder_kwargs"][1]["norm"] = "rms_norm_f32"
     expected_model = MossAudioTokenizerEncoder(
@@ -311,7 +311,7 @@ def test_repository_encoder_materializes_compute_dtype_at_load(tmp_path) -> None
 def test_repository_encoder_materialized_bfloat16_does_not_use_autocast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["compute_dtype"] = "bfloat16"
     model = MossAudioTokenizerEncoder(
         config,
@@ -337,7 +337,7 @@ def test_repository_encoder_materialized_bfloat16_does_not_use_autocast(
 
 
 def test_repository_encoder_skips_missing_decoder_shard(tmp_path) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     expected_model = MossAudioTokenizerEncoder(
         config,
         parameter_device="cpu",
@@ -372,7 +372,7 @@ def test_repository_encoder_skips_missing_decoder_shard(tmp_path) -> None:
 def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
     tmp_path,
 ) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     expected_model = MossAudioTokenizerVocoder(
         config,
         parameter_device="cpu",
@@ -402,7 +402,7 @@ def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
 
     assert isinstance(loaded.decoder, MossAudioTokenizerVocoderDecoder)
     assert loaded.quantizer.decode_cache is not None
-    _assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
+    assert_quantizer_weights_match(expected_model.quantizer, loaded.quantizer)
     assert all(
         not is_parametrized(module, "weight") for module in loaded.quantizer.modules()
     )
@@ -414,7 +414,7 @@ def test_repository_vocoder_loads_only_local_quantizer_and_decoder(
 
 
 def test_vocoder_streaming_rope_budget_tracks_decoder_stage_rates() -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config.update(sampling_rate=50, downsample_rate=4)
     transformer = config["decoder_kwargs"][0]
     config["decoder_kwargs"] = [
@@ -438,7 +438,7 @@ def test_vocoder_streaming_rope_budget_tracks_decoder_stage_rates() -> None:
 
 
 def test_repository_vocoder_materializes_compute_dtype_at_load(tmp_path) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["decoder_kwargs"][0]["norm"] = "rms_norm_f32"
     expected_model = MossAudioTokenizerVocoder(
         config,
@@ -485,7 +485,7 @@ def test_repository_vocoder_materializes_compute_dtype_at_load(tmp_path) -> None
 
 
 def test_repository_vocoder_skips_missing_encoder_shard(tmp_path) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     expected_model = MossAudioTokenizerVocoder(
         config,
         parameter_device="cpu",
@@ -524,7 +524,7 @@ def test_repository_vocoder_skips_missing_encoder_shard(tmp_path) -> None:
 
 def test_repository_vocoder_constructs_decoder_frame_rate_and_upsampling() -> None:
     model = MossAudioTokenizerVocoder(
-        _tiny_config(),
+        tiny_config(),
         parameter_device="cpu",
         decoder_dtype=torch.float32,
         compute_dtype=torch.float32,
@@ -545,7 +545,7 @@ def test_repository_vocoder_constructs_decoder_frame_rate_and_upsampling() -> No
 def test_repository_vocoder_materialized_bfloat16_does_not_use_autocast(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _tiny_config()
+    config = tiny_config()
     config["decoder_kwargs"] = [{"module_type": "PatchedPretransform", "patch_size": 2}]
     model = MossAudioTokenizerVocoder(
         config,
@@ -572,7 +572,7 @@ def test_repository_vocoder_materialized_bfloat16_does_not_use_autocast(
 
 def test_repository_quantizer_decode_matches_codebook_sum() -> None:
     torch.manual_seed(0)
-    quantizer = ResidualLFQ(_tiny_config()["quantizer_kwargs"], device="cpu")
+    quantizer = ResidualLFQ(tiny_config()["quantizer_kwargs"], device="cpu")
     codes = torch.randint(0, 4, (2, 3, 5))
 
     expected = quantizer.output_proj(
@@ -586,7 +586,7 @@ def test_repository_quantizer_decode_matches_codebook_sum() -> None:
 def test_repository_moss_audio_tokenizer_v1_vocoder_normalizes_checkpoint_fields(
     tmp_path,
 ) -> None:
-    config = _tiny_moss_audio_tokenizer_v1_config()
+    config = tiny_moss_audio_tokenizer_v1_config()
     expected_model = MossAudioTokenizerVocoder(
         config,
         parameter_device="cpu",
@@ -632,7 +632,7 @@ def test_repository_encoder_normalizes_moss_audio_tokenizer_v1_checkpoint_fields
     None
 ):
     model = MossAudioTokenizerEncoder(
-        _tiny_moss_audio_tokenizer_v1_config(),
+        tiny_moss_audio_tokenizer_v1_config(),
         parameter_device="cpu",
         compute_dtype=torch.bfloat16,
     )
@@ -680,7 +680,7 @@ def test_repository_encoder_rejects_float16(
 ) -> None:
     with pytest.raises(ValueError, match="dtype"):
         MossAudioTokenizerEncoder(
-            _tiny_config(),
+            tiny_config(),
             parameter_device="cpu",
             compute_dtype=compute_dtype,
         )
@@ -699,7 +699,7 @@ def test_repository_vocoder_rejects_float16(
 ) -> None:
     with pytest.raises(ValueError, match="dtype"):
         MossAudioTokenizerVocoder(
-            _tiny_config(),
+            tiny_config(),
             parameter_device="cpu",
             decoder_dtype=decoder_dtype,
             compute_dtype=compute_dtype,
