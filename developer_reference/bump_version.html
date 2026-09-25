@@ -733,9 +733,12 @@ the image lacks is installed on top; <code class="docutils literal notranslate">
 checks every exact pin in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> against what is installed.</p>
 <p>The image also installs Qwen-TTS without its conflicting dependencies, system
 SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
-project’s dependency overrides when resolving these packages. The CI import
-gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
-and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+project’s dependency overrides when resolving these packages. CosyVoice itself
+has no package release, so the CI venv setup clones it at the commit the
+Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
+the venv through a <code class="docutils literal notranslate"><span class="pre">.pth</span></code> file. The CI import gate checks Qwen-TTS after the
+compatibility patch, DAC, NeuCodec, CosyVoice and Matcha-TTS imports, and the
+SoX executable. It imports llama.cpp before Torch to catch system NCCL
 conflicts; the image prioritizes Torch’s NCCL library. A package listing alone
 does not prove a usable runtime.</p>
 <p>Reinstalling even the same FlashInfer wheel refreshes bundled header mtimes.
