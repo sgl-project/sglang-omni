@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -96,7 +96,7 @@ def build_sglang_talker_request(
     codec_eos_id: int,
     tts_bos_token_id: int,
     tts_eos_token_id: int,
-    params: dict[str, Any],
+    params: Mapping[str, object],
     request_id: str | None = None,
 ) -> SGLangARRequestData:
     """Build a codec request carrying speech-condition embeddings."""

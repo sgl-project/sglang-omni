@@ -8,10 +8,9 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from functools import lru_cache
-from typing import Any
 
 import numpy as np
 import torch
@@ -153,7 +152,7 @@ def warmup_flow(
     flow: AuKFlowMatching,
     device: torch.device,
     dtype: torch.dtype,
-    sampling: dict[str, Any],
+    sampling: Mapping[str, int | float | tuple[float, ...] | None],
     step_graph: AuKStepCudaGraphRunner | None = None,
 ) -> None:
     """Pay the block compile, and every declared graph capture, at startup.

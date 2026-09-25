@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from sglang.srt.managers.scheduler import GenerationBatchResult
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -74,7 +76,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
+        result: GenerationBatchResult,
         scheduler_output: SchedulerOutput,
         outputs: dict[str, RequestOutput],
     ) -> None:

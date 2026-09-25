@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
-from typing import Any
+from collections.abc import Mapping
 
 import torch
 import torch.nn as nn
@@ -123,7 +123,7 @@ def create_sglang_talker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
@@ -273,7 +273,7 @@ def create_sglang_thinker_executor_from_config(
     tp_size: int = 1,
     nccl_port: int | None = None,
     max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
     async_decode_min_batch_size: int = 2,
