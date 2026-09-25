@@ -156,8 +156,19 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         value: torch.Tensor,
         mask: torch.Tensor,
         pos_emb: torch.Tensor,
+        cache: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         q, k, v = self.forward_qkv(query, key, value)
+        if cache is not None:
+            if cache:
+                previous_key, previous_value = cache[0].chunk(2, dim=-1)
+                k = torch.cat((previous_key, k), dim=2)
+                v = torch.cat((previous_value, v), dim=2)
+            else:
+                pass
+            cache[:] = [torch.cat((k, v), dim=-1)]
+        else:
+            pass
         q = q.transpose(1, 2)
         n_batch_pos = pos_emb.size(0)
         p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
@@ -212,14 +223,16 @@ class EspnetRelPositionalEncoding(torch.nn.Module):
         pe = torch.cat([pe_positive, pe_negative], dim=1)
         self.pe = pe.to(device=x.device, dtype=x.dtype)
 
+    def position_embedding(
+        self, x: torch.Tensor, history_length: int = 0
+    ) -> torch.Tensor:
+        size = history_length + x.size(1)
+        self.extend_pe(x.new_empty((1, size)))
+        center = self.pe.size(1) // 2
+        return self.dropout(self.pe[:, center - size + 1 : center + size])
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self.extend_pe(x)
-        x = x * self.xscale
-        size = x.size(1)
-        pos_emb = self.pe[
-            :, self.pe.size(1) // 2 - size + 1 : self.pe.size(1) // 2 + size
-        ]
-        return (self.dropout(x), self.dropout(pos_emb))
+        return self.dropout(x * self.xscale), self.position_embedding(x)
 
 
 class LinearNoSubsampling(torch.nn.Module):
@@ -286,14 +299,18 @@ class ConformerEncoderLayer(nn.Module):
         self.normalize_before = normalize_before
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor, pos_emb: torch.Tensor
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        pos_emb: torch.Tensor,
+        cache: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         residual = x
         if self.normalize_before:
             x = self.norm_mha(x)
         else:
             pass
-        x_att = self.self_attn(x, x, x, mask, pos_emb)
+        x_att = self.self_attn(x, x, x, mask, pos_emb, cache)
         x = residual + self.dropout(x_att)
         if not self.normalize_before:
             x = self.norm_mha(x)

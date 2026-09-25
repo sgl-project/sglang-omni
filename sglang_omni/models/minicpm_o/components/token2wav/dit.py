@@ -79,7 +79,12 @@ class Attention(torch.nn.Module):
         ts = ts.transpose(1, 2)
         return ts
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        cache: list[torch.Tensor] | None = None,
+    ) -> torch.Tensor:
         b, t, c = x.shape
         q = self.to_q(x)
         k = self.to_k(x)
@@ -89,7 +94,20 @@ class Attention(torch.nn.Module):
         v = self.to_heads(v)
         q = self.q_norm(q)
         k = self.k_norm(k)
-        attn_mask = attn_mask.unsqueeze(1)
+        if cache is not None:
+            if cache:
+                previous_key, previous_value = cache[0].chunk(2, dim=-1)
+                k = torch.cat((k, previous_key), dim=2)
+                v = torch.cat((v, previous_value), dim=2)
+            else:
+                pass
+            cache[:] = [torch.cat((k, v), dim=-1)]
+        else:
+            pass
+        if attn_mask is not None:
+            attn_mask = attn_mask.unsqueeze(1)
+        else:
+            pass
         x = F.scaled_dot_product_attention(
             q,
             k,
@@ -188,13 +206,37 @@ class CausalConvBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, mask: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        cache: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         if mask is not None:
             x = x * mask
         else:
             pass
-        x = self.block(x)
+        if cache is None:
+            x = self.block(x)
+        else:
+            previous = (
+                cache[0].split((self.in_channels, self.out_channels), dim=1)
+                if cache
+                else (None, None)
+            )
+            next_cache = []
+            for index, module in enumerate(self.block):
+                if isinstance(module, CausalConv1d):
+                    history = previous[len(next_cache)]
+                    x = (
+                        F.pad(x, module.causal_padding)
+                        if history is None
+                        else torch.cat((history, x), dim=2)
+                    )
+                    next_cache.append(x[:, :, -module.causal_padding[0] :].clone())
+                    x = F.conv1d(x, module.weight, module.bias)
+                else:
+                    x = module(x)
+            cache[:] = [torch.cat(next_cache, dim=1)]
         if mask is not None:
             x = x * mask
         else:
@@ -234,7 +276,12 @@ class DiTBlock(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, attn_mask: torch.Tensor
+        self,
+        x: torch.Tensor,
+        c: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        cnn_cache: list[torch.Tensor] | None = None,
+        att_cache: list[torch.Tensor] | None = None,
     ) -> torch.Tensor:
         (
             shift_msa,
@@ -248,9 +295,11 @@ class DiTBlock(nn.Module):
             gate_conv,
         ) = self.adaLN_modulation(c).chunk(9, dim=-1)
         x = x + gate_msa * self.attn(
-            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask
+            modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, att_cache
         )
-        x = x + gate_conv * self.conv(modulate(self.norm3(x), shift_conv, scale_conv))
+        x = x + gate_conv * self.conv(
+            modulate(self.norm3(x), shift_conv, scale_conv), cache=cnn_cache
+        )
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -324,11 +373,12 @@ class DiT(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        mask: torch.Tensor,
+        mask: torch.Tensor | None,
         mu: torch.Tensor,
         t: torch.Tensor,
         spks: torch.Tensor | None = None,
         cond: torch.Tensor | None = None,
+        cache: dict[str, torch.Tensor] | None = None,
     ) -> torch.Tensor:
         t = self.t_embedder(t).unsqueeze(1)
         x = pack([x, mu], "b * t")[0]
@@ -342,10 +392,24 @@ class DiT(nn.Module):
         else:
             pass
         x = x.transpose(1, 2)
-        attn_mask = mask.bool()
+        attn_mask = mask.bool() if mask is not None else None
         x = self.in_proj(x)
-        for block in self.blocks:
-            x = block(x, t, attn_mask)
+        next_cnn, next_attention = [], []
+        for index, block in enumerate(self.blocks):
+            if cache is None:
+                x = block(x, t, attn_mask)
+            else:
+                cnn = [cache["cnn"][index]] if cache else []
+                attention = [cache["attention"][index]] if cache else []
+                x = block(x, t, attn_mask, cnn, attention)
+                next_cnn.append(cnn[0])
+                next_attention.append(attention[0])
+        if cache is not None:
+            cache.update(
+                cnn=torch.stack(next_cnn), attention=torch.stack(next_attention)
+            )
+        else:
+            pass
         x = self.final_layer(x, t)
         x = x.transpose(1, 2)
         return x

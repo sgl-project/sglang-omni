@@ -70,10 +70,20 @@ class Upsample1D(nn.Module):
         )
 
     def forward(
-        self, inputs: torch.Tensor, input_lengths: torch.Tensor
+        self,
+        inputs: torch.Tensor,
+        input_lengths: torch.Tensor,
+        cache: list[torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         outputs = F.interpolate(inputs, scale_factor=self.scale_factor, mode="nearest")
-        outputs = F.pad(outputs, (self.stride * 2, 0), value=0.0)
+        if cache:
+            outputs = torch.cat((cache[0], outputs), dim=2)
+        else:
+            outputs = F.pad(outputs, (self.stride * 2, 0), value=0.0)
+        if cache is not None:
+            cache[:] = [outputs[:, :, -self.stride * 2 :].clone()]
+        else:
+            pass
         outputs = self.conv(outputs)
         return (outputs, input_lengths * self.stride)
 
@@ -89,17 +99,36 @@ class PreLookaheadLayer(nn.Module):
         )
         self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, stride=1, padding=0)
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        outputs = inputs.transpose(1, 2).contiguous()
-        outputs = F.pad(
-            outputs, (0, self.pre_lookahead_len), mode="constant", value=0.0
-        )
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        cache: list[torch.Tensor] | None = None,
+        last_chunk: bool = True,
+    ) -> torch.Tensor:
+        outputs = inputs.transpose(1, 2)
+        if cache is None:
+            outputs = outputs.contiguous()
+        else:
+            pass
+        if last_chunk:
+            outputs = F.pad(outputs, (0, self.pre_lookahead_len))
+        else:
+            pass
         outputs = F.leaky_relu(self.conv1(outputs))
-        outputs = F.pad(outputs, (2, 0), mode="constant", value=0.0)
-        outputs = self.conv2(outputs)
-        outputs = outputs.transpose(1, 2).contiguous()
-        outputs = outputs + inputs
-        return outputs
+        if cache:
+            outputs = torch.cat((cache[0], outputs), dim=2)
+        else:
+            outputs = F.pad(outputs, (2, 0))
+        if cache is not None:
+            cache[:] = [outputs[:, :, -2:].clone()]
+        else:
+            pass
+        outputs = self.conv2(outputs).transpose(1, 2)
+        if cache is None:
+            outputs = outputs.contiguous()
+        else:
+            pass
+        return outputs + inputs[:, : outputs.shape[1]]
 
 
 class UpsampleConformerEncoderV2(torch.nn.Module):
@@ -193,30 +222,109 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         )
 
     def forward(
-        self, xs: torch.Tensor, xs_lens: torch.Tensor
+        self,
+        xs: torch.Tensor,
+        xs_lens: torch.Tensor,
+        cache: dict[str, torch.Tensor] | None = None,
+        last_chunk: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        T = xs.size(1)
-        masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
-        xs, pos_emb, masks = self.embed(xs, masks)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        xs = self.pre_lookahead_layer(xs)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        for layer in self.encoders:
-            xs = layer(xs, masks, pos_emb)
-        xs = xs.transpose(1, 2).contiguous()
-        xs, xs_lens = self.up_layer(xs, xs_lens)
-        xs = xs.transpose(1, 2).contiguous()
-        T = xs.size(1)
-        masks = ~make_pad_mask(xs_lens, T).unsqueeze(1)
-        xs, pos_emb, masks = self.up_embed(xs, masks)
-        xs = xs * masks.transpose(1, 2).to(xs)
-        for layer in self.up_encoders:
-            xs = layer(xs, masks, pos_emb)
+        attention = cache.get("attention") if cache is not None else None
+        history_length = (
+            attention.shape[3] // self.up_layer.stride if attention is not None else 0
+        )
+        lookahead_cache = (
+            [cache["cnn"][:, :, :2]] if cache is not None and cache else []
+        )
+        upsample_cache = [cache["cnn"][:, :, 2:]] if cache is not None and cache else []
+        attention_caches = []
+        for stage, (embedding, layers) in enumerate(
+            ((self.embed, self.encoders), (self.up_embed, self.up_encoders))
+        ):
+            masks = (
+                ~make_pad_mask(xs_lens, xs.size(1)).unsqueeze(1)
+                if cache is None
+                else xs.new_empty((0, 0, 0))
+            )
+            xs, positions, masks = embedding(xs, masks)
+            if cache is None:
+                xs = xs * masks.transpose(1, 2).to(xs)
+            else:
+                pass
+            if stage == 0:
+                xs = self.pre_lookahead_layer(
+                    xs, lookahead_cache if cache is not None else None, last_chunk
+                )
+                if cache is None:
+                    xs = xs * masks.transpose(1, 2).to(xs)
+                else:
+                    pass
+            else:
+                pass
+            if cache is not None:
+                positions = embedding.pos_enc.position_embedding(xs, history_length)
+            else:
+                pass
+            cache_offset = 0 if stage == 0 else len(self.encoders)
+            for index, layer in enumerate(layers):
+                layer_cache = (
+                    [attention[cache_offset + index, :, :, :history_length]]
+                    if attention is not None
+                    else []
+                )
+                xs = layer(
+                    xs, masks, positions, layer_cache if cache is not None else None
+                )
+                if cache is not None:
+                    attention_caches.append(layer_cache[0])
+                else:
+                    pass
+            if stage == 0:
+                xs = xs.transpose(1, 2)
+                if cache is None:
+                    xs = xs.contiguous()
+                else:
+                    pass
+                xs, xs_lens = self.up_layer(
+                    xs,
+                    xs_lens,
+                    upsample_cache if cache is not None else None,
+                )
+                xs = xs.transpose(1, 2)
+                if cache is None:
+                    xs = xs.contiguous()
+                else:
+                    pass
+                history_length *= self.up_layer.stride
+            else:
+                pass
         if self.normalize_before:
             xs = self.after_norm(xs)
         else:
             pass
-        return (xs, masks)
+        if cache is not None:
+            cache["cnn"] = torch.cat((lookahead_cache[0], upsample_cache[0]), dim=2)
+            first = torch.stack(attention_caches[: len(self.encoders)]).repeat(
+                1, 1, 1, self.up_layer.stride, 1
+            )
+            second = torch.stack(attention_caches[len(self.encoders) :])
+            cache["attention"] = torch.cat((first, second))
+        else:
+            pass
+        return xs, masks
+
+    def forward_chunk(
+        self,
+        xs: torch.Tensor,
+        last_chunk: bool = False,
+        cnn_cache: torch.Tensor | None = None,
+        att_cache: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        cache = (
+            {"cnn": cnn_cache, "attention": att_cache} if att_cache is not None else {}
+        )
+        lengths = torch.full((xs.shape[0],), xs.shape[1], device=xs.device)
+        xs, _ = self.forward(xs, lengths, cache, last_chunk)
+        return xs, cache["cnn"], cache["attention"]
 
 
 def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:

@@ -8,6 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import onnxruntime
 import torch
 import torchaudio
@@ -30,6 +31,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.speech_tokenizer import (
 )
 
 SpeakerPrompt = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+StreamCaches = tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]
 FLOW_TYPES = {
     "!new:cosyvoice2.flow.flow.CausalMaskedDiffWithXvec": CausalMaskedDiffWithXvec,
     "!new:cosyvoice2.transformer.upsample_encoder_v2.UpsampleConformerEncoderV2": UpsampleConformerEncoderV2,
@@ -146,6 +148,11 @@ class Token2Wav(torch.nn.Module):
         )
         self.hift.to(device).eval()
         self.cache: SpeakerPrompt | None = None
+        self.mel_cache_len = 8
+        self.source_cache_len = self.mel_cache_len * 480
+        self.speech_window = torch.from_numpy(np.hamming(2 * self.source_cache_len)).to(
+            device
+        )
 
     @torch.inference_mode()
     def prepare_prompt(self, path: str) -> SpeakerPrompt:
@@ -182,3 +189,112 @@ class Token2Wav(torch.nn.Module):
             mode="replicate",
         )
         return tokens, token_lengths, embedding, prompt_mel
+
+    @torch.inference_mode()
+    def open_stream(self, prompt: SpeakerPrompt) -> StreamCaches:
+        """Return the flow and HiFT caches that start a streaming decode."""
+        prompt_speech_tokens, _, speaker_embedding, prompt_mels = prompt
+        right_pad_speech_tokens = torch.full(
+            (1, 3),
+            4218,
+            device=prompt_speech_tokens.device,
+            dtype=prompt_speech_tokens.dtype,
+        )
+        with torch.amp.autocast(
+            "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+        ):
+            flow_cache = self.flow.setup_cache(
+                torch.cat([prompt_speech_tokens, right_pad_speech_tokens], dim=1),
+                prompt_mels,
+                speaker_embedding,
+                n_timesteps=self.n_timesteps,
+            )
+        hift_cache = dict(
+            mel=torch.zeros(1, prompt_mels.shape[2], 0, device=self.device),
+            source=torch.zeros(1, 1, 0, device=self.device),
+            speech=torch.zeros(1, 0, device=self.device),
+        )
+        return flow_cache, hift_cache
+
+    @torch.inference_mode()
+    def stream(
+        self,
+        generated_speech_tokens: list[int],
+        prompt: SpeakerPrompt,
+        caches: StreamCaches,
+        last_chunk: bool = False,
+    ) -> tuple[bytes, StreamCaches]:
+        """Decode one token chunk; the caller owns the caches and receives new ones."""
+        _, _, speaker_embedding, prompt_mels = prompt
+        flow_cache, hift_cache = caches
+        tokens = torch.tensor(
+            [generated_speech_tokens], dtype=torch.int32, device=self.device
+        )
+        with torch.amp.autocast(
+            "cuda", dtype=self.dtype, enabled=self.dtype != torch.float32
+        ):
+            chunk_mel, flow_cache = self.flow.inference_chunk(
+                token=tokens,
+                spk=speaker_embedding,
+                cache=flow_cache,
+                last_chunk=last_chunk,
+                n_timesteps=self.n_timesteps,
+            )
+        prompt_len = prompt_mels.shape[1]
+        if flow_cache["estimator_att_cache"].shape[4] > prompt_len + 100:
+            flow_cache["estimator_att_cache"] = torch.cat(
+                [
+                    flow_cache["estimator_att_cache"][:, :, :, :, :prompt_len],
+                    flow_cache["estimator_att_cache"][:, :, :, :, -100:],
+                ],
+                dim=4,
+            )
+        else:
+            pass
+        if flow_cache["conformer_att_cache"].shape[3] > prompt_len + 100:
+            flow_cache["conformer_att_cache"] = torch.cat(
+                [
+                    flow_cache["conformer_att_cache"][:, :, :, :prompt_len, :],
+                    flow_cache["conformer_att_cache"][:, :, :, -100:, :],
+                ],
+                dim=3,
+            )
+        else:
+            pass
+        hift_cache_speech = hift_cache["speech"]
+        mel = torch.concat([hift_cache["mel"], chunk_mel], dim=2)
+        speech, source = self.hift(mel.float(), hift_cache["source"])
+        if hift_cache_speech.shape[-1] > 0:
+            overlap = min(
+                self.source_cache_len, speech.shape[-1], hift_cache_speech.shape[-1]
+            )
+            speech = speech.clone()
+            speech[..., :overlap] = (
+                speech[..., :overlap] * self.speech_window[:overlap]
+                + hift_cache_speech[..., -overlap:]
+                * self.speech_window[
+                    self.source_cache_len : self.source_cache_len + overlap
+                ]
+            )
+        else:
+            pass
+        is_first_chunk = hift_cache_speech.shape[-1] == 0
+        hift_cache = dict(
+            mel=mel[..., -self.mel_cache_len :].clone(),
+            source=source[:, :, -self.source_cache_len :].clone(),
+            speech=speech[:, -self.source_cache_len :].clone(),
+        )
+        if not last_chunk:
+            if is_first_chunk:
+                silence_padding = torch.zeros(
+                    1, self.source_cache_len, device=speech.device
+                )
+                speech = torch.cat(
+                    [silence_padding, speech[:, : -self.source_cache_len]], dim=1
+                )
+            else:
+                speech = speech[:, : -self.source_cache_len]
+        else:
+            pass
+        wav_np = np.clip(speech.cpu().numpy(), -1.0, 1.0)
+        return (wav_np * 32767.0).astype("<i2").tobytes(), (flow_cache, hift_cache)
