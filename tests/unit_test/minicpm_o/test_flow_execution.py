@@ -13,6 +13,8 @@ from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 from sglang_omni.models.minicpm_o.components.token2wav.flow import (
     CausalConditionalCFM,
     FlowCudaGraphRunner,
+)
+from sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes import (
     build_default_flow_cuda_graph_shapes,
 )
 

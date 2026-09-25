@@ -564,7 +564,7 @@ class DiT(nn.Module):
         return x
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CapturedPackedDiTGraph:
     graph: torch.cuda.CUDAGraph
     inputs: tuple[torch.Tensor, ...]
@@ -581,17 +581,17 @@ class PackedDiTCudaGraphRunner:
             raise ValueError("Packed DiT CUDA graphs require a CUDA device")
         else:
             pass
-        self.estimator = estimator
-        self.device = torch.device(
+        self.estimator: DiT = estimator
+        self.device: torch.device = torch.device(
             "cuda",
             device.index if device.index is not None else torch.cuda.current_device(),
         )
-        self.min_free_bytes = int(min_free_gb * 1024**3)
+        self.min_free_bytes: int = int(min_free_gb * 1024**3)
         self.graphs: dict[tuple[int, int], CapturedPackedDiTGraph] = {}
         self.pool: tuple[int, int] | None = None
-        self.lock = Lock()
-        self.graph_replays = 0
-        self.graph_misses = 0
+        self.lock: Lock = Lock()
+        self.graph_replays: int = 0
+        self.graph_misses: int = 0
 
     @torch.inference_mode()
     def capture(self, shapes: tuple[tuple[int, int], ...]) -> None:
@@ -599,7 +599,10 @@ class PackedDiTCudaGraphRunner:
             raise ValueError("Packed DiT CUDA graph shapes must be nonempty and unique")
         else:
             pass
-        if any(batch <= 1 or capacity <= 2 * batch for batch, capacity in shapes):
+        if any(
+            batch_size <= 1 or packed_capacity <= 2 * batch_size
+            for batch_size, packed_capacity in shapes
+        ):
             raise ValueError("Packed DiT graph capacities must exceed the row count")
         else:
             pass
@@ -609,14 +612,14 @@ class PackedDiTCudaGraphRunner:
         graphs: dict[tuple[int, int], CapturedPackedDiTGraph] = {}
         with torch.cuda.device(self.device), torch.cuda.stream(stream):
             self.pool = torch.cuda.graph_pool_handle()
-            for batch, capacity in sorted(
+            for batch_size, packed_capacity in sorted(
                 shapes, key=lambda shape: shape[1], reverse=True
             ):
                 free, _ = torch.cuda.mem_get_info(self.device)
                 if free < self.min_free_bytes:
                     logger.warning(
-                        f"MiniCPM-o packed DiT graph skipped batch={batch} "
-                        f"capacity={capacity}: free VRAM {free / 1024**3:.1f} GB "
+                        f"MiniCPM-o packed DiT graph skipped batch={batch_size} "
+                        f"capacity={packed_capacity}: free VRAM {free / 1024**3:.1f} GB "
                         f"is below {self.min_free_bytes / 1024**3:.1f} GB headroom"
                     )
                     continue
@@ -624,28 +627,28 @@ class PackedDiTCudaGraphRunner:
                     pass
                 try:
                     hidden_size = self.estimator.in_proj.out_features
-                    row_length = capacity // (2 * batch + 1)
-                    lengths = torch.full(
-                        (2 * batch,),
-                        row_length,
+                    row_length_frames = packed_capacity // (2 * batch_size + 1)
+                    row_lengths = torch.full(
+                        (2 * batch_size,),
+                        row_length_frames,
                         device=self.device,
                         dtype=torch.int32,
                     )
                     layout = build_fixed_packed_layout(
-                        lengths,
-                        row_length,
-                        capacity,
+                        row_lengths,
+                        row_length_frames,
+                        packed_capacity,
                         self.estimator.blocks[0].conv.kernel_size - 1,
                     )
-                    inputs = (
+                    static_inputs = (
                         torch.zeros(
-                            capacity,
+                            packed_capacity,
                             hidden_size,
                             device=self.device,
                             dtype=torch.bfloat16,
                         ),
                         torch.zeros(
-                            2 * batch + 1,
+                            2 * batch_size + 1,
                             hidden_size,
                             device=self.device,
                             dtype=torch.bfloat16,
@@ -656,15 +659,23 @@ class PackedDiTCudaGraphRunner:
                         layout.conv_valid,
                     )
                     with torch.autocast("cuda", dtype=torch.bfloat16):
-                        max_length = min(capacity, PACKED_DIT_GRAPH_MAX_SEQUENCE_LENGTH)
-                        for _ in range(3):
-                            self.estimator.run_packed_blocks(
-                                inputs[0],
-                                inputs[1],
-                                *inputs[2:4],
+                        max_length = min(
+                            packed_capacity, PACKED_DIT_GRAPH_MAX_SEQUENCE_LENGTH
+                        )
+
+                        def run_packed_blocks() -> torch.Tensor:
+                            return self.estimator.run_packed_blocks(
+                                static_inputs[0],
+                                static_inputs[1],
+                                static_inputs[2],
+                                static_inputs[3],
                                 max_length,
-                                *inputs[4:],
+                                static_inputs[4],
+                                static_inputs[5],
                             )
+
+                        for _ in range(3):
+                            run_packed_blocks()
                         graph = torch.cuda.CUDAGraph()
                         with torch.cuda.graph(
                             cuda_graph=graph,
@@ -672,55 +683,50 @@ class PackedDiTCudaGraphRunner:
                             stream=stream,
                             capture_error_mode="thread_local",
                         ):
-                            output = self.estimator.run_packed_blocks(
-                                inputs[0],
-                                inputs[1],
-                                *inputs[2:4],
-                                max_length,
-                                *inputs[4:],
-                            )
-                    graphs[(batch, capacity)] = CapturedPackedDiTGraph(
-                        graph, inputs, output
+                            output = run_packed_blocks()
+                    graphs[(batch_size, packed_capacity)] = CapturedPackedDiTGraph(
+                        graph=graph, inputs=static_inputs, output=output
                     )
                 except Exception as exc:
                     logger.warning(
                         f"MiniCPM-o packed DiT graph capture failed for "
-                        f"batch={batch} capacity={capacity}: {exc}; using eager"
+                        f"batch={batch_size} capacity={packed_capacity}: {exc}; using eager"
                     )
         current_stream.wait_stream(stream)
         self.graphs = graphs
         logger.info(f"Captured {len(graphs)} MiniCPM-o packed DiT CUDA graph shapes")
 
     def fit(
-        self, batch: int, mel_frames: int, packed_valid_frames: int | None
+        self, batch_size: int, mel_frames: int, packed_valid_frames: int | None
     ) -> int | None:
-        capacity = min(
+        packed_capacity = min(
             (
-                shape[1]
-                for shape in self.graphs
-                if shape[0] == batch
+                captured_capacity
+                for captured_batch_size, captured_capacity in self.graphs
+                if captured_batch_size == batch_size
                 and packed_valid_frames is not None
-                and mel_frames <= min(shape[1], PACKED_DIT_GRAPH_MAX_SEQUENCE_LENGTH)
-                and shape[1] > packed_valid_frames
-                and shape[1] - packed_valid_frames <= mel_frames
+                and mel_frames
+                <= min(captured_capacity, PACKED_DIT_GRAPH_MAX_SEQUENCE_LENGTH)
+                and captured_capacity > packed_valid_frames
+                and captured_capacity - packed_valid_frames <= mel_frames
             ),
             default=None,
         )
-        if capacity is None:
+        if packed_capacity is None:
             self.graph_misses += 1
         else:
             pass
-        return capacity
+        return packed_capacity
 
     def replay(
         self,
-        capacity: int,
+        packed_capacity: int,
         packed: torch.Tensor,
         conditioning: torch.Tensor,
         layout: FixedPackedLayout,
     ) -> torch.Tensor | None:
         with self.lock:
-            captured = self.graphs.get((layout.valid.shape[0] // 2, capacity))
+            captured = self.graphs.get((layout.valid.shape[0] // 2, packed_capacity))
             if captured is None:
                 self.graph_misses += 1
                 return None

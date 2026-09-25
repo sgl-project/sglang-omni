@@ -83,10 +83,9 @@ table. Failed captures and requests outside the captured buckets fall
 back to eager execution. Captures may be skipped when less than 3 GiB
 of GPU memory remains.
 
-The packed-capacity presets
-`SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES` (12 keys) and
-`SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES` (46 default keys) live in
-`sglang_omni.models.minicpm_o.components.token2wav.flow`. The earlier
+The packed-capacity table
+`SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES` (46 default keys) lives in
+`sglang_omni.models.minicpm_o.components.token2wav.flow_graph_shapes`. The earlier
 H100 experiment captured *different*, whole-Euler-step three-dimensional
 graphs; its performance and quality results do not validate these new
 packed DiT graphs. Offline application of the two default tables to that

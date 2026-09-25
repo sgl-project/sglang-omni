@@ -34,108 +34,6 @@ from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 
 logger = logging.getLogger(__name__)
 FLOW_CUDA_GRAPH_FRAME_BUCKET = 16
-# note (wirybeaver): SeedTTS EN uses 260-714 frames; sparse tails retain coverage.
-FLOW_CUDA_GRAPH_FRAME_BUCKETS = (
-    *range(128, 257, 32),
-    *range(272, 721, 16),
-    *range(752, 1009, 32),
-    1024,
-)
-# note (wirybeaver): B2-B8 buckets cover 294 timed SeedTTS EN packed fits.
-FLOW_CUDA_GRAPH_PACKED_FRAME_BUCKETS: dict[int, tuple[int, ...]] = {
-    2: (
-        336,
-        384,
-        400,
-        416,
-        432,
-        448,
-        464,
-        480,
-        496,
-        512,
-        528,
-        544,
-        560,
-        576,
-        592,
-        608,
-        624,
-        640,
-    ),
-    3: (400, 416, 448, 464, 480, 496, 512, 528, 544, 560, 576, 608, 640, 656, 672),
-    4: (432, 448, 464, 480, 496, 512, 528, 576, 592, 608, 624),
-    5: (416, 432, 448, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624),
-    6: (464, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 640, 656),
-    7: (480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 656, 672, 720, 736),
-    8: (480, 496, 528, 544, 560, 576, 592, 608, 624, 640, 656, 672, 784),
-}
-
-
-def build_default_flow_cuda_graph_shapes() -> tuple[tuple[int, int], ...]:
-    """Build the default batch/mel-frame graph grid."""
-    return (
-        *((1, frames) for frames in FLOW_CUDA_GRAPH_FRAME_BUCKETS),
-        *(
-            (batch, frames)
-            for batch, frame_buckets in FLOW_CUDA_GRAPH_PACKED_FRAME_BUCKETS.items()
-            for frames in frame_buckets
-        ),
-    )
-
-
-SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES: tuple[tuple[int, int], ...] = (
-    (2, 2144),
-    (3, 3088),
-    (4, 3936),
-    (6, 5680),
-    (8, 7616),
-    (5, 4944),
-    (7, 6384),
-    (5, 4192),
-    (8, 6832),
-    (7, 7136),
-    (2, 2448),
-    (6, 6464),
-)
-# note (wirybeaver): Capacities projected from the September 2026 SeedTTS EN census.
-SEEDTTS_EN_DENSE_PACKED_DIT_CUDA_GRAPH_SHAPES: tuple[tuple[int, int], ...] = (
-    *SEEDTTS_EN_PACKED_DIT_CUDA_GRAPH_SHAPES,
-    (2, 1744),
-    (2, 1936),
-    (2, 1616),
-    (2, 2080),
-    (3, 2688),
-    (3, 3392),
-    (3, 3072),
-    (3, 2496),
-    (4, 3520),
-    (4, 4048),
-    (4, 3216),
-    (4, 4432),
-    (5, 4128),
-    (5, 5376),
-    (5, 4592),
-    (5, 3760),
-    (6, 5376),
-    (6, 5888),
-    (6, 5248),
-    (6, 5424),
-    (7, 6032),
-    (7, 6448),
-    (7, 4944),
-    (7, 6736),
-    (8, 7760),
-    (8, 8416),
-    (8, 7440),
-    (8, 6352),
-    (3, 2000),
-    (5, 3216),
-    (2, 1280),
-    (7, 5520),
-    (7, 5552),
-    (8, 6896),
-)
 
 
 class CausalConditionalCFM(torch.nn.Module):
@@ -285,14 +183,14 @@ class CausalConditionalCFM(torch.nn.Module):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CapturedFlowGraph:
     graph: torch.cuda.CUDAGraph
     inputs: tuple[torch.Tensor, ...]
     output: torch.Tensor
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CapturedFlowEpilogue:
     graph: torch.cuda.CUDAGraph
     inputs: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -300,7 +198,7 @@ class CapturedFlowEpilogue:
 
 
 class FlowCudaGraphRunner:
-    """Replay one Euler step from startup-captured batch/frame shapes."""
+    """Replay startup-captured Flow steps or packed-batch epilogues."""
 
     def __init__(
         self,
@@ -313,19 +211,19 @@ class FlowCudaGraphRunner:
             raise ValueError("Flow CUDA graphs require a CUDA device")
         else:
             pass
-        self.decoder = decoder
-        self.device = torch.device(
+        self.decoder: CausalConditionalCFM = decoder
+        self.device: torch.device = torch.device(
             "cuda",
             device.index if device.index is not None else torch.cuda.current_device(),
         )
-        self.dtype = next(decoder.parameters()).dtype
-        self.min_free_bytes = int(min_free_gb * 1024**3)
+        self.dtype: torch.dtype = next(decoder.parameters()).dtype
+        self.min_free_bytes: int = int(min_free_gb * 1024**3)
         self.graphs: dict[tuple[int, int], CapturedFlowGraph] = {}
         self.epilogues: dict[tuple[int, int], CapturedFlowEpilogue] = {}
         self.pool: tuple[int, int] | None = None
-        self.lock = Lock()
-        self.graph_replays = 0
-        self.graph_misses = 0
+        self.lock: Lock = Lock()
+        self.graph_replays: int = 0
+        self.graph_misses: int = 0
 
     @torch.inference_mode()
     def capture(self, shapes: tuple[tuple[int, int], ...]) -> None:
@@ -395,7 +293,7 @@ class FlowCudaGraphRunner:
                         ):
                             output = self.decoder.euler_finish(*epilogue_inputs)
                         epilogues[shape] = CapturedFlowEpilogue(
-                            graph, epilogue_inputs, output
+                            graph=graph, inputs=epilogue_inputs, output=output
                         )
                     else:
                         t = torch.zeros(
@@ -438,7 +336,9 @@ class FlowCudaGraphRunner:
                                 capture_error_mode="thread_local",
                             ):
                                 output = self.decoder.euler_step(*inputs)
-                        graphs[shape] = CapturedFlowGraph(graph, inputs, output)
+                        graphs[shape] = CapturedFlowGraph(
+                            graph=graph, inputs=inputs, output=output
+                        )
                 except Exception as exc:
                     logger.warning(
                         f"MiniCPM-o Flow CUDA graph capture failed for "
