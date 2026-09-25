@@ -32,22 +32,22 @@ def failing_factory():
     raise RuntimeError("factory boom")
 
 
-class _FakeControlPlane:
+class FakeControlPlane:
     def __init__(self, recv_endpoint: str):
         self.recv_endpoint = recv_endpoint
 
 
-class _FakeStage:
+class FakeStage:
     name = "preprocessing"
 
     def __init__(self, recv_endpoint: str):
-        self.control_plane = _FakeControlPlane(recv_endpoint)
+        self.control_plane = FakeControlPlane(recv_endpoint)
 
     async def run(self) -> None:
         await asyncio.Event().wait()
 
 
-class _FakeCoordinator:
+class StubCoordinator:
     def __init__(self, *args, **kwargs):
         del args, kwargs
         self.started = False
@@ -63,7 +63,7 @@ class _FakeCoordinator:
         self.stopped = True
 
 
-def _make_config(base_path: Path) -> PipelineConfig:
+def make_config(base_path: Path) -> PipelineConfig:
     return PipelineConfig(
         model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         entry_stage="preprocessing",
@@ -80,7 +80,7 @@ def _make_config(base_path: Path) -> PipelineConfig:
 
 
 @pytest.fixture(autouse=True)
-def _fake_stage_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_stage_relay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "sglang_omni.comm.router.create_relay",
         lambda relay_type, **kwargs: FakeRelay(device=kwargs.get("device", "cpu")),
@@ -89,7 +89,7 @@ def _fake_stage_relay(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_ipc_runtime_dir_creation_and_close_contracts(tmp_path: Path) -> None:
     """Preserves IPC runtime directory creation, uniqueness, and idempotent cleanup."""
-    ipc_config = _make_config(tmp_path)
+    ipc_config = make_config(tmp_path)
 
     runtime_a = runtime_config.create_ipc_runtime_dir(ipc_config)
     runtime_b = runtime_config.create_ipc_runtime_dir(ipc_config)
@@ -110,7 +110,7 @@ def test_prepare_pipeline_runtime_owns_or_preserves_ipc_runtime_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Preserves owned IPC cleanup and caller-owned IPC directory preservation."""
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
 
     def fail_allocate_endpoints(*args, **kwargs):
         del args, kwargs
@@ -136,7 +136,7 @@ def test_prepare_pipeline_runtime_returns_managed_ipc_runtime_dir(
     tmp_path: Path,
 ) -> None:
     """Preserves managed IPC runtime directory ownership in runtime prep."""
-    prep = runtime_config.prepare_pipeline_runtime(_make_config(tmp_path))
+    prep = runtime_config.prepare_pipeline_runtime(make_config(tmp_path))
     runtime_dir = prep.runtime_dir
     assert runtime_dir is not None
     try:
@@ -152,7 +152,7 @@ def test_ipc_stage_groups_use_unique_endpoints_for_same_model_name(
     tmp_path: Path,
 ) -> None:
     """Preserves unique IPC endpoints across same-model pipeline instances."""
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     prep_a = runtime_config.prepare_pipeline_runtime(config)
     prep_b = runtime_config.prepare_pipeline_runtime(config)
     assert prep_a.runtime_dir is not None
@@ -203,7 +203,7 @@ async def test_mp_runner_cleans_runtime_dir_on_start_failure(
             return None
 
     monkeypatch.setattr(mp_runner, "Coordinator", FailingCoordinator)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(tmp_path))
 
     with pytest.raises(RuntimeError, match="boom"):
         await runner.start()
@@ -223,18 +223,18 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
             self.terminated = False
             self.killed = False
             self.join_count = 0
-            self._alive = True
+            self.alive = True
 
         def is_alive(self) -> bool:
-            return self._alive
+            return self.alive
 
         def terminate(self) -> None:
             self.terminated = True
-            self._alive = False
+            self.alive = False
 
         def kill(self) -> None:
             self.killed = True
-            self._alive = False
+            self.alive = False
 
         def join(self, timeout=None) -> None:
             del timeout
@@ -268,14 +268,14 @@ async def test_mp_runner_cleans_spawned_groups_when_later_spawn_fails(
 
     first_group = FakeGroup("preprocessing")
     second_group = FakeGroup("thinker", fail_spawn=True)
-    monkeypatch.setattr(mp_runner, "Coordinator", _FakeCoordinator)
+    monkeypatch.setattr(mp_runner, "Coordinator", StubCoordinator)
     monkeypatch.setattr(
         mp_runner,
         "build_stage_groups",
         lambda *a, **k: [first_group, second_group],
     )
 
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(tmp_path))
     with pytest.raises(RuntimeError, match="spawn failed"):
         await runner.start()
 
@@ -393,7 +393,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     monkeypatch.setattr(mp_runner, "Coordinator", FakeCoordinator)
     monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: [group])
 
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(tmp_path))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(tmp_path))
     await runner.start()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
 
@@ -403,7 +403,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     assert list(tmp_path.iterdir()) == []
 
 
-async def _run_launcher_with_fake_runner(
+async def run_launcher_with_fake_runner(
     *,
     config: PipelineConfig,
     serve_mock: AsyncMock | None,
@@ -420,7 +420,7 @@ async def _run_launcher_with_fake_runner(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             del pipeline_config
             nonlocal runner_ref
-            self.coordinator = _FakeCoordinator()
+            self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
             }
@@ -480,13 +480,13 @@ async def _run_launcher_with_fake_runner(
 async def test_launcher_passes_one_resolved_custom_voice_config(
     tmp_path, monkeypatch
 ) -> None:
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     custom_voice_config = CustomVoiceConfig(
         speakers=("speaker",), task_type="CustomVoice"
     )
     resolve = Mock(return_value=custom_voice_config)
     monkeypatch.setattr(PipelineConfig, "resolve_custom_voice_config", resolve)
-    _, app, _ = await _run_launcher_with_fake_runner(
+    _, app, _ = await run_launcher_with_fake_runner(
         config=config,
         serve_mock=AsyncMock(return_value=None),
         monkeypatch=monkeypatch,
@@ -509,7 +509,7 @@ async def test_launcher_passes_moss_tts_speech_input_limit(
         model_path="OpenMOSS-Team/MOSS-TTS-v1.5",
         endpoints=EndpointsConfig(base_path=str(tmp_path)),
     )
-    _, app, _ = await _run_launcher_with_fake_runner(
+    _, app, _ = await run_launcher_with_fake_runner(
         config=config,
         serve_mock=AsyncMock(return_value=None),
         monkeypatch=monkeypatch,
@@ -523,10 +523,10 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     server_serve = AsyncMock(return_value=None)
 
-    runner, app, profiler_calls = await _run_launcher_with_fake_runner(
+    runner, app, profiler_calls = await run_launcher_with_fake_runner(
         config=config,
         serve_mock=server_serve,
         monkeypatch=monkeypatch,
@@ -616,11 +616,11 @@ async def test_launcher_stops_runner_when_server_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
 
     with pytest.raises(RuntimeError, match="server failed"):
-        await _run_launcher_with_fake_runner(
+        await run_launcher_with_fake_runner(
             config=config,
             serve_mock=server_serve,
             monkeypatch=monkeypatch,
@@ -636,7 +636,7 @@ async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
 ) -> None:
     from sglang_omni.serve import launcher
 
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
     replayed_signals: list[int] = []
     server_ref: launcher.uvicorn.Server | None = None
     original_handler = signal.getsignal(signal.SIGTERM)
@@ -658,7 +658,7 @@ async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
     monkeypatch.setattr(launcher.uvicorn.Server, "_serve", serve_until_sigterm)
     signal.signal(signal.SIGTERM, recording_handler)
     try:
-        runner, _, _ = await _run_launcher_with_fake_runner(
+        runner, _, _ = await run_launcher_with_fake_runner(
             config=config,
             serve_mock=None,
             monkeypatch=monkeypatch,
@@ -671,7 +671,9 @@ async def test_pipeline_uvicorn_server_consumes_handled_sigterm(
     assert runner.started
     assert runner.stopped
     assert replayed_signals == []
-    assert server_ref._captured_signals == []
+    assert (
+        server_ref._captured_signals == []
+    )  # noqa: leading-underscore  # upstream name
 
 
 @pytest.mark.asyncio
@@ -679,7 +681,7 @@ async def test_launcher_preserves_runner_start_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = _make_config(tmp_path)
+    config = make_config(tmp_path)
 
     from sglang_omni.serve import launcher
 

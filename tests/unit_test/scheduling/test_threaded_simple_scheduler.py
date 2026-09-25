@@ -20,14 +20,14 @@ from sglang_omni.scheduling.threaded_simple_scheduler import (
 )
 
 
-def _request(
+def request(
     request_id: str, data=None, message_type: str = "new_request"
 ) -> IncomingMessage:
     return IncomingMessage(request_id=request_id, type=message_type, data=data)
 
 
 @contextmanager
-def _running(scheduler: ThreadedSimpleScheduler) -> Iterator[None]:
+def running(scheduler: ThreadedSimpleScheduler) -> Iterator[None]:
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
     try:
@@ -38,7 +38,7 @@ def _running(scheduler: ThreadedSimpleScheduler) -> Iterator[None]:
         assert not thread.is_alive()
 
 
-def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+def wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() >= deadline:
@@ -57,12 +57,12 @@ def test_abort_suppresses_unseen_or_queued_request(
 
     if abort_before_enqueue:
         scheduler.abort("drop")
-    scheduler.inbox.put(_request("drop", "must-not-run"))
+    scheduler.inbox.put(request("drop", "must-not-run"))
     if not abort_before_enqueue:
         scheduler.abort("drop")
-    scheduler.inbox.put(_request("live", "must-run"))
+    scheduler.inbox.put(request("live", "must-run"))
 
-    with _running(scheduler):
+    with running(scheduler):
         result = scheduler.outbox.get(timeout=2.0)
         assert (result.request_id, result.data) == ("live", "must-run")
         with pytest.raises(queue.Empty):
@@ -74,7 +74,7 @@ def test_abort_suppresses_unseen_or_queued_request(
 
 def test_non_request_message_is_not_tracked_as_queued() -> None:
     scheduler = ThreadedSimpleScheduler(lambda payload: payload, max_concurrency=1)
-    scheduler.inbox.put(_request("stream-only", "chunk", "stream_chunk"))
+    scheduler.inbox.put(request("stream-only", "chunk", "stream_chunk"))
 
     assert not scheduler.inbox.is_reachable("stream-only")
     scheduler.abort("stream-only")
@@ -105,7 +105,7 @@ def test_enqueue_promotes_speculative_abort_beyond_cap_reach() -> None:
     scheduler.abort("victim")
     assert "victim" in scheduler.speculative_aborts
 
-    scheduler.enqueue(_request("victim", "must-not-run"))
+    scheduler.enqueue(request("victim", "must-not-run"))
 
     assert "victim" in scheduler.queued_aborts
     assert "victim" not in scheduler.speculative_aborts
@@ -114,8 +114,8 @@ def test_enqueue_promotes_speculative_abort_beyond_cap_reach() -> None:
         scheduler.abort(f"newer-{i}")
     assert "victim" in scheduler.queued_aborts
 
-    with _running(scheduler):
-        scheduler.inbox.put(_request("live", "must-run"))
+    with running(scheduler):
+        scheduler.inbox.put(request("live", "must-run"))
         result = scheduler.outbox.get(timeout=5.0)
         assert (result.request_id, result.data) == ("live", "must-run")
         with pytest.raises(queue.Empty):
@@ -144,7 +144,7 @@ def test_enqueue_migration_is_atomic_with_inbox_put() -> None:
 
     enqueue_thread = threading.Thread(
         target=scheduler.enqueue,
-        args=(_request("victim", "must-not-run"),),
+        args=(request("victim", "must-not-run"),),
         daemon=True,
     )
     enqueue_thread.start()
@@ -168,8 +168,8 @@ def test_enqueue_migration_is_atomic_with_inbox_put() -> None:
         scheduler.abort(f"newer-{i}")
     assert "victim" in scheduler.queued_aborts
 
-    with _running(scheduler):
-        scheduler.inbox.put(_request("live", "must-run"))
+    with running(scheduler):
+        scheduler.inbox.put(request("live", "must-run"))
         result = scheduler.outbox.get(timeout=5.0)
         assert (result.request_id, result.data) == ("live", "must-run")
         with pytest.raises(queue.Empty):
@@ -187,14 +187,14 @@ def test_queued_aborts_past_cap_are_not_evicted() -> None:
     total = _ABORTED_REQUEST_ID_LIMIT + 100
     for i in range(total):
         request_id = f"req-{i}"
-        scheduler.inbox.put(_request(request_id, request_id))
+        scheduler.inbox.put(request(request_id, request_id))
         scheduler.abort(request_id)
 
     assert len(scheduler.queued_aborts) == total
     assert not scheduler.speculative_aborts
 
-    with _running(scheduler):
-        _wait_until(lambda: not scheduler.queued_aborts, timeout=10.0)
+    with running(scheduler):
+        wait_until(lambda: not scheduler.queued_aborts, timeout=10.0)
 
     assert executed == []
 
@@ -215,9 +215,9 @@ def test_claimed_abort_survives_speculative_eviction() -> None:
         lambda payload: executed.set() or payload, max_concurrency=1
     )
     scheduler.inbox = PausingInbox()
-    scheduler.inbox.put(_request("claimed", "must-not-run"))
+    scheduler.inbox.put(request("claimed", "must-not-run"))
 
-    with _running(scheduler):
+    with running(scheduler):
         try:
             assert claimed.wait(timeout=5.0)
             scheduler.abort("claimed")
@@ -225,7 +225,7 @@ def test_claimed_abort_survives_speculative_eviction() -> None:
                 scheduler.abort(f"newer-{i}")
             release_get.set()
 
-            _wait_until(lambda: not scheduler.inbox.claimed_counts)
+            wait_until(lambda: not scheduler.inbox.claimed_counts)
             with pytest.raises(queue.Empty):
                 scheduler.outbox.get(timeout=0.3)
             assert not executed.is_set()
@@ -247,20 +247,20 @@ def test_abort_for_reused_id_survives_old_future_completion() -> None:
         return payload
 
     scheduler = ThreadedSimpleScheduler(compute, max_concurrency=1)
-    with _running(scheduler):
+    with running(scheduler):
         try:
-            scheduler.inbox.put(_request("reused", "old"))
+            scheduler.inbox.put(request("reused", "old"))
             assert started.wait(timeout=5.0)
             scheduler.abort("reused")
             scheduler.abort("reused")
             assert scheduler.has_tombstone("reused")
 
             release.set()
-            _wait_until(lambda: not scheduler.aborted_futures)
+            wait_until(lambda: not scheduler.aborted_futures)
             assert scheduler.has_tombstone("reused")
 
-            scheduler.inbox.put(_request("reused", "new"))
-            scheduler.inbox.put(_request("live", "live"))
+            scheduler.inbox.put(request("reused", "new"))
+            scheduler.inbox.put(request("live", "live"))
             assert scheduler.outbox.get(timeout=5.0).data == "live"
             assert executed == ["old", "live"]
             assert not scheduler.has_tombstone("reused")
@@ -324,16 +324,16 @@ def test_running_abort_survives_speculative_eviction() -> None:
         return payload
 
     scheduler = ThreadedSimpleScheduler(compute, max_concurrency=1)
-    with _running(scheduler):
+    with running(scheduler):
         try:
-            scheduler.inbox.put(_request("running", "must-not-return"))
+            scheduler.inbox.put(request("running", "must-not-return"))
             assert started.wait(timeout=5.0)
             scheduler.abort("running")
             for i in range(_ABORTED_REQUEST_ID_LIMIT + 1):
                 scheduler.abort(f"newer-{i}")
             release.set()
 
-            _wait_until(lambda: not scheduler.aborted_futures)
+            wait_until(lambda: not scheduler.aborted_futures)
             with pytest.raises(queue.Empty):
                 scheduler.outbox.get(timeout=0.2)
         finally:

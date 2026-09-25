@@ -19,7 +19,7 @@ from benchmarks.eval.benchmark_tts_seedtts import (
 from sglang_omni.admission import QueueFullError
 
 
-def _config_from_cli(*args: str) -> TtsSeedttsBenchmarkConfig:
+def config_from_cli(*args: str) -> TtsSeedttsBenchmarkConfig:
     parser = _build_arg_parser()
     parsed = parser.parse_args(list(args))
     _validate_args(parser, parsed)
@@ -27,7 +27,7 @@ def _config_from_cli(*args: str) -> TtsSeedttsBenchmarkConfig:
 
 
 def test_seedtts_benchmark_batch_args_default_to_64() -> None:
-    config = _config_from_cli()
+    config = config_from_cli()
 
     assert config.max_running_requests == 64
     assert config.cuda_graph_max_bs == 64
@@ -43,7 +43,7 @@ def test_seedtts_benchmark_batch_args_default_to_64() -> None:
 
 
 def test_seedtts_benchmark_batch_args_are_independent() -> None:
-    config = _config_from_cli(
+    config = config_from_cli(
         "--max-running-requests",
         "32",
         "--cuda-graph-max-bs",
@@ -66,21 +66,21 @@ def test_seedtts_benchmark_batch_args_are_independent() -> None:
 
 
 def test_seedtts_benchmark_records_quantization() -> None:
-    config = _config_from_cli("--quantization", "fp8")
+    config = config_from_cli("--quantization", "fp8")
     assert config.quantization == "fp8"
     results_config = _build_results_config(config, base_url="http://localhost:8000")
     assert results_config["quantization"] == "fp8"
 
 
 def test_seedtts_benchmark_quantization_defaults_to_none() -> None:
-    config = _config_from_cli()
+    config = config_from_cli()
     assert config.quantization is None
     results_config = _build_results_config(config, base_url="http://localhost:8000")
     assert results_config["quantization"] is None
 
 
 def test_results_config_records_sampling_and_omits_fingerprint() -> None:
-    config = _config_from_cli(
+    config = config_from_cli(
         "--temperature",
         "0.2",
         "--top-p",
@@ -100,7 +100,7 @@ def test_results_config_records_sampling_and_omits_fingerprint() -> None:
     assert results_config["seed"] == 3
     assert "environment_fingerprint" not in results_config
 
-    unset = _build_results_config(_config_from_cli(), base_url="http://localhost:8000")
+    unset = _build_results_config(config_from_cli(), base_url="http://localhost:8000")
     assert unset["temperature"] is None
     assert unset["top_p"] is None
     assert unset["top_k"] is None
@@ -109,7 +109,7 @@ def test_results_config_records_sampling_and_omits_fingerprint() -> None:
 
 
 def test_results_config_includes_fingerprint_when_set() -> None:
-    config = _config_from_cli()
+    config = config_from_cli()
     config.environment_fingerprint = {"client": {"git": {}}, "server": {"url": "u"}}
     results_config = _build_results_config(config, base_url="http://localhost:8000")
     assert results_config["environment_fingerprint"]["server"]["url"] == "u"
@@ -139,13 +139,13 @@ def test_plan_sustained_overshoot() -> None:
         )
 
 
-def _sample(sample_id: str) -> SampleInput:
+def make_sample(sample_id: str) -> SampleInput:
     return SampleInput(
         sample_id=sample_id, ref_text="r", ref_audio="r.wav", target_text="t"
     )
 
 
-def _stub_seedtts_benchmark(monkeypatch, run_fn, *, samples=None) -> None:
+def stub_seedtts_benchmark(monkeypatch, run_fn, *, samples=None) -> None:
     monkeypatch.setattr(
         "benchmarks.eval.benchmark_tts_seedtts.run_tts_seedtts_benchmark",
         run_fn,
@@ -157,7 +157,7 @@ def _stub_seedtts_benchmark(monkeypatch, run_fn, *, samples=None) -> None:
     if samples is not None:
         monkeypatch.setattr(
             "benchmarks.eval.benchmark_tts_seedtts._load_benchmark_samples",
-            lambda _config: samples,
+            lambda config: samples,
         )
 
 
@@ -205,7 +205,7 @@ async def test_concurrency_sweep_writes_per_point_output_dirs(
 ) -> None:
     seen_output_dirs: list[str] = []
 
-    async def _fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
         seen_output_dirs.append(config.output_dir)
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
         (Path(config.output_dir) / "speed_results.json").write_text(
@@ -220,9 +220,9 @@ async def test_concurrency_sweep_writes_per_point_output_dirs(
             }
         }
 
-    _stub_seedtts_benchmark(monkeypatch, _fake_run)
+    stub_seedtts_benchmark(monkeypatch, fake_run)
 
-    config = _config_from_cli("--output-dir", str(tmp_path))
+    config = config_from_cli("--output-dir", str(tmp_path))
     payload = await run_tts_concurrency_sweep(config, [16, 32])
     expected = [str(tmp_path / "c16"), str(tmp_path / "c32")]
     assert seen_output_dirs == expected
@@ -243,7 +243,7 @@ async def test_concurrency_sweep_writes_per_point_output_dirs(
 async def test_concurrency_sweep_repeats_aggregate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def _fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **_kwargs) -> dict:
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
         latency = 3.0 if config.output_dir.endswith("_r2") else 1.0
         return {
@@ -255,8 +255,8 @@ async def test_concurrency_sweep_repeats_aggregate(
             }
         }
 
-    _stub_seedtts_benchmark(monkeypatch, _fake_run)
-    config = _config_from_cli("--output-dir", str(tmp_path), "--generate-only")
+    stub_seedtts_benchmark(monkeypatch, fake_run)
+    config = config_from_cli("--output-dir", str(tmp_path), "--generate-only")
     payload = await run_tts_concurrency_sweep(config, [16], repeats=2)
     row = payload["rows"][0]
     assert [item["output_dir"] for item in row["per_repeat"]] == [
@@ -271,7 +271,7 @@ async def test_concurrency_sweep_repeats_aggregate(
 
 @pytest.mark.asyncio
 async def test_concurrency_sweep_rejects_non_positive_repeats(tmp_path: Path) -> None:
-    config = _config_from_cli("--output-dir", str(tmp_path))
+    config = config_from_cli("--output-dir", str(tmp_path))
     with pytest.raises(ValueError, match="repeats must be positive"):
         await run_tts_concurrency_sweep(config, [1], repeats=0)
 
@@ -283,7 +283,7 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     seen: list[TtsSeedttsBenchmarkConfig] = []
     seen_samples: list[list[str]] = []
 
-    async def _fake_run(config: TtsSeedttsBenchmarkConfig, **kwargs) -> dict:
+    async def fake_run(config: TtsSeedttsBenchmarkConfig, **kwargs) -> dict:
         seen.append(config)
         seen_samples.append([sample.sample_id for sample in kwargs["samples"]])
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
@@ -317,10 +317,10 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
             "config": {"concurrency": config.concurrency},
         }
 
-    _stub_seedtts_benchmark(monkeypatch, _fake_run, samples=[_sample("s0")])
+    stub_seedtts_benchmark(monkeypatch, fake_run, samples=[make_sample("s0")])
 
     payload = await run_tts_sustained_overshoot(
-        _config_from_cli(
+        config_from_cli(
             "--output-dir",
             str(tmp_path),
             "--generate-only",

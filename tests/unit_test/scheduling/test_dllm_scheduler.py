@@ -12,7 +12,7 @@ from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 
 
-class _ReqDouble:
+class ReqDouble:
     def __init__(self, *, rid: str = "req", block_size: int = 4) -> None:
         self.rid = rid
         self.dllm_incomplete_ids = array("q")
@@ -27,16 +27,16 @@ class _ReqDouble:
         self.finished_reason = None
         self.kv = ReqKvInfo(req_pool_idx=3)
         self.accepted_lengths: list[int] = []
-        self._finished = False
+        self.is_finished = False
 
     def update_finish_state(self, *, new_accepted_len: int = 1) -> None:
         self.accepted_lengths.append(new_accepted_len)
 
     def finished(self) -> bool:
-        return self._finished
+        return self.is_finished
 
 
-def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
+def make_scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
     scheduler = object.__new__(DllmScheduler)
     scheduler.dllm_config = SimpleNamespace(
         first_done_first_out_mode=fdfo,
@@ -53,7 +53,7 @@ def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> No
     next_states = [{"round": 2}, None]
     calls = []
 
-    class _Algorithm:
+    class Algorithm:
         fdfo = True
 
         def run(self, model_runner, forward_batch, algo_states):
@@ -67,7 +67,7 @@ def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> No
             )
 
     worker = object.__new__(ModelWorker)
-    worker.dllm_algorithm = _Algorithm()
+    worker.dllm_algorithm = Algorithm()
     worker.model_runner = object()
     batch = SimpleNamespace(
         reqs=[
@@ -93,7 +93,7 @@ def test_model_worker_fdfo_forwards_carried_states_and_all_result_fields() -> No
 
 
 def test_model_worker_sync_dllm_accepts_five_field_result() -> None:
-    class _Algorithm:
+    class Algorithm:
         fdfo = False
 
         def run(self, model_runner, forward_batch, algo_states):
@@ -101,7 +101,7 @@ def test_model_worker_sync_dllm_accepts_five_field_result() -> None:
             return ("logits", [[10, 11]], None, None, False)
 
     worker = object.__new__(ModelWorker)
-    worker.dllm_algorithm = _Algorithm()
+    worker.dllm_algorithm = Algorithm()
     worker.model_runner = object()
 
     result = ModelWorker.forward_batch_generation(worker, "forward-batch")
@@ -147,7 +147,7 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
         SimpleNamespace(init_new=lambda *args, **kwargs: "forward-batch"),
     )
 
-    scheduler._event_loop()
+    scheduler._event_loop()  # noqa: leading-underscore  # production name
 
     assert forwarded == [("forward-batch", batch)]
 
@@ -157,7 +157,7 @@ def test_dllm_staging_admission_uses_dllm_config(
 ) -> None:
     from sglang.srt.runtime_context import get_context
 
-    scheduler = _scheduler(fdfo=True)
+    scheduler = make_scheduler(fdfo=True)
     scheduler.tree_cache = object()
     scheduler.token_to_kv_pool_allocator = object()
     scheduler.req_to_token_pool = object()
@@ -172,7 +172,7 @@ def test_dllm_staging_admission_uses_dllm_config(
     scheduler.staging_queue = [req]
     created = {}
 
-    class _Adder:
+    class Adder:
         def __init__(self, *args, **kwargs) -> None:
             created["dllm_config"] = kwargs.get("dllm_config")
             self.can_run_list = []
@@ -182,14 +182,14 @@ def test_dllm_staging_admission_uses_dllm_config(
             self.can_run_list.append(value)
             return dllm_scheduler_module.AddReqResult.CONTINUE
 
-    class _Batch:
+    class Batch:
         @staticmethod
         def init_new(**kwargs):
             created["batch_reqs"] = kwargs["reqs"]
             return SimpleNamespace(prepare_for_extend=lambda: None)
 
-    monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", _Adder)
-    monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", _Batch)
+    monkeypatch.setattr(dllm_scheduler_module, "PrefillAdder", Adder)
+    monkeypatch.setattr(dllm_scheduler_module, "ScheduleBatch", Batch)
 
     with get_context().override_server_args(page_size=1, max_prefill_tokens=16):
         batch = scheduler.schedule_next_batch()
@@ -201,8 +201,8 @@ def test_dllm_staging_admission_uses_dllm_config(
 
 
 def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
-    scheduler = _scheduler(fdfo=True)
-    req = _ReqDouble()
+    scheduler = make_scheduler(fdfo=True)
+    req = ReqDouble()
     scheduler.staging_queue = [req]
     cache_calls = []
     free_calls = []
@@ -237,8 +237,8 @@ def test_fdfo_unresolved_block_carries_tokens_state_and_resident_kv() -> None:
 
 
 def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
-    scheduler = _scheduler(fdfo=True)
-    req = _ReqDouble()
+    scheduler = make_scheduler(fdfo=True)
+    req = ReqDouble()
     req.dllm_incomplete_ids = array("q", [7, 8, 9, 10])
     req.dllm_algo_state = {"round": 1}
     batch = SimpleNamespace(reqs=[req])
@@ -258,8 +258,8 @@ def test_fdfo_resolved_block_commits_fill_ids_and_output_tokens() -> None:
 
 
 def test_fdfo_result_requires_accept_lengths() -> None:
-    scheduler = _scheduler(fdfo=True)
-    batch = SimpleNamespace(reqs=[_ReqDouble()])
+    scheduler = make_scheduler(fdfo=True)
+    batch = SimpleNamespace(reqs=[ReqDouble()])
     result = SimpleNamespace(
         next_token_ids=[[10, 11, 12, 13]],
         accept_length_per_req_cpu=None,
@@ -271,8 +271,8 @@ def test_fdfo_result_requires_accept_lengths() -> None:
 
 
 def test_sync_dllm_result_commits_generated_suffix() -> None:
-    scheduler = _scheduler(fdfo=False)
-    req = _ReqDouble()
+    scheduler = make_scheduler(fdfo=False)
+    req = ReqDouble()
     batch = SimpleNamespace(reqs=[req])
     result = SimpleNamespace(
         next_token_ids=[[10, 11]],

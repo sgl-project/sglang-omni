@@ -83,7 +83,7 @@ def test_fish_model_runner_vq_injection_and_code_collection_contracts() -> None:
     )
 
 
-def _make_s2pro_request(
+def make_s2pro_request(
     request_id: str, *, inflight_middle_chunks: int = 0
 ) -> SchedulerRequest:
     req = FakeFishReq(inflight_middle_chunks=inflight_middle_chunks)
@@ -108,7 +108,7 @@ def _make_s2pro_request(
     )
 
 
-def _collect_s2pro_step(
+def collect_s2pro_step(
     requests: list[SchedulerRequest],
     code_rows: list[list[int]],
     *,
@@ -128,10 +128,10 @@ def _collect_s2pro_step(
 
 
 def test_fish_s2pro_audio_timestep_updates_audio_and_stream_state() -> None:
-    request = _make_s2pro_request("req-audio")
+    request = make_s2pro_request("req-audio")
     data = request.data
 
-    result = _collect_s2pro_step(
+    result = collect_s2pro_step(
         [request],
         [[SEMANTIC_TOKEN_ID, 11, 22]],
         rep_history_len=4,
@@ -238,11 +238,11 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
 
     runner = object.__new__(FishS2ProModelRunner)
 
-    def _embed(input_ids: torch.Tensor) -> torch.Tensor:
+    def embed(input_ids: torch.Tensor) -> torch.Tensor:
         return input_ids.to(dtype=torch.float32).unsqueeze(-1).repeat(1, 2)
 
     runner.model = SimpleNamespace(
-        get_embed_tokens=lambda: _embed,
+        get_embed_tokens=lambda: embed,
         audio_decoder=SimpleNamespace(
             embed_text_dim=lambda embeds, parts, mask: embeds
         ),
@@ -336,7 +336,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
 ) -> None:
     # multinomial_with_seed is a GPU-only Triton kernel; this CPU test only
     # exercises EOS handling, and all rows are unseeded, so stub it out.
-    def _fake_multinomial_with_seed(logprobs, seeds, pos):
+    def fake_multinomial_with_seed(logprobs, seeds, pos):
         del seeds, pos
         assert torch.all(logprobs <= 0)
         assert torch.isneginf(logprobs).any()
@@ -346,10 +346,10 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
     monkeypatch.setitem(
         decode_codebooks.__globals__,
         "multinomial_with_seed",
-        _fake_multinomial_with_seed,
+        fake_multinomial_with_seed,
     )
 
-    class _AudioDecoder:
+    class AudioDecoder:
         def __init__(self) -> None:
             self.seen_embedding_ids: list[torch.Tensor] = []
 
@@ -373,7 +373,7 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
             self.seen_embedding_ids.append(ids.detach().clone())
             return torch.zeros(ids.shape[0], 4)
 
-    audio_decoder = _AudioDecoder()
+    audio_decoder = AudioDecoder()
     model = SimpleNamespace(
         semantic_bias=torch.full((40,), -float("inf")),
         prev_token_count=torch.zeros(1, dtype=torch.long),
@@ -425,7 +425,7 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
     im_end_token_id = 39
     vocab_size = 40
 
-    class _AudioDecoder:
+    class AudioDecoder:
         def reset_caches(self) -> None:
             pass
 
@@ -469,7 +469,7 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
         graph_top_k=30,
         sampling_top_k=torch.full((batch,), 2, dtype=torch.long, device=device),
         top_k_positions=torch.arange(30, device=device),
-        audio_decoder=_AudioDecoder(),
+        audio_decoder=AudioDecoder(),
         semantic_begin_id=semantic_begin_id,
         im_end_token_id=im_end_token_id,
         codebook_size=8,
@@ -489,12 +489,12 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
 
 
 def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
-    request = _make_s2pro_request("req-terminal")
+    request = make_s2pro_request("req-terminal")
 
-    _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
     request.data.latest_stream_code_chunk = None
 
-    result = _collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
+    result = collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
 
     assert int(result.next_token_ids[0].item()) == IM_END_TOKEN_ID
     assert len(request.data.output_codes) == 1
@@ -508,9 +508,9 @@ def test_fish_s2pro_terminal_im_end_is_not_audio_codebook_frame() -> None:
 
 
 def test_fish_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
-    request = _make_s2pro_request("req-immediate-terminal")
+    request = make_s2pro_request("req-immediate-terminal")
 
-    result = _collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
+    result = collect_s2pro_step([request], [[IM_END_TOKEN_ID, 33, 44]])
 
     assert int(result.next_token_ids[0].item()) == IM_END_TOKEN_ID
     assert request.data.output_codes == []
@@ -520,10 +520,10 @@ def test_fish_s2pro_immediate_im_end_leaves_no_audio_codebook_frames() -> None:
 
 
 def test_fish_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> None:
-    audio_request = _make_s2pro_request("req-audio")
-    terminal_request = _make_s2pro_request("req-terminal")
+    audio_request = make_s2pro_request("req-audio")
+    terminal_request = make_s2pro_request("req-terminal")
 
-    _collect_s2pro_step(
+    collect_s2pro_step(
         [audio_request, terminal_request],
         [
             [SEMANTIC_TOKEN_ID, 11, 22],
@@ -549,9 +549,9 @@ def test_fish_s2pro_mixed_batch_keeps_terminal_and_audio_state_separate() -> Non
 
 
 def test_fish_s2pro_chunked_step_does_not_mutate_decode_state() -> None:
-    request = _make_s2pro_request("req-chunked", inflight_middle_chunks=1)
+    request = make_s2pro_request("req-chunked", inflight_middle_chunks=1)
 
-    _collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
+    collect_s2pro_step([request], [[SEMANTIC_TOKEN_ID, 11, 22]])
 
     assert request.data.output_codes == []
     assert request.data.latest_stream_code_chunk is None
@@ -644,7 +644,7 @@ def test_fish_req_hits_max_new_tokens_and_scheduler_reports_length(
     )
     req = data.req
     req.omni_data = data
-    req._omni_terminal_claimed = False
+    req._omni_terminal_claimed = False  # noqa: leading-underscore  # production name
 
     for value in (200, 201):
         assert not req.finished()

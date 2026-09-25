@@ -9,7 +9,7 @@ from sglang_omni.models.dots_tts.sglang_model import DotsTTSSGLangModel
 
 
 def test_weight_loader_routes_every_checkpoint_namespace() -> None:
-    class _Backbone(nn.Module):
+    class Backbone(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.received: list[tuple[str, torch.Tensor]] = []
@@ -17,7 +17,7 @@ def test_weight_loader_routes_every_checkpoint_namespace() -> None:
         def load_weights(self, weights: list[tuple[str, torch.Tensor]]) -> None:
             self.received = list(weights)
 
-    class _Flow(nn.Module):
+    class Flow(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             for root in (
@@ -33,8 +33,8 @@ def test_weight_loader_routes_every_checkpoint_namespace() -> None:
 
     model = DotsTTSSGLangModel.__new__(DotsTTSSGLangModel)
     nn.Module.__init__(model)
-    model.qwen2 = _Backbone()
-    model.flow = _Flow()
+    model.qwen2 = Backbone()
+    model.flow = Flow()
     flow_weights = [
         (name, torch.full_like(parameter, float(index + 1)))
         for index, (name, parameter) in enumerate(model.flow.named_parameters())
@@ -61,11 +61,11 @@ def test_weight_loader_routes_every_checkpoint_namespace() -> None:
         ]
     )
 
-    assert [name for name, _tensor in model.qwen2.received] == [
+    assert [name for name, tensor in model.qwen2.received] == [
         "model.embed_tokens.weight"
     ]
     assert loaded == {
-        *(f"flow.{name}" for name, _tensor in flow_weights),
+        *(f"flow.{name}" for name, tensor in flow_weights),
     }
     for index, (_name, parameter) in enumerate(model.flow.named_parameters()):
         torch.testing.assert_close(
@@ -82,7 +82,7 @@ def test_weight_loader_routes_every_checkpoint_namespace() -> None:
         model.load_weights([("new_acoustic_block.weight", torch.ones(1, 1))])
 
 
-class _TransformerOnlyBackbone(nn.Module):
+class TransformerOnlyBackbone(nn.Module):
     def __init__(self, hidden: torch.Tensor) -> None:
         super().__init__()
         self.hidden = hidden
@@ -96,16 +96,16 @@ class _TransformerOnlyBackbone(nn.Module):
         raise AssertionError("dots.tts must not enter the lm_head logits path")
 
 
-def _forward_model(hidden: torch.Tensor) -> DotsTTSSGLangModel:
+def forward_model(hidden: torch.Tensor) -> DotsTTSSGLangModel:
     model = DotsTTSSGLangModel.__new__(DotsTTSSGLangModel)
     nn.Module.__init__(model)
-    model.qwen2 = _TransformerOnlyBackbone(hidden)
+    model.qwen2 = TransformerOnlyBackbone(hidden)
     return model
 
 
 def test_forward_prefill_skips_lm_head_and_keeps_full_hidden_rows() -> None:
     hidden = torch.arange(12.0).reshape(6, 2)
-    model = _forward_model(hidden)
+    model = forward_model(hidden)
     embeds = torch.zeros(6, 2)
     batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_extend=lambda: True),
@@ -128,7 +128,7 @@ def test_forward_prefill_skips_lm_head_and_keeps_full_hidden_rows() -> None:
 
 def test_forward_decode_skips_lm_head_and_returns_per_request_rows() -> None:
     hidden = torch.arange(6.0).reshape(3, 2)
-    model = _forward_model(hidden)
+    model = forward_model(hidden)
     embeds = torch.zeros(3, 2)
     batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_extend=lambda: False),
@@ -148,7 +148,7 @@ def test_forward_decode_skips_lm_head_and_returns_per_request_rows() -> None:
 
 
 def test_graph_feedback_buffer_routes_decode_input_embeds() -> None:
-    class _BufferBackbone(nn.Module):
+    class BufferBackbone(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.config = SimpleNamespace(hidden_size=4)
@@ -164,7 +164,7 @@ def test_graph_feedback_buffer_routes_decode_input_embeds() -> None:
 
     model = DotsTTSSGLangModel.__new__(DotsTTSSGLangModel)
     nn.Module.__init__(model)
-    model.qwen2 = _BufferBackbone()
+    model.qwen2 = BufferBackbone()
 
     assert model.graph_feedback_buffer is None
     model.enable_graph_feedback(3)

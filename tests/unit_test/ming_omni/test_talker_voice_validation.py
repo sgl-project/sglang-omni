@@ -16,7 +16,7 @@ from sglang_omni.models.ming_omni.components.talker_executor import MingTalkerEx
 from sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker import MingOmniTalker
 
 
-def _write_voice_manifest(
+def write_voice_manifest(
     talker_dir: Path, presets: dict, wav_files: dict | None = None
 ) -> Path:
     """Write a voice_name.json manifest plus referenced wav stubs."""
@@ -35,7 +35,7 @@ def _write_voice_manifest(
 def test_executor_validate_resolves_paths_when_default_voice_present(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/DB30.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         {wav_rel: b"\x00" * 16},
@@ -53,7 +53,7 @@ def test_executor_validate_resolves_paths_when_default_voice_present(tmp_path: P
 def test_executor_validate_raises_when_default_voice_missing(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/OTHER.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         {wav_rel: b"\x00" * 16},
@@ -71,7 +71,7 @@ def test_executor_validate_raises_when_default_voice_missing(tmp_path: Path):
 def test_executor_validate_raises_when_wav_missing(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/DB30.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         wav_files=None,
@@ -92,7 +92,7 @@ def test_executor_validate_raises_value_error_not_key_error_on_bad_manifest(
     """Manifest entry without prompt_wav_path must surface a clear ValueError,
     not a bare KeyError from dict[...] access."""
     talker_dir = tmp_path / "talker"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x"}},  # missing prompt_wav_path key
     )
@@ -109,7 +109,7 @@ def test_executor_validate_raises_value_error_not_key_error_on_bad_manifest(
 def test_executor_validate_allows_voice_none_with_unrelated_presets(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/OTHER.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         {wav_rel: b"\x00" * 16},
@@ -126,7 +126,7 @@ def test_executor_validate_allows_voice_none_with_unrelated_presets(tmp_path: Pa
 def test_scheduler_validate_raises_when_default_voice_missing(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/OTHER.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"OTHER": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         {wav_rel: b"\x00" * 16},
@@ -145,7 +145,7 @@ def test_scheduler_validate_raises_when_default_voice_missing(tmp_path: Path):
 def test_scheduler_validate_raises_when_wav_missing(tmp_path: Path):
     talker_dir = tmp_path / "talker"
     wav_rel = "spks/DB30.wav"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x", "prompt_wav_path": wav_rel}},
         wav_files=None,
@@ -163,7 +163,7 @@ def test_scheduler_validate_raises_when_wav_missing(tmp_path: Path):
 
 def test_scheduler_validate_raises_value_error_on_bad_manifest(tmp_path: Path):
     talker_dir = tmp_path / "talker"
-    manifest = _write_voice_manifest(
+    manifest = write_voice_manifest(
         talker_dir,
         {"DB30": {"prompt_text": "x"}},  # missing prompt_wav_path key
     )
@@ -178,14 +178,14 @@ def test_scheduler_validate_raises_value_error_on_bad_manifest(tmp_path: Path):
         scheduler.validate_voice_presets(voice_dict, str(manifest), str(talker_dir))
 
 
-def _bare_talker(voice_json_dict: dict | None = None) -> MingOmniTalker:
+def bare_talker(voice_json_dict: dict | None = None) -> MingOmniTalker:
     talker = object.__new__(MingOmniTalker)
     talker.voice_json_dict = voice_json_dict if voice_json_dict is not None else {}
     return talker
 
 
 def test_omni_audio_generation_unknown_voice_no_prompt_wav_raises():
-    talker = _bare_talker()
+    talker = bare_talker()
     gen = MingOmniTalker.omni_audio_generation(
         talker,
         tts_text="hi",
@@ -197,7 +197,7 @@ def test_omni_audio_generation_unknown_voice_no_prompt_wav_raises():
 
 
 def test_omni_audio_generation_no_voice_no_prompt_wav_raises():
-    talker = _bare_talker()
+    talker = bare_talker()
     gen = MingOmniTalker.omni_audio_generation(
         talker,
         tts_text="hi",
@@ -211,7 +211,7 @@ def test_omni_audio_generation_no_voice_no_prompt_wav_raises():
 def test_omni_audio_generation_explicit_prompt_wav_overrides_preset(monkeypatch):
     """An explicit prompt_wav_path must take precedence over a registered
     preset (callers use this to override the voice for a single request)."""
-    talker = _bare_talker(
+    talker = bare_talker(
         voice_json_dict={
             "DB30": {
                 "prompt_text": "preset text",
@@ -248,18 +248,18 @@ def test_omni_audio_generation_explicit_prompt_wav_overrides_preset(monkeypatch)
         MingOmniTalker, "initial_graph", lambda self: None, raising=False
     )
 
-    import torch as _torch
+    import torch as torch
 
-    class _NullStream:
+    class NullStream:
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(_torch.cuda, "stream", lambda s: _NullStream())
+    monkeypatch.setattr(torch.cuda, "stream", lambda s: NullStream())
     monkeypatch.setattr(
-        _torch.cuda, "Stream", lambda device=None: object(), raising=False
+        torch.cuda, "Stream", lambda device=None: object(), raising=False
     )
     monkeypatch.setattr(
         MingOmniTalker,
@@ -282,29 +282,29 @@ def test_omni_audio_generation_explicit_prompt_wav_overrides_preset(monkeypatch)
     assert captured["prompt_text"] == "explicit text"
 
 
-def _fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
+def fake_detokenizer(sample_rate=44100, vae_patch_size=4, hop_size=480):
     encoder = SimpleNamespace(patch_size=vae_patch_size, hop_size=hop_size)
     config = SimpleNamespace(sample_rate=sample_rate)
     return SimpleNamespace(encoder=encoder, config=config)
 
 
-def _run_process_segment_with_chunk_lengths(
+def run_process_segment_with_chunk_lengths(
     chunk_lengths: list[int],
     *,
     text: str = "Hi.",
     sample_rate: int = 10,
     stream: bool = True,
 ):
-    import torch as _torch
+    import torch as torch
 
     talker = object.__new__(MingOmniTalker)
     talker.normalizer = SimpleNamespace(normalize=lambda value: value)
     talker.patch_size = 2
-    detok = _fake_detokenizer(sample_rate=sample_rate)
+    detok = fake_detokenizer(sample_rate=sample_rate)
 
     def fake_tts_job(**_kwargs):
         for chunk_length in chunk_lengths:
-            yield {"tts_speech": _torch.zeros(1, chunk_length, dtype=_torch.float32)}
+            yield {"tts_speech": torch.zeros(1, chunk_length, dtype=torch.float32)}
 
     talker.tts_job = fake_tts_job
     return list(
@@ -329,18 +329,18 @@ def _run_process_segment_with_chunk_lengths(
 
 
 def test_process_segment_streams_every_internal_segment():
-    import torch as _torch
+    import torch as torch
 
     talker = object.__new__(MingOmniTalker)
     talker.normalizer = SimpleNamespace(normalize=lambda text: text)
     talker.patch_size = 2
-    detok = _fake_detokenizer(sample_rate=100)
+    detok = fake_detokenizer(sample_rate=100)
     recorded_stream_flags = []
 
     def fake_tts_job(**kwargs):
         recorded_stream_flags.append(kwargs["stream"])
         for _ in range(4):
-            yield {"tts_speech": _torch.zeros(1, 10, dtype=_torch.float32)}
+            yield {"tts_speech": torch.zeros(1, 10, dtype=torch.float32)}
 
     talker.tts_job = fake_tts_job
     cache_position = {}
@@ -401,14 +401,14 @@ def test_process_segment_streams_every_internal_segment():
 
 
 def test_process_segment_single_chunk_below_duration_guard():
-    outputs = _run_process_segment_with_chunk_lengths([10], text="Longer text.")
+    outputs = run_process_segment_with_chunk_lengths([10], text="Longer text.")
 
     assert len(outputs) == 1
     assert outputs[0][0].shape == (1, 10)
 
 
 def test_process_segment_multi_chunk_below_duration_guard():
-    outputs = _run_process_segment_with_chunk_lengths(
+    outputs = run_process_segment_with_chunk_lengths(
         [10, 15, 20], text="This segment is long enough to keep streaming."
     )
 
@@ -416,13 +416,13 @@ def test_process_segment_multi_chunk_below_duration_guard():
 
 
 def test_process_segment_stops_after_chunk_that_crosses_duration_guard():
-    outputs = _run_process_segment_with_chunk_lengths([15, 10, 10], text="Hi.")
+    outputs = run_process_segment_with_chunk_lengths([15, 10, 10], text="Hi.")
 
     assert [item[0].shape[-1] for item in outputs] == [15, 10]
 
 
 def test_process_segment_duration_guard_applies_without_streaming():
-    outputs = _run_process_segment_with_chunk_lengths(
+    outputs = run_process_segment_with_chunk_lengths(
         [15, 10, 10], text="Hi.", stream=False
     )
 
@@ -430,13 +430,13 @@ def test_process_segment_duration_guard_applies_without_streaming():
 
 
 def test_process_segment_duration_guard_preserves_strict_two_second_boundary():
-    outputs = _run_process_segment_with_chunk_lengths([20, 5, 5], text="Hi.")
+    outputs = run_process_segment_with_chunk_lengths([20, 5, 5], text="Hi.")
 
     assert [item[0].shape[-1] for item in outputs] == [20, 5]
 
 
 def test_process_segment_empty_generation_has_no_outputs():
-    outputs = _run_process_segment_with_chunk_lengths([], text="Hi.")
+    outputs = run_process_segment_with_chunk_lengths([], text="Hi.")
 
     assert outputs == []
 
@@ -444,12 +444,12 @@ def test_process_segment_empty_generation_has_no_outputs():
 def test_process_segment_duration_guard_does_not_concat_per_chunk(monkeypatch):
     import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
 
-    def fail_cat(*_args, **_kwargs):
+    def fail_cat(*args, **_kwargs):
         raise AssertionError("duration guard must not concatenate all_wavs")
 
     monkeypatch.setattr(talker_mod.torch, "cat", fail_cat)
 
-    outputs = _run_process_segment_with_chunk_lengths(
+    outputs = run_process_segment_with_chunk_lengths(
         [10, 10, 10], text="This segment is long enough to keep streaming."
     )
 
@@ -459,11 +459,11 @@ def test_process_segment_duration_guard_does_not_concat_per_chunk(monkeypatch):
 def test_tts_job_stream_applies_silence_holder(monkeypatch):
     import threading as _threading
 
-    import torch as _torch
+    import torch as torch
 
     import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
 
-    class _DoneFuture:
+    class DoneFuture:
         def done(self):
             return True
 
@@ -476,13 +476,15 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
         def cancel(self):
             return False
 
-    class _FakeExecutor:
+    class FakeExecutor:
         def submit(self, fn, *args, **kwargs):
             token_queue = kwargs["token_queue"]
-            token_queue.put((_torch.ones(1, 1), False))
-            token_queue.put((_torch.ones(1, 1), True))
-            token_queue.put(talker_mod._TOKEN_DONE)
-            return _DoneFuture()
+            token_queue.put((torch.ones(1, 1), False))
+            token_queue.put((torch.ones(1, 1), True))
+            token_queue.put(
+                talker_mod._TOKEN_DONE
+            )  # noqa: leading-underscore  # production name
+            return DoneFuture()
 
     monkeypatch.setattr(
         MingOmniTalker,
@@ -492,7 +494,7 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
     )
 
     talker = object.__new__(MingOmniTalker)
-    talker.executor = _FakeExecutor()
+    talker.executor = FakeExecutor()
     talker.lock = _threading.Lock()
     talker.tts_speech_token_dict = {}
     talker.llm_end_dict = {}
@@ -503,12 +505,12 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
 
     def fake_token2wav(**kwargs):
         token2wav_last_chunks.append(kwargs["last_chunk"])
-        return _torch.ones(1, 10, dtype=_torch.float32), kwargs["cache"]
+        return torch.ones(1, 10, dtype=torch.float32), kwargs["cache"]
 
     def fake_silence_holder(speech, sample_rate, sil_cache, last_chunk):
         silence_holder_last_chunks.append(last_chunk)
         if not last_chunk:
-            return _torch.zeros(0, dtype=speech.dtype), {"held": True}
+            return torch.zeros(0, dtype=speech.dtype), {"held": True}
         return speech * 2, {"held": False}
 
     talker.token2wav = fake_token2wav
@@ -521,7 +523,7 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
             text="hello",
             spk_emb=None,
             instruction=None,
-            audio_detokenizer=_fake_detokenizer(sample_rate=100),
+            audio_detokenizer=fake_detokenizer(sample_rate=100),
             prompt_text=None,
             prompt_wav_lat=None,
             prompt_wav_emb=None,
@@ -532,7 +534,7 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
     assert token2wav_last_chunks == [False, True]
     assert silence_holder_last_chunks == [False, True]
     assert len(outputs) == 1
-    assert _torch.equal(outputs[0]["tts_speech"], _torch.full((1, 10), 2.0))
+    assert torch.equal(outputs[0]["tts_speech"], torch.full((1, 10), 2.0))
     assert talker.tts_speech_token_dict == {}
     assert talker.llm_end_dict == {}
     assert talker.vae_cache == {}
@@ -540,46 +542,46 @@ def test_tts_job_stream_applies_silence_holder(monkeypatch):
 
 
 def test_silence_holder_does_not_recache_emitted_audio():
-    import torch as _torch
+    import torch as torch
 
     sample_rate = 100
     cache = None
 
-    first_input = _torch.cat([_torch.ones(10), _torch.zeros(20)]).unsqueeze(0)
+    first_input = torch.cat([torch.ones(10), torch.zeros(20)]).unsqueeze(0)
     first_output, cache = MingOmniTalker.silence_holder(
         first_input, sample_rate, cache, last_chunk=False
     )
-    assert _torch.equal(first_output, _torch.ones(1, 10))
+    assert torch.equal(first_output, torch.ones(1, 10))
     assert len(cache["holder"]) == 1
-    assert _torch.equal(cache["holder"][0], _torch.zeros(1, 20))
+    assert torch.equal(cache["holder"][0], torch.zeros(1, 20))
 
-    second_input = _torch.full((1, 30), 2.0)
+    second_input = torch.full((1, 30), 2.0)
     second_output, cache = MingOmniTalker.silence_holder(
         second_input, sample_rate, cache, last_chunk=False
     )
-    assert _torch.equal(
+    assert torch.equal(
         second_output,
-        _torch.cat([_torch.zeros(1, 20), second_input], dim=-1),
+        torch.cat([torch.zeros(1, 20), second_input], dim=-1),
     )
     assert cache["holder"] == []
 
-    final_input = _torch.full((1, 10), 3.0)
+    final_input = torch.full((1, 10), 3.0)
     final_output, cache = MingOmniTalker.silence_holder(
         final_input, sample_rate, cache, last_chunk=True
     )
-    assert _torch.equal(final_output, final_input)
+    assert torch.equal(final_output, final_input)
     assert cache["holder"] == []
     assert cache["buffer"] == []
 
-    combined = _torch.cat([first_output, second_output, final_output], dim=-1)
-    expected = _torch.cat([first_input, second_input, final_input], dim=-1)
-    assert _torch.equal(combined, expected)
+    combined = torch.cat([first_output, second_output, final_output], dim=-1)
+    expected = torch.cat([first_input, second_input, final_input], dim=-1)
+    assert torch.equal(combined, expected)
 
 
 def test_silence_holder_flushes_partial_final_frame():
-    import torch as _torch
+    import torch as torch
 
-    final_input = _torch.arange(1, 16, dtype=_torch.float32).unsqueeze(0)
+    final_input = torch.arange(1, 16, dtype=torch.float32).unsqueeze(0)
     output, cache = MingOmniTalker.silence_holder(
         final_input,
         sample_rate=100,
@@ -587,7 +589,7 @@ def test_silence_holder_flushes_partial_final_frame():
         last_chunk=True,
     )
 
-    assert _torch.equal(output, final_input)
+    assert torch.equal(output, final_input)
     assert cache["holder"] == []
     assert cache["buffer"] == []
 
@@ -595,13 +597,11 @@ def test_silence_holder_flushes_partial_final_frame():
 @pytest.mark.parametrize("split", [0, 400, 425])
 @pytest.mark.parametrize("tail_level", [0.0, 0.0015])
 def test_silence_holder_checks_final_tail_activity(split, tail_level):
-    import torch as _torch
+    import torch as torch
 
     # 400 ms of silence followed by a 50 ms partial frame. Splits exercise
     # both held silence and a tail spanning the buffer and final input.
-    speech = _torch.cat(
-        [_torch.zeros(1, 400), _torch.full((1, 50), tail_level)], dim=-1
-    )
+    speech = torch.cat([torch.zeros(1, 400), torch.full((1, 50), tail_level)], dim=-1)
     cache = None
     if split:
         output, cache = MingOmniTalker.silence_holder(
@@ -613,7 +613,7 @@ def test_silence_holder_checks_final_tail_activity(split, tail_level):
         speech[..., split:], sample_rate=1000, sil_cache=cache, last_chunk=True
     )
     expected = speech if tail_level > 0 else speech[..., :300]
-    assert _torch.equal(output, expected)
+    assert torch.equal(output, expected)
     if tail_level > 0:
         assert cache["holder"] == []
         assert cache["buffer"] == []
@@ -662,7 +662,7 @@ def test_tts_job_abort_waits_for_worker_and_cleans_caches(monkeypatch):
                     text="abort me",
                     spk_emb=None,
                     instruction=None,
-                    audio_detokenizer=_fake_detokenizer(sample_rate=100),
+                    audio_detokenizer=fake_detokenizer(sample_rate=100),
                     prompt_text=None,
                     prompt_wav_lat=None,
                     prompt_wav_emb=None,
@@ -691,19 +691,19 @@ def test_tts_job_abort_waits_for_worker_and_cleans_caches(monkeypatch):
 
 
 def test_process_segment_uses_distinct_cache_keys_for_cut_fragments(monkeypatch):
-    import torch as _torch
+    import torch as torch
 
     import sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker as talker_mod
 
     talker = object.__new__(MingOmniTalker)
     talker.normalizer = SimpleNamespace(normalize=lambda text: text)
     talker.patch_size = 2
-    detok = _fake_detokenizer(sample_rate=10)
+    detok = fake_detokenizer(sample_rate=10)
     recorded_stream_flags = []
 
     def fake_tts_job(**kwargs):
         recorded_stream_flags.append(kwargs["stream"])
-        yield {"tts_speech": _torch.zeros(10, dtype=_torch.float32)}
+        yield {"tts_speech": torch.zeros(10, dtype=torch.float32)}
 
     monkeypatch.setattr(
         talker_mod,
@@ -746,7 +746,7 @@ def test_duration_capped_steps_short_text_uses_floor():
     talker = object.__new__(MingOmniTalker)
     talker.patch_size = 2
 
-    detok = _fake_detokenizer()
+    detok = fake_detokenizer()
     seconds_per_step = (2 * 4 * 480) / 44100  # ≈ 0.0871
     expected = max(1, int(2.0 / seconds_per_step))  # short-text floor = 2.0s
 
@@ -759,7 +759,7 @@ def test_duration_capped_steps_short_text_uses_floor():
 def test_duration_capped_steps_long_text_uses_per_char_rate():
     talker = object.__new__(MingOmniTalker)
     talker.patch_size = 2
-    detok = _fake_detokenizer()
+    detok = fake_detokenizer()
 
     text_len = 100
     seconds_per_step = (2 * 4 * 480) / 44100
@@ -777,7 +777,7 @@ def test_duration_capped_steps_long_text_uses_per_char_rate():
 def test_duration_capped_steps_respects_requested_ceiling():
     talker = object.__new__(MingOmniTalker)
     talker.patch_size = 2
-    detok = _fake_detokenizer()
+    detok = fake_detokenizer()
 
     capped = talker.duration_capped_steps(
         text_len=100, audio_detokenizer=detok, requested_max_steps=5
@@ -807,11 +807,11 @@ def test_duration_capped_steps_missing_encoder_attr_is_passthrough():
     assert capped == 42
 
 
-def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
+def stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
     """Wire MingOmniTalker.generate's collaborators with deterministic stubs."""
-    import torch as _torch
+    import torch as torch
 
-    target_device = _torch.device("cpu")
+    target_device = torch.device("cpu")
 
     talker.his_patch_size = 1
     talker.patch_size = 1
@@ -821,7 +821,7 @@ def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
         device=target_device,
     )
 
-    class _NoopCache:
+    class NoopCache:
         def __init__(self):
             self.calls = []
 
@@ -834,11 +834,11 @@ def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
     graph = SimpleNamespace(replay=lambda: None)
     pool_state = {
         "tuple": (
-            _NoopCache(),
-            _torch.zeros(1, 1, 1, dtype=_torch.bfloat16),
-            _torch.zeros(1, dtype=_torch.long),
+            NoopCache(),
+            torch.zeros(1, 1, 1, dtype=torch.bfloat16),
+            torch.zeros(1, dtype=torch.long),
             SimpleNamespace(
-                hidden_states=(_torch.zeros(1, 1, 1, dtype=_torch.bfloat16),)
+                hidden_states=(torch.zeros(1, 1, 1, dtype=torch.bfloat16),)
             ),
             graph,
         ),
@@ -848,47 +848,47 @@ def _stub_for_generate(talker: MingOmniTalker, num_steps_before_stop: int):
         put=lambda x: pool_state.__setitem__("tuple", x),
     )
 
-    def _fake_forward(**kwargs):
+    def fake_forward(**kwargs):
         return SimpleNamespace(
-            hidden_states=(_torch.zeros(1, 1, 1, device=target_device),),
+            hidden_states=(torch.zeros(1, 1, 1, device=target_device),),
         )
 
-    talker.model = _fake_forward
+    talker.model = fake_forward
     type(talker).device = property(lambda self: target_device)
 
     step_counter = {"n": 0}
 
-    def _execute(hidden_out, his_lat, cfg, sigma, temperature, abort_event):
+    def execute(hidden_out, his_lat, cfg, sigma, temperature, abort_event):
         n = step_counter["n"]
         step_counter["n"] += 1
-        gen_lat = _torch.full((1, 1, 1), float(n), device=target_device)
-        new_embeds = _torch.zeros(1, 1, 1, device=target_device)
+        gen_lat = torch.full((1, 1, 1), float(n), device=target_device)
+        new_embeds = torch.zeros(1, 1, 1, device=target_device)
         stop_value = (
             1.0
             if (num_steps_before_stop is not None and n == num_steps_before_stop)
             else 0.0
         )
-        stop_out = _torch.tensor([[0.0, stop_value]], device=target_device)
+        stop_out = torch.tensor([[0.0, stop_value]], device=target_device)
         return gen_lat, new_embeds, stop_out
 
-    talker.sampler_pool = SimpleNamespace(execute=_execute)
+    talker.sampler_pool = SimpleNamespace(execute=execute)
 
 
 @pytest.mark.accelerator
 def test_generate_emits_final_true_when_stop_token_fires(monkeypatch):
     """Stop-token exit terminates with last_chunk=True."""
-    import torch as _torch
+    import torch as torch
 
     talker = object.__new__(MingOmniTalker)
-    _stub_for_generate(talker, num_steps_before_stop=4)
+    stub_for_generate(talker, num_steps_before_stop=4)
 
     monkeypatch.setattr(
         "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker." "StaticCache",
         lambda **kw: object(),
     )
 
-    input_ids = _torch.zeros(1, 2, dtype=_torch.long)
-    inputs_embeds = _torch.zeros(1, 2, 1)
+    input_ids = torch.zeros(1, 2, dtype=torch.long)
+    inputs_embeds = torch.zeros(1, 2, 1)
 
     yields = list(
         MingOmniTalker.generate(
@@ -909,19 +909,19 @@ def test_generate_emits_final_true_when_stop_token_fires(monkeypatch):
 def test_generate_emits_final_true_when_duration_cap_hits(monkeypatch):
     """Loop exit via effective_max_decode_steps ceiling must still emit a
     last_chunk=True so the streaming VAE flushes its tail."""
-    import torch as _torch
+    import torch as torch
 
     talker = object.__new__(MingOmniTalker)
     # never trigger stop_out=1.0 inside the loop
-    _stub_for_generate(talker, num_steps_before_stop=None)
+    stub_for_generate(talker, num_steps_before_stop=None)
 
     monkeypatch.setattr(
         "sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker." "StaticCache",
         lambda **kw: object(),
     )
 
-    input_ids = _torch.zeros(1, 2, dtype=_torch.long)
-    inputs_embeds = _torch.zeros(1, 2, 1)
+    input_ids = torch.zeros(1, 2, dtype=torch.long)
+    inputs_embeds = torch.zeros(1, 2, 1)
 
     yields = list(
         MingOmniTalker.generate(

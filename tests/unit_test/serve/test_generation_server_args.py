@@ -37,7 +37,7 @@ GENERATION_SERVER_ARGS = {
 }
 
 
-def _serve_kwargs(**overrides) -> dict[str, object]:
+def serve_kwargs(**overrides) -> dict[str, object]:
     data: dict[str, object] = {
         "ctx": SimpleNamespace(args=[]),
         "model_path": "dummy",
@@ -46,12 +46,12 @@ def _serve_kwargs(**overrides) -> dict[str, object]:
     return data
 
 
-def _engine_overrides(config: PipelineConfig, stage_name: str) -> dict[str, object]:
+def engine_overrides(config: PipelineConfig, stage_name: str) -> dict[str, object]:
     engine = config.stage_named(stage_name).engine
     return engine.overrides() if engine is not None else {}
 
 
-def _set_generation_server_args(
+def set_generation_server_args(
     config: PipelineConfig, stage_name: str
 ) -> PipelineConfig:
     return ConfigManager(config).merge_config(
@@ -80,16 +80,16 @@ def test_dotted_engine_flags_reach_each_generation_stage(
     config_cls: type[PipelineConfig], stage_name: str
 ) -> None:
     config = config_cls(model_path="dummy")
-    merged = _set_generation_server_args(config, stage_name)
+    merged = set_generation_server_args(config, stage_name)
 
-    overrides = _engine_overrides(merged, stage_name)
+    overrides = engine_overrides(merged, stage_name)
     for key, value in GENERATION_SERVER_ARGS.items():
         assert overrides[key] == value
     # The write is per stage: no other stage picked the values up.
     for stage in merged.stages:
         if stage.name == stage_name:
             continue
-        assert "max_total_tokens" not in _engine_overrides(merged, stage.name)
+        assert "max_total_tokens" not in engine_overrides(merged, stage.name)
 
 
 def test_engine_flags_on_a_non_engine_stage_are_refused() -> None:
@@ -110,7 +110,7 @@ def test_serve_routes_dotted_engine_flags_to_the_stage(
     from_model_path.return_value = ConfigManager(config)
 
     serve(
-        **_serve_kwargs(
+        **serve_kwargs(
             ctx=SimpleNamespace(
                 args=[
                     "--tts_engine.engine.max_running_requests",
@@ -123,7 +123,7 @@ def test_serve_routes_dotted_engine_flags_to_the_stage(
     )
 
     launched_config = launch_server.call_args.args[0]
-    overrides = _engine_overrides(launched_config, "tts_engine")
+    overrides = engine_overrides(launched_config, "tts_engine")
     assert overrides["max_running_requests"] == 32
     assert overrides["max_total_tokens"] == TEST_MAX_TOTAL_TOKENS
 
@@ -137,7 +137,7 @@ def test_serve_without_engine_flags_preserves_pipeline_default(
     config = HiggsTtsPipelineConfig(model_path="dummy")
     from_model_path.return_value = ConfigManager(config)
 
-    serve(**_serve_kwargs())
+    serve(**serve_kwargs())
 
     launched_config = launch_server.call_args.args[0]
-    assert _engine_overrides(launched_config, "tts_engine") == {}
+    assert engine_overrides(launched_config, "tts_engine") == {}

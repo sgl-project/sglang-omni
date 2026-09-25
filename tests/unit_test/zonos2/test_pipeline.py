@@ -31,7 +31,7 @@ from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
     feedback = torch.arange(12, dtype=torch.float32).reshape(6, 2)
 
-    class _Pool:
+    class Pool:
         feedback_embeds = feedback
 
         def release_inactive(self, request_ids: set[str]) -> None:
@@ -45,7 +45,7 @@ def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
     runner = SimpleNamespace(
         model=SimpleNamespace(
             decode_input_embedding=SimpleNamespace(weight=weight),
-            decode_state_pool=_Pool(),
+            decode_state_pool=Pool(),
         )
     )
     forward_batch = SimpleNamespace(batch_size=4, input_ids=None, input_embeds=object())
@@ -119,7 +119,7 @@ def test_zonos2_multi_gpu_uses_typed_gpu_one_process() -> None:
     assert topology.stage_to_process["tts_engine"] == "pipeline"
 
 
-def _speech_payload(payload: dict) -> StagePayload:
+def speech_payload(payload: dict) -> StagePayload:
     validator = SpeechRequestValidator(default_model="Zyphra/zonos2")
     prepared = validator.parse_generation_request(payload)
     generation_request = validator.build_generate_request(
@@ -144,21 +144,21 @@ def test_speech_language_reaches_prompt_normalization(
     calls: list[str] = []
     normalizer = text_frontend.TTSTextNormalizer()
 
-    class _FakeNemoNormalizer:
+    class FakeNemoNormalizer:
         def __init__(self, lang: str) -> None:
             self.lang = lang
 
         def normalize(self, text: str, *, punct_post_process: bool) -> str:
             return f"{self.lang}:{text}"
 
-    def _get(lang: str):
+    def get(lang: str):
         calls.append(lang)
-        return _FakeNemoNormalizer(lang)
+        return FakeNemoNormalizer(lang)
 
-    monkeypatch.setattr(normalizer, "get", _get)
+    monkeypatch.setattr(normalizer, "get", get)
     monkeypatch.setattr(text_frontend, "_NORMALIZER", normalizer)
     state = build_zonos2_state(
-        _speech_payload({"input": f"{language} prompt", "language": language})
+        speech_payload({"input": f"{language} prompt", "language": language})
     )
     rows = text_frontend.build_prompt_rows(state.text, language=state.language)
     expected = text_frontend.text_to_byte_ids(f"{nemo_language}:{language} prompt")
@@ -172,13 +172,13 @@ def test_speech_language_reaches_prompt_normalization(
 def test_auto_and_unsupported_normalization_keep_raw_prompt(
     monkeypatch, language: str
 ) -> None:
-    class _FailingNormalizer:
+    class FailingNormalizer:
         def normalize(self, text: str, language: str) -> str:
             raise AssertionError("normalizer should not be called")
 
-    monkeypatch.setattr(text_frontend, "_NORMALIZER", _FailingNormalizer())
+    monkeypatch.setattr(text_frontend, "_NORMALIZER", FailingNormalizer())
     text = f"{language} raw prompt"
-    state = build_zonos2_state(_speech_payload({"input": text, "language": language}))
+    state = build_zonos2_state(speech_payload({"input": text, "language": language}))
     rows = text_frontend.build_prompt_rows(state.text, language=state.language)
     expected = text_frontend.text_to_byte_ids(text)
 
@@ -187,7 +187,7 @@ def test_auto_and_unsupported_normalization_keep_raw_prompt(
 
 def test_speech_seed_is_rejected_until_request_rng_is_supported() -> None:
     with pytest.raises(ValueError, match="does not support seed"):
-        build_zonos2_state(_speech_payload({"input": "seeded prompt", "seed": 17}))
+        build_zonos2_state(speech_payload({"input": "seeded prompt", "seed": 17}))
 
 
 def test_zonos2_engine_builder_disables_chunked_prefill() -> None:

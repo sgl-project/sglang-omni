@@ -34,7 +34,7 @@ def test_tp_initialization_uses_platform_backend(monkeypatch) -> None:
     )
     monkeypatch.setattr(server_args, "ServerArgs", lambda **_kwargs: object())
     monkeypatch.setattr(
-        server_args, "set_global_server_args_for_scheduler", lambda _args: None
+        server_args, "set_global_server_args_for_scheduler", lambda args: None
     )
     monkeypatch.setattr(image_encoder.MingImageEncoder, "did_init_tp", False)
 

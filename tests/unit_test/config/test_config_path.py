@@ -241,35 +241,35 @@ class TestLosslessNumericCoercion:
     int field (32.0 would be truncated into shape). CLI text is parsed to a
     scalar first, so both it and a native YAML scalar answer to the rule."""
 
-    def _path(self, pipeline_config, text: str) -> ConfigPath:
+    def path(self, pipeline_config, text: str) -> ConfigPath:
         return ConfigPath.parse(text, type(pipeline_config))
 
     @pytest.mark.parametrize("value", ["true", True, "2.5", 32.0])
     def test_lossy_values_are_refused_on_an_int_field(
         self, pipeline_config, value
     ) -> None:
-        path = self._path(pipeline_config, "stages.thinker.tp_size")
+        path = self.path(pipeline_config, "stages.thinker.tp_size")
         with pytest.raises(ConfigPathError, match="tp_size expects"):
             path.coerce(value)
 
     def test_a_boolean_is_refused_on_a_float_field(self, pipeline_config) -> None:
-        path = self._path(
+        path = self.path(
             pipeline_config, "stages.thinker.factory.prefill_coalesce_wait_ms"
         )
         with pytest.raises(ConfigPathError, match="got a boolean"):
             path.coerce("true")
 
     def test_an_int_still_fits_a_float_field(self, pipeline_config) -> None:
-        path = self._path(
+        path = self.path(
             pipeline_config, "stages.thinker.factory.prefill_coalesce_wait_ms"
         )
         assert path.coerce("40") == 40.0
 
     def test_zero_and_one_still_fit_a_bool_field(self, pipeline_config) -> None:
-        path = self._path(pipeline_config, "stages.thinker.factory.enable_async_decode")
+        path = self.path(pipeline_config, "stages.thinker.factory.enable_async_decode")
         assert path.coerce("1") is True
         assert path.coerce("0") is False
 
     def test_numeric_text_stays_text_on_a_string_field(self, pipeline_config) -> None:
-        path = self._path(pipeline_config, "stages.thinker.factory.device")
+        path = self.path(pipeline_config, "stages.thinker.factory.device")
         assert path.coerce("123") == "123"

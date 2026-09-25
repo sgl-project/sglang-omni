@@ -33,11 +33,11 @@ from benchmarks.realtime_asr.metrics import (
 DECODE_INTERVAL_MS = 1000
 
 
-def _pcm_seconds(seconds: float) -> bytes:
+def pcm_seconds(seconds: float) -> bytes:
     return b"\x01\x00" * int(SAMPLE_RATE * seconds)
 
 
-class _FakeTranscriptionServer:
+class FakeTranscriptionServer:
     """Minimal stand-in for RealtimeTranscriptionSession.
 
     Manual mode: one partial per ``decode_interval`` of audio, final on commit.
@@ -120,14 +120,14 @@ class _FakeTranscriptionServer:
 
 @pytest.fixture
 def fake_server():
-    server = _FakeTranscriptionServer()
+    server = FakeTranscriptionServer()
 
-    async def _run(coro):
+    async def run(coro):
         async with websockets.serve(server.handler, "127.0.0.1", 0) as ws_server:
             port = ws_server.sockets[0].getsockname()[1]
             return await coro(f"ws://127.0.0.1:{port}/v1/realtime?intent=transcription")
 
-    return server, _run
+    return server, run
 
 
 def test_split_packets_covers_all_bytes_in_order():
@@ -139,7 +139,7 @@ def test_split_packets_covers_all_bytes_in_order():
 
 def test_manual_session_records_packets_and_events(fake_server):
     server, run = fake_server
-    pcm = _pcm_seconds(2.5)
+    pcm = pcm_seconds(2.5)
 
     trace = asyncio.run(
         run(
@@ -186,7 +186,7 @@ def test_manual_session_records_packets_and_events(fake_server):
 
 def test_paced_send_spreads_packets_over_wall_clock(fake_server):
     _, run = fake_server
-    pcm = _pcm_seconds(1.0)
+    pcm = pcm_seconds(1.0)
 
     trace = asyncio.run(
         run(lambda url: run_session(url, pcm, packet_ms=100, paced=True))
@@ -202,7 +202,7 @@ def test_paced_send_spreads_packets_over_wall_clock(fake_server):
 
 def test_trailing_silence_extends_sent_audio_but_not_duration(fake_server):
     _, run = fake_server
-    pcm = _pcm_seconds(1.0)
+    pcm = pcm_seconds(1.0)
     trace = asyncio.run(
         run(
             lambda url: run_session(
@@ -215,18 +215,18 @@ def test_trailing_silence_extends_sent_audio_but_not_duration(fake_server):
 
 
 def test_timeout_is_reported_not_raised():
-    async def _hang(websocket):
+    async def hang(websocket):
         await websocket.send(json.dumps({"type": "session.created", "session": {}}))
         await asyncio.sleep(5)
 
-    async def _run():
-        async with websockets.serve(_hang, "127.0.0.1", 0) as ws_server:
+    async def run():
+        async with websockets.serve(hang, "127.0.0.1", 0) as ws_server:
             port = ws_server.sockets[0].getsockname()[1]
             return await run_session(
-                f"ws://127.0.0.1:{port}/v1/realtime", _pcm_seconds(0.2), timeout_s=0.3
+                f"ws://127.0.0.1:{port}/v1/realtime", pcm_seconds(0.2), timeout_s=0.3
             )
 
-    trace = asyncio.run(_run())
+    trace = asyncio.run(run())
     assert trace.error is not None and "timeout" in trace.error
     assert trace.end_s is not None
     assert "client error" in check_invariants(trace)[0]
@@ -235,7 +235,7 @@ def test_timeout_is_reported_not_raised():
 # --- metric definitions on hand-built traces ---------------------------------
 
 
-def _trace(
+def make_trace(
     events: list[tuple[float, dict]],
     *,
     sent_packet_s: float = 0.2,
@@ -266,7 +266,7 @@ def _trace(
     return trace
 
 
-def _seg(segment_id: int, text: str, *, final: bool, index: int) -> dict:
+def seg(segment_id: int, text: str, *, final: bool, index: int) -> dict:
     return {
         "type": "transcription.segment",
         "segment_id": segment_id,
@@ -279,7 +279,7 @@ def _seg(segment_id: int, text: str, *, final: bool, index: int) -> dict:
 def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point():
     # VAD says speech started at 400 ms; refresh point is 1400 ms of audio.
     # Packet 7 (audio_end 1.4 s) is sent at t0 + 1.2 s; partial arrives at t0 + 1.5 s.
-    trace = _trace(
+    trace = make_trace(
         [
             (
                 0.25,
@@ -290,8 +290,8 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 1,
                 },
             ),
-            (1.5, _seg(0, "hel", final=False, index=2)),
-            (2.6, _seg(0, "hello wor", final=False, index=3)),
+            (1.5, seg(0, "hel", final=False, index=2)),
+            (2.6, seg(0, "hello wor", final=False, index=3)),
             (
                 3.1,
                 {
@@ -300,7 +300,7 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 4,
                 },
             ),
-            (3.4, _seg(0, "hello world", final=True, index=5)),
+            (3.4, seg(0, "hello world", final=True, index=5)),
             (
                 3.5,
                 {
@@ -322,9 +322,9 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
 
 def test_manual_mode_first_segment_starts_at_zero():
     # No VAD events; refresh point is 1000 ms, reached by packet 5 sent at t0 + 0.8 s.
-    trace = _trace(
+    trace = make_trace(
         [
-            (1.0, _seg(0, "h", final=False, index=1)),
+            (1.0, seg(0, "h", final=False, index=1)),
             (
                 3.1,
                 {
@@ -333,7 +333,7 @@ def test_manual_mode_first_segment_starts_at_zero():
                     "event_index": 2,
                 },
             ),
-            (3.2, _seg(0, "hi", final=True, index=3)),
+            (3.2, seg(0, "hi", final=True, index=3)),
             (3.3, {"type": "transcription.completed", "text": "hi", "event_index": 4}),
         ],
         turn_detection=None,
@@ -344,9 +344,9 @@ def test_manual_mode_first_segment_starts_at_zero():
 def test_refresh_point_lookup_is_exact_on_packet_boundaries():
     # 10 x 200 ms packets reach exactly 2000 ms; float accumulation of 0.2
     # would have pushed the trigger to packet 11 and made the latency negative.
-    trace = _trace(
+    trace = make_trace(
         [
-            (1.9, _seg(0, "h", final=False, index=1)),
+            (1.9, seg(0, "h", final=False, index=1)),
             (3.3, {"type": "transcription.completed", "text": "h", "event_index": 2}),
         ],
         turn_detection=None,
@@ -358,9 +358,9 @@ def test_refresh_point_lookup_is_exact_on_packet_boundaries():
 
 def test_first_partial_skipped_when_segment_start_unknown():
     # Second segment without a speech_started event: no start, no latency.
-    trace = _trace(
+    trace = make_trace(
         [
-            (1.0, _seg(1, "x", final=False, index=1)),
+            (1.0, seg(1, "x", final=False, index=1)),
             (
                 3.1,
                 {
@@ -369,7 +369,7 @@ def test_first_partial_skipped_when_segment_start_unknown():
                     "event_index": 2,
                 },
             ),
-            (3.2, _seg(1, "x", final=True, index=3)),
+            (3.2, seg(1, "x", final=True, index=3)),
             (3.3, {"type": "transcription.completed", "text": "x", "event_index": 4}),
         ],
         turn_detection=None,
@@ -378,10 +378,10 @@ def test_first_partial_skipped_when_segment_start_unknown():
 
 
 def test_invariants_flag_each_protocol_violation():
-    trace = _trace(
+    trace = make_trace(
         [
-            (1.0, _seg(0, "a", final=True, index=1)),
-            (1.1, _seg(0, "b", final=False, index=3)),  # update after final
+            (1.0, seg(0, "a", final=True, index=1)),
+            (1.1, seg(0, "b", final=False, index=3)),  # update after final
             (
                 1.2,
                 {"type": "error", "error": {"code": "boom"}, "event_index": 2},
@@ -417,7 +417,7 @@ def test_percentile_and_summarize():
 # --- paired WER delta ------------------------------------------------------
 
 
-def _outputs(texts: dict[str, str | None]) -> list:
+def make_outputs(texts: dict[str, str | None]) -> list:
     """SampleOutputs with ref == hyp; ``None`` marks a failed sample."""
     from benchmarks.metrics.wer import SampleOutput
     from benchmarks.tasks.asr import apply_wer
@@ -437,8 +437,8 @@ def test_paired_wer_delta_ignores_samples_that_failed_on_one_side():
     from benchmarks.realtime_asr.metrics import paired_corpus_wer
 
     texts = {"a": "one two three", "b": "four five six", "c": "seven eight nine"}
-    stream = _outputs(texts)
-    http = _outputs({**texts, "c": None})  # identical transcripts, one HTTP failure
+    stream = make_outputs(texts)
+    http = make_outputs({**texts, "c": None})  # identical transcripts, one HTTP failure
 
     paired = paired_corpus_wer(stream, http, lang="en")
     assert paired["common_evaluated"] == 2
@@ -448,8 +448,8 @@ def test_paired_wer_delta_ignores_samples_that_failed_on_one_side():
 def test_paired_wer_delta_is_none_when_baseline_has_no_successes():
     from benchmarks.realtime_asr.metrics import paired_corpus_wer
 
-    stream = _outputs({"a": "one two three"})
-    http = _outputs({"a": None})
+    stream = make_outputs({"a": "one two three"})
+    http = make_outputs({"a": None})
 
     paired = paired_corpus_wer(stream, http, lang="en")
     assert paired["common_evaluated"] == 0

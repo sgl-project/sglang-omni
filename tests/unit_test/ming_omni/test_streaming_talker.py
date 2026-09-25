@@ -20,7 +20,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 
-class _FakeTalker:
+class FakeTalker:
     """Stand-in for MingOmniTalker that yields one waveform per call."""
 
     def __init__(self, *, samples_per_call: int = 512, sample_rate: int = 44100):
@@ -46,8 +46,8 @@ class _FakeTalker:
             yield (wav, None, None, None)
 
 
-def _make_scheduler(**kwargs) -> MingStreamingTalkerScheduler:
-    talker = kwargs.pop("talker", None) or _FakeTalker()
+def make_scheduler(**kwargs) -> MingStreamingTalkerScheduler:
+    talker = kwargs.pop("talker", None) or FakeTalker()
     return MingStreamingTalkerScheduler(
         talker=talker,
         sample_rate=talker.sample_rate,
@@ -55,13 +55,13 @@ def _make_scheduler(**kwargs) -> MingStreamingTalkerScheduler:
     )
 
 
-def _run(scheduler: MingStreamingTalkerScheduler) -> threading.Thread:
+def run(scheduler: MingStreamingTalkerScheduler) -> threading.Thread:
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
     return thread
 
 
-def _drain(
+def drain(
     scheduler: MingStreamingTalkerScheduler, *, until_request_id: str
 ) -> list[OutgoingMessage]:
     collected: list[OutgoingMessage] = []
@@ -79,7 +79,7 @@ def _drain(
     )
 
 
-def _segment(scheduler, rid: str, text: str, *, segment_id: int, final: bool = False):
+def segment(scheduler, rid: str, text: str, *, segment_id: int, final: bool = False):
     scheduler.inbox.put(
         IncomingMessage(
             request_id=rid,
@@ -99,8 +99,8 @@ def _segment(scheduler, rid: str, text: str, *, segment_id: int, final: bool = F
 
 
 def test_streaming_talker_emits_audio_per_segment_then_finalizes():
-    sched = _make_scheduler()
-    thread = _run(sched)
+    sched = make_scheduler()
+    thread = run(sched)
     try:
         rid = "req-1"
         sched.inbox.put(
@@ -110,10 +110,10 @@ def test_streaming_talker_emits_audio_per_segment_then_finalizes():
                 data=StagePayload(request_id=rid, request=None, data={"keep": "x"}),
             )
         )
-        _segment(sched, rid, "Hello.", segment_id=0)
-        _segment(sched, rid, "World.", segment_id=1, final=True)
+        segment(sched, rid, "Hello.", segment_id=0)
+        segment(sched, rid, "World.", segment_id=1, final=True)
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
-        msgs = _drain(sched, until_request_id=rid)
+        msgs = drain(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)
@@ -139,11 +139,11 @@ def test_streaming_talker_emits_audio_per_segment_then_finalizes():
 
 
 def test_streaming_talker_stream_before_payload_buffers_correctly():
-    sched = _make_scheduler()
-    thread = _run(sched)
+    sched = make_scheduler()
+    thread = run(sched)
     try:
         rid = "req-pre"
-        _segment(sched, rid, "Early bird.", segment_id=0, final=True)
+        segment(sched, rid, "Early bird.", segment_id=0, final=True)
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
         time.sleep(0.1)  # let scheduler buffer
         sched.inbox.put(
@@ -153,7 +153,7 @@ def test_streaming_talker_stream_before_payload_buffers_correctly():
                 data=StagePayload(request_id=rid, request=None, data={}),
             )
         )
-        msgs = _drain(sched, until_request_id=rid)
+        msgs = drain(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)
@@ -163,7 +163,7 @@ def test_streaming_talker_stream_before_payload_buffers_correctly():
 
 
 def test_streaming_talker_abort_short_circuits_generation():
-    class _SlowTalker(_FakeTalker):
+    class SlowTalker(FakeTalker):
         def omni_audio_generation(
             self, *, tts_text, voice_name, audio_detokenizer, stream, abort_event=None
         ):
@@ -174,9 +174,9 @@ def test_streaming_talker_abort_short_circuits_generation():
                 time.sleep(0.02)
                 yield (torch.zeros(256, dtype=torch.float32), None, None, None)
 
-    talker = _SlowTalker()
-    sched = _make_scheduler(talker=talker)
-    thread = _run(sched)
+    talker = SlowTalker()
+    sched = make_scheduler(talker=talker)
+    thread = run(sched)
     try:
         rid = "req-abort"
         sched.inbox.put(
@@ -186,14 +186,14 @@ def test_streaming_talker_abort_short_circuits_generation():
                 data=StagePayload(request_id=rid, request=None, data={}),
             )
         )
-        _segment(sched, rid, "long segment", segment_id=0)
+        segment(sched, rid, "long segment", segment_id=0)
         # Let a couple chunks emit, then abort.
         time.sleep(0.05)
         sched.abort(rid)
         # Mark stream done so the scheduler finalizes the aborted request.
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
         # Also send the new_request first if not already — already sent.
-        msgs = _drain(sched, until_request_id=rid)
+        msgs = drain(sched, until_request_id=rid)
     finally:
         sched.stop()
         thread.join(timeout=1.0)

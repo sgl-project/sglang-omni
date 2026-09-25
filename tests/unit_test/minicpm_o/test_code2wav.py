@@ -58,7 +58,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
     assert result.returncode == 0, result.stderr
 
 
-def _checkpoint_dir() -> Path | None:
+def checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
     candidates = [Path(env)] if env else []
@@ -77,7 +77,7 @@ def _checkpoint_dir() -> Path | None:
 
 @pytest.mark.accelerator
 def test_native_vocoder_with_checkpoint() -> None:
-    checkpoint = _checkpoint_dir()
+    checkpoint = checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
     model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
@@ -94,7 +94,7 @@ def test_native_vocoder_with_checkpoint() -> None:
 
 @pytest.mark.accelerator
 def test_native_vocoder_batch_matches_single_request_shapes() -> None:
-    checkpoint = _checkpoint_dir()
+    checkpoint = checkpoint_dir()
     if checkpoint is None or not torch.cuda.is_available():
         pytest.skip("Set MINICPMO_CHECKPOINT and provide CUDA for vocoder validation")
     model = MiniCPMOCode2Wav(str(checkpoint), device="cuda:0")
@@ -112,11 +112,11 @@ def test_native_vocoder_batch_matches_single_request_shapes() -> None:
     assert all(np.isfinite(wave).all() for wave in (*batched, single_a, single_b))
 
 
-def _data_uri(audio: bytes) -> str:
+def data_uri(audio: bytes) -> str:
     return "data:audio/wav;base64," + base64.b64encode(audio).decode("ascii")
 
 
-def _payload(
+def make_payload(
     *,
     request_id: str = "test",
     tokens: list[int] | None = None,
@@ -139,7 +139,7 @@ def test_chat_api_forwards_reference_to_vocoder() -> None:
         build_chat_generate_request,
     )
 
-    reference = _data_uri(b"reference")
+    reference = data_uri(b"reference")
     request = ChatCompletionRequest(
         model="minicpm-o",
         messages=[{"role": "user", "content": "Hello"}],
@@ -147,14 +147,14 @@ def test_chat_api_forwards_reference_to_vocoder() -> None:
         audio={"format": "wav", "ref_audio": reference},
     )
     generate_request = build_chat_generate_request(request)
-    payload = _payload(
+    payload = make_payload(
         params=build_params(generate_request), metadata=generate_request.metadata
     )
     assert code2wav_reference_audio(project_talker_to_code2wav(payload)) == b"reference"
 
 
 def test_invalid_reference_does_not_silently_use_default() -> None:
-    payload = _payload(params={"ref_audio": "/tmp/ref.wav"})
+    payload = make_payload(params={"ref_audio": "/tmp/ref.wav"})
     with pytest.raises(ValueError, match="inline audio"):
         code2wav_reference_audio(payload)
 
@@ -214,7 +214,7 @@ def test_vocode_rejects_empty_sequences() -> None:
         model.vocode([[1], []], b"ref")
 
 
-def _fake_code2wav_model() -> MagicMock:
+def fake_code2wav_model() -> MagicMock:
     fake = MagicMock()
     fake.sample_rate = 24000
     fake.resolve_prompt_wav.side_effect = lambda reference: (
@@ -232,28 +232,28 @@ def _fake_code2wav_model() -> MagicMock:
 
 
 def test_vocode_payloads_uses_one_batch_path() -> None:
-    fake = _fake_code2wav_model()
-    output = vocode_code2wav_payloads(fake, [_payload(tokens=[7, 8, 9])])[0]
+    fake = fake_code2wav_model()
+    output = vocode_code2wav_payloads(fake, [make_payload(tokens=[7, 8, 9])])[0]
     fake.vocode.assert_called_once_with([[7, 8, 9]], b"default")
     assert output.data["sample_rate"] == 24000
     assert output.data["audio_waveform_shape"] == [3 * SAMPLES_PER_CODEC_TOKEN]
 
 
 def test_vocode_payloads_groups_by_resolved_reference() -> None:
-    fake = _fake_code2wav_model()
+    fake = fake_code2wav_model()
     outputs = vocode_code2wav_payloads(
         fake,
         [
-            _payload(
-                request_id="a", tokens=[1, 2], params={"ref_audio": _data_uri(b"spk-a")}
+            make_payload(
+                request_id="a", tokens=[1, 2], params={"ref_audio": data_uri(b"spk-a")}
             ),
-            _payload(
-                request_id="b", tokens=[3], params={"ref_audio": _data_uri(b"spk-b")}
+            make_payload(
+                request_id="b", tokens=[3], params={"ref_audio": data_uri(b"spk-b")}
             ),
-            _payload(
+            make_payload(
                 request_id="c",
                 tokens=[4, 5, 6],
-                params={"ref_audio": _data_uri(b"spk-a")},
+                params={"ref_audio": data_uri(b"spk-a")},
             ),
         ],
     )
@@ -269,9 +269,12 @@ def test_vocode_payloads_groups_by_resolved_reference() -> None:
 
 
 def test_vocode_payloads_resolves_default_reference_before_grouping() -> None:
-    fake = _fake_code2wav_model()
+    fake = fake_code2wav_model()
     vocode_code2wav_payloads(
         fake,
-        [_payload(request_id="a", tokens=[1]), _payload(request_id="b", tokens=[2, 3])],
+        [
+            make_payload(request_id="a", tokens=[1]),
+            make_payload(request_id="b", tokens=[2, 3]),
+        ],
     )
     fake.vocode.assert_called_once_with([[1], [2, 3]], b"default")

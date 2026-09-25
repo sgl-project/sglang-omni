@@ -1092,7 +1092,7 @@ def test_compute_video_cache_key_changes_with_decode_params() -> None:
     assert compute_video_cache_key([], fps=8.0) is None
 
 
-def _make_fake_ming_image_encoder(spatial_merge_size: int = 2):
+def make_fake_ming_image_encoder(spatial_merge_size: int = 2):
     """Build a MingImageEncoder shell whose ``_encode`` returns synthetic
     tensors with the real shape contract (embeds rows == sum(token_counts)).
 
@@ -1132,7 +1132,7 @@ def test_ming_image_encoder_forward_video_embeds_match_token_counts() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     # Two videos: (t=2, h=4, w=4) and (t=1, h=6, w=6).
     # With merge_sq=4: tokens = 8 and 9, total = 17.
     video_grid_thw = torch.tensor([[2, 4, 4], [1, 6, 6]], dtype=torch.long)
@@ -1158,7 +1158,7 @@ def test_ming_image_encoder_forward_handles_image_and_video_together() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
     out = MingImageEncoder.forward(
         enc,
         pixel_values=torch.zeros(50, 16),
@@ -1195,7 +1195,7 @@ def test_ming_image_encoder_forward_skips_video_when_grid_thw_missing() -> None:
 
     from sglang_omni.models.ming_omni.components.image_encoder import MingImageEncoder
 
-    enc = _make_fake_ming_image_encoder()
+    enc = make_fake_ming_image_encoder()
 
     # pixel_values_videos without video_grid_thw -> skipped.
     out = MingImageEncoder.forward(

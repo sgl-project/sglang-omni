@@ -10,10 +10,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-_PROJECT_PREFIX = "sglang_omni."
+PROJECT_PREFIX = "sglang_omni."
 
 
-def _ming_config_with_thinker_tp2(config_cls):
+def ming_config_with_thinker_tp2(config_cls):
     config = config_cls(model_path="dummy")
     stages = [stage.model_copy(deep=True) for stage in config.stages]
     for stage in stages:
@@ -23,7 +23,7 @@ def _ming_config_with_thinker_tp2(config_cls):
     return stages
 
 
-def _build_groups(config, build_stage_groups, prepare_pipeline_runtime):
+def build_groups(config, build_stage_groups, prepare_pipeline_runtime):
     prep = prepare_pipeline_runtime(config)
     try:
         return build_stage_groups(
@@ -38,32 +38,32 @@ def _build_groups(config, build_stage_groups, prepare_pipeline_runtime):
             prep.runtime_dir.close()
 
 
-def _thinker_specs(config, build_stage_groups, prepare_pipeline_runtime):
-    groups = _build_groups(config, build_stage_groups, prepare_pipeline_runtime)
+def thinker_specs(config, build_stage_groups, prepare_pipeline_runtime):
+    groups = build_groups(config, build_stage_groups, prepare_pipeline_runtime)
     return [s for g in groups for s in g.specs if s.stage_name == "thinker"]
 
 
-def _module_refs_any(module: ModuleType, refs: Iterable[object]) -> bool:
+def module_refs_any(module: ModuleType, refs: Iterable[object]) -> bool:
     ref_ids = {id(ref) for ref in refs}
     return any(id(value) in ref_ids for value in vars(module).values())
 
 
-def _purge_project_modules_with_fake_refs(
+def purge_project_modules_with_fake_refs(
     snapshot: set[str],
     refs: Iterable[object],
 ) -> set[str]:
     purged: set[str] = set()
     for name, module in list(sys.modules.items()):
-        if not name.startswith(_PROJECT_PREFIX) or not isinstance(module, ModuleType):
+        if not name.startswith(PROJECT_PREFIX) or not isinstance(module, ModuleType):
             continue
-        if name not in snapshot or _module_refs_any(module, refs):
-            _remove_module(name, module)
+        if name not in snapshot or module_refs_any(module, refs):
+            remove_module(name, module)
             purged.add(name)
-    _remove_cached_attrs_from_purged_modules(purged)
+    remove_cached_attrs_from_purged_modules(purged)
     return purged
 
 
-def _remove_module(name: str, module: ModuleType) -> None:
+def remove_module(name: str, module: ModuleType) -> None:
     sys.modules.pop(name, None)
     parent_name, _, child_name = name.rpartition(".")
     parent = sys.modules.get(parent_name)
@@ -71,47 +71,47 @@ def _remove_module(name: str, module: ModuleType) -> None:
         delattr(parent, child_name)
 
 
-def _remove_cached_attrs_from_purged_modules(purged: set[str]) -> None:
+def remove_cached_attrs_from_purged_modules(purged: set[str]) -> None:
     if not purged:
         return
     for module in list(sys.modules.values()):
         if not isinstance(module, ModuleType) or not module.__name__.startswith(
-            _PROJECT_PREFIX
+            PROJECT_PREFIX
         ):
             continue
         for attr_name, value in list(vars(module).items()):
             value_module = getattr(value, "__module__", "")
-            if _module_name_matches_any(value_module, purged):
+            if module_name_matches_any(value_module, purged):
                 delattr(module, attr_name)
 
 
-def _module_name_matches_any(module_name: str, candidates: set[str]) -> bool:
+def module_name_matches_any(module_name: str, candidates: set[str]) -> bool:
     return any(
         module_name == candidate or module_name.startswith(f"{candidate}.")
         for candidate in candidates
     )
 
 
-def _project_modules_with_ref(ref: object) -> list[str]:
+def project_modules_with_ref(ref: object) -> list[str]:
     return [
         name
         for name, module in sys.modules.items()
-        if name.startswith(_PROJECT_PREFIX)
+        if name.startswith(PROJECT_PREFIX)
         and isinstance(module, ModuleType)
-        and _module_refs_any(module, (ref,))
+        and module_refs_any(module, (ref,))
     ]
 
 
-def _cached_attrs_from_missing_project_modules() -> list[str]:
+def cached_attrs_from_missing_project_modules() -> list[str]:
     stale_attrs: list[str] = []
     for module_name, module in sys.modules.items():
-        if not module_name.startswith(_PROJECT_PREFIX) or not isinstance(
+        if not module_name.startswith(PROJECT_PREFIX) or not isinstance(
             module, ModuleType
         ):
             continue
         for attr_name, value in vars(module).items():
             value_module = getattr(value, "__module__", "")
-            if not value_module.startswith(_PROJECT_PREFIX):
+            if not value_module.startswith(PROJECT_PREFIX):
                 continue
             if value_module not in sys.modules:
                 stale_attrs.append(f"{module_name}.{attr_name}->{value_module}")
@@ -224,10 +224,10 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
 
             config = MingOmniPipelineConfig(
                 model_path="dummy",
-                stages=_ming_config_with_thinker_tp2(MingOmniPipelineConfig),
+                stages=ming_config_with_thinker_tp2(MingOmniPipelineConfig),
             )
 
-            groups = _build_groups(config, build_stage_groups, prepare_pipeline_runtime)
+            groups = build_groups(config, build_stage_groups, prepare_pipeline_runtime)
             all_specs = [s for g in groups for s in g.specs]
             specs = [s for s in all_specs if s.stage_name == "thinker"]
             cpu_stage_specs = {
@@ -253,7 +253,7 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
             assert specs[0].factory_kwargs["nccl_port"] == specs[0].nccl_port
             assert specs[1].factory_kwargs["nccl_port"] == specs[0].nccl_port
 
-            explicit_stages = _ming_config_with_thinker_tp2(MingOmniPipelineConfig)
+            explicit_stages = ming_config_with_thinker_tp2(MingOmniPipelineConfig)
             for stage in explicit_stages:
                 if stage.name == "thinker":
                     stage.gpu = [2, 4]
@@ -261,21 +261,21 @@ def test_ming_thinker_tp2_builds_rank_specific_stage_specs(monkeypatch) -> None:
                 model_path="dummy",
                 stages=explicit_stages,
             )
-            explicit_specs = _thinker_specs(
+            explicit_specs = thinker_specs(
                 explicit_config, build_stage_groups, prepare_pipeline_runtime
             )
             assert [spec.gpu_id for spec in explicit_specs] == [2, 4]
     finally:
-        _purge_project_modules_with_fake_refs(before_import, fake_refs)
+        purge_project_modules_with_fake_refs(before_import, fake_refs)
 
-    assert _project_modules_with_ref(fake_torch) == []
-    assert _cached_attrs_from_missing_project_modules() == []
+    assert project_modules_with_ref(fake_torch) == []
+    assert cached_attrs_from_missing_project_modules() == []
 
 
 def test_ming_speech_rejects_talker_inside_explicit_thinker_tp_gpus() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
-    stages = _ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
+    stages = ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
     for stage in stages:
         if stage.name == "talker":
             stage.gpu = 1
@@ -319,7 +319,7 @@ def test_ming_streaming_speech_allows_thinker_tp_size_gt_one() -> None:
         MingOmniStreamingSpeechPipelineConfig,
     )
 
-    stages = _ming_config_with_thinker_tp2(MingOmniStreamingSpeechPipelineConfig)
+    stages = ming_config_with_thinker_tp2(MingOmniStreamingSpeechPipelineConfig)
     for stage in stages:
         if stage.name == "talker_stream":
             stage.gpu = 2
@@ -348,7 +348,7 @@ def test_ming_text_allows_image_encoder_tp_size_gt_one() -> None:
 def test_ming_speech_rejects_talker_on_non_contiguous_thinker_tp_gpu() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
-    stages = _ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
+    stages = ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
     for stage in stages:
         if stage.name == "thinker":
             stage.gpu = [0, 2]
@@ -362,7 +362,7 @@ def test_ming_speech_rejects_talker_on_non_contiguous_thinker_tp_gpu() -> None:
 def test_ming_speech_rejects_any_talker_gpu_list_overlap_with_thinker_tp() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
-    stages = _ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
+    stages = ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
     for stage in stages:
         if stage.name == "thinker":
             stage.gpu = [0, 2]
@@ -376,7 +376,7 @@ def test_ming_speech_rejects_any_talker_gpu_list_overlap_with_thinker_tp() -> No
 def test_ming_speech_allows_talker_outside_explicit_thinker_tp_gpus() -> None:
     from sglang_omni.models.ming_omni.config import MingOmniSpeechPipelineConfig
 
-    stages = _ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
+    stages = ming_config_with_thinker_tp2(MingOmniSpeechPipelineConfig)
     for stage in stages:
         if stage.name == "talker":
             stage.gpu = 2
@@ -573,7 +573,7 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
                 requires_tp_work_fanout=True,
             )
 
-            def _make_stage(scheduler):
+            def make_stage(scheduler):
                 return Stage(
                     name="test_stage",
                     role="leader",
@@ -588,19 +588,19 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
 
             payload = SimpleNamespace(request_id="req-1")
 
-            stage_omni = _make_stage(omni_like)
+            stage_omni = make_stage(omni_like)
             await stage_omni.execute(payload)
             fanout.fanout_work.assert_not_called()
             assert omni_like.inbox.get_nowait().request_id == "req-1"
 
             fanout.reset_mock()
 
-            stage_simple = _make_stage(simple_like)
+            stage_simple = make_stage(simple_like)
             await stage_simple.execute(payload)
             fanout.fanout_work.assert_called_once_with(payload)
             assert simple_like.inbox.get_nowait().request_id == "req-1"
     finally:
-        _purge_project_modules_with_fake_refs(before_import, fake_refs)
+        purge_project_modules_with_fake_refs(before_import, fake_refs)
 
-    assert _project_modules_with_ref(fake_torch) == []
-    assert _cached_attrs_from_missing_project_modules() == []
+    assert project_modules_with_ref(fake_torch) == []
+    assert cached_attrs_from_missing_project_modules() == []
