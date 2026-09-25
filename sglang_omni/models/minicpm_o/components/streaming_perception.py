@@ -12,7 +12,7 @@ import torch
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
-    AudioKVCache,
+    AudioEncoderState,
     MiniCPMOAudioEncoder,
 )
 from sglang_omni.preprocessing.audio import load_audio_path
@@ -119,7 +119,7 @@ class MiniCPMOPerceptionState:
         default_factory=lambda: np.zeros(0, dtype=np.float32)
     )
     audio_chunk_idx: int = 0
-    audio_past_key_values: AudioKVCache | None = None
+    audio_encoder_state: AudioEncoderState | None = None
     prefix_token_ids: list[int] = field(default_factory=list)
     prefix_embeds: torch.Tensor | None = None
     prefix_schema: list[tuple[str, int]] = field(default_factory=list)
@@ -188,7 +188,7 @@ class MiniCPMOPerceptionState:
     def close(self) -> None:
         self.is_open = False
         self.audio_buffer = np.zeros(0, dtype=np.float32)
-        self.audio_past_key_values = None
+        self.audio_encoder_state = None
         self.prefix_embeds = None
 
     def held(self) -> ResourceUsage:
@@ -197,7 +197,11 @@ class MiniCPMOPerceptionState:
         else:
             size = (
                 int(self.audio_buffer.nbytes)
-                + estimate_cache_bytes(self.audio_past_key_values)
+                + (
+                    self.audio_encoder_state.nbytes
+                    if self.audio_encoder_state is not None
+                    else 0
+                )
                 + estimate_cache_bytes(self.prefix_embeds)
             )
             # note (Junnan Li): Count the live processor even when every buffer is empty.
@@ -225,10 +229,10 @@ class MiniCPMOPerceptionState:
                 return_batch_feature=True,
             )
         )
-        audio_embeds, self.audio_past_key_values = self.audio_encoder.forward_streaming(
+        audio_embeds, self.audio_encoder_state = self.audio_encoder.forward_streaming(
             audio_features=batch.audio_features,
             audio_feature_lens=batch.audio_feature_lens,
-            past_key_values=self.audio_past_key_values,
+            state=self.audio_encoder_state,
             prefix_extra_frames=0 if self.audio_chunk_idx == 0 else 2,
             suffix_extra_frames=2,
         )

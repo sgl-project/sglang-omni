@@ -123,7 +123,7 @@ def test_golden_parity_vs_remote_code(lens: list[int]) -> None:
 
     native_mask = torch.where(allowed, 0.0, -1e9).unsqueeze(1)
     with torch.no_grad():
-        got = native(mel, native_mask)
+        got, _ = native(mel, native_mask)
 
     for i, length in enumerate(lens):
         valid_frames = (length - 1) // 2 + 1

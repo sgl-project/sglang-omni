@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -22,9 +23,39 @@ from sglang_omni.models.weight_loader import (
 MASK_MIN = -1e9
 
 logger = logging.getLogger(__name__)
-AudioKVCache = list[tuple[torch.Tensor, torch.Tensor]]
 
 QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
+
+
+@dataclass(frozen=True, kw_only=True)
+class AudioAttentionState:
+    """Read-only attention history; empty fields start cached attention."""
+
+    key: torch.Tensor | None = None
+    value: torch.Tensor | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class AudioEncoderState:
+    """Read-only per-layer audio history retained by one perception session."""
+
+    layers: tuple[AudioAttentionState, ...] = ()
+
+    @property
+    def past_length(self) -> int:
+        if self.layers and self.layers[0].key is not None:
+            return self.layers[0].key.shape[2]
+        else:
+            return 0
+
+    @property
+    def nbytes(self) -> int:
+        return sum(
+            tensor.numel() * tensor.element_size()
+            for layer in self.layers
+            for tensor in (layer.key, layer.value)
+            if tensor is not None
+        )
 
 
 def audio_config_object(config: PretrainedConfig) -> PretrainedConfig:
@@ -88,21 +119,19 @@ class MiniCPMWhisperEncoderAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attn_mask: torch.Tensor,
-        past_key_values: AudioKVCache | None = None,
-        layer_index: int = 0,
-    ) -> torch.Tensor:
+        state: AudioAttentionState | None = None,
+    ) -> tuple[torch.Tensor, AudioAttentionState | None]:
         query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
         key, value = self.reshape_heads(key), self.reshape_heads(value)
-        if past_key_values is not None:
-            if layer_index < len(past_key_values):
-                previous_key, previous_value = past_key_values[layer_index]
-                key = torch.cat((previous_key, key), dim=2)
-                value = torch.cat((previous_value, value), dim=2)
-                past_key_values[layer_index] = (key, value)
-            else:
-                past_key_values.append((key, value))
+        if state is not None and state.key is not None:
+            assert state.value is not None
+            key = torch.cat((state.key, key), dim=2)
+            value = torch.cat((state.value, value), dim=2)
         else:
             pass
+        new_state = (
+            AudioAttentionState(key=key, value=value) if state is not None else None
+        )
         attn_output = F.scaled_dot_product_attention(
             self.reshape_heads(query),
             key,
@@ -115,7 +144,7 @@ class MiniCPMWhisperEncoderAttention(nn.Module):
             hidden_states.shape[1],
             self.embed_dim,
         )
-        return self.out_proj(attn_output)
+        return self.out_proj(attn_output), new_state
 
 
 class MiniCPMWhisperEncoderLayer(nn.Module):
@@ -132,20 +161,17 @@ class MiniCPMWhisperEncoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attn_mask: torch.Tensor,
-        past_key_values: AudioKVCache | None = None,
-        layer_index: int = 0,
-    ) -> torch.Tensor:
+        state: AudioAttentionState | None = None,
+    ) -> tuple[torch.Tensor, AudioAttentionState | None]:
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states = self.self_attn(
-            hidden_states, attn_mask, past_key_values, layer_index
-        )
+        hidden_states, new_state = self.self_attn(hidden_states, attn_mask, state)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
         hidden_states = self.fc2(self.activation_fn(self.fc1(hidden_states)))
-        return residual + hidden_states
+        return residual + hidden_states, new_state
 
 
 class MiniCPMWhisperEncoder(nn.Module):
@@ -177,10 +203,10 @@ class MiniCPMWhisperEncoder(nn.Module):
         self,
         input_features: torch.Tensor,
         attn_mask: torch.Tensor,
-        past_key_values: AudioKVCache | None = None,
+        state: AudioEncoderState | None = None,
         prefix_extra_frames: int = 0,
         suffix_extra_frames: int = 0,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, AudioEncoderState | None]:
         hidden_states = input_features.to(
             device=self.conv1.weight.device, dtype=self.conv1.weight.dtype
         )
@@ -196,17 +222,31 @@ class MiniCPMWhisperEncoder(nn.Module):
             pass
         hidden_states = hidden_states.permute(0, 2, 1)
 
-        position = past_key_values[0][0].shape[2] if past_key_values else 0
+        position = state.past_length if state is not None else 0
         embed_pos = self.embed_positions.weight[
             position : position + hidden_states.shape[1]
         ]
         hidden_states = hidden_states + embed_pos.to(hidden_states.device)
 
+        new_layers: list[AudioAttentionState] = []
         for layer_index, layer in enumerate(self.layers):
-            hidden_states = layer(
-                hidden_states, attn_mask, past_key_values, layer_index
+            if state is None:
+                layer_state = None
+            elif layer_index < len(state.layers):
+                layer_state = state.layers[layer_index]
+            else:
+                layer_state = AudioAttentionState()
+            hidden_states, new_layer_state = layer(
+                hidden_states, attn_mask, layer_state
             )
-        return self.layer_norm(hidden_states)
+            if new_layer_state is not None:
+                new_layers.append(new_layer_state)
+            else:
+                pass
+        new_state = (
+            AudioEncoderState(layers=tuple(new_layers)) if state is not None else None
+        )
+        return self.layer_norm(hidden_states), new_state
 
 
 class MultiModalProjector(nn.Module):
@@ -343,7 +383,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
         attn_mask = attn_mask.unsqueeze(1)
 
-        audio_states = self.apm(wavforms, attn_mask)
+        audio_states, _ = self.apm(wavforms, attn_mask)
         audio_embeds = self.audio_projection_layer(audio_states)
 
         audio_embeds = audio_embeds.transpose(1, 2)
@@ -361,21 +401,21 @@ class MiniCPMOAudioEncoder(nn.Module):
         self,
         audio_features: torch.Tensor,
         audio_feature_lens: torch.Tensor,
-        past_key_values: AudioKVCache | None,
-        prefix_extra_frames: int,
-        suffix_extra_frames: int,
-    ) -> tuple[torch.Tensor, AudioKVCache]:
+        state: AudioEncoderState | None = None,
+        prefix_extra_frames: int = 0,
+        suffix_extra_frames: int = 0,
+    ) -> tuple[torch.Tensor, AudioEncoderState]:
         """Encode one mel chunk while retaining only its non-context attention KV."""
         if audio_features.shape[0] != 1:
             raise ValueError("streaming audio encoding supports batch_size=1")
         else:
             pass
-        cache = [] if past_key_values is None else past_key_values
-        past_length = cache[0][0].shape[2] if cache else 0
+        state = AudioEncoderState() if state is None else state
+        past_length = state.past_length
         convolution_length = (audio_features.shape[-1] + 1) // 2
         if past_length + convolution_length >= self.apm.embed_positions.num_embeddings:
             logger.warning(f"Resetting audio encoder KV at {past_length} frames")
-            cache = []
+            state = AudioEncoderState()
             past_length = 0
         else:
             pass
@@ -393,10 +433,10 @@ class MiniCPMOAudioEncoder(nn.Module):
             dtype=self.dtype,
             device=self.device,
         )
-        states = self.apm(
+        states, new_state = self.apm(
             audio_features,
             attention_mask,
-            cache,
+            state,
             prefix_extra_frames,
             suffix_extra_frames,
         )
@@ -405,4 +445,5 @@ class MiniCPMOAudioEncoder(nn.Module):
         pooled_length = feature_lens_after_pooling(
             audio_feature_lens, self.audio_pool_step
         ).item()
-        return embeds[0, :pooled_length], cache
+        assert new_state is not None
+        return embeds[0, :pooled_length], new_state
