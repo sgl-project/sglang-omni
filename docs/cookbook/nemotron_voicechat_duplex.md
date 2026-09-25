@@ -47,7 +47,7 @@ compilation; live sessions retain the standard operation timeout.
 2. Speak naturally. The browser sends continuous 80 ms PCM frames and plays
    streamed output, with assistant text shown alongside it.
 3. **静音麦克风** sends silence while the model continues responding.
-   **结束对话** releases the microphone and session.
+   **结束** releases the microphone and session.
 
 Microphone access requires localhost or HTTPS. To use a Kubernetes worker,
 forward its example port, then open the same localhost URL:
@@ -56,9 +56,9 @@ forward its example port, then open the same localhost URL:
 kubectl port-forward --context YOUR_CONTEXT -n default pod/YOUR_GPU_POD 8097:8097 --address 127.0.0.1
 ```
 
-The page shows input processing backlog, queued playback duration, and time to
-first audio packet (which can contain silence). It stops if input backlog exceeds
-9 seconds instead of silently dropping input. Sessions last at most four minutes;
+The minimal page has start, stop, and microphone mute controls, connection
+status, and assistant text. It stops if input backlog exceeds 9 seconds instead
+of silently dropping input. Sessions last at most four minutes;
 one browser session is supported at a time. This is a prototype: sustained GPU
 processing can fall behind real time. Automatic interruption depends on model
 behavior. Explicit response cancellation is not supported by the current protocol.
