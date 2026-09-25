@@ -1,48 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
 import json
 import sys
-from dataclasses import asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
-from types import SimpleNamespace
 
 import pytest
-from aiohttp import web
 
-from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import (
-    JUDGE_MAX_TOKENS,
-    JUDGE_PARSE_ATTEMPTS,
-    JudgeSpec,
-    build_judge_prompt,
-    build_level1_result_records,
-    build_response_prompt,
-    build_when_prompt,
-    judge_payload,
-    load_judge_config,
-    model_payload,
-    parse_choice,
-    parse_judge_score,
-    parse_when,
-    request_chat_completion,
-    run_judges,
-    run_level2_model,
-)
-
-
-
-
+from benchmarks.tasks.socialomni import request_chat_completion
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
+
 
 def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
@@ -56,6 +31,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
         "private reference response",
         "private reference transcript",
     )
+
 
 def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
@@ -74,6 +50,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values.update(overrides)
     return entrypoint.SocialOmniEvalConfig(**values)
 
+
 class _Response:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
@@ -88,6 +65,7 @@ class _Response:
     async def text(self) -> str:
         return self.body
 
+
 class _Session:
     def __init__(self, *responses: _Response):
         self.responses = list(responses) or [_Response()]
@@ -97,6 +75,7 @@ class _Session:
         response = self.responses[self.calls]
         self.calls += 1
         return response
+
 
 @pytest.mark.parametrize("status", [429, 501, 507])
 @pytest.mark.asyncio
@@ -122,6 +101,7 @@ async def test_retryable_http_error_is_retried(monkeypatch, status: int) -> None
     assert result.is_success
     assert session.calls == 2
 
+
 @pytest.mark.asyncio
 async def test_non_retryable_http_error_is_not_retried() -> None:
     session = _Session(_Response(400, "bad request"))
@@ -134,6 +114,7 @@ async def test_non_retryable_http_error_is_not_retried() -> None:
     assert not result.is_success
     assert session.calls == 1
 
+
 @pytest.mark.asyncio
 async def test_malformed_success_response_does_not_escape() -> None:
     result = await request_chat_completion(
@@ -145,6 +126,7 @@ async def test_malformed_success_response_does_not_escape() -> None:
     )
     assert not result.is_success
     assert "invalid JSON response object" in result.error
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -176,6 +158,7 @@ async def test_malformed_completion_is_recorded_as_failure(body) -> None:
     assert "invalid completion response" in result.error
     assert result.completion_tokens == 0
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("content", "expected"),
@@ -192,6 +175,7 @@ async def test_valid_completion_content(content, expected) -> None:
     )
     assert result.is_success
     assert result.text == expected
+
 
 @pytest.mark.parametrize(
     "suffix", ["", "/", "/v1", "/v1/", "/v1/chat/completions", "/v1/chat/completions/"]
@@ -286,6 +270,7 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     assert (
         saved["provenance"]["artifacts"]["declared_model_revision"] == "weights-commit"
     )
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["prompt_tokens", "completion_tokens"])

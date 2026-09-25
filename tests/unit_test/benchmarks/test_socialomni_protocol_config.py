@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import asyncio
 import json
-import sys
-from dataclasses import asdict, replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import replace
 from pathlib import Path
-from threading import Thread
-from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -17,32 +12,22 @@ from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLeve
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
 from benchmarks.tasks.socialomni import (
     JUDGE_MAX_TOKENS,
-    JUDGE_PARSE_ATTEMPTS,
     JudgeSpec,
     build_judge_prompt,
     build_level1_result_records,
     build_response_prompt,
     build_when_prompt,
     judge_payload,
-    load_judge_config,
     model_payload,
     parse_choice,
-    parse_judge_score,
-    parse_when,
-    request_chat_completion,
-    run_judges,
-    run_level2_model,
 )
-
-
-
-
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
+
 
 def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
@@ -56,6 +41,7 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
         "private reference response",
         "private reference transcript",
     )
+
 
 def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
@@ -74,6 +60,7 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values.update(overrides)
     return entrypoint.SocialOmniEvalConfig(**values)
 
+
 class _Response:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
@@ -88,6 +75,7 @@ class _Response:
     async def text(self) -> str:
         return self.body
 
+
 class _Session:
     def __init__(self, *responses: _Response):
         self.responses = list(responses) or [_Response()]
@@ -97,6 +85,7 @@ class _Session:
         response = self.responses[self.calls]
         self.calls += 1
         return response
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retry", [None, "score", "http"])
@@ -214,6 +203,7 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -
     )
     assert negative["gold_response_success"] is None
 
+
 def test_model_prompts_do_not_leak_reference_material() -> None:
     sample = _level2()
     when = build_when_prompt(sample)
@@ -225,17 +215,20 @@ def test_model_prompts_do_not_leak_reference_material() -> None:
     assert sample.reference_context in judge
     assert sample.reference_response in judge
 
+
 def test_model_payload_uses_native_video_with_embedded_audio() -> None:
     payload = model_payload("qwen3-omni", "prompt", "/tmp/prefix.mp4", 8)
     assert payload["videos"] == ["/tmp/prefix.mp4"]
     assert payload["use_audio_in_video"] is True
     assert payload["modalities"] == ["text"]
 
+
 def test_judge_payload_allows_reasoning_before_score() -> None:
     judge = JudgeSpec(
         "gemini-2.5-pro", "gemini-2.5-pro", "http://localhost:8000", None, 1
     )
     assert judge_payload(judge, "prompt")["max_tokens"] == JUDGE_MAX_TOKENS == 8192
+
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
@@ -253,6 +246,7 @@ def test_judge_payload_allows_reasoning_before_score() -> None:
 )
 def test_choice_parser_is_strict(raw: str, expected: str) -> None:
     assert parse_choice(raw, ("A", "B", "C", "D")) == expected
+
 
 @pytest.mark.parametrize(
     ("raw", "expected"),

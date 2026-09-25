@@ -396,6 +396,7 @@ async def create_video_prefix(
         socialomni_media.resolve_ffmpeg_executable = original_resolver
         socialomni_media.build_ffmpeg_prefix_command = original_command_builder
 
+
 __all__ = [
     "SocialOmniLevel1Sample",
     "SocialOmniLevel2Sample",
