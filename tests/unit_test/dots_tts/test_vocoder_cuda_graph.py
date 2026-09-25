@@ -42,16 +42,22 @@ class NonlinearInference:
             decoder=SimpleNamespace(window=window, chunk_size=chunk_size),
         )
 
-    def _decoder_stream_lookahead(self) -> int:
+    def _decoder_stream_lookahead(
+        self,
+    ) -> int:  # noqa: leading-underscore  # AudioVAE interface
         return 1
 
-    def _validate_stream_latents(self, latents: torch.Tensor) -> None:
+    def _validate_stream_latents(
+        self, latents: torch.Tensor
+    ) -> None:  # noqa: leading-underscore  # AudioVAE interface
         if latents.ndim != 3 or int(latents.shape[1]) != LATENT_DIM:
             raise ValueError(f"bad latents {tuple(latents.shape)}")
         else:
             pass
 
-    def _decode_stream_latents(self, latents, hidden):
+    def _decode_stream_latents(
+        self, latents, hidden
+    ):  # noqa: leading-underscore  # AudioVAE interface
         hidden_h, hidden_c = hidden
         drive = latents.mean(dim=(1, 2))
         hidden_h = torch.tanh(hidden_h * 0.9 + drive[None, :, None] * self.drive)
@@ -59,7 +65,9 @@ class NonlinearInference:
         gain = 1.0 + hidden_h.sum(dim=(0, 2))
         return latents * gain[:, None, None], (hidden_h, hidden_c)
 
-    def _decode_stream_window(self, window: torch.Tensor) -> torch.Tensor:
+    def _decode_stream_window(
+        self, window: torch.Tensor
+    ) -> torch.Tensor:  # noqa: leading-underscore  # AudioVAE interface
         mixed = torch.tanh(window.sum(dim=1).cumsum(dim=-1))
         return mixed.repeat_interleave(HOP, dim=-1).unsqueeze(1)
 
@@ -242,7 +250,9 @@ def test_capture_failure_aborts_pool_setup(
     cuda_device: torch.device, monkeypatch: pytest.MonkeyPatch, failure_call: int
 ) -> None:
     vocoder = make_streaming_vocoder(cuda_device)
-    decode_window = vocoder.codec.inference._decode_stream_window
+    decode_window = (
+        vocoder.codec.inference._decode_stream_window
+    )  # noqa: leading-underscore  # AudioVAE interface
     calls = 0
 
     def fail_forward(window: torch.Tensor) -> torch.Tensor:

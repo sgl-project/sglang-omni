@@ -162,9 +162,7 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
-    pool = DotsVocoderSlotPool(
-        FakeInference(), num_slots=2, chunk_size=6, latent_dim=5
-    )
+    pool = DotsVocoderSlotPool(FakeInference(), num_slots=2, chunk_size=6, latent_dim=5)
     a = pool.acquire()
     b = pool.acquire()
     with pytest.raises(ValueError, match="uniform latent length"):
