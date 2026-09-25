@@ -377,8 +377,24 @@ from . import socialomni_media  # noqa: E402
 
 socialomni_media.shutil = shutil
 build_ffmpeg_prefix_command = socialomni_media.build_ffmpeg_prefix_command
-create_video_prefix = socialomni_media.create_video_prefix
 resolve_ffmpeg_executable = socialomni_media.resolve_ffmpeg_executable
+
+
+async def create_video_prefix(
+    input_path: str | Path, timestamp_s: float, cache_dir: str | Path
+) -> Path:
+    """Create a cached video prefix while preserving the public patch points."""
+    original_resolver = socialomni_media.resolve_ffmpeg_executable
+    original_command_builder = socialomni_media.build_ffmpeg_prefix_command
+    socialomni_media.resolve_ffmpeg_executable = resolve_ffmpeg_executable
+    socialomni_media.build_ffmpeg_prefix_command = build_ffmpeg_prefix_command
+    try:
+        return await socialomni_media.create_video_prefix(
+            input_path, timestamp_s, cache_dir
+        )
+    finally:
+        socialomni_media.resolve_ffmpeg_executable = original_resolver
+        socialomni_media.build_ffmpeg_prefix_command = original_command_builder
 
 __all__ = [
     "SocialOmniLevel1Sample",
