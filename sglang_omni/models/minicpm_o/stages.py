@@ -125,6 +125,7 @@ def create_sglang_talker_executor_from_config(
     max_seq_len: int = 4096,
     server_args_overrides: dict[str, Any] | None = None,
     total_gpu_memory_fraction: float | None = None,
+    session_mode: bool = False,
 ) -> OmniScheduler:
     """Returns OmniScheduler for the native sglang MiniCPM-o talker."""
     concrete_device = resolve_concrete_device(device, gpu_id)
@@ -137,6 +138,14 @@ def create_sglang_talker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides.setdefault("trust_remote_code", False)
+    if session_mode:
+        overrides.update(
+            enable_streaming_session=True,
+            disable_overlap_schedule=True,
+            disable_cuda_graph=True,
+        )
+    else:
+        pass
     overrides["tp_size"] = tp_size
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
     overrides.setdefault("max_total_tokens", 32 * max_seq_len)
@@ -163,6 +172,7 @@ def create_sglang_talker_executor_from_config(
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
+        session_mode=session_mode,
     )
     logger.info(
         f"sglang_ar_started stage=talker gpu_id={gpu_id} "

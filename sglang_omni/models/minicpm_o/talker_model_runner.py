@@ -12,6 +12,11 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    session_prefill_rows,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -39,6 +44,15 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         parts: list[torch.Tensor] = []
         for sched_req in requests:
             data = sched_req.data
+            if isinstance(data, TalkerUnitRequestData):
+                parts.append(
+                    session_prefill_rows(
+                        data, self.model.emb_code, self.model.emb_code.weight.device
+                    )
+                )
+                continue
+            else:
+                pass
             tensor = data.prefill_input_embeds
             if tensor is None:
                 raise RuntimeError(
@@ -142,3 +156,12 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         penalized = torch.where(scores < 0, scores * alphas, scores / alphas)
         scores = torch.where(counts > 0, penalized, scores)
         logits[rows_t] = scores.to(orig_dtype)
+
+    def on_request_finished(self, request_id: str, data: SGLangARRequestData) -> None:
+        if isinstance(data, TalkerUnitRequestData):
+            # note (Junnan Li): The last sample has no KV and is not committed by chunk TTS.
+            data.req.output_ids = data.req.output_ids[:-1]
+            data.req.finished_len = len(data.req.output_ids)
+        else:
+            pass
+        super().on_request_finished(request_id, data)
