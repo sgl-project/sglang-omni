@@ -76,3 +76,11 @@ packed capacity)`. The capacity must be 16-aligned and leave one or more
 dummy frames after the CFG-doubled valid frames, with no more than one mel
 frame width of dummy tokens. Requests outside the captured capacity run packed
 DiT eagerly.
+
+An opt-in SeedTTS English H100 capture table is available as
+`SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES` in
+`sglang_omni.models.minicpm_o.components.token2wav.flow`. It combines six
+batch-1 shapes with 12 packed shapes and can be supplied through
+`code2wav.factory.flow_cuda_graph_capture_shapes`. It is not a default: the
+measured packed-graph replays did not establish a serving throughput gain over
+restart noise, and resident graph memory depends on the deployment.

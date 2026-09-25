@@ -42,6 +42,27 @@ FLOW_CUDA_GRAPH_FRAME_BUCKETS = (
     1024,
 )
 FlowCudaGraphShape = tuple[int, int] | tuple[int, int, int]
+# note (wirybeaver): Opt-in H100 SeedTTS EN shape table from the 2026-09-24 census.
+SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES: tuple[FlowCudaGraphShape, ...] = (
+    (1, 272),
+    (1, 384),
+    (1, 512),
+    (1, 640),
+    (1, 720),
+    (1, 1024),
+    (2, 672, 2144),
+    (3, 784, 3088),
+    (4, 848, 3936),
+    (6, 672, 5680),
+    (8, 752, 7616),
+    (5, 624, 4944),
+    (7, 880, 6384),
+    (5, 480, 4192),
+    (8, 576, 6832),
+    (7, 720, 7136),
+    (2, 640, 2448),
+    (6, 656, 6464),
+)
 
 
 def build_default_flow_cuda_graph_shapes() -> tuple[tuple[int, int], ...]:

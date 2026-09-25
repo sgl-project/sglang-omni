@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
 import os
 import subprocess
@@ -30,6 +31,9 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
 )
 from sglang_omni.models.minicpm_o.components.token2wav import vocoder
 from sglang_omni.models.minicpm_o.components.token2wav.dit import TimestepEmbedder
+from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+    SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES,
+)
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
@@ -337,6 +341,24 @@ def test_speech_pipeline_parses_flow_execution_options() -> None:
     assert code2wav.factory.flow_cuda_graph_capture_shapes == (
         (1, 256),
         (2, 512, 1856),
+    )
+
+
+def test_seedtts_en_graph_table_can_be_selected_explicitly() -> None:
+    assert sum(len(shape) == 3 for shape in SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES) == 12
+    config = MiniCPMOSpeechPipelineConfig(model_path="unused")
+    merged = ConfigManager(config).merge_config(
+        [
+            (
+                "code2wav.factory.flow_cuda_graph_capture_shapes",
+                json.dumps(SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES),
+            )
+        ]
+    )
+    code2wav = next(stage for stage in merged.stages if stage.name == "code2wav")
+    assert (
+        code2wav.factory.flow_cuda_graph_capture_shapes
+        == SEEDTTS_EN_FLOW_CUDA_GRAPH_SHAPES
     )
 
 
