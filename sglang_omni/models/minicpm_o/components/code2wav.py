@@ -40,11 +40,11 @@ class MiniCPMOCode2Wav(nn.Module):
         from sglang_omni.models.minicpm_o.components.token2wav.vocoder import Token2Wav
 
         dev = torch.device(device)
-        if dev.type != "cuda":
-            raise ValueError(f"Token2wav requires a CUDA device, got {device}")
+        if dev.type not in {"cuda", "xpu"}:
+            raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
         else:
             pass
-        self.device_context = torch.cuda.device(dev.index or 0)
+        self.device_context = torch.get_device_module(dev).device(dev.index or 0)
 
         model_dir = str(resolve_model_path(model_path))
         asset_dir = os.path.join(model_dir, "assets", "token2wav")
@@ -176,7 +176,7 @@ class MiniCPMOCode2Wav(nn.Module):
             speaker_embedding = speaker_embedding.expand(batch_size, -1).contiguous()
             prompt_mels = prompt_mels.expand(batch_size, -1, -1).contiguous()
             with torch.amp.autocast(
-                "cuda",
+                self.token2wav.device.type,
                 dtype=self.token2wav.dtype,
                 enabled=self.token2wav.dtype != torch.float32,
             ):

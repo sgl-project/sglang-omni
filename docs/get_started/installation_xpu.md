@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni and MiniCPM-o) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. Other model families
 (S2-Pro, Ming-Omni, Voxtral-TTS) are CUDA-only and are not offered here.
 
@@ -70,6 +70,8 @@ Or do it manually (the same steps the script automates):
 cp pyproject.toml .pyproject.cuda.bak
 cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
+# torch+xpu provides triton-xpu; do not let openai-whisper replace it with CUDA Triton.
+pip install --no-deps openai-whisper==20250625
 cp -f .pyproject.cuda.bak pyproject.toml && rm .pyproject.cuda.bak   # restore CUDA pyproject
 ```
 
@@ -139,7 +141,7 @@ would replace this project's 5.12.1, and resolving `sox` lifts `numpy` past the
 
 ```bash
 apt-get update && apt-get install -y sox   # the Python sox package shells out to it
-pip install --no-deps sox einops
+pip install --no-deps sox
 pip install --no-deps qwen-tts==0.1.1
 ```
 
@@ -178,5 +180,5 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > **Expected on XPU:** `Failed to import mooncake` / `Failed to import nixl` warnings are harmless
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
-> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni all serve end-to-end on Intel XPU**
-> (ASR single-card, TTS single-card, Qwen3-Omni thinker across 8 cards with tensor parallelism).
+> ✅ Support status: **Qwen3-ASR, Qwen3-TTS, Qwen3-Omni, and MiniCPM-o all serve end-to-end on Intel XPU**
+> (ASR, TTS, and MiniCPM-o single-card; Qwen3-Omni thinker across 8 cards with tensor parallelism).

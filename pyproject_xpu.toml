@@ -67,6 +67,16 @@ dependencies = [
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
 
+    # --- OpenAI Whisper ----------------------------------------------------
+    "more-itertools",
+    "numba==0.65.1",
+    "tiktoken",
+    "tqdm",
+
+    # --- MiniCPM-o ---------------------------------------------------------
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
+
     # --- AuK ---------------------------------------------------------------
     "omegaconf",              # Released AuK checkpoints use OmegaConf YAML
     "x-transformers",         # AuK DiT rotary embeddings
@@ -77,13 +87,12 @@ dependencies = [
 eval = [
     "s3prl>=0.4.18",
     "jiwer",
-    "openai-whisper==20250625",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
 ]
 # `all` aliases `eval`.
 all = [
-    "s3prl>=0.4.18", "jiwer", "openai-whisper==20250625",
+    "s3prl>=0.4.18", "jiwer",
     "pytest>=7.0.0", "pytest-asyncio>=0.21.0",
 ]
 
