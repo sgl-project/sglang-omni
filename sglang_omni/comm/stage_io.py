@@ -701,6 +701,7 @@ async def send_stream_signal(
     is_done: bool = False,
     error: str | None = None,
     replica_bindings: dict[str, int] | None = None,
+    trace_headers: dict[str, str] | None = None,
 ) -> None:
     await control_plane.send_to_stage(
         target_stage,
@@ -713,6 +714,7 @@ async def send_stream_signal(
             is_done=is_done,
             error=error,
             replica_bindings=replica_bindings,
+            trace_headers=trace_headers,
         ),
     )
 

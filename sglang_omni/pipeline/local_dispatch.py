@@ -43,10 +43,11 @@ class LocalStageDispatcher:
         request_id: str,
         payload: Any,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         target = self.get_stage(from_stage, to_stage)
         await target.receive_local_payload(
-            request_id, from_stage, payload, replica_bindings
+            request_id, from_stage, payload, replica_bindings, trace_headers
         )
 
     async def send_stream_chunk(
@@ -59,6 +60,7 @@ class LocalStageDispatcher:
         data: Any,
         metadata: dict[str, Any] | None = None,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_chunk(
@@ -68,6 +70,7 @@ class LocalStageDispatcher:
             data,
             metadata,
             replica_bindings,
+            trace_headers,
         )
 
     async def send_stream_signal(
@@ -79,6 +82,7 @@ class LocalStageDispatcher:
         is_done: bool = False,
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_signal(
@@ -87,4 +91,5 @@ class LocalStageDispatcher:
             is_done=is_done,
             error=error,
             replica_bindings=replica_bindings,
+            trace_headers=trace_headers,
         )

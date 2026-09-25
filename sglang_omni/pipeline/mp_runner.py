@@ -14,6 +14,9 @@ import multiprocessing
 import socket
 from typing import Any
 
+from opentelemetry.sdk.trace import TracerProvider
+
+from sglang_omni import tracing
 from sglang_omni.config.placement import (
     StagePlacementPlan,
     resolve_gpu_stage_names,
@@ -515,8 +518,11 @@ def wave_stage_names(wave: list[StageGroup]) -> list[str]:
 
 
 class MultiProcessPipelineRunner:
-
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self, config: PipelineConfig, *, otlp_traces_endpoint: str | None = None
+    ) -> None:
+        self.otlp_traces_endpoint = otlp_traces_endpoint
+        self.tracer_provider: TracerProvider | None = None
         self.config = config
         self._coordinator: Coordinator | None = (
             None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -578,6 +584,9 @@ class MultiProcessPipelineRunner:
             pass
 
         try:
+            self.tracer_provider = tracing.create_tracer_provider(
+                self.otlp_traces_endpoint
+            )
             ctx = multiprocessing.get_context("spawn")
             self.fatal_event = asyncio.Event()
             self.fatal_error = None
@@ -597,6 +606,10 @@ class MultiProcessPipelineRunner:
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
             )
+
+            for group in groups:
+                for spec in group.process_specs:
+                    spec.otlp_traces_endpoint = self.otlp_traces_endpoint
 
             # Note (Jiaxin Deng): roles are assigned before the coordinator
             # binds and before any child is spawned, so an unshareable topology
@@ -632,6 +645,11 @@ class MultiProcessPipelineRunner:
                 replica_topology=prep.replica_topology,
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
+                tracer=(
+                    self.tracer_provider.get_tracer("sglang_omni")
+                    if self.tracer_provider is not None
+                    else None
+                ),
             )
             if max_in_flight is not None:
                 logger.info(
@@ -746,6 +764,10 @@ class MultiProcessPipelineRunner:
             try:
                 await self.cleanup_on_failure()
             finally:
+                if self.tracer_provider is not None:
+                    await asyncio.to_thread(self.tracer_provider.shutdown)
+                else:
+                    pass
                 if self.mps is not None:
                     try:
                         await self.close_mps(
@@ -911,7 +933,13 @@ class MultiProcessPipelineRunner:
         # Note (Jiaxin Deng): _started is already false, so a cancellation that
         # lands mid teardown would make every later stop() a no-op and strand
         # the MPS lease, its flock and the state dir for the next serve.
-        await finish_despite_cancellation(self.teardown())
+        try:
+            await finish_despite_cancellation(self.teardown())
+        finally:
+            if self.tracer_provider is not None:
+                await asyncio.to_thread(self.tracer_provider.shutdown)
+            else:
+                pass
 
     async def teardown(self) -> None:
         before_signal = self.retire_mps_clients if self.mps is not None else None

@@ -19,6 +19,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.13"
 dependencies = [
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
     # --- Core framework (device-agnostic) ----------------------------------
     "pyzmq>=25.0.0",
     "msgpack>=1.0.0",
@@ -73,6 +75,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+tracing = [
+    "opentelemetry-exporter-otlp>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+]
 # SeedTTS speaker-sim / WER eval + tests (device-agnostic).
 eval = [
     "s3prl>=0.4.18",

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -143,6 +144,7 @@ class StageWorkerProcessSpec:
     # note (Dayuxiaoshui): root logger level for the spawned process. The
     # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
+    otlp_traces_endpoint: str | None = None
 
 
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
@@ -398,7 +400,7 @@ class StageGroup:
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
-                    f"{process_spec.process_name} " f"(pid={p.pid}, exit={p.exitcode})"
+                    f"{process_spec.process_name} (pid={p.pid}, exit={p.exitcode})"
                 )
             else:
                 pass
@@ -524,6 +526,9 @@ def run_process(
       live in this process, cold-start time degrades from ``max`` to ``sum``
       across them.
     """
+    from sglang_omni import tracing
+
+    provider = tracing.create_tracer_provider(spec.otlp_traces_endpoint)
     local_dispatcher = LocalStageDispatcher()
     stages: list[Stage] = []
 
@@ -562,6 +567,13 @@ def run_process(
                     local_dispatcher=local_dispatcher,
                 )
             )
+        for stage in stages:
+            if stage.owns_external_io and provider is not None:
+                stage.traces = tracing.RequestTraces(
+                    provider.get_tracer("sglang_omni"), "omni.stage", stage.name
+                )
+            else:
+                pass
         local_dispatcher.register_many(stages)
         asyncio.run(_start_and_run())
     except BaseException:
@@ -571,6 +583,13 @@ def run_process(
             reason=f"stage process {spec.process_name} failure",
         )
         raise
+    finally:
+        for stage in stages:
+            stage.traces.shutdown()
+        if provider is not None:
+            provider.shutdown()
+        else:
+            pass
 
 
 def cleanup_constructed_stages(
@@ -798,8 +817,8 @@ def construct_stage(
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
         allowed_stream_targets = set(spec.stream_targets)
-        get_stream_done_targets = (
-            lambda request_id, output, _fn=stream_done_to_fn: _target_result(
+        get_stream_done_targets = lambda request_id, output, _fn=stream_done_to_fn: (
+            _target_result(
                 _fn(request_id, output),
                 allowed_targets=allowed_stream_targets,
                 allow_empty=True,

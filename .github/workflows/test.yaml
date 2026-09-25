@@ -49,6 +49,7 @@ jobs:
           CUDA_VISIBLE_DEVICES: ""
         run: |
           source omni/bin/activate
+          pip install "opentelemetry-exporter-otlp>=1.28.0" "opentelemetry-instrumentation-fastapi>=0.49b0"
           export PYTHONPATH=$PWD
           bash .github/scripts/run_flaky_pytest.sh \
             pytest tests/ -v -m "not benchmark and not accelerator" -x

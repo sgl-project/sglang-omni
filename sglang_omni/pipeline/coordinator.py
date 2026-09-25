@@ -8,6 +8,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator
 
+from opentelemetry import trace
+
+from sglang_omni import tracing
 from sglang_omni.admission import QueueFullError
 from sglang_omni.config.topology import LogicalProcessPlan
 from sglang_omni.pipeline.control_plane import CoordinatorControlPlane
@@ -71,6 +74,7 @@ class Coordinator(CoordinatorSessions):
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
+        tracer: trace.Tracer | None = None,
     ):
         """Initialize coordinator.
 
@@ -88,6 +92,7 @@ class Coordinator(CoordinatorSessions):
                 (max_running_requests + max_queued_requests).
         """
         super().__init__()
+        self.traces = tracing.RequestTraces(tracer, "omni.pipeline")
         self.entry_stage = entry_stage
         self.terminal_stages: set[str] = (
             set(terminal_stages) if terminal_stages else set()
@@ -152,6 +157,7 @@ class Coordinator(CoordinatorSessions):
 
     async def stop(self) -> None:
         """Stop the coordinator."""
+        self.traces.shutdown()
         await self.stop_sessions()
         self.running = False
         self.control_plane.close()
@@ -163,6 +169,7 @@ class Coordinator(CoordinatorSessions):
         message = str(error)
         self.fatal_error = message
         for request_id, info in list(self.requests.items()):
+            self.traces.end(request_id, "error", "engine_failure")
             info.state = RequestState.FAILED
             info.error = message
             self.reject_completion_future(request_id, RuntimeError(message))
@@ -365,10 +372,16 @@ class Coordinator(CoordinatorSessions):
             timeout_s=timeout_s,
         )
 
-    async def submit(self, request_id: str, request: OmniRequest | Any) -> Any:
+    async def submit(
+        self,
+        request_id: str,
+        request: OmniRequest | Any,
+        *,
+        trace_headers: dict[str, str] | None = None,
+    ) -> Any:
         """Submit a request to the pipeline and wait for completion."""
         self.reject_session_metadata(request)
-        await self.submit_request(request_id, request)
+        await self.submit_request(request_id, request, trace_headers=trace_headers)
 
         future = self.completion_futures[request_id]
         try:
@@ -378,14 +391,20 @@ class Coordinator(CoordinatorSessions):
             self.completion_futures.pop(request_id, None)
 
     async def stream(
-        self, request_id: str, request: OmniRequest | Any
+        self,
+        request_id: str,
+        request: OmniRequest | Any,
+        *,
+        trace_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[CompleteMessage | StreamMessage]:
         """Submit a request and yield stream events until completion."""
         queue: asyncio.Queue[CompleteMessage | StreamMessage] = asyncio.Queue()
 
         self.reject_session_metadata(request)
         try:
-            await self.submit_request(request_id, request, stream_queue=queue)
+            await self.submit_request(
+                request_id, request, stream_queue=queue, trace_headers=trace_headers
+            )
             expected_terminal_stages = self.expected_terminal_stages(request_id)
 
             completed_stages: set[str] = set()
@@ -440,6 +459,7 @@ class Coordinator(CoordinatorSessions):
         terminal_stages: set[str] | None = None,
         replica_bindings: dict[str, int] | None = None,
         should_bypass_admission: bool = False,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         """Submit a request without waiting for completion."""
         if self.fatal_error is not None:
@@ -523,15 +543,24 @@ class Coordinator(CoordinatorSessions):
             metadata={"entry_stage": self.entry_stage},
         )
 
-        await self.control_plane.submit_to_stage(
-            entry_instance,
-            entry_info.control_endpoint,
-            SubmitMessage(
-                request_id=request_id,
-                data=payload,
-                replica_bindings=replica_bindings,
-            ),
-        )
+        self.traces.start(request_id, trace_headers)
+        try:
+            await self.control_plane.submit_to_stage(
+                entry_instance,
+                entry_info.control_endpoint,
+                SubmitMessage(
+                    request_id=request_id,
+                    data=payload,
+                    replica_bindings=replica_bindings,
+                    trace_headers=self.traces.headers(request_id),
+                ),
+            )
+        except asyncio.CancelledError:
+            self.traces.end(request_id, "cancelled")
+            raise
+        except BaseException:
+            self.traces.end(request_id, "error", "submit_failed")
+            raise
 
         # Update state
         info = self.requests.get(request_id)
@@ -628,6 +657,7 @@ class Coordinator(CoordinatorSessions):
         else:
             pass
 
+        self.traces.end(request_id, "cancelled")
         info.state = RequestState.ABORTED
         self.reject_completion_future(
             request_id, asyncio.CancelledError(f"Request {request_id} aborted")
@@ -736,6 +766,7 @@ class Coordinator(CoordinatorSessions):
 
         # Fail-fast: any terminal failure -> fail entire request
         if not msg.success:
+            self.traces.end(request_id, "error", "stage_error")
             info.state = RequestState.FAILED
             info.error = msg.error
             await self.control_plane.broadcast_abort(
@@ -784,6 +815,7 @@ class Coordinator(CoordinatorSessions):
                 await self.stream_queues[request_id].put(msg)
             else:
                 pass
+            self.traces.end(request_id)
             self.requests.pop(request_id, None)
             return
         else:
@@ -818,6 +850,7 @@ class Coordinator(CoordinatorSessions):
                 pass
         else:
             pass
+        self.traces.end(request_id)
         self.requests.pop(request_id, None)
 
     async def handle_stream(self, msg: StreamMessage) -> None:

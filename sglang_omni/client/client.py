@@ -87,11 +87,15 @@ class Client:
         self,
         request: GenerateRequest,
         request_id: str | None = None,
+        *,
+        trace_headers: dict[str, str] | None = None,
     ) -> AsyncIterator[GenerateChunk]:
         req_id = request_id or str(uuid.uuid4())
         omni_request = self.build_omni_request(request)
         if request.stream:
-            coordinator_stream = self.coordinator.stream(req_id, omni_request)
+            coordinator_stream = self.coordinator.stream(
+                req_id, omni_request, trace_headers=trace_headers
+            )
             async with aclosing(coordinator_stream):
                 async for msg in coordinator_stream:
                     if isinstance(msg, StreamMessage):
@@ -102,7 +106,9 @@ class Client:
         else:
             pass
 
-        result = await self.coordinator.submit(req_id, omni_request)
+        result = await self.coordinator.submit(
+            req_id, omni_request, trace_headers=trace_headers
+        )
         yield self.result_builder(req_id, result)
 
     # ------------------------------------------------------------------

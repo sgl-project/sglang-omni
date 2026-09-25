@@ -315,6 +315,10 @@ def serve(
         str, typer.Option(help="Server bind address (default: 0.0.0.0).")
     ] = "0.0.0.0",
     port: Annotated[int, typer.Option(help="Server bind port (default: 8000).")] = 8000,
+    otlp_traces_endpoint: Annotated[
+        str | None,
+        typer.Option(help="Enable request and stage tracing to this OTLP endpoint."),
+    ] = None,
     model_name: Annotated[
         str, typer.Option(help="Model name for /v1/models (default: pipeline name).")
     ] = None,
@@ -475,4 +479,5 @@ def serve(
         ),
         allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
         tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
+        otlp_traces_endpoint=otlp_traces_endpoint,
     )

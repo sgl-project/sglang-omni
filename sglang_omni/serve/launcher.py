@@ -412,6 +412,7 @@ async def run_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    otlp_traces_endpoint: str | None = None,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
 
@@ -420,7 +421,9 @@ async def run_server(
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
 
-    mp_runner = MultiProcessPipelineRunner(pipeline_config)
+    mp_runner = MultiProcessPipelineRunner(
+        pipeline_config, otlp_traces_endpoint=otlp_traces_endpoint
+    )
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
     await mp_runner.start(timeout=startup_timeout)
     coordinator = mp_runner.coordinator
@@ -490,6 +493,17 @@ async def run_server(
             architectures=[pipeline_config.architecture],
             audio_chunking=pipeline_config.resolved_audio_chunking,
         )
+        if mp_runner.tracer_provider is not None:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            FastAPIInstrumentor.instrument_app(
+                app,
+                tracer_provider=mp_runner.tracer_provider,
+                exclude_spans=["send", "receive"],
+                excluded_urls="health,healthz,metrics",
+            )
+        else:
+            pass
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
         mount_profiler_routes(app, profiler_ctl, profiler_dir)
@@ -569,6 +583,7 @@ def launch_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    otlp_traces_endpoint: str | None = None,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
 
@@ -604,5 +619,6 @@ def launch_server(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
+            otlp_traces_endpoint=otlp_traces_endpoint,
         )
     )

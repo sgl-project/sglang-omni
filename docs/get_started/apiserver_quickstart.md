@@ -216,3 +216,24 @@ If you see a 500 error, check the server logs for the full traceback. Common iss
 
 - [API Server Design](../developer_reference/apiserver_design.md)
 - [Developer Reference](../developer_reference/main.md)
+
+## Distributed tracing
+
+Install `sglang-omni[tracing]` and add
+`--otlp-traces-endpoint http://localhost:4317` to the serve command. Tracing is
+otherwise disabled. For HTTP export, set
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf` and use an endpoint ending
+in `/v1/traces`. Standard OTel service, resource and sampler environment variables
+apply.
+
+The HTTP server accepts W3C `traceparent`, `tracestate` and `baggage`. Python callers
+can use an active OTel span or pass `trace_headers` to `Client.generate`.
+`omni.pipeline` spans belong to the coordinator; `omni.stage` spans follow logical
+stage requests across local and cross-process transfers. TP followers do not emit
+duplicate stage spans. A stage span includes input waits, scheduling and output
+routing, not just GPU execution. Streaming chunks reuse the stage span;
+`omni.first_output` marks the first output observed by that stage.
+
+Completion, cancellation, failure and shutdown close request spans. The
+instrumentation does not capture prompts, generated content or media, and does
+not create spans per token or chunk. Realtime session tracing is not covered.

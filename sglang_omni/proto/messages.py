@@ -26,6 +26,7 @@ class DataReadyMessage:
     is_done: bool = False
     error: str | None = None
     replica_bindings: dict[str, int] | None = None
+    trace_headers: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         require_str(self.request_id, "request_id")
@@ -74,6 +75,10 @@ class DataReadyMessage:
         if self.error is not None:
             require_str(self.error, "error")
             d["error"] = self.error
+        else:
+            pass
+        if self.trace_headers:
+            d["trace_headers"] = dict(self.trace_headers)
         else:
             pass
         if self.replica_bindings:
@@ -130,6 +135,7 @@ class DataReadyMessage:
             is_done=is_done,
             error=error,
             replica_bindings=d.get("replica_bindings"),
+            trace_headers=d.get("trace_headers"),
         )
 
 
@@ -291,6 +297,7 @@ class SubmitMessage:
     request_id: str
     data: Any
     replica_bindings: dict[str, int] | None = None
+    trace_headers: dict[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = self.data
@@ -299,6 +306,10 @@ class SubmitMessage:
         else:
             pass
         d = {"type": "submit", "request_id": self.request_id, "data": data}
+        if self.trace_headers:
+            d["trace_headers"] = dict(self.trace_headers)
+        else:
+            pass
         if self.replica_bindings:
             d["replica_bindings"] = dict(self.replica_bindings)
         else:
@@ -316,6 +327,7 @@ class SubmitMessage:
             request_id=d["request_id"],
             data=data,
             replica_bindings=d.get("replica_bindings"),
+            trace_headers=d.get("trace_headers"),
         )
 
 

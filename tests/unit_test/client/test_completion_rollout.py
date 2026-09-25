@@ -19,7 +19,14 @@ class SubmitStubCoordinator:
     def __init__(self, result: Any) -> None:
         self.result = result
 
-    async def submit(self, request_id: str, omni_request: Any) -> Any:
+    async def submit(
+        self,
+        request_id: str,
+        omni_request: Any,
+        *,
+        trace_headers: dict[str, str] | None = None,
+    ) -> Any:
+        self.trace_headers = trace_headers
         del request_id, omni_request
         return self.result
 
@@ -30,7 +37,14 @@ class StreamStubCoordinator:
     def __init__(self, messages: list[Any]) -> None:
         self.messages = messages
 
-    async def stream(self, request_id: str, omni_request: Any):
+    async def stream(
+        self,
+        request_id: str,
+        omni_request: Any,
+        *,
+        trace_headers: dict[str, str] | None = None,
+    ):
+        self.trace_headers = trace_headers
         del request_id, omni_request
         for message in self.messages:
             yield message
@@ -227,3 +241,21 @@ def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
         "input_ids": [1, 2, 3],
         "multimodal_train_inputs": bundle,
     }
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_generate_forwards_explicit_trace_headers(stream: bool) -> None:
+    coordinator = (
+        StreamStubCoordinator([]) if stream else SubmitStubCoordinator({"text": "ok"})
+    )
+    client = Client(coordinator)
+    headers = {"traceparent": "00-12345678901234567890123456789012-1234567890123456-01"}
+
+    async def generate() -> None:
+        async for chunk in client.generate(
+            GenerateRequest(prompt="hi", stream=stream), trace_headers=headers
+        ):
+            assert chunk is not None
+
+    asyncio.run(generate())
+    assert coordinator.trace_headers == headers

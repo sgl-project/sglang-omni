@@ -20,7 +20,9 @@ from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal
 
 import torch
+from opentelemetry import trace
 
+from sglang_omni import tracing
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
 from sglang_omni.comm.engine import CommEngine, KVTransferCancelled, KVTransferRejected
@@ -115,7 +117,9 @@ class Stage:
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
+        tracer: trace.Tracer | None = None,
     ):
+        self.traces = tracing.RequestTraces(tracer, "omni.stage", name)
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -274,6 +278,7 @@ class Stage:
         logger.info("Stage %s started", self.name)
 
     async def stop(self) -> None:
+        self.traces.shutdown()
         self.running = False
         cleanup_error: Exception | None = None
 
@@ -503,6 +508,7 @@ class Stage:
             return
         else:
             pass
+        self.traces.start(request_id, msg.trace_headers)
         self.record_replica_bindings(request_id, msg.replica_bindings)
         self.active_requests.add(request_id)
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
@@ -530,6 +536,7 @@ class Stage:
             return
         else:
             pass
+        self.traces.start(request_id, msg.trace_headers)
 
         if stage_io.is_direct_cuda_ipc_payload_ref(msg.data_ref):
             try:
@@ -584,7 +591,12 @@ class Stage:
         from_stage: str,
         payload: Any,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
+        if request_id not in self.aborted:
+            self.traces.start(request_id, trace_headers)
+        else:
+            pass
         self.record_replica_bindings(request_id, replica_bindings)
         await self.receive_payload_from_stage(request_id, from_stage, payload)
 
@@ -596,11 +608,13 @@ class Stage:
         data: Any,
         metadata: dict[str, Any] | None = None,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         if request_id in self.aborted:
             return
         else:
             pass
+        self.traces.start(request_id, trace_headers)
         self.record_replica_bindings(request_id, replica_bindings)
         self.active_requests.add(request_id)
         item = StreamItem(
@@ -624,7 +638,12 @@ class Stage:
         is_done: bool = False,
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
+        if request_id not in self.aborted:
+            self.traces.start(request_id, trace_headers)
+        else:
+            pass
         self.record_replica_bindings(request_id, replica_bindings)
         await self.receive_stream_signal(
             request_id,
@@ -680,6 +699,7 @@ class Stage:
             return
         else:
             pass
+        self.traces.start(request_id, msg.trace_headers)
         self.active_requests.add(request_id)
 
         if stage_io.is_direct_cuda_ipc_stream_chunk_ref(msg.data_ref):
@@ -988,6 +1008,10 @@ class Stage:
         msg: DataReadyMessage,
         predecessor: asyncio.Future[None] | None = None,
     ) -> None:
+        if msg.request_id not in self.aborted:
+            self.traces.start(msg.request_id, msg.trace_headers)
+        else:
+            pass
         await self.wait_for_receive_predecessor(predecessor)
         await self.receive_stream_signal(
             msg.request_id,
@@ -1418,6 +1442,7 @@ class Stage:
 
     async def route_result(self, request_id: str, result: Any) -> None:
         """Route a completed result to next stage(s) or complete at coordinator."""
+        self.traces.output(request_id)
         if not self.owns_external_io:
             self.clear_request_state(request_id)
             return
@@ -1602,6 +1627,7 @@ class Stage:
                 request_id=request_id,
                 payload=projected_payload,
                 replica_bindings=self.replica_bindings.get(request_id),
+                trace_headers=self.traces.headers(request_id),
             )
             return
         else:
@@ -1632,6 +1658,7 @@ class Stage:
                         to_stage=target,
                         data_ref=direct_ref,
                         replica_bindings=self.replica_bindings.get(request_id),
+                        trace_headers=self.traces.headers(request_id),
                     ),
                 )
                 _emit_event(
@@ -1657,6 +1684,7 @@ class Stage:
             to_stage=target,
             target_endpoint=endpoint,
             replica_bindings=self.replica_bindings.get(request_id),
+            trace_headers=self.traces.headers(request_id),
         )
         _emit_event(
             request_id=request_id,
@@ -1811,6 +1839,7 @@ class Stage:
             metadata.get("modality") if isinstance(metadata, dict) else None
         )
         if request_id not in self.first_stream_chunk_seen:
+            self.traces.output(request_id)
             self.first_stream_chunk_seen.add(request_id)
             _emit_event(
                 request_id=request_id,
@@ -1848,6 +1877,7 @@ class Stage:
                 data=data,
                 metadata=metadata,
                 replica_bindings=self.replica_bindings.get(request_id),
+                trace_headers=self.traces.headers(request_id),
             )
             return
         else:
@@ -1896,6 +1926,7 @@ class Stage:
                     data_ref=direct_ref,
                     chunk_id=chunk_id,
                     replica_bindings=self.replica_bindings.get(request_id),
+                    trace_headers=self.traces.headers(request_id),
                 ),
             )
             return
@@ -1934,6 +1965,7 @@ class Stage:
                     data_ref=inline_ref,
                     chunk_id=chunk_id,
                     replica_bindings=self.replica_bindings.get(request_id),
+                    trace_headers=self.traces.headers(request_id),
                 ),
             )
             return
@@ -1963,6 +1995,7 @@ class Stage:
             metadata=metadata,
             transport=transport_kind,
             replica_bindings=self.replica_bindings.get(request_id),
+            trace_headers=self.traces.headers(request_id),
         )
 
     async def send_stream_signal_to_target(
@@ -2002,6 +2035,7 @@ class Stage:
                 is_done=is_done,
                 error=error,
                 replica_bindings=self.replica_bindings.get(request_id),
+                trace_headers=self.traces.headers(request_id),
             )
             return
         else:
@@ -2016,6 +2050,7 @@ class Stage:
             is_done=is_done,
             error=error,
             replica_bindings=self.replica_bindings.get(request_id),
+            trace_headers=self.traces.headers(request_id),
         )
 
     async def send_stream_to_coordinator(
@@ -2058,6 +2093,7 @@ class Stage:
             chunk_id=chunk_id,
         )
         if request_id not in self.first_stream_chunk_seen:
+            self.traces.output(request_id)
             self.first_stream_chunk_seen.add(request_id)
             _emit_event(
                 request_id=request_id,
@@ -2084,6 +2120,7 @@ class Stage:
         await self.control_plane.send_stream(msg)
 
     async def send_failure(self, request_id: str, error: str) -> None:
+        self.traces.end(request_id, "error", "stage_error")
         self.record_aborted_request_id(request_id)
         if not self.owns_external_io:
             self.clear_request_state(request_id)
@@ -2101,6 +2138,7 @@ class Stage:
         self.clear_request_state(request_id)
 
     def clear_request_state(self, request_id: str) -> None:
+        self.traces.end(request_id)
         self.active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         if self.stream_queue is not None:
@@ -2172,6 +2210,7 @@ class Stage:
             pass
 
     def on_abort(self, request_id: str) -> None:
+        self.traces.end(request_id, "cancelled")
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
