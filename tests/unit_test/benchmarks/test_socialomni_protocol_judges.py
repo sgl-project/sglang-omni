@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.asyncio
+
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint

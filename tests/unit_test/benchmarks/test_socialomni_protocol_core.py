@@ -6,6 +6,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.asyncio
 from aiohttp import web
 
 from benchmarks.benchmarker.data import RequestResult
