@@ -8,9 +8,10 @@ import io
 import wave
 
 PCM_SAMPLE_RATE = 16000
+PCM16_BYTES_PER_SAMPLE = 2
 
 # 60 seconds hard cap for audio buffer.
-DEFAULT_MAX_BUFFER_BYTES = 60 * PCM_SAMPLE_RATE * 2
+DEFAULT_MAX_BUFFER_BYTES = 60 * PCM_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE
 
 
 class BufferOverflow(ValueError):
@@ -22,7 +23,12 @@ class BufferOverflow(ValueError):
 
 
 class RealtimeAudioBuffer:
-    """Append-only buffer of raw little-endian PCM16 bytes."""
+    """Append-only buffer of raw little-endian PCM16 bytes.
+
+    Audio is addressed in session samples, counted from the first byte ever
+    appended. Dropping a prefix advances start_sample, so positions a caller
+    recorded earlier stay valid after the audio before them is gone.
+    """
 
     def __init__(
         self,
@@ -37,6 +43,9 @@ class RealtimeAudioBuffer:
         self.channels = channels
         self.max_bytes = max_bytes
         self.buf = bytearray()
+        self.start_sample = 0
+        # Across all channels, so it is also the byte size of one position.
+        self.bytes_per_sample = PCM16_BYTES_PER_SAMPLE * channels
 
     def append_b64(self, audio_b64: str) -> int:
         chunk = base64.b64decode(audio_b64, validate=False)
@@ -45,25 +54,33 @@ class RealtimeAudioBuffer:
     def append_bytes(self, chunk: bytes) -> int:
         if len(self.buf) + len(chunk) > self.max_bytes:
             raise BufferOverflow(self.max_bytes)
-        else:
-            pass
         self.buf.extend(chunk)
         return len(chunk)
 
     def clear(self) -> None:
-        self.buf.clear()
+        self.drop_prefix(len(self.buf))
 
     def drop_prefix(self, num_bytes: int) -> None:
-        if num_bytes <= 0:
-            return
-        else:
-            pass
-        if num_bytes >= len(self.buf):
-            self.buf.clear()
-            return
-        else:
-            pass
+        num_bytes = min(max(num_bytes, 0), len(self.buf))
         del self.buf[:num_bytes]
+        self.start_sample += num_bytes // self.bytes_per_sample
+
+    @property
+    def end_sample(self) -> int:
+        return self.start_sample + self.num_samples
+
+    def byte_offset(self, sample: int) -> int:
+        """Byte offset of a session sample, clamped to the held audio."""
+        sample = min(max(sample, self.start_sample), self.end_sample)
+        return (sample - self.start_sample) * self.bytes_per_sample
+
+    def slice(self, start_sample: int, end_sample: int | None = None) -> bytes:
+        """PCM between two session samples; None runs to the end."""
+        end_byte = len(self.buf) if end_sample is None else self.byte_offset(end_sample)
+        return bytes(self.buf[self.byte_offset(start_sample) : end_byte])
+
+    def drop_before(self, sample: int) -> None:
+        self.drop_prefix(self.byte_offset(sample))
 
     @property
     def num_bytes(self) -> int:
@@ -71,7 +88,7 @@ class RealtimeAudioBuffer:
 
     @property
     def num_samples(self) -> int:
-        return len(self.buf) // (2 * self.channels)
+        return len(self.buf) // self.bytes_per_sample
 
     def is_empty(self) -> bool:
         return self.num_samples == 0
@@ -91,7 +108,7 @@ class RealtimeAudioBuffer:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(self.channels)
-            wf.setsampwidth(2)
+            wf.setsampwidth(PCM16_BYTES_PER_SAMPLE)
             wf.setframerate(self.source_sr)
             wf.writeframes(pcm)
         return buf.getvalue()
@@ -100,6 +117,4 @@ class RealtimeAudioBuffer:
         assert 0 <= num_bytes <= len(self.buf), "Invalid tail length"
         if num_bytes == 0:
             return b""
-        else:
-            pass
         return bytes(self.buf[-num_bytes:])
