@@ -109,16 +109,16 @@ def extract_route_metadata(
     route_kind: RouteKind,
     body: bytes,
 ) -> RouteMetadata:
-    request_id = _request_id_from_request(request)
-    route_model, has_route_model_header = _route_model_from_header(request)
-    route_stream, has_route_stream_header = _route_stream_from_header(request)
-    route_capabilities, has_route_capabilities_header = _route_capabilities_from_header(
+    request_id = request_id_from_request(request)
+    route_model, has_route_model_header = route_model_from_header(request)
+    route_stream, has_route_stream_header = route_stream_from_header(request)
+    route_capabilities, has_route_capabilities_header = route_capabilities_from_header(
         request
     )
     has_json_body = route_kind in {
         RouteKind.SPEECH,
         RouteKind.SPEECH_BATCH,
-    } or _is_json_request(request)
+    } or is_json_request(request)
     is_body_over_metadata_limit = has_json_body and (
         len(body) > ROUTE_METADATA_JSON_LIMIT_BYTES
     )
@@ -126,9 +126,9 @@ def extract_route_metadata(
     payload: dict[str, JsonValue] | None = None
     large_json_metadata: LargeJsonMetadata | None = None
     if has_json_body and body and not is_body_over_metadata_limit:
-        payload = _parse_json_object(body)
+        payload = parse_json_object(body)
     elif is_body_over_metadata_limit:
-        large_json_metadata = _scan_large_json_metadata(body)
+        large_json_metadata = scan_large_json_metadata(body)
 
     speech_facts = (
         extract_speech_route_facts(payload, route_kind)
@@ -137,24 +137,24 @@ def extract_route_metadata(
         else None
     )
     if payload is not None:
-        request_id = request_id or _string_or_none(payload.get("request_id"))
+        request_id = request_id or string_or_none(payload.get("request_id"))
         model = (
             speech_facts.model
             if speech_facts is not None
-            else _string_or_none(payload.get("model"))
+            else string_or_none(payload.get("model"))
         )
         stream = payload.get("stream") is True
-        required_capabilities = _required_capabilities(
+        capabilities = required_capabilities(
             route_kind,
             payload,
             stream=stream,
             route_capabilities=set(),
             speech_facts=speech_facts,
         )
-        _validate_body_route_headers(
+        validate_body_route_headers(
             model=model,
             stream=stream,
-            required_capabilities=required_capabilities,
+            required_capabilities=capabilities,
             route_model=route_model,
             has_route_model_header=has_route_model_header,
             route_stream=route_stream,
@@ -166,17 +166,17 @@ def extract_route_metadata(
         request_id = request_id or large_json_metadata.request_id
         model = large_json_metadata.model
         stream = large_json_metadata.stream is True
-        required_capabilities = _required_capabilities(
+        capabilities = required_capabilities(
             route_kind,
             payload,
             stream=stream,
             route_capabilities=route_capabilities,
             speech_facts=None,
         )
-        _validate_body_route_headers(
+        validate_body_route_headers(
             model=model,
             stream=stream,
-            required_capabilities=required_capabilities,
+            required_capabilities=capabilities,
             route_model=route_model,
             has_route_model_header=has_route_model_header,
             route_stream=route_stream,
@@ -190,7 +190,7 @@ def extract_route_metadata(
         model = route_model
         stream = route_stream
         if route_kind in {RouteKind.TRANSCRIPTION, RouteKind.TRANSLATION}:
-            form = _multipart_form_facts(request, body)
+            form = multipart_form_facts(request, body)
             if form.model is not None:
                 if has_route_model_header and route_model != form.model:
                     raise RouteMetadataError(
@@ -204,7 +204,7 @@ def extract_route_metadata(
                         "form stream"
                     )
                 stream = form.stream
-        required_capabilities = _required_capabilities(
+        capabilities = required_capabilities(
             route_kind,
             payload,
             stream=stream,
@@ -219,12 +219,12 @@ def extract_route_metadata(
         request_id=request_id or str(uuid.uuid4()),
         model=model,
         stream=stream,
-        required_capabilities=required_capabilities,
+        required_capabilities=capabilities,
         is_body_over_metadata_limit=is_body_over_metadata_limit,
         has_route_model_header=has_route_model_header,
         has_route_capabilities_header=has_route_capabilities_header,
         route_kind=route_kind,
-        service_class=_service_class_for_route(route_kind),
+        service_class=service_class_for_route(route_kind),
         voice_names_requiring_registry=(
             set(speech_facts.voice_names_requiring_registry)
             if speech_facts is not None
@@ -233,7 +233,7 @@ def extract_route_metadata(
     )
 
 
-def _request_id_from_request(request: Request) -> str | None:
+def request_id_from_request(request: Request) -> str | None:
     return (
         request.headers.get("x-sglang-omni-request-id")
         or request.headers.get("x-request-id")
@@ -241,7 +241,7 @@ def _request_id_from_request(request: Request) -> str | None:
     )
 
 
-def _route_model_from_header(request: Request) -> tuple[str | None, bool]:
+def route_model_from_header(request: Request) -> tuple[str | None, bool]:
     value = request.headers.get(ROUTE_MODEL_HEADER)
     if value is None:
         return None, False
@@ -251,7 +251,7 @@ def _route_model_from_header(request: Request) -> tuple[str | None, bool]:
     return model, True
 
 
-def _route_stream_from_header(request: Request) -> tuple[bool, bool]:
+def route_stream_from_header(request: Request) -> tuple[bool, bool]:
     value = request.headers.get(ROUTE_STREAM_HEADER)
     if value is None:
         return False, False
@@ -263,7 +263,7 @@ def _route_stream_from_header(request: Request) -> tuple[bool, bool]:
     raise RouteMetadataError(f"{ROUTE_STREAM_HEADER} must be true or false")
 
 
-def _route_capabilities_from_header(request: Request) -> tuple[set[Capability], bool]:
+def route_capabilities_from_header(request: Request) -> tuple[set[Capability], bool]:
     value = request.headers.get(ROUTE_CAPABILITIES_HEADER)
     if value is None:
         return set(), False
@@ -284,7 +284,7 @@ def _route_capabilities_from_header(request: Request) -> tuple[set[Capability], 
     return capabilities, True
 
 
-def _validate_body_route_headers(
+def validate_body_route_headers(
     *,
     model: str | None,
     stream: bool,
@@ -310,11 +310,11 @@ def _validate_body_route_headers(
         )
 
 
-def _is_json_request(request: Request) -> bool:
+def is_json_request(request: Request) -> bool:
     return "json" in request.headers.get("content-type", "").lower()
 
 
-def _parse_json_object(body: bytes) -> dict[str, JsonValue]:
+def parse_json_object(body: bytes) -> dict[str, JsonValue]:
     try:
         payload = json.loads(body)
     except Exception:
@@ -324,15 +324,15 @@ def _parse_json_object(body: bytes) -> dict[str, JsonValue]:
     return payload
 
 
-def _scan_large_json_metadata(body: bytes) -> LargeJsonMetadata:
-    scanner = _JsonTopLevelScanner(body)
+def scan_large_json_metadata(body: bytes) -> LargeJsonMetadata:
+    scanner = JsonTopLevelScanner(body)
     try:
         return scanner.scan_metadata()
     except (IndexError, UnicodeDecodeError, ValueError):
         raise RouteMetadataError("invalid JSON body") from None
 
 
-class _JsonTopLevelScanner:
+class JsonTopLevelScanner:
     _METADATA_KEYS = {"model", "request_id", "stream"}
 
     def __init__(self, body: bytes):
@@ -341,37 +341,37 @@ class _JsonTopLevelScanner:
 
     def scan_metadata(self) -> LargeJsonMetadata:
         metadata = LargeJsonMetadata()
-        index = self._skip_ws(0)
+        index = self.skip_ws(0)
         if index >= self._length or self._body[index] != ord("{"):
             raise ValueError("JSON request body must be an object")
         index += 1
 
-        index = self._skip_ws(index)
+        index = self.skip_ws(index)
         if index < self._length and self._body[index] == ord("}"):
-            index = self._skip_ws(index + 1)
+            index = self.skip_ws(index + 1)
             if index != self._length:
                 raise ValueError("trailing data")
             return metadata
 
         while True:
-            index = self._skip_ws(index)
-            key, index = self._parse_string(index)
-            index = self._skip_ws(index)
+            index = self.skip_ws(index)
+            key, index = self.parse_string(index)
+            index = self.skip_ws(index)
             if index >= self._length or self._body[index] != ord(":"):
                 raise ValueError("missing object separator")
-            index = self._skip_ws(index + 1)
+            index = self.skip_ws(index + 1)
 
             if key in self._METADATA_KEYS:
-                index = self._read_metadata_value(metadata, key, index)
+                index = self.read_metadata_value(metadata, key, index)
             else:
-                index = self._skip_value(index)
+                index = self.skip_value(index)
 
-            index = self._skip_ws(index)
+            index = self.skip_ws(index)
             if index >= self._length:
                 raise ValueError("unterminated object")
             byte = self._body[index]
             if byte == ord("}"):
-                index = self._skip_ws(index + 1)
+                index = self.skip_ws(index + 1)
                 if index != self._length:
                     raise ValueError("trailing data")
                 return metadata
@@ -379,7 +379,7 @@ class _JsonTopLevelScanner:
                 raise ValueError("invalid object separator")
             index += 1
 
-    def _read_metadata_value(
+    def read_metadata_value(
         self,
         metadata: LargeJsonMetadata,
         key: str,
@@ -392,32 +392,32 @@ class _JsonTopLevelScanner:
             if self._body.startswith(b"false", index):
                 metadata.stream = False
                 return index + 5
-            return self._skip_value(index)
+            return self.skip_value(index)
 
         if index < self._length and self._body[index] == ord('"'):
-            value, next_index = self._parse_string(index)
+            value, next_index = self.parse_string(index)
             if value:
                 if key == "model":
                     metadata.model = value
                 else:
                     metadata.request_id = value
             return next_index
-        return self._skip_value(index)
+        return self.skip_value(index)
 
-    def _skip_ws(self, index: int) -> int:
+    def skip_ws(self, index: int) -> int:
         while index < self._length and self._body[index] in b" \t\r\n":
             index += 1
         return index
 
-    def _parse_string(self, index: int) -> tuple[str, int]:
+    def parse_string(self, index: int) -> tuple[str, int]:
         start = index
-        end = self._skip_string(index)
+        end = self.skip_string(index)
         value = json.loads(self._body[start:end])
         if not isinstance(value, str):
             raise ValueError("expected string")
         return value, end
 
-    def _skip_string(self, index: int) -> int:
+    def skip_string(self, index: int) -> int:
         if index >= self._length or self._body[index] != ord('"'):
             raise ValueError("expected string")
         index += 1
@@ -433,37 +433,37 @@ class _JsonTopLevelScanner:
                 index += 1
         raise ValueError("unterminated string")
 
-    def _skip_value(self, index: int) -> int:
-        index = self._skip_ws(index)
+    def skip_value(self, index: int) -> int:
+        index = self.skip_ws(index)
         if index >= self._length:
             raise ValueError("missing value")
         byte = self._body[index]
         if byte == ord('"'):
-            return self._skip_string(index)
+            return self.skip_string(index)
         if byte == ord("{"):
-            return self._skip_object(index)
+            return self.skip_object(index)
         if byte == ord("["):
-            return self._skip_array(index)
+            return self.skip_array(index)
         if byte == ord("t") and self._body.startswith(b"true", index):
             return index + 4
         if byte == ord("f") and self._body.startswith(b"false", index):
             return index + 5
         if byte == ord("n") and self._body.startswith(b"null", index):
             return index + 4
-        return self._skip_number(index)
+        return self.skip_number(index)
 
-    def _skip_object(self, index: int) -> int:
+    def skip_object(self, index: int) -> int:
         index += 1
-        index = self._skip_ws(index)
+        index = self.skip_ws(index)
         if index < self._length and self._body[index] == ord("}"):
             return index + 1
         while True:
-            index = self._skip_string(self._skip_ws(index))
-            index = self._skip_ws(index)
+            index = self.skip_string(self.skip_ws(index))
+            index = self.skip_ws(index)
             if index >= self._length or self._body[index] != ord(":"):
                 raise ValueError("missing object separator")
-            index = self._skip_value(index + 1)
-            index = self._skip_ws(index)
+            index = self.skip_value(index + 1)
+            index = self.skip_ws(index)
             if index >= self._length:
                 raise ValueError("unterminated object")
             byte = self._body[index]
@@ -473,14 +473,14 @@ class _JsonTopLevelScanner:
                 raise ValueError("invalid object separator")
             index += 1
 
-    def _skip_array(self, index: int) -> int:
+    def skip_array(self, index: int) -> int:
         index += 1
-        index = self._skip_ws(index)
+        index = self.skip_ws(index)
         if index < self._length and self._body[index] == ord("]"):
             return index + 1
         while True:
-            index = self._skip_value(index)
-            index = self._skip_ws(index)
+            index = self.skip_value(index)
+            index = self.skip_ws(index)
             if index >= self._length:
                 raise ValueError("unterminated array")
             byte = self._body[index]
@@ -490,7 +490,7 @@ class _JsonTopLevelScanner:
                 raise ValueError("invalid array separator")
             index += 1
 
-    def _skip_number(self, index: int) -> int:
+    def skip_number(self, index: int) -> int:
         decoder = json.JSONDecoder()
         text = self._body[index : min(self._length, index + 128)].decode("utf-8")
         value, consumed = decoder.raw_decode(text)
@@ -510,20 +510,20 @@ _FORM_TRUE_VALUES = {"true", "1", "yes", "on"}
 _FORM_FALSE_VALUES = {"false", "0", "no", "off"}
 
 
-def _multipart_form_facts(request: Request, body: bytes) -> MultipartFormFacts:
+def multipart_form_facts(request: Request, body: bytes) -> MultipartFormFacts:
     if not body:
         return MultipartFormFacts()
-    boundary = _multipart_boundary(request)
+    boundary = multipart_boundary(request)
     if boundary is None:
         return MultipartFormFacts()
-    values = _scan_multipart_form_fields(body, boundary)
+    values = scan_multipart_form_fields(body, boundary)
     return MultipartFormFacts(
         model=values.get("model") or None,
-        stream=_form_bool(values.get("stream")),
+        stream=form_bool(values.get("stream")),
     )
 
 
-def _form_bool(value: str | None) -> bool | None:
+def form_bool(value: str | None) -> bool | None:
     if value is None:
         return None
     normalized = value.strip().lower()
@@ -534,7 +534,7 @@ def _form_bool(value: str | None) -> bool | None:
     return None
 
 
-def _multipart_boundary(request: Request) -> bytes | None:
+def multipart_boundary(request: Request) -> bytes | None:
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" not in content_type.lower():
         return None
@@ -550,7 +550,7 @@ def _multipart_boundary(request: Request) -> bytes | None:
     return None
 
 
-def _scan_multipart_form_fields(body: bytes, boundary: bytes) -> dict[str, str]:
+def scan_multipart_form_fields(body: bytes, boundary: bytes) -> dict[str, str]:
     delimiter = b"--" + boundary
     values: dict[str, str] = {}
     position = body.find(delimiter)
@@ -568,7 +568,7 @@ def _scan_multipart_form_fields(body: bytes, boundary: bytes) -> dict[str, str]:
         )
         if headers_end < 0:
             return values
-        name, has_filename = _content_disposition_name(body[position:headers_end])
+        name, has_filename = content_disposition_name(body[position:headers_end])
         value_start = headers_end + 4
         value_end = body.find(b"\r\n" + delimiter, value_start)
         if value_end < 0:
@@ -588,7 +588,7 @@ def _scan_multipart_form_fields(body: bytes, boundary: bytes) -> dict[str, str]:
         position = value_end + 2 + len(delimiter)
 
 
-def _content_disposition_name(header_block: bytes) -> tuple[str | None, bool]:
+def content_disposition_name(header_block: bytes) -> tuple[str | None, bool]:
     for raw_line in header_block.split(b"\r\n"):
         try:
             line = raw_line.decode("utf-8")
@@ -609,7 +609,7 @@ def _content_disposition_name(header_block: bytes) -> tuple[str | None, bool]:
     return None, False
 
 
-def _required_capabilities(
+def required_capabilities(
     route_kind: RouteKind,
     payload: dict[str, JsonValue] | None,
     *,
@@ -631,7 +631,7 @@ def _required_capabilities(
     capabilities.update(route_capabilities)
     if payload is not None:
         capabilities.update(
-            _infer_payload_capabilities(
+            infer_payload_capabilities(
                 route_kind,
                 payload,
                 speech_facts=speech_facts,
@@ -640,23 +640,23 @@ def _required_capabilities(
     return capabilities
 
 
-def _infer_payload_capabilities(
+def infer_payload_capabilities(
     route_kind: RouteKind,
     payload: dict[str, JsonValue],
     *,
     speech_facts: SpeechRouteFacts | None,
 ) -> set[Capability]:
     capabilities: set[Capability] = set()
-    capabilities.update(_infer_input_field_capabilities(payload))
+    capabilities.update(infer_input_field_capabilities(payload))
     if speech_facts is not None and speech_facts.has_reference_audio:
         capabilities.add("audio_input")
-    if _modalities_include_audio(payload) or _has_non_empty(payload.get("audio")):
+    if modalities_include_audio(payload) or has_non_empty(payload.get("audio")):
         capabilities.add("audio_output")
-    capabilities.update(_infer_message_part_capabilities(payload.get("messages")))
+    capabilities.update(infer_message_part_capabilities(payload.get("messages")))
     return capabilities
 
 
-def _service_class_for_route(route_kind: RouteKind) -> ServiceClass:
+def service_class_for_route(route_kind: RouteKind) -> ServiceClass:
     if route_kind is RouteKind.SPEECH:
         return "speech_http"
     if route_kind is RouteKind.SPEECH_BATCH:
@@ -673,32 +673,32 @@ def extract_speech_route_facts(
     route_kind: RouteKind,
 ) -> SpeechRouteFacts:
     if route_kind is RouteKind.SPEECH:
-        return _speech_route_facts(payload)
+        return speech_route_facts(payload)
     if route_kind is RouteKind.SPEECH_BATCH:
-        return _speech_batch_route_facts(payload)
+        return speech_batch_route_facts(payload)
     raise ValueError(f"{route_kind.value} is not a speech route")
 
 
-def _speech_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts:
-    voice_name = _voice_name(payload)
-    has_explicit_reference = _has_explicit_speech_reference(payload)
+def speech_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts:
+    resolved_voice_name = voice_name(payload)
+    has_explicit_reference = has_explicit_speech_reference(payload)
     return SpeechRouteFacts(
-        model=_string_or_none(payload.get("model")),
+        model=string_or_none(payload.get("model")),
         voice_names_requiring_registry=(
-            frozenset({voice_name})
-            if voice_name is not None and not has_explicit_reference
+            frozenset({resolved_voice_name})
+            if resolved_voice_name is not None and not has_explicit_reference
             else frozenset()
         ),
-        has_reference_audio=_speech_has_reference_audio(payload),
+        has_reference_audio=speech_has_reference_audio(payload),
     )
 
 
-def _speech_batch_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts:
+def speech_batch_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts:
     items = payload.get("items")
     if not isinstance(items, list):
-        return _speech_route_facts(payload)
+        return speech_route_facts(payload)
 
-    default_facts = _speech_route_facts(payload)
+    default_facts = speech_route_facts(payload)
     models: set[str] = set()
     # The worker validates a named batch default before constructing effective
     # items, so an item-level reference does not suppress default voice lookup.
@@ -712,10 +712,10 @@ def _speech_batch_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts
         effective.update(
             {key: value for key, value in item.items() if value is not None}
         )
-        item_voice = _voice_name(item)
+        item_voice = voice_name(item)
         if item_voice is not None:
             effective["voice"] = item_voice
-        facts = _speech_route_facts(effective)
+        facts = speech_route_facts(effective)
         if facts.model is not None:
             models.add(facts.model)
         voice_names.update(facts.voice_names_requiring_registry)
@@ -725,7 +725,7 @@ def _speech_batch_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts
         raise RouteMetadataError(
             "speech batch items must resolve to one model for router forwarding"
         )
-    model = next(iter(models), _string_or_none(payload.get("model")))
+    model = next(iter(models), string_or_none(payload.get("model")))
     return SpeechRouteFacts(
         model=model,
         voice_names_requiring_registry=frozenset(voice_names),
@@ -733,7 +733,7 @@ def _speech_batch_route_facts(payload: dict[str, JsonValue]) -> SpeechRouteFacts
     )
 
 
-def _voice_name(payload: dict[str, JsonValue]) -> str | None:
+def voice_name(payload: dict[str, JsonValue]) -> str | None:
     value = payload.get("voice", payload.get("speaker"))
     if not isinstance(value, str):
         return None
@@ -741,19 +741,19 @@ def _voice_name(payload: dict[str, JsonValue]) -> str | None:
     return normalized or None
 
 
-def _infer_input_field_capabilities(payload: dict[str, JsonValue]) -> set[Capability]:
+def infer_input_field_capabilities(payload: dict[str, JsonValue]) -> set[Capability]:
     capabilities: set[Capability] = set()
     for field, capability in INPUT_FIELD_CAPABILITIES.items():
-        if _has_non_empty(payload.get(field)):
+        if has_non_empty(payload.get(field)):
             capabilities.add(capability)
     return capabilities
 
 
-def _string_or_none(value: JsonValue) -> str | None:
+def string_or_none(value: JsonValue) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _has_non_empty(value: JsonValue) -> bool:
+def has_non_empty(value: JsonValue) -> bool:
     if value is None or value is False:
         return False
     if isinstance(value, (str, list, dict)):
@@ -761,7 +761,7 @@ def _has_non_empty(value: JsonValue) -> bool:
     return True
 
 
-def _modalities_include_audio(payload: dict[str, JsonValue]) -> bool:
+def modalities_include_audio(payload: dict[str, JsonValue]) -> bool:
     for field in OUTPUT_MODALITY_FIELDS:
         modalities = payload.get(field)
         if isinstance(modalities, list) and any(item == "audio" for item in modalities):
@@ -769,25 +769,25 @@ def _modalities_include_audio(payload: dict[str, JsonValue]) -> bool:
     return False
 
 
-def _speech_has_reference_audio(payload: dict[str, JsonValue]) -> bool:
+def speech_has_reference_audio(payload: dict[str, JsonValue]) -> bool:
     reference_fields = ("audio_path", "ref_audio", "audio", "data")
-    if _has_non_empty(payload.get("ref_audio")):
+    if has_non_empty(payload.get("ref_audio")):
         return True
     references = payload.get("references")
     if not isinstance(references, list):
         return False
     return any(
         isinstance(reference, dict)
-        and any(_has_non_empty(reference.get(field)) for field in reference_fields)
+        and any(has_non_empty(reference.get(field)) for field in reference_fields)
         for reference in references
     )
 
 
-def _has_explicit_speech_reference(payload: dict[str, JsonValue]) -> bool:
+def has_explicit_speech_reference(payload: dict[str, JsonValue]) -> bool:
     return payload.get("ref_audio") is not None or bool(payload.get("references"))
 
 
-def _infer_message_part_capabilities(messages: JsonValue) -> set[Capability]:
+def infer_message_part_capabilities(messages: JsonValue) -> set[Capability]:
     capabilities: set[Capability] = set()
     if not isinstance(messages, list):
         return capabilities

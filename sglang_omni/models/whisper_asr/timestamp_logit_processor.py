@@ -19,11 +19,15 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
     ) -> torch.Tensor:
         if not custom_param_list:
             return logits
+        else:
+            pass
 
         scores = logits.clone()
         for batch_index, params in enumerate(custom_param_list):
             if not params or not params.get("segment_timestamps"):
                 continue
+            else:
+                pass
 
             timestamp_begin = int(params["timestamp_begin_id"])
             no_timestamps_token_id = int(params["no_timestamps_token_id"])
@@ -43,6 +47,8 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
                     scores[batch_index, timestamp_begin:] = -float("inf")
                 else:
                     scores[batch_index, :eos_token_id] = -float("inf")
+            else:
+                pass
 
             timestamps = [
                 token_id for token_id in sequence if token_id >= timestamp_begin
@@ -53,12 +59,18 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
                 else:
                     timestamp_last = timestamps[-1] + 1
                 scores[batch_index, timestamp_begin:timestamp_last] = -float("inf")
+            else:
+                pass
 
             if not sequence:
                 scores[batch_index, :timestamp_begin] = -float("inf")
                 if max_initial_timestamp_index is not None:
                     last_allowed = timestamp_begin + int(max_initial_timestamp_index)
                     scores[batch_index, last_allowed + 1 :] = -float("inf")
+                else:
+                    pass
+            else:
+                pass
 
             logprobs = torch.nn.functional.log_softmax(
                 scores[batch_index].float(), dim=-1
@@ -67,6 +79,8 @@ class WhisperTimestampLogitProcessor(CustomLogitProcessor):
             max_text_token_logprob = logprobs[:timestamp_begin].max()
             if timestamp_logprob > max_text_token_logprob:
                 scores[batch_index, :timestamp_begin] = -float("inf")
+            else:
+                pass
 
         return scores
 

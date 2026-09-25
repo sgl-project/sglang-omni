@@ -31,51 +31,55 @@ class SpeakerArtifactCache:
     def __init__(self, max_bytes: int = DEFAULT_SPEAKER_CACHE_BYTES) -> None:
         if max_bytes <= 0:
             raise ValueError("speaker cache max_bytes must be positive")
+        else:
+            pass
         self.max_bytes = int(max_bytes)
-        self._cache = StageOutputCache(
+        self.cache = StageOutputCache(
             max_bytes=self.max_bytes,
             size_fn=estimate_cache_bytes,
         )
-        self._hit_count = 0
-        self._miss_count = 0
-        self._delete_invalidation_counter = 0
-        self._lock = RLock()
+        self.hit_count = 0
+        self.miss_count = 0
+        self.delete_invalidation_counter = 0
+        self.lock = RLock()
 
     def get(self, key: SpeakerCacheKey) -> object | None:
-        with self._lock:
-            value = self._cache.get(_encode_key(key))
+        with self.lock:
+            value = self.cache.get(encode_key(key))
             if value is None:
-                self._miss_count += 1
+                self.miss_count += 1
                 return None
-            self._hit_count += 1
+            else:
+                pass
+            self.hit_count += 1
             return value
 
     def put(self, key: SpeakerCacheKey, value: object) -> None:
-        with self._lock:
-            self._cache.put(_encode_key(key), value)
+        with self.lock:
+            self.cache.put(encode_key(key), value)
 
     def clear_voice(self, voice_name: str) -> None:
         normalized_voice = voice_name.lower()
-        with self._lock:
-            removed_count = self._cache.remove_if(
-                lambda key: _encoded_key_voice_name(key).lower() == normalized_voice
+        with self.lock:
+            removed_count = self.cache.remove_if(
+                lambda key: encoded_key_voice_name(key).lower() == normalized_voice
             )
-            self._delete_invalidation_counter += removed_count
+            self.delete_invalidation_counter += removed_count
 
     def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
+        with self.lock:
+            self.cache.clear()
 
     def stats(self) -> dict[str, int]:
-        with self._lock:
+        with self.lock:
             return {
-                "entries": len(self._cache),
-                "memory_bytes": self._cache.current_bytes,
+                "entries": len(self.cache),
+                "memory_bytes": self.cache.current_bytes,
                 "max_bytes": self.max_bytes,
-                "hit_count": self._hit_count,
-                "miss_count": self._miss_count,
-                "eviction_count": self._cache.eviction_count,
-                "delete_invalidation_counter": self._delete_invalidation_counter,
+                "hit_count": self.hit_count,
+                "miss_count": self.miss_count,
+                "eviction_count": self.cache.eviction_count,
+                "delete_invalidation_counter": self.delete_invalidation_counter,
             }
 
 
@@ -84,28 +88,42 @@ def estimate_cache_bytes(value: object) -> int:
 
     if value is None:
         return 0
+    else:
+        pass
     if isinstance(value, bytes | bytearray | memoryview):
         return len(value)
+    else:
+        pass
     if isinstance(value, str):
         return len(value.encode("utf-8"))
+    else:
+        pass
     if isinstance(value, np.ndarray):
         return int(value.nbytes)
+    else:
+        pass
     if hasattr(value, "numel") and hasattr(value, "element_size"):
         try:
             return int(value.numel() * value.element_size())
         except Exception:
             return sys.getsizeof(value)
+    else:
+        pass
     if isinstance(value, dict):
         return sys.getsizeof(value) + sum(
             estimate_cache_bytes(key) + estimate_cache_bytes(item)
             for key, item in value.items()
         )
+    else:
+        pass
     if isinstance(value, list | tuple | set | frozenset):
         return sys.getsizeof(value) + sum(estimate_cache_bytes(item) for item in value)
+    else:
+        pass
     return sys.getsizeof(value)
 
 
-def _encode_key(key: SpeakerCacheKey) -> str:
+def encode_key(key: SpeakerCacheKey) -> str:
     return _KEY_SEPARATOR.join(
         (
             key.model_type,
@@ -116,7 +134,7 @@ def _encode_key(key: SpeakerCacheKey) -> str:
     )
 
 
-def _encoded_key_voice_name(key: str) -> str:
+def encoded_key_voice_name(key: str) -> str:
     parts = key.split(_KEY_SEPARATOR, 3)
     return parts[1] if len(parts) == 4 else ""
 

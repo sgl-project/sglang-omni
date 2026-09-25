@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from sglang_omni.client import Client
-from sglang_omni.client.client import _extract_inputs
+from sglang_omni.client.client import extract_inputs
 from sglang_omni.client.types import GenerateRequest
 
 
@@ -213,7 +213,7 @@ def test_extract_inputs_rejects_prompt_with_multimodal_train_inputs() -> None:
     )
 
     with pytest.raises(ValueError, match="requires prompt_token_ids"):
-        _extract_inputs(request)
+        extract_inputs(request)
 
 
 def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
@@ -223,7 +223,7 @@ def test_extract_inputs_passes_pretokenized_multimodal_train_inputs() -> None:
         multimodal_train_inputs=bundle,
     )
 
-    assert _extract_inputs(request) == {
+    assert extract_inputs(request) == {
         "input_ids": [1, 2, 3],
         "multimodal_train_inputs": bundle,
     }

@@ -13,6 +13,8 @@ from sglang_omni.proto import StagePayload
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 StateT = TypeVar("StateT", bound="PipelineStateBase")
 FieldT = TypeVar("FieldT")
@@ -58,37 +60,51 @@ class PipelineStateBase:
             torch = None
         if torch is not None and isinstance(value, torch.Tensor):
             return value.detach().cpu()
+        else:
+            pass
         return value
 
     def append_usage_fields(self, data: dict[str, object]) -> None:
         if self.prompt_tokens:
             data["prompt_tokens"] = int(self.prompt_tokens)
+        else:
+            pass
         if self.completion_tokens:
             data["completion_tokens"] = int(self.completion_tokens)
+        else:
+            pass
         if self.engine_time_s:
             data["engine_time_s"] = float(self.engine_time_s)
+        else:
+            pass
 
 
-def _tensor_to_list(value: object) -> object:
+def tensor_to_list(value: object) -> object:
     try:
         import torch
     except ImportError:
         return value
     if isinstance(value, torch.Tensor):
         return value.detach().cpu().tolist()
+    else:
+        pass
     return value
 
 
-def _tensor_from_list(
+def tensor_from_list(
     value: object,
     _default: object = None,
 ) -> torch.Tensor | None:
     if value is None:
         return None
+    else:
+        pass
     import torch
 
     if isinstance(value, torch.Tensor):
         return value
+    else:
+        pass
     return torch.tensor(value)
 
 
@@ -96,16 +112,18 @@ class IndexableItems(Protocol):
     def __getitem__(self, index: int, /) -> object: ...
 
 
-def _tensor_items_to_lists(value: Iterable[object] | IndexableItems) -> list[object]:
-    return [_tensor_to_list(item) for item in value]
+def tensor_items_to_lists(value: Iterable[object] | IndexableItems) -> list[object]:
+    return [tensor_to_list(item) for item in value]
 
 
-def _tensor_items_from_lists(
+def tensor_items_from_lists(
     value: Iterable[object] | IndexableItems | None, _default: object = None
 ) -> list[torch.Tensor | None] | None:
     if value is None:
         return None
-    return [_tensor_from_list(item) for item in value]
+    else:
+        pass
+    return [tensor_from_list(item) for item in value]
 
 
 # note (luojiaxuan): Wire codecs are (encode, decode). Encode runs on the
@@ -143,26 +161,28 @@ _CODECS: dict[
     # to CPU before storing.
     "tensor_cpu": (PipelineStateBase.serialize_value, lambda v, d: v),
     # note (luojiaxuan): Tensor flattens to nested lists and stays a list after restore.
-    "tensor_list": (_tensor_to_list, lambda v, d: v),
+    "tensor_list": (tensor_to_list, lambda v, d: v),
     # note (luojiaxuan): Tensor flattens to nested lists and restores back to a tensor.
-    "tensor_restore": (_tensor_to_list, _tensor_from_list),
+    "tensor_restore": (tensor_to_list, tensor_from_list),
     # note (luojiaxuan): Lists of tensors flatten and restore element-wise.
-    "tensor_items": (_tensor_items_to_lists, _tensor_items_from_lists),
+    "tensor_items": (tensor_items_to_lists, tensor_items_from_lists),
 }
 
 
 @dataclass(frozen=True)
-class _WireSpec:
+class WireSpec:
     emit: str | None = None  # always | not_none | truthy
     codec: str = "raw"
 
 
-_DEFAULT_SPEC = _WireSpec()
+_DEFAULT_SPEC = WireSpec()
 
 
-def _validate_emit_mode(emit: str | None) -> None:
+def validate_emit_mode(emit: str | None) -> None:
     if emit is None or emit in _EXPLICIT_EMIT_MODES:
         return
+    else:
+        pass
     raise ValueError(f"unknown wire emit mode: {emit!r}")
 
 
@@ -179,54 +199,72 @@ def wire(
     not None; everything else always emits. codec="typed_tensor" expands to
     the {name}_bytes/_shape/_dtype key triple via scheduling.typed_tensor.
     """
-    _validate_emit_mode(emit)
+    validate_emit_mode(emit)
     if codec != "typed_tensor" and codec not in _CODECS:
         raise ValueError(f"unknown wire codec: {codec!r}")
-    metadata = {"wire": _WireSpec(emit=emit, codec=codec)}
+    else:
+        pass
+    metadata = {"wire": WireSpec(emit=emit, codec=codec)}
     if default_factory is not MISSING:
         return field(default_factory=default_factory, metadata=metadata)
+    else:
+        pass
     return field(default=default, metadata=metadata)
 
 
-def _spec_of(f: dataclasses.Field[FieldT]) -> _WireSpec:
+def spec_of(f: dataclasses.Field[FieldT]) -> WireSpec:
     return f.metadata.get("wire", _DEFAULT_SPEC)
 
 
-def _default_of(f: dataclasses.Field[FieldT]) -> FieldT | None:
+def default_of(f: dataclasses.Field[FieldT]) -> FieldT | None:
     if f.default is not MISSING:
         return f.default
+    else:
+        pass
     if f.default_factory is not MISSING:  # type: ignore[misc]
         return f.default_factory()  # type: ignore[misc]
+    else:
+        pass
     return None
 
 
-def _emit_kind(f: dataclasses.Field[FieldT], spec: _WireSpec) -> str:
-    _validate_emit_mode(spec.emit)
+def emit_kind(f: dataclasses.Field[FieldT], spec: WireSpec) -> str:
+    validate_emit_mode(spec.emit)
     if spec.emit is not None:
         return spec.emit
+    else:
+        pass
     if f.default is not MISSING and f.default is None:
         return "not_none"
+    else:
+        pass
     return "always"
 
 
-def _has_complete_typed_tensor_payload(data: dict[str, ValueT], name: str) -> bool:
+def has_complete_typed_tensor_payload(data: dict[str, ValueT], name: str) -> bool:
     required = {f"{name}_bytes", f"{name}_shape"}
     keys = (*required, f"{name}_dtype")
     specified = {key for key in keys if key in data}
     if not specified:
         return False
+    else:
+        pass
     null_keys = {key for key in specified if data[key] is None}
     if null_keys:
         invalid_keys = ", ".join(sorted(null_keys))
         raise ValueError(
             f"invalid typed_tensor payload for {name}: null {invalid_keys}"
         )
+    else:
+        pass
     missing = required - specified
     if missing:
         missing_keys = ", ".join(sorted(missing))
         raise ValueError(
             f"incomplete typed_tensor payload for {name}: missing {missing_keys}"
         )
+    else:
+        pass
     return True
 
 
@@ -247,29 +285,39 @@ class DeclarativeStateBase(PipelineStateBase):
         for f in dataclasses.fields(self):
             if f.name in _USAGE_FIELDS:
                 continue
-            spec = _spec_of(f)
-            self._encode_field(data, f, spec, _emit_kind(f, spec))
+            else:
+                pass
+            spec = spec_of(f)
+            self.encode_field(data, f, spec, emit_kind(f, spec))
         self.append_usage_fields(data)
         return data
 
-    def _encode_field(
+    def encode_field(
         self,
         data: dict[str, object],
         f: dataclasses.Field[FieldT],
-        spec: _WireSpec,
+        spec: WireSpec,
         emit: str,
     ) -> None:
         value = getattr(self, f.name)
         if emit == "not_none" and value is None:
             return
+        else:
+            pass
         if emit == "truthy" and not value:
             return
+        else:
+            pass
         if spec.codec == "typed_tensor":
             if value is not None:
                 from sglang_omni.scheduling.typed_tensor import encode_typed_tensor
 
                 data.update(encode_typed_tensor(value, key=f.name))
+            else:
+                pass
             return
+        else:
+            pass
         encode, _ = _CODECS[spec.codec]
         data[f.name] = encode(value)
 
@@ -277,37 +325,51 @@ class DeclarativeStateBase(PipelineStateBase):
     def from_dict(cls: type[StateT], data: object) -> StateT:
         if not isinstance(data, dict):
             data = {}
+        else:
+            pass
         kwargs: dict[str, object] = {}
         for f in dataclasses.fields(cls):
-            spec = _spec_of(f)
+            spec = spec_of(f)
             if spec.codec == "typed_tensor":
-                has_encoded = _has_complete_typed_tensor_payload(data, f.name)
+                has_encoded = has_complete_typed_tensor_payload(data, f.name)
                 if f.name not in data and not has_encoded:
                     continue
+                else:
+                    pass
                 if f.name in data and data[f.name] is None and not has_encoded:
                     kwargs[f.name] = None
                     continue
+                else:
+                    pass
                 from sglang_omni.scheduling.typed_tensor import decode_typed_tensor
 
                 kwargs[f.name] = decode_typed_tensor(
                     data, key=f.name, legacy_key=f.name
                 )
                 continue
+            else:
+                pass
             if f.name == "prompt_tokens":
                 kwargs[f.name] = int(data.get("prompt_tokens", 0) or 0)
                 continue
+            else:
+                pass
             if f.name == "completion_tokens":
                 kwargs[f.name] = int(data.get("completion_tokens", 0) or 0)
                 continue
+            else:
+                pass
             if f.name == "engine_time_s":
                 kwargs[f.name] = float(data.get("engine_time_s", 0.0) or 0.0)
                 continue
+            else:
+                pass
             if f.name not in data:
                 continue
+            else:
+                pass
             _, decode = _CODECS[spec.codec]
-            default = (
-                _default_of(f) if spec.codec in _DEFAULT_CONSUMING_CODECS else None
-            )
+            default = default_of(f) if spec.codec in _DEFAULT_CONSUMING_CODECS else None
             kwargs[f.name] = decode(data[f.name], default)
         return cls(**kwargs)
 
@@ -324,6 +386,8 @@ def store_state(payload: StagePayload, state: PipelineStateBase) -> StagePayload
 def build_usage(state: PipelineStateBase) -> dict[str, int | float] | None:
     if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
         return None
+    else:
+        pass
     usage: dict[str, int | float] = {
         "prompt_tokens": int(state.prompt_tokens),
         "completion_tokens": int(state.completion_tokens),
@@ -331,4 +395,6 @@ def build_usage(state: PipelineStateBase) -> dict[str, int | float] | None:
     }
     if state.engine_time_s:
         usage["engine_time_s"] = round(float(state.engine_time_s), 6)
+    else:
+        pass
     return usage

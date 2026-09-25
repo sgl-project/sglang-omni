@@ -20,6 +20,8 @@ import torch
 
 if TYPE_CHECKING:
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+else:
+    pass
 
 _OMNI_PREFILL_INPUTS_ATTR = "_sglang_omni_prefill_inputs"
 
@@ -49,6 +51,8 @@ def attach_omni_prefill_inputs(
         raise RuntimeError(
             "OmniPrefillInputs conflicts with forward_batch.replace_embeds"
         )
+    else:
+        pass
     num_tokens = len(forward_batch.input_ids)
     if prefill_inputs.input_embeds.shape[0] != num_tokens:
         raise RuntimeError(
@@ -56,6 +60,8 @@ def attach_omni_prefill_inputs(
             f"embeds rows={prefill_inputs.input_embeds.shape[0]}, "
             f"batch tokens={num_tokens}"
         )
+    else:
+        pass
     setattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR, prefill_inputs)
 
 
@@ -70,6 +76,8 @@ def clear_omni_prefill_inputs(forward_batch: ForwardBatch | None) -> None:
     """Remove the private Omni payload, if present."""
     if hasattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR):
         delattr(forward_batch, _OMNI_PREFILL_INPUTS_ATTR)
+    else:
+        pass
 
 
 __all__ = [

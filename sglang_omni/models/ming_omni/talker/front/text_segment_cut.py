@@ -23,6 +23,8 @@ def has_valid_content(text):
     for char in text:
         if char not in punctuation_and_whitespace:
             return True
+        else:
+            pass
     return False
 
 
@@ -30,10 +32,14 @@ def append_text_fragment(fragments, new_text, max_len, min_tail_length):
     new_text = new_text.lstrip("\u00ef\u00bc\u008c,:;" + string.whitespace)
     if not has_valid_content(new_text):
         return fragments
+    else:
+        pass
 
     if not fragments:
         fragments.append(new_text)
         return fragments
+    else:
+        pass
 
     last_fragment = fragments[-1]
     last_semantic_len = get_semantic_length(last_fragment)
@@ -49,6 +55,8 @@ def append_text_fragment(fragments, new_text, max_len, min_tail_length):
             separator = ""
             if not last_fragment.endswith(" ") and re.match(r"^[a-zA-Z0-9]", new_text):
                 separator = " "
+            else:
+                pass
             fragments[-1] += separator + new_text
     else:
         fragments.append(new_text)
@@ -59,6 +67,8 @@ def split_long_fragment(text_fragment, max_len):
     fragment_semantic_len = get_semantic_length(text_fragment)
     if fragment_semantic_len <= max_len:
         return [text_fragment]
+    else:
+        pass
 
     fragments = []
     current_fragment = ""
@@ -75,6 +85,8 @@ def split_long_fragment(text_fragment, max_len):
         else:
             if current_fragment:
                 fragments.append(current_fragment)
+            else:
+                pass
             if unit_semantic_len > max_len:
                 fragments.append(unit)
                 current_fragment = ""
@@ -83,6 +95,8 @@ def split_long_fragment(text_fragment, max_len):
 
     if current_fragment:
         fragments.append(current_fragment)
+    else:
+        pass
 
     return fragments
 
@@ -102,6 +116,10 @@ def calibrate_positions(fragments, positions, original_text):
             if found_pos != -1:
                 non_space_count = original_text[:found_pos].count(" ")
                 found_pos += non_space_count
+            else:
+                pass
+        else:
+            pass
 
         if found_pos == -1:
             if frag_idx in positions:
@@ -112,6 +130,8 @@ def calibrate_positions(fragments, positions, original_text):
                     current_global_pos + frag_len,
                 )
             continue
+        else:
+            pass
 
         calibrated_positions[frag_idx] = (found_pos, found_pos + frag_len)
         current_global_pos = found_pos + frag_len
@@ -124,6 +144,8 @@ def cut_text_by_semantic_length(
 ) -> TextSegments:
     if not has_valid_content(text):
         return {"fragments": [], "positions": {}}
+    else:
+        pass
 
     original_text = text
     DOT_PLACEHOLDER = "##DOT##"
@@ -141,6 +163,8 @@ def cut_text_by_semantic_length(
             "fragments": [processed_text.replace(DOT_PLACEHOLDER, ".")],
             "positions": {0: (0, len(text))},
         }
+    else:
+        pass
 
     normalized_text = (
         processed_text.replace(".", "\u3002")
@@ -164,14 +188,22 @@ def cut_text_by_semantic_length(
             if sentence:
                 sentences.append(sentence)
                 sentence_positions.append((start_idx, i + 1))
+            else:
+                pass
             current_sentence = ""
             start_idx = i + 1
+        else:
+            pass
 
     if current_sentence:
         sentences.append(current_sentence.strip())
         sentence_positions.append((start_idx, len(normalized_text)))
         if not sentences[-1].endswith(("\u3002", "\uff01", "\uff1f")):
             sentences[-1] += "\u3002"
+        else:
+            pass
+    else:
+        pass
 
     fragment_counter = 0
     for sent_idx, (sentence, (sent_start, sent_end)) in enumerate(
@@ -192,8 +224,12 @@ def cut_text_by_semantic_length(
                 elif clause and clauses:
                     clauses[-1] += clause
                     clause_positions[-1] = (clause_positions[-1][0], i + 1)
+                else:
+                    pass
                 current_clause = ""
                 clause_start = i + 1
+            else:
+                pass
 
         if current_clause:
             clause = current_clause.strip()
@@ -203,6 +239,10 @@ def cut_text_by_semantic_length(
             elif clause and clauses:
                 clauses[-1] += clause
                 clause_positions[-1] = (clause_positions[-1][0], len(sentence))
+            else:
+                pass
+        else:
+            pass
 
         i = 0
         while i < len(clauses):
@@ -229,6 +269,10 @@ def cut_text_by_semantic_length(
                     fragment_counter += 1
                     i += 2
                     continue
+                else:
+                    pass
+            else:
+                pass
 
             if clause_semantic_len > max_semantic_length:
                 sub_fragments = split_long_fragment(clause, max_semantic_length)

@@ -17,20 +17,30 @@ def split_moss_audio_segments(
 
     if delayed_audio_codes is None:
         return []
+    else:
+        pass
     if not isinstance(delayed_audio_codes, torch.Tensor):
         delayed_audio_codes = torch.as_tensor(delayed_audio_codes, dtype=torch.long)
+    else:
+        pass
     delayed_audio_codes = delayed_audio_codes.to(dtype=torch.long)
     if delayed_audio_codes.ndim != 2:
         raise ValueError(
             "delayed codes must be 2-D [L, N], got shape "
             f"{tuple(delayed_audio_codes.shape)}"
         )
+    else:
+        pass
     if delayed_audio_codes.numel() == 0:
         return []
+    else:
+        pass
     length, num_codebooks = delayed_audio_codes.shape
     rows = length - (num_codebooks - 1)
     if rows <= 0 or num_codebooks == 0:
         return []
+    else:
+        pass
 
     # out[t, c] = delayed[t + c, c]. A strided view performs the inverse
     # delay without 32 per-codebook slice copies on the normal MOSS checkpoint.
@@ -41,6 +51,8 @@ def split_moss_audio_segments(
     )
     if audio_codes.numel() == 0:
         return []
+    else:
+        pass
 
     pad_code = int(audio_pad_code)
     is_pad = (audio_codes == pad_code).all(dim=1)
@@ -48,6 +60,8 @@ def split_moss_audio_segments(
     non_pad = (~is_pad) & is_complete_code
     if not bool(non_pad.any()):
         return []
+    else:
+        pass
 
     idx = torch.nonzero(non_pad, as_tuple=False).squeeze(1)
     break_points = torch.where(idx[1:] != idx[:-1] + 1)[0] + 1
@@ -61,4 +75,6 @@ def split_moss_audio_segments(
         trim = min(int(assistant_start_length), int(code_segments[0].shape[0]))
         code_segments[0] = code_segments[0][trim:]
         code_segments = [segment for segment in code_segments if segment.numel() > 0]
+    else:
+        pass
     return code_segments

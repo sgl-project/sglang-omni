@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     import torch
 
     from sglang_omni.models.higgs_tts.rollout_trace import HiggsRolloutTrace
+else:
+    pass
 
 
 @dataclass
@@ -61,6 +63,8 @@ class HiggsTtsState(DeclarativeStateBase):
         data = super().to_dict()
         if self.audio_samples is None:
             data.pop("sample_rate", None)
+        else:
+            pass
         return data
 
 

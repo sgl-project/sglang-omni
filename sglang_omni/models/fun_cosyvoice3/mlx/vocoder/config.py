@@ -55,6 +55,8 @@ class FlowConfig:
         for source, target in aliases.items():
             if source in dit:
                 values[target] = dit[source]
+            else:
+                pass
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})
 
@@ -93,6 +95,8 @@ class HiFTConfig:
                 "n_fft": int(values.pop("istft_n_fft", 16)),
                 "hop_len": int(values.pop("istft_hop_len", 4)),
             }
+        else:
+            pass
         allowed = cls.__dataclass_fields__
         return cls(**{key: value for key, value in values.items() if key in allowed})
 

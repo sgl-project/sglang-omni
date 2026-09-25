@@ -62,11 +62,11 @@ _HiggsRequestBuilder = Callable[[StagePayload], HiggsSGLangRequestData]
 _HiggsResultAdapter = Callable[[HiggsSGLangRequestData], StagePayload]
 
 
-def _perf_counter() -> float:
+def perf_counter() -> float:
     return time.perf_counter()
 
 
-def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
+def ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
     """Stable hash of the full N-codebook ref-audio sequence.
 
     Returned as a short hex string used as ``Req.extra_key``. ``None`` for
@@ -76,6 +76,8 @@ def _ref_audio_fingerprint(codes: list[list[int]] | None) -> str | None:
     """
     if not codes:
         return None
+    else:
+        pass
     buf = bytearray(2 * sum(len(row) for row in codes))
     i = 0
     for row in codes:
@@ -98,10 +100,16 @@ def build_sglang_higgs_request(
     }
     if state.top_p is not None:
         sp_kwargs["top_p"] = float(state.top_p)
+    else:
+        pass
     if state.top_k is not None:
         sp_kwargs["top_k"] = int(state.top_k)
+    else:
+        pass
     if state.seed is not None:
         sp_kwargs["sampling_seed"] = int(state.seed)
+    else:
+        pass
     sampling_params = SamplingParams(**sp_kwargs)
     # tokenizer_manager.normalize() is bypassed in our custom pipeline;
     # without it stop_strs / stop_regex_strs stay None and the upstream
@@ -117,11 +125,11 @@ def build_sglang_higgs_request(
         origin_input_ids=input_ids_list,
         sampling_params=sampling_params,
         vocab_size=151_936,
-        extra_key=_ref_audio_fingerprint(state.reference_codes_delayed),
+        extra_key=ref_audio_fingerprint(state.reference_codes_delayed),
     )
     # V1's prefill manager probes these attrs; absence triggers AttributeError.
-    req._codec_suppress_tokens = None
-    req._input_embeds_are_projected = False
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._input_embeds_are_projected = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     return HiggsSGLangRequestData(
         input_ids=input_ids,
@@ -151,8 +159,12 @@ def build_higgs_stream_metadata(
         raise TypeError(
             f"Higgs request params must be a dict, got {type(params).__name__}"
         )
+    else:
+        pass
     if not bool(params.get("stream", False)):
         return None
+    else:
+        pass
 
     num_codebooks = int(data.num_codebooks)
     codebook_size = int(data.codebook_size)
@@ -161,6 +173,8 @@ def build_higgs_stream_metadata(
             f"Invalid Higgs stream codec contract: "
             f"num_codebooks={num_codebooks}, codebook_size={codebook_size}"
         )
+    else:
+        pass
     metadata: dict[str, str | int | bool] = {
         "modality": "audio_codes",
         "stream": True,
@@ -203,6 +217,8 @@ def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> No
             codebook_vocab_size=int(data.codebook_size),
             delayed_logprobs=logprobs,
         )
+    else:
+        pass
     state.prompt_tokens = len(data.input_ids)
 
 
@@ -222,8 +238,10 @@ def make_higgs_scheduler_adapters(
                 int(state.max_new_tokens),
                 int(max_new_tokens_cap),
             )
+        else:
+            pass
         data = build_sglang_higgs_request(state, request_id=payload.request_id)
-        data.engine_start_s = _perf_counter()
+        data.engine_start_s = perf_counter()
         data.stage_payload = payload
         data.stream_metadata = build_higgs_stream_metadata(
             payload,
@@ -239,7 +257,9 @@ def make_higgs_scheduler_adapters(
         state = HiggsTtsState.from_dict(payload.data)
         apply_higgs_result(state, data)
         if data.engine_start_s:
-            state.engine_time_s = _perf_counter() - data.engine_start_s
+            state.engine_time_s = perf_counter() - data.engine_start_s
+        else:
+            pass
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

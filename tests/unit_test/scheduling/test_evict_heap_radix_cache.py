@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import random
 
+import pytest
 import torch
 from sglang.srt.mem_cache.base_prefix_cache import EvictParams, InsertParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
@@ -105,11 +107,34 @@ def test_factory_selects_evict_heap_only_for_lru():
         assert type(build(policy)) is RadixCache, policy
 
 
+def test_factory_passes_the_eviction_policy_config_to_the_strategy():
+    from sglang.srt.runtime_context import get_context
+
+    from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
+
+    if "eviction_policy_config" not in {
+        field.name for field in dataclasses.fields(CacheInitParams)
+    }:
+        pytest.skip("CacheInitParams has no eviction_policy_config")
+    else:
+        pass
+
+    with get_context().override_server_args(
+        disable_radix_cache=False,
+        chunked_prefill_size=None,
+        radix_eviction_policy="slru",
+        radix_eviction_policy_config={"protected_threshold": 4},
+    ):
+        cache = create_tree_cache(None, _MockAllocator(), 1)
+
+    assert cache.eviction_strategy.protected_threshold == 4
+
+
 def test_heap_stays_bounded_and_recovers():
     cache = _make(EvictHeapRadixCache)
     _run_trace(cache, seed=7, steps=2000, drain=False)
     assert cache.evictable_leaves
-    assert len(cache._evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
+    assert len(cache.evict_heap) <= max(1024, 4 * len(cache.evictable_leaves))
     cache.evict(EvictParams(num_tokens=1 << 20))
     # The cache keeps working after a full drain.
     key = RadixKey(token_ids=[1, 2, 3], extra_key="post")

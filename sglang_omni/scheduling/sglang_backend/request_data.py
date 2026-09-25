@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
     from sglang_omni.models.qwen3_omni.pending_text_queue import PendingTextTensorQueue
     from sglang_omni.proto import StagePayload
+else:
+    pass
 
 
 @dataclass

@@ -17,8 +17,8 @@ from sglang_omni.models.moss_transcribe_diarize.engine_builder import (
     MossTranscribeDiarizeEngineBuilder,
 )
 from sglang_omni.models.moss_transcribe_diarize.stages import (
-    _missing_additional_chat_templates_compat,
     create_sglang_moss_transcribe_diarize_executor,
+    missing_additional_chat_templates_compat,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -235,16 +235,16 @@ def test_compile_encoder_sets_runner_and_warms_each_bucket(
     encoder = torch.nn.Linear(4, 4)
     model = SimpleNamespace(
         whisper_encoder=encoder,
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [2, 1, 1], input_feature_len=6)
 
-    assert model._compiled_encoder is runner
-    assert model._compiled_chunk_buckets == frozenset({1, 2})
-    assert model._compiled_input_feature_len == 6
+    assert model.compiled_encoder is runner
+    assert model.compiled_chunk_buckets == frozenset({1, 2})
+    assert model.compiled_input_feature_len == 6
     assert len(warmups) == 6
     assert {shape[0] for shape in warmups} == {1, 2}
     assert all(shape[1:] == (4, 6) for shape in warmups)
@@ -272,15 +272,15 @@ def test_compile_encoder_drops_bucket_whose_warmup_fails(
 
     model = SimpleNamespace(
         whisper_encoder=torch.nn.Linear(4, 4),
-        _compiled_encoder=None,
-        _compiled_chunk_buckets=frozenset(),
-        _compiled_input_feature_len=0,
+        compiled_encoder=None,
+        compiled_chunk_buckets=frozenset(),
+        compiled_input_feature_len=0,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=4)),
     )
 
     Model.compile_encoder(model, [1, 2], input_feature_len=6)
 
-    assert model._compiled_chunk_buckets == frozenset({1})
+    assert model.compiled_chunk_buckets == frozenset({1})
 
 
 def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
@@ -342,8 +342,8 @@ def _stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool)
         "from_pretrained",
         lambda *a, **k: processor,
     )
-    monkeypatch.setattr(stages, "_default_max_new_tokens", lambda path: 100)
-    monkeypatch.setattr(stages, "_default_context_length", lambda path: 4096)
+    monkeypatch.setattr(stages, "default_max_new_tokens", lambda path: 100)
+    monkeypatch.setattr(stages, "default_context_length", lambda path: 4096)
     monkeypatch.setattr(
         engine_factory, "build_generation_batch_overrides", lambda **k: {}
     )
@@ -492,7 +492,7 @@ def test_processor_compat_ignores_missing_additional_chat_templates(
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_templates)
     monkeypatch.setattr(hub_utils, "list_repo_templates", missing_templates)
 
-    with _missing_additional_chat_templates_compat():
+    with missing_additional_chat_templates_compat():
         assert (
             processing_utils.list_repo_templates("repo", local_files_only=False) == []
         )
@@ -509,6 +509,6 @@ def test_processor_compat_preserves_non_template_repo_errors(
 
     monkeypatch.setattr(processing_utils, "list_repo_templates", missing_repo)
 
-    with _missing_additional_chat_templates_compat():
+    with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)

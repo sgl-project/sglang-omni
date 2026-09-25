@@ -16,6 +16,8 @@ def audio_data_uri_from_reference(reference: dict[str, ReferenceValueT]) -> str 
     data = reference.get("data")
     if data is None:
         return None
+    else:
+        pass
     media_type = reference.get("media_type") or "audio/wav"
     return f"data:{media_type};base64,{data}"
 
@@ -36,10 +38,14 @@ def audio_waveform_payload(
     """
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().float().cpu().numpy()
+    else:
+        pass
     try:
         array = np.asarray(audio, dtype=np.float32)
         if not (keep_channels and array.ndim == 2):
             array = array.reshape(-1)
+        else:
+            pass
     except (TypeError, ValueError) as exc:
         raise TypeError(
             f"Unsupported {source_hint} audio output type: {type(audio)}"
@@ -52,6 +58,10 @@ def audio_waveform_payload(
     }
     if sample_rate is not None:
         payload["sample_rate"] = int(sample_rate)
+    else:
+        pass
     if modality is not None:
         payload["modality"] = modality
+    else:
+        pass
     return payload

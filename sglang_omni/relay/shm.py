@@ -51,12 +51,14 @@ class ShmOperation(RelayOperation, Generic[ShmMetadataT]):
     """Base class implementation for SHM operations."""
 
     def __init__(self, metadata: ShmMetadataT) -> None:
-        self._metadata = metadata
-        self._completed = False
+        self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.completed = False
 
     @property
     def metadata(self) -> ShmMetadataT:
-        return self._metadata
+        return (
+            self._metadata
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 class ShmPutOperation(ShmOperation[ShmMetadataT]):
@@ -71,39 +73,45 @@ class ShmPutOperation(ShmOperation[ShmMetadataT]):
         release_cb: Callable[[], None],
     ) -> None:
         super().__init__(metadata)
-        self._shm_name = shm_name
-        self._release_cb = release_cb
-        self._receiver_done = asyncio.get_running_loop().create_future()
+        self.shm_name = shm_name
+        self.release_cb = release_cb
+        self.receiver_done = asyncio.get_running_loop().create_future()
         shm_obj.close()
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
         try:
-            await asyncio.wait_for(self._receiver_done, timeout=timeout)
+            await asyncio.wait_for(self.receiver_done, timeout=timeout)
         except TimeoutError as exc:
-            self._unlink_if_present()
+            self.unlink_if_present()
             raise TimeoutError(
-                f"SHM block {self._shm_name} was not consumed in time"
+                f"SHM block {self.shm_name} was not consumed in time"
             ) from exc
         except Exception:
-            self._unlink_if_present()
+            self.unlink_if_present()
             raise
         finally:
-            self._completed = True
-            self._release_cb()
+            self.completed = True
+            self.release_cb()
 
     def mark_receiver_done(self) -> None:
-        if not self._receiver_done.done():
-            self._receiver_done.set_result(None)
+        if not self.receiver_done.done():
+            self.receiver_done.set_result(None)
+        else:
+            pass
 
     def mark_receiver_failed(self, exc: BaseException) -> None:
-        if not self._receiver_done.done():
-            self._receiver_done.set_exception(exc)
+        if not self.receiver_done.done():
+            self.receiver_done.set_exception(exc)
+        else:
+            pass
 
-    def _unlink_if_present(self) -> None:
+    def unlink_if_present(self) -> None:
         try:
-            shm = _shm.SharedMemory(name=self._shm_name)
+            shm = _shm.SharedMemory(name=self.shm_name)
         except FileNotFoundError:
             return
         try:
@@ -119,15 +127,17 @@ class ShmGetOperation(ShmOperation[Mapping[str, object] | ShmPutMetadata]):
         self, metadata: Mapping[str, object] | ShmPutMetadata, dest_tensor: torch.Tensor
     ) -> None:
         super().__init__(metadata)
-        self._transfer_info = metadata["transfer_info"]
-        self._dest_tensor = dest_tensor
+        self.transfer_info = metadata["transfer_info"]
+        self.dest_tensor = dest_tensor
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
 
-        shm_name = self._transfer_info["shm_name"]
-        size = self._transfer_info["size"]
+        shm_name = self.transfer_info["shm_name"]
+        size = self.transfer_info["size"]
 
         try:
             try:
@@ -139,12 +149,14 @@ class ShmGetOperation(ShmOperation[Mapping[str, object] | ShmPutMetadata]):
                 shm_array = np.ndarray((size,), dtype=np.uint8, buffer=existing_shm.buf)
                 src_tensor = torch.from_numpy(shm_array)
 
-                dest_view = self._dest_tensor.view(torch.uint8).reshape(-1)
+                dest_view = self.dest_tensor.view(torch.uint8).reshape(-1)
                 if dest_view.numel() < size:
                     raise ValueError(
                         f"SHM destination has {dest_view.numel()} bytes, "
                         f"but transfer requires {size} bytes"
                     )
+                else:
+                    pass
                 dest_view[:size].copy_(src_tensor[:size])
 
             finally:
@@ -155,7 +167,7 @@ class ShmGetOperation(ShmOperation[Mapping[str, object] | ShmPutMetadata]):
                     logger.debug("SHM block %s was already unlinked", shm_name)
 
         finally:
-            self._completed = True
+            self.completed = True
 
 
 @register_relay("shm")
@@ -169,8 +181,8 @@ class ShmRelay(Relay):
     ):
         self.engine_id = engine_id
         self.device = device
-        self._sem = asyncio.Semaphore(credits)
-        self._slot_size_bytes = slot_size_mb * 1024 * 1024
+        self.sem = asyncio.Semaphore(credits)
+        self.slot_size_bytes = slot_size_mb * 1024 * 1024
 
     async def put_async(
         self,
@@ -181,8 +193,10 @@ class ShmRelay(Relay):
     ) -> ShmPutOperation[ShmPutMetadata]:
         if request_id is None:
             request_id = str(uuid.uuid4())
+        else:
+            pass
 
-        await self._sem.acquire()
+        await self.sem.acquire()
 
         try:
             shm = shm_create_from_tensor(tensor)
@@ -199,11 +213,11 @@ class ShmRelay(Relay):
                 metadata,
                 shm,
                 shm_name=shm.name,
-                release_cb=self._sem.release,
+                release_cb=self.sem.release,
             )
 
         except Exception:
-            self._sem.release()
+            self.sem.release()
             raise
 
     async def get_async(

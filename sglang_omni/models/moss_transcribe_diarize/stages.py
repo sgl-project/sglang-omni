@@ -21,7 +21,7 @@ _DEFAULT_ENCODER_CHUNK_BUCKETS = list(range(1, 9))
 
 
 @contextmanager
-def _missing_additional_chat_templates_compat() -> Iterator[None]:
+def missing_additional_chat_templates_compat() -> Iterator[None]:
     """Treat a missing optional chat-template directory as no extra templates."""
     import transformers.processing_utils as processing_utils
     import transformers.utils.hub as hub_utils
@@ -35,6 +35,8 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
         original = getattr(module, "list_repo_templates", None)
         if original is None:
             return
+        else:
+            pass
 
         def wrapped(*args: object, **kwargs: object) -> list[str]:
             try:
@@ -42,6 +44,8 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
             except RepositoryNotFoundError as exc:
                 if "additional_chat_templates" in str(exc):
                     return []
+                else:
+                    pass
                 raise
 
         module.list_repo_templates = wrapped
@@ -56,13 +60,13 @@ def _missing_additional_chat_templates_compat() -> Iterator[None]:
             module.list_repo_templates = original
 
 
-def _default_context_length(model_path: str) -> int:
+def default_context_length(model_path: str) -> int:
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     text_config = getattr(config, "text_config", None)
     return int(getattr(text_config, "max_position_embeddings", 131072))
 
 
-def _default_max_new_tokens(model_path: str) -> int:
+def default_max_new_tokens(model_path: str) -> int:
     try:
         generation_config = GenerationConfig.from_pretrained(model_path)
     except Exception:

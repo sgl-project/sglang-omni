@@ -14,6 +14,8 @@ from sglang_omni.scheduling.pipeline_state import wire
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 MING_TTS_SAMPLE_RATE = 44100
 MING_TTS_DEFAULT_MAX_DECODE_STEPS = 200

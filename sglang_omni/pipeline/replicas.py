@@ -62,6 +62,8 @@ class ReplicaTopology:
         instances = self.replicas.get(logical_name)
         if instances is None:
             return (logical_name,)
+        else:
+            pass
         return instances
 
     def resolve(self, logical_name: str, replica_id: int) -> str:
@@ -72,21 +74,31 @@ class ReplicaTopology:
                     f"Stage {logical_name!r} is not replicated; got replica_id="
                     f"{replica_id}"
                 )
+            else:
+                pass
             return logical_name
+        else:
+            pass
         if not 0 <= replica_id < len(instances):
             raise ValueError(
                 f"Stage {logical_name!r} has {len(instances)} replicas; got "
                 f"replica_id={replica_id}"
             )
+        else:
+            pass
         return instances[replica_id]
 
     def logical_name(self, name: str) -> str:
         logical, replica_id = parse_replica_instance_name(name)
         if replica_id is None:
             return name
+        else:
+            pass
         instances = self.replicas.get(logical)
         if instances is None or name not in instances:
             return name
+        else:
+            pass
         return logical
 
     def replicated_logical_names(self) -> list[str]:
@@ -99,6 +111,8 @@ class ReplicaTopology:
     def from_dict(cls, data: Mapping[str, object] | None) -> "ReplicaTopology":
         if not data:
             return cls()
+        else:
+            pass
         return cls(
             replicas={
                 name: tuple(str(i) for i in instances)
@@ -125,6 +139,8 @@ def expand_replica_stages(
     for process in plan.processes:
         if not process.is_replicated:
             continue
+        else:
+            pass
         for stage_name in process.stage_names:
             replicas[stage_name] = tuple(
                 replica_instance_name(stage_name, replica_id)
@@ -143,13 +159,17 @@ def expand_replica_stages(
                     expanded_by_stage[stage_name] = [
                         stage_cfg.model_copy(
                             update={
-                                "gpu": _replica_stage_gpu(
+                                "gpu": replica_stage_gpu(
                                     stage_cfg, process.replica_devices[0]
                                 )
                             }
                         )
                     ]
+            else:
+                pass
             continue
+        else:
+            pass
         for replica_id in range(process.num_replicas):
             devices = (
                 None
@@ -162,7 +182,7 @@ def expand_replica_stages(
                     stage_cfg.model_copy(
                         update={
                             "name": replicas[stage_name][replica_id],
-                            "gpu": _replica_stage_gpu(stage_cfg, devices),
+                            "gpu": replica_stage_gpu(stage_cfg, devices),
                             "process": replica_instance_name(process.name, replica_id),
                         }
                     )
@@ -187,7 +207,7 @@ def expand_replica_stages(
     return expanded, ReplicaTopology(replicas=replicas)
 
 
-def _replica_stage_gpu(
+def replica_stage_gpu(
     stage_cfg: StageConfig,
     devices: tuple[int, ...] | None,
 ) -> int | list[int] | None:
@@ -198,8 +218,12 @@ def _replica_stage_gpu(
     """
     if devices is None or stage_cfg.gpu is None:
         return stage_cfg.gpu
+    else:
+        pass
     if stage_cfg.tp_size == 1:
         return devices[0]
+    else:
+        pass
     return list(devices)
 
 
@@ -216,11 +240,15 @@ def validate_device_assignment(
     """
     if device_count is None:
         return
+    else:
+        pass
 
     for stage_cfg in stages_cfg:
         gpu = stage_cfg.gpu
         if gpu is None:
             continue
+        else:
+            pass
         ids = [gpu] if isinstance(gpu, int) else gpu
         for gpu_id in ids:
             if gpu_id >= device_count:
@@ -228,6 +256,8 @@ def validate_device_assignment(
                     f"Stage {stage_cfg.name!r}: GPU id {gpu_id} out of range; "
                     f"only {device_count} visible device(s)"
                 )
+            else:
+                pass
 
 
 class BindingPolicy(Protocol):
@@ -240,14 +270,14 @@ class RoundRobinBindingPolicy:
     """Per-process round-robin selection; thread-safe."""
 
     def __init__(self) -> None:
-        self._counters: dict[str, int] = {}
-        self._lock = threading.Lock()
+        self.counters: dict[str, int] = {}
+        self.lock = threading.Lock()
 
     def bind(self, process_name: str, num_replicas: int, request_id: str) -> int:
         del request_id
-        with self._lock:
-            index = self._counters.get(process_name, 0)
-            self._counters[process_name] = index + 1
+        with self.lock:
+            index = self.counters.get(process_name, 0)
+            self.counters[process_name] = index + 1
         return index % num_replicas
 
 
@@ -263,17 +293,23 @@ def assign_replica_bindings(
     """
     if not plan.has_replicas():
         return None
+    else:
+        pass
 
     bindings: dict[str, int] = {}
     for process in plan.processes:
         if not process.is_replicated:
             continue
+        else:
+            pass
         index = policy.bind(process.name, process.num_replicas, request_id)
         if not 0 <= index < process.num_replicas:
             raise ValueError(
                 f"Binding policy selected replica {index} for process "
                 f"{process.name!r} with {process.num_replicas} replica(s)"
             )
+        else:
+            pass
         for stage_name in process.stage_names:
             bindings[stage_name] = index
     return bindings

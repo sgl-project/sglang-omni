@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,8 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
                 "Higgs tts_engine total_gpu_memory_fraction must be in (0, 1): "
                 "it drives sglang mem_fraction_static, which requires < 1"
             )
+        else:
+            pass
         self.max_new_tokens = max_new_tokens
         self.max_running_requests = max_running_requests
         self.cuda_graph_max_bs = cuda_graph_max_bs
@@ -111,9 +115,13 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder["HiggsSGLangRequestData"]):
         expected = self.total_gpu_memory_fraction
         if expected is None:
             return
+        else:
+            pass
         actual = overrides.get("mem_fraction_static")
         if actual is not None and abs(actual - expected) <= 1e-9:
             return
+        else:
+            pass
         logger.warning(
             "Higgs tts_engine mem_fraction_static=%s overrides the "
             "placement-validated total_gpu_memory_fraction=%s",

@@ -7,8 +7,8 @@ import pytest
 import torch
 
 from sglang_omni.models.higgs_tts.stages import (
-    _HiggsReferenceEncodeHook,
-    _HiggsReferenceInput,
+    HiggsReferenceEncodeHook,
+    HiggsReferenceInput,
 )
 from sglang_omni.models.higgs_tts.utils import apply_delay_pattern
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
@@ -31,9 +31,9 @@ class _FakeCodec:
 def _service(
     codec: _FakeCodec,
 ) -> ReferenceEncodeService[
-    _HiggsReferenceInput, torch.Tensor, torch.Tensor, _HiggsReferenceInput
+    HiggsReferenceInput, torch.Tensor, torch.Tensor, HiggsReferenceInput
 ]:
-    hook = _HiggsReferenceEncodeHook(
+    hook = HiggsReferenceEncodeHook(
         codec, num_codebooks=codec.num_codebooks, model_identity="ckpt"
     )
     return ReferenceEncodeService(hook, max_items=8, max_bytes=1 << 20)
@@ -44,8 +44,8 @@ def test_same_content_key_hits_cache_and_round_trips_long() -> None:
     service = _service(codec)
     wav = torch.zeros(1, 1, 240)
 
-    first = service.get_or_encode(_HiggsReferenceInput(wav, "waveform:abc"))
-    second = service.get_or_encode(_HiggsReferenceInput(wav, "waveform:abc"))
+    first = service.get_or_encode(HiggsReferenceInput(wav, "waveform:abc"))
+    second = service.get_or_encode(HiggsReferenceInput(wav, "waveform:abc"))
 
     assert codec.calls == 1
     assert service.stats()["hits"] == 1
@@ -63,8 +63,8 @@ def test_missing_content_key_bypasses_cache() -> None:
     service = _service(codec)
     wav = torch.zeros(1, 1, 240)
 
-    service.get_or_encode(_HiggsReferenceInput(wav, None))
-    service.get_or_encode(_HiggsReferenceInput(wav, None))
+    service.get_or_encode(HiggsReferenceInput(wav, None))
+    service.get_or_encode(HiggsReferenceInput(wav, None))
 
     assert codec.calls == 2
     assert service.stats()["uncacheable"] == 2
@@ -78,4 +78,4 @@ def test_codec_shape_mismatch_fails_loud() -> None:
 
     service = _service(_WrongShapeCodec())
     with pytest.raises(ValueError, match="codec output must be"):
-        service.get_or_encode(_HiggsReferenceInput(torch.zeros(1, 1, 240), "k"))
+        service.get_or_encode(HiggsReferenceInput(torch.zeros(1, 1, 240), "k"))

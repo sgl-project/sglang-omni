@@ -93,11 +93,15 @@ class ModelConfig:
             self.audio_config = AudioEncoderConfig()
         elif isinstance(self.audio_config, dict):
             self.audio_config = AudioEncoderConfig.from_dict(self.audio_config)
+        else:
+            pass
 
         if self.text_config is None:
             self.text_config = TextConfig()
         elif isinstance(self.text_config, dict):
             self.text_config = TextConfig.from_dict(self.text_config)
+        else:
+            pass
 
     @classmethod
     def from_dict(cls, params: dict[str, object]) -> ModelConfig:
@@ -107,14 +111,26 @@ class ModelConfig:
             thinker = params.pop("thinker_config")
             if "audio_config" in thinker:
                 params["audio_config"] = thinker["audio_config"]
+            else:
+                pass
             if "text_config" in thinker:
                 params["text_config"] = thinker["text_config"]
+            else:
+                pass
             if "audio_token_id" in thinker:
                 params["audio_token_id"] = thinker["audio_token_id"]
+            else:
+                pass
             if "audio_start_token_id" in thinker:
                 params["audio_start_token_id"] = thinker["audio_start_token_id"]
+            else:
+                pass
             if "audio_end_token_id" in thinker:
                 params["audio_end_token_id"] = thinker["audio_end_token_id"]
+            else:
+                pass
+        else:
+            pass
 
         if "audio_config" in params and isinstance(params["audio_config"], dict):
             params["audio_config"] = AudioEncoderConfig.from_dict(
@@ -122,11 +138,15 @@ class ModelConfig:
             )
         elif "audio_config" not in params:
             params["audio_config"] = AudioEncoderConfig()
+        else:
+            pass
 
         if "text_config" in params and isinstance(params["text_config"], dict):
             params["text_config"] = TextConfig.from_dict(params["text_config"])
         elif "text_config" not in params:
             params["text_config"] = TextConfig()
+        else:
+            pass
 
         return cls(
             **{

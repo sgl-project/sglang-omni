@@ -168,7 +168,7 @@ def test_client_result_builder_merges_decode_with_talker_stream():
             "sample_rate": 44100,
         },
     }
-    chunk: GenerateChunk = Client._default_result_builder("req-x", merged)
+    chunk: GenerateChunk = Client.default_result_builder("req-x", merged)
     assert chunk.text == "Hello world."
     assert chunk.modality == "audio"
     assert isinstance(chunk.audio_data, np.ndarray)

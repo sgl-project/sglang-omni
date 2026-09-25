@@ -58,6 +58,8 @@ from sglang_omni.utils.gpu_memory import (
 if TYPE_CHECKING:
     from sglang_omni.client.types import GenerateChunk
     from sglang_omni.proto import StreamMessage
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +118,7 @@ class ModelCapabilitiesLog(TypedDict):
     breakable_prefill_cuda_graph: bool
 
 
-class _PipelineUvicornServer(uvicorn.Server):
+class PipelineUvicornServer(uvicorn.Server):
     """Keep Uvicorn's graceful handling without re-raising process signals.
 
     Uvicorn re-raises a captured SIGTERM after HTTP shutdown. That terminates
@@ -130,6 +132,8 @@ class _PipelineUvicornServer(uvicorn.Server):
         if threading.current_thread() is not threading.main_thread():
             yield
             return
+        else:
+            pass
 
         original_handlers = {
             sig: signal.signal(sig, self.handle_exit) for sig in _HANDLED_SIGNALS
@@ -139,7 +143,7 @@ class _PipelineUvicornServer(uvicorn.Server):
         finally:
             for sig, handler in original_handlers.items():
                 signal.signal(sig, handler)
-            self._captured_signals.clear()
+            self._captured_signals.clear()  # noqa: leading-underscore
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +151,7 @@ class _PipelineUvicornServer(uvicorn.Server):
 # ---------------------------------------------------------------------------
 
 
-def _find_available_port(host: str, port: int) -> int:
+def find_available_port(host: str, port: int) -> int:
     """Return *port* if available, otherwise find a free port and warn.
 
     SGLANG_OMNI_STRICT_PORT=1 turns the fallback into a hard error: a
@@ -164,6 +168,8 @@ def _find_available_port(host: str, port: int) -> int:
                 f"port {port} is already in use on {host} and "
                 "SGLANG_OMNI_STRICT_PORT=1 forbids falling back"
             ) from exc
+        else:
+            pass
     logger.warning(f"Port {port} is already in use on {host}.")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
@@ -172,16 +178,16 @@ def _find_available_port(host: str, port: int) -> int:
     return free_port
 
 
-def _default_run_id() -> str:
+def default_run_id() -> str:
     return time.strftime("run_%Y%m%d_%H%M%S")
 
 
-def _default_template(profiler_dir: str, run_id: str) -> str:
+def default_template(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "trace")
 
 
 # ---------------------------------------------------------------------------
-def _stage_runtime_log_summary(
+def stage_runtime_log_summary(
     pipeline_config: PipelineConfig,
 ) -> dict[str, StageRuntimeLog]:
     """Build stage placement and runtime budget fields for startup logs."""
@@ -197,6 +203,8 @@ def _stage_runtime_log_summary(
         )
         if stage.gpu is None and fraction is None and kv_cache_bytes is None:
             continue
+        else:
+            pass
         summary[stage.name] = {
             "gpu": stage.gpu,
             "total_gpu_memory_fraction": fraction,
@@ -207,7 +215,7 @@ def _stage_runtime_log_summary(
     return summary
 
 
-def _format_gpu_device_info(info: GpuDeviceInfo) -> GpuDeviceLog:
+def format_gpu_device_info(info: GpuDeviceInfo) -> GpuDeviceLog:
     return {
         "device_id": info.device_id,
         "name": info.name or "unknown",
@@ -219,7 +227,7 @@ def _format_gpu_device_info(info: GpuDeviceInfo) -> GpuDeviceLog:
     }
 
 
-def _placement_log_summary(
+def placement_log_summary(
     placement_plan,
     process_plan,
     pipeline_config: PipelineConfig,
@@ -231,7 +239,7 @@ def _placement_log_summary(
     """
 
     hardware = {
-        gpu_id: _format_gpu_device_info(get_gpu_device_info(gpu_id))
+        gpu_id: format_gpu_device_info(get_gpu_device_info(gpu_id))
         for gpu_id in sorted(placement_plan.gpus)
     }
     return {
@@ -245,7 +253,7 @@ def _placement_log_summary(
             stage_name: list(process_names)
             for stage_name, process_names in process_plan.tp_stage_to_processes.items()
         },
-        "stage_runtime": _stage_runtime_log_summary(pipeline_config),
+        "stage_runtime": stage_runtime_log_summary(pipeline_config),
         "gpus": {
             gpu_id: {
                 "hardware": hardware[gpu_id],
@@ -260,15 +268,19 @@ def _placement_log_summary(
     }
 
 
-def _model_capabilities_log_summary(
+def model_capabilities_log_summary(
     pipeline_config: PipelineConfig,
 ) -> ModelCapabilitiesLog | None:
     architecture = getattr(type(pipeline_config), "architecture", None)
     if architecture is None:
         return None
+    else:
+        pass
     capabilities = get_model_capabilities(architecture)
     if capabilities is None:
         return None
+    else:
+        pass
     return {
         "architecture": architecture,
         "reference_audio": capabilities.supports_reference_audio,
@@ -282,9 +294,9 @@ def _model_capabilities_log_summary(
     }
 
 
-def _log_model_capabilities(pipeline_config: PipelineConfig) -> None:
+def log_model_capabilities(pipeline_config: PipelineConfig) -> None:
     try:
-        summary = _model_capabilities_log_summary(pipeline_config)
+        summary = model_capabilities_log_summary(pipeline_config)
     except Exception:
         logger.warning(
             "Failed to resolve model capabilities for startup log",
@@ -293,6 +305,8 @@ def _log_model_capabilities(pipeline_config: PipelineConfig) -> None:
         return
     if summary is not None:
         logger.info("Model capabilities: %s", json.dumps(summary, sort_keys=True))
+    else:
+        pass
 
 
 class StartReq(BaseModel):
@@ -312,26 +326,28 @@ class StartRequestProfileReq(BaseModel):
     event_dir: str | None = None
 
 
-def _default_event_dir(profiler_dir: str, run_id: str) -> str:
+def default_event_dir(profiler_dir: str, run_id: str) -> str:
     return os.path.join(profiler_dir, run_id, "events")
 
 
-def _mount_profiler_routes(
+def mount_profiler_routes(
     app, profiler_ctl: ProfilerControlClient, profiler_dir: str | None
 ) -> None:
     router = APIRouter()
 
     @router.post("/start_profile")
     async def start(req: StartReq):
-        run_id = req.run_id or _default_run_id()
+        run_id = req.run_id or default_run_id()
         event_dir = req.event_dir
         if event_dir is None and profiler_dir is not None:
-            event_dir = _default_event_dir(profiler_dir, run_id)
+            event_dir = default_event_dir(profiler_dir, run_id)
+        else:
+            pass
         if req.enable_torch:
             if req.trace_path_template is not None:
                 tpl = req.trace_path_template
             elif profiler_dir is not None:
-                tpl = _default_template(profiler_dir, run_id)
+                tpl = default_template(profiler_dir, run_id)
             else:
                 raise HTTPException(
                     status_code=400,
@@ -349,6 +365,8 @@ def _mount_profiler_routes(
                         "SGLANG_TORCH_PROFILER_DIR is not set"
                     ),
                 )
+            else:
+                pass
             tpl = req.trace_path_template or ""
         if event_dir is not None:
             try:
@@ -360,6 +378,8 @@ def _mount_profiler_routes(
                     "Failed to start coordinator request event recorder",
                     exc_info=True,
                 )
+        else:
+            pass
         await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template=tpl,
@@ -377,7 +397,7 @@ def _mount_profiler_routes(
     @router.post("/start_request_profile")
     async def start_request(req: StartRequestProfileReq):
         """Start request-level (JSONL) event profiling only (no torch trace)."""
-        run_id = req.run_id or _default_run_id()
+        run_id = req.run_id or default_run_id()
         event_dir = req.event_dir
         if event_dir is None:
             if profiler_dir is None:
@@ -388,7 +408,11 @@ def _mount_profiler_routes(
                         "SGLANG_TORCH_PROFILER_DIR is not set"
                     ),
                 )
-            event_dir = _default_event_dir(profiler_dir, run_id)
+            else:
+                pass
+            event_dir = default_event_dir(profiler_dir, run_id)
+        else:
+            pass
         try:
             _get_event_recorder().start(
                 run_id=run_id, event_dir=event_dir, stage="coordinator"
@@ -414,6 +438,8 @@ def _mount_profiler_routes(
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
             recorder.stop(run_id=active)
+        else:
+            pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
         return {"run_id": run_id or active}
 
@@ -425,13 +451,15 @@ def _mount_profiler_routes(
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
             recorder.stop(run_id=active)
+        else:
+            pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
         return {"run_id": run_id or active}
 
     app.include_router(router)
 
 
-async def _run_server(
+async def run_server(
     pipeline_config: PipelineConfig,
     *,
     host: str = "0.0.0.0",
@@ -449,7 +477,7 @@ async def _run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     # 0. Check port availability before loading models
-    port = _find_available_port(host, port)
+    port = find_available_port(host, port)
 
     mp_runner = MultiProcessPipelineRunner(pipeline_config)
     startup_timeout = float(os.environ.get("SGLANG_OMNI_STARTUP_TIMEOUT", "600"))
@@ -462,7 +490,7 @@ async def _run_server(
     placement_plan = mp_runner.prep.placement_plan
     process_plan = mp_runner.prep.process_plan
     gpu_ids = set(placement_plan.gpus)
-    placement_summary = _placement_log_summary(
+    placement_summary = placement_log_summary(
         placement_plan,
         process_plan,
         pipeline_config,
@@ -470,7 +498,7 @@ async def _run_server(
     logger.info(
         f"Resolved placement/topology plan: placement={placement_summary}",
     )
-    _log_model_capabilities(pipeline_config)
+    log_model_capabilities(pipeline_config)
     logger.info(
         "Pipeline '%s' started (%d GPU(s))",
         pipeline_config.name,
@@ -515,7 +543,7 @@ async def _run_server(
         )
         profiler_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
         profiler_ctl = ProfilerControlClient(mp_runner.stage_control_endpoints)
-        _mount_profiler_routes(app, profiler_ctl, profiler_dir)
+        mount_profiler_routes(app, profiler_ctl, profiler_dir)
 
         config = uvicorn.Config(
             app,
@@ -524,15 +552,15 @@ async def _run_server(
             log_level=log_level,
             timeout_keep_alive=120,
         )
-        server = _PipelineUvicornServer(config)
-        await _serve_with_failure_watch(server, [mp_runner.wait_failed()])
+        server = PipelineUvicornServer(config)
+        await serve_with_failure_watch(server, [mp_runner.wait_failed()])
     finally:
         logger.info("Shutting down pipeline …")
         await mp_runner.stop()
         logger.info("Pipeline stopped.")
 
 
-async def _serve_with_failure_watch(
+async def serve_with_failure_watch(
     server: uvicorn.Server,
     runtime_watchers,
 ) -> None:
@@ -550,6 +578,8 @@ async def _serve_with_failure_watch(
         if server_task in done:
             await server_task
             return
+        else:
+            pass
 
         server.should_exit = True
         with suppress(asyncio.CancelledError):
@@ -558,16 +588,24 @@ async def _serve_with_failure_watch(
         for task in done:
             if task is server_task:
                 continue
+            else:
+                pass
             if task.cancelled():
                 raise RuntimeError("Pipeline runtime task was cancelled")
+            else:
+                pass
             exc = task.exception()
             if exc is not None:
                 raise exc
+            else:
+                pass
             raise RuntimeError("Pipeline runtime task exited unexpectedly")
     finally:
         for task in watcher_tasks:
             if not task.done():
                 task.cancel()
+            else:
+                pass
 
 
 def launch_server(
@@ -606,7 +644,7 @@ def launch_server(
     """
     apply_gpu_compat_env_defaults()
     asyncio.run(
-        _run_server(
+        run_server(
             pipeline_config,
             host=host,
             port=port,

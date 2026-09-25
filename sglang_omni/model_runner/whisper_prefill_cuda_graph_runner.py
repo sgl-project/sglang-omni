@@ -14,6 +14,8 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
     from sglang.srt.model_executor.model_runner import ModelRunner
+else:
+    pass
 
 
 class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):

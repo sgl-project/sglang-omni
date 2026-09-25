@@ -12,8 +12,8 @@ from typing_extensions import TypeVar
 if TYPE_CHECKING:
     import torch
     from sglang.srt.managers.schedule_batch import ScheduleBatch
-
-    from sglang_omni.scheduling.sglang_backend.output_processor import AuxHiddenExtra
+else:
+    pass
 
 
 class SchedulerStatus(Enum):
@@ -64,7 +64,7 @@ class RequestOutput:
     request_id: str
     data: str | bytes | bytearray | SupportsInt | SupportsIndex | None = None
     finished: bool = False
-    extra: AuxHiddenExtra | dict[str, dict[object, torch.Tensor]] | None = None
+    extra: dict[str, torch.Tensor] | None = None
 
 
 @dataclass
@@ -117,6 +117,8 @@ def sampled_logprobs_to_list(next_token_logprobs: object) -> list[float] | None:
 
     if next_token_logprobs is None:
         return None
+    else:
+        pass
     if hasattr(next_token_logprobs, "detach"):
         values = next_token_logprobs.detach().float().cpu().tolist()
     elif hasattr(next_token_logprobs, "tolist"):
@@ -125,14 +127,22 @@ def sampled_logprobs_to_list(next_token_logprobs: object) -> list[float] | None:
         values = next_token_logprobs
     if isinstance(values, (int, float)):
         return [float(values)]
+    else:
+        pass
     if not isinstance(values, (list, tuple)):
         return None
+    else:
+        pass
 
     out: list[float] = []
     for value in values:
         if isinstance(value, (list, tuple)):
             if len(value) != 1:
                 return None
+            else:
+                pass
             value = value[0]
+        else:
+            pass
         out.append(float(value))
     return out

@@ -20,12 +20,12 @@ from sglang_omni.models.weight_loader import (
 )
 
 
-def _load_image_tokenizer_config(model_dir: str | Path) -> dict:
+def load_image_tokenizer_config(model_dir: str | Path) -> dict:
     with open(Path(model_dir) / "image_tokenizer" / "config.json", "r") as f:
         return json.load(f)
 
 
-def _make_vision_config(raw: dict) -> SimpleNamespace:
+def make_vision_config(raw: dict) -> SimpleNamespace:
     vc = raw.get("vision_config", raw)
     return SimpleNamespace(
         hidden_size=vc["hidden_size"],
@@ -41,7 +41,7 @@ def _make_vision_config(raw: dict) -> SimpleNamespace:
     )
 
 
-def _make_vq_config(raw: dict) -> SimpleNamespace:
+def make_vq_config(raw: dict) -> SimpleNamespace:
     vq = raw.get("vq_config", raw)
     return SimpleNamespace(
         num_embeddings=vq["num_embeddings"],
@@ -140,6 +140,8 @@ class VisionEmbeddings(nn.Module):
 
         if isinstance(lengths, list):
             lengths = torch.tensor(lengths, device=device, dtype=torch.long)
+        else:
+            pass
 
         orig_size = int(pos_w.shape[0] ** 0.5)
         pos_2d = (
@@ -302,14 +304,16 @@ class LLaDA2ImageEncoder(nn.Module):
         self.dtype = torch_dtype
 
         try:
-            raw_config = _load_image_tokenizer_config(self.model_dir)
+            raw_config = load_image_tokenizer_config(self.model_dir)
         except (FileNotFoundError, OSError):
             if Path(model_path).exists():
                 raise
+            else:
+                pass
             self.model_dir = str(resolve_model_path(model_path, local_files_only=False))
-            raw_config = _load_image_tokenizer_config(self.model_dir)
-        vision_cfg = _make_vision_config(raw_config)
-        vq_cfg = _make_vq_config(raw_config)
+            raw_config = load_image_tokenizer_config(self.model_dir)
+        vision_cfg = make_vision_config(raw_config)
+        vq_cfg = make_vq_config(raw_config)
 
         tokenizer_path = str(Path(self.model_dir) / "image_tokenizer")
         self.visual = load_module(

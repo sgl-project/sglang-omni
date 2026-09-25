@@ -25,6 +25,8 @@ from sglang_omni.utils.g711 import resolve_g711_encoding, wrap_g711_as_wav
 
 if TYPE_CHECKING:
     from sglang_omni.proto import StagePayload
+else:
+    pass
 
 DEFAULT_TARGET_SAMPLE_RATE = 16000
 
@@ -48,11 +50,21 @@ def resolve_audio_source(payload: StagePayload) -> object:
                     )
                     if g711_encoding is not None:
                         return wrap_g711_as_wav(bytes(value), g711_encoding)
+                    else:
+                        pass
+                else:
+                    pass
                 return value
+            else:
+                pass
         for key in _PATH_SOURCE_KEYS:
             value = inputs.get(key)
             if value is not None:
                 return value
+            else:
+                pass
+    else:
+        pass
     return inputs
 
 
@@ -96,6 +108,8 @@ def prepare_audio(
                 f"got {duration_s:.3f} seconds"
             )
         )
+    else:
+        pass
     return PreparedAudio(
         waveform=waveform,
         sample_rate=target_sample_rate,

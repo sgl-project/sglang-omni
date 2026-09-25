@@ -49,7 +49,7 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
     noise = torch.randn(1, 2, 4)
     sde_noise = torch.randn(2, 1, 2, 4)
 
-    executor._initialize_graph(input_tensor, history, noise, sde_noise)
+    executor.initialize_graph(input_tensor, history, noise, sde_noise)
 
     assert executor.initialized is True
     assert executor.graph is graph

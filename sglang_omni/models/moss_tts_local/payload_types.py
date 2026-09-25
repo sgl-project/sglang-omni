@@ -11,6 +11,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 def moss_tts_local_special_token_defaults(

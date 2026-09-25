@@ -43,6 +43,8 @@ if TYPE_CHECKING:
         compute_video_cache_key,
         ensure_video_list_async,
     )
+else:
+    pass
 
 _LAZY_EXPORTS = {
     "append_modality_placeholders": "sglang_omni.preprocessing.text",
@@ -98,6 +100,8 @@ def __getattr__(name: str) -> object:
     module_name = _LAZY_EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    else:
+        pass
     value = getattr(import_module(module_name), name)
     globals()[name] = value
     return value

@@ -41,37 +41,37 @@ class S2ProPrompt(TypedDict):
     vq_parts: list[torch.Tensor]
 
 
-class _InferencePromptEncoder:
+class InferencePromptEncoder:
     """Accumulate the tensor fields consumed by the Fish serving path."""
 
     def __init__(self, tokenizer: PreTrainedTokenizerFast) -> None:
-        self._tokenizer = tokenizer
-        self._token_segments: list[torch.Tensor] = []
-        self._vq_mask_segments: list[torch.Tensor] = []
-        self._vq_parts: list[torch.Tensor] = []
+        self.tokenizer = tokenizer
+        self.token_segments: list[torch.Tensor] = []
+        self.vq_mask_segments: list[torch.Tensor] = []
+        self.vq_parts: list[torch.Tensor] = []
 
     def append_text(self, text: str) -> None:
-        tokens = torch.tensor(self._tokenizer.encode(text), dtype=torch.int)
-        self._token_segments.append(tokens)
-        self._vq_mask_segments.append(torch.zeros_like(tokens, dtype=torch.bool))
+        tokens = torch.tensor(self.tokenizer.encode(text), dtype=torch.int)
+        self.token_segments.append(tokens)
+        self.vq_mask_segments.append(torch.zeros_like(tokens, dtype=torch.bool))
 
     def append_vq(self, codes: torch.Tensor) -> None:
         codes = codes.clone().to(torch.int)
         tokens = torch.tensor(
-            self._tokenizer.convert_tokens_to_ids(
+            self.tokenizer.convert_tokens_to_ids(
                 [SEMANTIC_TOKEN_TEMPLATE.format(i=code) for code in codes[0].int()]
             ),
             dtype=torch.int,
         )
-        self._token_segments.append(tokens)
-        self._vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))
-        self._vq_parts.append(codes)
+        self.token_segments.append(tokens)
+        self.vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))
+        self.vq_parts.append(codes)
 
     def finish(self) -> S2ProPrompt:
         return {
-            "input_ids": torch.cat(self._token_segments, dim=0),
-            "vq_mask_tokens": torch.cat(self._vq_mask_segments, dim=0),
-            "vq_parts": self._vq_parts,
+            "input_ids": torch.cat(self.token_segments, dim=0),
+            "vq_mask_tokens": torch.cat(self.vq_mask_segments, dim=0),
+            "vq_parts": self.vq_parts,
         }
 
 
@@ -79,19 +79,19 @@ class S2ProTokenizerAdapter:
     """Build the inference prompt fields consumed by S2-Pro serving."""
 
     def __init__(self, hf_tokenizer: PreTrainedTokenizerFast) -> None:
-        self._tok = hf_tokenizer
+        self.tok = hf_tokenizer
 
     @property
     def eos_token_ids(self) -> list[int]:
-        return [self._tok.convert_tokens_to_ids(IM_END_TOKEN)]
+        return [self.tok.convert_tokens_to_ids(IM_END_TOKEN)]
 
     @property
     def semantic_begin_id(self) -> int:
-        return self._tok.convert_tokens_to_ids(SEMANTIC_TOKEN_TEMPLATE.format(i=0))
+        return self.tok.convert_tokens_to_ids(SEMANTIC_TOKEN_TEMPLATE.format(i=0))
 
     @property
     def semantic_end_id(self) -> int:
-        return self._tok.convert_tokens_to_ids(SEMANTIC_TOKEN_TEMPLATE.format(i=4095))
+        return self.tok.convert_tokens_to_ids(SEMANTIC_TOKEN_TEMPLATE.format(i=4095))
 
     def build_prompt(
         self,
@@ -108,14 +108,20 @@ class S2ProTokenizerAdapter:
                 codes = ref.vq_codes
                 if codes is None:
                     continue
+                else:
+                    pass
                 shape = tuple(codes.shape)
                 if codes.ndim != 2 or shape[0] != num_codebooks:
                     raise ValueError(
                         f"Reference {index} VQ codes must have shape "
                         f"({num_codebooks}, T); got {shape}"
                     )
+                else:
+                    pass
+        else:
+            pass
 
-        encoder = _InferencePromptEncoder(self._tok)
+        encoder = InferencePromptEncoder(self.tok)
 
         # System message: reference audio for voice cloning
         if references:
@@ -129,15 +135,23 @@ class S2ProTokenizerAdapter:
                 ref_text = f"<|speaker:{speaker}|>{ref.text}" if ref.text else ""
                 if ref_text:
                     encoder.append_text(ref_text)
+                else:
+                    pass
                 if ref.vq_codes is not None:
                     all_codes.append(ref.vq_codes)
+                else:
+                    pass
 
             encoder.append_text("\n\nSpeech:\n")
 
             if all_codes:
                 encoder.append_vq(torch.cat(all_codes, dim=1))
+            else:
+                pass
 
             encoder.append_text(f"{IM_END_TOKEN}\n")
+        else:
+            pass
 
         # User message: text to synthesize
         text_with_tag = f"<|speaker:{speaker}|>{text}"

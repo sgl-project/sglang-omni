@@ -10,6 +10,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 if TYPE_CHECKING:
     import numpy.typing as npt
     import torch
+else:
+    pass
 
 
 @dataclass

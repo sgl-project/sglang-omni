@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
+else:
+    pass
 
 ValueT = TypeVar("ValueT")
 

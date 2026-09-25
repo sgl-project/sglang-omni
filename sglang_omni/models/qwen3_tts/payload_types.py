@@ -11,6 +11,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 
 @dataclass

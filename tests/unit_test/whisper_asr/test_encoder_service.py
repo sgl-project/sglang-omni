@@ -16,8 +16,8 @@ from sglang.srt.managers.schedule_batch import (
 
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
-    _expected_audio_tokens,
     build_cache_namespace,
+    expected_audio_tokens,
 )
 
 _HIDDEN_SIZE = 8
@@ -69,15 +69,15 @@ class _StubModel(torch.nn.Module):
         encoder = _StubEncoder(dtype=dtype)
         self.model = SimpleNamespace(encoder=encoder)
         self.config = SimpleNamespace(d_model=_HIDDEN_SIZE)
-        self._encoder = encoder
+        self.encoder = encoder
 
     @property
     def encode_calls(self) -> int:
-        return self._encoder.encode_calls
+        return self.encoder.encode_calls
 
     def encode_audio_features(self, items: list[object]) -> torch.Tensor:
         features: list[torch.Tensor] = []
-        reference = next(self._encoder.parameters())
+        reference = next(self.encoder.parameters())
         for item in items:
             feature = getattr(item, "feature", None)
             if feature is None:
@@ -85,7 +85,7 @@ class _StubModel(torch.nn.Module):
             if not isinstance(feature, torch.Tensor):
                 feature = torch.as_tensor(feature)
             features.append(feature.to(device=reference.device, dtype=reference.dtype))
-        return self._encoder(torch.cat(features, dim=0))
+        return self.encoder(torch.cat(features, dim=0))
 
 
 def _make_item(*, fingerprint: str = "fp", fill: float = 1.0) -> MultimodalDataItem:
@@ -142,7 +142,7 @@ def test_pinning_is_off_without_cuda_device() -> None:
     # service must not try to page-lock anything.
     service = _make_service()
     assert service.pin_host_memory is False
-    assert service._cache.pin_memory is False
+    assert service.cache.pin_memory is False
     assert service.stats()["pin_prewarm_s"] == 0.0
 
 
@@ -204,7 +204,7 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
     def _boom(_tokens: int) -> torch.Tensor:
         raise RuntimeError("cudaHostAlloc failed")
 
-    monkeypatch.setattr(service, "_new_pinned_host", _boom)
+    monkeypatch.setattr(service, "new_pinned_host", _boom)
     item = _make_item(fingerprint="fallback", fill=4.0)
     service.encode_item(item)
     # note (Jeffro): the entry is still cached, just in pageable memory, and the service
@@ -212,7 +212,7 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
     cached = _cached_entry(service, "fallback")
     assert not cached.is_pinned()
     assert service.pin_host_memory is False
-    assert service._cache.pin_memory is False
+    assert service.cache.pin_memory is False
     assert service.stats()["pin_failures"] == 1
     torch.cuda.synchronize()
     assert torch.equal(cached.to("cuda"), item.precomputed_embeddings)
@@ -222,13 +222,13 @@ def test_pinned_allocation_failure_falls_back_to_pageable(
 @_requires_cuda
 def test_prewarm_covers_cache_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
     allocations: list[int] = []
-    original = WhisperPreLMEncoderService._new_pinned_host
+    original = WhisperPreLMEncoderService.new_pinned_host
 
     def _counting(self: WhisperPreLMEncoderService, tokens: int) -> torch.Tensor:
         allocations.append(tokens)
         return original(self, tokens)
 
-    monkeypatch.setattr(WhisperPreLMEncoderService, "_new_pinned_host", _counting)
+    monkeypatch.setattr(WhisperPreLMEncoderService, "new_pinned_host", _counting)
     service = _make_service(_cuda_model(), cache_max_entries=5)
     assert allocations == [_TOKENS] * 5
     assert service.stats()["pin_prewarm_s"] >= 0.0
@@ -289,8 +289,8 @@ def test_expected_audio_tokens() -> None:
             model_specific_data={"num_audio_tokens": num_audio_tokens},
         )
 
-    assert _expected_audio_tokens(item(12)) == 12
-    assert _expected_audio_tokens(item(None)) is None
+    assert expected_audio_tokens(item(12)) == 12
+    assert expected_audio_tokens(item(None)) is None
 
 
 def test_build_cache_namespace_is_stable() -> None:
@@ -365,7 +365,7 @@ def test_no_fingerprint_does_not_cache() -> None:
     assert item.precomputed_embeddings is not None
     assert service.stats()["misses"] == 0
     assert service.stats()["hits"] == 0
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_close_rejects_new_encodes() -> None:
@@ -377,7 +377,7 @@ def test_close_rejects_new_encodes() -> None:
 
 def test_batched_encode_retries_per_item_on_multi_failure() -> None:
     model = _StubModel()
-    model._encoder.fail_multi_item = True
+    model.encoder.fail_multi_item = True
     service = _make_service(model, max_batch_size=4)
     items = [_make_item(fingerprint=f"b{i}", fill=float(i + 1)) for i in range(3)]
     import concurrent.futures

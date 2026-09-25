@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+else:
+    pass
 
 
 def create_dllm_thinker_scheduler(

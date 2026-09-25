@@ -15,6 +15,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 ZONOS2_SAMPLE_RATE = 44100
 N_CODEBOOKS = 9

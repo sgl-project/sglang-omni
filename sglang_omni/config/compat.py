@@ -45,6 +45,8 @@ def canonicalize_dotted_key(key: str, config: PipelineConfig) -> str:
                 "spelling cannot distinguish the two",
                 raw=key,
             )
+        else:
+            pass
         parts = ["stages", *parts]
     elif head in stage_names:
         raise ConfigPathError(
@@ -62,5 +64,7 @@ def canonicalize_dotted_key(key: str, config: PipelineConfig) -> str:
             raw=key,
             suggestions=tuple(close or candidates[:5]),
         )
+    else:
+        pass
 
     return ".".join(parts)

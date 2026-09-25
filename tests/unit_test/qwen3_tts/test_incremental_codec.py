@@ -13,9 +13,9 @@ from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateAre
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
-    _incremental_transformer,
     incremental_causal_conv1d,
     incremental_causal_transconv1d,
+    incremental_transformer,
 )
 
 
@@ -329,7 +329,7 @@ def test_incremental_transformer_matches_whole_across_window(
     offset = 0
     for length in partitions:
         actual.append(
-            _incremental_transformer(
+            incremental_transformer(
                 transformer, inputs[:, offset : offset + length], state
             )
         )
@@ -681,7 +681,7 @@ def test_incremental_codec_cuda_graph_alternates_shared_pool_keys() -> None:
         arena=arena,
     )
     runner.capture()
-    assert len(runner._graphs) == 2
+    assert len(runner.graphs) == 2
     slots = {1: [arena.acquire()], 4: [arena.acquire() for _ in range(4)]}
     eager_states = {
         batch_size: arena.gather(rows) for batch_size, rows in slots.items()
@@ -898,9 +898,9 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
         Qwen3TTSIncrementalCodecCudaGraphRunner,
     )
     from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+        IncrementalDecodeBatch,
+        IncrementalDecodePlan,
         Qwen3TTSStreamingVocoderScheduler,
-        _IncrementalDecodeBatch,
-        _IncrementalDecodePlan,
     )
 
     torch.manual_seed(23)
@@ -940,9 +940,9 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
-    scheduler._samples_per_frame = decoder.total_upsample
+    scheduler.samples_per_frame = decoder.total_upsample
     plans = [
-        _IncrementalDecodePlan(
+        IncrementalDecodePlan(
             decoder_input=codes[0:1],
             slot=slots[0],
             fresh_frames=width,
@@ -950,7 +950,7 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
             generated_frames=12,
             emitted_generated_frames=0,
         ),
-        _IncrementalDecodePlan(
+        IncrementalDecodePlan(
             decoder_input=codes[1:2],
             slot=slots[1],
             fresh_frames=width,
@@ -959,8 +959,8 @@ def test_windowed_replays_match_one_eager_decode_and_its_arena_state() -> None:
             emitted_generated_frames=0,
         ),
     ]
-    batch = _IncrementalDecodeBatch(decoder=incremental, arena=arena, slots=slots)
-    deltas, waveform = scheduler._decode_incremental_windows(
+    batch = IncrementalDecodeBatch(decoder=incremental, arena=arena, slots=slots)
+    deltas, waveform = scheduler.decode_incremental_windows(
         codes, plans, batch, runner, split
     )
     torch.cuda.synchronize(device)

@@ -31,14 +31,14 @@ def _require_cuda_for_accelerator_tests(request: pytest.FixtureRequest):
 
 def _runner(code_predictor_forward, device: torch.device) -> Qwen3TTSModelRunner:
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    runner._has_pending_code_step = False
-    runner._token_id_host_bufs = None
-    runner._token_id_host_slot = 0
+    runner.has_pending_code_step = False
+    runner.token_id_host_bufs = None
+    runner.token_id_host_slot = 0
     runner.model = SimpleNamespace(
         config=SimpleNamespace(codec_eos_token_id=EOS),
         code_predictor_forward=code_predictor_forward,
-        _output_codes=torch.zeros((4, 3), dtype=torch.long, device=device),
-        _output_embeds=torch.zeros((4, 2), device=device),
+        output_codes=torch.zeros((4, 3), dtype=torch.long, device=device),
+        output_embeds=torch.zeros((4, 2), device=device),
     )
     return runner
 
@@ -69,12 +69,12 @@ def test_collect_codes_stages_the_ids_before_the_predictor_runs():
 
     def code_predictor_forward(layer0_codes, hidden, semantic_positions=None):
         staged_when_called.append(result._host_token_ids)
-        runner.model._output_codes[:3] = layer0_codes + torch.arange(3)
-        runner.model._output_embeds[:3] = layer0_codes.to(torch.float32)
+        runner.model.output_codes[:3] = layer0_codes + torch.arange(3)
+        runner.model.output_embeds[:3] = layer0_codes.to(torch.float32)
 
     runner = _runner(code_predictor_forward, torch.device("cpu"))
 
-    runner._collect_codes(result, forward_batch, object(), requests)
+    runner.collect_codes(result, forward_batch, object(), requests)
 
     assert len(staged_when_called) == 1
     assert staged_when_called[0] is ids
@@ -84,8 +84,8 @@ def test_collect_codes_stages_the_ids_before_the_predictor_runs():
         for row, req in enumerate(requests)
     }
     runner.post_process_outputs(result, SimpleNamespace(requests=requests), outputs)
-    runner.model._output_codes.zero_()
-    runner.model._output_embeds.zero_()
+    runner.model.output_codes.zero_()
+    runner.model.output_embeds.zero_()
 
     assert [c.tolist() for c in requests[0].data.output_codes] == [[7, 8, 9]]
     assert requests[0].data.pending_feedback_queue[0].tolist() == [7.0, 7.0]
@@ -123,8 +123,8 @@ def test_staged_ids_resolve_while_the_predictor_is_still_running():
     runner = _runner(code_predictor_forward, device)
     stream = torch.cuda.current_stream(device)
 
-    runner._collect_codes(result, forward_batch, object(), requests)
-    host_ids = runner._resolve_host_token_ids(result)
+    runner.collect_codes(result, forward_batch, object(), requests)
+    host_ids = runner.resolve_host_token_ids(result)
     predictor_done = stream.query()
     torch.cuda.synchronize()
 
@@ -143,7 +143,7 @@ def test_staged_ids_keep_the_sampled_values_when_later_stream_work_overwrites_th
 
     runner = _runner(code_predictor_forward, device)
 
-    runner._collect_codes(result, forward_batch, object(), requests)
+    runner.collect_codes(result, forward_batch, object(), requests)
 
-    assert runner._resolve_host_token_ids(result).tolist() == [7, 8]
+    assert runner.resolve_host_token_ids(result).tolist() == [7, 8]
     assert result.next_token_ids.tolist() == [-1, -1]

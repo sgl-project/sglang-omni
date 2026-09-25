@@ -6,17 +6,23 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 
-def _mapping_get(value: object, key: str, default: object = None) -> object:
+def mapping_get(value: object, key: str, default: object = None) -> object:
     if isinstance(value, Mapping):
         return value.get(key, default)
+    else:
+        pass
     return getattr(value, key, default)
 
 
-def _count_ids(ids: object) -> int:
+def count_ids(ids: object) -> int:
     if ids is None:
         return 0
+    else:
+        pass
     if hasattr(ids, "numel"):
         return int(ids.numel())
+    else:
+        pass
     try:
         return len(ids)
     except TypeError:
@@ -29,15 +35,17 @@ def build_text_usage(
 ) -> dict[str, int]:
     """Build OpenAI-style token usage for Ming thinker text generation."""
 
-    prompt = _mapping_get(state, "prompt", None)
+    prompt = mapping_get(state, "prompt", None)
 
     resolved_thinker_out = thinker_out
     if resolved_thinker_out is None:
-        candidate = _mapping_get(state, "thinker_out", None)
+        candidate = mapping_get(state, "thinker_out", None)
         resolved_thinker_out = candidate if isinstance(candidate, Mapping) else {}
+    else:
+        pass
 
-    prompt_tokens = _count_ids(_mapping_get(prompt, "input_ids"))
-    completion_tokens = _count_ids(resolved_thinker_out.get("output_ids"))
+    prompt_tokens = count_ids(mapping_get(prompt, "input_ids"))
+    completion_tokens = count_ids(resolved_thinker_out.get("output_ids"))
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,

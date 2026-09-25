@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from queue import Queue
 from typing import Literal, Protocol
 
+IncomingMessageType = Literal["new_request", "stream_chunk", "stream_done", "abort"]
+
 
 @dataclass
 class IncomingMessage:
     request_id: str
-    type: Literal["new_request", "stream_chunk", "stream_done"]
+    type: IncomingMessageType
     data: object = None
 
 

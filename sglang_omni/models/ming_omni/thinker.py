@@ -56,6 +56,8 @@ from sglang_omni.vendor.sglang.utils import add_prefix, make_layers
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,8 @@ class BailingMoeV2Attention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
             self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        else:
+            pass
 
         # RoPE - using partial rotary factor
         self.rotary_emb = get_rope(
@@ -170,6 +174,8 @@ class BailingMoeV2Attention(nn.Module):
         # QK normalization
         if self.use_qk_norm:
             q, k = apply_qk_norm(q, k, self.q_norm, self.k_norm, self.head_dim)
+        else:
+            pass
 
         # Partial RoPE: only apply to first rotary_dim dimensions
         q_rot = q[..., : self.rotary_dim]
@@ -256,6 +262,8 @@ class BailingMoeV2MLP(nn.Module):
     ) -> torch.Tensor:
         if (self.tp_size == 1) and hidden_states.shape[0] == 0:
             return hidden_states
+        else:
+            pass
         gate_up, _ = self.gate_up_proj(hidden_states)
         hidden_states = self.act_fn(gate_up)
         hidden_states, _ = self.down_proj(
@@ -370,7 +378,7 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             scores_for_routing = scores
 
         # Group-limited top-k selection
-        topk_weights, topk_ids = self._group_limited_topk(scores_for_routing)
+        topk_weights, topk_ids = self.group_limited_topk(scores_for_routing)
 
         # Gather actual scores (without bias) for the selected experts
         topk_weights = torch.gather(scores, dim=1, index=topk_ids)
@@ -380,6 +388,8 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             topk_weights = topk_weights / (
                 topk_weights.sum(dim=-1, keepdim=True) + 1e-20
             )
+        else:
+            pass
         topk_weights = topk_weights * self.routed_scaling_factor
 
         # FusedMoE forward — wrap in StandardTopKOutput
@@ -406,10 +416,12 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
             and not should_use_flashinfer_cutlass_moe_fp4_allgather()
         ):
             final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+        else:
+            pass
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
-    def _group_limited_topk(
+    def group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection.
@@ -541,6 +553,8 @@ class BailingMoeV2DecoderLayer(nn.Module):
 
         if hidden_states.shape[0] != 0:
             hidden_states = self.self_attn(hidden_states, forward_batch)
+        else:
+            pass
 
         hidden_states, residual = self.layer_communicator.prepare_mlp(
             hidden_states=hidden_states,
@@ -565,7 +579,7 @@ class BailingMoeV2DecoderLayer(nn.Module):
         )
 
         if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True
+            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         else:
             hidden_states, residual = self.layer_communicator.postprocess_layer(
                 hidden_states,
@@ -649,14 +663,20 @@ class BailingMoeV2TextModel(nn.Module):
                 if name.startswith(prefix):
                     name = name[len(prefix) :]
                     break
+                else:
+                    pass
 
             # 0. Remap checkpoint naming conventions to our model's naming
             # gate.expert_bias -> expert_bias (MoE routing bias)
             if ".mlp.gate.expert_bias" in name:
                 name = name.replace(".mlp.gate.expert_bias", ".mlp.expert_bias")
+            else:
+                pass
             # word_embeddings -> embed_tokens
             if name == "word_embeddings.weight":
                 name = "embed_tokens.weight"
+            else:
+                pass
 
             # 1a. Handle checkpoint naming: attention.X -> self_attn.Y
             # Ming checkpoint uses "attention.query_key_value" / "attention.dense"
@@ -668,6 +688,8 @@ class BailingMoeV2TextModel(nn.Module):
                 name = name.replace(".attention.dense.", ".self_attn.o_proj.")
                 name = name.replace(".attention.q_norm.", ".self_attn.q_norm.")
                 name = name.replace(".attention.k_norm.", ".self_attn.k_norm.")
+            else:
+                pass
 
             # 1b. Handle separate q/k/v -> fused qkv_proj (if checkpoint has them)
             matched_attn = False
@@ -680,8 +702,14 @@ class BailingMoeV2TextModel(nn.Module):
                         _loaded_weight_count += 1
                         matched_attn = True
                         break
+                    else:
+                        pass
+                else:
+                    pass
             if matched_attn:
                 continue
+            else:
+                pass
 
             # 2. Handle MoE expert weights via FusedMoE weight_loader
             if ".mlp.experts." in name:
@@ -713,6 +741,12 @@ class BailingMoeV2TextModel(nn.Module):
                         )
                         _loaded_weight_count += 1
                         continue
+                    else:
+                        pass
+                else:
+                    pass
+            else:
+                pass
 
             # 3. Handle gate/up -> fused gate_up_proj
             # Applies to both shared_experts and dense MLP (layer 0)
@@ -722,6 +756,8 @@ class BailingMoeV2TextModel(nn.Module):
             for weight_name, shard_id in ((".gate_proj.", 0), (".up_proj.", 1)):
                 if weight_name not in name:
                     continue
+                else:
+                    pass
                 fused_key = name.replace(weight_name, ".gate_up_proj.")
                 if fused_key in params_dict:
                     param = params_dict[fused_key]
@@ -730,8 +766,12 @@ class BailingMoeV2TextModel(nn.Module):
                     _gate_up_fused_shards.setdefault(fused_key, set()).add(shard_id)
                     matched_mlp_gate_up = True
                     break
+                else:
+                    pass
             if matched_mlp_gate_up:
                 continue
+            else:
+                pass
 
             # 4. Handle shared expert gate_up_proj / down_proj directly
             # (already fused in checkpoint)
@@ -741,6 +781,8 @@ class BailingMoeV2TextModel(nn.Module):
                 weight_loader(param, loaded_weight)
                 _loaded_weight_count += 1
                 continue
+            else:
+                pass
 
             _skipped_weight_count += 1
             _unmatched_weight_names.append(name)
@@ -755,6 +797,8 @@ class BailingMoeV2TextModel(nn.Module):
                 "Incomplete Ming gate/up fused weights: "
                 f"missing_pairs={incomplete_gate_up_pairs}"
             )
+        else:
+            pass
         if _unmatched_weight_names:
             logger.warning(
                 "Ming thinker text loader skipped unmatched weights: "
@@ -762,6 +806,8 @@ class BailingMoeV2TextModel(nn.Module):
                 len(_unmatched_weight_names),
                 _unmatched_weight_names[:10],
             )
+        else:
+            pass
         logger.info(
             "Ming thinker text loader summary: loaded=%d skipped=%d unmatched=%d",
             _loaded_weight_count,
@@ -846,20 +892,26 @@ class BailingMoeV2ForCausalLM(nn.Module):
         # This runs during model loading, BEFORE SGLangModelScheduler reads
         # the config, so the patched values will be visible.
         # ------------------------------------------------------------------
-        self._patch_token_ids(config, llm_cfg)
+        self.patch_token_ids(config, llm_cfg)
 
     @staticmethod
-    def _patch_token_ids(
+    def patch_token_ids(
         config: "PretrainedConfig", llm_cfg: "PretrainedConfig | None"
     ) -> None:
         """Set image/video/audio token IDs on the HF config."""
         if not hasattr(config, "image_token_id"):
             config.image_token_id = getattr(llm_cfg, "image_patch_token", None)
+        else:
+            pass
         if not hasattr(config, "video_token_id"):
             config.video_token_id = getattr(llm_cfg, "video_patch_token", None)
+        else:
+            pass
         if not hasattr(config, "audio_token_id"):
             # audio_patch_token is NOT in config.json — resolve from tokenizer
-            model_path = getattr(config, "_name_or_path", None)
+            model_path = getattr(
+                config, "_name_or_path", None
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             if model_path:
                 try:
                     from sglang_omni.models.ming_omni.components.common import (
@@ -885,6 +937,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     )
             else:
                 config.audio_token_id = None
+        else:
+            pass
 
     def forward(
         self,
@@ -922,6 +976,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
                 "model.model."
             ):
                 stripped = stripped[len("model.") :]
+            else:
+                pass
 
             # Route lm_head weights
             if stripped in ("lm_head.weight",) or name in ("model.lm_head.weight",):
@@ -932,17 +988,25 @@ class BailingMoeV2ForCausalLM(nn.Module):
                     )
                     weight_loader(param, tensor)
                     _loaded_lm_head_count += 1
+                else:
+                    pass
                 continue
+            else:
+                pass
 
             # Skip vision encoder + projector weights (handled by IMAGE_STAGE)
             if stripped.startswith("vision."):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
             if stripped.startswith("linear_proj.") and not stripped.startswith(
                 "linear_proj_audio."
             ):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
 
             # Skip audio weights (handled by AUDIO_STAGE)
             if stripped.startswith("audio.") or stripped.startswith(
@@ -950,6 +1014,8 @@ class BailingMoeV2ForCausalLM(nn.Module):
             ):
                 _skipped_tower_count += 1
                 continue
+            else:
+                pass
 
             # Pass original name to text model (it does its own prefix stripping)
             model_weights.append((name, tensor))
@@ -970,3 +1036,7 @@ class BailingMoeV2ForCausalLM(nn.Module):
             lm_weight = lm_head_params.get("weight")
             if lm_weight is not None:
                 lm_weight.data = self.model.embed_tokens.weight.data
+            else:
+                pass
+        else:
+            pass

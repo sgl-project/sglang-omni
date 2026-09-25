@@ -77,6 +77,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         # torchaudio.compliance.kaldi.fbank, so we don't precompute them here.
         if window != "hamming":
             raise ValueError(f"Unsupported window: {window!r} (Fun-ASR uses hamming)")
+        else:
+            pass
 
     @property
     def nb_max_frames(self) -> int:
@@ -84,7 +86,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         max_mel = int(round(30.0 * self.sampling_rate / self.hop_length))
         return (max_mel + self.stride_lfr - 1) // self.stride_lfr
 
-    def _extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
+    def extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
         """Compute 80-mel log-mel fbank via Kaldi compliance (matches funasr WavFrontend).
 
         Mirrors ``funasr.frontends.wav_frontend.WavFrontend.forward``:
@@ -95,6 +97,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         wav = np.asarray(waveform, dtype=np.float32)
         if wav.ndim != 1:
             wav = wav.reshape(-1)
+        else:
+            pass
         # WavFrontend.forward: waveform * (1 << 15) — scale to int16 range.
         # Without this, log-mel values are ~21 lower (2*log(32768)) and the
         # encoder/adaptor produce embeddings the LLM cannot decode (→ /sil).
@@ -111,7 +115,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         )  # [T_mel, n_mels]
         return mat, mat.shape[0]
 
-    def _lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
+    def lfr(self, fbank: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Low frame rate stacking (matches funasr ``apply_lfr``).
 
         Stacks ``num_frames_lfr`` frames every ``stride_lfr`` stride: left-pad by repeating
@@ -141,6 +145,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
                 * (t_lfr - last_idx)
             )
             inputs = torch.vstack([inputs] + [inputs[-1:]] * int(num_padding))
+        else:
+            pass
         out = inputs.as_strided(sizes, strides)
         return out.clone().to(torch.float32), t_lfr
 
@@ -171,11 +177,13 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
                 f"FunAsrNanoFeatureExtractor: sampling_rate {sampling_rate} != "
                 f"{self.sampling_rate}; resampling is the caller's responsibility."
             )
+        else:
+            pass
 
         feats, masks = [], []
         for wav in waveforms:
-            fbank, t_mel = self._extract_fbank(wav)
-            lfr_feat, t_lfr = self._lfr(fbank)  # [t_lfr, num_frames_lfr*n_mels=560]
+            fbank, t_mel = self.extract_fbank(wav)
+            lfr_feat, t_lfr = self.lfr(fbank)  # [t_lfr, num_frames_lfr*n_mels=560]
             # Transpose to [num_frames_lfr * n_mels, t_lfr] = [560, t_lfr] (encoder expects [B, T, 560])
             lfr_feat = lfr_feat.t().contiguous()
             feats.append(lfr_feat)
@@ -206,10 +214,16 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         out = {"input_features": batched}
         if return_attention_mask:
             out["attention_mask"] = attention
+        else:
+            pass
         if return_tensors == "pt":
             out["input_features"] = torch.from_numpy(out["input_features"])
             if "attention_mask" in out:
                 out["attention_mask"] = torch.from_numpy(out["attention_mask"])
+            else:
+                pass
+        else:
+            pass
         return out
 
 
@@ -248,7 +262,7 @@ class FunAsrNanoProcessor:
         )
         return cls(feature_extractor=feature_extractor, tokenizer=tokenizer)
 
-    def _get_feat_extract_output_lengths(self, input_lengths):
+    def get_feat_extract_output_lengths(self, input_lengths):
         """LFR frames -> adaptor audio-token count (3x stride-2)."""
         return fun_asr_low_frame_rate_length(input_lengths)
 
@@ -266,6 +280,10 @@ class FunAsrNanoProcessor:
             inputs["input_features"] = audio_inputs["input_features"]
             if "attention_mask" in audio_inputs:
                 inputs["feature_attention_mask"] = audio_inputs["attention_mask"]
+            else:
+                pass
+        else:
+            pass
 
         if text is not None:
             text_inputs = self.tokenizer(
@@ -284,7 +302,7 @@ class FunAsrNanoProcessor:
                     AUDIO_PLACEHOLDER_TOKEN
                 )
                 feat_lengths = inputs["feature_attention_mask"].sum(dim=-1)
-                audio_token_counts = self._get_feat_extract_output_lengths(feat_lengths)
+                audio_token_counts = self.get_feat_extract_output_lengths(feat_lengths)
                 expanded = []
                 for seq_idx in range(input_ids.shape[0]):
                     ids = (
@@ -306,8 +324,12 @@ class FunAsrNanoProcessor:
                 pad_id = self.tokenizer.pad_token_id or 0
                 padded = [s + [pad_id] * (max_len - len(s)) for s in expanded]
                 input_ids = torch.tensor(padded, dtype=torch.long)
+            else:
+                pass
 
             inputs["input_ids"] = input_ids
+        else:
+            pass
         return inputs
 
 
@@ -410,15 +432,21 @@ class FunAsrNanoConfig(PretrainedConfig):
                 "Fun-ASR supports only the current flat HF checkpoint; "
                 "download the latest FunAudioLLM/Fun-ASR-Nano-2512-hf revision."
             )
+        else:
+            pass
         if isinstance(audio_config, dict):
             audio_config = FunAsrNanoEncoderConfig(**audio_config)
         elif audio_config is None:
             audio_config = FunAsrNanoEncoderConfig()
+        else:
+            pass
         self.audio_config = audio_config
         if isinstance(adaptor_config, dict):
             adaptor_config = FunAsrNanoAdaptorConfig(**adaptor_config)
         elif adaptor_config is None:
             adaptor_config = FunAsrNanoAdaptorConfig()
+        else:
+            pass
         self.adaptor_config = adaptor_config
 
         from transformers.models.qwen3.configuration_qwen3 import (
@@ -429,6 +457,8 @@ class FunAsrNanoConfig(PretrainedConfig):
             text_config = HFQwen3Config(**text_config)
         elif text_config is None:
             text_config = HFQwen3Config()
+        else:
+            pass
         self.text_config = text_config
         self.audio_token_id = audio_token_id
         self.initializer_range = initializer_range
@@ -442,6 +472,8 @@ class FunAsrNanoConfig(PretrainedConfig):
         text_config = getattr(self, "text_config", None)
         if text_config is None:
             return self
+        else:
+            pass
         return text_config
 
 

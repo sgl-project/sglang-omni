@@ -195,7 +195,7 @@ def test_streaming_kv_grad_and_missing_triton_use_fallback(monkeypatch):
     assert not kernels.can_fuse_streaming_kv(*inputs[:6])
     with torch.no_grad():
         assert kernels.can_fuse_streaming_kv(*inputs[:6])
-        monkeypatch.setattr(kernels, "_streaming_kv_gather_kernel", None)
+        monkeypatch.setattr(kernels, "streaming_kv_gather_kernel", None)
         assert not kernels.can_fuse_streaming_kv(*inputs[:6])
 
 
@@ -241,7 +241,7 @@ def test_indexed_attention_fusion_and_fallback_match_torch(
                 slots = backing[::2]
             if step == 3:
                 for m in (model, reference):
-                    m._streaming_state.reset_slots(torch.tensor([3], device="cuda"))
+                    m.streaming_state.reset_slots(torch.tensor([3], device="cuda"))
             chunk = torch.randn(3, length, 48, device="cuda", dtype=torch.bfloat16)
             execution = attention_impl.StreamingExecutionContext(slots, valid)
             with monkeypatch.context() as patch:
@@ -260,8 +260,8 @@ def test_indexed_attention_fusion_and_fallback_match_torch(
                 "exec_mask",
             ]:
                 _assert_bytes_equal(
-                    getattr(model._streaming_state, name),
-                    getattr(reference._streaming_state, name),
+                    getattr(model.streaming_state, name),
+                    getattr(reference.streaming_state, name),
                 )
         # note (Zhang Yiyang): Empty chunks retain output and state behavior.
         empty = chunk[:, :0]
@@ -295,8 +295,8 @@ def test_indexed_attention_commits_only_after_output_projection(monkeypatch):
 
     monkeypatch.setattr(model.out_proj, "forward", fail_projection)
     with model.streaming(4):
-        state = model._streaming_state
-        model._ensure_streaming_cache(state, 4, torch.device("cuda"), torch.bfloat16)
+        state = model.streaming_state
+        model.ensure_streaming_cache(state, 4, torch.device("cuda"), torch.bfloat16)
         names = ["offset", "cached_keys", "cached_values", "cached_positions"]
         before = {name: getattr(state, name).clone() for name in names}
         with pytest.raises(RuntimeError, match="projection failed"):

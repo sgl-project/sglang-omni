@@ -10,8 +10,8 @@ import torch
 
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.stages import (
-    _batch_audio_encoder_payloads,
-    _encoder_batch_wait_ms,
+    batch_audio_encoder_payloads,
+    encoder_batch_wait_ms,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 
@@ -40,7 +40,7 @@ def test_encoder_batch_wait_falls_back_to_zero(
     else:
         monkeypatch.setenv("SGLANG_OMNI_ENCODER_BATCH_WAIT_MS", raw)
 
-    assert _encoder_batch_wait_ms() == 0
+    assert encoder_batch_wait_ms() == 0
 
 
 def _payload(request_id: str, cache_key: str, time_steps: int) -> StagePayload:
@@ -67,7 +67,7 @@ def test_audio_encoder_batch_dedups_same_cache_key() -> None:
         _payload("req-a2", "spk-a", 3),
     ]
 
-    out = _batch_audio_encoder_payloads(payloads, model=model, cache=None)
+    out = batch_audio_encoder_payloads(payloads, model=model, cache=None)
 
     assert model.calls == [2]
     assert len(out) == 3
@@ -87,7 +87,7 @@ def test_audio_encoder_batch_without_cache_keys_runs_every_request() -> None:
     for payload in payloads:
         payload.data["encoder_inputs"]["audio_encoder"].pop("cache_key")
 
-    out = _batch_audio_encoder_payloads(payloads, model=model, cache=None)
+    out = batch_audio_encoder_payloads(payloads, model=model, cache=None)
 
     assert model.calls == [2]
     assert len(out) == 2
@@ -98,12 +98,12 @@ def test_audio_encoder_cache_preserves_hits_in_mixed_batch():
 
     model = _FakeAudioEncoder()
     cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
-    first = _batch_audio_encoder_payloads(
+    first = batch_audio_encoder_payloads(
         [_payload("a1", "a", 3), _payload("b1", "b", 5), _payload("a2", "a", 3)],
         model=model,
         cache=cache,
     )
-    second = _batch_audio_encoder_payloads(
+    second = batch_audio_encoder_payloads(
         [_payload("b2", "b", 5), _payload("c", "c", 2), _payload("a3", "a", 3)],
         model=model,
         cache=cache,
@@ -149,7 +149,7 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
 
     model = ReusedOutputEncoder()
     cache = StageOutputCache(max_size=64, max_bytes=4 * 1024**3, cache_device="cpu")
-    first = _batch_audio_encoder_payloads(
+    first = batch_audio_encoder_payloads(
         [_payload("a1", "a", 3)], model=model, cache=cache
     )
     first_encoder_out = Qwen3OmniPipelineState.from_dict(first[0].data).encoder_outs[
@@ -157,8 +157,8 @@ def test_audio_encoder_cache_owns_cuda_output_before_replay():
     ]
     assert isinstance(first_encoder_out, dict)
     expected = {key: value.cpu().clone() for key, value in first_encoder_out.items()}
-    _batch_audio_encoder_payloads([_payload("b", "b", 5)], model=model, cache=cache)
-    again = _batch_audio_encoder_payloads(
+    batch_audio_encoder_payloads([_payload("b", "b", 5)], model=model, cache=cache)
+    again = batch_audio_encoder_payloads(
         [_payload("a2", "a", 3)], model=model, cache=cache
     )
     assert model.calls == 2

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -29,7 +29,7 @@ def is_flash_attn_available() -> bool:
     )
 
 
-def _raise_flash_attn_unavailable() -> None:
+def raise_flash_attn_unavailable() -> None:
     raise ImportError(
         "Ming flash_attn backend requires the legacy flash_attn API "
         "with flash_attn_func and flash_attn_varlen_func. The installed "
@@ -49,6 +49,8 @@ class RMSNorm(nn.Module):
         if self.native_rms_norm:
             if self.weight.dtype in [torch.float16, torch.bfloat16]:
                 x = x.to(self.weight.dtype)
+            else:
+                pass
             x = F.rms_norm(
                 x, normalized_shape=(x.shape[-1],), weight=self.weight, eps=self.eps
             )
@@ -57,6 +59,8 @@ class RMSNorm(nn.Module):
             x = x * torch.rsqrt(variance + self.eps)
             if self.weight.dtype in [torch.float16, torch.bfloat16]:
                 x = x.to(self.weight.dtype)
+            else:
+                pass
             x = x * self.weight
 
         return x
@@ -100,6 +104,8 @@ class Attention(nn.Module):
             raise ImportError(
                 "Attention equires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
+        else:
+            pass
 
         self.dim = dim
         self.heads = heads
@@ -124,7 +130,11 @@ class Attention(nn.Module):
 
         if attn_backend == "flash_attn":
             if not is_flash_attn_available():
-                _raise_flash_attn_unavailable()
+                raise_flash_attn_unavailable()
+            else:
+                pass
+        else:
+            pass
 
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
@@ -154,8 +164,12 @@ class Attention(nn.Module):
         # qk norm
         if self.q_norm is not None:
             query = self.q_norm(query)
+        else:
+            pass
         if self.k_norm is not None:
             key = self.k_norm(key)
+        else:
+            pass
 
         query, key = apply_rotary_embedding(
             query, key, rope, pe_attn_head=self.pe_attn_head
@@ -187,12 +201,16 @@ class Attention(nn.Module):
             if self.attn_mask_enabled and mask is not None:
                 final_output[valid_sample_indices] = x
                 x = final_output
+            else:
+                pass
 
             x = x.transpose(1, 2).reshape(batch_size, -1, self.heads * head_dim)
 
         elif self.attn_backend == "flash_attn":
             if not is_flash_attn_available():
-                _raise_flash_attn_unavailable()
+                raise_flash_attn_unavailable()
+            else:
+                pass
             query = query.transpose(1, 2)  # [b, h, n, d] -> [b, n, h, d]
             key = key.transpose(1, 2)
             value = value.transpose(1, 2)
@@ -216,6 +234,8 @@ class Attention(nn.Module):
             else:
                 x = flash_attn_func(query, key, value, dropout_p=0.0, causal=False)
                 x = x.reshape(batch_size, -1, self.heads * head_dim)
+        else:
+            pass
 
         x = x.to(query.dtype)
 
@@ -227,6 +247,8 @@ class Attention(nn.Module):
         if mask is not None:
             mask = mask.unsqueeze(-1)
             x = x.masked_fill(~mask, 0.0)
+        else:
+            pass
 
         return x
 
@@ -246,10 +268,11 @@ class DiTBlock(nn.Module):
         pe_attn_head=None,
         attn_backend="flash_attn",  # "torch" or "flash_attn"
         attn_mask_enabled=True,
+        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
         **kwargs,
     ):
         super().__init__()
-        self.norm1 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm1 = norm_layer(hidden_size, 1e-6)
         self.attn = Attention(
             dim=hidden_size,
             heads=num_heads,
@@ -260,7 +283,7 @@ class DiTBlock(nn.Module):
             attn_backend=attn_backend,
             attn_mask_enabled=attn_mask_enabled,
         )
-        self.norm2 = RMSNorm(hidden_size, eps=1e-6)
+        self.norm2 = norm_layer(hidden_size, 1e-6)
         self.mlp = FeedForward(
             dim=hidden_size, mult=mlp_ratio, dropout=dropout, approximate="tanh"
         )
@@ -276,9 +299,14 @@ class FinalLayer(nn.Module):
     The final layer of DiT.
     """
 
-    def __init__(self, hidden_size, out_channels):
+    def __init__(
+        self,
+        hidden_size,
+        out_channels,
+        norm_layer: Callable[[int, float], nn.Module] = RMSNorm,
+    ):
         super().__init__()
-        self.norm_final = RMSNorm(hidden_size, eps=1e-6)
+        self.norm_final = norm_layer(hidden_size, 1e-6)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
 
     def forward(self, x):

@@ -19,14 +19,14 @@ else:
     tl = None
 
 
-def _has_triton_runtime() -> bool:
+def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
 
 
-if _has_triton_runtime():
+if has_triton_runtime():
 
     @triton.jit
-    def _gather_codec_embedding_and_add_kernel(
+    def gather_codec_embedding_and_add_kernel(
         token_ids,
         embedding_weight,
         gathered,
@@ -54,10 +54,10 @@ if _has_triton_runtime():
         tl.store(accumulated_offsets, current + values, mask=mask)
 
 else:
-    _gather_codec_embedding_and_add_kernel = None
+    gather_codec_embedding_and_add_kernel = None
 
 
-def _contiguous_storage_ranges_overlap(
+def contiguous_storage_ranges_overlap(
     first: torch.Tensor, second: torch.Tensor
 ) -> bool:
     first_start = first.data_ptr()
@@ -78,8 +78,10 @@ def gather_codec_embedding_and_add(
     Return ``False`` without writes when the caller must use the eager path.
     """
 
-    if _gather_codec_embedding_and_add_kernel is None:
+    if gather_codec_embedding_and_add_kernel is None:
         return False
+    else:
+        pass
     if not (
         token_ids.is_cuda
         and embedding_weight.is_cuda
@@ -87,26 +89,42 @@ def gather_codec_embedding_and_add(
         and accumulated.is_cuda
     ):
         return False
+    else:
+        pass
     if token_ids.ndim != 1 or embedding_weight.ndim != 2:
         return False
+    else:
+        pass
     if gathered.ndim != 2 or accumulated.ndim != 2:
         return False
+    else:
+        pass
     batch_size = token_ids.shape[0]
     hidden_size = embedding_weight.shape[1]
     if batch_size == 0 or hidden_size == 0:
         return False
+    else:
+        pass
     if gathered.shape != (batch_size, hidden_size):
         return False
+    else:
+        pass
     if accumulated.shape != (batch_size, hidden_size):
         return False
+    else:
+        pass
     if token_ids.dtype not in (torch.int32, torch.int64):
         return False
+    else:
+        pass
     if (
         embedding_weight.dtype != torch.bfloat16
         or gathered.dtype != torch.bfloat16
         or accumulated.dtype != torch.bfloat16
     ):
         return False
+    else:
+        pass
     if not (
         token_ids.device
         == embedding_weight.device
@@ -114,6 +132,8 @@ def gather_codec_embedding_and_add(
         == accumulated.device
     ):
         return False
+    else:
+        pass
     if (
         not token_ids.is_contiguous()
         or not embedding_weight.is_contiguous()
@@ -121,6 +141,8 @@ def gather_codec_embedding_and_add(
         or not accumulated.is_contiguous()
     ):
         return False
+    else:
+        pass
     if (
         token_ids.stride(0) != 1
         or embedding_weight.stride(1) != 1
@@ -128,16 +150,20 @@ def gather_codec_embedding_and_add(
         or accumulated.stride(1) != 1
     ):
         return False
+    else:
+        pass
     if (
-        _contiguous_storage_ranges_overlap(gathered, accumulated)
-        or _contiguous_storage_ranges_overlap(gathered, embedding_weight)
-        or _contiguous_storage_ranges_overlap(accumulated, embedding_weight)
+        contiguous_storage_ranges_overlap(gathered, accumulated)
+        or contiguous_storage_ranges_overlap(gathered, embedding_weight)
+        or contiguous_storage_ranges_overlap(accumulated, embedding_weight)
     ):
         return False
+    else:
+        pass
 
     block_size = 256
     grid = (batch_size, triton.cdiv(hidden_size, block_size))
-    _gather_codec_embedding_and_add_kernel[grid](
+    gather_codec_embedding_and_add_kernel[grid](
         token_ids,
         embedding_weight,
         gathered,

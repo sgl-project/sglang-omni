@@ -37,9 +37,11 @@ if TYPE_CHECKING:
         FunAsrNanoForConditionalGeneration,
     )
     from sglang_omni.proto import StagePayload
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
     from sglang_omni.scheduling.types import RequestOutput
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             sm_version = get_visible_gpu_sm_version(self.gpu_id)
             if sm_version is not None and sm_version >= 100:
                 defaults["mm_attention_backend"] = "triton_attn"
+            else:
+                pass
         return defaults
 
     def setup_model_resources(
@@ -166,6 +170,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                     "enable_encoder_torch_compile; the encoder runs from "
                     "captured CUDA graphs (eager capture), not dynamo"
                 )
+            else:
+                pass
             from sglang_omni.models.fun_asr.encoder_cuda_graph import (
                 FunASREncoderCudaGraphRunner,
             )
@@ -181,12 +187,14 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                 self.pre_lm_max_batch_size,
             )
         elif self.enable_encoder_torch_compile:
-            from sglang_omni.models.fun_asr.stages import _compile_fun_asr_audio_encoder
+            from sglang_omni.models.fun_asr.stages import compile_fun_asr_audio_encoder
 
-            _compile_fun_asr_audio_encoder(
+            compile_fun_asr_audio_encoder(
                 model,
                 warmup_inference_mode=self.enable_pre_lm_encoder,
             )
+        else:
+            pass
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
 
     def setup_runtime_resources(
@@ -196,6 +204,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
     ) -> None:
         if not self.enable_pre_lm_encoder:
             return
+        else:
+            pass
         self.audio_encoder_service = FunASRPreLMEncoderService(
             model,
             cache_namespace=build_cache_namespace(
@@ -235,6 +245,8 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
+        else:
+            pass
 
     def extra_scheduler_kwargs(
         self,

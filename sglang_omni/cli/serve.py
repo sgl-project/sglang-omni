@@ -35,7 +35,7 @@ def launch_server(*args: object, **kwargs: object) -> object:
     return _launch_server(*args, **kwargs)
 
 
-def _validate_colocate_cli_request(
+def validate_colocate_cli_request(
     *,
     colocate: bool,
     config: str | None,
@@ -43,26 +43,34 @@ def _validate_colocate_cli_request(
 ) -> None:
     if not colocate:
         return
+    else:
+        pass
     if text_only:
         raise typer.BadParameter("--colocate cannot be combined with --text-only")
+    else:
+        pass
     if not config:
         raise typer.BadParameter("--colocate requires --config")
+    else:
+        pass
 
 
-def _validate_colocate_config(pipeline_config: PipelineConfig) -> None:
+def validate_colocate_config(pipeline_config: PipelineConfig) -> None:
     if type(pipeline_config).__name__ != _QWEN_COLOCATED_CONFIG_CLASS:
         raise typer.BadParameter(
             f"--colocate requires a {_QWEN_COLOCATED_CONFIG_CLASS} config file"
         )
+    else:
+        pass
 
 
-def _should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
+def should_print_merged_config(*, colocate: bool, log_level: str) -> bool:
     """Return whether to print the full resolved pipeline config."""
 
     return colocate or log_level.lower() == "debug"
 
 
-def _print_merged_config(pipeline_config: PipelineConfig) -> None:
+def print_merged_config(pipeline_config: PipelineConfig) -> None:
     print("=" * 20, "Merged Configuration", "=" * 20)
     print(
         yaml.dump(
@@ -75,16 +83,18 @@ def _print_merged_config(pipeline_config: PipelineConfig) -> None:
     print("=" * 50)
 
 
-def _validate_allowed_local_media_path(value: str | None) -> str | None:
+def validate_allowed_local_media_path(value: str | None) -> str | None:
     if value is None:
         return None
+    else:
+        pass
     try:
         return str(resolve_allowed_local_media_path(value))
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
+def normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
     domains: list[str] = []
     for value in values or []:
         domains.extend(
@@ -93,13 +103,15 @@ def _normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
     return domains
 
 
-def _validate_tts_batch_max_items(value: int) -> int:
+def validate_tts_batch_max_items(value: int) -> int:
     if value < 1:
         raise typer.BadParameter("tts batch max items must be greater than 0")
+    else:
+        pass
     return value
 
 
-def _engine_stage_names(pipeline_config: PipelineConfig) -> list[str]:
+def engine_stage_names(pipeline_config: PipelineConfig) -> list[str]:
     config_cls = type(pipeline_config)
     return [
         stage.name
@@ -130,12 +142,16 @@ def patches_from_broadcast_flags(
 
     if mem_fraction_static is None:
         return patches
-    engine_stages = _engine_stage_names(pipeline_config)
+    else:
+        pass
+    engine_stages = engine_stage_names(pipeline_config)
     if not engine_stages:
         raise typer.BadParameter(
             "--mem-fraction-static requires a pipeline with at least one "
             "SGLang engine stage"
         )
+    else:
+        pass
     for stage_name in engine_stages:
         patches.add(
             ConfigPatch.create(
@@ -149,16 +165,20 @@ def patches_from_broadcast_flags(
     return patches
 
 
-def _stage_tp_gpu_ids(stage) -> list[int]:
+def stage_tp_gpu_ids(stage) -> list[int]:
     gpu = stage.gpu
     if gpu is None:
         return []
+    else:
+        pass
     if isinstance(gpu, int):
         return [gpu]
+    else:
+        pass
     return [int(g) for g in gpu]
 
 
-def _gate_custom_all_reduce_on_topology(
+def gate_custom_all_reduce_on_topology(
     stage: object,
     updates: dict[str, object],
     *,
@@ -176,6 +196,8 @@ def _gate_custom_all_reduce_on_topology(
     """
     if updates.get("disable_custom_all_reduce") is not True or should_disable:
         return updates
+    else:
+        pass
     refined = dict(updates)
     refined["disable_custom_all_reduce"] = False
     logger.info(
@@ -207,22 +229,30 @@ def tensor_parallel_engine_writes(
         )
         if not updates:
             continue
+        else:
+            pass
         if stage.name in topology_gated_custom_ar_stages:
-            gpu_ids = tuple(_stage_tp_gpu_ids(stage))
+            gpu_ids = tuple(stage_tp_gpu_ids(stage))
             if gpu_ids not in topology_gated_custom_ar_cache:
                 topology_gated_custom_ar_cache[gpu_ids] = (
                     should_disable_custom_all_reduce_for_gpus(gpu_ids)
                 )
-            updates = _gate_custom_all_reduce_on_topology(
+            else:
+                pass
+            updates = gate_custom_all_reduce_on_topology(
                 stage,
                 updates,
                 gpu_ids=gpu_ids,
                 should_disable=topology_gated_custom_ar_cache[gpu_ids],
             )
+        else:
+            pass
         already_set = stage.engine.overrides() if stage.engine is not None else {}
         for key, value in updates.items():
             if key in already_set:
                 continue
+            else:
+                pass
             writes[f"stages.{stage.name}.engine.{key}"] = value
     return writes
 
@@ -245,6 +275,8 @@ def apply_tensor_parallel_engine_overrides(
     writes = tensor_parallel_engine_writes(pipeline_config)
     if not writes:
         return pipeline_config
+    else:
+        pass
     data = pipeline_config.model_dump()
     for path_text, value in writes.items():
         ConfigPath.parse(path_text, config_cls).write(data, value)
@@ -356,7 +388,7 @@ def serve(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    _validate_colocate_cli_request(
+    validate_colocate_cli_request(
         colocate=colocate,
         config=config,
         text_only=text_only,
@@ -374,10 +406,14 @@ def serve(
     elif text_only:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
+        else:
+            pass
         config_manager = ConfigManager.from_model_path(model_path, variant="text")
     else:
         if model_path is None:
             raise typer.BadParameter("--model-path is required unless --config is set")
+        else:
+            pass
         config_manager = ConfigManager.from_model_path(model_path)
 
     # we use ctx to capture the arguments that are used to modify the configuration on the fly
@@ -403,6 +439,8 @@ def serve(
         flag_patches = flag_patches.merge(
             patches_from_model_path_flag(model_path, config_manager.config)
         )
+    else:
+        pass
     try:
         merged_config = config_manager.merge_config(
             extra_args,
@@ -415,11 +453,15 @@ def serve(
         # under the merge internals.
         raise typer.BadParameter(str(exc)) from exc
     if colocate:
-        _validate_colocate_config(merged_config)
+        validate_colocate_config(merged_config)
+    else:
+        pass
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 
-    if _should_print_merged_config(colocate=colocate, log_level=log_level):
-        _print_merged_config(merged_config)
+    if should_print_merged_config(colocate=colocate, log_level=log_level):
+        print_merged_config(merged_config)
+    else:
+        pass
 
     launch_server(
         merged_config,
@@ -428,9 +470,9 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
-        allowed_local_media_path=_validate_allowed_local_media_path(
+        allowed_local_media_path=validate_allowed_local_media_path(
             allowed_local_media_path
         ),
-        allowed_media_domains=_normalize_allowed_media_domains(allowed_media_domain),
-        tts_batch_max_items=_validate_tts_batch_max_items(tts_batch_max_items),
+        allowed_media_domains=normalize_allowed_media_domains(allowed_media_domain),
+        tts_batch_max_items=validate_tts_batch_max_items(tts_batch_max_items),
     )

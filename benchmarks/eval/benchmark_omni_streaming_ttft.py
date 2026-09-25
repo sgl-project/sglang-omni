@@ -36,18 +36,31 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.benchmarker.conditions import (  # noqa: E402
+    add_fingerprint_argument,
+    add_talker_sampling_arguments,
+    fingerprint_fields,
+)
 from benchmarks.benchmarker.utils import wait_for_service  # noqa: E402
+from benchmarks.tasks.tts import (  # noqa: E402
+    TalkerSamplingParams,
+    talker_sampling_params,
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+DEFAULT_STREAMING_TTFT_SEED = 1000
+MAX_COMPLETION_TOKENS = 256
 
 PROMPTS: dict[str, str] = {
     "short": "Please reply: Hello, how are you today?",
@@ -75,8 +88,64 @@ class RunResult:
 class Summary:
     label: str
     base_url: str
+    seed: int
+    talker_temperature: float | None
+    talker_top_p: float | None
+    talker_top_k: int | None
+    talker_repetition_penalty: float | None
     per_run: list[RunResult] = field(default_factory=list)
     aggregate: dict[str, dict[str, float]] = field(default_factory=dict)
+
+
+class StreamingTtftMessage(TypedDict):
+    role: str
+    content: str
+
+
+class StreamingTtftAudio(TypedDict):
+    voice: str
+    format: str
+
+
+class StreamingTtftMetadata(TypedDict):
+    client_label: str
+
+
+class StreamingTtftPayload(TypedDict, total=False):
+    model: str
+    messages: list[StreamingTtftMessage]
+    modalities: list[str]
+    audio: StreamingTtftAudio
+    stream: bool
+    seed: int
+    max_tokens: int
+    metadata: StreamingTtftMetadata
+    talker_temperature: float
+    talker_top_p: float
+    talker_top_k: int
+    talker_repetition_penalty: float
+
+
+def streaming_ttft_payload(
+    *,
+    model: str,
+    prompt: str,
+    seed: int,
+    request_id_hint: str,
+    talker_params: TalkerSamplingParams,
+) -> StreamingTtftPayload:
+    payload: StreamingTtftPayload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["text", "audio"],
+        "audio": {"voice": "alloy", "format": "wav"},
+        "stream": True,
+        "seed": seed,
+        "max_tokens": MAX_COMPLETION_TOKENS,
+        "metadata": {"client_label": request_id_hint},
+    }
+    payload.update(talker_params)
+    return payload
 
 
 async def _measure_one(
@@ -88,22 +157,17 @@ async def _measure_one(
     request_id_hint: str,
     seed: int,
     timeout_s: float,
+    talker_params: TalkerSamplingParams,
 ) -> tuple[float, float, int, int]:
-    """Stream a chat completion with modalities=[text, audio] and time the
-    first audio delta. The talker_ar pipeline owns the audio output; this is
-    the metric ``partial_start_min_chunks`` is designed to move.
-    """
+    """Time the first audio delta of one streaming chat completion."""
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["text", "audio"],
-        "audio": {"voice": "alloy", "format": "wav"},
-        "stream": True,
-        "seed": seed,
-        "max_tokens": 256,
-        "metadata": {"client_label": request_id_hint},
-    }
+    payload = streaming_ttft_payload(
+        model=model,
+        prompt=prompt,
+        seed=seed,
+        request_id_hint=request_id_hint,
+        talker_params=talker_params,
+    )
 
     start = time.perf_counter()
     ttft: float | None = None
@@ -141,13 +205,25 @@ async def _measure_one(
 
 
 async def _run(args: argparse.Namespace) -> Summary:
-    summary = Summary(label=args.label, base_url=args.base_url)
+    talker_params = talker_sampling_params(
+        talker_temperature=args.talker_temperature,
+        talker_top_p=args.talker_top_p,
+        talker_top_k=args.talker_top_k,
+        talker_repetition_penalty=args.talker_repetition_penalty,
+    )
+    summary = Summary(
+        label=args.label,
+        base_url=args.base_url,
+        seed=args.seed,
+        talker_temperature=args.talker_temperature,
+        talker_top_p=args.talker_top_p,
+        talker_top_k=args.talker_top_k,
+        talker_repetition_penalty=args.talker_repetition_penalty,
+    )
     async with httpx.AsyncClient(http2=False) as client:
         for prompt_id, prompt_text in PROMPTS.items():
-            # Discard warmup runs from aggregates but keep their raw timings
-            # for diagnostic context.
+            # Warmup replays the measured seed so timed repeats are not cold.
             for warm in range(args.warmup):
-                seed = 9000 + warm
                 hint = f"{args.label}-{prompt_id}-warmup{warm}"
                 ttft, total, audio_chunks, status_code = await _measure_one(
                     client,
@@ -155,25 +231,19 @@ async def _run(args: argparse.Namespace) -> Summary:
                     args.model,
                     prompt_text,
                     request_id_hint=hint,
-                    seed=seed,
+                    seed=args.seed,
                     timeout_s=args.timeout_s,
+                    talker_params=talker_params,
                 )
                 logger.info(
-                    "[%s] WARMUP prompt=%s repeat=%d ttft=%.3fs total=%.3fs "
-                    "audio_chunks=%d status_code=%d",
-                    args.label,
-                    prompt_id,
-                    warm,
-                    ttft,
-                    total,
-                    audio_chunks,
-                    status_code,
+                    f"[{args.label}] WARMUP prompt={prompt_id} repeat={warm} "
+                    f"ttft={ttft:.3f}s total={total:.3f}s "
+                    f"audio_chunks={audio_chunks} status_code={status_code}"
                 )
 
             ttfts: list[float] = []
             totals: list[float] = []
             for repeat in range(args.repeats):
-                seed = 1000 + repeat
                 hint = f"{args.label}-{prompt_id}-{repeat}"
                 ttft, total, audio_chunks, status_code = await _measure_one(
                     client,
@@ -181,8 +251,9 @@ async def _run(args: argparse.Namespace) -> Summary:
                     args.model,
                     prompt_text,
                     request_id_hint=hint,
-                    seed=seed,
+                    seed=args.seed,
                     timeout_s=args.timeout_s,
+                    talker_params=talker_params,
                 )
                 summary.per_run.append(
                     RunResult(
@@ -198,13 +269,8 @@ async def _run(args: argparse.Namespace) -> Summary:
                 ttfts.append(ttft)
                 totals.append(total)
                 logger.info(
-                    "[%s] prompt=%s repeat=%d ttft=%.3fs total=%.3fs audio_chunks=%d",
-                    args.label,
-                    prompt_id,
-                    repeat,
-                    ttft,
-                    total,
-                    audio_chunks,
+                    f"[{args.label}] prompt={prompt_id} repeat={repeat} "
+                    f"ttft={ttft:.3f}s total={total:.3f}s audio_chunks={audio_chunks}"
                 )
 
             summary.aggregate[prompt_id] = {
@@ -256,8 +322,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_STREAMING_TTFT_SEED,
+        help="Sampler seed used for warmup and every measured repeat.",
+    )
+    add_talker_sampling_arguments(parser)
+    add_fingerprint_argument(parser)
     parser.add_argument("--timeout-s", type=float, default=300.0)
     args = parser.parse_args(argv)
+    if args.repeats < 1:
+        parser.error("--repeats must be positive")
+    if args.warmup < 0:
+        parser.error("--warmup must be non-negative")
     if args.output is None:
         args.output = _default_output_path(args.label)
     elif args.output.exists():
@@ -267,19 +345,21 @@ def main(argv: list[str] | None = None) -> int:
     summary = asyncio.run(_run(args))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(
-            {
-                "label": summary.label,
-                "base_url": summary.base_url,
-                "per_run": [asdict(r) for r in summary.per_run],
-                "aggregate": summary.aggregate,
-            },
-            indent=2,
-        )
-    )
+    document = {
+        "label": summary.label,
+        "base_url": summary.base_url,
+        "seed": summary.seed,
+        "talker_temperature": summary.talker_temperature,
+        "talker_top_p": summary.talker_top_p,
+        "talker_top_k": summary.talker_top_k,
+        "talker_repetition_penalty": summary.talker_repetition_penalty,
+        "per_run": [asdict(run) for run in summary.per_run],
+        "aggregate": summary.aggregate,
+        **fingerprint_fields(args.fingerprint, args.base_url),
+    }
+    args.output.write_text(json.dumps(document, indent=2))
     _print_summary(summary)
-    logger.info("wrote %s", args.output)
+    logger.info(f"wrote {args.output}")
     return 0
 
 

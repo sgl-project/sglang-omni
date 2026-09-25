@@ -7,6 +7,8 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 if TYPE_CHECKING:
     import torch
+else:
+    pass
 
 INPUT_SAMPLE_RATE = 16_000
 OUTPUT_SAMPLE_RATE = 22_050

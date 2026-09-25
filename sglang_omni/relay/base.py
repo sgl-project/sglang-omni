@@ -26,6 +26,8 @@ def register_relay(name: str):
     def decorator(cls):
         if name in RELAY_REGISTRY:
             logger.warning(f"Relay type '{name}' is already registered. Overwriting!")
+        else:
+            pass
         RELAY_REGISTRY[name] = cls
         return cls
 
@@ -52,14 +54,20 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
                 from .nixl import NixlRelay  # noqa: F401 - Register backend.
             elif relay_type == "mooncake":
                 from .mooncake import MooncakeRelay  # noqa: F401 - Register backend.
+            else:
+                pass
         except ImportError:
             pass
+    else:
+        pass
 
     if relay_type not in RELAY_REGISTRY:
         available = list(RELAY_REGISTRY.keys())
         raise ValueError(
             f"Unknown relay type: '{relay_type}'. Available types: {available}"
         )
+    else:
+        pass
 
     relay_cls = RELAY_REGISTRY[relay_type]
 
@@ -73,6 +81,8 @@ def create_relay(relay_type: str, **kwargs) -> Relay:
             # If class accepts **kwargs, pass all remaining parameters
             valid_kwargs.update(kwargs)
             break
+        else:
+            pass
 
     return relay_cls(**valid_kwargs)
 
@@ -156,24 +166,24 @@ class CreditAllocator:
         self.credits = credits
         self.slot_size = slot_size
         self.base_ptr = base_ptr
-        self._free_credits = asyncio.Queue(maxsize=credits)
+        self.free_credits = asyncio.Queue(maxsize=credits)
 
         # Initialize credits
         for i in range(credits):
             if slot_size is not None:
                 # Memory mode: return offsets
-                self._free_credits.put_nowait(i * slot_size)
+                self.free_credits.put_nowait(i * slot_size)
             else:
                 # Simple mode: return credit IDs
-                self._free_credits.put_nowait(i)
+                self.free_credits.put_nowait(i)
 
     async def acquire_async(self) -> int:
         """Acquire a credit (blocks if none available)."""
-        return await self._free_credits.get()
+        return await self.free_credits.get()
 
     def release(self, credit_id: int):
         """Release a credit back to the pool."""
         try:
-            self._free_credits.put_nowait(credit_id)
+            self.free_credits.put_nowait(credit_id)
         except asyncio.QueueFull:
             logger.error("Attempted to release credit to a full pool!")

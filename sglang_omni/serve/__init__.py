@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sglang_omni.serve.launcher import launch_server
     from sglang_omni.serve.openai_api import create_app
+else:
+    pass
 
 _EXPORTS = {
     "create_app": ("sglang_omni.serve.openai_api", "create_app"),

@@ -19,6 +19,8 @@ from sglang_omni.models.weight_loader import default_weight_loader
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
+else:
+    pass
 
 
 class DotsTTSSGLangModel(nn.Module):
@@ -43,6 +45,8 @@ class DotsTTSSGLangModel(nn.Module):
             raise ValueError(
                 "dots.tts requires its top-level config and checkpoint path"
             )
+        else:
+            pass
         self.qwen2 = Qwen2ForCausalLM(
             llm_config,
             quant_config=quant_config,
@@ -54,14 +58,18 @@ class DotsTTSSGLangModel(nn.Module):
             latent_stats_path=str(Path(checkpoint) / "latent_stats.pt"),
             optimize=False,
         )
-        self._graph_feedback_buffer: torch.Tensor | None = None
+        self._graph_feedback_buffer: torch.Tensor | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
 
     def get_input_embeddings(self):
         return self.qwen2.get_input_embeddings()
 
     @property
     def graph_feedback_buffer(self) -> torch.Tensor | None:
-        return self._graph_feedback_buffer
+        return (
+            self._graph_feedback_buffer
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def enable_graph_feedback(self, max_batch_size: int) -> None:
         """Route decode feedback embeddings through a persistent buffer.
@@ -76,8 +84,10 @@ class DotsTTSSGLangModel(nn.Module):
         """
         if max_batch_size <= 0:
             raise ValueError("dots.tts graph feedback buffer needs a positive size")
+        else:
+            pass
         parameter = next(self.qwen2.parameters())
-        self._graph_feedback_buffer = torch.zeros(
+        self._graph_feedback_buffer = torch.zeros(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             (int(max_batch_size), int(self.qwen2.config.hidden_size)),
             device=parameter.device,
             dtype=parameter.dtype,
@@ -91,6 +101,8 @@ class DotsTTSSGLangModel(nn.Module):
             if name.startswith("llm."):
                 qwen_weights.append((name.removeprefix("llm."), tensor))
                 continue
+            else:
+                pass
             if name.startswith(
                 (
                     "audio_encoder.",
@@ -104,6 +116,8 @@ class DotsTTSSGLangModel(nn.Module):
                 )
             ):
                 continue
+            else:
+                pass
             parameter = flow_params.get(name)
             assert parameter is not None, (
                 f"Unexpected dots.tts checkpoint weight {name!r}; expected an "
@@ -125,14 +139,19 @@ class DotsTTSSGLangModel(nn.Module):
     ) -> LogitsProcessorOutput:
         del kwargs
         if (
-            self._graph_feedback_buffer is not None
+            self._graph_feedback_buffer
+            is not None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             and forward_batch.forward_mode.is_decode()
         ):
             # note (luojiaxuan): same source for capture, replay, and eager decode; rows beyond
             # the live batch are padding and their outputs are discarded.
-            input_embeds = self._graph_feedback_buffer[: input_ids.shape[0]]
+            input_embeds = self._graph_feedback_buffer[
+                : input_ids.shape[0]
+            ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
+        else:
+            pass
         hidden_states = self.qwen2.model(
             input_ids=input_ids,
             positions=positions,

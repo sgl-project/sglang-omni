@@ -37,7 +37,7 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
     )
     runner = object.__new__(Qwen3ASRTorchMpsModelRunner)
     runner.device = torch.device(device)
-    runner._past_key_values = {}
+    runner.past_key_values = {}
     features = torch.randn(2, 8, device=device)
     runner.model = SimpleNamespace(
         language_model=model,
@@ -45,7 +45,7 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
             features.unsqueeze(0) if batched_audio else features
         ),
     )
-    runner._next_token_result = lambda tokens: tokens
+    runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
@@ -54,7 +54,7 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
     first = runner.custom_prefill_forward(
         None, SimpleNamespace(input_ids=torch.tensor([1, 999, 999, 2])), requests
     )
-    assert "one" in runner._past_key_values
+    assert "one" in runner.past_key_values
     second = runner.custom_decode_forward(
         None, SimpleNamespace(input_ids=first), requests
     )
@@ -67,11 +67,11 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
         expected = model(inputs_embeds=embeds).logits[:, -1].argmax(dim=-1)
     assert torch.equal(second, expected)
     runner.on_request_finished("one", None)
-    assert not runner._past_key_values
-    runner._past_key_values["one"] = object()
+    assert not runner.past_key_values
+    runner.past_key_values["one"] = object()
     runner.abort_request("one")
     runner.abort_request("one")
-    assert not runner._past_key_values
+    assert not runner.past_key_values
     with pytest.raises(RuntimeError, match="no cache"):
         runner.custom_decode_forward(None, SimpleNamespace(input_ids=first), requests)
 
@@ -86,7 +86,7 @@ def test_shared_runner_retains_model_specific_errors():
     with pytest.raises(
         RuntimeError, match="Other ASR Torch MPS.*max_running_requests=1"
     ):
-        runner._one_request([])
+        runner.one_request([])
     req = SimpleNamespace(multimodal_inputs=None)
     request = SimpleNamespace(data=SimpleNamespace(req=req))
     with pytest.raises(
@@ -152,11 +152,11 @@ def test_audio_tower_runs_before_token_embedding():
 
     runner = object.__new__(Qwen3ASRTorchMpsModelRunner)
     runner.device = torch.device("cpu")
-    runner._past_key_values = {}
+    runner.past_key_values = {}
     runner.model = SimpleNamespace(
         language_model=model, get_audio_feature=get_audio_feature
     )
-    runner._next_token_result = lambda tokens: tokens
+    runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
         multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)

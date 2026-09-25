@@ -17,14 +17,18 @@ import transformers
 _QWEN3_ROPE_THETA = 1_000_000
 
 
-def _build_text_config(raw: object) -> transformers.PretrainedConfig:
+def build_text_config(raw: object) -> transformers.PretrainedConfig:
     """Realise a text-backbone sub-config into a concrete ``PretrainedConfig``."""
     if isinstance(raw, transformers.PretrainedConfig):
         return raw
+    else:
+        pass
     cfg = dict(raw or {})
     model_type = cfg.get("model_type", "qwen3")
     if model_type == "qwen3" and cfg.get("rope_theta") is None:
         cfg["rope_theta"] = _QWEN3_ROPE_THETA
+    else:
+        pass
     try:
         cfg_cls = transformers.CONFIG_MAPPING[model_type]
     except KeyError as exc:
@@ -58,7 +62,7 @@ class HiggsMultimodalQwen3Config(transformers.PretrainedConfig):
         self.audio_token_id = audio_token_id
         self.mel_per_sample = mel_per_sample
         self.audio_encoder_config = audio_encoder_config
-        self.text_config = _build_text_config(text_config)
+        self.text_config = build_text_config(text_config)
         super().__init__(**kwargs)
 
     def get_text_config(self, decoder: bool = False) -> transformers.PretrainedConfig:

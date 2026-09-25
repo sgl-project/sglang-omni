@@ -20,7 +20,7 @@ from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 
 
@@ -139,7 +139,7 @@ async def _make_relay_chunk(
         to_stage=to_stage,
     )
     pending_ops = [op]
-    data_ref = await stage_io._with_stream_metadata(
+    data_ref = await stage_io.with_stream_metadata(
         relay,
         data_ref,
         metadata,
@@ -191,7 +191,7 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
             scheduler=scheduler,
             is_terminal=True,
         )
-        stage._active_requests.add("req")
+        stage.active_requests.add("req")
         scheduler.outbox.put(
             OutgoingMessage(
                 request_id="req",
@@ -207,7 +207,7 @@ def test_terminal_scheduler_stream_routes_to_coordinator() -> None:
             )
         )
 
-        await stage._drain_outbox_external()
+        await stage.drain_outbox_external()
 
         assert len(control_plane.streams) == 2
         msg = control_plane.streams[0]
@@ -241,7 +241,7 @@ def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
             scheduler=scheduler,
             is_terminal=True,
         )
-        stage._active_requests.add("req-live")
+        stage.active_requests.add("req-live")
 
         messages = [
             OutgoingMessage("req-live", "stream", {"sequence": 0}),
@@ -252,7 +252,7 @@ def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
         for message in messages:
             scheduler.outbox.put(message)
 
-        await stage._drain_outbox_external()
+        await stage.drain_outbox_external()
 
         assert [
             (msg.chunk_id, msg.chunk["sequence"]) for msg in control_plane.streams
@@ -261,7 +261,7 @@ def test_outbox_drain_reuses_one_executor_wakeup_for_ready_messages(
         completion = control_plane.completions[0]
         assert (completion.success, completion.result) == (True, {"answer": "done"})
         assert scheduler.outbox.empty()
-        assert not stage._active_requests
+        assert not stage.active_requests
 
         # Before this optimization each message required an executor round trip.
         run_in_executor.assert_awaited_once()
@@ -295,7 +295,7 @@ def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
             scheduler=scheduler,
             is_terminal=True,
         )
-        stage._active_requests.add("req-live")
+        stage.active_requests.add("req-live")
 
         for sequence in range(1, 66):
             scheduler.outbox.put(
@@ -306,7 +306,7 @@ def test_outbox_drain_yields_after_ready_message_batch(monkeypatch) -> None:
             execution_order.append("competing-coroutine")
 
         competing_task = asyncio.create_task(_competing_ready_coroutine())
-        await stage._drain_outbox_external()
+        await stage.drain_outbox_external()
         await competing_task
 
         assert execution_order == [
@@ -345,7 +345,7 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
             relay=relay,
             scheduler=scheduler,
         )
-        stage._active_requests.add("req")
+        stage.active_requests.add("req")
         scheduler.outbox.put(
             OutgoingMessage(
                 request_id="req",
@@ -356,7 +356,7 @@ def test_explicit_scheduler_stream_target_keeps_stage_to_stage_routing(
             )
         )
 
-        await stage._drain_outbox_external()
+        await stage.drain_outbox_external()
 
         assert control_plane.streams == []
         assert len(relay.puts) == 1
@@ -391,8 +391,8 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline(
             relay=relay,
             scheduler=scheduler,
         )
-        stage._active_requests.add("req")
-        stage._replica_bindings["req"] = {"decode": 1}
+        stage.active_requests.add("req")
+        stage.replica_bindings["req"] = {"decode": 1}
         scheduler.outbox.put(
             OutgoingMessage(
                 request_id="req",
@@ -403,7 +403,7 @@ def test_small_cpu_scheduler_stream_chunk_rides_inline(
             )
         )
 
-        await stage._drain_outbox_external()
+        await stage.drain_outbox_external()
 
         assert relay.puts == []
         assert len(control_plane.stage_messages) == 1
@@ -549,13 +549,13 @@ def test_stage_routes_inline_stream_chunk_to_scheduler(
             relay=relay,
             scheduler=scheduler,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
             data={"ready": True},
         )
-        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        await stage.on_data_ready(await _make_relay_payload(relay, payload))
         token = torch.tensor([7], dtype=torch.long)
         msg = DataReadyMessage(
             request_id="req",
@@ -565,7 +565,7 @@ def test_stage_routes_inline_stream_chunk_to_scheduler(
             chunk_id=0,
         )
 
-        await stage._on_stream_chunk(msg)
+        await stage.on_stream_chunk(msg)
 
         payload_msg = scheduler.inbox.get_nowait()
         chunk_msg = scheduler.inbox.get_nowait()
@@ -643,10 +643,10 @@ def test_stage_fails_pre_payload_stream_chunk_by_default() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
         codes = torch.arange(11, dtype=torch.float32)
 
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -684,15 +684,15 @@ def test_stage_routes_stream_chunk_after_payload_by_default() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
             data={"ready": True},
         )
-        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        await stage.on_data_ready(await _make_relay_payload(relay, payload))
         codes = torch.arange(11, dtype=torch.float32)
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -731,10 +731,10 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
             scheduler=scheduler,
             can_accept_stream_before_payload=True,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue = StreamQueue(max_pending=4096)
         codes = torch.arange(11, dtype=torch.float32)
 
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -752,7 +752,7 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
         assert torch.equal(chunk_msg.data.data, codes)
         assert chunk_msg.data.metadata == {"modality": "audio_codes"}
 
-        await stage._on_stream_signal(
+        await stage.on_stream_signal(
             DataReadyMessage(
                 request_id="req",
                 from_stage="tts_engine",
@@ -770,7 +770,7 @@ def test_stage_routes_pre_payload_stream_events_for_capable_receiver() -> None:
             request=OmniRequest(inputs="hello"),
             data={"ready": True},
         )
-        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        await stage.on_data_ready(await _make_relay_payload(relay, payload))
         payload_msg = scheduler.inbox.get_nowait()
         assert payload_msg.request_id == "req"
         assert payload_msg.type == "new_request"
@@ -793,7 +793,7 @@ def test_stage_stream_chunk_received_after_relay_materialization(monkeypatch) ->
         order.append("routed")
 
     monkeypatch.setattr(CommEngine, "read_stream_chunk", fake_read_stream_chunk)
-    monkeypatch.setattr(Stage, "_route_stream_item_or_fail", fake_route)
+    monkeypatch.setattr(Stage, "route_stream_item_or_fail", fake_route)
     monkeypatch.setattr(
         "sglang_omni.pipeline.stage.runtime._emit_event",
         lambda **kwargs: order.append(kwargs["event_name"]),
@@ -811,7 +811,7 @@ def test_stage_stream_chunk_received_after_relay_materialization(monkeypatch) ->
             scheduler=SimpleNamespace(outbox=queue.Queue()),
             can_accept_stream_before_payload=True,
         )
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             DataReadyMessage(
                 request_id="req",
                 from_stage="tts_engine",
@@ -855,10 +855,10 @@ def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:
             scheduler=scheduler,
             is_terminal=True,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
-        stage._stream_queue.open("req")
+        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue.open("req")
 
-        await stage._queue_stream_error(
+        await stage.queue_stream_error(
             "req",
             from_stage="thinker",
             error=RuntimeError("stream failed"),
@@ -868,8 +868,8 @@ def test_stage_stream_error_fails_request_even_with_stream_queue() -> None:
         assert len(control_plane.completions) == 1
         assert control_plane.completions[0].success is False
         assert control_plane.completions[0].error == "stream failed"
-        assert not stage._stream_queue.has("req")
-        assert "req" in stage._aborted
+        assert not stage.stream_queue.has("req")
+        assert "req" in stage.aborted
 
     asyncio.run(_run())
 
@@ -892,11 +892,11 @@ def test_terminal_request_can_be_readmitted_after_cleanup() -> None:
             scheduler=scheduler,
             can_accept_stream_before_payload=True,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
-        stage._stream_queue.open("req")
-        stage._active_requests.add("req")
+        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue.open("req")
+        stage.active_requests.add("req")
 
-        stage._clear_request_state("req")
+        stage.clear_request_state("req")
         await stage.receive_local_payload(
             "req",
             "tts_engine",
@@ -905,8 +905,8 @@ def test_terminal_request_can_be_readmitted_after_cleanup() -> None:
         incoming = scheduler.inbox.get_nowait()
         assert incoming.request_id == "req"
         assert incoming.type == "new_request"
-        assert "req" in stage._active_requests
-        assert stage._stream_queue.has("req")
+        assert "req" in stage.active_requests
+        assert stage.stream_queue.has("req")
         assert stage.control_plane.completions == []
 
     asyncio.run(_run())
@@ -962,7 +962,7 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read() -> None:
             inbox=queue.Queue(),
             abort=lambda request_id: None,
         )
-        relay = _AbortOnReadRelay(lambda: stage._on_abort("req"))
+        relay = _AbortOnReadRelay(lambda: stage.on_abort("req"))
         stage = Stage(
             name="vocoder",
             role="single",
@@ -973,9 +973,9 @@ def test_stage_drops_stream_chunk_after_abort_during_relay_read() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._stream_queue = None
+        stage.stream_queue = None
 
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -1012,8 +1012,8 @@ def test_stage_drains_relay_stream_chunk_for_already_aborted_request() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._aborted.add("req")
-        await stage._on_stream_chunk(
+        stage.aborted.add("req")
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -1050,14 +1050,14 @@ def test_stage_drains_relay_payload_for_already_aborted_request() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._aborted.add("req")
+        stage.aborted.add("req")
         payload = StagePayload(
             request_id="req",
             request=OmniRequest(inputs="hello"),
             data={},
         )
 
-        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        await stage.on_data_ready(await _make_relay_payload(relay, payload))
 
         assert scheduler.inbox.empty()
         assert relay.gets == 1
@@ -1085,10 +1085,10 @@ def test_stage_routes_relay_stream_chunk_to_scheduler() -> None:
             relay=relay,
             scheduler=scheduler,
         )
-        stage._stream_queue = StreamQueue(max_pending=4096)
-        stage._stream_queue.open("req")
+        stage.stream_queue = StreamQueue(max_pending=4096)
+        stage.stream_queue.open("req")
 
-        await stage._on_stream_chunk(
+        await stage.on_stream_chunk(
             await _make_relay_chunk(
                 relay,
                 request_id="req",
@@ -1117,7 +1117,7 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
             inbox=queue.Queue(),
             abort=lambda request_id: None,
         )
-        relay = _AbortOnReadRelay(lambda: stage._on_abort("req"))
+        relay = _AbortOnReadRelay(lambda: stage.on_abort("req"))
         stage = Stage(
             name="vocoder",
             role="single",
@@ -1134,7 +1134,7 @@ def test_stage_drops_payload_after_abort_during_relay_read() -> None:
             data={},
         )
 
-        await stage._on_data_ready(await _make_relay_payload(relay, payload))
+        await stage.on_data_ready(await _make_relay_payload(relay, payload))
 
         assert scheduler.inbox.empty()
 

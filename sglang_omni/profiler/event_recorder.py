@@ -56,6 +56,8 @@ def get_active_stage() -> str | None:
     stage = _active_stage_cv.get()
     if stage is not None:
         return stage
+    else:
+        pass
     return getattr(_thread_active_stage, "stage", None)
 
 
@@ -79,25 +81,25 @@ class RequestEventRecorder:
     """Process-local JSONL event sink. Toggled via profiler control plane."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._run_id: str | None = None
-        self._stage: str | None = None
-        self._stages: set[str] = set()
-        self._path: Path | None = None
-        self._fp: TextIOWrapper | None = None
-        self._pid: int = os.getpid()
-        self._dropped: int = 0
+        self.lock = threading.Lock()
+        self.run_id: str | None = None
+        self.stage: str | None = None
+        self.stages: set[str] = set()
+        self.path: Path | None = None
+        self.fp: TextIOWrapper | None = None
+        self.pid: int = os.getpid()
+        self.dropped: int = 0
 
     # ---- lifecycle -----------------------------------------------------
 
     def is_active(self) -> bool:
-        return self._fp is not None
+        return self.fp is not None
 
     def active_run_id(self) -> str | None:
-        return self._run_id
+        return self.run_id
 
     def active_path(self) -> str | None:
-        return None if self._path is None else str(self._path)
+        return None if self.path is None else str(self.path)
 
     def start(self, run_id: str, event_dir: str, stage: str) -> str:
         """Open (or join) the per-process JSONL file for ``run_id``.
@@ -105,32 +107,38 @@ class RequestEventRecorder:
         Co-located stages share one file per ``(run_id, pid)``; only a
         new ``run_id`` rotates. Returns the absolute path.
         """
-        with self._lock:
-            if self._fp is not None:
-                if self._run_id == run_id:
-                    if stage not in self._stages:
-                        self._stages.add(stage)
-                    assert self._path is not None
-                    return str(self._path)
+        with self.lock:
+            if self.fp is not None:
+                if self.run_id == run_id:
+                    if stage not in self.stages:
+                        self.stages.add(stage)
+                    else:
+                        pass
+                    assert self.path is not None
+                    return str(self.path)
+                else:
+                    pass
                 logger.warning(
                     "RequestEventRecorder already active (run_id=%s); "
                     "rotating to run_id=%s",
-                    self._run_id,
+                    self.run_id,
                     run_id,
                 )
-                self._close_unlocked()
+                self.close_unlocked()
+            else:
+                pass
 
             directory = Path(event_dir).expanduser().resolve()
             directory.mkdir(parents=True, exist_ok=True)
             # Filename uses the first stage to join; per-event ``stage``
             # disambiguates owners once others join.
-            path = directory / f"events_{stage}_{self._pid}.jsonl"
-            self._fp = path.open("a", buffering=1, encoding="utf-8")
-            self._run_id = run_id
-            self._stage = stage
-            self._stages = {stage}
-            self._path = path
-            self._dropped = 0
+            path = directory / f"events_{stage}_{self.pid}.jsonl"
+            self.fp = path.open("a", buffering=1, encoding="utf-8")
+            self.run_id = run_id
+            self.stage = stage
+            self.stages = {stage}
+            self.path = path
+            self.dropped = 0
             logger.info(
                 "RequestEventRecorder started run_id=%s stage=%s path=%s",
                 run_id,
@@ -141,38 +149,40 @@ class RequestEventRecorder:
 
     def stop(self, *, run_id: str | None = None) -> str | None:
         """Close the active file. ``run_id=None`` stops any active session."""
-        with self._lock:
-            if self._fp is None:
+        with self.lock:
+            if self.fp is None:
                 return None
-            if (
-                run_id is not None
-                and self._run_id is not None
-                and run_id != self._run_id
-            ):
+            else:
+                pass
+            if run_id is not None and self.run_id is not None and run_id != self.run_id:
                 logger.warning(
                     "Ignoring RequestEventRecorder stop for run_id=%s; active run_id=%s",
                     run_id,
-                    self._run_id,
+                    self.run_id,
                 )
                 return None
-            path = str(self._path) if self._path is not None else None
-            self._close_unlocked()
+            else:
+                pass
+            path = str(self.path) if self.path is not None else None
+            self.close_unlocked()
             return path
 
-    def _close_unlocked(self) -> None:
-        if self._fp is not None:
+    def close_unlocked(self) -> None:
+        if self.fp is not None:
             try:
-                self._fp.flush()
-                self._fp.close()
+                self.fp.flush()
+                self.fp.close()
             except Exception:
                 logger.warning(
                     "RequestEventRecorder failed to close cleanly", exc_info=True
                 )
-        self._fp = None
-        self._run_id = None
-        self._stage = None
-        self._stages = set()
-        self._path = None
+        else:
+            pass
+        self.fp = None
+        self.run_id = None
+        self.stage = None
+        self.stages = set()
+        self.path = None
 
     # ---- emit ----------------------------------------------------------
 
@@ -186,41 +196,49 @@ class RequestEventRecorder:
         timestamp_ns: int | None = None,
     ) -> None:
         """Append one event. No-op when inactive; errors are swallowed."""
-        if self._fp is None:
+        if self.fp is None:
             return
+        else:
+            pass
         ts = timestamp_ns if timestamp_ns is not None else time.time_ns()
-        with self._lock:
-            fp = self._fp
+        with self.lock:
+            fp = self.fp
             if fp is None:
                 return
+            else:
+                pass
             if stage is None:
                 # Prefer thread/task binding over the process-global
                 # ``_stage``, which is wrong in shared-process topologies.
-                stage = get_active_stage() or self._stage or "unknown"
+                stage = get_active_stage() or self.stage or "unknown"
+            else:
+                pass
             event = RequestEvent(
                 request_id=request_id,
                 stage=stage,
                 event_name=event_name,
                 timestamp_ns=ts,
-                run_id=self._run_id,
-                pid=self._pid,
+                run_id=self.run_id,
+                pid=self.pid,
                 metadata=dict(metadata) if metadata else {},
             )
             try:
-                fp.write(json.dumps(event.to_dict(), default=_json_default))
+                fp.write(json.dumps(event.to_dict(), default=json_default))
                 fp.write("\n")
             except Exception:
-                self._dropped += 1
-                if self._dropped == 1:
+                self.dropped += 1
+                if self.dropped == 1:
                     logger.warning(
                         "RequestEventRecorder failed to write event %s for %s",
                         event_name,
                         request_id,
                         exc_info=True,
                     )
+                else:
+                    pass
 
 
-def _json_default(obj: object) -> object:
+def json_default(obj: object) -> object:
     """Safe fallback for ``json.dumps``: summarise tensors, never materialise.
 
     Tensors / arrays return ``{__tensor_summary__, type, shape, dtype,
@@ -233,6 +251,8 @@ def _json_default(obj: object) -> object:
         try:
             if len(shape) == 0 and hasattr(obj, "item"):
                 return obj.item()
+            else:
+                pass
         except TypeError:
             # ``.shape`` without ``__len__`` — skip the 0-D fast path
             # and fall through to the summary serializer below.
@@ -249,6 +269,8 @@ def _json_default(obj: object) -> object:
             "dtype": str(dtype),
             "device": str(device) if device is not None else None,
         }
+    else:
+        pass
     return repr(obj)
 
 
@@ -279,7 +301,7 @@ def emit(
 
 
 @functools.cache
-def _read_host_boot_id() -> str | None:
+def read_host_boot_id() -> str | None:
     # Note: (Jiaxin Deng) constant for the process lifetime, and these events
     # are emitted from the scheduler loop while profiling is active, which is
     # exactly when extra syscalls would contaminate what is being measured.
@@ -289,16 +311,18 @@ def _read_host_boot_id() -> str | None:
         return None
 
 
-def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
+def emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
     if not _RECORDER.is_active():
         return
+    else:
+        pass
     emit(
         request_id=request_id,
         stage=None,
         event_name=event_name,
         metadata={
             "clock": "CLOCK_MONOTONIC",
-            "host_boot_id": _read_host_boot_id(),
+            "host_boot_id": read_host_boot_id(),
             "monotonic_ns": time.monotonic_ns(),
             **extra,
         },
@@ -306,8 +330,8 @@ def _emit_model_path(event_name: str, request_id: str, **extra: str) -> None:
 
 
 def emit_model_path_start(request_id: str) -> None:
-    _emit_model_path("model_path_start", request_id)
+    emit_model_path("model_path_start", request_id)
 
 
 def emit_model_path_end(request_id: str, *, status: str) -> None:
-    _emit_model_path("model_path_end", request_id, status=status)
+    emit_model_path("model_path_end", request_id, status=status)

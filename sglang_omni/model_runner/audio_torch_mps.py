@@ -19,6 +19,8 @@ if TYPE_CHECKING:
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.types import SchedulerRequest
+else:
+    pass
 
 RequestT = TypeVar("RequestT")
 
@@ -32,20 +34,22 @@ class AudioTorchMpsModelRunner(ModelRunner):
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
         super().__init__(tp_worker, output_processor)
-        self._past_key_values: dict[str, Cache | None] = {}
+        self.past_key_values: dict[str, Cache | None] = {}
 
     def lookahead_eligible(self, batch: object) -> bool:
         del batch
         return False
 
-    def _one_request(self, requests: list[RequestT]) -> RequestT:
+    def one_request(self, requests: list[RequestT]) -> RequestT:
         if len(requests) != 1:
             raise RuntimeError(
                 f"{self.model_name} Torch MPS currently requires max_running_requests=1"
             )
+        else:
+            pass
         return requests[0]
 
-    def _next_token_result(self, next_token_ids: torch.Tensor) -> GenerationBatchResult:
+    def next_token_result(self, next_token_ids: torch.Tensor) -> GenerationBatchResult:
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         return GenerationBatchResult(
@@ -62,22 +66,28 @@ class AudioTorchMpsModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> GenerationBatchResult:
         del forward_batch
-        scheduler_request = self._one_request(requests)
+        scheduler_request = self.one_request(requests)
         req = scheduler_request.data.req
         mm_inputs = req.multimodal_inputs
         if mm_inputs is None or len(mm_inputs.mm_items) != 1:
             raise ValueError(
                 f"{self.model_name} Torch MPS requires exactly one audio item"
             )
+        else:
+            pass
         item = mm_inputs.mm_items[0]
         if item.feature is None or item.pad_value is None:
             raise ValueError(
                 f"{self.model_name} Torch MPS requires audio features and pad value"
             )
+        else:
+            pass
         if mm_inputs.audio_token_id is None:
             raise ValueError(
                 f"{self.model_name} Torch MPS is missing its audio token ID"
             )
+        else:
+            pass
 
         token_ids = [int(token_id) for token_id in schedule_batch.input_ids.tolist()]
         pad_value = int(item.pad_value)
@@ -95,6 +105,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS prefill has no audio placeholders"
             )
+        else:
+            pass
         audio_start = audio_positions[0]
         if audio_positions != list(
             range(audio_start, audio_start + len(audio_positions))
@@ -102,6 +114,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             raise ValueError(
                 f"{self.model_name} Torch MPS audio placeholders must be contiguous"
             )
+        else:
+            pass
 
         language_model = self.model.language_model
         input_ids = torch.tensor(
@@ -123,6 +137,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
         # Audio families return either [tokens, hidden] or [1, tokens, hidden].
         if audio_features.ndim == 2:
             audio_features = audio_features.unsqueeze(0)
+        else:
+            pass
         if audio_features.shape != (
             1,
             len(audio_positions),
@@ -132,6 +148,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
                 f"{self.model_name} Torch MPS audio embedding shape does not match its "
                 f"placeholder span: {tuple(audio_features.shape)}"
             )
+        else:
+            pass
         input_embeddings[0, audio_start : audio_start + len(audio_positions), :] = (
             audio_features[0]
         )
@@ -141,8 +159,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             use_cache=True,
             logits_to_keep=1,
         )
-        self._past_key_values[scheduler_request.request_id] = output.past_key_values
-        return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        self.past_key_values[scheduler_request.request_id] = output.past_key_values
+        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     @torch.inference_mode()
     def custom_decode_forward(
@@ -152,10 +170,10 @@ class AudioTorchMpsModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> GenerationBatchResult:
         del forward_batch
-        scheduler_request = self._one_request(requests)
+        scheduler_request = self.one_request(requests)
         request_id = scheduler_request.request_id
         try:
-            past_key_values = self._past_key_values[request_id]
+            past_key_values = self.past_key_values[request_id]
         except KeyError as exc:
             raise RuntimeError(
                 f"{self.model_name} Torch MPS decode has no cache for {request_id}"
@@ -171,12 +189,12 @@ class AudioTorchMpsModelRunner(ModelRunner):
             use_cache=True,
             logits_to_keep=1,
         )
-        self._past_key_values[request_id] = output.past_key_values
-        return self._next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        self.past_key_values[request_id] = output.past_key_values
+        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
 
     def on_request_finished(self, request_id: str, req_data: object) -> None:
         del req_data
-        self._past_key_values.pop(request_id, None)
+        self.past_key_values.pop(request_id, None)
 
     def abort_request(self, request_id: str) -> None:
-        self._past_key_values.pop(request_id, None)
+        self.past_key_values.pop(request_id, None)

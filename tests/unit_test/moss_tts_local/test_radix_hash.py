@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU unit tests for the capture-safe generated-row radix hash.
-
-Imports only ``torch`` and the ``radix_hash`` module (no model/runtime deps),
-so the whole file runs on CPU. These cover the *key layer* of the two-layer
-verification rubric in ``docs/design/gpu_radix_hash.md``; the GPU bit-identity
-*output layer* rerun is tracked separately (PENDING-GPU).
-"""
+"""Generated-row radix hash properties, CUDA equivalence, and graph replay."""
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from sglang_omni.models.moss_tts_local.radix_hash import (
     _BASE,
     _MOD,
     RADIX_HASH_SPACE,
+    build_rows_and_radix_token_ids,
     gpu_radix_row_hash,
     poly_row_hash,
 )
@@ -22,6 +18,10 @@ from sglang_omni.models.moss_tts_local.radix_hash import (
 _N_CHANNELS = 13  # text channel + 12 RVQ codes (n_vq = 12)
 _END_ID = 151670  # audio_end_token_id: in the special band (>= RADIX_HASH_SPACE)
 _SLOT_ID = 151646  # audio_assistant_slot_token_id: text channel of a continuing frame
+
+requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA is required"
+)
 
 
 def _continuing_rows(codes: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -139,3 +139,168 @@ def test_accepts_non_int64_input_dtype():
     keys = gpu_radix_row_hash(rows, next_text, _END_ID)
     assert keys.dtype == torch.int64
     assert int(keys.min()) >= 0 and int(keys.max()) < RADIX_HASH_SPACE
+
+
+def test_build_rows_and_ids_cpu_matches_split_reference():
+    stop = torch.tensor([0, 1, 2], dtype=torch.long)
+    codes = torch.tensor([[1, 2], [-1, _MOD + 3], [7, 8]], dtype=torch.long)
+    rows, ids = build_rows_and_radix_token_ids(stop, codes, _SLOT_ID, _END_ID)
+    expected_rows = torch.tensor(
+        [[_SLOT_ID, 1, 2], [_END_ID, -1, _MOD + 3], [_END_ID, 7, 8]],
+        dtype=torch.long,
+    )
+    expected_ids = torch.tensor(
+        [
+            _ref_poly(row) % RADIX_HASH_SPACE if row[0] != _END_ID else _END_ID
+            for row in expected_rows.tolist()
+        ],
+        dtype=torch.int64,
+    )
+    assert torch.equal(rows, expected_rows)
+    assert torch.equal(ids, expected_ids)
+
+
+@pytest.mark.accelerator
+@requires_cuda
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize(
+    "shape", [(0, 13), (4, 0), (1, 1), (3, 7), (16, 13), (129, 33)]
+)
+@pytest.mark.parametrize("strided", [False, True])
+def test_cuda_matches_python_reference(shape, dtype, strided):
+    batch, channels = shape
+    rows = torch.randint(-4096, 4096, shape, dtype=dtype)
+    limits = torch.iinfo(dtype)
+    boundaries = [limits.min, -_MOD, -1, 0, _MOD - 1, _MOD, limits.max]
+    for index, value in enumerate(boundaries[: rows.numel()]):
+        rows.view(-1)[index] = value
+    text = torch.full((batch,), _SLOT_ID, dtype=dtype)
+    text[::3] = _END_ID
+    hash_space = 1009
+    expected = torch.tensor(
+        [
+            _END_ID if token == _END_ID else _ref_poly(row) % hash_space
+            for row, token in zip(rows.tolist(), text.tolist())
+        ],
+        dtype=torch.int64,
+    )
+    if strided:
+        storage = torch.empty((batch, channels * 2), device="cuda", dtype=dtype)
+        device_rows = storage[:, ::2]
+        device_rows.copy_(rows)
+    else:
+        device_rows = rows.cuda()
+    text_storage = torch.empty((batch, 2), device="cuda", dtype=dtype)
+    device_text = text_storage[:, 1]
+    device_text.copy_(text)
+    actual = gpu_radix_row_hash(
+        device_rows, device_text, _END_ID, hash_space=hash_space
+    )
+    assert actual.dtype == torch.int64
+    assert actual.device == device_rows.device
+    assert torch.equal(actual.cpu(), expected)
+
+
+@pytest.mark.accelerator
+@requires_cuda
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("strided", [False, True])
+def test_cuda_row_builder_tail_matches_python_reference(dtype, strided):
+    batch = 129
+    channels = _N_CHANNELS - 1
+    codes = (torch.arange(batch * channels) % 1024).reshape(batch, channels)
+    stop = (torch.arange(batch) + 1) % 3
+    text = torch.where(stop == 0, _SLOT_ID, _END_ID)
+    expected_rows = torch.cat((text[:, None], codes), dim=1)
+    expected_ids = torch.tensor(
+        [
+            _END_ID if row[0] == _END_ID else _ref_poly(row) % RADIX_HASH_SPACE
+            for row in expected_rows.tolist()
+        ],
+        dtype=torch.int64,
+    )
+    if strided:
+        code_storage = torch.empty((batch, channels * 2), device="cuda", dtype=dtype)
+        device_codes = code_storage[:, ::2]
+        device_codes.copy_(codes)
+        stop_storage = torch.empty(batch * 2, device="cuda", dtype=dtype)
+        device_stop = stop_storage[::2]
+        device_stop.copy_(stop)
+    else:
+        device_codes = codes.to(device="cuda", dtype=dtype)
+        device_stop = stop.to(device="cuda", dtype=dtype)
+
+    rows, ids = build_rows_and_radix_token_ids(
+        device_stop, device_codes, _SLOT_ID, _END_ID
+    )
+
+    assert rows.dtype == ids.dtype == torch.int64
+    assert rows.device == ids.device == device_codes.device
+    assert torch.equal(rows.cpu(), expected_rows)
+    assert torch.equal(ids.cpu(), expected_ids)
+
+
+@pytest.mark.accelerator
+@requires_cuda
+def test_cuda_graph_replays_new_rows_and_eos():
+    rows = torch.zeros((16, _N_CHANNELS), device="cuda", dtype=torch.int64)
+    text = rows[:, 0]
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        gpu_radix_row_hash(rows, text, _END_ID)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = gpu_radix_row_hash(rows, text, _END_ID)
+    for step in range(3):
+        host_rows = torch.randint(0, 4096, rows.shape, dtype=torch.int64)
+        host_rows[:, 0] = _SLOT_ID
+        host_rows[step::3, 0] = _END_ID
+        expected = gpu_radix_row_hash(host_rows, host_rows[:, 0], _END_ID)
+        rows.copy_(host_rows)
+        graph.replay()
+        assert torch.equal(actual.cpu(), expected)
+
+
+@pytest.mark.accelerator
+@requires_cuda
+def test_cuda_graph_replays_row_builder():
+    stop = torch.zeros(16, device="cuda", dtype=torch.int64)
+    codes = torch.zeros((16, _N_CHANNELS - 1), device="cuda", dtype=torch.int64)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        build_rows_and_radix_token_ids(stop, codes, _SLOT_ID, _END_ID)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual_rows, actual_ids = build_rows_and_radix_token_ids(
+            stop, codes, _SLOT_ID, _END_ID
+        )
+    for step in range(3):
+        host_stop = torch.arange(16, dtype=torch.int64) % 3
+        host_codes = torch.randint(0, 1024, codes.shape, dtype=torch.int64)
+        host_rows = torch.empty((16, _N_CHANNELS), dtype=torch.int64)
+        host_rows[:, 0] = torch.where(
+            host_stop == 0,
+            torch.full((16,), _SLOT_ID, dtype=torch.int64),
+            torch.full((16,), _END_ID, dtype=torch.int64),
+        )
+        host_rows[:, 1:] = host_codes
+        expected_ids = torch.tensor(
+            [
+                (
+                    _END_ID
+                    if row[0] == _END_ID
+                    else _ref_poly(row.tolist()) % RADIX_HASH_SPACE
+                )
+                for row in host_rows
+            ],
+            dtype=torch.int64,
+        )
+        stop.copy_(host_stop)
+        codes.copy_(host_codes)
+        graph.replay()
+        assert torch.equal(actual_rows.cpu(), host_rows)
+        assert torch.equal(actual_ids.cpu(), expected_ids)

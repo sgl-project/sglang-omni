@@ -19,11 +19,13 @@ if TYPE_CHECKING:
     from sglang_omni.models.dots_tts.sglang_model import DotsTTSSGLangModel
     from sglang_omni.models.dots_tts.tail import DotsTtsAcousticTail
     from sglang_omni.proto import StagePayload
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.types import RequestOutput
+else:
+    pass
 
 
 logger = logging.getLogger(__name__)
@@ -50,8 +52,10 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         self.max_running_requests = int(max_running_requests)
         if min(self.num_steps, self.max_audio_patches, self.max_running_requests) <= 0:
             raise ValueError("dots.tts batching limits must be positive")
-        self._model_runner: DotsTTSModelRunner | None = None
-        self._acoustic_tail: DotsTtsAcousticTail | None = None
+        else:
+            pass
+        self.model_runner: DotsTTSModelRunner | None = None
+        self.acoustic_tail: DotsTtsAcousticTail | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         del checkpoint_dir
@@ -68,9 +72,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
         if self.optimize and int(cfg.max_running_requests) == 1:
-            from sglang_omni.models.dots_tts.stages import _configure_optimized_kernels
+            from sglang_omni.models.dots_tts.stages import configure_optimized_kernels
 
-            _configure_optimized_kernels()
+            configure_optimized_kernels()
+        else:
+            pass
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -88,11 +94,15 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         if int(overrides.get("tp_size", 1)) != 1:
             raise ValueError("dots.tts base support does not implement TP")
+        else:
+            pass
         requested = int(
             overrides.get("max_running_requests", self.max_running_requests)
         )
         if requested <= 0:
             raise ValueError("dots.tts max_running_requests must be positive")
+        else:
+            pass
         self.max_running_requests = requested
         overrides["disable_radix_cache"] = True
         overrides["chunked_prefill_size"] = 0
@@ -100,11 +110,15 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
             raise ValueError(
                 "dots.tts uses its DiT compile path; SGLang backbone compile is disabled"
             )
+        else:
+            pass
         if not bool(overrides.get("disable_cuda_graph", True)):
             # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
             # its can_run gate requires an exact hidden-mode match with the
             # acoustic tail's per-step request.
             overrides["enable_return_hidden_states"] = True
+        else:
+            pass
 
     def setup_model(
         self,
@@ -136,6 +150,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                     256,
                 )
             )
+        else:
+            pass
         model.flow.optimize = self.optimize and max_running_requests == 1
         model.eval()
         if max_running_requests > 1:
@@ -145,7 +161,9 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
                 max_audio_patches=self.max_audio_patches,
                 optimize=self.optimize,
             )
-            self._acoustic_tail = model.flow.batched_tail
+            self.acoustic_tail = model.flow.batched_tail
+        else:
+            pass
         if max_running_requests == 1:
             tail_backend = (
                 "compiled single-request DiT/semantic encoder"
@@ -178,8 +196,8 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
     ) -> DotsTTSModelRunner:
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
-        self._model_runner = DotsTTSModelRunner(model_worker, output_proc)
-        return self._model_runner
+        self.model_runner = DotsTTSModelRunner(model_worker, output_proc)
+        return self.model_runner
 
     def make_adapters(self, model: DotsTTSSGLangModel | None) -> tuple[
         Callable[[StagePayload], DotsTTSSGLangRequestData],
@@ -203,13 +221,15 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         return _build_request, apply_latent_result
 
     def make_abort_callback(self) -> Callable[[str], None]:
-        assert self._model_runner is not None
-        return self._model_runner.reset_request
+        assert self.model_runner is not None
+        return self.model_runner.reset_request
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
-        if self._acoustic_tail is None:
+        if self.acoustic_tail is None:
             return {}
-        return {"shutdown_callback": self._acoustic_tail.log_graph_counters}
+        else:
+            pass
+        return {"shutdown_callback": self.acoustic_tail.log_graph_counters}
 
     def extra_scheduler_kwargs(
         self,

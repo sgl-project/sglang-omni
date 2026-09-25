@@ -17,11 +17,13 @@ if TYPE_CHECKING:
         FunAsrNanoForConditionalGeneration,
     )
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
 
-def _compile_fun_asr_audio_encoder(
+def compile_fun_asr_audio_encoder(
     model: "FunAsrNanoForConditionalGeneration",
     *,
     warmup_lfr_frames: int = 128,
@@ -45,12 +47,14 @@ def _compile_fun_asr_audio_encoder(
 
     from sglang.srt.compilation.torch_compile_decoration import set_torch_compile_config
 
-    from sglang_omni.models.fun_asr.sglang_model import _sanm_mask_from_lengths
+    from sglang_omni.models.fun_asr.sglang_model import sanm_mask_from_lengths
 
     if warmup_lfr_frames < 2:
         # Note (wilsonzheng0327) Sizes 0/1 are always shape-specialized by
         # Dynamo; warming up with them would not build the symbolic-length graph.
         raise ValueError(f"warmup_lfr_frames must be >= 2, got {warmup_lfr_frames}")
+    else:
+        pass
     set_torch_compile_config()
     model.audio_tower.forward = torch.compile(model.audio_tower.forward, dynamic=True)
     model.multi_modal_projector.forward = torch.compile(
@@ -81,7 +85,7 @@ def _compile_fun_asr_audio_encoder(
                 .contiguous()
             )
             mask = (
-                _sanm_mask_from_lengths(
+                sanm_mask_from_lengths(
                     torch.full((batch,), t, device=param.device, dtype=torch.long),
                     t,
                     dtype=param.dtype,
@@ -136,10 +140,14 @@ def create_sglang_fun_asr_executor(
         raise ValueError(
             f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
         )
+    else:
+        pass
     if pre_lm_max_batch_wait_ms < 0:
         raise ValueError(
             f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
         )
+    else:
+        pass
 
     from sglang_omni.models.fun_asr.engine_builder import FunASREngineBuilder
 

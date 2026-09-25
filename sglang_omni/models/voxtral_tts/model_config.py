@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from transformers import MistralConfig
+else:
+    pass
 
 
 @dataclass

@@ -44,8 +44,8 @@ def test_zonos2_decode_buffers_pad_async_lookahead_rows() -> None:
     weight = torch.full((4, 2), -1.0)
     runner = SimpleNamespace(
         model=SimpleNamespace(
-            _decode_input_embedding=SimpleNamespace(weight=weight),
-            _decode_state_pool=_Pool(),
+            decode_input_embedding=SimpleNamespace(weight=weight),
+            decode_state_pool=_Pool(),
         )
     )
     forward_batch = SimpleNamespace(batch_size=4, input_ids=None, input_embeds=object())
@@ -129,7 +129,7 @@ def _speech_payload(payload: dict) -> StagePayload:
     )
     return StagePayload(
         request_id="request",
-        request=Client._build_omni_request(generation_request),
+        request=Client.build_omni_request(generation_request),
         data={},
     )
 
@@ -213,7 +213,7 @@ def test_zonos2_engine_builder_resolves_context_length(monkeypatch) -> None:
         "load_zonos2_pretrained_config",
         lambda path: SimpleNamespace(max_seqlen=6144),
     )
-    monkeypatch.setattr(eb, "_build_config_shim", lambda path, cfg: "/tmp/shim")
+    monkeypatch.setattr(eb, "build_config_shim", lambda path, cfg: "/tmp/shim")
 
     builder = Zonos2EngineBuilder()
     assert builder.resolve_checkpoint("fake-zonos2") == "/tmp/shim"

@@ -22,6 +22,8 @@ from sglang_omni.models.moss_tts.sampling_kernels import (
 
 if TYPE_CHECKING:
     from transformers import PretrainedConfig
+else:
+    pass
 
 _NEG_INF = float("-inf")
 _INT64_MAX = torch.iinfo(torch.int64).max
@@ -71,7 +73,7 @@ def matches_graph_profile(data: object) -> bool:
     )
 
 
-def _sample_default_audio_tokens(
+def sample_default_audio_tokens(
     logits: torch.Tensor,
     *,
     seeds: torch.Tensor,
@@ -85,6 +87,8 @@ def _sample_default_audio_tokens(
     if 0 < AUDIO_SAMPLING.top_k < vocab:
         topk_scores = torch.topk(scores, k=AUDIO_SAMPLING.top_k, dim=-1).values
         scores = scores.masked_fill(scores < topk_scores[:, -1:], _NEG_INF)
+    else:
+        pass
 
     sorted_scores, sorted_indices = torch.sort(scores, descending=True, dim=-1)
     probs_sorted = torch.softmax(sorted_scores, dim=-1)
@@ -99,6 +103,8 @@ def _sample_default_audio_tokens(
 
     if scores.device.type == "cuda" and output is not None:
         return seeded_gumbel_argmax(scores, seeds, positions, output)
+    else:
+        pass
     return multinomial_with_seed(scores, seeds, positions).view(-1).long()
 
 
@@ -162,11 +168,15 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
                 f"[B, {num_controls}], "
                 f"got {tuple(control_logits.shape)}"
             )
+        else:
+            pass
         if tuple(audio_logits.shape[:2]) != (batch_size, self.n_vq):
             raise ValueError(
                 "MOSS-TTS Delay graph audio logits must have shape [B, n_vq, V], "
                 f"got {tuple(audio_logits.shape)}"
             )
+        else:
+            pass
 
         seeds = batch.seeds
         generation_steps = batch.generation_steps
@@ -226,7 +236,7 @@ class MossTTSDelayAudioGraphSampler(nn.Module):
             (audio_positions + self.channel_indices + 1).reshape(-1).contiguous()
         )
         audio_seeds = seeds.unsqueeze(1).expand(batch_size, self.n_vq).reshape(-1)
-        sampled_audio = _sample_default_audio_tokens(
+        sampled_audio = sample_default_audio_tokens(
             flat_audio_logits,
             seeds=audio_seeds,
             positions=audio_positions,

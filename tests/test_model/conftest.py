@@ -14,6 +14,8 @@ pytest_plugins = ["tests.utils"]
 if TYPE_CHECKING:
     from typing import Generator
 
+    from tests.test_model.omni_ci_config import OmniCiModelPreset
+    from tests.test_model.omni_router_utils import ManagedRouterHandle
     from tests.utils import ServerHandle
 
 
@@ -102,6 +104,7 @@ TTS_STAGE_OPTION = "--tts-stage"
 SELECTED_TTS_CI_STAGE = pytest.StashKey[str]()
 TTS_CI_MODEL_OPTION = "--tts-ci-model"
 ASR_CI_MODEL_OPTION = "--asr-ci-model"
+OMNI_CI_MODEL_OPTION = "--omni-ci-model"
 QWEN3_OMNI_MODEL_PATH = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
 # Single source of truth for the model path used by Qwen3-Omni vision-encoder
 # benchmarks and the SGLang state they bring up. Honors
@@ -139,6 +142,83 @@ QWEN3_OMNI_BF16_THINKER_ARGS = f"--config {QWEN3_OMNI_BF16_THINKER_CONFIG}"
 QWEN3_OMNI_DISAGG_THINKER_MEM_FRACTION = "0.82"
 QWEN3_OMNI_DISAGG_TALKER_MEM_FRACTION = "0.40"
 QWEN3_OMNI_FP8_TP2_THINKER_MEM_FRACTION = "0.40"
+
+OMNI_CI_QWEN_FIXTURES = {
+    "test_qwen3_omni_thinker_length": "qwen3_omni_bf16_tp2_server",
+    "test_qwen3_omni_tts_ci": "qwen3_omni_bf16_colocated_server",
+    "test_qwen3_omni_mmmu_ci": "qwen3_omni_fp8_colocated_server",
+    "test_qwen3_omni_mmmu_talker_ci": "qwen3_omni_bf16_disagg_server",
+    "test_qwen3_omni_mmsu_ci": "qwen3_omni_bf16_colocated_thinker_server",
+    "test_qwen3_omni_mmsu_talker_ci": "qwen3_omni_fp8_tp2_server",
+    "test_qwen3_omni_videomme_ci": "qwen3_omni_bf16_disagg_server",
+    "test_qwen3_omni_videomme_talker_ci": "qwen3_omni_bf16_disagg_server",
+    "test_qwen3_omni_videoamme_ci": "qwen3_omni_fp8_colocated_server",
+    "test_qwen3_omni_videoamme_talker_tp2_ci": "qwen3_omni_fp8_tp2_server",
+}
+MINICPMO_CI_TEXT_MEM_FRACTION = "0.80"
+MINICPMO_CI_SPEECH_THINKER_MEM_FRACTION = "0.55"
+MINICPMO_CI_TALKER_MEM_FRACTION = "0.15"
+
+
+@pytest.fixture(scope="session")
+def omni_ci_model() -> OmniCiModelPreset:
+    from tests.test_model.omni_ci_config import select_omni_ci_preset
+
+    return select_omni_ci_preset()[1]
+
+
+@pytest.fixture(scope="module")
+def omni_ci_server(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+    omni_ci_model: OmniCiModelPreset,
+) -> Generator[ManagedRouterHandle | ServerHandle, None, None]:
+    from tests.test_model.omni_router_utils import (
+        CiRouterTopology,
+        launch_managed_router,
+    )
+
+    module_name = request.module.__name__.rsplit(".", 1)[-1]
+    qwen_fixture = OMNI_CI_QWEN_FIXTURES[module_name]
+    if omni_ci_model.name == "qwen3-omni":
+        yield request.getfixturevalue(qwen_fixture)
+        return
+
+    audio_output = "talker" in module_name or module_name == "test_qwen3_omni_tts_ci"
+    max_seq_len = 32768 if "video" in module_name else 8192
+    if module_name == "test_qwen3_omni_thinker_length":
+        max_seq_len = 128
+    thinker_memory = (
+        MINICPMO_CI_SPEECH_THINKER_MEM_FRACTION
+        if audio_output
+        else MINICPMO_CI_TEXT_MEM_FRACTION
+    )
+    worker_args = (
+        f"--thinker.factory.max_seq_len {max_seq_len} "
+        f"--thinker.engine.mem_fraction_static {thinker_memory}"
+    )
+    if audio_output:
+        worker_args += (
+            f" --talker.engine.mem_fraction_static {MINICPMO_CI_TALKER_MEM_FRACTION}"
+        )
+    else:
+        worker_args += " --text-only"
+
+    with launch_managed_router(
+        tmp_path_factory=tmp_path_factory,
+        model_path=os.environ.get(
+            "SGLANG_OMNI_TEST_MINICPMO_MODEL", omni_ci_model.model_path
+        ),
+        model_name=omni_ci_model.name,
+        worker_extra_args=worker_args,
+        router_topology=(
+            CiRouterTopology.OMNI_AUDIO if audio_output else CiRouterTopology.OMNI_TEXT
+        ),
+        num_workers=2,
+        num_gpus_per_worker=1,
+        generation_streaming=not audio_output,
+    ) as router:
+        yield router
 
 
 @pytest.fixture(scope="module")
@@ -568,6 +648,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "If omitted, use ASR_CI_MODEL from the environment."
         ),
     )
+    parser.addoption(
+        OMNI_CI_MODEL_OPTION,
+        action="store",
+        default="",
+        help="Select the Omni CI model preset; defaults to OMNI_CI_MODEL or qwen3-omni.",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -581,6 +667,9 @@ def pytest_configure(config: pytest.Config) -> None:
     asr_model_value = config.getoption(ASR_CI_MODEL_OPTION)
     if asr_model_value:
         os.environ["ASR_CI_MODEL"] = _parse_asr_ci_model(asr_model_value)
+    omni_model_value = config.getoption(OMNI_CI_MODEL_OPTION)
+    if omni_model_value:
+        os.environ["OMNI_CI_MODEL"] = _parse_omni_ci_model(omni_model_value)
 
 
 @pytest.fixture(scope="session")
@@ -651,6 +740,15 @@ def _parse_asr_ci_model(option_value: str) -> str:
             f"Use one of {allowed}."
         )
     return normalized_value
+
+
+def _parse_omni_ci_model(option_value: str) -> str:
+    from tests.test_model.omni_ci_config import select_omni_ci_preset
+
+    try:
+        return select_omni_ci_preset(option_value.strip().lower())[0]
+    except ValueError as exc:
+        raise pytest.UsageError(str(exc)) from exc
 
 
 def pytest_collection_modifyitems(

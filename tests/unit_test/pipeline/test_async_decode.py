@@ -21,7 +21,7 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -37,12 +37,12 @@ class _StubRunner(ModelRunner):
 
     def __init__(self):
         self.device = _STUB_DEVICE
-        self._async_enabled = True
-        self._execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
-        self._staging_slot = 0
-        self._host_staging_buffers = []
-        self._async_query_hit = 0
-        self._async_query_miss = 0
+        self.async_enabled = True
+        self.execution_bridge = FakeExecutionBridge(_STUB_DEVICE)
+        self.staging_slot = 0
+        self.host_staging_buffers = []
+        self.async_query_hit = 0
+        self.async_query_miss = 0
         self.launch_calls = 0
         self.resolve_calls = 0
         self.finalize_calls = 0
@@ -50,13 +50,13 @@ class _StubRunner(ModelRunner):
         self.last_prepare_is_lookahead = None
         self.last_skip_rids = None
 
-    def _build_forward_batch(self, scheduler_output):
+    def build_forward_batch(self, scheduler_output):
         sb = types.SimpleNamespace(is_prefill_only=False, input_ids=None)
         sb.copy = lambda: sb
         self.last_schedule_batch = sb
         return types.SimpleNamespace(), sb, False  # decode
 
-    def _prepare_and_forward(
+    def prepare_and_forward(
         self,
         forward_batch,
         schedule_batch,
@@ -82,7 +82,7 @@ class _StubRunner(ModelRunner):
         self.resolve_calls += 1
         self.last_resolved_buf = launch_buf
 
-    def _finalize(
+    def finalize(
         self,
         batch_result,
         forward_batch,
@@ -126,7 +126,7 @@ def test_launch_event_comes_from_the_runners_device_module():
     accel = torch.device(current_platform.device_type)
     runner = _StubRunner()
     runner.device = accel
-    runner._execution_bridge = FakeExecutionBridge(accel)
+    runner.execution_bridge = FakeExecutionBridge(accel)
 
     seen = []
     real_event = torch.get_device_module(accel).Event
@@ -168,10 +168,10 @@ def test_launch_returns_handle_resolve_consumes_it():
         out = r.execute_resolve(step)
     assert out is not None
     assert (r.launch_calls, r.resolve_calls, r.finalize_calls) == (1, 1, 1)
-    assert (r._async_query_hit, r._async_query_miss) == (1, 0)
+    assert (r.async_query_hit, r.async_query_miss) == (1, 0)
     assert r.last_prepare_is_lookahead is True
-    assert len(r._execution_bridge.published) == 1
-    published_batch, published_ids = r._execution_bridge.published[0]
+    assert len(r.execution_bridge.published) == 1
+    published_batch, published_ids = r.execution_bridge.published[0]
     assert published_batch is r.last_schedule_batch
     assert torch.equal(published_ids, torch.tensor([17]))
     # resolve must NOT re-publish the token rail: under launch-first it runs
@@ -208,7 +208,7 @@ def test_query_miss_falls_back_to_synchronize():
         step = r.execute_launch(_sched_output(1))
         r.execute_resolve(step)
     assert step.event.synced is True
-    assert (r._async_query_hit, r._async_query_miss) == (0, 1)
+    assert (r.async_query_hit, r.async_query_miss) == (0, 1)
 
 
 def test_resolve_recomputes_finished_overrun_skip_rids():
@@ -347,7 +347,7 @@ def test_finalize_skips_overrun_bookkeeping_and_extras():
         ]
     )
 
-    runner._finalize(
+    runner.finalize(
         batch_result,
         types.SimpleNamespace(),
         schedule_batch,
@@ -392,7 +392,7 @@ def test_finalize_unions_finalize_skip_rids_hook():
         ]
     )
 
-    runner._finalize(
+    runner.finalize(
         batch_result,
         types.SimpleNamespace(),
         schedule_batch,
@@ -408,10 +408,10 @@ def test_finalize_unions_finalize_skip_rids_hook():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_host_staging_pingpong():
     r = _StubRunner()
-    b0 = r._next_host_staging((8, 18), torch.float32)
-    b1 = r._next_host_staging((8, 18), torch.float32)
-    b2 = r._next_host_staging((8, 18), torch.float32)
-    assert len(r._host_staging_buffers) == 2
+    b0 = r.next_host_staging((8, 18), torch.float32)
+    b1 = r.next_host_staging((8, 18), torch.float32)
+    b2 = r.next_host_staging((8, 18), torch.float32)
+    assert len(r.host_staging_buffers) == 2
     assert b0 is b2 and b0 is not b1  # ping-pong between exactly 2 buffers
     assert b0.is_pinned() and tuple(b0.shape) == (8, 18) and b0.dtype == torch.float32
 
@@ -426,8 +426,8 @@ def test_default_launch_resolve_pinned_snapshot_pingpong():
     launch(N+2) may reuse it only after resolve(N) consumed it.
     """
     r = ModelRunner.__new__(ModelRunner)
-    r._staging_slot = 0
-    r._host_staging_buffers = []
+    r.staging_slot = 0
+    r.host_staging_buffers = []
     reqs = [object(), object()]
 
     def _result(vals):
@@ -455,8 +455,8 @@ def test_default_launch_resolve_pinned_snapshot_pingpong():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned memory requires CUDA")
 def test_default_launch_staging_grows_then_slices_to_smaller_batch():
     r = ModelRunner.__new__(ModelRunner)
-    r._staging_slot = 0
-    r._host_staging_buffers = []
+    r.staging_slot = 0
+    r.host_staging_buffers = []
     big = types.SimpleNamespace(
         next_token_ids=torch.tensor([1, 2, 3, 4], device="cuda"), logits_output=None
     )
@@ -618,7 +618,7 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
         batch = _StaleDecodeBatch(
             [survivor, finished, retracted], torch.tensor(step_slots)
         )
-        out = s._drop_stale_overrun(batch)
+        out = s.drop_stale_overrun(batch)
 
         assert out is batch
         assert [req.rid for req in out.reqs] == ["s"]
@@ -638,7 +638,7 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
         assert free.count(step_slots[2]) == 1 and step_slots[2] not in cached
 
         assert (
-            s._drop_stale_overrun(
+            s.drop_stale_overrun(
                 _StaleDecodeBatch([finished, retracted], torch.tensor(step_slots[1:]))
             )
             is None
@@ -648,7 +648,7 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
             == total - survivor_slots
         )
         clean = _StaleDecodeBatch([survivor], torch.tensor(step_slots[:1]))
-        assert s._drop_stale_overrun(clean) is clean
+        assert s.drop_stale_overrun(clean) is clean
 
 
 def test_batch_is_decode():
@@ -662,20 +662,21 @@ def test_batch_is_decode():
             is_decode=lambda: False, is_extend=lambda: True
         )
     )
-    assert OmniScheduler._batch_is_decode(decode) is True
-    assert OmniScheduler._batch_is_decode(extend) is False
+    assert OmniScheduler.batch_is_decode(decode) is True
+    assert OmniScheduler.batch_is_decode(extend) is False
     assert (
-        OmniScheduler._batch_is_decode(types.SimpleNamespace(forward_mode=None))
-        is False
+        OmniScheduler.batch_is_decode(types.SimpleNamespace(forward_mode=None)) is False
     )
 
 
 def test_async_pending_batch_uses_initialized_state():
     s = OmniScheduler.__new__(OmniScheduler)
-    s._async_pending = None
-    assert s._async_pending_batch() is None
-    s._async_pending = ("batchX", "sched_out", "pending_step")
-    assert s._async_pending_batch() == "batchX"
+    s.async_pending = None
+    assert s.async_pending_batch() is None
+    s.async_pending = PendingDecode(
+        batch="batchX", scheduler_output="sched_out", device_step="pending_step"
+    )
+    assert s.async_pending_batch() == "batchX"
 
 
 # ---------------------------------------------------------------------------
@@ -716,13 +717,13 @@ class _FakeBatch:
 
 def _new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
-    s._sleep_during_idle = lambda: None
-    s._admin_lock = threading.Lock()
-    s._admin_queue = queue.Queue()
-    s._request_admission_lock = threading.RLock()
-    s._pending_request_builds = {}
-    s._pending_request_admissions = {}
-    s._model_runner = None
+    s.sleep_during_idle = lambda: None
+    s.admin_lock = threading.Lock()
+    s.admin_queue = queue.Queue()
+    s.request_admission_lock = threading.RLock()
+    s.pending_request_builds = {}
+    s.pending_request_admissions = {}
+    s.model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False
     s.page_size = 1
@@ -738,16 +739,16 @@ def _drive_loop(seq, min_bs=2):
     and return the ordered list of path events taken."""
     events = []
     s = _new_scheduler_for_async_loop()
-    s._running = True
+    s.running = True
     s._engine_paused = False
-    s._async_pending = None
+    s.async_pending = None
     s.async_decode_min_batch_size = min_bs
     s.cur_batch = None
     s.last_batch = None
     s.recv_requests = lambda: []
-    s._take_deferred_request_payloads = lambda: []
+    s.take_deferred_request_payloads = lambda: []
     s.process_input_requests = lambda r: None
-    s._batch_is_decode = lambda b: True
+    s.batch_is_decode = lambda b: True
     s.self_check_during_idle = lambda: events.append("idle")
     s.self_check_during_busy = lambda: None
 
@@ -755,10 +756,10 @@ def _drive_loop(seq, min_bs=2):
         events.append("launch")
         return ("sched_output", "pending_step")
 
-    s._run_batch_launch = launch
-    s._resolve_and_process = lambda pb, ps, pstep: events.append("resolve")
+    s.run_batch_launch = launch
+    s.resolve_and_process = lambda pb, ps, pstep: events.append("resolve")
     # use the REAL drain helper so the bs>=2 -> bs=1 transition is exercised
-    s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
+    s.resolve_pending_async = OmniScheduler.resolve_pending_async.__get__(s)
 
     def run_batch(b):
         events.append("sync")
@@ -774,11 +775,11 @@ def _drive_loop(seq, min_bs=2):
         i = state["i"]
         state["i"] += 1
         if i >= len(batches) - 1:
-            s._running = False  # stop after the final scripted item
+            s.running = False  # stop after the final scripted item
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
     return events, s
 
 
@@ -796,7 +797,7 @@ def test_fast_path_bs1_bypasses_lookahead_and_drains_on_transition():
         "idle",  # empty
     ]
     # the in-flight step was drained -> no pending left stranded
-    assert s._async_pending is None
+    assert s.async_pending is None
 
 
 def test_fast_path_threshold_one_keeps_all_decode_on_lookahead():
@@ -816,15 +817,15 @@ def test_fast_path_threshold_four_routes_bs1_to_3_sync():
 def test_custom_logit_processor_transitions_async_sync_async():
     events = []
     s = _scaffold_async_loop()
-    s._model_runner = _StubRunner()
+    s.model_runner = _StubRunner()
     launch_events = iter(("launch async N", "launch async N+2"))
 
     def launch_async(batch):
         events.append(next(launch_events))
         return "sched_output", "pending_step"
 
-    s._run_batch_launch = launch_async
-    s._resolve_and_process = lambda *args: events.append("resolve N")
+    s.run_batch_launch = launch_async
+    s.resolve_and_process = lambda *args: events.append("resolve N")
     s.run_batch = lambda batch: events.append("run sync N+1") or object()
     s.process_batch_result = lambda batch, result: None
 
@@ -837,11 +838,11 @@ def test_custom_logit_processor_transitions_async_sync_async():
         i = state["i"]
         state["i"] += 1
         if i == len(batches) - 1:
-            s._running = False
+            s.running = False
         return batches[i]
 
     s.get_next_batch_to_run = get_next_batch_to_run
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     assert events == [
         "launch async N",
@@ -873,14 +874,16 @@ def test_pending_decode_drain_order_for_prefill(
     events = []
     pending_during_schedule = []
     pending_batch = _FakeBatch(2)
-    pending = (pending_batch, "prev_sched", "prev_step")
+    pending = PendingDecode(
+        batch=pending_batch, scheduler_output="prev_sched", device_step="prev_step"
+    )
     s = _scaffold_async_loop(async_pending=pending)
     s.is_mixed_chunk = is_mixed_chunk
     s.running_batch.batch_is_full = batch_is_full
     s.waiting_queue = [object()] if prefill_source == "waiting" else []
     s.chunked_req = object() if prefill_source == "chunked" else None
-    s._batch_is_decode = lambda batch: False
-    s._resolve_and_process = lambda *args: events.append("resolve")
+    s.batch_is_decode = lambda batch: False
+    s.resolve_and_process = lambda *args: events.append("resolve")
     s.process_batch_result = lambda batch, result: None
 
     def run_batch(batch):
@@ -891,12 +894,12 @@ def test_pending_decode_drain_order_for_prefill(
 
     def get_next_batch_to_run():
         events.append("schedule")
-        pending_during_schedule.append(s._async_pending)
-        s._running = False
+        pending_during_schedule.append(s.async_pending)
+        s.running = False
         return _FakeBatch(1)
 
     s.get_next_batch_to_run = get_next_batch_to_run
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     expected_events = (
         ["schedule", "resolve", "prefill"]
@@ -911,26 +914,28 @@ def test_pending_decode_drain_order_for_prefill(
 def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     events = []
     pending_batch = _FakeBatch(2)
-    pending = (pending_batch, "prev_sched", "prev_step")
+    pending = PendingDecode(
+        batch=pending_batch, scheduler_output="prev_sched", device_step="prev_step"
+    )
     s = _scaffold_async_loop(async_pending=pending)
     s.is_mixed_chunk = True
     s.running_batch.batch_is_full = True
     s.waiting_queue = [object()]
-    s._resolve_and_process = lambda *args: events.append("resolve")
+    s.resolve_and_process = lambda *args: events.append("resolve")
 
     def launch(batch):
         events.append("launch")
         return "sched_output", "pending_step"
 
-    s._run_batch_launch = launch
+    s.run_batch_launch = launch
 
     def get_next_batch_to_run():
-        events.append(("schedule", s._async_pending is pending))
-        s._running = False
+        events.append(("schedule", s.async_pending is pending))
+        s.running = False
         return _FakeBatch(2)
 
     s.get_next_batch_to_run = get_next_batch_to_run
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     assert events == [("schedule", True), "launch", "resolve"]
 
@@ -949,11 +954,11 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
 class _DFReq:
     def __init__(self, name):
         self.name = name
-        self._done = False
+        self.done = False
         self.is_retracted = False
 
     def finished(self):
-        return self._done
+        return self.done
 
 
 class _DFBatch:
@@ -995,21 +1000,21 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
         freed.add(req.name)
 
     s = _new_scheduler_for_async_loop()
-    s._running = True
+    s.running = True
     s._engine_paused = False
-    s._async_pending = None
+    s.async_pending = None
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
     s.recv_requests = lambda: []
-    s._take_deferred_request_payloads = lambda: []
+    s.take_deferred_request_payloads = lambda: []
     s.process_input_requests = lambda r: None
-    s._batch_is_decode = lambda b: True
+    s.batch_is_decode = lambda b: True
     s.self_check_during_idle = lambda: None
     s.self_check_during_busy = lambda: None
-    s._run_batch_launch = lambda b: ("sched_output", "pending_step")
+    s.run_batch_launch = lambda b: ("sched_output", "pending_step")
     # real drain helper -> exercises the real fast-path ordering under test
-    s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
+    s.resolve_pending_async = OmniScheduler.resolve_pending_async.__get__(s)
 
     # Resolving a step finishes the next scheduled req and frees its KV (mirrors
     # process_batch_result_decode -> release_kv_cache). other finishes first
@@ -1019,12 +1024,12 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     def resolve_and_process(pb, ps, pstep):
         if finish_order:
             r = finish_order.pop(0)
-            r._done = True
+            r.done = True
             release_kv(r)
             if r in running:
                 running.remove(r)
 
-    s._resolve_and_process = resolve_and_process
+    s.resolve_and_process = resolve_and_process
 
     s.run_batch = lambda b: object()  # not _FAILED_BATCH_RESULT
 
@@ -1043,31 +1048,31 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     def gnb():
         state["i"] += 1
         if not running:
-            s._running = False
+            s.running = False
             return None
         return _DFBatch(list(running))
 
     s.get_next_batch_to_run = gnb
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     assert not double_freed, f"KV double-freed (stale fast-path batch): {double_freed}"
 
 
 def _scaffold_async_loop(*, async_pending=None):
     s = _new_scheduler_for_async_loop()
-    s._running = True
+    s.running = True
     s._engine_paused = False
-    s._async_pending = async_pending
+    s.async_pending = async_pending
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
     s.recv_requests = lambda: []
-    s._take_deferred_request_payloads = lambda: []
+    s.take_deferred_request_payloads = lambda: []
     s.process_input_requests = lambda r: None
-    s._batch_is_decode = lambda b: True
+    s.batch_is_decode = lambda b: True
     s.self_check_during_idle = lambda: None
     s.self_check_during_busy = lambda: None
-    s._resolve_pending_async = OmniScheduler._resolve_pending_async.__get__(s)
+    s.resolve_pending_async = OmniScheduler.resolve_pending_async.__get__(s)
     return s
 
 
@@ -1078,9 +1083,9 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
     def launch(b):
         raise RuntimeError("launch boom")
 
-    s._run_batch_launch = launch
-    s._resolve_and_process = lambda *a, **kw: None
-    s._handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
+    s.run_batch_launch = launch
+    s.resolve_and_process = lambda *a, **kw: None
+    s.handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
 
     batch = _FakeBatch(2)
     batches = [batch]
@@ -1090,31 +1095,33 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
         i = state["i"]
         state["i"] += 1
         if i >= 0:
-            s._running = False
+            s.running = False
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     assert failures == [(batch, RuntimeError, "launch boom")]
-    # launch failed before _async_pending was set; prev state preserved.
-    assert s._async_pending is None
+    # launch failed before async_pending was set; prev state preserved.
+    assert s.async_pending is None
 
 
 def test_async_path_resolve_failure_calls_handle_batch_failure():
     failures = []
     prev_batch = _FakeBatch(2)
     s = _scaffold_async_loop(
-        async_pending=(prev_batch, "prev_sched", "prev_step"),
+        async_pending=PendingDecode(
+            batch=prev_batch, scheduler_output="prev_sched", device_step="prev_step"
+        ),
     )
 
-    s._run_batch_launch = lambda b: ("sched_output", "pending_step")
+    s.run_batch_launch = lambda b: ("sched_output", "pending_step")
 
     def resolve(pb, ps, pstep):
         raise RuntimeError("resolve boom")
 
-    s._resolve_and_process = resolve
-    s._handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
+    s.resolve_and_process = resolve
+    s.handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
 
     new_batch = _FakeBatch(2)
     batches = [new_batch]
@@ -1124,34 +1131,36 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
         i = state["i"]
         state["i"] += 1
         if i >= 0:
-            s._running = False
+            s.running = False
         return batches[i] if i < len(batches) else None
 
     s.get_next_batch_to_run = gnb
-    s._event_loop_async_decode()
+    s.event_loop_async_decode()
 
     assert failures == [(prev_batch, RuntimeError, "resolve boom")]
-    # launch succeeded; _async_pending was rotated to the new batch.
-    assert s._async_pending is not None
-    assert s._async_pending[0] is new_batch
+    # launch succeeded; async_pending was rotated to the new batch.
+    assert s.async_pending is not None
+    assert s.async_pending.batch is new_batch
 
 
 def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = _FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
-    s._async_pending = (stranded_batch, "sched", "step")
+    s.async_pending = PendingDecode(
+        batch=stranded_batch, scheduler_output="sched", device_step="step"
+    )
 
     def resolve(pb, ps, pstep):
         raise RuntimeError("drain boom")
 
-    s._resolve_and_process = resolve
-    s._handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
+    s.resolve_and_process = resolve
+    s.handle_batch_failure = lambda b, exc: failures.append((b, type(exc), str(exc)))
 
-    OmniScheduler._resolve_pending_async(s)
+    OmniScheduler.resolve_pending_async(s)
 
     assert failures == [(stranded_batch, RuntimeError, "drain boom")]
-    assert s._async_pending is None
+    assert s.async_pending is None
 
 
 class _MixedBatch:
@@ -1208,7 +1217,7 @@ def _drop_stale_scheduler():
 def test_drop_stale_overrun_mixed_reslices_per_token():
     s = _drop_stale_scheduler()
     batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
     assert out is batch
     assert out.out_cache_loc.tolist() == [100, 101, 102, 104]
     assert out.input_ids.tolist() == [0, 1, 2, 4]
@@ -1221,7 +1230,7 @@ def test_drop_stale_overrun_mixed_reslices_per_token():
 def test_drop_stale_overrun_extend_multitoken_drop():
     s = _drop_stale_scheduler()
     batch = _MixedBatch(lens=[2, 3], done=[True, False])
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
     assert out.out_cache_loc.tolist() == [102, 103, 104]
     assert out.input_ids.tolist() == [2, 3, 4]
     assert out.extend_lens == [3]
@@ -1235,7 +1244,7 @@ def test_drop_stale_overrun_reslices_deferred_prefill_tokens():
     batch.prefill_input_ids_cpu = batch.input_ids
     batch.input_ids = None
 
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
 
     assert out.input_ids is None
     assert out.prefill_input_ids_cpu.tolist() == [2, 3, 4]
@@ -1247,7 +1256,7 @@ def test_drop_stale_overrun_rejects_mixed_deferred_prefill():
     batch.mix_running_indices = torch.tensor([1])
 
     with pytest.raises(RuntimeError, match="mixed chunked-prefill"):
-        s._drop_stale_overrun(batch)
+        s.drop_stale_overrun(batch)
 
 
 def test_drop_stale_overrun_reslices_logprob_token_ids():
@@ -1259,7 +1268,7 @@ def test_drop_stale_overrun_reslices_logprob_token_ids():
         logprob=[True, True, True],
     )
     assert batch.extend_input_logprob_token_ids.tolist() == [100, 101, 200, 201]
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
     assert out.extend_input_logprob_token_ids.tolist() == [100, 101]
     assert out.extend_lens == [3, 2]
     assert out.extend_logprob_start_lens == [1, 2]
@@ -1268,7 +1277,7 @@ def test_drop_stale_overrun_reslices_logprob_token_ids():
 def test_drop_stale_overrun_drops_last_logprob_req():
     s = _drop_stale_scheduler()
     batch = _MixedBatch(lens=[2, 2], done=[True, False], logprob=[True, False])
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
     assert out.return_logprob is False
     assert out.extend_input_logprob_token_ids is None
 
@@ -1279,5 +1288,5 @@ def test_drop_stale_overrun_filters_decoding_reqs():
     batch = _MixedBatch(lens=[3, 1, 1], done=[False, True, False])
     batch.decoding_reqs = [batch.reqs[1], batch.reqs[2]]
     live_decode = batch.reqs[2]
-    out = s._drop_stale_overrun(batch)
+    out = s.drop_stale_overrun(batch)
     assert out.decoding_reqs == [live_decode]

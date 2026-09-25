@@ -111,7 +111,7 @@ def test_qwen3_asr_audio_token_length_formula_is_shared() -> None:
     processor = object.__new__(Qwen3ASRProcessor)
 
     assert torch.equal(qwen3_asr_audio_token_lengths(lengths), expected)
-    assert torch.equal(processor._get_feat_extract_output_lengths(lengths), expected)
+    assert torch.equal(processor.get_feat_extract_output_lengths(lengths), expected)
     assert qwen3_asr_num_audio_tokens(3000) == 390
 
 

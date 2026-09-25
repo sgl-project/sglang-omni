@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.19 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.20 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.19
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.20
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -125,8 +125,8 @@ Two SGLang generation-stage knobs bound how the server behaves past saturation:
 
 | Knob | Meaning | Qwen3-TTS default |
 |---|---|---|
-| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `16` |
-| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `16` |
+| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `64` |
+| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `64` |
 
 Every request enters the waiting queue first, so `max_queued_requests`
 must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
@@ -136,12 +136,12 @@ defaults to 4 request-build workers with pending depth 16.
 
 ### Breakable prefill CUDA graphs
 
-Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
-prefill CUDA-graph backend with a token ladder up to 512:
+Every Qwen3-TTS checkpoint (Base, CustomVoice, VoiceDesign) defaults to the
+breakable prefill CUDA-graph backend with a token ladder up to 512:
 
 | Knob | Meaning | Default |
 |---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
+| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` |
 | `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
 | `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
 
@@ -153,18 +153,13 @@ are exactly one token, and they are the only shapes that fall back: 2 and
 3 already replay inside bucket 4. Adding the single `1` bucket takes the
 fallback rate to zero.
 
-Only CustomVoice takes this default, selected by the checkpoint's
-`tts_model_type`. Base prefills also carry reference audio, so their shape
-distribution differs, and VoiceDesign has not been measured; both keep the
-eager path.
-
 Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
 default costs extra graph capture during startup. Raising
 `cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
 new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
 
-Raising `max_running_requests` does **not** automatically raise the waiting
-bound. For a ceiling-32 experiment:
+To change the ceiling, set `max_running_requests` and `max_queued_requests`
+together:
 
 ```bash
 sgl-omni serve \

@@ -23,11 +23,13 @@ if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
     from sglang_omni.proto import StagePayload
     from sglang_omni.scheduling.bootstrap import InfrastructureOptions
-    from sglang_omni.scheduling.messages import OutgoingMessage
+    from sglang_omni.scheduling.message import OutgoingMessage
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
     from sglang_omni.scheduling.types import RequestOutput
+else:
+    pass
 
 
 class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
@@ -48,6 +50,8 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
         # only when a budget is declared, so the single-process path is untouched.
         if self.total_gpu_memory_fraction is None:
             return {}
+        else:
+            pass
         return {"total_gpu_memory_fraction": self.total_gpu_memory_fraction}
 
     def resolve_context_length(
@@ -87,13 +91,13 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
         server_args: object,
     ) -> None:
         del checkpoint_dir, device, gpu_id, server_args
-        self._model_runner = model_worker.model_runner
+        self.model_runner = model_worker.model_runner
 
     def post_cuda_graph_setup(
         self, model: MossTTSDelaySGLangModel, server_args: object
     ) -> None:
         del server_args
-        graph_runner = self._model_runner.decode_cuda_graph_runner
+        graph_runner = self.model_runner.decode_cuda_graph_runner
         model.init_sampling_graphs(
             list(graph_runner.capture_bs),
             disable_padding=graph_runner.disable_padding,
@@ -114,7 +118,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
         Callable[[StagePayload], MossTTSSGLangRequestData],
         Callable[[MossTTSSGLangRequestData], StagePayload],
     ]:
-        self._stream_output_builder = (
+        self.stream_output_builder = (
             request_builders.make_moss_tts_stream_output_builder()
         )
         return request_builders.make_moss_tts_scheduler_adapters(model=model)
@@ -128,7 +132,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder["MossTTSSGLangRequestData"]):
             list[OutgoingMessage],
         ],
     ]:
-        return {"stream_output_builder": self._stream_output_builder}
+        return {"stream_output_builder": self.stream_output_builder}
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_moss_tts_request

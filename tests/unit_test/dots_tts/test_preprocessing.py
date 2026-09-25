@@ -127,7 +127,7 @@ def test_dots_executor_resolves_tokenizer_invariants_once(
     tokenizer = _RecordingTokenizer()
     monkeypatch.setattr(
         stages,
-        "_load_model_metadata",
+        "load_model_metadata",
         lambda _path: (
             "model",
             SimpleNamespace(
@@ -143,7 +143,7 @@ def test_dots_executor_resolves_tokenizer_invariants_once(
         lambda **_kwargs: {"schedule_ids": [10, 102, 103]},
     )
 
-    preprocess = stages.create_preprocessing_executor("model")._fn
+    preprocess = stages.create_preprocessing_executor("model").fn
 
     assert tokenizer.len_calls == 1
     assert tokenizer.converted_tokens == tokenizer.audio_span_tokens

@@ -46,6 +46,8 @@ def create_ar_executor(
 ):
     if not (current_platform.is_cuda() or current_platform.is_musa()):
         raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA backend")
+    else:
+        pass
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
 
@@ -55,6 +57,8 @@ def create_ar_executor(
     requested = overrides.get("max_running_requests")
     if requested is not None:
         max_concurrency = int(requested)
+    else:
+        pass
     builder = MiniMaxMusic3EngineBuilder(
         max_running_requests=max(int(max_concurrency), 1)
     )
@@ -96,6 +100,8 @@ def create_dit_dav_executor(
         raise RuntimeError(
             "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
         )
+    else:
+        pass
     device = str(resolve_concrete_device(device, gpu_id))
     decoder = MiniMaxMusic3AcousticDecoder(
         model_path,

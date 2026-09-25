@@ -20,6 +20,8 @@ if TYPE_CHECKING:
         Qwen3TTSTokenizerV2DecoderDecoderResidualUnit,
         Qwen3TTSTokenizerV2DecoderTransformerModel,
     )
+else:
+    pass
 
 
 @dataclass(frozen=True)
@@ -76,18 +78,24 @@ class Qwen3TTSIncrementalCodecState:
             return torch.full(
                 (batch_size,), self.frame_position, device=device, dtype=torch.long
             )
+        else:
+            pass
         if int(self.frame_positions.shape[0]) != batch_size:
             raise ValueError(
                 "Qwen3-TTS incremental codec state carries "
                 f"{int(self.frame_positions.shape[0])} row positions for a batch "
                 f"of {batch_size}"
             )
+        else:
+            pass
         return self.frame_positions.to(device=device, dtype=torch.long)
 
     def advance(self, fresh_frames: int) -> None:
         self.frame_position += fresh_frames
         if self.frame_positions is not None:
             self.frame_positions = self.frame_positions + fresh_frames
+        else:
+            pass
 
     def clone(self) -> Qwen3TTSIncrementalCodecState:
         return Qwen3TTSIncrementalCodecState(
@@ -121,6 +129,8 @@ def incremental_causal_conv1d(
     stride = int(conv.stride[0])
     if stride != 1:
         raise ValueError(f"incremental causal Conv1d requires stride=1, got {stride}")
+    else:
+        pass
     history_size = int(module.padding)
     history = state.conv_histories.get(key)
     if history is None:
@@ -129,6 +139,8 @@ def incremental_causal_conv1d(
         )
     elif history.shape[:-1] != hidden_states.shape[:-1]:
         raise ValueError(f"incremental causal Conv1d state shape changed for {key}")
+    else:
+        pass
 
     combined = torch.cat((history, hidden_states), dim=-1)
     output = conv(combined).contiguous()
@@ -136,6 +148,8 @@ def incremental_causal_conv1d(
         raise RuntimeError(
             f"incremental causal Conv1d changed temporal length for {key}"
         )
+    else:
+        pass
     state.conv_histories[key] = (
         combined[..., -history_size:].clone()
         if history_size
@@ -169,8 +183,12 @@ def incremental_causal_transconv1d(
             raise ValueError(
                 f"incremental causal ConvTranspose1d state shape changed for {key}"
             )
+        else:
+            pass
         overlap_length = int(overlap.shape[-1])
         output[..., :overlap_length] += overlap
+    else:
+        pass
 
     emit_length = int(hidden_states.shape[-1]) * stride
     emitted = output[..., :emit_length]
@@ -179,13 +197,17 @@ def incremental_causal_transconv1d(
         raise RuntimeError(
             f"incremental causal ConvTranspose1d produced the wrong overlap for {key}"
         )
+    else:
+        pass
     state.transconv_overlaps[key] = tail.clone()
     if conv.bias is not None:
         emitted = emitted + conv.bias.view(1, -1, 1)
+    else:
+        pass
     return emitted.contiguous()
 
 
-def _apply_rotary_pos_emb(
+def apply_rotary_pos_emb(
     query: torch.Tensor,
     key: torch.Tensor,
     cos: torch.Tensor,
@@ -204,9 +226,11 @@ def _apply_rotary_pos_emb(
     )
 
 
-def _repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
+def repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
     if groups == 1:
         return hidden_states
+    else:
+        pass
     batch, heads, length, head_dim = hidden_states.shape
     hidden_states = hidden_states[:, :, None, :, :].expand(
         batch, heads, groups, length, head_dim
@@ -214,7 +238,7 @@ def _repeat_kv(hidden_states: torch.Tensor, groups: int) -> torch.Tensor:
     return hidden_states.reshape(batch, heads * groups, length, head_dim)
 
 
-def _incremental_attention(
+def incremental_attention(
     attention: "Qwen3TTSTokenizerV2DecoderAttention",
     hidden_states: torch.Tensor,
     position_embeddings: tuple[torch.Tensor, torch.Tensor],
@@ -235,7 +259,7 @@ def _incremental_attention(
     query = query.transpose(1, 2)
     key = key.transpose(1, 2)
     value = value.transpose(1, 2)
-    query, key = _apply_rotary_pos_emb(
+    query, key = apply_rotary_pos_emb(
         query, key, position_embeddings[0], position_embeddings[1]
     )
 
@@ -243,17 +267,23 @@ def _incremental_attention(
     prior_value = state.transformer_values.get(layer_index)
     if (prior_key is None) != (prior_value is None):
         raise RuntimeError(f"incomplete transformer state for layer {layer_index}")
+    else:
+        pass
     if prior_key is not None:
         key = torch.cat((prior_key, key), dim=-2)
         value = torch.cat((prior_value, value), dim=-2)
+    else:
+        pass
 
     if int(key.shape[-2]) != int(key_positions.shape[-1]):
         raise RuntimeError(
             f"incremental transformer state length {int(key.shape[-2])} does not "
             f"match {int(key_positions.shape[-1])} key positions"
         )
-    repeated_key = _repeat_kv(key, int(attention.num_key_value_groups))
-    repeated_value = _repeat_kv(value, int(attention.num_key_value_groups))
+    else:
+        pass
+    repeated_key = repeat_kv(key, int(attention.num_key_value_groups))
+    repeated_value = repeat_kv(value, int(attention.num_key_value_groups))
     scores = torch.matmul(query, repeated_key.transpose(2, 3)) * float(
         attention.scaling
     )
@@ -263,6 +293,8 @@ def _incremental_attention(
     sliding_window = int(attention.sliding_window)
     if sliding_window > 0:
         allowed &= keys_by_row > (queries_by_row - sliding_window)
+    else:
+        pass
     # Note (Qihao Liu): a right-aligned K/V buffer that a stream has not filled
     # yet holds zeros whose nominal absolute position is negative. Those slots
     # would otherwise satisfy both tests above for an early query, so mask them
@@ -278,7 +310,7 @@ def _incremental_attention(
     return attention.o_proj(output), key, value
 
 
-def _incremental_transformer(
+def incremental_transformer(
     transformer: "Qwen3TTSTokenizerV2DecoderTransformerModel",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
@@ -310,7 +342,7 @@ def _incremental_transformer(
     for layer_index, layer in enumerate(transformer.layers):
         residual = hidden_states
         normalized = layer.input_layernorm(hidden_states)
-        attended, key, value = _incremental_attention(
+        attended, key, value = incremental_attention(
             layer.self_attn,
             normalized,
             position_embeddings,
@@ -340,7 +372,7 @@ def _incremental_transformer(
     return transformer.output_proj(transformer.norm(hidden_states))
 
 
-def _incremental_convnext(
+def incremental_convnext(
     module: "Qwen3TTSTokenizerV2ConvNeXtBlock",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
@@ -358,7 +390,7 @@ def _incremental_convnext(
     return residual + hidden_states.permute(0, 2, 1)
 
 
-def _incremental_residual_unit(
+def incremental_residual_unit(
     module: "Qwen3TTSTokenizerV2DecoderDecoderResidualUnit",
     hidden_states: torch.Tensor,
     state: Qwen3TTSIncrementalCodecState,
@@ -378,7 +410,7 @@ def _incremental_residual_unit(
 
 class Qwen3TTSIncrementalDecoder:
     def __init__(self, decoder: "Qwen3TTSTokenizerV2Decoder") -> None:
-        self._require_attrs(
+        self.require_attrs(
             decoder,
             "decoder",
             "quantizer",
@@ -390,8 +422,10 @@ class Qwen3TTSIncrementalDecoder:
         )
         if len(decoder.decoder) < 3:
             raise TypeError("unsupported Qwen3-TTS decoder layout")
-        self._require_attrs(decoder.pre_conv, "pre_conv", "conv", "padding")
-        self._require_attrs(
+        else:
+            pass
+        self.require_attrs(decoder.pre_conv, "pre_conv", "conv", "padding")
+        self.require_attrs(
             decoder.pre_transformer,
             "pre_transformer",
             "input_proj",
@@ -402,7 +436,7 @@ class Qwen3TTSIncrementalDecoder:
             "window_size",
         )
         for layer_index, layer in enumerate(decoder.pre_transformer.layers):
-            self._require_attrs(
+            self.require_attrs(
                 layer,
                 f"pre_transformer.layers.{layer_index}",
                 "input_layernorm",
@@ -412,7 +446,7 @@ class Qwen3TTSIncrementalDecoder:
                 "mlp",
                 "mlp_layer_scale",
             )
-            self._require_attrs(
+            self.require_attrs(
                 layer.self_attn,
                 f"pre_transformer.layers.{layer_index}.self_attn",
                 "head_dim",
@@ -429,10 +463,12 @@ class Qwen3TTSIncrementalDecoder:
         for stage_index, blocks in enumerate(decoder.upsample):
             if len(blocks) != 2:
                 raise TypeError("unsupported Qwen3-TTS upsample layout")
-            self._require_attrs(
+            else:
+                pass
+            self.require_attrs(
                 blocks[0], f"upsample.{stage_index}.0", "conv", "right_pad"
             )
-            self._require_attrs(
+            self.require_attrs(
                 blocks[1],
                 f"upsample.{stage_index}.1",
                 "dwconv",
@@ -442,19 +478,21 @@ class Qwen3TTSIncrementalDecoder:
                 "pwconv2",
                 "gamma",
             )
-        self._require_attrs(decoder.decoder[0], "decoder.0", "conv", "padding")
-        self._require_attrs(decoder.decoder[-1], "decoder.final", "conv", "padding")
+        self.require_attrs(decoder.decoder[0], "decoder.0", "conv", "padding")
+        self.require_attrs(decoder.decoder[-1], "decoder.final", "conv", "padding")
         for block_index, block in enumerate(decoder.decoder[1:-2], start=1):
             if not hasattr(block, "block") or len(block.block) < 2:
                 raise TypeError("unsupported Qwen3-TTS decoder block layout")
-            self._require_attrs(
+            else:
+                pass
+            self.require_attrs(
                 block.block[1],
                 f"decoder.{block_index}.1",
                 "conv",
                 "right_pad",
             )
             for residual_index, residual in enumerate(block.block[2:]):
-                self._require_attrs(
+                self.require_attrs(
                     residual,
                     f"decoder.{block_index}.{residual_index + 2}",
                     "act1",
@@ -462,22 +500,26 @@ class Qwen3TTSIncrementalDecoder:
                     "act2",
                     "conv2",
                 )
-        self._decoder = decoder
+        self.decoder = decoder
         self.total_upsample = int(decoder.total_upsample)
-        self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = None
-        self._compiled_kernel: (
+        self._state_spec: Qwen3TTSIncrementalCodecStateSpec | None = (
+            None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
+        self.compiled_kernel: (
             Callable[[torch.Tensor, Qwen3TTSIncrementalCodecState], torch.Tensor] | None
         ) = None
-        self._compiled_shapes: set[tuple[int, int]] = set()
+        self.compiled_shapes: set[tuple[int, int]] = set()
 
     @staticmethod
-    def _require_attrs(module: object, path: str, *names: str) -> None:
+    def require_attrs(module: object, path: str, *names: str) -> None:
         missing = [name for name in names if not hasattr(module, name)]
         if missing:
             raise TypeError(
                 "unsupported Qwen3-TTS decoder layout; "
                 f"{path} is missing {', '.join(missing)}"
             )
+        else:
+            pass
 
     def state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
         """Describe one stream's state without running a decode.
@@ -487,12 +529,20 @@ class Qwen3TTSIncrementalDecoder:
         from them. This walks the validated module tree in the same order
         ``decode`` does and derives every key and shape statically.
         """
-        if self._state_spec is None:
-            self._state_spec = self._build_state_spec()
-        return self._state_spec
+        if (
+            self._state_spec is None
+        ):  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self._state_spec = (
+                self.build_state_spec()
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        else:
+            pass
+        return (
+            self._state_spec
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
-    def _build_state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
-        decoder = self._decoder
+    def build_state_spec(self) -> Qwen3TTSIncrementalCodecStateSpec:
+        decoder = self.decoder
         conv: list[tuple[str, int, int]] = []
         transconv: list[tuple[str, int, int]] = []
 
@@ -528,6 +578,8 @@ class Qwen3TTSIncrementalDecoder:
                 "unsupported Qwen3-TTS decoder layout; k_proj width "
                 f"{key_features} is not a multiple of head_dim {head_dim}"
             )
+        else:
+            pass
         return Qwen3TTSIncrementalCodecStateSpec(
             conv_histories=tuple(conv),
             transconv_overlaps=tuple(transconv),
@@ -591,31 +643,41 @@ class Qwen3TTSIncrementalDecoder:
             raise ValueError(
                 "Qwen3-TTS incremental codec decoding requires codes shaped [B, Q, T]"
             )
+        else:
+            pass
         if int(codes.shape[0]) < 1:
             raise ValueError(
                 "Qwen3-TTS incremental codec decoding requires at least one row"
             )
+        else:
+            pass
         fresh_frames = int(codes.shape[-1])
         if fresh_frames <= 0:
             raise ValueError(
                 "Qwen3-TTS incremental codec decoding requires fresh frames"
             )
+        else:
+            pass
         # note (luojiaxuan): the compiled kernel is opt-in per call. Only the
         # graph runner asks for it, at capture time, on static buffers; every
         # eager decode stays off Dynamo, whose value guards would otherwise
         # recompile once per stream position and hit the recompile limit.
         shape = (int(codes.shape[0]), fresh_frames)
-        if compiled and shape not in self._compiled_shapes:
+        if compiled and shape not in self.compiled_shapes:
             raise RuntimeError(
                 f"Qwen3-TTS incremental codec shape {shape} was not precompiled"
             )
-        kernel = self._compiled_kernel if compiled else self._decode_tensors
+        else:
+            pass
+        kernel = self.compiled_kernel if compiled else self.decode_tensors
         waveform = kernel(codes, state)
         expected_samples = fresh_frames * self.total_upsample
         if int(waveform.shape[-1]) != expected_samples:
             raise RuntimeError(
                 "Qwen3-TTS incremental codec decoder returned the wrong sample count"
             )
+        else:
+            pass
         state.transformer_context_length = min(
             self.state_spec().retained_context,
             state.transformer_context_length + fresh_frames,
@@ -623,7 +685,7 @@ class Qwen3TTSIncrementalDecoder:
         state.advance(fresh_frames)
         return waveform
 
-    def _decode_tensors(
+    def decode_tensors(
         self,
         codes: torch.Tensor,
         state: Qwen3TTSIncrementalCodecState,
@@ -634,27 +696,29 @@ class Qwen3TTSIncrementalDecoder:
         they are the Python scalars that change every step, and inside the
         traced region each distinct value would force a recompile.
         """
-        hidden_states = self._decoder.quantizer.decode(codes)
+        hidden_states = self.decoder.quantizer.decode(codes)
         hidden_states = incremental_causal_conv1d(
-            self._decoder.pre_conv,
+            self.decoder.pre_conv,
             hidden_states,
             state,
             "pre_conv",
         ).transpose(1, 2)
-        hidden_states = _incremental_transformer(
-            self._decoder.pre_transformer, hidden_states, state
+        hidden_states = incremental_transformer(
+            self.decoder.pre_transformer, hidden_states, state
         ).permute(0, 2, 1)
 
-        for stage_index, blocks in enumerate(self._decoder.upsample):
+        for stage_index, blocks in enumerate(self.decoder.upsample):
             if len(blocks) != 2:
                 raise TypeError("unsupported Qwen3-TTS upsample layout")
+            else:
+                pass
             hidden_states = incremental_causal_transconv1d(
                 blocks[0],
                 hidden_states,
                 state,
                 f"upsample.{stage_index}.transconv",
             )
-            hidden_states = _incremental_convnext(
+            hidden_states = incremental_convnext(
                 blocks[1],
                 hidden_states,
                 state,
@@ -662,13 +726,15 @@ class Qwen3TTSIncrementalDecoder:
             )
 
         waveform = incremental_causal_conv1d(
-            self._decoder.decoder[0], hidden_states, state, "decoder.0"
+            self.decoder.decoder[0], hidden_states, state, "decoder.0"
         )
         for block_index, decoder_block in enumerate(
-            self._decoder.decoder[1:-2], start=1
+            self.decoder.decoder[1:-2], start=1
         ):
             if len(decoder_block.block) < 2:
                 raise TypeError("unsupported Qwen3-TTS decoder block layout")
+            else:
+                pass
             waveform = decoder_block.block[0](waveform)
             waveform = incremental_causal_transconv1d(
                 decoder_block.block[1],
@@ -677,15 +743,15 @@ class Qwen3TTSIncrementalDecoder:
                 f"decoder.{block_index}.transconv",
             )
             for residual_index, residual_unit in enumerate(decoder_block.block[2:]):
-                waveform = _incremental_residual_unit(
+                waveform = incremental_residual_unit(
                     residual_unit,
                     waveform,
                     state,
                     f"decoder.{block_index}.residual.{residual_index}",
                 )
-        waveform = self._decoder.decoder[-2](waveform)
+        waveform = self.decoder.decoder[-2](waveform)
         return incremental_causal_conv1d(
-            self._decoder.decoder[-1], waveform, state, "decoder.final"
+            self.decoder.decoder[-1], waveform, state, "decoder.final"
         ).clamp(min=-1, max=1)
 
     def precompile(
@@ -700,12 +766,23 @@ class Qwen3TTSIncrementalDecoder:
         Pass the codes and state of a real decode, in its grad-disabling
         context: Dynamo guards on both, and the step advances the state.
         """
-        if self._compiled_kernel is None:
-            self._compiled_kernel = torch.compile(
-                self._decode_tensors, dynamic=False, fullgraph=True
+        if self.compiled_kernel is None:
+            self.compiled_kernel = torch.compile(
+                self.decode_tensors, dynamic=False, fullgraph=True
             )
+        else:
+            pass
         shape = (int(codes.shape[0]), int(codes.shape[-1]))
-        if shape in self._compiled_shapes:
+        if shape in self.compiled_shapes:
             return
-        self._compiled_kernel(codes, state)
-        self._compiled_shapes.add(shape)
+        else:
+            pass
+        # note (luojiaxuan): one trace per (batch, width) pair, past the default
+        # 8; ``decode`` never compiles a new shape, so the limit only matters here.
+        with torch._dynamo.config.patch(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            recompile_limit=max(
+                torch._dynamo.config.recompile_limit, 64
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        ):
+            self.compiled_kernel(codes, state)
+        self.compiled_shapes.add(shape)

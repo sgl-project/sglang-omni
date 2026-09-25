@@ -23,29 +23,31 @@ class RotaryEmbedding:
     def __init__(self, dim: int, theta: float = 10000.0):
         self.dim = dim
         self.theta = theta
-        self._cos: Optional[mx.array] = None
-        self._sin: Optional[mx.array] = None
-        self._cached_len = 0
+        self.cos: Optional[mx.array] = None
+        self.sin: Optional[mx.array] = None
+        self.cached_len = 0
 
-    def _build(self, seq_len: int):
+    def build(self, seq_len: int):
         inv_freq = 1.0 / (
             self.theta ** (mx.arange(0, self.dim, 2).astype(mx.float32) / self.dim)
         )
         t = mx.arange(seq_len).astype(mx.float32)
         freqs = mx.outer(t, inv_freq)
         freqs = mx.repeat(freqs, 2, axis=-1)
-        self._cos = mx.cos(freqs)
-        self._sin = mx.sin(freqs)
-        mx.eval(self._cos, self._sin)
-        self._cached_len = seq_len
+        self.cos = mx.cos(freqs)
+        self.sin = mx.sin(freqs)
+        mx.eval(self.cos, self.sin)
+        self.cached_len = seq_len
 
     def forward_from_seq_len(self, seq_len: int):
-        if self._cos is None or seq_len > self._cached_len:
-            self._build(seq_len)
-        return self._cos[:seq_len], self._sin[:seq_len]
+        if self.cos is None or seq_len > self.cached_len:
+            self.build(seq_len)
+        else:
+            pass
+        return self.cos[:seq_len], self.sin[:seq_len]
 
 
-def _rotate_half(x: mx.array) -> mx.array:
+def rotate_half(x: mx.array) -> mx.array:
     """Rotate adjacent channel pairs by 90 degrees."""
     shape = x.shape
     x = x.reshape(*shape[:-1], shape[-1] // 2, 2)
@@ -62,7 +64,7 @@ def apply_rotary_pos_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     sin = sin[None]
     # Note (yexiaodong): Preserve the table dtype to keep this path on fused
     # Metal kernels instead of adding explicit fp32 casts.
-    x_rot = (x_rot * cos + _rotate_half(x_rot) * sin).astype(x.dtype)
+    x_rot = (x_rot * cos + rotate_half(x_rot) * sin).astype(x.dtype)
     return mx.concatenate([x_rot, x_pass], axis=-1)
 
 
@@ -104,12 +106,16 @@ class CausalConvPositionEmbedding(nn.Module):
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
         if mask is not None:
             x = mx.where(mask[..., None], x, 0.0)
+        else:
+            pass
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         x = nn.mish(self.conv1(x))
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         x = nn.mish(self.conv2(x))
         if mask is not None:
             x = mx.where(mask[..., None], x, 0.0)
+        else:
+            pass
         return x
 
 
@@ -152,7 +158,7 @@ class ConvNeXtV2Block(nn.Module):
         return residual + x
 
 
-def _layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
+def layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return mx.fast.layer_norm(x, weight=None, bias=None, eps=eps)
 
 
@@ -168,7 +174,7 @@ class AdaLayerNormZero(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mx.split(
             emb, 6, axis=-1
         )
-        x = _layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        x = layer_norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -180,7 +186,7 @@ class AdaLayerNormZeroFinal(nn.Module):
     def __call__(self, x: mx.array, emb: mx.array) -> mx.array:
         emb = self.linear(nn.silu(emb))
         scale, shift = mx.split(emb, 2, axis=-1)
-        return _layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+        return layer_norm(x) * (1 + scale)[:, None, :] + shift[:, None, :]
 
 
 class Attention(nn.Module):
@@ -207,6 +213,8 @@ class Attention(nn.Module):
             cos, sin = rope
             q = apply_rotary_pos_emb(q, cos, sin)
             k = apply_rotary_pos_emb(k, cos, sin)
+        else:
+            pass
 
         q = q.reshape(B, N, self.heads, head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(B, N, self.heads, head_dim).transpose(0, 2, 1, 3)
@@ -217,11 +225,15 @@ class Attention(nn.Module):
         if mask is not None:
             if mask.ndim == 3:
                 mask = mask[:, None]
+            else:
+                pass
             additive_mask = mx.where(
                 mask,
                 mx.zeros(mask.shape, dtype=q.dtype),
                 mx.full(mask.shape, -float("inf"), dtype=q.dtype),
             )
+        else:
+            pass
         out = mx.fast.scaled_dot_product_attention(
             q,
             k,
@@ -257,7 +269,7 @@ class DiTBlock(nn.Module):
         attn_out = self.attn(norm, mask=mask, rope=rope)
         x = x + gate_msa[:, None] * attn_out
 
-        ff_norm = _layer_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+        ff_norm = layer_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
         ff_out = self.ff(ff_norm)
         x = x + gate_mlp[:, None] * ff_out
         return x
@@ -279,6 +291,8 @@ class InputEmbedding(nn.Module):
                 spks[:, None, :], (x.shape[0], x.shape[1], spks.shape[-1])
             )
             to_cat.append(spks)
+        else:
+            pass
         x = self.proj(mx.concatenate(to_cat, axis=-1))
         x = self.conv_pos_embed(x) + x
         return x
@@ -303,6 +317,8 @@ class DiT(nn.Module):
         super().__init__()
         if mu_dim is None:
             mu_dim = mel_dim
+        else:
+            pass
         self.out_channels = out_channels
         self.dim = dim
         self.depth = depth
@@ -339,6 +355,8 @@ class DiT(nn.Module):
         B, N = x.shape[0], x.shape[1]
         if t.ndim == 0:
             t = mx.broadcast_to(t, (B,))
+        else:
+            pass
 
         t = self.time_embed(t)
         x = self.input_embed(x, cond, mu, spks)
@@ -356,6 +374,8 @@ class DiT(nn.Module):
 
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(mx.concatenate([x, residual], axis=-1))
+        else:
+            pass
 
         x = self.norm_out(x, t)
         out = self.proj_out(x)

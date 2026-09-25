@@ -21,7 +21,7 @@ from sglang_omni.models.qwen3_omni.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
     from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
     from sglang_omni.pipeline.stage.stream_queue import StreamItem
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -66,24 +68,32 @@ class TalkerSamplingConfig(OptionalTalkerSamplingConfig):
     suppress_tokens: list[int]
 
 
-def _resolve_seed(params: Mapping[str, object]) -> int | None:
+def resolve_seed(params: Mapping[str, object]) -> int | None:
     """Resolve random seed from request params (accepts both ``seed`` and ``sampling_seed``)."""
     for key in ("seed", "sampling_seed"):
         value = params.get(key)
         if value is not None:
             return int(value)
+        else:
+            pass
     return None
 
 
 def output_modalities(request: OmniRequest | None) -> set[str] | None:
     if request is None:
         return None
+    else:
+        pass
     metadata = request.metadata
     if not isinstance(metadata, dict):
         return None
+    else:
+        pass
     modalities = metadata.get("output_modalities")
     if modalities is None:
         return None
+    else:
+        pass
     if isinstance(modalities, str):
         values = (modalities,)
     elif isinstance(modalities, (list, tuple, set)):
@@ -118,6 +128,8 @@ def resolve_encoder_next_stages(
     del request_id
     if should_generate_audio_output(output):
         return [THINKER_STAGE, TALKER_STAGE]
+    else:
+        pass
     return THINKER_STAGE
 
 
@@ -127,12 +139,16 @@ def resolve_thinker_stream_done_targets(
     del request_id
     if should_generate_audio_output(output):
         return [TALKER_STAGE, DECODE_STAGE]
+    else:
+        pass
     return [DECODE_STAGE]
 
 
 def resolve_terminal_stages(request: OmniRequest) -> list[str]:
     if should_generate_audio_output(request):
         return [DECODE_STAGE, CODE2WAV_STAGE]
+    else:
+        pass
     return [DECODE_STAGE]
 
 
@@ -142,7 +158,7 @@ def resolve_preprocessing_next_stages(
     del request_id
     state = Qwen3OmniPipelineState.from_dict(output.data)
     return [
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
         MM_AGGREGATE_STAGE,
     ]
 
@@ -153,11 +169,13 @@ def resolve_preprocessing_next_stages_speech(
     del request_id
     state = Qwen3OmniPipelineState.from_dict(output.data)
     targets = [
-        *_encoder_stages_with_model_inputs(state.encoder_inputs),
+        *encoder_stages_with_model_inputs(state.encoder_inputs),
         THINKER_STAGE,
     ]
     if should_generate_audio_output(output):
         targets.append(TALKER_STAGE)
+    else:
+        pass
     return targets
 
 
@@ -169,21 +187,27 @@ def resolve_mm_aggregate_wait_sources(
     del request_id
     if from_stage != "preprocessing":
         return None
+    else:
+        pass
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    return ["preprocessing", *_active_encoder_stages(state.encoder_inputs)]
+    return ["preprocessing", *active_encoder_stages(state.encoder_inputs)]
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
     """Keep decode payload focused on text detokenization state."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
     state.thinker_inputs = {}
-    state.stream_state = _copy_mutable_containers(state.stream_state)
+    state.stream_state = copy_mutable_containers(state.stream_state)
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)
         if "extra_model_outputs" in thinker_out:
             thinker_out["extra_model_outputs"] = {}
+        else:
+            pass
         state.thinker_out = thinker_out
+    else:
+        pass
 
     if state.engine_outputs:
         engine_outputs = dict(state.engine_outputs)
@@ -192,8 +216,14 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
             thinker_engine_out = dict(thinker_engine_out)
             if "extra_model_outputs" in thinker_engine_out:
                 thinker_engine_out["extra_model_outputs"] = {}
+            else:
+                pass
             engine_outputs[THINKER_STAGE] = thinker_engine_out
+        else:
+            pass
         state.engine_outputs = engine_outputs
+    else:
+        pass
 
     return StagePayload(
         request_id=payload.request_id,
@@ -226,12 +256,16 @@ def build_encoder_request(
     inputs = state.encoder_inputs.get(stage_name)
     if not isinstance(inputs, dict) or not inputs:
         return EncoderRequestData(model_inputs={}, skip_result={})
+    else:
+        pass
     if inputs.get("_skip"):
         skip_result = inputs.get("_result")
         return EncoderRequestData(
             model_inputs={},
             skip_result=skip_result if isinstance(skip_result, dict) else {},
         )
+    else:
+        pass
     cache_key = inputs.get("cache_key")
     model_inputs = {
         k: v for k, v in inputs.items() if k not in ("cache_key", "_active")
@@ -264,12 +298,12 @@ def build_lightweight_mm_inputs(
     mm_audio = mm_inputs.get("audio", {})
     mm_video = mm_inputs.get("video", {})
     return {
-        "image": _select_present_fields(mm_image, ("image_grid_thw",)),
-        "audio": _select_present_fields(
+        "image": select_present_fields(mm_image, ("image_grid_thw",)),
+        "audio": select_present_fields(
             mm_audio,
             ("feature_attention_mask", "audio_feature_lengths"),
         ),
-        "video": _select_present_fields(
+        "video": select_present_fields(
             mm_video,
             ("video_grid_thw", "video_second_per_grid", "use_audio_in_video"),
         ),
@@ -277,11 +311,11 @@ def build_lightweight_mm_inputs(
 
 
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=IMAGE_STAGE)
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
-    return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
+    return project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
 
 def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
@@ -289,18 +323,18 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         mm_inputs=build_lightweight_mm_inputs(state.mm_inputs),
-        encoder_inputs=_project_encoder_input_metadata(state.encoder_inputs),
+        encoder_inputs=project_encoder_input_metadata(state.encoder_inputs),
         stream_state=dict(state.stream_state),
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    stage_name = _single_encoder_stage_name(state)
+    stage_name = single_encoder_stage_name(state)
     encoder_out = state.encoder_outs.get(stage_name, {})
     projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 # note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
@@ -318,7 +352,7 @@ _TALKER_UNUSED_ENCODER_OUT_KEYS = (
 
 def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    stage_name = _single_encoder_stage_name(state)
+    stage_name = single_encoder_stage_name(state)
     encoder_out = state.encoder_outs.get(stage_name, {})
     if isinstance(encoder_out, dict):
         encoder_out = {
@@ -326,8 +360,10 @@ def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
             for k, v in encoder_out.items()
             if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
         }
+    else:
+        pass
     projected = Qwen3OmniPipelineState(encoder_outs={stage_name: encoder_out})
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
 def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
@@ -349,28 +385,30 @@ def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
             for k, v in model_inputs.items()
             if k not in _TALKER_UNUSED_MODEL_INPUT_KEYS
         }
+    else:
+        pass
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
         thinker_inputs=thinker_inputs,
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
-def _project_preprocessing_to_encoder(
+def project_preprocessing_to_encoder(
     payload: StagePayload,
     *,
     stage_name: str,
 ) -> StagePayload:
     state = Qwen3OmniPipelineState.from_dict(payload.data)
     projected = Qwen3OmniPipelineState(
-        encoder_inputs=_select_encoder_inputs(
+        encoder_inputs=select_encoder_inputs(
             state.encoder_inputs, stage_name=stage_name
         )
     )
-    return _payload_with_state(payload, projected)
+    return payload_with_state(payload, projected)
 
 
-def _payload_with_state(
+def payload_with_state(
     payload: StagePayload, state: Qwen3OmniPipelineState
 ) -> StagePayload:
     return StagePayload(
@@ -381,30 +419,42 @@ def _payload_with_state(
 
 
 @overload
-def _copy_mutable_containers(value: dict[KeyT, ValueT]) -> dict[KeyT, object]: ...
+def copy_mutable_containers(value: dict[KeyT, ValueT]) -> dict[KeyT, object]: ...
 
 
 @overload
-def _copy_mutable_containers(value: object) -> object: ...
+def copy_mutable_containers(value: object) -> object: ...
 
 
-def _copy_mutable_containers(value: object) -> object:
+def copy_mutable_containers(value: object) -> object:
     if isinstance(value, torch.Tensor):
         return value
+    else:
+        pass
     if isinstance(value, dict):
-        return {key: _copy_mutable_containers(item) for key, item in value.items()}
+        return {key: copy_mutable_containers(item) for key, item in value.items()}
+    else:
+        pass
     if isinstance(value, list):
-        return [_copy_mutable_containers(item) for item in value]
+        return [copy_mutable_containers(item) for item in value]
+    else:
+        pass
     if isinstance(value, tuple):
-        return tuple(_copy_mutable_containers(item) for item in value)
+        return tuple(copy_mutable_containers(item) for item in value)
+    else:
+        pass
     if isinstance(value, set):
-        return {_copy_mutable_containers(item) for item in value}
+        return {copy_mutable_containers(item) for item in value}
+    else:
+        pass
     if isinstance(value, bytearray):
         return bytearray(value)
+    else:
+        pass
     return value
 
 
-def _select_encoder_inputs(
+def select_encoder_inputs(
     encoder_inputs: dict[str, dict[str, ValueT]],
     *,
     stage_name: str,
@@ -412,74 +462,96 @@ def _select_encoder_inputs(
     stage_inputs = encoder_inputs.get(stage_name)
     if not isinstance(stage_inputs, dict):
         return {}
+    else:
+        pass
     return {stage_name: dict(stage_inputs)}
 
 
-def _project_encoder_input_metadata(
+def project_encoder_input_metadata(
     encoder_inputs: dict[str, ValueT],
 ) -> dict[str, dict[str, object]]:
     projected: dict[str, dict[str, object]] = {}
     for stage_name, stage_inputs in encoder_inputs.items():
         if not isinstance(stage_inputs, dict):
             continue
+        else:
+            pass
         stage_metadata: dict[str, object] = {}
         cache_key = stage_inputs.get("cache_key")
         if cache_key is not None:
             stage_metadata["cache_key"] = cache_key
+        else:
+            pass
         if stage_inputs.get("_skip"):
             stage_metadata["_skip"] = True
-        elif _is_active_encoder_branch(stage_name, stage_inputs):
+        elif is_active_encoder_branch(stage_name, stage_inputs):
             stage_metadata["_active"] = True
+        else:
+            pass
         if stage_metadata:
             projected[stage_name] = stage_metadata
+        else:
+            pass
     return projected
 
 
-def _encoder_stages_with_model_inputs(
+def encoder_stages_with_model_inputs(
     encoder_inputs: dict[str, ValueT],
 ) -> list[str]:
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
+        if has_encoder_model_input(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _active_encoder_stages(
+def active_encoder_stages(
     encoder_inputs: dict[str, ValueT],
 ) -> list[str]:
     return [
         stage_name
         for stage_name in (IMAGE_STAGE, AUDIO_STAGE)
-        if _is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
+        if is_active_encoder_branch(stage_name, encoder_inputs.get(stage_name))
     ]
 
 
-def _is_active_encoder_branch(stage_name: str, stage_inputs: object) -> bool:
+def is_active_encoder_branch(stage_name: str, stage_inputs: object) -> bool:
     if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
         return False
+    else:
+        pass
     active_marker = stage_inputs.get("_active")
     if active_marker is not None:
         return active_marker is True
-    return _has_encoder_model_input(stage_name, stage_inputs)
+    else:
+        pass
+    return has_encoder_model_input(stage_name, stage_inputs)
 
 
-def _has_encoder_model_input(stage_name: str, stage_inputs: object) -> bool:
+def has_encoder_model_input(stage_name: str, stage_inputs: object) -> bool:
     if not isinstance(stage_inputs, dict) or stage_inputs.get("_skip"):
         return False
+    else:
+        pass
     if stage_inputs.get("_active") is False:
         return False
+    else:
+        pass
     if stage_name == IMAGE_STAGE:
         return (
             stage_inputs.get("pixel_values") is not None
             or stage_inputs.get("pixel_values_videos") is not None
         )
+    else:
+        pass
     if stage_name == AUDIO_STAGE:
         return stage_inputs.get("input_features") is not None
+    else:
+        pass
     return False
 
 
-def _select_present_fields(
+def select_present_fields(
     source: Mapping[str, ValueT],
     keys: tuple[str, ...],
 ) -> dict[str, ValueT]:
@@ -488,18 +560,22 @@ def _select_present_fields(
         value = source.get(key)
         if value is not None:
             selected[key] = value
+        else:
+            pass
     return selected
 
 
-def _single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
+def single_encoder_stage_name(state: Qwen3OmniPipelineState) -> str:
     if len(state.encoder_outs) != 1:
         raise ValueError(
             f"Expected exactly one encoder output in payload, got {sorted(state.encoder_outs)}"
         )
+    else:
+        pass
     return next(iter(state.encoder_outs))
 
 
-def _extract_thinker_model_inputs(
+def extract_thinker_model_inputs(
     thinker_inputs: dict[str, ValueT],
 ) -> dict[str, object]:
     """Return the model input payload without confusing an empty payload for absence.
@@ -514,7 +590,11 @@ def _extract_thinker_model_inputs(
             raise TypeError(
                 "Qwen3-Omni thinker model_inputs must be a dict when provided"
             )
+        else:
+            pass
         return dict(model_inputs)
+    else:
+        pass
 
     return {
         key: value
@@ -533,11 +613,13 @@ def build_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
+    model_inputs = extract_thinker_model_inputs(thinker_inputs)
 
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     if "attention_mask" in model_inputs:
         model_inputs.pop("attention_mask", None)
+    else:
+        pass
 
     return ARRequestData(
         input_ids=input_ids.to(dtype=torch.long),
@@ -551,7 +633,7 @@ def build_thinker_request(
     )
 
 
-def _compute_mrope_positions(
+def compute_mrope_positions(
     input_ids: torch.Tensor,
     model_inputs: Mapping[str, object],
     thinker_config: Qwen3OmniMoeThinkerConfig,
@@ -580,13 +662,21 @@ def _compute_mrope_positions(
     ids_2d = ids_2d.cpu()
     if isinstance(image_grid_thw, torch.Tensor):
         image_grid_thw = image_grid_thw.cpu()
+    else:
+        pass
     if isinstance(video_grid_thw, torch.Tensor):
         video_grid_thw = video_grid_thw.cpu()
+    else:
+        pass
     second_per_grid_ts = model_inputs.get("video_second_per_grid")
     if isinstance(second_per_grid_ts, torch.Tensor):
         second_per_grid_ts = second_per_grid_ts.cpu()
+    else:
+        pass
     if isinstance(audio_feature_lengths, torch.Tensor):
         audio_feature_lengths = audio_feature_lengths.cpu()
+    else:
+        pass
 
     kwargs: dict[str, object] = {
         "audio_token_id": audio_token_id,
@@ -638,7 +728,7 @@ def build_sglang_thinker_request(
     attention_mask = prompt.get("attention_mask")
     thinker_inputs = state.thinker_inputs or {}
 
-    model_inputs = _extract_thinker_model_inputs(thinker_inputs)
+    model_inputs = extract_thinker_model_inputs(thinker_inputs)
     capture_keys = thinker_inputs.get("capture_model_output_keys", ())
     media_cache_keys = thinker_inputs.get("media_cache_keys", {})
     pad_values: dict[str, int] = {}
@@ -652,6 +742,8 @@ def build_sglang_thinker_request(
             cache_key = media_cache_keys.get(modality)
             if cache_key is None:
                 continue
+            else:
+                pass
             h = xxhash.xxh3_64(cache_key.encode()).intdigest()
             pad_val = vocab_size + h % (1 << 62)
             pad_values[modality] = pad_val
@@ -660,10 +752,18 @@ def build_sglang_thinker_request(
             input_ids = input_ids.clone()
             for orig_id, pad_val in token_id_map.items():
                 input_ids[input_ids == orig_id] = pad_val
+        else:
+            pass
         if pad_values:
             model_inputs["pad_values"] = pad_values
+        else:
+            pass
+    else:
+        pass
     if "attention_mask" in model_inputs:
         model_inputs.pop("attention_mask", None)
+    else:
+        pass
     input_ids_list = input_ids.to(dtype=torch.long).tolist()
 
     max_new_tokens = params.get("max_new_tokens", 2048)
@@ -674,7 +774,7 @@ def build_sglang_thinker_request(
     repetition_penalty = params.get("repetition_penalty", 1.0)
     stop = params.get("stop") or []
     stop_token_ids = params.get("stop_token_ids") or []
-    seed = _resolve_seed(params)
+    seed = resolve_seed(params)
 
     # Build SGLang SamplingParams and normalize
     sampling_params = SamplingParams(
@@ -704,7 +804,7 @@ def build_sglang_thinker_request(
 
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
-        mrope_result = _compute_mrope_positions(
+        mrope_result = compute_mrope_positions(
             original_input_ids.to(dtype=torch.long), model_inputs, thinker_config
         )
         if mrope_result is not None:
@@ -713,14 +813,18 @@ def build_sglang_thinker_request(
             mm_inputs.mrope_positions = mrope_positions
             mm_inputs.mrope_position_delta = mrope_position_delta
             req.multimodal_inputs = mm_inputs
+        else:
+            pass
+    else:
+        pass
 
     req.omni_model_inputs = model_inputs if model_inputs else None
-    req._omni_consumed = None
-    req._codec_suppress_tokens = None
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     # note (chenrui): recording placement here spares the thinker merge a sync on
     # a GPU mask to find placeholders; tensors spare it walking them as well.
-    req._omni_mm_positions = None
+    req._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if model_inputs and thinker_config is not None:
         mm_positions: dict[str, torch.Tensor] = {}
         for modality, orig_token_id in [
@@ -730,7 +834,9 @@ def build_sglang_thinker_request(
         ]:
             match_id = pad_values.get(modality, orig_token_id)
             mm_positions[modality] = (input_ids == match_id).nonzero(as_tuple=True)[0]
-        req._omni_mm_positions = mm_positions
+        req._omni_mm_positions = mm_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    else:
+        pass
 
     # Build SGLangARRequestData — output_ids points to req.output_ids
     data = SGLangARRequestData(
@@ -838,10 +944,12 @@ def build_sglang_talker_request(
         vocab_size=codec_vocab_size,
     )
     req.tokenizer = tokenizer
-    req._input_embeds_are_projected = bool(input_embeds_are_projected)
+    req._input_embeds_are_projected = bool(
+        input_embeds_are_projected
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req.omni_model_inputs = dict(talker_model_inputs or {})
-    req._omni_consumed = None
-    req._codec_suppress_tokens = (
+    req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._codec_suppress_tokens = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         tuple(int(token_id) for token_id in suppress_tokens)
         if suppress_tokens
         else None
@@ -859,13 +967,15 @@ def build_sglang_talker_request(
                 int(ids.numel())
             )
         else:
-            mrope_positions, mrope_position_delta = _compute_mrope_positions(
+            mrope_positions, mrope_position_delta = compute_mrope_positions(
                 ids, mm_model_inputs, thinker_config
             )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta
         req.multimodal_inputs = mm_inputs
+    else:
+        pass
 
     multimodal_mask: torch.Tensor | None = None
     if thinker_token_ids is not None:
@@ -875,7 +985,13 @@ def build_sglang_talker_request(
             for token_id in (audio_token_id, image_token_id, video_token_id):
                 if token_id is not None:
                     mask |= token_ids == int(token_id)
+                else:
+                    pass
             multimodal_mask = mask
+        else:
+            pass
+    else:
+        pass
 
     if thinker_layer_hidden is not None:
         req.omni_model_inputs["talker_layer_hidden_states"] = thinker_layer_hidden
@@ -894,12 +1010,18 @@ def build_sglang_talker_request(
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
     )
-    data.suppress_tokens = list(req._codec_suppress_tokens or [])
+    data.suppress_tokens = list(
+        req._codec_suppress_tokens or []
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     data.talker_model_inputs = dict(talker_model_inputs or {})
     if thinker_layer_hidden is not None:
         data.extra_model_outputs["thinker_layer_hidden"] = thinker_layer_hidden
+    else:
+        pass
     if multimodal_mask is not None:
         data.extra_model_outputs["talker_multimodal_mask"] = multimodal_mask
+    else:
+        pass
     data.input_embeds_are_projected = bool(input_embeds_are_projected)
     data.thinker_chunks_done = bool(thinker_chunks_done)
     data.pending_text_queue = coerce_pending_text_queue(pending_text_queue)
@@ -924,108 +1046,70 @@ def apply_thinker_result(
     finish_reason = getattr(result, "finish_reason", None)
     if finish_reason is not None:
         thinker_out["finish_reason"] = finish_reason
+    else:
+        pass
 
     weight_version = getattr(result, "weight_version", None)
     if weight_version is not None:
         thinker_out["weight_version"] = weight_version
+    else:
+        pass
 
     output_token_logprobs = getattr(result, "output_token_logprobs", None)
     if output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = output_token_logprobs
+    else:
+        pass
 
     state.thinker_out = thinker_out
     state.engine_outputs[stage_name] = thinker_out
     return thinker_out
 
 
-def make_thinker_stream_output_builder() -> (
-    Callable[[str, SGLangARRequestData, RequestOutput], list[OutgoingMessage]]
-):
-    def _normalize_chunk_hidden(hidden: torch.Tensor | None) -> torch.Tensor | None:
-        if hidden is None:
-            return None
-        if hidden.ndim == 1:
-            return hidden
-        if hidden.ndim == 2:
-            return hidden[0]
-        return None
-
-    def _split_dual_layer_hidden(
-        hidden: dict[str | int, torch.Tensor] | torch.Tensor,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-        if isinstance(hidden, torch.Tensor):
-            return _normalize_chunk_hidden(hidden), None
-
-        embed = hidden.get("embed")
-        if embed is None and 0 in hidden:
-            embed = hidden[0]
-        if embed is None and "0" in hidden:
-            embed = hidden["0"]
-
-        layer_hidden = None
-        for key, value in hidden.items():
-            if key in ("embed", 0, "0"):
-                continue
-            if isinstance(value, torch.Tensor):
-                layer_hidden = value
-                break
-        return _normalize_chunk_hidden(embed), _normalize_chunk_hidden(layer_hidden)
-
+def make_thinker_stream_output_builder(
+    *, speech_enabled: bool
+) -> Callable[[str, SGLangARRequestData, RequestOutput], list[OutgoingMessage]]:
     def _build_stream_output(
         request_id: str, req_data: SGLangARRequestData, req_output: RequestOutput
     ) -> list[OutgoingMessage]:
-        req = getattr(req_data, "req", None)
-        if req is not None and req.inflight_middle_chunks > 0:
-            # While chunked prefill is still consuming prompt tokens, suppress
-            # hidden-state streaming to the talker.
-            # Emitting chunks this early lets prompt-side states masquerade as the
-            # first assistant token and can leak the user/ref-text prompt into TTS.
+        # note (ratish): a middle chunk of a chunked prefill samples a token the
+        # request discards; streaming it would put a prompt row into the answer
+        if req_data.req.inflight_middle_chunks > 0 or req_output.data is None:
             return []
-        if req_output.data is None:
+        else:
+            pass
+
+        stage_payload = req_data.stage_payload
+        stream_targets: list[str] = []
+        if (stage_payload.request.params or {}).get("stream", False):
+            stream_targets.append("decode")
+        else:
+            pass
+        # note (ratish): a request without output modalities defaults to audio,
+        # and a text-only deployment has no talker to receive it
+        if speech_enabled and should_generate_audio_output(stage_payload):
+            stream_targets.append("talker_ar")
+        else:
+            pass
+        if not stream_targets:
             return []
+        else:
+            pass
 
         token_id = int(req_output.data)
-        messages: list[OutgoingMessage] = []
-
-        # Skip per-token decode emit when not streaming; talker_ar below stays
-        # unconditional since talker generates audio either way.
-        stage_payload = req_data.stage_payload
-        is_streaming = bool(
-            stage_payload is not None
-            and (stage_payload.request.params or {}).get("stream", False)
-        )
-        if is_streaming:
-            # Wrap int; stream transport only accepts tensors.
-            messages.append(
-                OutgoingMessage(
-                    request_id=request_id,
-                    type="stream",
-                    data=torch.tensor([token_id], dtype=torch.long),
-                    target="decode",
-                    metadata={"token_id": token_id},
-                )
+        # note (ratish): a cross-process stream chunk must be a tensor, and one
+        # this small is pickled inline with the control message
+        token_tensor = torch.tensor([token_id], dtype=torch.long)
+        return [
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=token_tensor,
+                target=target,
+                metadata={"token_id": token_id},
             )
-
-        if not should_generate_audio_output(stage_payload):
-            return messages
-
-        # Speech mode: also stream hidden states to the talker for codec gen.
-        extra = req_output.extra
-        if isinstance(extra, dict) and "hidden_states" in extra:
-            embed, layer_hidden = _split_dual_layer_hidden(extra["hidden_states"])
-            hidden = embed if embed is not None else layer_hidden
-            if hidden is not None:
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        data=hidden,
-                        target="talker_ar",
-                        metadata={"token_id": token_id},
-                    )
-                )
-
-        return messages
+            for target in stream_targets
+        ]
 
     return _build_stream_output
 
@@ -1076,7 +1160,6 @@ def make_talker_scheduler_adapters(
     model: Qwen3OmniTalker,
     model_path: str,
     thinker_config: Qwen3OmniMoeThinkerConfig | None,
-    required_aux_hidden_key: int,
     codec_bos_id: int = 2149,
     codec_eos_id: int | None = None,
     codec_nothink_id: int = 2155,
@@ -1141,11 +1224,11 @@ def make_talker_scheduler_adapters(
             "repetition_penalty": float(params.get("talker_repetition_penalty", 1.05)),
             "codec_eos_id": codec_eos_id if codec_eos_id >= 0 else None,
             "suppress_tokens": suppress_tokens,
-            "seed": _resolve_seed(params),
+            "seed": resolve_seed(params),
         }
 
     def request_builder(payload: StagePayload) -> SGLangARRequestData:
-        return _build_talker_request_data(
+        return build_talker_request_data(
             payload,
             prefill_builder=prefill_builder,
             tokenizer=tokenizer,
@@ -1174,7 +1257,7 @@ def make_talker_scheduler_adapters(
     )
 
 
-def _build_talker_request_data(
+def build_talker_request_data(
     payload: StagePayload,
     *,
     prefill_builder: TalkerPrefillBuilder,
@@ -1194,6 +1277,8 @@ def _build_talker_request_data(
             xxhash.xxh64_intdigest(str(payload.request_id).encode("utf-8"))
             & MAX_INT32_POSITIVE
         )
+    else:
+        pass
     thinker_chunks = list(payload.prefetched_chunks)
     thinker_done = bool(payload.prefetched_stream_done)
 
@@ -1202,6 +1287,8 @@ def _build_talker_request_data(
             "talker request_builder requires prefetched thinker chunks; "
             "check the partial-start readiness policy or upstream wiring"
         )
+    else:
+        pass
 
     prompt_prefill = prefill_builder.build_prompt_prefill(
         payload,

@@ -9,7 +9,7 @@ VOICECHAT_MODEL_ARCH_OVERRIDE = "NemotronVoiceChatForCausalLM"
 _voicechat_hf_config_registered = False
 
 
-def _load_backbone_config(repo_id):
+def load_backbone_config(repo_id):
     path = hf_hub_download(repo_id, "config.json")
     backbone = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     for key in ("architectures", "model_type", "torch_dtype", "dtype"):
@@ -39,12 +39,14 @@ class NemotronVoiceChatConfig(NemotronHConfig):
         # Already a voice chat config
         if "perception" in config_dict:
             return super().from_dict(config_dict, **kwargs)
+        else:
+            pass
 
         stt_config = config_dict["model"]["stt"]["model"]
         backbone_path = stt_config["pretrained_llm"]
         return super().from_dict(
             {
-                **_load_backbone_config(backbone_path),
+                **load_backbone_config(backbone_path),
                 "architectures": [VOICECHAT_MODEL_ARCH_OVERRIDE],
                 "perception": stt_config["perception"],
                 "speech_generation": config_dict["model"]["speech_generation"]["model"],
@@ -64,6 +66,8 @@ def register_voicechat_hf_config():
     global _voicechat_hf_config_registered
     if _voicechat_hf_config_registered:
         return
+    else:
+        pass
     AutoConfig.register("nemotron_voicechat", NemotronVoiceChatConfig, exist_ok=True)
     _voicechat_hf_config_registered = True
 

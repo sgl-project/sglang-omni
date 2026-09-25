@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Iterable
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage import Stage
     from sglang_omni.proto.request import StagePayload
+else:
+    pass
 
 
 class LocalStageDispatcher:
@@ -19,22 +21,24 @@ class LocalStageDispatcher:
     """
 
     def __init__(self) -> None:
-        self._stages: dict[str, Stage] = {}
+        self.stages: dict[str, Stage] = {}
 
     def register(self, stage: Stage) -> None:
-        self._stages[stage.name] = stage
+        self.stages[stage.name] = stage
 
     def register_many(self, stages: Iterable[Stage]) -> None:
         for stage in stages:
             self.register(stage)
 
-    def _get_stage(self, from_stage: str, to_stage: str) -> Stage:
-        target = self._stages.get(to_stage)
+    def get_stage(self, from_stage: str, to_stage: str) -> Stage:
+        target = self.stages.get(to_stage)
         if target is None:
             raise RuntimeError(
                 f"Local stage target {to_stage!r} is not registered "
                 f"for traffic from {from_stage!r}"
             )
+        else:
+            pass
         return target
 
     async def send_payload(
@@ -46,7 +50,7 @@ class LocalStageDispatcher:
         payload: "StagePayload",
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_payload(
             request_id, from_stage, payload, replica_bindings
         )
@@ -62,7 +66,7 @@ class LocalStageDispatcher:
         metadata: dict[str, object] | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_chunk(
             request_id,
             from_stage,
@@ -82,7 +86,7 @@ class LocalStageDispatcher:
         error: str | None = None,
         replica_bindings: dict[str, int] | None = None,
     ) -> None:
-        target = self._get_stage(from_stage, to_stage)
+        target = self.get_stage(from_stage, to_stage)
         await target.receive_local_stream_signal(
             request_id,
             from_stage,

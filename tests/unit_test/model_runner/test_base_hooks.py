@@ -121,9 +121,9 @@ def _runner(calls: list[str], *, custom_result):
 
     runner = object.__new__(RecordingRunner)
     runner.device = torch.device("cpu")
-    runner._execution_bridge = FakeExecutionBridge()
+    runner.execution_bridge = FakeExecutionBridge()
     runner.output_processor = SimpleNamespace(
-        _capture_hidden=False,
+        capture_hidden=False,
         process=lambda result, scheduler_output: {
             "req-1": SimpleNamespace(extra={}),
         },
@@ -304,7 +304,7 @@ def test_prepare_and_forward_clears_sidecar_before_cleanup_on_forward_error() ->
     )
 
     with pytest.raises(ValueError, match="forward failed"):
-        runner._prepare_and_forward(
+        runner.prepare_and_forward(
             forward_batch,
             SimpleNamespace(is_prefill_only=True),
             [],
@@ -371,7 +371,7 @@ def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
         ),
     ]
 
-    runner._finalize(
+    runner.finalize(
         SimpleNamespace(
             next_token_ids=torch.tensor([1, 2]),
             logits_output=None,

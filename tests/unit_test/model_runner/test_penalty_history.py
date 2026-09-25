@@ -72,8 +72,8 @@ def _forward(batch):
         return contextlib.nullcontext(batch.sampling_info.copy_for_forward())
 
     runner = object.__new__(ModelRunner)
-    runner._execution_bridge = SimpleNamespace(forward_context=forward_context)
-    with runner._execution_context(batch, isolate_sampling=True) as snapshot:
+    runner.execution_bridge = SimpleNamespace(forward_context=forward_context)
+    with runner.execution_context(batch, isolate_sampling=True) as snapshot:
         return snapshot
 
 

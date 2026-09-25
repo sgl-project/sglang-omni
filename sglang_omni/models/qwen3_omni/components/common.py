@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
         Qwen3OmniMoeThinkerConfig,
     )
+else:
+    pass
 
 
 def load_thinker_config(model_path: str) -> "Qwen3OmniMoeThinkerConfig":

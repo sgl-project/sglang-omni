@@ -81,7 +81,7 @@ def test_speech_tokenizer_loader_moves_the_encoder_padding_to_host(
     monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda path: path)
     monkeypatch.setattr(qwen3_stages, "_SPEECH_TOKENIZERS", {})
 
-    tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
+    tokenizer = qwen3_stages.load_qwen3_tts_tokenizer(
         "/ckpt", device="cpu", dtype="float32", attn_implementation=None
     )
 
@@ -170,11 +170,11 @@ def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest() 
             np.asarray(w, dtype=np.float32) for w in waveforms
         ],
     )
-    batcher = qwen3_request_builders._Qwen3TTSRefCodeBatcher(
+    batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
         tokenizer, max_batch_wait_ms=0, graph_bucket_frames=(4,)
     )
     try:
-        assert batcher._graph_runner is not None
+        assert batcher.graph_runner is not None
         inside = batcher.encode(np.random.rand(3 * HOP + 1).astype(np.float32), 24000)
         beyond = batcher.encode(np.random.rand(5 * HOP).astype(np.float32), 24000)
     finally:
@@ -182,7 +182,7 @@ def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest() 
 
     assert inside.shape == (4, 2) and inside.is_cuda
     assert beyond.shape == (5, 2) and beyond.is_cuda
-    assert batcher._graph_runner.stats() == {
+    assert batcher.graph_runner.stats() == {
         "enabled": True,
         "disable_reason": None,
         "bucket_frames": [4],

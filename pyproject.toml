@@ -32,7 +32,7 @@ dependencies = [
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
     # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
     # so Apple Silicon installs this exact tag from source with the all_mps extra.
-    "sglang==0.5.19; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "sglang==0.5.20; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "mlx>=0.32.0; sys_platform == 'darwin' and platform_machine == 'arm64'",  # floor enforced by SGLang's MLX runtime gate
     "mlx-lm; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "flashinfer_python[cu13]==0.6.18; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
@@ -117,6 +117,11 @@ fun-cosyvoice3 = [
     "matplotlib",
 ]
 
+minicpm-o = [
+    "einops>=0.8.1",
+    "onnx>=1.18.0",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router-py = "sglang_omni_router.python.serve:main"
@@ -183,4 +188,5 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
+"sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]

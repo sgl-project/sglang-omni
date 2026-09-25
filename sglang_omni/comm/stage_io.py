@@ -73,6 +73,8 @@ def relay_device(relay: Relay) -> str:
         raise TypeError(
             f"{type(relay).__name__}.device must be str, got {type(device).__name__}"
         )
+    else:
+        pass
     return device
 
 
@@ -98,6 +100,8 @@ def extract_tensors(
             "dtype": str(obj.dtype),
             "device": str(obj.device),
         }, {path: obj}
+    else:
+        pass
     if isinstance(obj, dict):
         out, tensors = {}, {}
         for key, value in obj.items():
@@ -105,6 +109,8 @@ def extract_tensors(
             out[key], child_tensors = extract_tensors(value, child_path)
             tensors.update(child_tensors)
         return out, tensors
+    else:
+        pass
     if isinstance(obj, (list, tuple)):
         out, tensors = [], {}
         for idx, value in enumerate(obj):
@@ -112,6 +118,8 @@ def extract_tensors(
             out.append(child)
             tensors.update(child_tensors)
         return type(obj)(out), tensors
+    else:
+        pass
     return obj, {}
 
 
@@ -126,7 +134,11 @@ def extract_cuda_tensors(
                 "dtype": str(obj.dtype),
                 "device": str(obj.device),
             }, {path: obj}
+        else:
+            pass
         return obj, {}
+    else:
+        pass
     if isinstance(obj, dict):
         out, tensors = {}, {}
         for key, value in obj.items():
@@ -134,6 +146,8 @@ def extract_cuda_tensors(
             out[key], child_tensors = extract_cuda_tensors(value, child_path)
             tensors.update(child_tensors)
         return out, tensors
+    else:
+        pass
     if isinstance(obj, (list, tuple)):
         out, tensors = [], {}
         for idx, value in enumerate(obj):
@@ -141,6 +155,8 @@ def extract_cuda_tensors(
             out.append(child)
             tensors.update(child_tensors)
         return type(obj)(out), tensors
+    else:
+        pass
     return obj, {}
 
 
@@ -150,10 +166,18 @@ def restore_tensors(obj: object, tensors: dict[str, torch.Tensor]) -> object:
             path = obj["_tensor_placeholder"]
             if path not in tensors:
                 raise KeyError(f"missing tensor payload for placeholder {path!r}")
+            else:
+                pass
             return tensors[path]
+        else:
+            pass
         return {key: restore_tensors(value, tensors) for key, value in obj.items()}
+    else:
+        pass
     if isinstance(obj, (list, tuple)):
         return type(obj)(restore_tensors(value, tensors) for value in obj)
+    else:
+        pass
     return obj
 
 
@@ -167,6 +191,8 @@ def strip_process_local_metadata(
     """
     if metadata is None:
         return None
+    else:
+        pass
     return {
         key: value
         for key, value in metadata.items()
@@ -177,16 +203,20 @@ def strip_process_local_metadata(
 def should_use_direct_cuda_ipc_stream_chunk(
     data: object, metadata: dict[str, MetadataValueT] | None
 ) -> bool:
-    if not _contains_cuda_tensor(data):
+    if not contains_cuda_tensor(data):
         return False
-    if _contains_cpu_tensor(data) or _contains_cpu_tensor(metadata):
+    else:
+        pass
+    if contains_cpu_tensor(data) or contains_cpu_tensor(metadata):
         return False
-    inline_size = _inline_cpu_pickle_size(data) + _inline_cpu_pickle_size(metadata)
+    else:
+        pass
+    inline_size = inline_cpu_pickle_size(data) + inline_cpu_pickle_size(metadata)
     return inline_size <= _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT
 
 
 def payload_has_cuda_tensor(payload: object) -> bool:
-    return _contains_cuda_tensor(payload)
+    return contains_cuda_tensor(payload)
 
 
 def serialize_direct_cuda_ipc_payload(
@@ -197,11 +227,17 @@ def serialize_direct_cuda_ipc_payload(
             f"direct CUDA IPC payload requires StagePayload, got "
             f"{type(payload).__name__}"
         )
-    if _contains_cuda_tensor(payload.request) or _contains_cpu_tensor(payload.request):
+    else:
+        pass
+    if contains_cuda_tensor(payload.request) or contains_cpu_tensor(payload.request):
         raise ValueError("direct CUDA IPC payload does not support request tensors")
+    else:
+        pass
     data_without_tensors, tensors = extract_cuda_tensors(payload.data)
     if not tensors:
         raise ValueError("direct CUDA IPC payload requires at least one CUDA tensor")
+    else:
+        pass
     header = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -213,7 +249,7 @@ def serialize_direct_cuda_ipc_payload(
         "version": 1,
         "header": header_bytes,
         "tensors": [
-            {"path": path, "tensor_bytes": _ipc_pickle(tensor)}
+            {"path": path, "tensor_bytes": ipc_pickle(tensor)}
             for path, tensor in tensors.items()
         ],
     }
@@ -230,28 +266,38 @@ def deserialize_direct_cuda_ipc_payload(
 ) -> StagePayload:
     if data_ref.get("_type") != _DIRECT_CUDA_IPC_PAYLOAD_TYPE:
         raise ValueError("data_ref is not a direct CUDA IPC payload")
+    else:
+        pass
     if data_ref.get("version") != 1:
         raise ValueError(
             f"unsupported direct CUDA IPC payload version {data_ref.get('version')!r}"
         )
+    else:
+        pass
     header_bytes = data_ref.get("header")
     if not isinstance(header_bytes, bytes):
         raise TypeError(
             "direct CUDA IPC payload header must be bytes, got "
             f"{type(header_bytes).__name__}"
         )
+    else:
+        pass
     header = pickle.loads(header_bytes)
     if not isinstance(header, StagePayload):
         raise TypeError(
             "direct CUDA IPC payload header must decode to StagePayload, got "
             f"{type(header).__name__}"
         )
+    else:
+        pass
     raw_tensors = data_ref.get("tensors")
     if not isinstance(raw_tensors, list):
         raise TypeError(
             "direct CUDA IPC payload tensors must be list, got "
             f"{type(raw_tensors).__name__}"
         )
+    else:
+        pass
     tensors: dict[str, torch.Tensor] = {}
     for item in raw_tensors:
         if not isinstance(item, dict):
@@ -259,28 +305,40 @@ def deserialize_direct_cuda_ipc_payload(
                 "direct CUDA IPC payload tensor entry must be dict, got "
                 f"{type(item).__name__}"
             )
+        else:
+            pass
         path = item.get("path")
         if not isinstance(path, str):
             raise TypeError(
                 "direct CUDA IPC payload tensor path must be str, got "
                 f"{type(path).__name__}"
             )
+        else:
+            pass
         tensor_bytes = item.get("tensor_bytes")
         if not isinstance(tensor_bytes, bytes):
             raise TypeError(
                 "direct CUDA IPC payload tensor_bytes must be bytes, got "
                 f"{type(tensor_bytes).__name__}"
             )
+        else:
+            pass
         tensor = pickle.loads(tensor_bytes)
         if not isinstance(tensor, torch.Tensor):
             raise TypeError(
                 "direct CUDA IPC payload tensor entry must decode to Tensor, got "
                 f"{type(tensor).__name__}"
             )
+        else:
+            pass
         if not tensor.is_cuda:
             raise ValueError("direct CUDA IPC payload tensor decoded as non-CUDA")
+        else:
+            pass
         if path in tensors:
             raise ValueError(f"duplicate direct CUDA IPC tensor path {path!r}")
+        else:
+            pass
         tensors[path] = tensor
     return StagePayload(
         request_id=header.request_id,
@@ -295,13 +353,17 @@ def serialize_direct_cuda_ipc_stream_chunk(
 ) -> DirectCudaIpcStreamChunkRef:
     if not should_use_direct_cuda_ipc_stream_chunk(data, metadata):
         raise ValueError("same-GPU CUDA stream chunk is not direct-IPC eligible")
+    else:
+        pass
     ref: DirectCudaIpcStreamChunkRef = {
         "_type": _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE,
         "version": 1,
-        "tensor_bytes": _ipc_pickle(data),
+        "tensor_bytes": ipc_pickle(data),
     }
     if metadata is not None:
-        ref["metadata"] = _serialize_direct_ipc_metadata_value(metadata)
+        ref["metadata"] = serialize_direct_ipc_metadata_value(metadata)
+    else:
+        pass
     return ref
 
 
@@ -314,16 +376,26 @@ def serialize_inline_stream_chunk(
 ) -> InlineStreamChunkRef | None:
     if not isinstance(data, torch.Tensor) or data.device.type != "cpu":
         return None
-    if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
+    else:
+        pass
+    if contains_cuda_tensor(metadata) or contains_cpu_tensor(metadata):
         return None
+    else:
+        pass
     if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
+    else:
+        pass
     data = data.detach()
     if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         data = data.clone(memory_format=torch.contiguous_format)
+    else:
+        pass
     payload = pickle.dumps((data, metadata))
     if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         return None
+    else:
+        pass
     return {
         "_type": _INLINE_STREAM_CHUNK_TYPE,
         "version": 1,
@@ -340,35 +412,49 @@ def deserialize_inline_stream_chunk(
 ) -> tuple[torch.Tensor, dict[str, object] | None]:
     if data_ref.get("_type") != _INLINE_STREAM_CHUNK_TYPE:
         raise ValueError("data_ref is not an inline stream chunk")
+    else:
+        pass
     if data_ref.get("version") != 1:
         raise ValueError(
             f"unsupported inline stream chunk version {data_ref.get('version')!r}"
         )
+    else:
+        pass
     payload = data_ref.get("payload")
     if not isinstance(payload, bytes):
         raise TypeError(
             f"inline stream chunk payload must be bytes, got {type(payload).__name__}"
         )
+    else:
+        pass
     if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
         raise ValueError(
             "inline stream chunk payload exceeds "
             f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
         )
+    else:
+        pass
     data, metadata = pickle.loads(payload)
     if not isinstance(data, torch.Tensor):
         raise TypeError(
             f"inline stream chunk data must be torch.Tensor, got {type(data).__name__}"
         )
+    else:
+        pass
     if data.device.type != "cpu":
         device_type = data.device.type
         raise ValueError(
             f"inline stream chunk data must be a CPU tensor, got {device_type}"
         )
+    else:
+        pass
     if metadata is not None and not isinstance(metadata, dict):
         raise TypeError(
             "inline stream chunk metadata must be dict or None, got "
             f"{type(metadata).__name__}"
         )
+    else:
+        pass
     return data, metadata
 
 
@@ -384,30 +470,42 @@ def deserialize_direct_cuda_ipc_stream_chunk(
 ) -> tuple[object, dict[str, object] | None]:
     if data_ref.get("_type") != _DIRECT_CUDA_IPC_STREAM_CHUNK_TYPE:
         raise ValueError("data_ref is not a direct CUDA IPC stream chunk")
+    else:
+        pass
     if data_ref.get("version") != 1:
         raise ValueError(
             f"unsupported direct CUDA IPC version {data_ref.get('version')!r}"
         )
+    else:
+        pass
     tensor_bytes = data_ref.get("tensor_bytes")
     if not isinstance(tensor_bytes, bytes):
         raise TypeError(
             "direct CUDA IPC data_ref tensor_bytes must be bytes, got "
             f"{type(tensor_bytes).__name__}"
         )
+    else:
+        pass
     data = pickle.loads(tensor_bytes)
     raw_metadata = data_ref.get("metadata")
     if raw_metadata is None:
         return data, None
+    else:
+        pass
     if not isinstance(raw_metadata, dict):
         raise TypeError(
             f"direct CUDA IPC metadata must be dict, got {type(raw_metadata).__name__}"
         )
+    else:
+        pass
     metadata = deserialize_direct_ipc_metadata(raw_metadata)
     if not isinstance(metadata, dict):
         raise TypeError(
             "direct CUDA IPC decoded metadata must be dict, got "
             f"{type(metadata).__name__}"
         )
+    else:
+        pass
     return data, metadata
 
 
@@ -421,7 +519,7 @@ async def write_payload(
     to_stage: str | None = None,
 ) -> tuple[DataRef, RelayOperation]:
     data_without_tensors, tensors = extract_tensors(payload.data)
-    packed, entries = _pack_tensors(tensors, device=relay_device(relay))
+    packed, entries = pack_tensors(tensors, device=relay_device(relay))
     header = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
@@ -456,14 +554,18 @@ async def read_payload(
 ) -> StagePayload:
     if data_ref.kind is not DataKind.STAGE_PAYLOAD:
         raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
+    else:
+        pass
     if data_ref.header is None:
         raise ValueError("stage_payload data_ref is missing header")
+    else:
+        pass
     header = pickle.loads(base64.b64decode(data_ref.header))
-    transfer_buf = await _read_transfer_buffer(relay, request_id, data_ref)
+    transfer_buf = await read_transfer_buffer(relay, request_id, data_ref)
     tensors = {
-        entry.path: _restore_tensor_device(
+        entry.path: restore_tensor_device(
             transfer_buf[entry.offset : entry.offset + entry.size]
-            .view(_torch_dtype(entry.dtype))
+            .view(torch_dtype(entry.dtype))
             .reshape(entry.shape),
             entry.device,
             local_device,
@@ -493,16 +595,22 @@ async def write_tensor(
         raise TypeError(
             f"write_tensor requires torch.Tensor, got {type(tensor).__name__}"
         )
+    else:
+        pass
     source_device = str(tensor.device)
     packed = tensor.contiguous().view(torch.uint8).reshape(-1)
     target_device = torch.device(relay_device(relay))
     if packed.device != target_device:
         packed = packed.to(device=target_device)
-    offset = _pad_offset(0, _dtype_alignment(tensor.dtype))
+    else:
+        pass
+    offset = pad_offset(0, dtype_alignment(tensor.dtype))
     if offset:
         packed = torch.cat(
             [torch.zeros(offset, dtype=torch.uint8, device=target_device), packed]
         )
+    else:
+        pass
     op = await relay.put_async(
         packed,
         request_id=object_id,
@@ -534,16 +642,24 @@ async def read_tensor(
 ) -> torch.Tensor:
     if data_ref.layout is not DataLayout.RAW_TENSOR:
         raise ValueError(f"expected raw_tensor layout, got {data_ref.layout.value}")
+    else:
+        pass
     if data_ref.shape is None:
         raise ValueError("raw tensor data_ref is missing shape")
+    else:
+        pass
     if data_ref.dtype is None:
         raise ValueError("raw tensor data_ref is missing dtype")
+    else:
+        pass
     if data_ref.offset is None:
         raise ValueError("raw tensor data_ref is missing offset")
-    transfer_buf = await _read_transfer_buffer(relay, data_ref.object_id, data_ref)
+    else:
+        pass
+    transfer_buf = await read_transfer_buffer(relay, data_ref.object_id, data_ref)
     return (
         transfer_buf[data_ref.offset :]
-        .view(_torch_dtype(data_ref.dtype))
+        .view(torch_dtype(data_ref.dtype))
         .reshape(data_ref.shape)
     )
 
@@ -562,6 +678,8 @@ async def write_stream_chunk(
 ) -> tuple[DataRef, list[RelayOperation]]:
     if object_id is None:
         object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
+    else:
+        pass
     data_ref, op = await write_tensor(
         relay,
         object_id,
@@ -573,7 +691,7 @@ async def write_stream_chunk(
         to_stage=target_stage,
     )
     pending_ops = [op]
-    data_ref = await _with_stream_metadata(
+    data_ref = await with_stream_metadata(
         relay,
         data_ref,
         metadata,
@@ -591,16 +709,22 @@ async def read_stream_chunk(
 ) -> tuple[torch.Tensor, dict[str, object] | None]:
     data = await read_tensor(relay, data_ref)
     if data_ref.device is not None:
-        data = _restore_tensor_device(data, data_ref.device, local_device)
+        data = restore_tensor_device(data, data_ref.device, local_device)
+    else:
+        pass
     metadata = dict(data_ref.metadata or {})
     if data_ref.metadata_tensors:
         tensors = {}
         for ref in data_ref.metadata_tensors:
             tensor = await read_tensor(relay, ref.ref)
             if ref.ref.device is not None:
-                tensor = _restore_tensor_device(tensor, ref.ref.device, local_device)
+                tensor = restore_tensor_device(tensor, ref.ref.device, local_device)
+            else:
+                pass
             tensors[ref.path] = tensor
         metadata = restore_tensors(metadata, tensors)
+    else:
+        pass
     return data, metadata or None
 
 
@@ -630,7 +754,7 @@ async def send_stream_signal(
     )
 
 
-async def _with_stream_metadata(
+async def with_stream_metadata(
     relay: Relay,
     data_ref: DataRef,
     metadata: dict[MetadataKeyT, MetadataValueT] | None,
@@ -641,6 +765,8 @@ async def _with_stream_metadata(
 ) -> DataRef:
     if metadata is None:
         return data_ref
+    else:
+        pass
     metadata_without_tensors, tensors = extract_tensors(metadata)
     tensor_refs = []
     for idx, (path, tensor) in enumerate(tensors.items()):
@@ -670,7 +796,7 @@ async def _with_stream_metadata(
     )
 
 
-def _pack_tensors(
+def pack_tensors(
     tensors: dict[str, torch.Tensor],
     *,
     device: str,
@@ -681,10 +807,14 @@ def _pack_tensors(
         flat = tensor.contiguous().view(torch.uint8).reshape(-1)
         if flat.device != target_device:
             flat = flat.to(device=target_device)
-        padding = _pad_offset(offset, _dtype_alignment(tensor.dtype))
+        else:
+            pass
+        padding = pad_offset(offset, dtype_alignment(tensor.dtype))
         if padding:
             chunks.append(torch.zeros(padding, dtype=torch.uint8, device=target_device))
             offset += padding
+        else:
+            pass
         chunks.append(flat)
         entries.append(
             TensorMeta(
@@ -699,10 +829,12 @@ def _pack_tensors(
         offset += int(flat.numel())
     if not chunks:
         chunks.append(torch.zeros(1, dtype=torch.uint8, device=target_device))
+    else:
+        pass
     return torch.cat(chunks), entries
 
 
-async def _read_transfer_buffer(
+async def read_transfer_buffer(
     relay: Relay,
     request_id: str,
     data_ref: DataRef,
@@ -721,22 +853,24 @@ async def _read_transfer_buffer(
     return buf
 
 
-def _dtype_alignment(dtype: torch.dtype) -> int:
+def dtype_alignment(dtype: torch.dtype) -> int:
     return max(torch.empty((), dtype=dtype).element_size(), 1)
 
 
-def _pad_offset(offset: int, alignment: int) -> int:
+def pad_offset(offset: int, alignment: int) -> int:
     return (-offset) % alignment
 
 
-def _torch_dtype(dtype_str: str) -> torch.dtype:
+def torch_dtype(dtype_str: str) -> torch.dtype:
     dtype = _TORCH_DTYPES.get(dtype_str)
     if dtype is None:
         raise ValueError(f"unsupported tensor dtype metadata: {dtype_str!r}")
+    else:
+        pass
     return dtype
 
 
-def _restore_tensor_device(
+def restore_tensor_device(
     tensor: torch.Tensor,
     device: str,
     local_device: str | None = None,
@@ -748,117 +882,168 @@ def _restore_tensor_device(
     """
     if torch.device(device).type == "cpu":
         return tensor.cpu()
+    else:
+        pass
     if tensor.device.type == torch.device(device).type:
         return tensor
+    else:
+        pass
     if local_device is None:
         return tensor
+    else:
+        pass
     return tensor.to(local_device)
 
 
-def _contains_cuda_tensor(obj: object, seen: set[int] | None = None) -> bool:
+def contains_cuda_tensor(obj: object, seen: set[int] | None = None) -> bool:
     if obj is None:
         return False
+    else:
+        pass
     seen = set() if seen is None else seen
     obj_id = id(obj)
     if obj_id in seen:
         return False
+    else:
+        pass
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
         return obj.is_cuda
+    else:
+        pass
     if isinstance(obj, dict):
-        return any(_contains_cuda_tensor(value, seen) for value in obj.values())
+        return any(contains_cuda_tensor(value, seen) for value in obj.values())
+    else:
+        pass
     if isinstance(obj, (list, tuple, set, frozenset)):
-        return any(_contains_cuda_tensor(value, seen) for value in obj)
+        return any(contains_cuda_tensor(value, seen) for value in obj)
+    else:
+        pass
     if is_dataclass(obj) and not isinstance(obj, type):
         return any(
-            _contains_cuda_tensor(getattr(obj, field.name), seen)
+            contains_cuda_tensor(getattr(obj, field.name), seen)
             for field in fields(obj)
         )
+    else:
+        pass
     return False
 
 
-def _contains_cpu_tensor(obj: object, seen: set[int] | None = None) -> bool:
+def contains_cpu_tensor(obj: object, seen: set[int] | None = None) -> bool:
     if obj is None:
         return False
+    else:
+        pass
     seen = set() if seen is None else seen
     obj_id = id(obj)
     if obj_id in seen:
         return False
+    else:
+        pass
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
         return not obj.is_cuda
+    else:
+        pass
     if isinstance(obj, dict):
-        return any(_contains_cpu_tensor(value, seen) for value in obj.values())
+        return any(contains_cpu_tensor(value, seen) for value in obj.values())
+    else:
+        pass
     if isinstance(obj, (list, tuple, set, frozenset)):
-        return any(_contains_cpu_tensor(value, seen) for value in obj)
+        return any(contains_cpu_tensor(value, seen) for value in obj)
+    else:
+        pass
     if is_dataclass(obj) and not isinstance(obj, type):
         return any(
-            _contains_cpu_tensor(getattr(obj, field.name), seen)
-            for field in fields(obj)
+            contains_cpu_tensor(getattr(obj, field.name), seen) for field in fields(obj)
         )
+    else:
+        pass
     return False
 
 
-def _inline_cpu_pickle_size(obj: object, seen: set[int] | None = None) -> int:
+def inline_cpu_pickle_size(obj: object, seen: set[int] | None = None) -> int:
     if obj is None:
         return 0
+    else:
+        pass
     seen = set() if seen is None else seen
     obj_id = id(obj)
     if obj_id in seen:
         return 0
+    else:
+        pass
     seen.add(obj_id)
     if isinstance(obj, torch.Tensor):
         return 0 if obj.is_cuda else _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT + 1
+    else:
+        pass
     if isinstance(obj, dict):
         return sum(
-            _inline_cpu_pickle_size(key, seen) + _inline_cpu_pickle_size(value, seen)
+            inline_cpu_pickle_size(key, seen) + inline_cpu_pickle_size(value, seen)
             for key, value in obj.items()
         )
+    else:
+        pass
     if isinstance(obj, (list, tuple, set, frozenset)):
-        return sum(_inline_cpu_pickle_size(value, seen) for value in obj)
+        return sum(inline_cpu_pickle_size(value, seen) for value in obj)
+    else:
+        pass
     if is_dataclass(obj) and not isinstance(obj, type):
         return sum(
-            _inline_cpu_pickle_size(getattr(obj, field.name), seen)
+            inline_cpu_pickle_size(getattr(obj, field.name), seen)
             for field in fields(obj)
         )
+    else:
+        pass
     try:
         return len(pickle.dumps(obj))
     except Exception:
         return _DIRECT_CUDA_IPC_STREAM_INLINE_BYTES_LIMIT + 1
 
 
-def _ipc_pickle(obj: object) -> bytes:
-    if not _contains_cuda_tensor(obj):
+def ipc_pickle(obj: object) -> bytes:
+    if not contains_cuda_tensor(obj):
         return pickle.dumps(obj)
+    else:
+        pass
     buf = io.BytesIO()
     ForkingPickler(buf, 2).dump(obj)
     return buf.getvalue()
 
 
 @overload
-def _serialize_direct_ipc_metadata_value(
+def serialize_direct_ipc_metadata_value(
     value: dict[str, MetadataValueT],
 ) -> dict[str, object]: ...
 
 
 @overload
-def _serialize_direct_ipc_metadata_value(value: object) -> object: ...
+def serialize_direct_ipc_metadata_value(value: object) -> object: ...
 
 
-def _serialize_direct_ipc_metadata_value(value: object) -> object:
+def serialize_direct_ipc_metadata_value(value: object) -> object:
     if isinstance(value, torch.Tensor):
-        return {"_ipc_tensor": _ipc_pickle(value)}
+        return {"_ipc_tensor": ipc_pickle(value)}
+    else:
+        pass
     if isinstance(value, dict):
         return {
-            key: _serialize_direct_ipc_metadata_value(item)
+            key: serialize_direct_ipc_metadata_value(item)
             for key, item in value.items()
         }
+    else:
+        pass
     if isinstance(value, list):
-        return [_serialize_direct_ipc_metadata_value(item) for item in value]
+        return [serialize_direct_ipc_metadata_value(item) for item in value]
+    else:
+        pass
     if isinstance(value, tuple):
         return {
-            "_ipc_tuple": [_serialize_direct_ipc_metadata_value(item) for item in value]
+            "_ipc_tuple": [serialize_direct_ipc_metadata_value(item) for item in value]
         }
+    else:
+        pass
     return value
 
 
@@ -868,15 +1053,27 @@ def deserialize_direct_ipc_metadata(value: object) -> object:
             tensor_bytes = value["_ipc_tensor"]
             if not isinstance(tensor_bytes, bytes):
                 raise TypeError("_ipc_tensor metadata must be bytes")
+            else:
+                pass
             return pickle.loads(tensor_bytes)
+        else:
+            pass
         if set(value) == {"_ipc_tuple"}:
             items = value["_ipc_tuple"]
             if not isinstance(items, list):
                 raise TypeError("_ipc_tuple metadata must be list")
+            else:
+                pass
             return tuple(deserialize_direct_ipc_metadata(item) for item in items)
+        else:
+            pass
         return {
             key: deserialize_direct_ipc_metadata(item) for key, item in value.items()
         }
+    else:
+        pass
     if isinstance(value, list):
         return [deserialize_direct_ipc_metadata(item) for item in value]
+    else:
+        pass
     return value

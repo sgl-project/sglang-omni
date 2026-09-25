@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 
 from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer
+from .modules import DiTBlock, FinalLayer, RMSNorm
 from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 
@@ -44,6 +44,9 @@ class Aggregator(nn.Module):
         )
         if execution_config.attn_backend is not None:
             kwargs["attn_backend"] = execution_config.attn_backend
+        else:
+            pass
+        norm_layer = execution_config.norm_layer or RMSNorm
 
         self.in_channels = in_channels
         self.out_channels = in_channels
@@ -62,11 +65,21 @@ class Aggregator(nn.Module):
 
         self.blocks = nn.ModuleList(
             [
-                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, **kwargs)
+                DiTBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    norm_layer=norm_layer,
+                    **kwargs,
+                )
                 for _ in range(depth)
             ]
         )
-        self.final_layer = FinalLayer(hidden_size, llm_input_dim)
+        self.final_layer = FinalLayer(
+            hidden_size,
+            llm_input_dim,
+            norm_layer=norm_layer,
+        )
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -76,6 +89,10 @@ class Aggregator(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+                else:
+                    pass
+            else:
+                pass
 
         self.apply(_basic_init)
 
@@ -108,6 +125,8 @@ class Aggregator(nn.Module):
         if mask is not None:
             mask_pad = mask.clone().detach()[:, :1]
             mask = torch.cat([mask_pad, mask], dim=-1)
+        else:
+            pass
         for block in self.blocks:
             x = block(x, mask, rope)  # (N, T, D)
         x = self.final_layer(x)  # (N, T, patch_size ** 2 * out_channels)

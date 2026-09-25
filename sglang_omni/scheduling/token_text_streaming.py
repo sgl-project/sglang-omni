@@ -7,11 +7,13 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Callable, TypeVar
 
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 
 if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
     from sglang_omni.scheduling.types import RequestOutput
+else:
+    pass
 
 MetadataValueT = TypeVar("MetadataValueT")
 
@@ -42,16 +44,24 @@ def make_token_text_stream_output_builder(
         req = req_data.req
         if req is None:
             return []
+        else:
+            pass
 
         # note (guozhihao): suppress while chunked prefill is still on prompt tokens.
         if req.inflight_middle_chunks > 0:
             return []
+        else:
+            pass
 
         stage_payload = req_data.stage_payload
         if stage_payload is None:
             return []
+        else:
+            pass
         if not (stage_payload.request.params or {}).get("stream", False):
             return []
+        else:
+            pass
 
         # note (guozhihao): Fun sets allow_terminal_flush so empty data can flush
         # when finished(); MOSS leaves it False and empty data stays silent.
@@ -65,6 +75,8 @@ def make_token_text_stream_output_builder(
                 return []
         elif not is_terminal:
             return []
+        else:
+            pass
 
         try:
             pending = getattr(req, pending_ids_attr)
@@ -79,8 +91,12 @@ def make_token_text_stream_output_builder(
         )
         if token_id is not None and not is_eos:
             pending.append(token_id)
+        else:
+            pass
         if not pending:
             return []
+        else:
+            pass
 
         now = time.perf_counter()
         try:
@@ -97,6 +113,8 @@ def make_token_text_stream_output_builder(
             and (now - last_emit) < min_emit_interval_s
         ):
             return []
+        else:
+            pass
 
         delta = decode_fn(pending)
         # note (guozhihao): trailing U+FFFD hold is independent of terminal flush so a
@@ -105,9 +123,13 @@ def make_token_text_stream_output_builder(
             is_terminal and emit_trailing_replacement_on_terminal
         ):
             return []
+        else:
+            pass
         pending.clear()
         if not delta:
             return []
+        else:
+            pass
 
         setattr(req, last_emit_attr, now)
 
@@ -133,6 +155,8 @@ def make_token_text_stream_output_builder(
             )
 
         _build_stream_output.flush = _flush_stream_output  # type: ignore[attr-defined]
+    else:
+        pass
 
     return _build_stream_output
 

@@ -73,6 +73,8 @@ from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleSched
 if TYPE_CHECKING:
     from sglang_omni.models.higgs_tts.request_builders import HiggsSGLangRequestData
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -95,31 +97,45 @@ _CONSUMED_REFERENCE_INPUT_KEYS = frozenset(
 )
 
 
-def _reference_audio_cache_key(reference_audio: object) -> str | None:
+def reference_audio_cache_key(reference_audio: object) -> str | None:
     """Safe source key for preprocessing waveform-cache lookup."""
     if isinstance(reference_audio, (str, Path)):
         return _reference_path_cache_key(reference_audio)
+    else:
+        pass
     if not isinstance(reference_audio, dict):
         return None
+    else:
+        pass
     path = reference_audio.get("audio_path") or reference_audio.get("path")
     if path:
         return _reference_path_cache_key(path)
+    else:
+        pass
     if "bytes" in reference_audio:
         data = reference_audio["bytes"]
         if isinstance(data, str):
             data = data.encode()
+        else:
+            pass
         return hash_media_item(data)
+    else:
+        pass
     encoded = reference_audio.get("base64") or reference_audio.get("data")
     if encoded is None:
         return None
+    else:
+        pass
     raw = base64.b64decode(encoded) if isinstance(encoded, str) else bytes(encoded)
     return hash_media_item(raw)
 
 
-def _without_consumed_reference_media(inputs: object) -> object:
+def without_consumed_reference_media(inputs: object) -> object:
     """Return inputs with the reference media preprocessing already consumed."""
     if not isinstance(inputs, dict):
         return inputs
+    else:
+        pass
     return {
         key: value
         for key, value in inputs.items()
@@ -127,7 +143,7 @@ def _without_consumed_reference_media(inputs: object) -> object:
     }
 
 
-def _reference_code_cache_key_from_waveform(
+def reference_code_cache_key_from_waveform(
     waveform: torch.Tensor, sample_rate: int
 ) -> str:
     """Content key for the reference-code cache after audio decode/resample.
@@ -140,17 +156,21 @@ def _reference_code_cache_key_from_waveform(
     return f"waveform:{meta}:{hash_bytes(wav.numpy().tobytes())}"
 
 
-def _uploaded_voice_cache_key(
+def uploaded_voice_cache_key(
     reference_audio: object,
     *,
     artifact_kind: str,
 ) -> SpeakerCacheKey | None:
     if not isinstance(reference_audio, dict):
         return None
+    else:
+        pass
     voice_name = reference_audio.get("uploaded_voice_name")
     created_at = reference_audio.get("uploaded_voice_created_at")
     if voice_name is None or created_at is None:
         return None
+    else:
+        pass
     return SpeakerCacheKey(
         model_type="higgs_tts",
         voice_name=str(voice_name),
@@ -159,13 +179,15 @@ def _uploaded_voice_cache_key(
     )
 
 
-def _state_uploaded_voice_cache_key(
+def state_uploaded_voice_cache_key(
     state: HiggsTtsState,
     *,
     artifact_kind: str,
 ) -> SpeakerCacheKey | None:
     if state.uploaded_voice_name is None or state.uploaded_voice_created_at is None:
         return None
+    else:
+        pass
     return SpeakerCacheKey(
         model_type="higgs_tts",
         voice_name=state.uploaded_voice_name,
@@ -174,7 +196,7 @@ def _state_uploaded_voice_cache_key(
     )
 
 
-class _HiggsReferenceInput:
+class HiggsReferenceInput:
     """Waveform plus its content key computed at preprocessing time."""
 
     __slots__ = ("waveform", "content_key")
@@ -190,8 +212,8 @@ class ReferenceAudioCodec(Protocol):
     ) -> torch.Tensor: ...
 
 
-class _HiggsReferenceEncodeHook(
-    TensorReferenceEncodeHook[_HiggsReferenceInput, _HiggsReferenceInput]
+class HiggsReferenceEncodeHook(
+    TensorReferenceEncodeHook[HiggsReferenceInput, HiggsReferenceInput]
 ):
     """Encode delayed 24 kHz reference codes keyed by waveform content."""
 
@@ -204,23 +226,25 @@ class _HiggsReferenceEncodeHook(
     def __init__(
         self, codec: ReferenceAudioCodec, *, num_codebooks: int, model_identity: str
     ) -> None:
-        self._codec = codec
-        self._num_codebooks = int(num_codebooks)
+        self.codec = codec
+        self.num_codebooks = int(num_codebooks)
         self.model_id = str(model_identity)
-        self.encoder_config_hash = f"nq{self._num_codebooks}"
+        self.encoder_config_hash = f"nq{self.num_codebooks}"
 
-    def input_key(self, item: _HiggsReferenceInput) -> str | None:
+    def input_key(self, item: HiggsReferenceInput) -> str | None:
         return item.content_key
 
-    def encode_one(self, item: _HiggsReferenceInput) -> torch.Tensor:
-        ref_codes_TN = self._codec.encode_reference(
-            item.waveform, sample_rate=24000
-        ).to(torch.long)
-        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != self._num_codebooks:
+    def encode_one(self, item: HiggsReferenceInput) -> torch.Tensor:
+        ref_codes_TN = self.codec.encode_reference(item.waveform, sample_rate=24000).to(
+            torch.long
+        )
+        if ref_codes_TN.ndim != 2 or ref_codes_TN.shape[1] != self.num_codebooks:
             raise ValueError(
-                f"codec output must be [T, {self._num_codebooks}], got "
+                f"codec output must be [T, {self.num_codebooks}], got "
                 f"{tuple(ref_codes_TN.shape)}"
             )
+        else:
+            pass
         return apply_delay_pattern(ref_codes_TN)
 
 
@@ -261,6 +285,8 @@ def create_preprocessing_executor(
         params = payload.request.params or {}
         if isinstance(inputs, str):
             inputs = {"text": inputs}
+        else:
+            pass
 
         raw_refs = inputs.get("references")
         if raw_refs and isinstance(raw_refs, list):
@@ -269,6 +295,8 @@ def create_preprocessing_executor(
                 inputs = dict(inputs)
                 if first.get("text") and not inputs.get("reference_text"):
                     inputs["reference_text"] = first["text"]
+                else:
+                    pass
                 if inputs.get("reference_audio") is None:
                     if "bytes" in first or "base64" in first or "data" in first:
                         inputs["reference_audio"] = first
@@ -276,6 +304,12 @@ def create_preprocessing_executor(
                         inputs["reference_audio"] = first.get(
                             "audio_path"
                         ) or first.get("path")
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         text = inputs.get("input") or inputs.get("text") or ""
         reference_text = inputs.get("reference_text") or None
@@ -286,6 +320,8 @@ def create_preprocessing_executor(
                 f"cap at {_MAX_REF_AUDIO_SEC}s of audio "
                 f"(~{_MAX_REF_AUDIO_SEC * 75} frames at 75 Hz)."
             )
+        else:
+            pass
 
         waveform_tensor = None
         reference_code_cache_key = None
@@ -293,7 +329,7 @@ def create_preprocessing_executor(
         uploaded_voice_created_at = None
         if ref_codes_TN is None and inputs.get("reference_audio") is not None:
             reference_audio = inputs["reference_audio"]
-            speaker_waveform_cache_key = _uploaded_voice_cache_key(
+            speaker_waveform_cache_key = uploaded_voice_cache_key(
                 reference_audio,
                 artifact_kind="reference_waveform",
             )
@@ -304,8 +340,10 @@ def create_preprocessing_executor(
                 if cached_reference is not None:
                     waveform_tensor, reference_code_cache_key = cached_reference
                     waveform_tensor = waveform_tensor.clone()
+                else:
+                    pass
             else:
-                reference_source_key = _reference_audio_cache_key(reference_audio)
+                reference_source_key = reference_audio_cache_key(reference_audio)
                 with reference_waveform_cache_lock:
                     cached_reference = reference_waveform_cache.get(
                         reference_source_key
@@ -313,18 +351,24 @@ def create_preprocessing_executor(
                 if cached_reference is not None:
                     cached_waveform, reference_code_cache_key = cached_reference
                     waveform_tensor = cached_waveform.clone()
+                else:
+                    pass
             if waveform_tensor is None:
                 waveform_np, sample_rate = load_audio_to_24k(reference_audio)
                 wav = torch.from_numpy(waveform_np)
                 if sample_rate != 24000:
                     wav = F_audio.resample(wav, sample_rate, 24000)
+                else:
+                    pass
                 if wav.shape[-1] > _MAX_REF_AUDIO_SEC * 24000:
                     raise ValueError(
                         f"reference_audio is too long "
                         f"({wav.shape[-1] / 24000:.1f}s); cap at {_MAX_REF_AUDIO_SEC}s."
                     )
+                else:
+                    pass
                 waveform_tensor = wav.view(1, 1, -1).contiguous().float()
-                reference_code_cache_key = _reference_code_cache_key_from_waveform(
+                reference_code_cache_key = reference_code_cache_key_from_waveform(
                     waveform_tensor, 24000
                 )
                 if speaker_waveform_cache_key is not None:
@@ -338,6 +382,12 @@ def create_preprocessing_executor(
                             reference_source_key,
                             (waveform_tensor.clone(), reference_code_cache_key),
                         )
+                else:
+                    pass
+            else:
+                pass
+        else:
+            pass
 
         if ref_codes_TN is not None:
             delayed = apply_delay_pattern(ref_codes_TN)
@@ -382,7 +432,7 @@ def create_preprocessing_executor(
             return_omni_rollout=bool(params.get("return_omni_rollout", False)),
         )
         payload.data = state.to_dict()
-        payload.request.inputs = _without_consumed_reference_media(
+        payload.request.inputs = without_consumed_reference_media(
             payload.request.inputs
         )
         return payload
@@ -420,11 +470,13 @@ def create_audio_encoder_executor(
         codec.model.acoustic_encoder = torch.compile(
             codec.model.acoustic_encoder, mode="default", dynamic=True
         )
+    else:
+        pass
     codec.encode_reference(
         torch.zeros(codec.SAMPLE_RATE), sample_rate=codec.SAMPLE_RATE
     )
     reference_service = ReferenceEncodeService(
-        _HiggsReferenceEncodeHook(
+        HiggsReferenceEncodeHook(
             codec,
             num_codebooks=num_codebooks,
             model_identity=checkpoint_dir,
@@ -440,10 +492,12 @@ def create_audio_encoder_executor(
         waveform = state.reference_waveform
         if waveform is None:
             return payload
+        else:
+            pass
 
         # note (luojiaxuan): Uploaded voices stay on the versioned speaker cache
         # invalidated by voice re-upload; everything else rides the shared service.
-        speaker_code_cache_key = _state_uploaded_voice_cache_key(
+        speaker_code_cache_key = state_uploaded_voice_cache_key(
             state,
             artifact_kind="reference_codes",
         )
@@ -456,7 +510,7 @@ def create_audio_encoder_executor(
             delayed_rows = cached_delayed.tolist()
         else:
             delayed = reference_service.get_or_encode(
-                _HiggsReferenceInput(waveform, state.reference_code_cache_key),
+                HiggsReferenceInput(waveform, state.reference_code_cache_key),
                 desc=state.uploaded_voice_name or "ad-hoc reference",
             )
             delayed_rows = delayed.tolist()
@@ -464,6 +518,8 @@ def create_audio_encoder_executor(
                 speaker_cache.put(
                     speaker_code_cache_key, delayed.detach().to("cpu", torch.int32)
                 )
+            else:
+                pass
         state.reference_codes_delayed = delayed_rows
         state.prompt_token_ids = adapter.build_prompt(
             state.target_text or "",
@@ -547,6 +603,8 @@ def create_vocoder_executor(
         raise ValueError(
             "compile_decode and decode_cuda_graph_frame_counts are mutually exclusive"
         )
+    else:
+        pass
     # decode_cuda_graph_frame_counts must cover every window size the streaming
     # scheduler can submit, or those windows fall back to eager decode (warned
     # only once per distinct missed frame count, so easy to miss in serving
@@ -572,6 +630,10 @@ def create_vocoder_executor(
                 current_platform.device_type,
             )
             compile_decode = False
+        else:
+            pass
+    else:
+        pass
     if compile_decode:
         eager_decode = codec.model.decode
         try:
@@ -612,6 +674,8 @@ def create_vocoder_executor(
             codec.capture_decode_cuda_graphs(
                 tuple(int(value) for value in decode_cuda_graph_frame_counts)
             )
+    else:
+        pass
 
     return HiggsStreamingVocoderScheduler(
         codec,

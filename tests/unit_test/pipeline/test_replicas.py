@@ -697,7 +697,7 @@ class TestReceiveSideLogicalNames:
             can_accept_stream_before_payload=True,
             replica_topology={"engine": ["engine@r0", "engine@r1"]},
         )
-        stage._stream_queue = StreamQueue()
+        stage.stream_queue = StreamQueue()
 
         async def run() -> None:
             await stage.receive_local_stream_chunk(

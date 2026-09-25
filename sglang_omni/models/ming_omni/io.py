@@ -47,6 +47,8 @@ class MingOmniPipelineState:
     def from_dict(cls, data: object) -> "MingOmniPipelineState":
         if not isinstance(data, dict):
             data = {}
+        else:
+            pass
         mm_inputs = data.get("mm_inputs")
         encoder_inputs = data.get("encoder_inputs")
         encoder_outs = data.get("encoder_outs")
@@ -70,22 +72,40 @@ class MingOmniPipelineState:
         data: dict[str, object] = {}
         if self.raw_inputs is not None:
             data["raw_inputs"] = self.raw_inputs
+        else:
+            pass
         if self.prompt is not None:
             data["prompt"] = self.prompt
+        else:
+            pass
         if self.mm_inputs:
             data["mm_inputs"] = self.mm_inputs
+        else:
+            pass
         if self.encoder_inputs:
             data["encoder_inputs"] = self.encoder_inputs
+        else:
+            pass
         if self.encoder_outs:
             data["encoder_outs"] = self.encoder_outs
+        else:
+            pass
         if self.thinker_inputs:
             data["thinker_inputs"] = self.thinker_inputs
+        else:
+            pass
         if self.thinker_out is not None:
             data["thinker_out"] = self.thinker_out
+        else:
+            pass
         if self.engine_outputs:
             data["engine_outputs"] = self.engine_outputs
+        else:
+            pass
         if self.stream_state:
             data["stream_state"] = self.stream_state
+        else:
+            pass
         return data
 
 

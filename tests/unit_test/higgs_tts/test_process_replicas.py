@@ -14,7 +14,7 @@ from sglang_omni.config.runtime import (
 from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
 from sglang_omni.models.higgs_tts import stages
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
-from sglang_omni.pipeline.mp_runner import _build_stage_groups
+from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
@@ -46,7 +46,7 @@ def test_higgs_frontend_replicas_inject_same_gpu_id(tmp_path) -> None:
     config = _same_gpu_frontend_replica_config(tmp_path)
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,

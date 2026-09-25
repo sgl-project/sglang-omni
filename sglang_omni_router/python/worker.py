@@ -107,7 +107,7 @@ class Worker:
         self.health_epoch += 1
         if error is not None:
             self.last_error = error
-        self._log_state_transition(previous_state, self.state)
+        self.log_state_transition(previous_state, self.state)
 
     def clear_dead(self) -> None:
         previous_state = self.state
@@ -116,7 +116,7 @@ class Worker:
         self.health_epoch += 1
         self.consecutive_failures = 0
         self.consecutive_successes = 0
-        self._log_state_transition(previous_state, self.state)
+        self.log_state_transition(previous_state, self.state)
 
     def set_disabled(self, disabled: bool) -> None:
         if self.disabled != disabled:
@@ -139,13 +139,13 @@ class Worker:
         service_class: ServiceClass = "generation",
     ) -> None:
         self.routed_requests += 1
-        _increment_counter(self.routed_requests_by_class, service_class)
+        increment_counter(self.routed_requests_by_class, service_class)
         if status_code is not None and 200 <= status_code < 400:
             self.successful_requests += 1
-            _increment_counter(self.successful_requests_by_class, service_class)
+            increment_counter(self.successful_requests_by_class, service_class)
             return
         self.failed_requests += 1
-        _increment_counter(self.failed_requests_by_class, service_class)
+        increment_counter(self.failed_requests_by_class, service_class)
 
     @contextmanager
     def request_guard(self) -> Iterator[None]:
@@ -175,10 +175,10 @@ class Worker:
             self.consecutive_failures = 0
             if self.consecutive_successes >= success_threshold:
                 self.state = HEALTH_STATE_HEALTHY
-            self._log_state_transition(previous_state, self.state)
+            self.log_state_transition(previous_state, self.state)
             return
 
-        self._record_failure(
+        self.record_failure(
             previous_state=previous_state,
             failure_threshold=failure_threshold,
         )
@@ -195,12 +195,12 @@ class Worker:
         self.last_checked_at = observed_at or datetime.now(timezone.utc)
         self.last_status_code = status_code
         self.last_error = error
-        self._record_failure(
+        self.record_failure(
             previous_state=previous_state,
             failure_threshold=failure_threshold,
         )
 
-    def _record_failure(
+    def record_failure(
         self,
         *,
         previous_state: WorkerState,
@@ -212,7 +212,7 @@ class Worker:
         failure_threshold_crossed = self.consecutive_failures == failure_threshold
         if failure_threshold_reached:
             self.state = HEALTH_STATE_UNHEALTHY
-        self._log_state_transition(
+        self.log_state_transition(
             previous_state,
             self.state,
             warn=failure_threshold_crossed,
@@ -224,7 +224,7 @@ class Worker:
                 f"(threshold={failure_threshold})",
             )
 
-    def _log_state_transition(
+    def log_state_transition(
         self,
         previous_state: WorkerState,
         next_state: WorkerState,
@@ -239,8 +239,8 @@ class Worker:
             else:
                 logger.debug(
                     f"Worker {self.display_id} health state changed "
-                    f"from {_format_state_for_log(previous_state)} "
-                    f"to {_format_state_for_log(next_state)}",
+                    f"from {format_state_for_log(previous_state)} "
+                    f"to {format_state_for_log(next_state)}",
                 )
             return
 
@@ -252,8 +252,8 @@ class Worker:
         )
         log(
             f"Worker {self.display_id} health state changed "
-            f"from {_format_state_for_log(previous_state)} "
-            f"to {_format_state_for_log(next_state)}",
+            f"from {format_state_for_log(previous_state)} "
+            f"to {format_state_for_log(next_state)}",
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -287,9 +287,9 @@ def build_workers(configs: list[WorkerConfig]) -> list[Worker]:
     return [Worker(config=config) for config in configs]
 
 
-def _increment_counter(counters: dict[str, int], key: str) -> None:
+def increment_counter(counters: dict[str, int], key: str) -> None:
     counters[key] = counters.get(key, 0) + 1
 
 
-def _format_state_for_log(state: WorkerState) -> str:
+def format_state_for_log(state: WorkerState) -> str:
     return state.replace("_", " ").title()

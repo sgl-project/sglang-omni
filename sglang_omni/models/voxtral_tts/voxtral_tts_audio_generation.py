@@ -79,7 +79,7 @@ class MultiVocabEmbeddings(nn.Module):
         aligned_size = 128 * ((total_vocab + 127) // 128)
         self.embeddings = nn.Embedding(aligned_size, embedding_dim)
 
-    def _rebuild_offsets(self) -> None:
+    def rebuild_offsets(self) -> None:
         """Recompute the per-codebook offsets buffer.
 
         Must be called after ``to_empty()`` (meta-device init) because
@@ -129,7 +129,7 @@ class RMSNorm(nn.Module):
         self.scale = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
-    def _norm(self, x: torch.Tensor) -> torch.Tensor:
+    def norm(self, x: torch.Tensor) -> torch.Tensor:
         return x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(
@@ -137,8 +137,10 @@ class RMSNorm(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if residual is not None:
             x = x + residual
+        else:
+            pass
         pre_norm = x  # keep the un-normalised value for the next residual
-        out = self._norm(x).to(x.dtype) * self.scale
+        out = self.norm(x).to(x.dtype) * self.scale
         return out, pre_norm
 
 
@@ -161,23 +163,23 @@ class RotaryPositionEmbedding(nn.Module):
         self.head_dim = head_dim
         self.max_positions = max_positions
         self.theta = theta
-        self._dtype = dtype
-        self._materialise_cache()
+        self.dtype = dtype
+        self.materialise_cache()
 
-    def _materialise_cache(self) -> None:
+    def materialise_cache(self) -> None:
         half = self.head_dim // 2
         freq_exponents = torch.arange(half, dtype=torch.float32) / half
         inv_freq = 1.0 / (self.theta**freq_exponents)
         positions = torch.arange(self.max_positions, dtype=torch.float32)
         # outer product → [max_positions, half]
         angles = torch.outer(positions, inv_freq)
-        cos_cache = angles.cos().to(self._dtype)
-        sin_cache = angles.sin().to(self._dtype)
-        self.register_buffer("_cos", cos_cache, persistent=False)
-        self.register_buffer("_sin", sin_cache, persistent=False)
+        cos_cache = angles.cos().to(self.dtype)
+        sin_cache = angles.sin().to(self.dtype)
+        self.register_buffer("cos", cos_cache, persistent=False)
+        self.register_buffer("sin", sin_cache, persistent=False)
 
     @staticmethod
-    def _rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    def rotate(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply Neox-style rotation: split in half, rotate, concatenate."""
         x1, x2 = x.chunk(2, dim=-1)
         return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
@@ -189,11 +191,11 @@ class RotaryPositionEmbedding(nn.Module):
         k: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         seq_len = positions.numel()
-        cos = self._cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
-        sin = self._sin[positions.flatten()].unsqueeze(1).to(q.dtype)
+        cos = self.cos[positions.flatten()].unsqueeze(1).to(q.dtype)  # [S, 1, D/2]
+        sin = self.sin[positions.flatten()].unsqueeze(1).to(q.dtype)
 
-        q = self._rotate(q.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
-        k = self._rotate(k.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
+        q = self.rotate(q.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
+        k = self.rotate(k.view(seq_len, -1, self.head_dim), cos, sin).flatten(1)
         return q, k
 
 
@@ -243,6 +245,8 @@ class CausalSelfAttention(nn.Module):
         if kv_cache is not None:
             k = torch.cat([kv_cache[0], k], dim=0)
             v = torch.cat([kv_cache[1], v], dim=0)
+        else:
+            pass
         updated_kv = (k, v)
 
         # SDPA expects [B, H, S, D]; batch dim is always 1 here
@@ -351,13 +355,15 @@ _GLOBAL_KEY_MAP: dict[str, str] = {
 }
 
 
-def _remap_checkpoint_key(name: str) -> str | None:
+def remap_checkpoint_key(name: str) -> str | None:
     """Map a Mistral-format checkpoint key to our parameter name.
 
     Returns ``None`` if the key does not belong to the LLM backbone.
     """
     if name in _GLOBAL_KEY_MAP:
         return _GLOBAL_KEY_MAP[name]
+    else:
+        pass
 
     # layers.<N>.<suffix> → blocks.<N>.<mapped_suffix>
     m = re.match(r"^layers\.(\d+)\.(.+)$", name)
@@ -366,10 +372,14 @@ def _remap_checkpoint_key(name: str) -> str | None:
         mapped = _LAYER_KEY_MAP.get(suffix)
         if mapped is not None:
             return f"blocks.{layer_idx}.{mapped}"
+        else:
+            pass
+    else:
+        pass
     return None
 
 
-def _interleave_qk_weight(w: torch.Tensor, n_heads: int, head_dim: int) -> torch.Tensor:
+def interleave_qk_weight(w: torch.Tensor, n_heads: int, head_dim: int) -> torch.Tensor:
     """Re-order Q/K weight rows from Mistral's grouped layout to the
     interleaved layout expected by the Neox-style rotary convention.
 
@@ -448,14 +458,14 @@ class VoxtralTTSAudioGeneration(nn.Module):
         positions = position_ids.flatten()
 
         if do_layer_debug and past_key_values is None:
-            hidden, kv = self._debug_forward(embeds, positions)
+            hidden, kv = self.debug_forward(embeds, positions)
         else:
             hidden, kv = self.language_model(embeds, positions, past_key_values)
 
         return hidden.unsqueeze(0), kv if use_cache else None
 
     @torch.no_grad()
-    def _debug_forward(
+    def debug_forward(
         self,
         embeds: torch.Tensor,
         positions: torch.Tensor,
@@ -481,6 +491,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
         shard_paths = sorted(glob.glob(os.path.join(checkpoint_dir, "*.safetensors")))
         if not shard_paths:
             raise FileNotFoundError(f"No .safetensors files found in {checkpoint_dir}")
+        else:
+            pass
 
         n_heads = self.n_heads
         n_kv_heads = self.n_kv_heads
@@ -493,7 +505,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
             with safe_open(path, framework="pt", device="cpu") as fp:
                 for ckpt_key in fp.keys():
                     tensor = fp.get_tensor(ckpt_key)
-                    self._dispatch_weight(
+                    self.dispatch_weight(
                         ckpt_key,
                         tensor,
                         llm_state,
@@ -514,15 +526,19 @@ class VoxtralTTSAudioGeneration(nn.Module):
         )
         if missing:
             logger.warning("Missing keys (first 5): %s", missing[:5])
+        else:
+            pass
         if unexpected:
             logger.warning("Unexpected keys (first 5): %s", unexpected[:5])
+        else:
+            pass
         logger.info(
             "Acoustic transformer: %d loaded | Audio embedding: %s",
             counters["acoustic"],
             counters["embedding"],
         )
 
-    def _dispatch_weight(
+    def dispatch_weight(
         self,
         ckpt_key: str,
         tensor: torch.Tensor,
@@ -534,15 +550,19 @@ class VoxtralTTSAudioGeneration(nn.Module):
     ) -> None:
         """Route a single checkpoint tensor to the correct sub-module."""
         # --- LLM backbone ---
-        mapped = _remap_checkpoint_key(ckpt_key)
+        mapped = remap_checkpoint_key(ckpt_key)
         if mapped is not None:
             if "attention.wq." in ckpt_key:
-                tensor = _interleave_qk_weight(tensor, n_heads, head_dim)
+                tensor = interleave_qk_weight(tensor, n_heads, head_dim)
             elif "attention.wk." in ckpt_key:
-                tensor = _interleave_qk_weight(tensor, n_kv_heads, head_dim)
+                tensor = interleave_qk_weight(tensor, n_kv_heads, head_dim)
+            else:
+                pass
             llm_state[mapped] = tensor
             counters["llm"] += 1
             return
+        else:
+            pass
 
         # --- Acoustic transformer ---
         prefix = "acoustic_transformer."
@@ -551,6 +571,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
             self.acoustic_transformer.load_weight((param_name, tensor))
             counters["acoustic"] += 1
             return
+        else:
+            pass
 
         # --- Audio codebook embedding ---
         if ckpt_key == (
@@ -558,6 +580,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
         ):
             self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
             counters["embedding"] = True
+        else:
+            pass
 
     # ---- factory ----------------------------------------------------------
 
@@ -588,12 +612,12 @@ class VoxtralTTSAudioGeneration(nn.Module):
 
         # Rebuild non-persistent buffers lost during meta init
         for block in model.language_model.blocks:
-            block.attn.rotary_emb._materialise_cache()
+            block.attn.rotary_emb.materialise_cache()
 
-        model.audio_token_embedding._rebuild_offsets()
+        model.audio_token_embedding.rebuild_offsets()
 
         at = model.acoustic_transformer
-        at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
+        at.timesteps = torch.linspace(0, 1, at.acoustic_decode_iters)
         dim = at.acoustic_transformer_args.dim
         at.time_embedding.inv_freq = torch.exp(
             -math.log(10_000.0) * torch.arange(dim // 2).float() / (dim // 2)
@@ -624,10 +648,14 @@ class VoxtralTTSAudioGeneration(nn.Module):
                         weights_only=True,
                     )
                     voice_embeddings[name] = emb.to(dtype=torch.bfloat16)
+                else:
+                    pass
             logger.info(
                 "Loaded %d voice embeddings: %s",
                 len(voice_embeddings),
                 list(voice_embeddings.keys()),
             )
+        else:
+            pass
 
         return model, voice_embeddings, config

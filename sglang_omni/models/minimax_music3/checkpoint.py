@@ -26,12 +26,12 @@ class TTMCheckpointPaths:
 
 
 @lru_cache(maxsize=None)
-def _download_once(model_path: str) -> str:
+def download_once(model_path: str) -> str:
     return _resolve_source(model_path)
 
 
 def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
-    root = Path(_download_once(str(Path(model_path).expanduser()))).expanduser()
+    root = Path(download_once(str(Path(model_path).expanduser()))).expanduser()
     direct_qwen = root / "qwen_7B" / "qwen_7B"
     direct_dit = root / "flowmatching_vae.pth"
     if not (direct_qwen.is_dir() and direct_dit.exists()) and root.is_dir():
@@ -44,6 +44,10 @@ def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
         ]
         if len(candidates) == 1:
             root = candidates[0]
+        else:
+            pass
+    else:
+        pass
     qwen_dir = root / "qwen_7B" / "qwen_7B"
     tokenizer_dir = root / "qwen_7B" / "qwen3-8B-tokenizer-music"
     paths = TTMCheckpointPaths(
@@ -63,6 +67,8 @@ def load_json(path: Path) -> dict[str, JsonValue]:
         value = json.load(f)
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object in {path}")
+    else:
+        pass
     return value
 
 
@@ -76,8 +82,12 @@ def load_torch_state(path: str | Path, *, device: torch.device) -> dict[str, obj
     )
     if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
         state = state["state_dict"]
+    else:
+        pass
     if not isinstance(state, dict) or not all(isinstance(k, str) for k in state):
         raise ValueError(f"expected tensor state dict in {path}")
+    else:
+        pass
     return state
 
 
@@ -99,6 +109,8 @@ def load_audio_state(paths: TTMCheckpointPaths) -> dict[str, torch.Tensor]:
         for key, value in shard.items():
             if any(key.startswith(prefix) for prefix in prefixes):
                 result[key] = value
+            else:
+                pass
     return result
 
 

@@ -24,17 +24,17 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 def test_drain_batch_respects_gpu_microbatch_limit() -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._max_batch_size = 2
-    service._queue = queue.Queue()
+    service.max_batch_size = 2
+    service.queue = queue.Queue()
     entries = [
         QueueEntry(object(), concurrent.futures.Future())
-        for _ in range(service._max_batch_size + 2)
+        for _ in range(service.max_batch_size + 2)
     ]
     for entry in entries:
-        service._queue.put(entry)
+        service.queue.put(entry)
 
-    assert service._drain_batch() == entries[:2]
-    assert service._queue.qsize() == 2
+    assert service.drain_batch() == entries[:2]
+    assert service.queue.qsize() == 2
 
 
 def test_encoder_microbatch_limit_must_be_positive() -> None:
@@ -59,9 +59,9 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._stream = _FailingStream()
-    service._model = SimpleNamespace(
-        _get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
+    service.stream = _FailingStream()
+    service.model = SimpleNamespace(
+        get_audio_feature_uncached=lambda items, forward_batch: torch.ones(2, 3)
     )
     monkeypatch.setattr(
         encoder_service.torch.cuda,
@@ -79,7 +79,7 @@ def test_encode_batch_commits_item_state_only_after_stream_success(
     ]
 
     with pytest.raises(torch.OutOfMemoryError, match="test encoder OOM"):
-        service._execute_batch(items)
+        service.execute_batch(items)
 
     for item, feature in zip(items, features):
         assert item.feature is feature
@@ -91,13 +91,13 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._max_batch_size = 1
-    service._queue = queue.Queue()
-    service._worker_state_lock = threading.Lock()
-    service._worker_error = None
-    service._batch_count = 0
-    service._item_count = 0
-    service._device = "cuda:7"
+    service.max_batch_size = 1
+    service.queue = queue.Queue()
+    service.worker_state_lock = threading.Lock()
+    service.worker_error = None
+    service.batch_count = 0
+    service.item_count = 0
+    service.device = "cuda:7"
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
     calls: list[list[object]] = []
@@ -132,38 +132,38 @@ def test_singleton_oom_is_request_scoped_and_worker_processes_next_item(
         cleanup_steps.append("empty_cache")
         poisoned = False
 
-    service._stream = SimpleNamespace(
+    service.stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
-    monkeypatch.setattr(service, "_execute_batch", _execute_batch)
+    monkeypatch.setattr(service, "execute_batch", _execute_batch)
     monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
     monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
 
     def _run_worker() -> None:
         try:
-            service._worker()
+            service.worker()
         except _StopWorker:
             pass
 
-    service._thread = threading.Thread(target=_run_worker, daemon=True)
-    service._thread.start()
+    service.thread = threading.Thread(target=_run_worker, daemon=True)
+    service.thread.start()
 
     try:
         with pytest.raises(torch.OutOfMemoryError, match="test encoder OOM"):
             service.encode_item(failed_item)
         service.encode_item(healthy_item)
     finally:
-        service._queue.put(QueueEntry(stop_item, concurrent.futures.Future()))
-        service._thread.join(timeout=1)
+        service.queue.put(QueueEntry(stop_item, concurrent.futures.Future()))
+        service.thread.join(timeout=1)
 
     gc.collect()
-    assert not service._thread.is_alive()
+    assert not service.thread.is_alive()
     assert calls == [[failed_item], [healthy_item]]
     assert cleanup_steps == ["synchronize", "empty_cache"]
     assert selected_devices == ["cuda:7"]
     assert healthy_item.feature is None
-    assert service._batch_count == 1
-    assert service._item_count == 1
+    assert service.batch_count == 1
+    assert service.item_count == 1
     assert retained_intermediates[0]() is None
     assert all(record.exc_info is None for record in caplog.records)
     assert all(
@@ -176,14 +176,14 @@ def test_batched_oom_falls_back_to_per_item_encoding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._batch_count = 0
-    service._item_count = 0
-    service._worker_state_lock = threading.Lock()
-    service._worker_error = None
-    service._device = "cuda:5"
+    service.batch_count = 0
+    service.item_count = 0
+    service.worker_state_lock = threading.Lock()
+    service.worker_error = None
+    service.device = "cuda:5"
     cleanup_steps: list[str] = []
     selected_devices: list[str] = []
-    service._stream = SimpleNamespace(
+    service.stream = SimpleNamespace(
         synchronize=lambda: cleanup_steps.append("synchronize")
     )
     poisoned = False
@@ -209,21 +209,21 @@ def test_batched_oom_falls_back_to_per_item_encoding(
         cleanup_steps.append("empty_cache")
         poisoned = False
 
-    monkeypatch.setattr(service, "_execute_batch", _execute_batch)
+    monkeypatch.setattr(service, "execute_batch", _execute_batch)
     monkeypatch.setattr(encoder_service.torch.cuda, "device", _cuda_device)
     monkeypatch.setattr(encoder_service.torch.cuda, "empty_cache", _empty_cache)
     entries = [QueueEntry(item, concurrent.futures.Future()) for item in items]
     batches = iter([(entries, False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     assert [entry.future.result() for entry in entries] == [None, None]
     assert calls == [items, [items[0]], [items[1]]]
-    assert service._batch_count == 2
+    assert service.batch_count == 2
     assert cleanup_steps == ["synchronize", "empty_cache"]
     assert selected_devices == ["cuda:5"]
-    assert service._item_count == 2
+    assert service.item_count == 2
 
 
 def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
@@ -231,8 +231,8 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._worker_state_lock = threading.Lock()
-    service._worker_error = None
+    service.worker_state_lock = threading.Lock()
+    service.worker_error = None
     retained_intermediates: list[weakref.ReferenceType[_EncoderIntermediate]] = []
 
     def _raise_non_oom_encoder_failure(_items: list[object]) -> list[object]:
@@ -240,12 +240,12 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
         retained_intermediates.append(weakref.ref(intermediate))
         raise ValueError("unexpected encoder shape")
 
-    monkeypatch.setattr(service, "_execute_batch", _raise_non_oom_encoder_failure)
+    monkeypatch.setattr(service, "execute_batch", _raise_non_oom_encoder_failure)
     entry = QueueEntry(object(), concurrent.futures.Future())
     batches = iter([([entry], False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     failure = entry.future.exception()
     assert isinstance(failure, ValueError)
@@ -268,12 +268,12 @@ def test_non_oom_failure_logs_traceback_without_retaining_exception_state(
 
 def test_encode_item_rechecks_cache_after_preprocessing() -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._device = torch.device("cpu")
-    service._dtype = torch.float32
-    service._hidden_size = 3
-    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    service.device = torch.device("cpu")
+    service.dtype = torch.float32
+    service.hidden_size = 3
+    service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     cached = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    service._cache.put("fingerprint", cached)
+    service.cache.put("fingerprint", cached)
     item = MultimodalDataItem(
         modality=Modality.AUDIO,
         hash=7,
@@ -283,7 +283,7 @@ def test_encode_item_rechecks_cache_after_preprocessing() -> None:
             "audio_feature_lengths": torch.tensor([2]),
         },
     )
-    service._submit = lambda item: pytest.fail("cached item must not be submitted")
+    service.submit = lambda item: pytest.fail("cached item must not be submitted")
 
     service.encode_item(item)
 
@@ -301,22 +301,22 @@ def test_encode_item_rechecks_cache_after_preprocessing() -> None:
 )
 def test_lookup_cached_embedding_evicts_invalid_entries(cached: torch.Tensor) -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._dtype = torch.float32
-    service._hidden_size = 3
-    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
-    service._cache.put("fingerprint", cached)
+    service.dtype = torch.float32
+    service.hidden_size = 3
+    service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    service.cache.put("fingerprint", cached)
 
     assert service.lookup_cached_embedding("fingerprint", 2) is None
-    assert len(service._cache) == 0
+    assert len(service.cache) == 0
 
 
 def test_lookup_cached_embedding_returns_valid_entry() -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._dtype = torch.float32
-    service._hidden_size = 3
-    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    service.dtype = torch.float32
+    service.hidden_size = 3
+    service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     cached = torch.arange(6, dtype=torch.float32).reshape(2, 3)
-    service._cache.put("fingerprint", cached)
+    service.cache.put("fingerprint", cached)
 
     result = service.lookup_cached_embedding("fingerprint", 2)
 
@@ -326,14 +326,14 @@ def test_lookup_cached_embedding_returns_valid_entry() -> None:
 
 def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     service = object.__new__(BatchedAudioEncoderService)
-    service._batch_count = 0
-    service._item_count = 0
-    service._worker_state_lock = threading.Lock()
-    service._worker_error = None
-    service._device = torch.device("cpu")
-    service._cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
+    service.batch_count = 0
+    service.item_count = 0
+    service.worker_state_lock = threading.Lock()
+    service.worker_error = None
+    service.device = torch.device("cpu")
+    service.cache = StageOutputCache(max_size=4, max_bytes=1024, cache_device="cpu")
     synchronized: list[None] = []
-    service._stream = SimpleNamespace(synchronize=lambda: synchronized.append(None))
+    service.stream = SimpleNamespace(synchronize=lambda: synchronized.append(None))
 
     good = MultimodalDataItem(
         modality=Modality.AUDIO,
@@ -356,14 +356,14 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
         rows = int(items[0].audio_feature_lengths.sum())
         return torch.ones(rows, 3)
 
-    service._model = SimpleNamespace(_get_audio_feature_uncached=encode)
-    service._batch_context = contextlib.nullcontext
+    service.model = SimpleNamespace(get_audio_feature_uncached=encode)
+    service.batch_context = contextlib.nullcontext
     good_entry = QueueEntry(good, concurrent.futures.Future())
     bad_entry = QueueEntry(bad, concurrent.futures.Future())
     batches = iter([([good_entry, bad_entry], False), ([], True)])
-    service._next_batch = lambda: next(batches)
+    service.next_batch = lambda: next(batches)
 
-    service._worker()
+    service.worker()
 
     assert good_entry.future.result(timeout=0) is None
     with pytest.raises(RuntimeError, match="item failed"):
@@ -371,6 +371,6 @@ def test_batch_failure_retries_moss_items_with_failure_isolation() -> None:
     assert good.precomputed_embeddings.shape == (2, 3)
     assert good.feature is None
     assert bad.precomputed_embeddings is None
-    assert torch.equal(service._cache.get("1"), good.precomputed_embeddings)
-    assert service._cache.get("2") is None
+    assert torch.equal(service.cache.get("1"), good.precomputed_embeddings)
+    assert service.cache.get("2") is None
     assert len(synchronized) == 1

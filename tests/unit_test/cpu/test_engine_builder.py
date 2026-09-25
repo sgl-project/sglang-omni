@@ -102,7 +102,7 @@ def _build_on(monkeypatch, device: str) -> dict[str, Any]:
             }
 
         def setup_model(self, **kwargs: Any) -> None:
-            build_kwargs["_device"] = kwargs["device"]
+            build_kwargs["device"] = kwargs["device"]
 
         def get_model_buffer_bs(self, model: Any) -> int | None:
             # Must cover max_running_requests above or the policy check rejects it.
@@ -189,7 +189,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
     )
     monkeypatch.setattr(
         bootstrap,
-        "_describe_sglang_runtime_configuration",
+        "describe_sglang_runtime_configuration",
         lambda server_args, gpu_id: "CPU test runtime",
     )
     monkeypatch.setattr(model_worker_mod, "ModelWorker", lambda **kwargs: FakeWorker())
@@ -218,5 +218,5 @@ def test_a_cpu_stage_drops_its_placement_index(monkeypatch):
     """
     build_kwargs = _build_on(monkeypatch, device="cpu")
 
-    assert build_kwargs["_device"] == "cpu"
+    assert build_kwargs["device"] == "cpu"
     assert build_kwargs["_gpu_id"] == 0

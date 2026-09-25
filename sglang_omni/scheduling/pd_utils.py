@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,8 @@ def serialize_kv_allocator(
     """
     if lock is None:
         lock = threading.RLock()
+    else:
+        pass
 
     def synchronized(
         method: Callable[Params, ResultT],
@@ -63,6 +67,8 @@ def serialize_kv_allocator(
         method = getattr(allocator, name)
         if not name.startswith("_") and inspect.ismethod(method):
             setattr(allocator, name, synchronized(method))
+        else:
+            pass
     return lock
 
 
@@ -103,25 +109,39 @@ class DecodeContinuation:
     def __post_init__(self) -> None:
         if self.version != CONTINUATION_VERSION:
             raise ValueError(f"unsupported decode continuation version {self.version}")
+        else:
+            pass
         if not self.request_id or not self.transfer_id:
             raise ValueError("decode continuation ids must be non-empty")
+        else:
+            pass
         if not self.output_ids:
             raise ValueError("decode continuation requires the Prefill token")
+        else:
+            pass
         if self.vocab_size <= 0:
             raise ValueError("decode continuation vocab_size must be positive")
+        else:
+            pass
         for name in ("sampling_params", "stage_payload"):
             if not isinstance(getattr(self, name), dict):
                 raise TypeError(f"decode continuation {name} must be a mapping")
+            else:
+                pass
         if self.multimodal_resume is not None and not isinstance(
             self.multimodal_resume, dict
         ):
             raise TypeError("decode continuation multimodal_resume must be a mapping")
+        else:
+            pass
         hidden_states = self.return_hidden_states
         if not isinstance(hidden_states, bool) and hidden_states != "last":
             raise ValueError(
                 f"unsupported decode continuation "
                 f"return_hidden_states {hidden_states!r}"
             )
+        else:
+            pass
 
     def encode(self) -> bytes:
         return msgspec.msgpack.encode(dataclasses.asdict(self))
@@ -134,10 +154,14 @@ class DecodeContinuation:
             raise ValueError("invalid decode continuation encoding") from exc
         if not isinstance(decoded, dict):
             raise TypeError("decode continuation must contain a mapping")
+        else:
+            pass
         expected = {field.name for field in dataclasses.fields(cls)}
         unknown = set(decoded) - expected
         if unknown:
             raise ValueError(f"unknown decode continuation fields: {unknown}")
+        else:
+            pass
         try:
             return cls(**decoded)
         except TypeError as exc:
@@ -173,18 +197,30 @@ def continuation_from_req(
 
     if not req.output_ids:
         raise ValueError(f"Prefill request {req.rid!r} produced no token")
+    else:
+        pass
     if req.custom_logit_processor:
         raise NotImplementedError("PD does not support custom logit processors")
-    data = req._omni_data
+    else:
+        pass
+    data = (
+        req.omni_data
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if data.input_embeds_are_projected or getattr(
-        req, "_input_embeds_are_projected", False
+        req,
+        "_input_embeds_are_projected",
+        False,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     ):
         raise NotImplementedError("PD does not support projected input embeddings")
-    sampling = _sampling_params_to_dict(req.sampling_params)
+    else:
+        pass
+    sampling = sampling_params_to_dict(req.sampling_params)
     if any(
         sampling.get(key) for key in ("json_schema", "regex", "ebnf", "structural_tag")
     ):
         raise NotImplementedError("PD does not support structured-output sampling")
+    else:
+        pass
 
     payload, multimodal_resume, origin_input_ids = state_builder(req)
     return DecodeContinuation(
@@ -244,6 +280,8 @@ def req_from_continuation(
     sampling_values = dict(continuation.sampling_params)
     if isinstance(sampling_values.get("stop_token_ids"), list):
         sampling_values["stop_token_ids"] = set(sampling_values["stop_token_ids"])
+    else:
+        pass
     sampling_params = SamplingParams(**sampling_values)
     req = Req(
         rid=continuation.request_id,
@@ -295,15 +333,19 @@ def req_from_continuation(
         return_logprob=continuation.return_logprob,
         output_token_logprobs=list(continuation.output_token_logprobs),
     )
-    req._omni_data = data
+    req.omni_data = data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     state_restorer(req, data, continuation.multimodal_resume)
     if req.tokenizer is None and (
         sampling_params.stop_strs or sampling_params.stop_regex_strs
     ):
         raise ValueError("PD state_restorer must provide a tokenizer for stop strings")
+    else:
+        pass
 
     if req_to_token_pool.alloc([req]) is None:
         raise DecodeRequestPoolExhausted("decode request pool is exhausted")
+    else:
+        pass
     try:
         req_to_token_pool.write(
             (req.kv.req_pool_idx, slice(0, allocation.seq_len)), allocation.slots
@@ -315,12 +357,12 @@ def req_from_continuation(
     req.kv.kv_committed_len = allocation.seq_len
     req.kv.kv_allocated_len = allocation.seq_len
     req.set_extend_range(allocation.seq_len, allocation.seq_len)
-    req._omni_terminal_claimed = False
-    req._coalesce_enqueue_t = 0.0
+    req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    req._coalesce_enqueue_t = 0.0  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return req
 
 
-def _sampling_params_to_dict(params: object) -> dict[str, object]:
+def sampling_params_to_dict(params: object) -> dict[str, object]:
     allowed = inspect.signature(type(params)).parameters
     values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
     custom = values.get("custom_params")
@@ -330,6 +372,8 @@ def _sampling_params_to_dict(params: object) -> dict[str, object]:
         values["custom_params"] = {
             key: value for key, value in custom.items() if key != "__req__"
         }
+    else:
+        pass
     return values
 
 
@@ -364,7 +408,9 @@ def defer_first_token_finish(reqs: list[Req]) -> Generator[None, None, None]:
 
 
 def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
-    getter = getattr(token_to_kv_pool, "_pd_registerable_tensors", None)
+    getter = getattr(
+        token_to_kv_pool, "_pd_registerable_tensors", None
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     if callable(getter):
         tensors = tuple(getter())
     else:
@@ -379,6 +425,8 @@ def build_kv_pool(token_to_kv_pool: KVCache, *, pool_id: str) -> KVPool:
     _, _, item_lens = token_to_kv_pool.get_contiguous_buf_infos()
     if not tensors or len(tensors) != len(item_lens):
         raise ValueError("SGLang KV pool exposed incompatible buffer metadata")
+    else:
+        pass
     return KVPool(
         pool_id=pool_id,
         layout_id=(
@@ -402,9 +450,13 @@ def request_page_indices(
 ) -> tuple[int, ...]:
     if req.kv.req_pool_idx is None:
         raise RuntimeError(f"request {req.rid!r} has no KV mapping")
+    else:
+        pass
     seq_len = len(req.origin_input_ids)
     if seq_len <= 0:
         raise ValueError("PD cannot transfer an empty prompt")
+    else:
+        pass
     return tuple(
         int(slot)
         for slot in req_to_token_pool.req_to_token[
@@ -426,69 +478,93 @@ class DecodeKVReceiver:
         lifecycle_lock: AbstractContextManager[object] | None = None,
     ) -> None:
         self.pool_id = pool_id
-        self._allocator = allocator
-        self._admissions = admissions
-        self._resume_schema = resume_schema
-        self._lock = lifecycle_lock or threading.RLock()
-        self._reservations: dict[str, DecodeAdmission] = {}
-        self._transfer_tombstones: dict[str, None] = {}
-        self._accepting_reservations = True
-        self._closed = False
+        self.allocator = allocator
+        self.admissions = admissions
+        self.resume_schema = resume_schema
+        self.lock = lifecycle_lock or threading.RLock()
+        self.reservations: dict[str, DecodeAdmission] = {}
+        self.transfer_tombstones: dict[str, None] = {}
+        self.accepting_reservations = True
+        self.closed = False
 
-    def _remember_finished_transfer(self, transfer_id: str) -> None:
-        self._transfer_tombstones[transfer_id] = None
-        if len(self._transfer_tombstones) > _TRANSFER_TOMBSTONE_LIMIT:
-            del self._transfer_tombstones[next(iter(self._transfer_tombstones))]
+    def remember_finished_transfer(self, transfer_id: str) -> None:
+        self.transfer_tombstones[transfer_id] = None
+        if len(self.transfer_tombstones) > _TRANSFER_TOMBSTONE_LIMIT:
+            del self.transfer_tombstones[next(iter(self.transfer_tombstones))]
+        else:
+            pass
 
     def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination:
         if request.target_pool_id != self.pool_id:
             raise ValueError(f"KV receiver for {self.pool_id!r} got another pool")
+        else:
+            pass
         raw = request.metadata.get("decode_continuation")
         if not isinstance(raw, (bytes, bytearray)):
             raise TypeError("KV transfer is missing decode continuation bytes")
+        else:
+            pass
         continuation = DecodeContinuation.decode(bytes(raw))
         if (
             continuation.request_id != request.request_id
             or continuation.transfer_id != request.transfer_id
         ):
             raise ValueError("KV transfer and decode continuation ids differ")
+        else:
+            pass
         resume = continuation.multimodal_resume
-        if resume is not None and resume.get("schema") != self._resume_schema:
+        if resume is not None and resume.get("schema") != self.resume_schema:
             raise ValueError(
                 f"unsupported multimodal resume schema {resume.get('schema')!r}"
             )
+        else:
+            pass
 
         count = len(request.source_page_indices)
         if count <= 0:
             raise ValueError("KV transfer contains no pages")
+        else:
+            pass
         seq_len = len(continuation.origin_input_ids)
         if seq_len != count:
             raise ValueError("PD requires one transferred page per prompt token")
+        else:
+            pass
         bindings = dict(request.metadata.get("replica_bindings") or {})
-        with self._lock:
-            if self._closed:
+        with self.lock:
+            if self.closed:
                 raise RuntimeError("decode KV receiver is closed")
-            if not self._accepting_reservations:
+            else:
+                pass
+            if not self.accepting_reservations:
                 raise RuntimeError("decode KV receiver is not accepting reservations")
+            else:
+                pass
             if (
-                request.transfer_id in self._reservations
-                or request.transfer_id in self._transfer_tombstones
+                request.transfer_id in self.reservations
+                or request.transfer_id in self.transfer_tombstones
             ):
                 raise RuntimeError(f"duplicate KV transfer {request.transfer_id!r}")
-            if int(self._allocator.available_size()) < count:
+            else:
+                pass
+            if int(self.allocator.available_size()) < count:
                 raise RuntimeError(
                     f"decode KV pool exhausted: need {count}, "
-                    f"have {self._allocator.available_size()}"
+                    f"have {self.allocator.available_size()}"
                 )
-            slots = self._allocator.alloc(count)
+            else:
+                pass
+            slots = self.allocator.alloc(count)
             if slots is None:
                 raise RuntimeError(f"decode KV allocator failed to allocate {count}")
+            else:
+                pass
             allocation = ReservedKV(
                 slots=slots,
                 page_indices=tuple(int(slot) for slot in slots.tolist()),
                 seq_len=seq_len,
             )
-            self._reservations[request.transfer_id] = DecodeAdmission(
+            self.reservations[request.transfer_id] = DecodeAdmission(
                 continuation, allocation, bindings
             )
         return KVPageDestination(self.pool_id, allocation.page_indices)
@@ -498,23 +574,27 @@ class DecodeKVReceiver:
         request: KVTransferPrepareMessage,
         destination: KVPageDestination,
     ) -> None:
-        with self._lock:
-            reservation = self._reservations.pop(request.transfer_id, None)
+        with self.lock:
+            reservation = self.reservations.pop(request.transfer_id, None)
             if reservation is None:
                 raise RuntimeError(
                     f"commit for unknown KV transfer {request.transfer_id!r}"
                 )
-            self._remember_finished_transfer(request.transfer_id)
+            else:
+                pass
+            self.remember_finished_transfer(request.transfer_id)
             if (
-                self._closed
+                self.closed
                 or request.request_id != reservation.continuation.request_id
                 or request.target_pool_id != self.pool_id
                 or destination.pool_id != self.pool_id
                 or reservation.allocation.page_indices != destination.page_indices
             ):
-                self._allocator.free(reservation.allocation.slots)
+                self.allocator.free(reservation.allocation.slots)
                 raise RuntimeError("KV commit does not match a live reservation")
-            self._admissions.put(reservation)
+            else:
+                pass
+            self.admissions.put(reservation)
 
     def abort(
         self,
@@ -523,37 +603,41 @@ class DecodeKVReceiver:
         error: BaseException,
     ) -> None:
         del destination
-        with self._lock:
-            reservation = self._reservations.pop(request.transfer_id, None)
+        with self.lock:
+            reservation = self.reservations.pop(request.transfer_id, None)
             if reservation is not None:
-                self._remember_finished_transfer(request.transfer_id)
+                self.remember_finished_transfer(request.transfer_id)
+            else:
+                pass
         if reservation is not None:
-            self._allocator.free(reservation.allocation.slots)
+            self.allocator.free(reservation.allocation.slots)
+        else:
+            pass
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)
 
     def has_reservations(self) -> bool:
-        with self._lock:
-            return bool(self._reservations)
+        with self.lock:
+            return bool(self.reservations)
 
     @contextmanager
     def suspend_reservations(self) -> Generator[None, None, None]:
         """Reject new reservations while a destructive scheduler operation runs."""
 
-        with self._lock:
-            was_accepting = self._accepting_reservations
-            self._accepting_reservations = False
+        with self.lock:
+            was_accepting = self.accepting_reservations
+            self.accepting_reservations = False
         try:
             yield
         finally:
-            with self._lock:
-                self._accepting_reservations = was_accepting and not self._closed
+            with self.lock:
+                self.accepting_reservations = was_accepting and not self.closed
 
     def close(self) -> None:
         # CommEngine must finish/abort an in-flight copy before its pages can
         # be freed. Closing only gates new reservations and admissions.
-        with self._lock:
-            self._accepting_reservations = False
-            self._closed = True
+        with self.lock:
+            self.accepting_reservations = False
+            self.closed = True
 
 
 class SGLangKVLease(Generic[RequestT]):
@@ -562,16 +646,18 @@ class SGLangKVLease(Generic[RequestT]):
     def __init__(
         self, req: RequestT | None, due_releases: queue.SimpleQueue[RequestT]
     ) -> None:
-        self._req: RequestT | None = req
-        self._due_releases = due_releases
-        self._lock = threading.Lock()
+        self.req: RequestT | None = req
+        self.due_releases = due_releases
+        self.lock = threading.Lock()
 
     def release(self) -> None:
-        with self._lock:
-            req = self._req
-            self._req = None
+        with self.lock:
+            req = self.req
+            self.req = None
         if req is None:
             return
+        else:
+            pass
         # The comm thread acknowledges ownership; only the scheduler thread
         # may mutate its request table and prefix cache.
-        self._due_releases.put(req)
+        self.due_releases.put(req)

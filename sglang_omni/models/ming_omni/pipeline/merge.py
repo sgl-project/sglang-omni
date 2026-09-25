@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Iterable, Mapping, TypeGuard
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
+else:
+    pass
 
 import torch
 
@@ -19,18 +21,22 @@ from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_
 from sglang_omni.proto import StagePayload
 
 
-def _as_tensor(value: object, dtype: torch.dtype | None = None) -> torch.Tensor | None:
+def as_tensor(value: object, dtype: torch.dtype | None = None) -> torch.Tensor | None:
     if value is None:
         return None
+    else:
+        pass
     if isinstance(value, torch.Tensor):
         return value.to(dtype=dtype) if dtype is not None else value
+    else:
+        pass
     try:
         return torch.as_tensor(value, dtype=dtype)
     except Exception:
         return None
 
 
-def _non_empty(tensor: torch.Tensor | None) -> TypeGuard[torch.Tensor]:
+def non_empty(tensor: torch.Tensor | None) -> TypeGuard[torch.Tensor]:
     return isinstance(tensor, torch.Tensor) and tensor.numel() > 0
 
 
@@ -46,14 +52,20 @@ def merge_for_thinker(payloads: dict[str, StagePayload]) -> StagePayload:
     encoder_outs: dict[str, object] = {}
     if state.encoder_outs:
         encoder_outs.update(state.encoder_outs)
+    else:
+        pass
 
     for stage_name, payload in payloads.items():
         stage_state = MingOmniPipelineState.from_dict(payload.data)
         if stage_name in stage_state.encoder_outs:
             encoder_outs[stage_name] = stage_state.encoder_outs[stage_name]
             continue
+        else:
+            pass
         if stage_name in stage_state.engine_outputs:
             encoder_outs[stage_name] = stage_state.engine_outputs[stage_name]
+        else:
+            pass
 
     thinker_inputs = build_thinker_inputs(state, encoder_outs)
 
@@ -85,39 +97,51 @@ def build_thinker_inputs(
     )
 
     audio_embeds = (
-        _as_tensor(audio_out.get("audio_embeds"))
+        as_tensor(audio_out.get("audio_embeds"))
         if isinstance(audio_out, dict)
         else None
     )
     image_embeds = (
-        _as_tensor(image_out.get("image_embeds"))
+        as_tensor(image_out.get("image_embeds"))
         if isinstance(image_out, dict)
         else None
     )
     video_embeds = (
-        _as_tensor(image_out.get("video_embeds"))
+        as_tensor(image_out.get("video_embeds"))
         if isinstance(image_out, dict)
         else None
     )
 
     thinker_model_inputs: dict[str, torch.Tensor] = {}
 
-    if _non_empty(audio_embeds):
+    if non_empty(audio_embeds):
         # Flatten: [B, T', H] -> [T', H] (remove batch dim for SGLang injection)
         if audio_embeds.dim() == 3:
             audio_embeds = audio_embeds.squeeze(0)
+        else:
+            pass
         thinker_model_inputs["audio_embeds"] = audio_embeds
+    else:
+        pass
 
-    if _non_empty(image_embeds):
+    if non_empty(image_embeds):
         # Flatten: [B, T', H] -> [T', H] if needed
         if image_embeds.dim() == 3:
             image_embeds = image_embeds.squeeze(0)
+        else:
+            pass
         thinker_model_inputs["image_embeds"] = image_embeds
+    else:
+        pass
 
-    if _non_empty(video_embeds):
+    if non_empty(video_embeds):
         if video_embeds.dim() == 3:
             video_embeds = video_embeds.squeeze(0)
+        else:
+            pass
         thinker_model_inputs["video_embeds"] = video_embeds
+    else:
+        pass
 
     media_cache_keys: dict[str, str] = {}
     encoder_inputs = state.encoder_inputs or {}
@@ -132,18 +156,28 @@ def build_thinker_inputs(
         # across different videos with the same placeholder count.
         media_cache_keys["image"] = f"image:{image_ck}"
         media_cache_keys["video"] = f"video:{image_ck}"
+    else:
+        pass
     if audio_ck:
         media_cache_keys["audio"] = f"audio:{audio_ck}"
+    else:
+        pass
 
     if not thinker_model_inputs:
         if media_cache_keys:
             return {"media_cache_keys": media_cache_keys}
+        else:
+            pass
         return {}
+    else:
+        pass
     result: dict[str, Mapping[str, torch.Tensor | str]] = {
         "model_inputs": thinker_model_inputs
     }
     if media_cache_keys:
         result["media_cache_keys"] = media_cache_keys
+    else:
+        pass
     return result
 
 
@@ -159,10 +193,14 @@ def decode_events(
     output_ids = thinker_out.get("output_ids", [])
     if not isinstance(output_ids, list) or not output_ids:
         return []
+    else:
+        pass
 
     stream_state = state.stream_state
     if not stream_state:
         stream_state.update({"token_ids": [], "text": "", "emitted_text": ""})
+    else:
+        pass
     token_ids = stream_state.setdefault("token_ids", [])
     stream_state.setdefault("text", "")
     stream_state.setdefault("emitted_text", "")
@@ -186,6 +224,8 @@ def decode_events(
                 is_final=True,
             )
         ]
+    else:
+        pass
 
     token_id = int(output_ids[-1])
     if eos_token_id is not None and token_id == int(eos_token_id):
@@ -198,6 +238,8 @@ def decode_events(
                 is_final=True,
             )
         ]
+    else:
+        pass
 
     token_ids.append(token_id)
     decoded = tokenizer.decode(token_ids, skip_special_tokens=True)
@@ -206,11 +248,15 @@ def decode_events(
     # Skip incomplete multi-byte characters (replacement char).
     if "\ufffd" in decoded:
         return []
+    else:
+        pass
 
     emitted_text = str(stream_state.get("emitted_text", ""))
     delta = decoded[len(emitted_text) :]
     if not delta:
         return []
+    else:
+        pass
     stream_state["emitted_text"] = decoded
     return [
         MingOmniEvent(

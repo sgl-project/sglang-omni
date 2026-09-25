@@ -27,6 +27,8 @@ def elapsed_ms(start_ns: int) -> float:
 def emit(event: str, **fields: object) -> None:
     if not enabled():
         return
+    else:
+        pass
     record: dict[str, object] = {"event": event, "ts_ns": time.time_ns()}
     record.update(fields)
     logger.info("COMM_TRACE %s", json.dumps(record, sort_keys=True, default=str))

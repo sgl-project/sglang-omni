@@ -17,6 +17,8 @@ from torch import nn
 
 if TYPE_CHECKING:
     from transformers import Qwen2Config
+else:
+    pass
 
 VOCAB_SIZE = 6561
 TOTAL_VOCAB_SIZE = VOCAB_SIZE + 200
@@ -41,7 +43,7 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
         self.text_embed_tokens = self.model.embed_tokens
         self.speech_embedding = nn.Embedding(TOTAL_VOCAB_SIZE, config.hidden_size)
         self.llm_decoder = nn.Linear(config.hidden_size, TOTAL_VOCAB_SIZE, bias=False)
-        self._cached_params_dict = dict(self.named_parameters())
+        self.cached_params_dict = dict(self.named_parameters())
 
     @property
     def vocab_size(self) -> int:
@@ -69,6 +71,8 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
 
         if is_decode:
             input_embeds = self.speech_embedding(input_ids)
+        else:
+            pass
 
         hidden_states = self.model(
             input_ids,
@@ -90,6 +94,8 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
                     [hidden_states.shape[0] - 1], device=hidden_states.device
                 )
             hidden_states = hidden_states[last_indices]
+        else:
+            pass
 
         logits = self.llm_decoder(hidden_states)
         return LogitsProcessorOutput(
@@ -107,27 +113,37 @@ class FunCosyVoice3SGLangModel(Qwen2ForCausalLM):
                     ("model." + name[len(backbone_prefix) :], loaded_weight)
                 )
                 continue
+            else:
+                pass
 
             # note: skip Qwen2 text lm_head — CosyVoice3 uses llm_decoder instead
             if name == "llm.model.lm_head.weight":
                 continue
+            else:
+                pass
 
             if name in (
                 "speech_embedding.weight",
                 "llm_decoder.weight",
                 "llm_decoder.bias",
             ):
-                param = self._cached_params_dict.get(name)
+                param = self.cached_params_dict.get(name)
                 if param is not None:
                     loader = getattr(param, "weight_loader", default_weight_loader)
                     loader(param, loaded_weight)
+                else:
+                    pass
                 continue
+            else:
+                pass
 
             # note (PoTaTo): pass through HF safetensors keys (model.*) to Qwen2 backbone
             backbone_weights.append((name, loaded_weight))
 
         if backbone_weights:
             super().load_weights(backbone_weights)
+        else:
+            pass
 
 
 EntryClass = FunCosyVoice3SGLangModel

@@ -50,43 +50,53 @@ class AggregatedInput(InputHandler):
         merge: Callable[[dict[str, StagePayload]], StagePayload],
         expected_sources_fn: ExpectedSourcesFn | None = None,
     ):
-        self._sources = sources
-        self._merge = merge
-        self._expected_sources_fn = expected_sources_fn
-        self._pending: dict[str, dict[str, StagePayload]] = {}
-        self._expected_sources: dict[str, set[str]] = {}
+        self.sources = sources
+        self.merge = merge
+        self.expected_sources_fn = expected_sources_fn
+        self.pending: dict[str, dict[str, StagePayload]] = {}
+        self.expected_sources: dict[str, set[str]] = {}
 
     def receive(
         self, request_id: str, from_stage: str, data: "StagePayload"
     ) -> StagePayload | None:
-        if from_stage not in self._sources:
+        if from_stage not in self.sources:
             logger.warning(
                 "AggregatedInput: unexpected source %s for request %s",
                 from_stage,
                 request_id,
             )
             return None
+        else:
+            pass
 
-        if request_id not in self._pending:
-            self._pending[request_id] = {}
-        self._pending[request_id][from_stage] = data
+        if request_id not in self.pending:
+            self.pending[request_id] = {}
+        else:
+            pass
+        self.pending[request_id][from_stage] = data
 
-        expected_sources = self._expected_sources.get(request_id)
-        if expected_sources is None and self._expected_sources_fn is not None:
-            resolved = self._expected_sources_fn(request_id, from_stage, data)
+        expected_sources = self.expected_sources.get(request_id)
+        if expected_sources is None and self.expected_sources_fn is not None:
+            resolved = self.expected_sources_fn(request_id, from_stage, data)
             if resolved is not None:
-                expected_sources = self._normalize_expected_sources(
+                expected_sources = self.normalize_expected_sources(
                     request_id,
                     resolved,
                 )
-                self._expected_sources[request_id] = expected_sources
+                self.expected_sources[request_id] = expected_sources
+            else:
+                pass
         elif expected_sources is None:
-            expected_sources = self._sources
+            expected_sources = self.sources
+        else:
+            pass
 
         if expected_sources is None:
             return None
+        else:
+            pass
 
-        pending_sources = set(self._pending[request_id])
+        pending_sources = set(self.pending[request_id])
         unexpected = pending_sources - expected_sources
         if unexpected:
             raise ValueError(
@@ -94,15 +104,19 @@ class AggregatedInput(InputHandler):
                 f"request {request_id}: {sorted(unexpected)}. "
                 f"Expected: {sorted(expected_sources)}"
             )
+        else:
+            pass
 
         if pending_sources == expected_sources:
-            inputs = self._pending.pop(request_id)
-            self._expected_sources.pop(request_id, None)
-            return self._merge(inputs)
+            inputs = self.pending.pop(request_id)
+            self.expected_sources.pop(request_id, None)
+            return self.merge(inputs)
+        else:
+            pass
 
         return None
 
-    def _normalize_expected_sources(
+    def normalize_expected_sources(
         self,
         request_id: str,
         sources: str | Iterable[str],
@@ -122,21 +136,27 @@ class AggregatedInput(InputHandler):
                 "AggregatedInput: dynamic fan-in resolver returned no sources "
                 f"for request {request_id}"
             )
+        else:
+            pass
         non_string = [source for source in expected if not isinstance(source, str)]
         if non_string:
             raise ValueError(
                 "AggregatedInput: dynamic fan-in resolver returned non-string "
                 f"sources for request {request_id}: {non_string!r}"
             )
-        unknown = expected - self._sources
+        else:
+            pass
+        unknown = expected - self.sources
         if unknown:
             raise ValueError(
                 "AggregatedInput: dynamic fan-in resolver returned sources "
                 f"outside static wait_for for request {request_id}: "
-                f"{sorted(unknown)}. Allowed: {sorted(self._sources)}"
+                f"{sorted(unknown)}. Allowed: {sorted(self.sources)}"
             )
+        else:
+            pass
         return expected
 
     def cancel(self, request_id: str) -> None:
-        self._pending.pop(request_id, None)
-        self._expected_sources.pop(request_id, None)
+        self.pending.pop(request_id, None)
+        self.expected_sources.pop(request_id, None)

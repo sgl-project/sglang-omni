@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from whisper.model import AudioEncoder
 
     from sglang_omni.models.ming_omni.hf_config import WhisperEncoderConfig
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,7 @@ AUDIO_TOWER_PREFIXES = ("audio.",)
 AUDIO_PROJ_PREFIXES = ("linear_proj_audio.",)
 
 
-def _autocast_context(tensor: torch.Tensor):
+def autocast_context(tensor: torch.Tensor):
     """Use BF16 autocast on supported accelerator tensors."""
     device_type = tensor.device.type
     return torch.autocast(
@@ -66,9 +68,9 @@ class MingAudioEncoder(nn.Module):
         dtype: str | None = None,
     ):
         super().__init__()
-        self._model_path = model_path
-        self._device = device
-        self._dtype = resolve_dtype(dtype) if dtype else torch.bfloat16
+        self.model_path = model_path
+        self.device = device
+        self.dtype = resolve_dtype(dtype) if dtype else torch.bfloat16
 
         config = load_ming_config(model_path)
         audio_cfg = config.audio_config
@@ -76,7 +78,7 @@ class MingAudioEncoder(nn.Module):
         llm_hidden_size = config.llm_config.hidden_size
 
         # Build whisper encoder
-        self.audio_tower = self._build_whisper_encoder(whisper_cfg)
+        self.audio_tower = self.build_whisper_encoder(whisper_cfg)
 
         # Build projection: Conv1d + Transpose + MLP layers
         audio_encoder_proj = nn.Conv1d(
@@ -94,16 +96,16 @@ class MingAudioEncoder(nn.Module):
         mlp_modules.append(Transpose(-1, -2))
         self.projection = nn.Sequential(*mlp_modules)
 
-        self._norm_query_embeds = audio_cfg.norm_query_embeds
+        self.norm_query_embeds = audio_cfg.norm_query_embeds
 
         # Load weights
-        self._load_weights()
+        self.load_weights()
 
         # Move to target device/dtype
-        self.to(device=self._device, dtype=self._dtype)
+        self.to(device=self.device, dtype=self.dtype)
         self.eval()
 
-    def _build_whisper_encoder(
+    def build_whisper_encoder(
         self, whisper_cfg: "WhisperEncoderConfig"
     ) -> "AudioEncoder":
         """Build a WhisperAudioEncoder from config."""
@@ -124,21 +126,21 @@ class MingAudioEncoder(nn.Module):
                 "Install with: pip install openai-whisper"
             )
 
-    def _load_weights(self) -> None:
+    def load_weights(self) -> None:
         """Load audio tower and projection weights from checkpoint."""
-        logger.info(f"Loading Ming audio encoder weights from {self._model_path}")
+        logger.info(f"Loading Ming audio encoder weights from {self.model_path}")
         load_module(
             self.audio_tower,
-            self._model_path,
+            self.model_path,
             prefix=AUDIO_TOWER_PREFIXES,
-            dtype=self._dtype,
+            dtype=self.dtype,
             device="cpu",
         )
         load_module(
             self.projection,
-            self._model_path,
+            self.model_path,
             prefix=AUDIO_PROJ_PREFIXES,
-            dtype=self._dtype,
+            dtype=self.dtype,
             device="cpu",
         )
 
@@ -158,15 +160,17 @@ class MingAudioEncoder(nn.Module):
                 audio_embeds: Projected embeddings [B, T', hidden_size]
                 audio_embed_lengths: Output lengths [B, N]
         """
-        audio_feats = audio_feats.to(device=self._device)
+        audio_feats = audio_feats.to(device=self.device)
         if audio_feats_lengths is not None:
-            audio_feats_lengths = audio_feats_lengths.to(device=self._device)
+            audio_feats_lengths = audio_feats_lengths.to(device=self.device)
+        else:
+            pass
 
         # Whisper encoder expects [B, T, n_mels] and we process segments independently
         # Unwrap segments for per-segment encoding
         if audio_feats_lengths is not None and audio_feats_lengths.dim() == 2:
             # Unwrap batch-concatenated format
-            segments, seg_lengths = self._unwrap_feats(audio_feats, audio_feats_lengths)
+            segments, seg_lengths = self.unwrap_feats(audio_feats, audio_feats_lengths)
         else:
             segments = audio_feats
             seg_lengths = torch.tensor(
@@ -175,42 +179,46 @@ class MingAudioEncoder(nn.Module):
 
         with (
             torch.no_grad(),
-            _autocast_context(segments),
+            autocast_context(segments),
         ):
             # Cast input to float32 for Whisper conv layers, autocast handles the rest
             segments = segments.float()
             # Whisper encoder forward: [B, T, n_mels] -> [B, T, n_state]
             # The whisper encoder expects [B, T, n_mels], transposes internally
-            encoded = self._whisper_forward(segments)
+            encoded = self.whisper_forward(segments)
 
             # Project: [B, n_state, T] -> Conv1d -> [B, hidden, T'] -> transpose -> [B, T', hidden]
             projected = self.projection(encoded.transpose(-1, -2)).transpose(-1, -2)
 
             # Compute output lengths after Conv1d downsampling
-            config = load_ming_config(self._model_path)
+            config = load_ming_config(self.model_path)
             audio_cfg = config.audio_config
-            out_lengths = self._compute_output_lengths(
+            out_lengths = self.compute_output_lengths(
                 seg_lengths,
                 audio_cfg.ds_kernel_size,
                 audio_cfg.ds_stride,
             )
 
             # Normalize if configured
-            if self._norm_query_embeds:
+            if self.norm_query_embeds:
                 projected = F.normalize(projected, dim=-1)
+            else:
+                pass
 
         # Re-wrap to batch-concatenated format if needed
         if audio_feats_lengths is not None and audio_feats_lengths.dim() == 2:
-            projected, _, out_lengths = self._wrap_feats(
+            projected, _, out_lengths = self.wrap_feats(
                 projected, audio_feats_lengths, out_lengths
             )
+        else:
+            pass
 
         return {
             "audio_embeds": projected,
             "audio_embed_lengths": out_lengths,
         }
 
-    def _whisper_forward(self, x: torch.Tensor) -> torch.Tensor:
+    def whisper_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run whisper encoder forward pass with variable-length support."""
         # x: [B, T, n_mels]
         x = x.transpose(1, 2)  # [B, n_mels, T]
@@ -226,7 +234,7 @@ class MingAudioEncoder(nn.Module):
         return x
 
     @staticmethod
-    def _compute_output_lengths(
+    def compute_output_lengths(
         input_lengths: torch.Tensor,
         kernel_size: int,
         stride: int,
@@ -236,7 +244,7 @@ class MingAudioEncoder(nn.Module):
         return (input_lengths - kernel_size + 2 * padding) // stride + 1
 
     @staticmethod
-    def _unwrap_feats(
+    def unwrap_feats(
         feats: torch.Tensor,
         feats_lengths: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -249,6 +257,8 @@ class MingAudioEncoder(nn.Module):
                 feat_len = feats_lengths[i, j].item()
                 if feat_len == 0:
                     break
+                else:
+                    pass
                 feat_segs.append(feats[i, feat_index : feat_index + feat_len])
                 feat_seg_lengths.append(feat_len)
                 feat_index += feat_len
@@ -259,7 +269,7 @@ class MingAudioEncoder(nn.Module):
         return feat_segs_batch.to(feats.device), feat_seg_lengths_t
 
     @staticmethod
-    def _wrap_feats(
+    def wrap_feats(
         feat_segs: torch.Tensor,
         feats_lengths: torch.Tensor,
         feats_seg_lengths: torch.Tensor,
@@ -275,6 +285,8 @@ class MingAudioEncoder(nn.Module):
                 feat_len = feats_lengths[i, j].item()
                 if feat_len == 0:
                     break
+                else:
+                    pass
                 out_len = feats_seg_lengths[feat_idx].item()
                 feat_buffer.append(feat_segs[feat_idx, :out_len])
                 feat_lengths_buffer.append(out_len)

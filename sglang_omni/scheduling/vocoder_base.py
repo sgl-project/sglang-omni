@@ -40,6 +40,8 @@ class BatchVocoderBase(Generic[StateT, CodesT, WaveformT]):
             raise RuntimeError(
                 f"decode_batch returned {len(results)} results for {len(items)} inputs"
             )
+        else:
+            pass
         return [
             self.store_result(payload, state, wav, sample_rate)
             for payload, (state, _), (wav, sample_rate) in zip(
@@ -57,6 +59,8 @@ class BatchVocoderBase(Generic[StateT, CodesT, WaveformT]):
                 raise RuntimeError(
                     f"decode_batch returned {len(results)} results for 1 input"
                 )
+            else:
+                pass
             wav, sr = results[0]
             return self.store_result(payload, state, wav, sr)
 

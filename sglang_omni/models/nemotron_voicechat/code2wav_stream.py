@@ -5,7 +5,7 @@ from collections.abc import Callable
 import torch
 
 from sglang_omni.proto import StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_simple_scheduler import StreamingSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -25,15 +25,17 @@ class StreamingCodec:
     def push(self, codes_TQ: torch.Tensor) -> torch.Tensor:
         for row in codes_TQ.to(self.device):
             self.codes_rows.append(row)
-        return self._advance(final=False)
+        return self.advance(final=False)
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
         if not self.codes_rows:
             return torch.zeros(0)
-        return self._advance(final=True)
+        else:
+            pass
+        return self.advance(final=True)
 
-    def _advance(self, *, final: bool) -> torch.Tensor:
+    def advance(self, *, final: bool) -> torch.Tensor:
         frames = len(self.codes_rows)
         samples_per_frame = self.decoder.samples_per_frame
         first = max(0, frames - DECODE_WINDOW_FRAMES)
@@ -45,7 +47,7 @@ class StreamingCodec:
         return fresh
 
 
-class _StreamState:
+class StreamState:
     def __init__(self, decoder, device) -> None:
         self.codec = StreamingCodec(decoder, device)
         self.audio_parts: list[torch.Tensor] = []
@@ -60,25 +62,25 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler[StagePayload]):
         compute_fn: Callable[[StagePayload], object] | None,
     ) -> None:
         super().__init__(compute_fn)
-        self._decoder = decoder
-        self._device = device
-        self._states: dict[str, _StreamState] = {}
+        self.decoder = decoder
+        self.device = device
+        self.states: dict[str, StreamState] = {}
 
-    def _new_state(self) -> _StreamState:
-        return _StreamState(self._decoder, self._device)
+    def new_state(self) -> StreamState:
+        return StreamState(self.decoder, self.device)
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
-        return payload.request_id in self._states
+        return payload.request_id in self.states
 
     def on_streaming_new_request(self, request_id: str, payload: StagePayload) -> None:
-        self._states.setdefault(request_id, self._new_state())
+        self.states.setdefault(request_id, self.new_state())
 
     def clear_stream_state(self, request_id: str) -> None:
-        self._states.pop(request_id, None)
+        self.states.pop(request_id, None)
 
     @torch.inference_mode()
     def on_stream_chunk(self, request_id: str, item) -> list[OutgoingMessage]:
-        state = self._states.setdefault(request_id, self._new_state())
+        state = self.states.setdefault(request_id, self.new_state())
         tail = state.codec.push(item.data)
         state.audio_parts.append(tail)
         # Chunks to the coordinator are msgpack'd, so the waveform travels in
@@ -99,9 +101,11 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler[StagePayload]):
 
     @torch.inference_mode()
     def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        state = self._states.get(request_id)
+        state = self.states.get(request_id)
         if state is None:
             return []
+        else:
+            pass
         messages: list[OutgoingMessage] = []
         if state.codec.codes_rows:
             tail = state.codec.flush()
@@ -120,6 +124,10 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler[StagePayload]):
                         metadata={"modality": "audio"},
                     )
                 )
+            else:
+                pass
+        else:
+            pass
         waveform = torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
         return messages + [
             OutgoingMessage(

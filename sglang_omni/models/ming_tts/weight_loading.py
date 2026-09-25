@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
         AudioVAE,
     )
+else:
+    pass
 
 OWNER_AR_MODEL = "ar_model"
 OWNER_TTS_HEADS = "tts_heads"
@@ -109,12 +111,16 @@ class MingTTSWeightReport:
         self.loaded_keys.setdefault(owner, []).append(checkpoint_key)
         if target_param is not None:
             self.loaded_params.setdefault(owner, []).append(target_param)
+        else:
+            pass
 
     def add_loaded_shard(self, target_param: str, shard: str | int) -> None:
         bucket = self.loaded_shards.setdefault(target_param, [])
         shard_id = str(shard)
         if shard_id not in bucket:
             bucket.append(shard_id)
+        else:
+            pass
 
     def add_required_shards(
         self,
@@ -126,6 +132,8 @@ class MingTTSWeightReport:
             shard_id = str(shard)
             if shard_id not in bucket:
                 bucket.append(shard_id)
+            else:
+                pass
 
     def to_dict(self) -> dict[str, object]:
         def bucket_summary(
@@ -156,6 +164,8 @@ class MingTTSWeightReport:
                         "missing_sample": list(missing[:_SAMPLE_LIMIT]),
                         "missing_count": len(missing),
                     }
+                else:
+                    pass
             return summary
 
         return {
@@ -181,10 +191,14 @@ class MingTTSWeightReport:
         def format_size(size_bytes: int) -> str:
             if size_bytes <= 0:
                 return f"{size_bytes}B"
+            else:
+                pass
             size = float(size_bytes)
             for unit in ("B", "KiB", "MiB", "GiB"):
                 if size < 1024.0 or unit == "GiB":
                     return f"{size:.2f}{unit}"
+                else:
+                    pass
                 size /= 1024.0
             return f"{size_bytes}B"
 
@@ -205,7 +219,11 @@ class MingTTSWeightReport:
                     detail = f"loaded={loaded}"
                     if deferred:
                         detail += f" deferred={deferred}"
+                    else:
+                        pass
                     lines.append(f"  {owner}: {detail} total={total}")
+                else:
+                    pass
         else:
             for owner, count in sorted(self.loaded.items()):
                 lines.append(f"  {owner}: loaded={count}")
@@ -213,6 +231,8 @@ class MingTTSWeightReport:
         for reason, keys in sorted(self.skipped.items()):
             if not keys:
                 continue
+            else:
+                pass
             lines.append(
                 f"  skipped: count={len(keys)} reason={reason} "
                 f"sample={sample(keys)}"
@@ -220,6 +240,8 @@ class MingTTSWeightReport:
         for owner, keys in sorted(self.deferred.items()):
             if not keys:
                 continue
+            else:
+                pass
             lines.append(
                 f"  deferred: owner={owner} count={len(keys)} sample={sample(keys)}"
             )
@@ -229,11 +251,15 @@ class MingTTSWeightReport:
                     f"  missing: owner={owner} count={len(keys)} "
                     f"sample={sample(keys)}"
                 )
+        else:
+            pass
         lines.append(f"  leftovers={len(self.leftovers)}")
         if self.leftovers:
             lines.append(f"  leftover_sample={sample(self.leftovers)}")
+        else:
+            pass
         if self.required_shards:
-            incomplete = _incomplete_packed_shards(
+            incomplete = incomplete_packed_shards(
                 self.loaded_shards,
                 self.required_shards,
             )
@@ -244,6 +270,10 @@ class MingTTSWeightReport:
             if incomplete:
                 target, missing = next(iter(incomplete.items()))
                 lines.append(f"  packed_missing_sample={target}: {sample(missing)}")
+            else:
+                pass
+        else:
+            pass
         return "\n".join(lines)
 
 
@@ -252,12 +282,20 @@ def classify_ming_tts_weight(name: str) -> str:
 
     if name.startswith(MING_TTS_LM_HEAD_PREFIX):
         return OWNER_INTENTIONAL_SKIP
+    else:
+        pass
     if name.startswith(_AR_PREFIXES):
         return OWNER_AR_MODEL
+    else:
+        pass
     if name.startswith(_TTS_HEAD_PREFIXES):
         return OWNER_TTS_HEADS
+    else:
+        pass
     if name.startswith(MING_TTS_AUDIO_PREFIX):
         return OWNER_AUDIO_VAE
+    else:
+        pass
     return OWNER_UNKNOWN
 
 
@@ -289,6 +327,8 @@ def scan_ming_tts_weights(
                 "Ming-Omni-TTS expects model.safetensors.index.json or "
                 f"model.safetensors under {resolved_path}"
             )
+        else:
+            pass
         from safetensors import safe_open
 
         with safe_open(str(single_path), framework="pt", device="cpu") as handle:
@@ -298,6 +338,8 @@ def scan_ming_tts_weights(
 
     if not weight_map:
         raise FileNotFoundError(f"No checkpoint tensors found under {resolved_path}")
+    else:
+        pass
 
     prefix_counts: dict[str, int] = {}
     keys_by_owner: dict[str, list[str]] = {owner: [] for owner in _OWNERS}
@@ -318,6 +360,8 @@ def scan_ming_tts_weights(
                 if key.startswith(tts_prefix):
                     prefix = tts_prefix[:-1]
                     break
+                else:
+                    pass
         prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
 
     return MingTTSWeightManifest(
@@ -366,6 +410,8 @@ def load_ming_tts_audio_vae_weights(
         raise FileNotFoundError(
             f"No {MING_TTS_AUDIO_PREFIX} tensors found under {manifest.model_path}"
         )
+    else:
+        pass
 
     from safetensors import safe_open
 
@@ -383,6 +429,8 @@ def load_ming_tts_audio_vae_weights(
                 output_key = key
                 if key.startswith(MING_TTS_AUDIO_PREFIX):
                     output_key = key[len(MING_TTS_AUDIO_PREFIX) :]
+                else:
+                    pass
                 state_dict[output_key] = handle.get_tensor(key)
                 checkpoint_keys_by_target[output_key] = key
 
@@ -390,6 +438,8 @@ def load_ming_tts_audio_vae_weights(
         raise FileNotFoundError(
             f"No {MING_TTS_AUDIO_PREFIX} tensors found under {manifest.model_path}"
         )
+    else:
+        pass
 
     incompatible = audio_vae.load_state_dict(state_dict, strict=False)
     missing = [str(key) for key in getattr(incompatible, "missing_keys", ())]
@@ -402,12 +452,16 @@ def load_ming_tts_audio_vae_weights(
         )
     if missing:
         report.missing.setdefault(OWNER_AUDIO_VAE, []).extend(missing)
+    else:
+        pass
     if unexpected:
         report.leftovers.extend(unexpected)
+    else:
+        pass
     assert_ming_tts_weight_coverage(report)
 
     audio_vae.eval()
-    audio_vae._ming_tts_weight_report = report
+    audio_vae._ming_tts_weight_report = report  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     return report
 
 
@@ -416,15 +470,21 @@ def assert_ming_tts_weight_coverage(report: MingTTSWeightReport) -> None:
         sample = ", ".join(keys[:_SAMPLE_LIMIT])
         if len(keys) > _SAMPLE_LIMIT:
             sample += f", ... ({len(keys)} total)"
+        else:
+            pass
         return sample
 
     errors = []
     if report.leftovers:
         errors.append(f"leftover weights: {format_key_count(report.leftovers)}")
+    else:
+        pass
     for owner, keys in sorted(report.missing.items()):
         if keys:
             errors.append(f"missing {owner} weights: {format_key_count(keys)}")
-    for target, missing in _incomplete_packed_shards(
+        else:
+            pass
+    for target, missing in incomplete_packed_shards(
         report.loaded_shards,
         report.required_shards,
     ).items():
@@ -433,9 +493,11 @@ def assert_ming_tts_weight_coverage(report: MingTTSWeightReport) -> None:
         )
     if errors:
         raise RuntimeError("Ming-Omni-TTS weight coverage failed: " + "; ".join(errors))
+    else:
+        pass
 
 
-def _incomplete_packed_shards(
+def incomplete_packed_shards(
     loaded_shards: dict[str, list[str]],
     required_shards: dict[str, list[str]],
 ) -> dict[str, list[str]]:

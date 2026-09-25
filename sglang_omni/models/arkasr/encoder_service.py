@@ -55,6 +55,8 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 if TYPE_CHECKING:
     from sglang_omni.models.arkasr.sglang_model import ArkasrForConditionalGeneration
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +76,7 @@ _FRONTEND_CONFIG_FIELDS = (
 
 
 @dataclass(frozen=True)
-class _DetachedFailure:
+class DetachedFailure:
     exception: Exception
     formatted_traceback: str
 
@@ -110,18 +112,20 @@ def build_cache_namespace(
     return hashlib.blake2b(blob, digest_size=8).hexdigest()
 
 
-def _expected_audio_tokens(item: object) -> int | None:
+def expected_audio_tokens(item: object) -> int | None:
     """Audio placeholder token count for an item (rows the LM expects)."""
     num_tokens = getattr(item, "num_audio_tokens", None)
     return int(num_tokens) if num_tokens is not None else None
 
 
-def _text_hidden_size(model: ArkasrForConditionalGeneration) -> int:
+def text_hidden_size(model: ArkasrForConditionalGeneration) -> int:
     # ArkasrConfig subclasses Qwen2Config, so the LM hidden size is top level;
     # it is also the adapter's output dim (ArkAudioMLPAdapter.adapting).
     hidden_size = getattr(model.config, "hidden_size", None)
     if hidden_size is None:
         raise RuntimeError("ARK-ASR config does not expose hidden_size")
+    else:
+        pass
     return int(hidden_size)
 
 
@@ -143,42 +147,42 @@ class ArkasrPreLMEncoderService(
         max_batch_wait_ms: int = 0,
         max_queue_size: int = 0,
     ) -> None:
-        self._model = model
+        self.model = model
         reference = next(model.audio_encoder.parameters())
-        self._device = reference.device
-        self._dtype = reference.dtype
-        self._hidden_size = _text_hidden_size(model)
-        self._stream = (
-            torch.cuda.Stream(device=self._device)
-            if self._device.type == "cuda"
+        self.device = reference.device
+        self.dtype = reference.dtype
+        self.hidden_size = text_hidden_size(model)
+        self.stream = (
+            torch.cuda.Stream(device=self.device)
+            if self.device.type == "cuda"
             else None
         )
-        self._cache = StageOutputCache(
+        self.cache = StageOutputCache(
             max_size=cache_max_entries,
             max_bytes=cache_max_bytes,
             cache_device="cpu",
         )
-        self._namespace = cache_namespace
-        self._max_batch_size = max(int(max_batch_size), 1)
-        self._max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
-        self._lock = threading.Lock()
-        self._lifecycle_lock = threading.Lock()
-        self._closed = False
-        self._inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
-        self._hits = 0
-        self._misses = 0
-        self._merged = 0
-        self._failed = 0
-        self._batch_count = 0
-        self._item_count = 0
-        self._submitted = 0
-        self._pending = 0
-        self._queue_full_waits = 0
-        self._queue_depth_max = 0
-        self._queue_wait_count = 0
-        self._queue_wait_total_s = 0.0
-        self._queue_wait_max_s = 0.0
-        self._encoder_time_s = 0.0
+        self.namespace = cache_namespace
+        self.max_batch_size = max(int(max_batch_size), 1)
+        self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
+        self.lock = threading.Lock()
+        self.lifecycle_lock = threading.Lock()
+        self.closed = False
+        self.inflight: dict[str, concurrent.futures.Future[torch.Tensor]] = {}
+        self.hits = 0
+        self.misses = 0
+        self.merged = 0
+        self.failed = 0
+        self.batch_count = 0
+        self.item_count = 0
+        self.submitted = 0
+        self.pending = 0
+        self.queue_full_waits = 0
+        self.queue_depth_max = 0
+        self.queue_wait_count = 0
+        self.queue_wait_total_s = 0.0
+        self.queue_wait_max_s = 0.0
+        self.encoder_time_s = 0.0
         super().__init__(
             worker_name="arkasr-audio-encode",
             max_queue_size=max_queue_size,
@@ -186,14 +190,16 @@ class ArkasrPreLMEncoderService(
 
     def close(self) -> None:
         """Stop the encoder worker after all queued requests finish."""
-        with self._lifecycle_lock:
-            if self._closed:
+        with self.lifecycle_lock:
+            if self.closed:
                 return
-            self._closed = True
-            self._queue.put(QueueSignal.SHUTDOWN)
-        self._thread.join(timeout=5)
+            else:
+                pass
+            self.closed = True
+            self.queue.put(QueueSignal.SHUTDOWN)
+        self.thread.join(timeout=5)
 
-    def _enqueue(
+    def enqueue(
         self,
         item: MultimodalDataItem,
         future: concurrent.futures.Future[torch.Tensor],
@@ -205,75 +211,89 @@ class ArkasrPreLMEncoderService(
             enqueued_at=time.perf_counter(),
         )
         while True:
-            with self._lifecycle_lock:
-                if self._closed:
+            with self.lifecycle_lock:
+                if self.closed:
                     raise RuntimeError("ARK-ASR pre-LM encoder service is closed")
+                else:
+                    pass
                 try:
-                    self._queue.put_nowait(entry)
+                    self.queue.put_nowait(entry)
                     break
                 except queue.Full:
                     queue_was_full = True
-            with self._worker_state_lock:
-                if self._worker_error is not None:
+            with self.worker_state_lock:
+                if self.worker_error is not None:
                     raise RuntimeError(
                         "pre-LM encoder worker has failed"
-                    ) from self._worker_error
+                    ) from self.worker_error
+                else:
+                    pass
             time.sleep(0.01)
-        queue_depth = self._queue.qsize()
-        with self._lock:
+        queue_depth = self.queue.qsize()
+        with self.lock:
             if queue_was_full:
-                self._queue_full_waits += 1
-            self._queue_depth_max = max(self._queue_depth_max, queue_depth)
+                self.queue_full_waits += 1
+            else:
+                pass
+            self.queue_depth_max = max(self.queue_depth_max, queue_depth)
 
     def submit_item(
         self, item: MultimodalDataItem
     ) -> concurrent.futures.Future[torch.Tensor]:
         """Return when the item has been queued for LM-ready encoding."""
-        expected_tokens = _expected_audio_tokens(item)
+        expected_tokens = expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
                 "ARK-ASR pre-LM encode requires the item's num_audio_tokens"
             )
-        key = self._cache_key(item)
+        else:
+            pass
+        key = self.cache_key(item)
 
         if key is None:
-            return self._track_submission(self._submit(item))
+            return self.track_submission(self.submit(item))
+        else:
+            pass
 
-        cached = self._cache.get(key)
+        cached = self.cache.get(key)
         if cached is not None:
-            if self._is_valid(cached, expected_tokens):
-                with self._lock:
-                    self._hits += 1
+            if self.is_valid(cached, expected_tokens):
+                with self.lock:
+                    self.hits += 1
                 self.attach_embedding(item, cached)
                 future: concurrent.futures.Future[torch.Tensor] = (
                     concurrent.futures.Future()
                 )
                 future.set_result(cached)
-                return self._track_submission(future)
+                return self.track_submission(future)
+            else:
+                pass
             logger.warning(
                 f"ARK-ASR pre-LM cache entry {key} failed validation "
                 f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
                 f"discarding it if unchanged before re-encoding"
             )
-            self._cache.remove_if_same(key, cached)
+            self.cache.remove_if_same(key, cached)
             cached = None
+        else:
+            pass
 
         follower_of: concurrent.futures.Future[torch.Tensor] | None = None
         leader = False
-        with self._lock:
-            future = self._inflight.get(key)
+        with self.lock:
+            future = self.inflight.get(key)
             if future is None:
-                cached = self._cache.get(key)
-                if cached is not None and self._is_valid(cached, expected_tokens):
-                    self._hits += 1
+                cached = self.cache.get(key)
+                if cached is not None and self.is_valid(cached, expected_tokens):
+                    self.hits += 1
                 else:
                     cached = None
                     future = concurrent.futures.Future()
-                    self._inflight[key] = future
+                    self.inflight[key] = future
                     leader = True
-                    self._misses += 1
+                    self.misses += 1
             else:
-                self._merged += 1
+                self.merged += 1
                 follower_of = future
         if cached is not None:
             self.attach_embedding(item, cached)
@@ -281,19 +301,27 @@ class ArkasrPreLMEncoderService(
                 concurrent.futures.Future()
             )
             completed.set_result(cached)
-            return self._track_submission(completed)
+            return self.track_submission(completed)
+        else:
+            pass
         if leader:
             future.add_done_callback(
-                lambda done, cache_key=key: self._clear_inflight(cache_key, done)
+                lambda done, cache_key=key: self.clear_inflight(cache_key, done)
             )
             try:
-                self._submit(item, future)
+                self.submit(item, future)
             except Exception as exc:
                 if not future.done():
                     future.set_exception(exc)
+                else:
+                    pass
                 raise
+        else:
+            pass
         if follower_of is None:
-            return self._track_submission(future)
+            return self.track_submission(future)
+        else:
+            pass
 
         item.feature = None
         completion: concurrent.futures.Future[torch.Tensor] = (
@@ -303,18 +331,20 @@ class ArkasrPreLMEncoderService(
         def attach_follower(done: concurrent.futures.Future[torch.Tensor]) -> None:
             try:
                 embedding = done.result()
-                if not self._is_valid(embedding, expected_tokens):
+                if not self.is_valid(embedding, expected_tokens):
                     raise RuntimeError(
                         f"ARK-ASR pre-LM encode leader for {key} returned an "
                         "invalid embedding"
                     )
+                else:
+                    pass
                 self.attach_embedding(item, embedding)
                 completion.set_result(embedding)
             except Exception as exc:
                 completion.set_exception(exc)
 
         follower_of.add_done_callback(attach_follower)
-        return self._track_submission(completion)
+        return self.track_submission(completion)
 
     def encode_item(self, item: MultimodalDataItem) -> None:
         """Block until ``item.precomputed_embeddings`` holds the LM embedding.
@@ -325,141 +355,151 @@ class ArkasrPreLMEncoderService(
         """
         self.submit_item(item).result(timeout=self.ENCODE_TIMEOUT_S)
 
-    def _track_submission(
+    def track_submission(
         self, future: concurrent.futures.Future[torch.Tensor]
     ) -> concurrent.futures.Future[torch.Tensor]:
-        with self._lock:
-            self._submitted += 1
-            self._pending += 1
+        with self.lock:
+            self.submitted += 1
+            self.pending += 1
 
         def finish(done: concurrent.futures.Future[torch.Tensor]) -> None:
             try:
                 failed = done.exception() is not None
             except concurrent.futures.CancelledError:
                 failed = True
-            with self._lock:
-                self._pending -= 1
+            with self.lock:
+                self.pending -= 1
                 if failed:
-                    self._failed += 1
+                    self.failed += 1
+                else:
+                    pass
 
         future.add_done_callback(finish)
         return future
 
-    def _clear_inflight(
+    def clear_inflight(
         self,
         key: str,
         future: concurrent.futures.Future[torch.Tensor],
     ) -> None:
-        with self._lock:
-            if self._inflight.get(key) is future:
-                del self._inflight[key]
+        with self.lock:
+            if self.inflight.get(key) is future:
+                del self.inflight[key]
+            else:
+                pass
 
     def stats(self) -> dict[str, int | float]:
-        with self._lock:
-            cache_lookups = self._hits + self._misses
+        with self.lock:
+            cache_lookups = self.hits + self.misses
             return {
-                "hits": self._hits,
-                "misses": self._misses,
-                "merged": self._merged,
-                "failed": self._failed,
-                "submitted": self._submitted,
-                "pending": self._pending,
-                "queue_full_waits": self._queue_full_waits,
-                "queue_depth_max": self._queue_depth_max,
-                "cache_hit_rate": (
-                    self._hits / cache_lookups if cache_lookups else 0.0
-                ),
-                "batches": self._batch_count,
-                "items": self._item_count,
-                "queue_depth": self._queue.qsize(),
+                "hits": self.hits,
+                "misses": self.misses,
+                "merged": self.merged,
+                "failed": self.failed,
+                "submitted": self.submitted,
+                "pending": self.pending,
+                "queue_full_waits": self.queue_full_waits,
+                "queue_depth_max": self.queue_depth_max,
+                "cache_hit_rate": (self.hits / cache_lookups if cache_lookups else 0.0),
+                "batches": self.batch_count,
+                "items": self.item_count,
+                "queue_depth": self.queue.qsize(),
                 "queue_wait_avg_s": (
-                    self._queue_wait_total_s / self._queue_wait_count
-                    if self._queue_wait_count
+                    self.queue_wait_total_s / self.queue_wait_count
+                    if self.queue_wait_count
                     else 0.0
                 ),
-                "queue_wait_max_s": self._queue_wait_max_s,
-                "encoder_time_s": self._encoder_time_s,
-                "cache_entries": len(self._cache),
-                "cache_bytes": self._cache.current_bytes,
-                "cache_evictions": self._cache.eviction_count,
+                "queue_wait_max_s": self.queue_wait_max_s,
+                "encoder_time_s": self.encoder_time_s,
+                "cache_entries": len(self.cache),
+                "cache_bytes": self.cache.current_bytes,
+                "cache_evictions": self.cache.eviction_count,
             }
 
-    def _cache_key(self, item: object) -> str | None:
+    def cache_key(self, item: object) -> str | None:
         item_hash = getattr(item, "audio_fingerprint", None)
         if item_hash is None:
             return None
-        return f"{self._namespace}:{item_hash}"
+        else:
+            pass
+        return f"{self.namespace}:{item_hash}"
 
-    def _is_valid(
+    def is_valid(
         self, embedding: object, expected_tokens: int
     ) -> TypeGuard[torch.Tensor]:
         return (
             isinstance(embedding, torch.Tensor)
             and embedding.dim() == 2
             and embedding.shape[0] == expected_tokens
-            and embedding.shape[1] == self._hidden_size
-            and embedding.dtype == self._dtype
+            and embedding.shape[1] == self.hidden_size
+            and embedding.dtype == self.dtype
         )
 
     def attach_embedding(
         self, item: MultimodalDataItem, embedding: torch.Tensor
     ) -> None:
-        embedding = embedding.to(self._device, non_blocking=True)
-        if self._stream is not None and embedding.is_cuda:
+        embedding = embedding.to(self.device, non_blocking=True)
+        if self.stream is not None and embedding.is_cuda:
             # the batch path allocates on the private stream while the LM
             # consumes on the default stream; register the consumer so the
             # allocator cannot recycle the block for a later batch while LM
             # reads are still queued.
-            embedding.record_stream(torch.cuda.default_stream(self._device))
+            embedding.record_stream(torch.cuda.default_stream(self.device))
+        else:
+            pass
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
-    def _drain_batch(
+    def drain_batch(
         self,
     ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
         # the default window is 0 (greedy drain): items that queued while the
         # previous batch encoded are taken instantly, so groups still form
         # under load, and an idle-arrival request never pays a batching wait --
         # at concurrency 1 a window is pure latency.
-        first = self._queue.get()
+        first = self.queue.get()
         if first is QueueSignal.SHUTDOWN:
             return [], True
+        else:
+            pass
         batch = [first]
-        deadline = time.monotonic() + self._max_batch_wait_s
+        deadline = time.monotonic() + self.max_batch_wait_s
         shutdown = False
-        while len(batch) < self._max_batch_size:
+        while len(batch) < self.max_batch_size:
             try:
                 remaining = deadline - time.monotonic()
                 queued = (
-                    self._queue.get(timeout=remaining)
+                    self.queue.get(timeout=remaining)
                     if remaining > 0
-                    else self._queue.get_nowait()
+                    else self.queue.get_nowait()
                 )
             except queue.Empty:
                 break
             if queued is QueueSignal.SHUTDOWN:
                 shutdown = True
                 break
+            else:
+                pass
             batch.append(queued)
         return batch, shutdown
 
-    def _next_batch(
+    def next_batch(
         self,
     ) -> tuple[list[QueueEntry[MultimodalDataItem, torch.Tensor]], bool]:
-        return self._drain_batch()
+        return self.drain_batch()
 
     @contextlib.contextmanager
-    def _batch_context(self) -> Iterator[None]:
+    def batch_context(self) -> Iterator[None]:
         with torch.inference_mode():
-            if self._stream is None:
+            if self.stream is None:
                 yield
             else:
-                with torch.cuda.stream(self._stream):
+                with torch.cuda.stream(self.stream):
                     yield
 
     def encode_batch(self, items: list[MultimodalDataItem]) -> torch.Tensor:
-        return self._model.get_audio_feature(items)
+        return self.model.get_audio_feature(items)
 
     def split_embeddings(
         self,
@@ -468,31 +508,37 @@ class ArkasrPreLMEncoderService(
     ) -> list[torch.Tensor]:
         token_counts = []
         for item in items:
-            expected = _expected_audio_tokens(item)
+            expected = expected_audio_tokens(item)
             if expected is None:
                 raise RuntimeError(
                     "ARK-ASR pre-LM encode item is missing its audio token count"
                 )
+            else:
+                pass
             token_counts.append(expected)
         # get_audio_feature concatenates each item's [tokens_i, hidden] block
         # along the token axis, so the result is already flat.
         if (
             embedding.dim() != 2
             or embedding.shape[0] != sum(token_counts)
-            or embedding.shape[1] != self._hidden_size
-            or embedding.dtype != self._dtype
+            or embedding.shape[1] != self.hidden_size
+            or embedding.dtype != self.dtype
         ):
             raise RuntimeError(
                 f"ARK-ASR encoder output {tuple(embedding.shape)} "
                 f"({embedding.dtype}) != expected rows "
-                f"{sum(token_counts)}x{self._hidden_size} ({self._dtype})"
+                f"{sum(token_counts)}x{self.hidden_size} ({self.dtype})"
             )
+        else:
+            pass
         parts = torch.split(embedding, token_counts, dim=0)
         return [part.clone() for part in parts]
 
     def synchronize_batch(self) -> None:
-        if self._stream is not None:
-            self._stream.synchronize()
+        if self.stream is not None:
+            self.stream.synchronize()
+        else:
+            pass
 
     def cache_embedding(
         self,
@@ -501,21 +547,23 @@ class ArkasrPreLMEncoderService(
         host_copy: torch.Tensor | None = None,
     ) -> None:
         del host_copy
-        key = self._cache_key(item)
+        key = self.cache_key(item)
         if key is not None:
-            self._cache.put(key, embedding)
+            self.cache.put(key, embedding)
+        else:
+            pass
 
-    def _retry_batch(
+    def retry_batch(
         self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]], _exc: Exception
     ) -> bool:
         return len(batch) > 1
 
-    def _handle_batch_failure(
+    def handle_batch_failure(
         self,
         batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         if len(batch) == 1:
             logger.error(
                 "ARK-ASR audio encode failed:\n%s",
@@ -528,24 +576,24 @@ class ArkasrPreLMEncoderService(
                 len(batch),
                 failure.formatted_traceback,
             )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
-    def _handle_item_failure(
+    def handle_item_failure(
         self,
         _entry: QueueEntry[MultimodalDataItem, torch.Tensor],
         exc: Exception,
     ) -> Exception:
-        failure = self._detach_failure(exc)
+        failure = self.detach_failure(exc)
         logger.error(
             "ARK-ASR per-item audio encode retry failed:\n%s",
             failure.formatted_traceback,
         )
-        self._recover_after_failure(failure.exception)
+        self.recover_after_failure(failure.exception)
         return failure.exception
 
     @staticmethod
-    def _detach_failure(exc: Exception) -> _DetachedFailure:
+    def detach_failure(exc: Exception) -> DetachedFailure:
         # keep the formatted traceback for logs but drop frame references from
         # the propagated exception; a future holding a traceback would pin
         # encoder tensors after an OOM.
@@ -561,29 +609,33 @@ class ArkasrPreLMEncoderService(
             detached = ValueError(message)
         else:
             detached = RuntimeError(f"{type(exc).__name__}: {message}")
-        return _DetachedFailure(
+        return DetachedFailure(
             exception=detached,
             formatted_traceback=formatted_traceback,
         )
 
-    def _recover_after_failure(self, exc: Exception) -> None:
+    def recover_after_failure(self, exc: Exception) -> None:
         if not isinstance(exc, torch.OutOfMemoryError):
             return
-        if self._stream is not None:
+        else:
+            pass
+        if self.stream is not None:
             try:
-                self._stream.synchronize()
+                self.stream.synchronize()
             except Exception:
                 logger.warning(
                     "ARK-ASR encoder stream cleanup failed after OOM",
                     exc_info=True,
                 )
+        else:
+            pass
         try:
-            with torch.cuda.device(self._device):
+            with torch.cuda.device(self.device):
                 torch.cuda.empty_cache()
         except Exception:
             logger.warning("ARK-ASR CUDA cache cleanup failed after OOM", exc_info=True)
 
-    def _on_batch_start(
+    def on_batch_start(
         self, batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]]
     ) -> None:
         dequeue_time = time.perf_counter()
@@ -592,33 +644,37 @@ class ArkasrPreLMEncoderService(
             for entry in batch
             if entry.enqueued_at is not None
         ]
-        with self._lock:
-            self._queue_wait_count += len(queue_waits)
-            self._queue_wait_total_s += sum(queue_waits)
-            self._queue_wait_max_s = max(
-                self._queue_wait_max_s,
+        with self.lock:
+            self.queue_wait_count += len(queue_waits)
+            self.queue_wait_total_s += sum(queue_waits)
+            self.queue_wait_max_s = max(
+                self.queue_wait_max_s,
                 max(queue_waits, default=0.0),
             )
 
-    def _on_batch_finished(
+    def on_batch_finished(
         self,
         batch: list[QueueEntry[MultimodalDataItem, torch.Tensor]],
         batch_exc: Exception | None,
         retry_recovered: int | None,
         elapsed_s: float,
     ) -> None:
-        with self._lock:
-            self._encoder_time_s += elapsed_s
+        with self.lock:
+            self.encoder_time_s += elapsed_s
             if batch_exc is not None:
                 if retry_recovered is not None:
                     # retried items are single-item batches.
-                    self._batch_count += retry_recovered
-                    self._item_count += retry_recovered
+                    self.batch_count += retry_recovered
+                    self.item_count += retry_recovered
+                else:
+                    pass
                 return
-            self._batch_count += 1
-            self._item_count += len(batch)
-            batch_count = self._batch_count
-            item_count = self._item_count
+            else:
+                pass
+            self.batch_count += 1
+            self.item_count += len(batch)
+            batch_count = self.batch_count
+            item_count = self.item_count
         if batch_count % 50 == 1:
             logger.info(
                 f"ARK-ASR pre-LM encoder stage: {batch_count} batches, "
@@ -626,6 +682,8 @@ class ArkasrPreLMEncoderService(
                 f"{item_count / batch_count:.2f} items/batch, "
                 f"last batch: {len(batch)}), cache: {self.stats()}"
             )
+        else:
+            pass
 
 
 __all__ = [

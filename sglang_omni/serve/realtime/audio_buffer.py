@@ -45,6 +45,8 @@ class RealtimeAudioBuffer:
     def append_bytes(self, chunk: bytes) -> int:
         if len(self.buf) + len(chunk) > self.max_bytes:
             raise BufferOverflow(self.max_bytes)
+        else:
+            pass
         self.buf.extend(chunk)
         return len(chunk)
 
@@ -54,9 +56,13 @@ class RealtimeAudioBuffer:
     def drop_prefix(self, num_bytes: int) -> None:
         if num_bytes <= 0:
             return
+        else:
+            pass
         if num_bytes >= len(self.buf):
             self.buf.clear()
             return
+        else:
+            pass
         del self.buf[:num_bytes]
 
     @property
@@ -94,4 +100,6 @@ class RealtimeAudioBuffer:
         assert 0 <= num_bytes <= len(self.buf), "Invalid tail length"
         if num_bytes == 0:
             return b""
+        else:
+            pass
         return bytes(self.buf[-num_bytes:])

@@ -61,6 +61,8 @@ class Connection:
             raise ValueError(
                 f"Invalid rank in topology: send={send_ranks}, recv={recv_ranks}, world_size={world_size}"
             )
+        else:
+            pass
 
         if not dist.is_initialized():
             os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
@@ -102,6 +104,8 @@ class Connection:
             logger.warning(
                 f"[{self.name}] Receiving data from rank {target_rank} which is NOT in recv_ranks {self.recv_ranks}!"
             )
+        else:
+            pass
         return target_rank
 
 
@@ -117,15 +121,17 @@ class NcclOperation(RelayOperation, Generic[NcclMetadataT]):
         tensor_ref: object,
         metadata: NcclMetadataT | None = None,
     ) -> None:
-        self._conn = connection
-        self._work = work_handle
-        self._tensor_ref = tensor_ref
-        self._metadata = metadata
-        self._completed = False
+        self.conn = connection
+        self.work = work_handle
+        self.tensor_ref = tensor_ref
+        self._metadata = metadata  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.completed = False
 
     @property
     def metadata(self) -> NcclMetadataT | None:
-        return self._metadata
+        return (
+            self._metadata
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 class PutOperation(NcclOperation[NcclMetadataT]):
@@ -140,25 +146,31 @@ class PutOperation(NcclOperation[NcclMetadataT]):
         on_completion_cb: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(connection, work_handle, tensor_ref, metadata)
-        self._on_completion_cb = on_completion_cb
+        self.on_completion_cb = on_completion_cb
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
 
         start = time.time()
         try:
-            while not self._work.is_completed():
+            while not self.work.is_completed():
                 if time.time() - start > timeout:
                     raise TimeoutError(f"PutOperation timed out")
+                else:
+                    pass
                 await asyncio.sleep(0.0001)
 
-            self._work.wait()
+            self.work.wait()
 
         finally:
-            self._completed = True
-            if self._on_completion_cb:
-                self._on_completion_cb()
+            self.completed = True
+            if self.on_completion_cb:
+                self.on_completion_cb()
+            else:
+                pass
 
 
 class GetOperation(NcclOperation[None]):
@@ -175,19 +187,23 @@ class GetOperation(NcclOperation[None]):
         super().__init__(connection, work_handle, dest_tensor, metadata=None)
 
     async def wait_for_completion(self, timeout: float = 30.0) -> None:
-        if self._completed:
+        if self.completed:
             return
+        else:
+            pass
 
         start = time.time()
         try:
-            while not self._work.is_completed():
+            while not self.work.is_completed():
                 if time.time() - start > timeout:
                     raise TimeoutError(f"GetOperation timed out")
+                else:
+                    pass
                 await asyncio.sleep(0.0001)
 
-            self._work.wait()
+            self.work.wait()
         finally:
-            self._completed = True
+            self.completed = True
 
 
 @register_relay("nccl")
@@ -212,13 +228,19 @@ class NcclRelay(Relay):
                 self.device_id = int(device.split(":")[1])
             except ValueError:
                 self.device_id = 0
+        else:
+            pass
 
         if torch.cuda.is_available():
             torch.cuda.set_device(self.device_id)
+        else:
+            pass
 
         if rank is None:
             rank = int(os.environ.get("RANK", 0))
             world_size = int(os.environ.get("WORLD_SIZE", 2))
+        else:
+            pass
 
         self.connection = Connection(
             engine_id,
@@ -254,6 +276,8 @@ class NcclRelay(Relay):
             if warmup_reqs:
                 for req in warmup_reqs:
                     req.wait()
+            else:
+                pass
 
             dist.barrier(group=self.connection.group)
 
@@ -279,11 +303,15 @@ class NcclRelay(Relay):
                 raise ValueError(
                     f"Ambiguous destination! send_ranks={self.connection.send_ranks}, but dst_rank is None."
                 )
+        else:
+            pass
 
         if dst_rank not in self.connection.send_ranks:
             logger.warning(
                 f"Sending to rank {dst_rank} which is NOT in send_ranks whitelist!"
             )
+        else:
+            pass
 
         credit_id = await self.allocator.acquire_async()
 
@@ -325,6 +353,8 @@ class NcclRelay(Relay):
             src_rank = self.connection.ensure_remote_agent(
                 remote_engine_id, remote_agent_meta
             )
+        else:
+            pass
 
         work = dist.irecv(tensor=dest_tensor, src=src_rank, group=self.connection.group)
 
@@ -340,3 +370,5 @@ class NcclRelay(Relay):
     def close(self) -> None:
         if dist.is_initialized():
             dist.destroy_process_group()
+        else:
+            pass

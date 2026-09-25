@@ -68,7 +68,7 @@ def models():
     decode = create_decode_executor(checkpoint, device="cuda", gpu_id=0)
 
     def generate(payload):
-        return decode._fn(engine._fn(conditioning._fn(payload)))
+        return decode.fn(engine.fn(conditioning.fn(payload)))
 
     return upstream, generate, checkpoint, Path(source)
 
@@ -101,7 +101,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         default_model="tencent/AuK"
     ).build_generate_request(request)
     payload = StagePayload(
-        request_id="parity", request=Client._build_omni_request(generated), data={}
+        request_id="parity", request=Client.build_omni_request(generated), data={}
     )
     state = build_auk_state(payload, make_runtime_config(checkpoint))
     payload.data = state.to_dict()

@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import MultimodalInputs, ScheduleBatch
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.model_executor.model_runner import ModelRunner
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +35,16 @@ _orig_compute_mrope_positions: (
 ) = None
 
 
-def _all_degenerate(multimodal_inputs: list[MultimodalInputs | None]) -> bool:
+def all_degenerate(multimodal_inputs: list[MultimodalInputs | None]) -> bool:
     for mm_input in multimodal_inputs:
         if mm_input is not None and not getattr(mm_input, DEGENERATE_MROPE_FLAG, False):
             return False
+        else:
+            pass
     return True
 
 
-def _fast_compute_mrope_positions(
+def fast_compute_mrope_positions(
     self: ForwardBatch, model_runner: ModelRunner, batch: ScheduleBatch
 ) -> None:
     """Drop-in replacement for ForwardBatch._compute_mrope_positions.
@@ -50,9 +54,11 @@ def _fast_compute_mrope_positions(
     Every degenerate ASR request lands on seq_len - 1, so the loop collapses
     into one broadcast from seq_lens_cpu.
     """
-    if not (self.forward_mode.is_decode() and _all_degenerate(batch.multimodal_inputs)):
+    if not (self.forward_mode.is_decode() and all_degenerate(batch.multimodal_inputs)):
         _orig_compute_mrope_positions(self, model_runner, batch)
         return
+    else:
+        pass
 
     row = self.seq_lens_cpu.to(torch.int64) - 1
     mrope_positions = (
@@ -72,15 +78,19 @@ def apply_asr_mrope_fast_path() -> None:
     if os.environ.get("SGLANG_OMNI_ASR_FAST_MROPE", "1") == "0":
         logger.info("[qwen3-asr] fast mrope decode path disabled via env")
         return
+    else:
+        pass
     if _orig_compute_mrope_positions is not None:
         return
+    else:
+        pass
 
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
     _orig_compute_mrope_positions = (
-        ForwardBatch._compute_mrope_positions
+        ForwardBatch._compute_mrope_positions  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     )  # save the original function
-    ForwardBatch._compute_mrope_positions = (
-        _fast_compute_mrope_positions  # replace with the fast path
+    ForwardBatch._compute_mrope_positions = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        fast_compute_mrope_positions  # replace with the fast path
     )
     logger.info("[qwen3-asr] fast mrope decode path applied")

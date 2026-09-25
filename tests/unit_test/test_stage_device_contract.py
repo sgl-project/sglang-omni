@@ -499,11 +499,11 @@ def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(
 
     scheduler = code2wav_scheduler.create_code2wav_scheduler("unused", device=None)
 
-    assert scheduler._device.type == platforms.current_platform.device_type
+    assert scheduler.device.type == platforms.current_platform.device_type
     if platforms.current_platform.device_type != "cpu":
         # Placement was not requested, so the backend's current card is bound.
         # A cpu device correctly carries no index.
-        assert scheduler._device.index is not None
+        assert scheduler.device.index is not None
 
 
 def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
@@ -612,7 +612,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         resolve_factory_signature_args,
     )
     from sglang_omni.pipeline import runtime_config
-    from sglang_omni.pipeline.mp_runner import _build_stage_groups
+    from sglang_omni.pipeline.mp_runner import build_stage_groups
     from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
     from tests.unit_test.fixtures.pipeline_fakes import FakeMpContext
 
@@ -629,7 +629,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
 
     # note (lennox): the replica cards (2, 3) need not exist on this host; the
     # test stops at the launch specs, before any process or device is touched.
-    monkeypatch.setattr(runtime_config, "_visible_device_count", lambda: None)
+    monkeypatch.setattr(runtime_config, "visible_device_count", lambda: None)
     # note (lennox): budget here is unrelated to gpu routing, set it only for local test run on Windows.
     monkeypatch.setattr(runtime_config, "_IPC_SUN_PATH_BUDGET", 10_000)
 
@@ -640,7 +640,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
 
     prep = prepare_pipeline_runtime(config)
     try:
-        groups = _build_stage_groups(
+        groups = build_stage_groups(
             config,
             ctx=FakeMpContext(),
             stages_cfg=prep.stages_cfg,

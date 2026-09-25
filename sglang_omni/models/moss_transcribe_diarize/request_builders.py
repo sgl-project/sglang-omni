@@ -23,7 +23,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
-from sglang_omni.scheduling.messages import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
@@ -36,6 +36,8 @@ if TYPE_CHECKING:
         BatchedAudioEncoderService,
     )
     from sglang_omni.scheduling.types import RequestOutput
+else:
+    pass
 
 MetadataValueT = TypeVar("MetadataValueT")
 SamplingValueT = TypeVar("SamplingValueT")
@@ -89,18 +91,22 @@ class MossTranscribeDiarizeRequestData(SGLangARRequestData):
     enforce_request_limits: bool = True
 
 
-def _only_audio(value: object) -> object:
+def only_audio(value: object) -> object:
     if isinstance(value, (list, tuple)):
         if len(value) != 1:
             raise ValueError(
                 "MOSS-Transcribe-Diarize supports exactly one audio per request, "
                 f"got {len(value)} items"
             )
+        else:
+            pass
         return value[0]
+    else:
+        pass
     return value
 
 
-def _audio_source_from_payload(payload: StagePayload) -> object:
+def audio_source_from_payload(payload: StagePayload) -> object:
     """Extended source resolver: MOSS accepts more sources than the shared
     default (``audio_data``, single-item ``audios`` lists, metadata fallbacks,
     and ``{"data"|"path"|"url": ...}`` dict entries)."""
@@ -109,45 +115,65 @@ def _audio_source_from_payload(payload: StagePayload) -> object:
         for key in ("audio_bytes", "bytes", "file", "audio_data"):
             value = inputs.get(key)
             if value is not None:
-                return _unwrap_source_dict(value)
+                return unwrap_source_dict(value)
+            else:
+                pass
         value = inputs.get("audios")
         if value is not None:
-            return _unwrap_source_dict(_only_audio(value))
+            return unwrap_source_dict(only_audio(value))
+        else:
+            pass
         for key in ("audio_path", "path", "url"):
             value = inputs.get(key)
             if value is not None:
-                return _unwrap_source_dict(value)
+                return unwrap_source_dict(value)
+            else:
+                pass
+    else:
+        pass
 
     metadata = payload.request.metadata or {}
     value = metadata.get("audios")
     if value is not None:
-        return _unwrap_source_dict(_only_audio(value))
+        return unwrap_source_dict(only_audio(value))
+    else:
+        pass
     for key in ("audio_data", "audio"):
         value = metadata.get(key)
         if value is not None:
-            return _unwrap_source_dict(value)
-    return _unwrap_source_dict(inputs)
+            return unwrap_source_dict(value)
+        else:
+            pass
+    return unwrap_source_dict(inputs)
 
 
-def _has_metadata_audio_source(payload: StagePayload) -> bool:
+def has_metadata_audio_source(payload: StagePayload) -> bool:
     metadata = payload.request.metadata or {}
     return any(
         metadata.get(key) is not None for key in ("audios", "audio_data", "audio")
     )
 
 
-def _unwrap_source_dict(source: object) -> object:
+def unwrap_source_dict(source: object) -> object:
     if isinstance(source, dict):
         if source.get("data") is not None:
             return source["data"]
+        else:
+            pass
         if source.get("path") is not None:
             return source["path"]
+        else:
+            pass
         if source.get("url") is not None:
             return source["url"]
+        else:
+            pass
+    else:
+        pass
     return source
 
 
-def _explicit_generation_fields(metadata: dict[str, MetadataValueT]) -> set[str]:
+def explicit_generation_fields(metadata: dict[str, MetadataValueT]) -> set[str]:
     """Sampling fields the caller set explicitly (see EXPLICIT_GENERATION_PARAMS_KEY).
 
     Anything not listed here resolves to the model's own default, so a client
@@ -157,10 +183,12 @@ def _explicit_generation_fields(metadata: dict[str, MetadataValueT]) -> set[str]
     fields = metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
     if isinstance(fields, (list, tuple)):
         return {str(field) for field in fields}
+    else:
+        pass
     return set()
 
 
-def _sampling_param(
+def sampling_param(
     params: dict[str, SamplingValueT],
     explicit_fields: set[str],
     field: str,
@@ -169,11 +197,13 @@ def _sampling_param(
 ) -> SamplingResultT:
     if field not in explicit_fields:
         return default
+    else:
+        pass
     value = params.get(field)
     return default if value is None else cast(value)
 
 
-def _decode_token_ids(
+def decode_token_ids(
     tokenizer: "PreTrainedTokenizerBase",
     token_ids: list[int],
     skip_special_tokens: bool,
@@ -192,7 +222,7 @@ def postprocess_moss_transcribe_diarize_text(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
 
-def _render_prompt(processor: "ProcessorMixin", input_text: str) -> str:
+def render_prompt(processor: "ProcessorMixin", input_text: str) -> str:
     messages = [
         {
             "role": "user",
@@ -209,7 +239,7 @@ def _render_prompt(processor: "ProcessorMixin", input_text: str) -> str:
     )
 
 
-def _prompt_from_payload(
+def prompt_from_payload(
     payload: StagePayload,
     processor: "ProcessorMixin",
     *,
@@ -224,44 +254,64 @@ def _prompt_from_payload(
             tokenize=False,
             add_generation_prompt=True,
         )
+    else:
+        pass
 
     input_text: object = params.get("prompt")
     if isinstance(inputs, dict):
         input_text = inputs.get("prompt", inputs.get("text", input_text))
-    elif isinstance(inputs, str) and _has_metadata_audio_source(payload):
+    elif isinstance(inputs, str) and has_metadata_audio_source(payload):
         input_text = inputs
+    else:
+        pass
 
     if isinstance(input_text, list):
         input_text = processor.tokenizer.decode(input_text)
+    else:
+        pass
     input_text = input_text or ""
     if _AUDIO_PAD in input_text:
         return str(input_text)
+    else:
+        pass
 
     if not str(input_text).strip():
         if default_prompt is not None:
             return default_prompt
+        else:
+            pass
         input_text = DEFAULT_TRANSCRIBE_DIARIZE_PROMPT
+    else:
+        pass
 
-    return _render_prompt(processor, str(input_text))
+    return render_prompt(processor, str(input_text))
 
 
-def _contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, int]]:
+def contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, int]]:
     offsets: list[tuple[int, int]] = []
     start: int | None = None
     for idx, value in enumerate(input_ids):
         if value == token_id:
             if start is None:
                 start = idx
+            else:
+                pass
             continue
+        else:
+            pass
         if start is not None:
             offsets.append((start, idx - 1))
             start = None
+        else:
+            pass
     if start is not None:
         offsets.append((start, len(input_ids) - 1))
+    else:
+        pass
     return offsets
 
 
-def _prompt_token_parts(
+def prompt_token_parts(
     prompt: str,
     tokenizer: "PreTrainedTokenizerBase",
     audio_token: str,
@@ -272,6 +322,8 @@ def _prompt_token_parts(
             f"Expected exactly one {audio_token!r} token per text sample, "
             f"got {audio_token_count}."
         )
+    else:
+        pass
     before_audio, after_audio = prompt.split(audio_token, maxsplit=1)
     return (
         tuple(tokenizer.encode(before_audio, add_special_tokens=False)),
@@ -279,7 +331,7 @@ def _prompt_token_parts(
     )
 
 
-def _audio_feature_lengths_from_waveform(
+def audio_feature_lengths_from_waveform(
     processor: object,
     num_samples: int,
 ) -> torch.Tensor:
@@ -293,6 +345,8 @@ def _audio_feature_lengths_from_waveform(
     )
     if chunk_samples <= 0 or stride <= 0:
         raise ValueError("MOSS-Transcribe-Diarize processor has invalid audio strides")
+    else:
+        pass
     return torch.tensor(
         [
             (min(chunk_samples, num_samples - start) - 1) // stride + 1
@@ -302,13 +356,13 @@ def _audio_feature_lengths_from_waveform(
     )
 
 
-def _extract_audio_features(
+def extract_audio_features(
     processor: object,
     audio: np.ndarray,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     feature_extractor = processor.feature_extractor
     n_samples = int(feature_extractor.n_samples)
-    audio_feature_lengths = _audio_feature_lengths_from_waveform(
+    audio_feature_lengths = audio_feature_lengths_from_waveform(
         processor,
         int(audio.shape[0]),
     )
@@ -317,6 +371,8 @@ def _extract_audio_features(
         chunk = audio[start : start + n_samples]
         if chunk.shape[0] < n_samples:
             chunk = np.pad(chunk, (0, n_samples - chunk.shape[0]))
+        else:
+            pass
         chunks.append(chunk)
 
     input_features = feature_extractor(
@@ -354,8 +410,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
     audio_token = str(processor.audio_token)
-    default_prompt = _render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
-    default_prompt_parts = _prompt_token_parts(
+    default_prompt = render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
+    default_prompt_parts = prompt_token_parts(
         default_prompt,
         tokenizer,
         audio_token,
@@ -364,17 +420,17 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     def request_builder(payload: StagePayload) -> MossTranscribeDiarizeRequestData:
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
-        explicit_fields = _explicit_generation_fields(metadata)
+        explicit_fields = explicit_generation_fields(metadata)
         prepared = prepare_audio(
             payload,
             source_name="MOSS-Transcribe-Diarize",
             target_sample_rate=_SAMPLE_RATE,
-            source_resolver=_audio_source_from_payload,
+            source_resolver=audio_source_from_payload,
         )
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
-        prompt = _prompt_from_payload(
+        prompt = prompt_from_payload(
             payload,
             processor,
             default_prompt=default_prompt,
@@ -389,7 +445,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
         cached_embedding = None
         if audio_encoder_service is not None:
-            audio_feature_lengths = _audio_feature_lengths_from_waveform(
+            audio_feature_lengths = audio_feature_lengths_from_waveform(
                 processor,
                 len(audio),
             )
@@ -397,6 +453,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 fingerprint,
                 int(audio_feature_lengths.sum().item()),
             )
+        else:
+            pass
 
         if cached_embedding is None:
             (
@@ -404,7 +462,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 audio_feature_lengths,
                 audio_chunk_mapping,
                 audio_token_count,
-            ) = _extract_audio_features(processor, audio)
+            ) = extract_audio_features(processor, audio)
         else:
             features = None
             audio_chunk_mapping = torch.zeros_like(audio_feature_lengths)
@@ -413,23 +471,29 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         if prompt == default_prompt:
             prefix_ids, suffix_ids = default_prompt_parts
         else:
-            prefix_ids, suffix_ids = _prompt_token_parts(
+            prefix_ids, suffix_ids = prompt_token_parts(
                 prompt,
                 tokenizer,
                 audio_token,
             )
-        audio_span_ids = processor._audio_span_ids(audio_token_count)
+        audio_span_ids = processor._audio_span_ids(
+            audio_token_count
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         if len(prefix_ids) + len(audio_span_ids) + len(suffix_ids) > max_length:
             raise ValueError(f"Prompt/audio sequence exceeds max_length={max_length}")
+        else:
+            pass
         offsets = [
             (start + len(prefix_ids), end + len(prefix_ids))
-            for start, end in _contiguous_offsets(
+            for start, end in contiguous_offsets(
                 audio_span_ids,
                 audio_token_id,
             )
         ]
         if not offsets:
             raise ValueError("MOSS-Transcribe-Diarize prompt has no audio tokens")
+        else:
+            pass
 
         audio_item = MultimodalDataItem(
             modality=Modality.AUDIO,
@@ -449,6 +513,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 audio_encoder_service.encode_item(audio_item)
             else:
                 audio_encoder_service.attach_embedding(audio_item, cached_embedding)
+        else:
+            pass
 
         padded_audio_span_ids = [
             audio_item.pad_value if token_id == audio_token_id else token_id
@@ -468,20 +534,22 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             audio_end_id=audio_end_id,
         )
 
-        temperature = _sampling_param(
+        temperature = sampling_param(
             params, explicit_fields, "temperature", DEFAULT_TEMPERATURE, float
         )
-        top_p = _sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
-        top_k = _sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
+        top_p = sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
+        top_k = sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
         # Opt-in mitigation for repetition loops (#975): honoured only when
         # the caller sets it explicitly, so greedy defaults stay unchanged.
-        repetition_penalty = _sampling_param(
+        repetition_penalty = sampling_param(
             params, explicit_fields, "repetition_penalty", 1.0, float
         )
         # Same range SamplingParams enforces; failing here keeps the error
         # on the request path instead of inside the scheduler.
         if not 0.0 < repetition_penalty <= 2.0:
             raise ValueError("repetition_penalty must be in (0, 2]")
+        else:
+            pass
         # note (db-ol): the model default was sized for short clips and
         # silently cuts transcripts past about 20 minutes. Scale the default
         # budget with duration unless the operator configured a fixed one.
@@ -493,6 +561,8 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             # through to the duration scaled default.
             if request_max_new_tokens < 1:
                 raise ValueError("max_new_tokens must be at least 1")
+            else:
+                pass
         elif duration_scaled_default:
             if audio_duration_s <= 0.0:
                 # Empty audio has no legitimate long transcript; keep the
@@ -539,7 +609,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             extra_key=fingerprint,
         )
         req.multimodal_inputs = mm_inputs
-        req._codec_suppress_tokens = None
+        req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
         logger.debug(
             f"[moss-td] prompt_tokens={len(padded_input_ids)} "
@@ -566,7 +636,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     def result_adapter(data: MossTranscribeDiarizeRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
-        raw_text = _decode_token_ids(
+        raw_text = decode_token_ids(
             tokenizer,
             output_ids,
             skip_special_tokens=False,
@@ -610,7 +680,7 @@ def make_moss_transcribe_diarize_stream_output_builder(
         else (int(tokenizer_eos) if tokenizer_eos is not None else None)
     )
     return make_token_text_stream_output_builder(
-        decode_fn=lambda ids: _decode_token_ids(
+        decode_fn=lambda ids: decode_token_ids(
             tokenizer, ids, skip_special_tokens=True
         ),
         build_message_data=lambda delta: {

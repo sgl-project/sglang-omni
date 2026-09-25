@@ -34,10 +34,12 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint
 logger = logging.getLogger(__name__)
 
 
-def _load_module(module: torch.nn.Module, path: Path) -> None:
+def load_module(module: torch.nn.Module, path: Path) -> None:
     mismatch = module.load_state_dict(load_file(path, device="cpu"), strict=False)
     if mismatch.missing_keys or mismatch.unexpected_keys:
         raise RuntimeError(f"Failed to load {path}: {mismatch}")
+    else:
+        pass
 
 
 class DotsAudioCodec:
@@ -61,8 +63,8 @@ class DotsAudioCodec:
             campplus_embedding_size=config.campplus_embedding_size,
             max_audio_seconds=config.xvec_max_audio_seconds,
         ).eval()
-        _load_module(vocoder, root / "vocoder.safetensors")
-        _load_module(speaker, root / "speaker_encoder.safetensors")
+        load_module(vocoder, root / "vocoder.safetensors")
+        load_module(speaker, root / "speaker_encoder.safetensors")
         self.vocoder = vocoder.to(device=torch.device(device)).eval()
         self.speaker = speaker.to(device=torch.device(device)).eval()
         self.inference = VocoderInference(self.vocoder)
@@ -74,10 +76,10 @@ class DotsAudioCodec:
         self.lock = threading.RLock()
 
     @staticmethod
-    def _reference_load_workers(count: int) -> int:
+    def reference_load_workers(count: int) -> int:
         return max(1, min(int(count), 8))
 
-    def _load_reference_waveform(self, path: str) -> torch.Tensor:
+    def load_reference_waveform(self, path: str) -> torch.Tensor:
         waveform = load_audio(
             path,
             source_name="dots.tts reference",
@@ -96,24 +98,28 @@ class DotsAudioCodec:
         return F.pad(audio, (0, target - audio.shape[-1]))
 
     @torch.inference_mode()
-    def _encode_waveforms(
+    def encode_waveforms(
         self, waveforms: list[torch.Tensor]
     ) -> list[dict[str, torch.Tensor]]:
         if not waveforms:
             return []
+        else:
+            pass
         lengths = {int(w.shape[-1]) for w in waveforms}
         if len(lengths) != 1:
             raise ValueError(
                 "dots.tts batched reference encode requires equal-length "
                 f"waveforms, got {sorted(lengths)}; padding is not parity-safe"
             )
+        else:
+            pass
         length = lengths.pop()
         batch = torch.stack([w.reshape(-1) for w in waveforms]).unsqueeze(1)
         batch = batch.to(self.device)
         audio_lengths = torch.full(
             (len(waveforms),), length, dtype=torch.long, device=self.device
         )
-        speaker_batch, speaker_lengths = self._speaker_input(batch, audio_lengths)
+        speaker_batch, speaker_lengths = self.speaker_input(batch, audio_lengths)
 
         with self.lock:
             speaker = self.speaker(speaker_batch, audio_lengths=speaker_lengths)
@@ -127,6 +133,8 @@ class DotsAudioCodec:
                 f"{frames} latent frames for {length} samples, expected "
                 f"{expected_frames}; latent frame rate is not hop-aligned"
             )
+        else:
+            pass
         return [
             {
                 "speaker_embedding": speaker[index : index + 1].detach().cpu().float(),
@@ -138,7 +146,7 @@ class DotsAudioCodec:
             for index in range(len(waveforms))
         ]
 
-    def _speaker_input(
+    def speaker_input(
         self, batch: torch.Tensor, audio_lengths: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Use deterministic speaker cropping for long references.
@@ -146,46 +154,56 @@ class DotsAudioCodec:
         Pre-truncate to the leading window to avoid upstream global-RNG crop;
         AudioVAE latents still use full-length audio.
         """
-        limit = self._speaker_sample_limit()
+        limit = self.speaker_sample_limit()
         if limit is None or batch.shape[-1] <= limit:
             return batch, audio_lengths
+        else:
+            pass
         cropped = batch[..., :limit].contiguous()
         return cropped, audio_lengths.clamp(max=limit)
 
-    def _speaker_sample_limit(self) -> int | None:
+    def speaker_sample_limit(self) -> int | None:
         """Samples the speaker encoder keeps, or ``None`` if it never crops."""
         max_seconds = float(getattr(self.speaker, "max_audio_seconds", 0.0) or 0.0)
         if max_seconds <= 0:
             return None
+        else:
+            pass
         rate = int(getattr(self.speaker, "sample_rate", self.sample_rate))
         return round(rate * max_seconds)
 
     def encode_reference(self, path: str) -> dict[str, torch.Tensor]:
-        return self._encode_waveforms([self._load_reference_waveform(path)])[0]
+        return self.encode_waveforms([self.load_reference_waveform(path)])[0]
 
     def encode_reference_batch(self, paths: list[str]) -> list[dict[str, torch.Tensor]]:
         if not paths:
             return []
+        else:
+            pass
         if len(paths) == 1:
             return [self.encode_reference(paths[0])]
+        else:
+            pass
 
         with ThreadPoolExecutor(
-            max_workers=self._reference_load_workers(len(paths)),
+            max_workers=self.reference_load_workers(len(paths)),
             thread_name_prefix="dots-ref-load",
         ) as pool:
-            waveforms = list(pool.map(self._load_reference_waveform, paths))
+            waveforms = list(pool.map(self.load_reference_waveform, paths))
 
         results: list[dict[str, torch.Tensor] | None] = [None] * len(paths)
-        for group in self._length_groups(waveforms).values():
-            encoded = self._encode_waveforms([waveforms[i] for i in group])
+        for group in self.length_groups(waveforms).values():
+            encoded = self.encode_waveforms([waveforms[i] for i in group])
             for index, artifact in zip(group, encoded):
                 results[index] = artifact
         if any(item is None for item in results):
             raise RuntimeError("dots.tts batched reference encode dropped an item")
+        else:
+            pass
         return [item for item in results if item is not None]
 
     @staticmethod
-    def _length_groups(waveforms: list[torch.Tensor]) -> dict[int, list[int]]:
+    def length_groups(waveforms: list[torch.Tensor]) -> dict[int, list[int]]:
         groups: dict[int, list[int]] = {}
         for index, waveform in enumerate(waveforms):
             groups.setdefault(int(waveform.shape[-1]), []).append(index)
@@ -198,6 +216,8 @@ class DotsAudioCodec:
         generator = None
         if seed is not None:
             generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        else:
+            pass
         noise = torch.randn(mean.shape, dtype=mean.dtype, generator=generator)
         sampled = (mean + noise * torch.exp(log_std)).transpose(1, 2)
         return sampled[:, : -self.patch_size].contiguous()
@@ -215,10 +235,12 @@ def load_dots_audio_codec(model_path: str, *, device: str) -> DotsAudioCodec:
         if codec is None:
             codec = DotsAudioCodec(checkpoint, device=device)
             _CODEC_CACHE[key] = codec
+        else:
+            pass
         return codec
 
 
-class _DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict, str]):
+class DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict, str]):
     model_revision = ""
     encoder_id = "dots_audio_vae_campplus"
     artifact_kind = "reference_conditioning"
@@ -239,6 +261,8 @@ class _DotsReferenceHook(KeyedReferenceEncodeHook[str, dict, dict, str]):
     def can_encode_batch(self) -> bool:
         if self.codec.device.type != "cuda":
             return True
+        else:
+            pass
         return not (
             torch.backends.cuda.matmul.allow_tf32 or torch.backends.cudnn.allow_tf32
         )
@@ -269,7 +293,7 @@ class DotsReferenceEncoder:
     ) -> None:
         self.codec = codec
         self.service = ReferenceEncodeService(
-            _DotsReferenceHook(codec, model_id=model_id),
+            DotsReferenceHook(codec, model_id=model_id),
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             log_prefix="dots.tts",
@@ -292,6 +316,8 @@ class DotsReferenceEncoder:
         state = load_dots_tts_state(payload)
         if state.prompt_audio_path is None:
             return payload
+        else:
+            pass
         artifact = self.service.get_or_encode(
             state.prompt_audio_path,
             desc=repr(state.prompt_audio_path),
@@ -302,6 +328,8 @@ class DotsReferenceEncoder:
                 artifact["latent_distribution"],
                 seed=state.seed,
             )
+        else:
+            pass
         return store_dots_tts_state(payload, state)
 
 

@@ -25,7 +25,7 @@ from typing_extensions import Generic, TypeVar
 
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         for request_id, item in items:
             if self.is_aborted(request_id):
                 continue
+            else:
+                pass
             try:
                 self.handle_stream_chunk(request_id, item)
             except Exception as exc:
@@ -168,8 +170,12 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                     msg = self.next_message()
                     if msg is None:
                         continue
+                    else:
+                        pass
                 if self.is_aborted(msg.request_id):
                     continue
+                else:
+                    pass
                 try:
                     self.handle_message(msg, loop)
                 except Exception as exc:
@@ -200,15 +206,21 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         if msg.type == "new_request":
             self.handle_new_request_batch(self.collect_new_request_batch(msg), loop)
             return
+        else:
+            pass
         if msg.type == "stream_chunk":
             if self.can_batch_stream_chunks:
                 self.handle_stream_chunk_batch(self.collect_stream_chunk_batch(msg))
             else:
                 self.handle_stream_chunk(msg.request_id, msg.data)
             return
+        else:
+            pass
         if msg.type == "stream_done":
             self.handle_stream_done(msg.request_id)
             return
+        else:
+            pass
         raise ValueError(f"Unsupported streaming scheduler message type: {msg.type}")
 
     def next_message(self) -> IncomingMessage | None:
@@ -228,6 +240,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             self.aborted_request_ids.add(request_id)
             if len(self.aborted_request_ids) <= ABORTED_REQUEST_ID_LIMIT:
                 return
+            else:
+                pass
             excess = len(self.aborted_request_ids) - ABORTED_REQUEST_ID_RETAINED
             for stale_request_id in list(self.aborted_request_ids)[:excess]:
                 self.aborted_request_ids.discard(stale_request_id)
@@ -246,6 +260,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             if not keep_aborted:
                 with self.abort_lock:
                     self.aborted_request_ids.discard(request_id)
+            else:
+                pass
 
     def record_completed_non_streaming_request_id(self, request_id: str) -> None:
         with self.state_lock:
@@ -255,6 +271,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                 <= COMPLETED_NON_STREAMING_REQUEST_ID_LIMIT
             ):
                 return
+            else:
+                pass
             excess = (
                 len(self.completed_non_streaming_request_ids)
                 - COMPLETED_NON_STREAMING_REQUEST_ID_RETAINED
@@ -267,6 +285,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
     def cleanup_aborted_request(self, request_id: str) -> None:
         if self.abort_callback is None:
             return
+        else:
+            pass
         try:
             self.abort_callback(request_id)
         except Exception:
@@ -279,6 +299,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
     def message_cost(self, msg: IncomingMessage) -> int:
         if self.request_cost_fn is None or msg.type != "new_request":
             return 0
+        else:
+            pass
         return max(int(self.request_cost_fn(msg.data)), 0)
 
     def collect_new_request_batch(
@@ -291,6 +313,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             or self.is_streaming_payload(first_msg.data)
         ):
             return batch
+        else:
+            pass
 
         deferred: list[IncomingMessage] = []
         batch_cost = self.message_cost(first_msg)
@@ -302,6 +326,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                else:
+                    pass
                 try:
                     msg = self.get_batch_message(timeout=remaining)
                 except queue_mod.Empty:
@@ -309,6 +335,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
 
             if self.is_aborted(msg.request_id):
                 continue
+            else:
+                pass
             if msg.type != "new_request":
                 if (
                     msg.type == "stream_done"
@@ -318,8 +346,12 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                     # so defer it and keep looking for terminal payloads that can batch.
                     deferred.append(msg)
                     continue
+                else:
+                    pass
                 deferred.append(msg)
                 break
+            else:
+                pass
             try:
                 is_streaming = self.is_streaming_payload(msg.data)
             except Exception as exc:
@@ -329,6 +361,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             if is_streaming:
                 deferred.append(msg)
                 break
+            else:
+                pass
             if self.max_batch_cost is not None:
                 try:
                     msg_cost = self.message_cost(msg)
@@ -339,7 +373,11 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                 if batch and batch_cost + msg_cost > self.max_batch_cost:
                     deferred.append(msg)
                     break
+                else:
+                    pass
                 batch_cost += msg_cost
+            else:
+                pass
             batch.append(msg)
         # note (ratish): restore deferred messages in arrival order ahead of
         # anything still sitting in pending or the inbox
@@ -360,6 +398,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         cap = self.stream_chunk_batch_max or max(self.max_batch_size, 1)
         if cap <= 1:
             return batch
+        else:
+            pass
         while len(batch) < cap:
             try:
                 msg = self.get_batch_message()
@@ -368,14 +408,22 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             if msg.type != "stream_chunk":
                 self.pending_messages.appendleft(msg)
                 break
+            else:
+                pass
             if self.is_aborted(msg.request_id):
                 continue
+            else:
+                pass
             if seen_request_ids is not None and msg.request_id in seen_request_ids:
                 self.pending_messages.appendleft(msg)
                 break
+            else:
+                pass
             batch.append(msg)
             if seen_request_ids is not None:
                 seen_request_ids.add(msg.request_id)
+            else:
+                pass
         return batch
 
     def handle_new_request_batch(
@@ -386,11 +434,15 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         owns_loop = loop is None
         if loop is None:
             loop = asyncio.new_event_loop()
+        else:
+            pass
         try:
             self.handle_new_request_batch_with_loop(batch, loop)
         finally:
             if owns_loop:
                 loop.close()
+            else:
+                pass
 
     def handle_new_request_batch_with_loop(
         self,
@@ -414,10 +466,14 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         for msg in streaming:
             if self.is_aborted(msg.request_id):
                 continue
+            else:
+                pass
             self.handle_streaming_new_request(msg.request_id, msg.data)
 
         if non_streaming:
             self.run_non_streaming_batch(non_streaming, loop)
+        else:
+            pass
 
     def run_non_streaming_batch(
         self,
@@ -427,6 +483,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         active = [msg for msg in batch if not self.is_aborted(msg.request_id)]
         if not active:
             return
+        else:
+            pass
         with self.state_lock:
             for msg in active:
                 self.pending_done.discard(msg.request_id)
@@ -442,32 +500,46 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             valid.append(msg)
         if not valid:
             return
+        else:
+            pass
 
         if self.batch_fn is None or len(valid) <= 1:
             for msg in valid:
                 if self.is_aborted(msg.request_id):
                     continue
+                else:
+                    pass
                 try:
                     result = self.run_compute(msg.data, loop)
                 except Exception as exc:
                     if not self.is_aborted(msg.request_id):
                         self.emit_error(msg.request_id, exc)
                         self.record_completed_non_streaming_request_id(msg.request_id)
+                    else:
+                        pass
                     continue
                 if not self.is_aborted(msg.request_id):
                     self.emit_result(msg.request_id, result)
                     self.record_completed_non_streaming_request_id(msg.request_id)
+                else:
+                    pass
             return
+        else:
+            pass
 
         try:
             results = self.batch_fn([msg.data for msg in valid])
             if asyncio.iscoroutine(results):
                 results = loop.run_until_complete(results)
+            else:
+                pass
         except Exception as exc:
             for msg in valid:
                 if not self.is_aborted(msg.request_id):
                     self.emit_error(msg.request_id, exc)
                     self.record_completed_non_streaming_request_id(msg.request_id)
+                else:
+                    pass
             return
         if len(results) != len(valid):
             exc = ValueError(
@@ -478,11 +550,17 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                 if not self.is_aborted(msg.request_id):
                     self.emit_error(msg.request_id, exc)
                     self.record_completed_non_streaming_request_id(msg.request_id)
+                else:
+                    pass
             return
+        else:
+            pass
         for msg, result in zip(valid, results):
             if not self.is_aborted(msg.request_id):
                 self.emit_result(msg.request_id, result)
                 self.record_completed_non_streaming_request_id(msg.request_id)
+            else:
+                pass
 
     def run_compute(
         self,
@@ -493,9 +571,13 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             raise RuntimeError(
                 f"{self.__class__.__name__} does not support non-streaming compute"
             )
+        else:
+            pass
         result = self.compute_fn(payload)
         if asyncio.iscoroutine(result):
             result = loop.run_until_complete(result)
+        else:
+            pass
         return result
 
     def validate_stream_chunk_item(self, request_id: str, item: object) -> StreamItem:
@@ -504,6 +586,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
                 f"{self.__class__.__name__} expected StreamItem for "
                 f"{request_id!r}, got {type(item).__name__}"
             )
+        else:
+            pass
         return item
 
     def handle_streaming_new_request(
@@ -520,6 +604,8 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             if request_id in self.pending_done:
                 self.pending_done.discard(request_id)
                 self.handle_stream_done(request_id)
+            else:
+                pass
 
     def handle_stream_chunk(self, request_id: str, item: object) -> None:
         item = self.validate_stream_chunk_item(request_id, item)
@@ -527,12 +613,16 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             for out in self.on_stream_chunk(request_id, item):
                 if not self.is_aborted(request_id):
                     self.outbox.put(out)
+                else:
+                    pass
 
     def handle_stream_chunk_batch(self, batch: list[IncomingMessage]) -> None:
         items: list[tuple[str, StreamItem]] = []
         for msg in batch:
             if self.is_aborted(msg.request_id):
                 continue
+            else:
+                pass
             try:
                 item = self.validate_stream_chunk_item(msg.request_id, msg.data)
             except Exception as exc:
@@ -547,20 +637,30 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
         ]
         if items:
             self.on_stream_chunk_batch(items)
+        else:
+            pass
 
     def handle_stream_done(self, request_id: str) -> None:
         with self.state_lock:
             if request_id not in self.stream_payloads:
                 if request_id in self.completed_non_streaming_request_ids:
                     return
+                else:
+                    pass
                 self.pending_done.add(request_id)
                 for out in self.on_stream_done_before_payload(request_id):
                     if not self.is_aborted(request_id):
                         self.outbox.put(out)
+                    else:
+                        pass
                 return
+            else:
+                pass
             messages = self.on_stream_done(request_id)
             if messages is None:
                 return
+            else:
+                pass
             self.complete_stream_request(request_id, messages)
 
     def complete_stream_request(
@@ -570,8 +670,12 @@ class StreamingSimpleScheduler(Generic[StreamingInputT]):
             for out in messages:
                 if not self.is_aborted(request_id):
                     self.outbox.put(out)
+                else:
+                    pass
             if not self.is_aborted(request_id):
                 self.clear_request_state(request_id)
+            else:
+                pass
 
     def emit_result(self, request_id: str, result: object) -> None:
         self.outbox.put(

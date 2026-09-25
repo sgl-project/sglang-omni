@@ -7,8 +7,8 @@ import logging
 import torch
 
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
+    CapturedGraph,
     WhisperEncoderCudaGraphRunner,
-    _CapturedGraph,
 )
 
 
@@ -30,14 +30,14 @@ class _Graph:
         static_features: torch.Tensor,
         static_output: torch.Tensor,
     ) -> None:
-        self._encoder = encoder
+        self.encoder = encoder
         self._static_features = static_features
         self._static_output = static_output
         self.replays = 0
 
     def replay(self) -> None:
         self.replays += 1
-        self._static_output.copy_(self._encoder(self._static_features))
+        self._static_output.copy_(self.encoder(self._static_features))
 
 
 def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:
@@ -50,7 +50,7 @@ def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:
     static_features = torch.full((4, 2, 5), 99.0)
     static_output = torch.empty((4, 5))
     graph = _Graph(encoder, static_features, static_output)
-    runner._graphs[4] = _CapturedGraph(
+    runner.graphs[4] = CapturedGraph(
         graph=graph,
         input_features=static_features,
         output=static_output,
