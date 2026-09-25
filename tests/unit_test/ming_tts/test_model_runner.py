@@ -62,7 +62,7 @@ def test_ming_tts_follower_rejects_tail_failure() -> None:
         runner.apply_follower_step_update(update, [SimpleNamespace()])
 
 
-def _run_ming_tts_tail_step(
+def run_ming_tts_tail_step(
     *,
     stop_prob: float,
     generation_steps: int,
@@ -72,7 +72,7 @@ def _run_ming_tts_tail_step(
     runner = object.__new__(MingTTSModelRunner)
     runner.model = SimpleNamespace(
         decode_input_embedding=SimpleNamespace(weight=torch.empty(1, 4)),
-        run_tail_step=lambda _inputs: SimpleNamespace(
+        run_tail_step=lambda inputs: SimpleNamespace(
             sampled=torch.tensor([[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]]),
             feedback_embeddings=torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
             stop_prob=torch.tensor([stop_prob]),
@@ -107,7 +107,7 @@ def _run_ming_tts_tail_step(
 
 
 def test_ming_tts_streaming_length_limit_marks_terminal_patch() -> None:
-    data, request_state, step_update = _run_ming_tts_tail_step(
+    data, request_state, step_update = run_ming_tts_tail_step(
         stop_prob=0.0,
         generation_steps=3,
         max_new_tokens=4,
@@ -128,7 +128,7 @@ def test_ming_tts_streaming_length_limit_marks_terminal_patch() -> None:
 
 
 def test_ming_tts_streaming_stop_head_marks_terminal_patch() -> None:
-    data, request_state, step_update = _run_ming_tts_tail_step(
+    data, request_state, step_update = run_ming_tts_tail_step(
         stop_prob=0.9,
         generation_steps=4,
         max_new_tokens=256,
@@ -144,7 +144,7 @@ def test_ming_tts_streaming_stop_head_marks_terminal_patch() -> None:
 
 
 def test_ming_tts_streaming_mid_generation_patch_is_not_terminal() -> None:
-    data, request_state, step_update = _run_ming_tts_tail_step(
+    data, request_state, step_update = run_ming_tts_tail_step(
         stop_prob=0.1,
         generation_steps=4,
         max_new_tokens=256,
@@ -164,7 +164,7 @@ def test_ming_tts_streaming_mid_generation_patch_is_not_terminal() -> None:
 
 
 def test_ming_tts_streaming_stop_head_is_gated_until_step_four() -> None:
-    data, _request_state, step_update = _run_ming_tts_tail_step(
+    data, request_state, step_update = run_ming_tts_tail_step(
         stop_prob=0.9,
         generation_steps=3,
         max_new_tokens=256,
@@ -177,7 +177,7 @@ def test_ming_tts_streaming_stop_head_is_gated_until_step_four() -> None:
 
 
 def test_ming_tts_non_streaming_step_buffers_latents_without_stream_patch() -> None:
-    data, request_state, _step_update = _run_ming_tts_tail_step(
+    data, request_state, step_update = run_ming_tts_tail_step(
         stop_prob=0.9,
         generation_steps=4,
         max_new_tokens=256,
@@ -196,7 +196,7 @@ def test_ming_tts_non_streaming_step_buffers_latents_without_stream_patch() -> N
 
 def test_prefill_forward_publishes_sglang_forward_context() -> None:
     runner = MingTTSModelRunner.__new__(MingTTSModelRunner)
-    attn_backend = SimpleNamespace(init_forward_metadata=lambda _batch: None)
+    attn_backend = SimpleNamespace(init_forward_metadata=lambda batch: None)
     runner.tp_worker = SimpleNamespace(
         model_runner=SimpleNamespace(attn_backend=attn_backend)
     )

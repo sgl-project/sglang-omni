@@ -155,7 +155,7 @@ def test_fish_preprocessing_uses_bounded_cpu_threads(
     assert intraop_threads == expected_intraop_threads
 
 
-def _run_configure_preprocessing_threads(
+def run_configure_preprocessing_threads(
     env_overrides: dict[str, str], *, worker_count: int = 8
 ) -> tuple[int, int, int]:
     """Run ``_configure_preprocessing_threads`` in a fresh interpreter and return
@@ -197,7 +197,7 @@ def test_fish_preprocessing_thread_bound_holds_in_real_process(
 ) -> None:
     """Effective torch intra-op pool matches the returned value and stays bounded;
     an explicit OMP override wins over MKL. Verified in a real subprocess."""
-    returned, effective, cap = _run_configure_preprocessing_threads(env_overrides)
+    returned, effective, cap = run_configure_preprocessing_threads(env_overrides)
     assert returned == effective
     if expected == "bounded":
         assert 1 <= effective <= cap
@@ -456,7 +456,7 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
 
 
-class _RecordingFishTokenizer(FakeFishTokenizer):
+class RecordingFishTokenizer(FakeFishTokenizer):
     vocab_size = 512
 
     def __init__(self) -> None:
@@ -480,7 +480,7 @@ class _RecordingFishTokenizer(FakeFishTokenizer):
         return 640
 
 
-def _attach_recording_stop_token_ids(tokenizer: _RecordingFishTokenizer) -> None:
+def attach_recording_stop_token_ids(tokenizer: RecordingFishTokenizer) -> None:
     tokenizer.additional_stop_token_ids = list(tokenizer.get_added_vocab().values())
 
 
@@ -489,9 +489,9 @@ def test_fish_scheduler_resolves_tokenizer_invariants_once(
 ) -> None:
     monkeypatch.setattr(
         "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
-        _attach_recording_stop_token_ids,
+        attach_recording_stop_token_ids,
     )
-    tokenizer = _RecordingFishTokenizer()
+    tokenizer = RecordingFishTokenizer()
     original_added_vocab = dict(tokenizer.added_vocab)
 
     request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=tokenizer)
@@ -514,9 +514,9 @@ def test_fish_direct_builder_resolves_tokenizer_invariants(
 ) -> None:
     monkeypatch.setattr(
         "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
-        _attach_recording_stop_token_ids,
+        attach_recording_stop_token_ids,
     )
-    tokenizer = _RecordingFishTokenizer()
+    tokenizer = RecordingFishTokenizer()
     original_added_vocab = dict(tokenizer.added_vocab)
 
     req_data = build_sglang_tts_request(
@@ -534,9 +534,9 @@ def test_fish_scheduler_reuses_caller_supplied_im_end_token_id(
 ) -> None:
     monkeypatch.setattr(
         "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
-        _attach_recording_stop_token_ids,
+        attach_recording_stop_token_ids,
     )
-    tokenizer = _RecordingFishTokenizer()
+    tokenizer = RecordingFishTokenizer()
 
     request_builder, _, _ = make_tts_scheduler_adapters(
         tokenizer=tokenizer, im_end_token_id=np.int64(99)
@@ -601,7 +601,9 @@ def test_fish_tts_accepts_default_top_k_sentinel() -> None:
     assert req_data.top_k == -1
 
 
-def _server_args_overrides(config: S2ProPipelineConfig, name: str) -> dict[str, object]:
+def make_server_args_overrides(
+    config: S2ProPipelineConfig, name: str
+) -> dict[str, object]:
     engine = config.stage_named(name).engine
     return engine.overrides() if engine is not None else {}
 
@@ -640,14 +642,14 @@ def test_s2pro_dotted_torch_compile_targets_tts_engine(
 
     merged = ConfigManager(config).merge_config(flags)
 
-    assert _server_args_overrides(merged, "tts_engine") == expected
-    assert _server_args_overrides(merged, "vocoder") == {}
+    assert make_server_args_overrides(merged, "tts_engine") == expected
+    assert make_server_args_overrides(merged, "vocoder") == {}
 
 
 def test_s2pro_without_compile_flags_is_a_noop() -> None:
     config = S2ProPipelineConfig(model_path="model")
 
-    assert _server_args_overrides(config, "tts_engine") == {}
+    assert make_server_args_overrides(config, "tts_engine") == {}
 
 
 def test_s2pro_torch_compile_max_bs_rejects_non_positive() -> None:
@@ -692,7 +694,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
         lambda model, *, max_batch_size: warmup_calls.append((model, max_batch_size)),
     )
 
-    class _Layer:
+    class Layer:
         def forward_kvcached(
             self,
             x: torch.Tensor,
@@ -703,9 +705,9 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
             del freqs_cis, cache_seqlens, cache_position
             return x
 
-    class _AudioDecoder:
+    class AudioDecoder:
         def __init__(self) -> None:
-            self.layers = [_Layer()]
+            self.layers = [Layer()]
 
         def set_compiled_forward_kvcached_layers(
             self,
@@ -716,7 +718,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
             self.compiled_forward_kvcached_layers = forward_kvcached_layers
             self.compiled_forward_kvcached_max_bs = max_batch_size
 
-    audio_decoder = _AudioDecoder()
+    audio_decoder = AudioDecoder()
     model = SimpleNamespace(audio_decoder=audio_decoder)
 
     stages.compile_s2pro_codebook_decoder(model, max_batch_size=2)
@@ -735,7 +737,7 @@ def test_s2pro_compile_helper_targets_forward_kvcached(
 def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
 
-    class _AudioDecoder:
+    class AudioDecoder:
         def __init__(self) -> None:
             self.embeddings = torch.nn.Embedding(32, 4, dtype=torch.bfloat16)
             self.project_in = torch.nn.Identity()
@@ -759,7 +761,7 @@ def test_s2pro_compile_warmup_covers_batches_codebooks_and_resets() -> None:
             )
             return decoder_input
 
-    audio_decoder = _AudioDecoder()
+    audio_decoder = AudioDecoder()
     model = SimpleNamespace(audio_decoder=audio_decoder)
 
     stages.warmup_s2pro_codebook_decoder(model, max_batch_size=20)
@@ -800,13 +802,13 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
         lambda target, **kwargs: target,
     )
 
-    class _Layer:
+    class Layer:
         def forward_kvcached(self, x: torch.Tensor) -> torch.Tensor:
             return x
 
-    class _AudioDecoder:
+    class AudioDecoder:
         def __init__(self) -> None:
-            self.layers = [_Layer()]
+            self.layers = [Layer()]
             self.embeddings = torch.nn.Embedding(32, 4)
             self.config = SimpleNamespace(num_codebooks=10)
             self.eager_forward_kvcached_layers = ["eager"]
@@ -839,7 +841,7 @@ def test_s2pro_compile_warmup_failure_rolls_back_to_eager(
                 else self.eager_forward_kvcached_layers
             )
 
-    audio_decoder = _AudioDecoder()
+    audio_decoder = AudioDecoder()
     stages.compile_s2pro_codebook_decoder(
         SimpleNamespace(audio_decoder=audio_decoder),
         max_batch_size=8,
@@ -858,7 +860,7 @@ def run_s2pro_engine(monkeypatch: pytest.MonkeyPatch, tmp_path):
     published: list = []
 
     def run(**kwargs):
-        return _run_s2pro_engine_with_fake_buffers(
+        return run_s2pro_engine_with_fake_buffers(
             monkeypatch, checkpoint=checkpoint, published=published, **kwargs
         )
 
@@ -867,7 +869,7 @@ def run_s2pro_engine(monkeypatch: pytest.MonkeyPatch, tmp_path):
         published.pop().restore()
 
 
-def _run_s2pro_engine_with_fake_buffers(
+def run_s2pro_engine_with_fake_buffers(
     monkeypatch: pytest.MonkeyPatch,
     *,
     checkpoint: str,
@@ -908,7 +910,7 @@ def _run_s2pro_engine_with_fake_buffers(
     compile_calls: list[tuple[object, int]] = []
     init_graph_calls: list[bool] = []
 
-    class _FakeSGLangRunner:
+    class FakeSGLangRunner:
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.server_args = server_args
             self.model = SimpleNamespace()
@@ -918,9 +920,9 @@ def _run_s2pro_engine_with_fake_buffers(
             assert get_exec().graph.torch_compile_max_bs == 64
             init_graph_calls.append(True)
 
-    class _FakeWorker:
+    class FakeWorker:
         def __init__(self, server_args: SimpleNamespace) -> None:
-            self.model_runner = _FakeSGLangRunner(server_args)
+            self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
 
     monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
@@ -972,7 +974,7 @@ def _run_s2pro_engine_with_fake_buffers(
         slot.install()
         published.append(slot)
         publish(server_args, role="scheduler")
-        worker = _FakeWorker(server_args)
+        worker = FakeWorker(server_args)
         if before_memory_pool is not None:
             before_memory_pool(worker)
         return (
@@ -1022,11 +1024,11 @@ def _run_s2pro_engine_with_fake_buffers(
 
     from sglang_omni.scheduling import omni_scheduler
 
-    class _FakeOmniScheduler:
+    class FakeOmniScheduler:
         def __init__(self, **kwargs: object) -> None:
             self.__dict__.update(kwargs)
 
-    monkeypatch.setattr(omni_scheduler, "OmniScheduler", _FakeOmniScheduler)
+    monkeypatch.setattr(omni_scheduler, "OmniScheduler", FakeOmniScheduler)
 
     fake_model_runner = ModuleType("sglang_omni.models.fishaudio_s2_pro.model_runner")
     fake_model_runner.FishS2ProModelRunner = lambda *args, **kwargs: SimpleNamespace(
@@ -1274,7 +1276,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
     release = threading.Event()
     entered = threading.Event()
 
-    class _AudioMediaIO:
+    class AudioMediaIO:
         def __init__(self, *, target_sr: int) -> None:
             self.target_sr = target_sr
 
@@ -1282,7 +1284,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
             assert payload == b"ref"
             return np.zeros(12, dtype=np.float32), self.target_sr
 
-    class _Codec:
+    class Codec:
         sample_rate = 16000
 
         def __init__(self) -> None:
@@ -1295,7 +1297,7 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
             self.calls += 1
             return torch.tensor([[1, 2, 3]], dtype=torch.long), None
 
-    monkeypatch.setattr(audio_module, "AudioMediaIO", _AudioMediaIO)
+    monkeypatch.setattr(audio_module, "AudioMediaIO", AudioMediaIO)
     monkeypatch.setitem(
         sys.modules,
         "torchaudio",
@@ -1306,18 +1308,18 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
         ),
     )
 
-    codec = _Codec()
+    codec = Codec()
     worker_count = 4
     gate = threading.Barrier(worker_count)
 
-    class _GatedFishReferenceEncodeHook(FishReferenceEncodeHook):
+    class GatedFishReferenceEncodeHook(FishReferenceEncodeHook):
         def normalize_input(self, raw_input):
             item = super().normalize_input(raw_input)
             gate.wait(timeout=5)
             return item
 
     service = ReferenceEncodeService(
-        _GatedFishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        GatedFishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
         max_items=16,
         max_bytes=1024,
     )
@@ -1351,14 +1353,14 @@ def test_fish_reference_encode_service_failure_does_not_poison(
     from sglang_omni.models.fishaudio_s2_pro.stages import FishReferenceEncodeHook
     from sglang_omni.preprocessing import audio as audio_module
 
-    class _AudioMediaIO:
+    class AudioMediaIO:
         def __init__(self, *, target_sr: int) -> None:
             self.target_sr = target_sr
 
         def load_bytes(self, payload: bytes):
             return np.zeros(8, dtype=np.float32), self.target_sr
 
-    class _Codec:
+    class Codec:
         sample_rate = 16000
 
         def __init__(self) -> None:
@@ -1371,7 +1373,7 @@ def test_fish_reference_encode_service_failure_does_not_poison(
                 raise RuntimeError("transient")
             return torch.tensor([[5, 6]], dtype=torch.long), None
 
-    monkeypatch.setattr(audio_module, "AudioMediaIO", _AudioMediaIO)
+    monkeypatch.setattr(audio_module, "AudioMediaIO", AudioMediaIO)
     monkeypatch.setitem(
         sys.modules,
         "torchaudio",
@@ -1382,7 +1384,7 @@ def test_fish_reference_encode_service_failure_does_not_poison(
         ),
     )
 
-    codec = _Codec()
+    codec = Codec()
     service = ReferenceEncodeService(
         FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
         max_items=16,
@@ -1416,7 +1418,7 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
 
     monkeypatch.setattr(audio_utils, "load_audio", load_audio)
 
-    class _Codec:
+    class Codec:
         sample_rate = 16000
 
         def __init__(self) -> None:
@@ -1429,7 +1431,7 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
                 ref_path.write_bytes(b"version-b")
             return torch.tensor([[self.calls, self.calls + 1]], dtype=torch.long), None
 
-    codec = _Codec()
+    codec = Codec()
     service = ReferenceEncodeService(
         FishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
         max_items=16,
@@ -1449,7 +1451,7 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     assert codec.calls == 2
 
 
-def _tiny_fish_omni_config(*, with_audio_decoder: bool = True):
+def tiny_fish_omni_config(*, with_audio_decoder: bool = True):
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.configuration import (
         FishQwen3AudioDecoderConfig,
         FishQwen3Config,
@@ -1484,14 +1486,14 @@ def _tiny_fish_omni_config(*, with_audio_decoder: bool = True):
     )
 
 
-def _write_tiny_audio_decoder_checkpoint(tmp_path, *, drop_key: str | None = None):
+def write_tiny_audio_decoder_checkpoint(tmp_path, *, drop_key: str | None = None):
     from safetensors.torch import save_file
 
     from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.text2semantic.audio_decoder import (
         FishQwen3AudioDecoder,
     )
 
-    config = _tiny_fish_omni_config()
+    config = tiny_fish_omni_config()
     config.save_pretrained(tmp_path)
     source = FishQwen3AudioDecoder(config.audio_decoder_config)
     with torch.no_grad():
@@ -1512,7 +1514,7 @@ def test_load_audio_decoder_strictly_loads_only_fast_path_on_meta(
     from sglang_omni.models import weight_loader
     from sglang_omni.models.fishaudio_s2_pro import bootstrap
 
-    source = _write_tiny_audio_decoder_checkpoint(tmp_path)
+    source = write_tiny_audio_decoder_checkpoint(tmp_path)
     tokenizer = object()
     monkeypatch.setattr(
         "transformers.PreTrainedTokenizerFast.from_pretrained",
@@ -1545,7 +1547,7 @@ def test_load_audio_decoder_strictly_loads_only_fast_path_on_meta(
 def test_load_audio_decoder_rejects_missing_decoder_config(tmp_path) -> None:
     from sglang_omni.models.fishaudio_s2_pro import bootstrap
 
-    _tiny_fish_omni_config(with_audio_decoder=False).save_pretrained(tmp_path)
+    tiny_fish_omni_config(with_audio_decoder=False).save_pretrained(tmp_path)
 
     with pytest.raises(RuntimeError, match="config does not define an audio decoder"):
         bootstrap.load_audio_decoder(str(tmp_path), device="cpu")
@@ -1554,7 +1556,7 @@ def test_load_audio_decoder_rejects_missing_decoder_config(tmp_path) -> None:
 def test_load_audio_decoder_rejects_incomplete_decoder_weights(tmp_path) -> None:
     from sglang_omni.models.fishaudio_s2_pro import bootstrap
 
-    _write_tiny_audio_decoder_checkpoint(
+    write_tiny_audio_decoder_checkpoint(
         tmp_path,
         drop_key="output.weight",
     )
@@ -1572,7 +1574,7 @@ def test_fish_checkpoint_config_remains_registered_without_hf_slow_model(
         FishQwen3OmniConfig,
     )
 
-    _tiny_fish_omni_config().save_pretrained(tmp_path)
+    tiny_fish_omni_config().save_pretrained(tmp_path)
 
     loaded = AutoConfig.from_pretrained(tmp_path)
     assert isinstance(loaded, FishQwen3OmniConfig)
@@ -1672,7 +1674,7 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
         FishQwen3AudioDecoder,
     )
 
-    class _EagerLayer:
+    class EagerLayer:
         def forward_kvcached(
             self,
             x: torch.Tensor,
@@ -1687,7 +1689,7 @@ def test_decoder_forward_kvcached_obeys_compiled_batch_size_cap() -> None:
     decoder = object.__new__(FishQwen3AudioDecoder)
     decoder.input_pos = torch.zeros(1, dtype=torch.long)
     decoder.freqs_cis = torch.zeros(8, 1, 1, dtype=torch.float32)
-    decoder.layers = [_EagerLayer()]
+    decoder.layers = [EagerLayer()]
     decoder.eager_forward_kvcached_layers = [
         layer.forward_kvcached for layer in decoder.layers
     ]

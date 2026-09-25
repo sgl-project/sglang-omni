@@ -20,32 +20,32 @@ from benchmarks.eval import (
 )
 
 
-class _FakeDataset:
+class FakeDataset:
     def __init__(self, rows: list[dict]) -> None:
-        self._rows = rows
+        self.rows = rows
         self.column_names = list(rows[0].keys()) if rows else []
         self.selected_indices: list[int] | None = None
 
-    def cast_column(self, _name: str, _audio_spec) -> "_FakeDataset":
+    def cast_column(self, _name: str, _audio_spec) -> "FakeDataset":
         return self
 
-    def select(self, indices: list[int]) -> "_FakeDataset":
+    def select(self, indices: list[int]) -> "FakeDataset":
         self.selected_indices = list(indices)
-        return _FakeDataset([self._rows[i] for i in indices])
+        return FakeDataset([self.rows[i] for i in indices])
 
-    def rename_columns(self, aliases: dict[str, str]) -> "_FakeDataset":
-        return _FakeDataset(
+    def rename_columns(self, aliases: dict[str, str]) -> "FakeDataset":
+        return FakeDataset(
             [
                 {aliases.get(key, key): value for key, value in row.items()}
-                for row in self._rows
+                for row in self.rows
             ]
         )
 
     def __len__(self) -> int:
-        return len(self._rows)
+        return len(self.rows)
 
     def __iter__(self):
-        return iter(self._rows)
+        return iter(self.rows)
 
 
 def test_download_dataset_prewarms_all_mmmu_configs(monkeypatch) -> None:
@@ -92,14 +92,14 @@ def test_download_seedtts_uses_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.SEEDTTS_DATASET_ID, quiet=True)
@@ -139,7 +139,7 @@ def test_local_seedtts_source_does_not_claim_huggingface_revision(
     output_path = tmp_path / "result.json"
     captured: dict = {}
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -194,7 +194,7 @@ def test_custom_seedtts_repo_does_not_use_canonical_revision(
             )
         ]
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -274,7 +274,7 @@ def test_asr_benchmark_rejects_empty_dataset(
     monkeypatch.setattr(
         benchmark_asr_seedtts,
         "load_seedtts_samples",
-        lambda *_args, **_kwargs: [],
+        lambda *args, **_kwargs: [],
     )
 
     with pytest.raises(RuntimeError, match="No SeedTTS samples"):
@@ -293,9 +293,13 @@ def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> No
         )
     ]
 
-    before = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+    before = benchmark_asr_seedtts._evaluation_input_sha256(
+        samples
+    )  # noqa: leading-underscore  # production name
     audio_path.write_bytes(b"second")
-    after = benchmark_asr_seedtts._evaluation_input_sha256(samples)
+    after = benchmark_asr_seedtts._evaluation_input_sha256(
+        samples
+    )  # noqa: leading-underscore  # production name
 
     assert before != after
 
@@ -303,7 +307,7 @@ def test_evaluation_input_fingerprint_tracks_audio_content(tmp_path: Path) -> No
 def test_load_seedtts_samples_stages_only_selected_rows(
     monkeypatch, tmp_path: Path
 ) -> None:
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     rows = [
         {
@@ -315,7 +319,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         }
         for idx in range(5)
     ]
-    dataset = _FakeDataset(rows)
+    dataset = FakeDataset(rows)
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
 
@@ -351,7 +355,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
         "audio/1.wav",
     ]
 
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 @pytest.mark.parametrize(
@@ -364,7 +368,7 @@ def test_load_seedtts_samples_stages_only_selected_rows(
 def test_load_seedtts_samples_rejects_unsafe_audio_paths(
     monkeypatch, tmp_path: Path, ref_audio_path: str | None, outside_name: str
 ) -> None:
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     stage_dir = tmp_path / "seedtts_stage"
     stage_dir.mkdir()
@@ -385,7 +389,7 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
         assert repo_id == prepare.SEEDTTS_DATASET_ID
         assert split == "en"
         assert revision == prepare.SEEDTTS_DATASET_REVISION
-        return _FakeDataset(rows)
+        return FakeDataset(rows)
 
     monkeypatch.setitem(
         sys.modules,
@@ -408,7 +412,7 @@ def test_load_seedtts_samples_rejects_unsafe_audio_paths(
     assert not outside_path.exists()
     assert list(stage_dir.rglob("*.wav")) == []
 
-    seedtts._STAGED_CACHE.clear()
+    seedtts._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_download_stt_benchmark_uses_pinned_revision(
@@ -425,14 +429,14 @@ def test_download_stt_benchmark_uses_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.DATASETS["stt-benchmark"], quiet=True)
@@ -443,7 +447,7 @@ def test_download_stt_benchmark_uses_pinned_revision(
     }
 
 
-def _stt_wav_bytes(idx: int) -> bytes:
+def stt_wav_bytes(idx: int) -> bytes:
     """A valid minimal 16 kHz mono PCM WAV whose frames vary with *idx*."""
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -454,11 +458,11 @@ def _stt_wav_bytes(idx: int) -> bytes:
     return buffer.getvalue()
 
 
-def _stt_rows(count: int) -> list[dict]:
+def stt_rows(count: int) -> list[dict]:
     return [
         {
             "sample_id": f"sample-{idx}",
-            "audio": {"bytes": _stt_wav_bytes(idx), "path": None},
+            "audio": {"bytes": stt_wav_bytes(idx), "path": None},
             "duration_seconds": 1.0 + idx,
             "transcription": f"Transcript {idx}.",
         }
@@ -466,7 +470,7 @@ def _stt_rows(count: int) -> list[dict]:
     ]
 
 
-def _install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> None:
+def install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> None:
     monkeypatch.setitem(
         sys.modules,
         "datasets",
@@ -480,7 +484,7 @@ def _install_fake_datasets(monkeypatch: pytest.MonkeyPatch, load_dataset) -> Non
     )
 
 
-def _stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
+def stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
     monkeypatch.setattr(
         stt_benchmark.tempfile, "mkdtemp", lambda prefix: str(stage_dir)
     )
@@ -490,9 +494,9 @@ def _stage_stt_into(monkeypatch: pytest.MonkeyPatch, stage_dir: Path) -> None:
 def test_load_stt_benchmark_samples_stages_selected_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
-    dataset = _FakeDataset(_stt_rows(5))
+    dataset = FakeDataset(stt_rows(5))
     stage_dir = tmp_path / "stt_stage"
     stage_dir.mkdir()
 
@@ -502,8 +506,8 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
         assert revision == prepare.STT_BENCHMARK_DATASET_REVISION
         return dataset
 
-    _install_fake_datasets(monkeypatch, fake_load_dataset)
-    _stage_stt_into(monkeypatch, stage_dir)
+    install_fake_datasets(monkeypatch, fake_load_dataset)
+    stage_stt_into(monkeypatch, stage_dir)
 
     samples = stt_benchmark.load_stt_benchmark_samples(max_samples=2)
 
@@ -512,7 +516,7 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
     assert samples[0].ref_text == "Transcript 0."
     assert samples[0].target_text == "Transcript 0."
     assert Path(samples[0].ref_audio) == stage_dir / "sample-0.wav"
-    assert (stage_dir / "sample-0.wav").read_bytes() == _stt_wav_bytes(0)
+    assert (stage_dir / "sample-0.wav").read_bytes() == stt_wav_bytes(0)
     assert sorted(path.name for path in stage_dir.glob("*.wav")) == [
         "sample-0.wav",
         "sample-1.wav",
@@ -527,23 +531,23 @@ def test_load_stt_benchmark_samples_stages_selected_rows(
     again = stt_benchmark.load_stt_benchmark_samples(max_samples=2)
     assert [sample.sample_id for sample in again] == ["sample-0", "sample-1"]
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_custom_stt_benchmark_repo_loads_default_revision(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     observed: dict = {}
 
     def fake_load_dataset(repo_id: str, split: str, **kwargs):
         observed["repo_id"] = repo_id
         observed["split"] = split
         observed.update(kwargs)
-        return _FakeDataset(_stt_rows(1))
+        return FakeDataset(stt_rows(1))
 
-    _install_fake_datasets(monkeypatch, fake_load_dataset)
-    _stage_stt_into(monkeypatch, tmp_path)
+    install_fake_datasets(monkeypatch, fake_load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
 
     samples = stt_benchmark.load_stt_benchmark_samples(
         "example/custom-stt", split="validation"
@@ -552,21 +556,21 @@ def test_custom_stt_benchmark_repo_loads_default_revision(
     assert len(samples) == 1
     assert observed == {"repo_id": "example/custom-stt", "split": "validation"}
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_custom_stt_config_uses_dataset_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     calls: list[dict] = []
 
     def load_dataset(repo_id: str, **kwargs):
         calls.append({"repo_id": repo_id, **kwargs})
-        return _FakeDataset(_stt_rows(1))
+        return FakeDataset(stt_rows(1))
 
-    _install_fake_datasets(monkeypatch, load_dataset)
-    _stage_stt_into(monkeypatch, tmp_path)
+    install_fake_datasets(monkeypatch, load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
     for config_name in ("english", "chinese", "english"):
         samples = stt_benchmark.load_stt_benchmark_samples(
             "example/custom-stt", config_name=config_name, split="validation"
@@ -581,13 +585,13 @@ def test_custom_stt_config_uses_dataset_metadata(
         }
         for name in ("english", "chinese")
     ]
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_librispeech_stages_flac_with_column_aliases(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     audio = io.BytesIO()
     waveform = np.array([0.0, 0.25, -0.25, 0.5], dtype=np.float32)
     sf.write(audio, waveform, 16000, format="FLAC")
@@ -600,7 +604,7 @@ def test_librispeech_stages_flac_with_column_aliases(
             "verification_mode": "no_checks",
             "revision": "example-revision",
         }
-        return _FakeDataset(
+        return FakeDataset(
             [
                 {
                     "id": "sample-0",
@@ -610,8 +614,8 @@ def test_librispeech_stages_flac_with_column_aliases(
             ]
         )
 
-    _install_fake_datasets(monkeypatch, load_dataset)
-    _stage_stt_into(monkeypatch, tmp_path)
+    install_fake_datasets(monkeypatch, load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
     samples = stt_benchmark.load_stt_benchmark_samples(
         "openslr/librispeech_asr",
         config_name="clean",
@@ -626,23 +630,23 @@ def test_librispeech_stages_flac_with_column_aliases(
     assert staged.samplerate == 16000
     decoded, _ = sf.read(samples[0].ref_audio)
     np.testing.assert_array_equal(decoded, waveform)
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_stt_column_aliases_preserve_canonical_columns(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
-    rows = _stt_rows(1)
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    rows = stt_rows(1)
     rows[0].update(id="alternate-id", text="Alternate transcript.")
-    _install_fake_datasets(monkeypatch, lambda *args, **kwargs: _FakeDataset(rows))
-    _stage_stt_into(monkeypatch, tmp_path)
+    install_fake_datasets(monkeypatch, lambda *args, **kwargs: FakeDataset(rows))
+    stage_stt_into(monkeypatch, tmp_path)
 
     samples = stt_benchmark.load_stt_benchmark_samples()
 
     assert samples[0].sample_id == "sample-0"
     assert samples[0].ref_text == "Transcript 0."
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 @pytest.mark.parametrize("config_name", ["clean", "other"])
@@ -650,7 +654,7 @@ def test_download_librispeech_selects_only_test_files(
     monkeypatch: pytest.MonkeyPatch, config_name: str
 ) -> None:
     calls: list[dict] = []
-    _install_fake_datasets(
+    install_fake_datasets(
         monkeypatch,
         lambda repo_id, **kwargs: calls.append({"repo_id": repo_id, **kwargs}),
     )
@@ -671,25 +675,25 @@ def test_download_librispeech_selects_only_test_files(
 def test_load_stt_benchmark_samples_rejects_unsafe_sample_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sample_id: str
 ) -> None:
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
     stage_dir = tmp_path / "stt_stage"
     stage_dir.mkdir()
-    rows = _stt_rows(1)
+    rows = stt_rows(1)
     rows[0]["sample_id"] = sample_id
 
-    _install_fake_datasets(monkeypatch, lambda *a, **k: _FakeDataset(rows))
-    _stage_stt_into(monkeypatch, stage_dir)
+    install_fake_datasets(monkeypatch, lambda *a, **k: FakeDataset(rows))
+    stage_stt_into(monkeypatch, stage_dir)
 
     with pytest.raises(ValueError, match="Invalid sample_id"):
         stt_benchmark.load_stt_benchmark_samples(max_samples=1)
 
     assert list(tmp_path.rglob("*.wav")) == []
 
-    stt_benchmark._STAGED_CACHE.clear()
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
-def _one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
+def one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
     audio_path = tmp_path / "sample.wav"
     audio_path.write_bytes(b"audio")
     return [
@@ -702,7 +706,7 @@ def _one_stt_sample(tmp_path: Path) -> list[seedtts.SampleInput]:
     ]
 
 
-def _run_stt_benchmark_main(
+def run_stt_benchmark_main(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
@@ -717,7 +721,7 @@ def _run_stt_benchmark_main(
         loaded.update(kwargs)
         return samples
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -752,8 +756,8 @@ def _run_stt_benchmark_main(
 def test_stt_benchmark_main_pins_canonical_revision_and_english(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    loaded, captured = _run_stt_benchmark_main(
-        monkeypatch, tmp_path, argv=[], samples=_one_stt_sample(tmp_path)
+    loaded, captured = run_stt_benchmark_main(
+        monkeypatch, tmp_path, argv=[], samples=one_stt_sample(tmp_path)
     )
 
     assert loaded == {
@@ -779,11 +783,11 @@ def test_stt_benchmark_main_pins_canonical_revision_and_english(
 def test_custom_stt_benchmark_repo_does_not_use_canonical_revision(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    loaded, captured = _run_stt_benchmark_main(
+    loaded, captured = run_stt_benchmark_main(
         monkeypatch,
         tmp_path,
         argv=["--repo-id", "example/custom-stt", "--max-samples", "3"],
-        samples=_one_stt_sample(tmp_path),
+        samples=one_stt_sample(tmp_path),
     )
 
     assert loaded["revision"] is None
@@ -794,7 +798,7 @@ def test_custom_stt_benchmark_repo_does_not_use_canonical_revision(
 def test_stt_benchmark_cli_records_config_and_language(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    loaded, _ = _run_stt_benchmark_main(
+    loaded, _ = run_stt_benchmark_main(
         monkeypatch,
         tmp_path,
         argv=[
@@ -805,7 +809,7 @@ def test_stt_benchmark_cli_records_config_and_language(
             "--lang",
             "zh",
         ],
-        samples=_one_stt_sample(tmp_path),
+        samples=one_stt_sample(tmp_path),
     )
 
     assert loaded["config_name"] == "mandarin"
@@ -818,12 +822,14 @@ def test_stt_benchmark_main_rejects_empty_dataset(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     with pytest.raises(RuntimeError, match="No STT benchmark samples"):
-        _run_stt_benchmark_main(monkeypatch, tmp_path, argv=[], samples=[])
+        run_stt_benchmark_main(monkeypatch, tmp_path, argv=[], samples=[])
 
 
 def test_evaluation_input_fingerprint_is_namespaced(tmp_path: Path) -> None:
-    samples = _one_stt_sample(tmp_path)
-    fingerprint = benchmark_asr_seedtts._evaluation_input_sha256
+    samples = one_stt_sample(tmp_path)
+    fingerprint = (
+        benchmark_asr_seedtts._evaluation_input_sha256
+    )  # noqa: leading-underscore  # production name
 
     assert fingerprint(samples) == fingerprint(samples, namespace="seedtts")
     assert fingerprint(samples) != fingerprint(samples, namespace="stt-benchmark")
@@ -870,14 +876,14 @@ def test_download_asr_longform_dataset_uses_split_and_pinned_revision(
         sys.modules,
         "datasets",
         types.SimpleNamespace(
-            get_dataset_config_names=lambda *_args, **_kwargs: [],
+            get_dataset_config_names=lambda *args, **_kwargs: [],
             load_dataset=fake_load_dataset,
         ),
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        types.SimpleNamespace(hf_hub_download=lambda *_args, **_kwargs: None),
+        types.SimpleNamespace(hf_hub_download=lambda *args, **_kwargs: None),
     )
 
     prepare.download_dataset(prepare.DATASETS[dataset_name], quiet=True)
@@ -889,7 +895,7 @@ def test_download_asr_longform_dataset_uses_split_and_pinned_revision(
     }
 
 
-def _longform_rows(count: int) -> list[dict]:
+def longform_rows(count: int) -> list[dict]:
     return [
         {
             "audio": {"bytes": f"encoded-{index}".encode(), "path": None},
@@ -899,7 +905,7 @@ def _longform_rows(count: int) -> list[dict]:
     ]
 
 
-def _stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> None:
+def stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> None:
     monkeypatch.setattr(
         asr_longform.tempfile, "mkdtemp", lambda prefix: str(staging_dir)
     )
@@ -909,8 +915,8 @@ def _stage_longform_into(monkeypatch: pytest.MonkeyPatch, staging_dir: Path) -> 
 def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
-    dataset = _FakeDataset(_longform_rows(5))
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    dataset = FakeDataset(longform_rows(5))
     staging_dir = tmp_path / "longform_stage"
     staging_dir.mkdir()
     decoded_sources: list[bytes | str] = []
@@ -924,7 +930,7 @@ def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
     monkeypatch.setattr(asr_longform, "load_dataset", lambda *a, **k: dataset)
     monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
     monkeypatch.setattr(asr_longform, "load_audio", fake_load_audio)
-    _stage_longform_into(monkeypatch, staging_dir)
+    stage_longform_into(monkeypatch, staging_dir)
 
     samples = asr_longform.load_asr_longform_samples("meanwhile", max_samples=2)
 
@@ -953,17 +959,17 @@ def test_load_asr_longform_samples_selects_before_decode_and_stages_pcm(
         "meanwhile-000001",
     ]
 
-    asr_longform._STAGED_CACHE.clear()
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
 
 
 def test_load_asr_longform_full_split_checks_canonical_sample_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
     monkeypatch.setattr(
         asr_longform,
         "load_dataset",
-        lambda *a, **k: _FakeDataset(_longform_rows(1)),
+        lambda *a, **k: FakeDataset(longform_rows(1)),
     )
 
     with pytest.raises(ValueError, match="Expected 64 samples"):
@@ -973,16 +979,14 @@ def test_load_asr_longform_full_split_checks_canonical_sample_count(
 def test_load_asr_longform_rejects_empty_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    asr_longform._STAGED_CACHE.clear()
-    rows = _longform_rows(1)
+    asr_longform._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+    rows = longform_rows(1)
     rows[0]["text"] = "  "
     staging_dir = tmp_path / "longform_stage"
     staging_dir.mkdir()
-    monkeypatch.setattr(
-        asr_longform, "load_dataset", lambda *a, **k: _FakeDataset(rows)
-    )
+    monkeypatch.setattr(asr_longform, "load_dataset", lambda *a, **k: FakeDataset(rows))
     monkeypatch.setattr(asr_longform, "Audio", lambda **kwargs: ("Audio", kwargs))
-    _stage_longform_into(monkeypatch, staging_dir)
+    stage_longform_into(monkeypatch, staging_dir)
 
     with pytest.raises(ValueError, match="Empty text"):
         asr_longform.load_asr_longform_samples("meanwhile", max_samples=1)
@@ -998,9 +1002,9 @@ def test_asr_longform_main_records_registered_dataset_provenance(
     def capture_load(dataset_name: str, **kwargs):
         loaded["dataset_name"] = dataset_name
         loaded.update(kwargs)
-        return _one_stt_sample(tmp_path)
+        return one_stt_sample(tmp_path)
 
-    async def empty_sweep(*_args, **_kwargs):
+    async def empty_sweep(*args, **_kwargs):
         return []
 
     def capture_provenance(**kwargs):
@@ -1024,7 +1028,7 @@ def test_asr_longform_main_records_registered_dataset_provenance(
         benchmark_asr_longform, "load_asr_longform_samples", capture_load
     )
     monkeypatch.setattr(benchmark_asr_longform, "_sweep", empty_sweep)
-    monkeypatch.setattr(benchmark_asr_longform, "_print_table", lambda *_args: None)
+    monkeypatch.setattr(benchmark_asr_longform, "_print_table", lambda *args: None)
     monkeypatch.setattr(
         benchmark_asr_longform,
         "collect_benchmark_provenance",

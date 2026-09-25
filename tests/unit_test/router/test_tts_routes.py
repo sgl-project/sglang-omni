@@ -27,11 +27,11 @@ from sglang_omni_router.python.voice_routing import (
 from sglang_omni_router.python.worker import Worker, build_workers, worker_id_from_url
 
 
-def _request_netloc(request: httpx.Request) -> str:
+def request_netloc(request: httpx.Request) -> str:
     return f"{request.url.host}:{request.url.port}"
 
 
-def _wait_for_router_ready(client: TestClient) -> None:
+def wait_for_router_ready(client: TestClient) -> None:
     for _ in range(100):
         if client.get("/ready").status_code == 200:
             return
@@ -39,7 +39,7 @@ def _wait_for_router_ready(client: TestClient) -> None:
     raise AssertionError("router did not become ready")
 
 
-def _wait_for_voice_registry_ready(client: TestClient) -> dict[str, Any]:
+def wait_for_voice_registry_ready(client: TestClient) -> dict[str, Any]:
     state: dict[str, Any] = {}
     for _ in range(100):
         state = client.get("/health").json()["voice_routing"]
@@ -49,7 +49,7 @@ def _wait_for_voice_registry_ready(client: TestClient) -> dict[str, Any]:
     raise AssertionError(f"voice registry did not become ready: {state}")
 
 
-def _router_config(
+def router_config(
     *,
     max_payload_size: int = 512 * 1024 * 1024,
     health_failure_threshold: int = 1,
@@ -73,7 +73,7 @@ def _router_config(
     )
 
 
-def _voice_routing(
+def make_voice_routing(
     config: RouterConfig,
     workers: list[Worker],
     client: httpx.AsyncClient,
@@ -101,7 +101,7 @@ async def test_worker_builtin_voice_list_does_not_populate_uploaded_registry(
             speakers=("Ryan",), task_type="CustomVoice"
         ),
     )
-    config = _router_config(voice_owner_worker_url="http://worker-a:8101")
+    config = router_config(voice_owner_worker_url="http://worker-a:8101")
     workers = build_workers(config.workers)
     workers[0].state = "healthy"
     async with httpx.AsyncClient(
@@ -109,7 +109,7 @@ async def test_worker_builtin_voice_list_does_not_populate_uploaded_registry(
     ) as client:
         listed = await client.get("/v1/audio/voices")
         assert listed.json()["voices"] == ["default", "Ryan"]
-        state = _voice_routing(config, workers, client)
+        state = make_voice_routing(config, workers, client)
         assert state.ensure_owner() is workers[0]
         assert state.requires_owner({"Ryan"})
         await state.reconcile_once()
@@ -123,13 +123,13 @@ def test_voice_owner_config_must_identify_a_capable_worker() -> None:
         ValueError,
         match="voice_owner_worker_url must identify a configured worker",
     ):
-        _router_config(voice_owner_worker_url="http://worker-c:8103")
+        router_config(voice_owner_worker_url="http://worker-c:8103")
 
     with pytest.raises(
         ValueError,
         match="must identify a worker with capabilities: audio_input, speech",
     ):
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(
                     url="http://worker-a:8101",
@@ -142,7 +142,7 @@ def test_voice_owner_config_must_identify_a_capable_worker() -> None:
 
 @pytest.mark.asyncio
 async def test_automatic_voice_owner_tracks_dynamic_worker_registration() -> None:
-    config = _router_config(
+    config = router_config(
         worker_configs=[WorkerConfig(url="http://worker-a:8101", capabilities={"chat"})]
     )
     workers = build_workers(config.workers)
@@ -183,15 +183,15 @@ async def test_automatic_voice_owner_tracks_dynamic_worker_registration() -> Non
 
 
 def test_automatic_voice_owner_skips_an_unroutable_candidate() -> None:
-    workers = build_workers(_router_config().workers)
+    workers = build_workers(router_config().workers)
     workers[0].state = "healthy"
     workers[0].set_disabled(True)
     workers[1].state = "healthy"
-    config = _router_config()
+    config = router_config()
 
     async def run() -> None:
         async with httpx.AsyncClient() as client:
-            state = _voice_routing(config, workers, client)
+            state = make_voice_routing(config, workers, client)
             assert state.ensure_owner() is workers[1]
             assert state.to_dict() == {
                 "owner_worker_id": workers[1].worker_id,
@@ -222,7 +222,7 @@ def test_voice_registry_mutation_before_hydration_preserves_owner_state() -> Non
                 request=request,
             )
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -287,7 +287,7 @@ def test_voice_registry_mutations_during_hydration_are_not_overwritten() -> None
                 request=request,
             )
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -340,7 +340,7 @@ def test_voice_registry_hydration_retries_without_request_path_io() -> None:
                 request=request,
             )
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -377,7 +377,7 @@ def test_missing_voice_registry_keeps_unknown_names_on_the_owner() -> None:
             request_count += 1
             return httpx.Response(404, request=request)
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -417,7 +417,7 @@ def test_voice_registry_response_size_is_bounded() -> None:
                 request=request,
             )
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -455,7 +455,7 @@ def test_undispatched_mutation_preserves_the_confirmed_registry() -> None:
                 request=request,
             )
 
-        workers = build_workers(_router_config().workers)
+        workers = build_workers(router_config().workers)
         workers[0].state = "healthy"
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             state = VoiceRoutingState(
@@ -499,21 +499,21 @@ def test_rejected_voice_mutation_preserves_builtin_routing() -> None:
                 request=request,
             )
         if request.url.path == "/v1/audio/speech":
-            seen_speech_workers.append(_request_netloc(request))
+            seen_speech_workers.append(request_netloc(request))
             return httpx.Response(200, content=b"audio", request=request)
         raise AssertionError(
             f"unexpected upstream request: {request.method} {request.url.path}"
         )
 
     app = create_app(
-        _router_config(voice_owner_worker_url="http://worker-b:8102"),
+        router_config(voice_owner_worker_url="http://worker-b:8102"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
     with TestClient(app) as client:
-        _wait_for_router_ready(client)
+        wait_for_router_ready(client)
         assert client.get("/v1/audio/voices").status_code == 200
-        _wait_for_voice_registry_ready(client)
+        wait_for_voice_registry_ready(client)
 
         disabled = client.put(
             f"/workers/{worker_id_from_url('http://worker-b:8102')}",
@@ -563,17 +563,17 @@ def test_voice_registry_uses_the_control_http_client() -> None:
         raise AssertionError(f"unexpected control request: {request.url.path}")
 
     app = create_app(
-        _router_config(voice_owner_worker_url="http://worker-a:8101"),
+        router_config(voice_owner_worker_url="http://worker-a:8101"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(data_handler)),
         health_client=httpx.AsyncClient(transport=httpx.MockTransport(control_handler)),
     )
     with TestClient(app) as client:
-        _wait_for_router_ready(client)
+        wait_for_router_ready(client)
         response = client.post(
             "/v1/audio/speech",
             json={"input": "hello", "voice": "Vivian"},
         )
-        _wait_for_voice_registry_ready(client)
+        wait_for_voice_registry_ready(client)
 
     assert response.status_code == 200
     assert "/v1/audio/voices" in control_requests
@@ -586,7 +586,7 @@ def test_tts_http_routes_preserve_batch_identity_and_uploaded_voice_owner() -> N
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal uploaded
-        worker = _request_netloc(request)
+        worker = request_netloc(request)
         path = request.url.path
         if path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
@@ -626,7 +626,7 @@ def test_tts_http_routes_preserve_batch_identity_and_uploaded_voice_owner() -> N
 
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     app = create_app(
-        _router_config(
+        router_config(
             voice_owner_worker_url="http://worker-b:8102",
             health_check_interval_secs=1,
         ),
@@ -634,9 +634,9 @@ def test_tts_http_routes_preserve_batch_identity_and_uploaded_voice_owner() -> N
     )
 
     with TestClient(app) as client:
-        _wait_for_router_ready(client)
+        wait_for_router_ready(client)
         assert client.get("/v1/audio/voices").status_code == 200
-        _wait_for_voice_registry_ready(client)
+        wait_for_voice_registry_ready(client)
         seen.clear()
         upload = client.post(
             "/v1/audio/voices",
@@ -658,7 +658,7 @@ def test_tts_http_routes_preserve_batch_identity_and_uploaded_voice_owner() -> N
             },
         )
         deleted = client.delete("/v1/audio/voices/Clone")
-        _wait_for_voice_registry_ready(client)
+        wait_for_voice_registry_ready(client)
         deleted_voice = client.post(
             "/v1/audio/speech",
             json={"input": "hello", "voice": "Clone"},
@@ -719,18 +719,18 @@ def test_explicit_reference_does_not_require_the_uploaded_voice_owner(
                 request=request,
             )
         if request.url.path == path:
-            seen_workers.append(_request_netloc(request))
+            seen_workers.append(request_netloc(request))
             return httpx.Response(200, json={"ok": True}, request=request)
         raise AssertionError(f"unexpected upstream request: {request.url.path}")
 
     app = create_app(
-        _router_config(voice_owner_worker_url="http://worker-b:8102"),
+        router_config(voice_owner_worker_url="http://worker-b:8102"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     with TestClient(app) as client:
-        _wait_for_router_ready(client)
+        wait_for_router_ready(client)
         assert client.get("/v1/audio/voices").status_code == 200
-        registry = _wait_for_voice_registry_ready(client)
+        registry = wait_for_voice_registry_ready(client)
         assert registry["uploaded_voice_count"] == 1
         disabled = client.put(
             f"/workers/{worker_id_from_url('http://worker-b:8102')}",
@@ -756,12 +756,12 @@ def test_batch_item_reference_keeps_uploaded_default_voice_on_owner() -> None:
                 request=request,
             )
         if request.url.path == "/v1/audio/speech/batch":
-            seen_workers.append(_request_netloc(request))
+            seen_workers.append(request_netloc(request))
             return httpx.Response(200, json={"results": []}, request=request)
         raise AssertionError(f"unexpected upstream request: {request.url.path}")
 
     app = create_app(
-        _router_config(voice_owner_worker_url="http://worker-b:8102"),
+        router_config(voice_owner_worker_url="http://worker-b:8102"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     with TestClient(app) as client:
@@ -784,12 +784,12 @@ def test_batch_item_model_override_selects_its_effective_model() -> None:
         if request.url.path == "/health":
             return httpx.Response(200, json={"status": "healthy"}, request=request)
         if request.url.path == "/v1/audio/speech/batch":
-            seen_workers.append(_request_netloc(request))
+            seen_workers.append(request_netloc(request))
             return httpx.Response(200, json={"results": []}, request=request)
         raise AssertionError(f"unexpected upstream request: {request.url.path}")
 
     app = create_app(
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(url="http://worker-a:8101", model="model-a"),
                 WorkerConfig(url="http://worker-b:8102", model="model-b"),
@@ -817,7 +817,7 @@ def test_mixed_model_batch_is_rejected_before_forwarding() -> None:
         return httpx.Response(200, json={}, request=request)
 
     app = create_app(
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(url="http://worker-a:8101", model="model-a"),
                 WorkerConfig(url="http://worker-b:8102", model="model-b"),
@@ -849,7 +849,7 @@ def test_batch_streaming_is_rejected_before_worker_selection() -> None:
         return httpx.Response(200, json={}, request=request)
 
     app = create_app(
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(
                     url="http://worker-a:8101",
@@ -882,7 +882,7 @@ def test_large_batch_item_model_requires_a_route_hint_with_a_voice_owner() -> No
         return httpx.Response(200, json={}, request=request)
 
     app = create_app(
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(url="http://worker-a:8101", model="model-a"),
                 WorkerConfig(url="http://worker-b:8102", model="model-b"),
@@ -920,7 +920,7 @@ def test_large_speech_body_without_voice_owner_requires_audio_input() -> None:
         return httpx.Response(200, json={}, request=request)
 
     app = create_app(
-        _router_config(
+        router_config(
             worker_configs=[
                 WorkerConfig(
                     url="http://worker-a:8101",
@@ -1018,13 +1018,13 @@ async def test_voice_mutations_do_not_serialize_upstream_requests() -> None:
             receive,
         )
 
-    config = _router_config()
+    config = router_config()
     workers = build_workers(config.workers)
     workers[0].state = "healthy"
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler)
     ) as async_client:
-        voice_routing = _voice_routing(config, workers, async_client)
+        voice_routing = make_voice_routing(config, workers, async_client)
         proxy = proxy_module.ProxyHandler(
             config=config,
             workers=workers,
@@ -1131,13 +1131,13 @@ async def test_voice_upload_uses_the_stored_name_from_the_success_response(
             request=upstream_request,
         )
 
-    config = _router_config()
+    config = router_config()
     workers = build_workers(config.workers)
     workers[0].state = "healthy"
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler)
     ) as async_client:
-        voice_routing = _voice_routing(config, workers, async_client)
+        voice_routing = make_voice_routing(config, workers, async_client)
         proxy = proxy_module.ProxyHandler(
             config=config,
             workers=workers,
@@ -1202,7 +1202,7 @@ async def test_uncertain_voice_upload_is_reconciled_before_balancing() -> None:
         },
         receive,
     )
-    config = _router_config(
+    config = router_config(
         health_failure_threshold=3,
         health_check_interval_secs=1,
     )
@@ -1211,7 +1211,7 @@ async def test_uncertain_voice_upload_is_reconciled_before_balancing() -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler)
     ) as async_client:
-        voice_routing = _voice_routing(config, workers, async_client)
+        voice_routing = make_voice_routing(config, workers, async_client)
         proxy = proxy_module.ProxyHandler(
             config=config,
             workers=workers,
@@ -1297,13 +1297,13 @@ async def test_voice_upload_ownership_uses_the_completed_response() -> None:
             request=upstream_request,
         )
 
-    config = _router_config(voice_owner_worker_url="http://worker-b:8102")
+    config = router_config(voice_owner_worker_url="http://worker-b:8102")
     workers = build_workers(config.workers)
     workers[1].state = "healthy"
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(handler)
     ) as async_client:
-        voice_routing = _voice_routing(config, workers, async_client)
+        voice_routing = make_voice_routing(config, workers, async_client)
         proxy = proxy_module.ProxyHandler(
             config=config,
             workers=workers,
@@ -1342,7 +1342,7 @@ async def test_voice_upload_ownership_uses_the_completed_response() -> None:
             await voice_routing.stop()
 
 
-class _FakeTTSUpstream:
+class FakeTTSUpstream:
     def __init__(self, messages: list[str | bytes]) -> None:
         self.sent: list[str | bytes] = []
         self.messages = messages
@@ -1378,7 +1378,7 @@ async def test_tts_websocket_rejects_oversized_followup_before_upstream_send() -
         async def receive(self) -> dict[str, Any]:
             return {"type": "websocket.receive", "text": "x" * 5}
 
-    class WaitingUpstream(_FakeTTSUpstream):
+    class WaitingUpstream(FakeTTSUpstream):
         async def __anext__(self):
             await asyncio.Event().wait()
 
@@ -1428,7 +1428,7 @@ def test_tts_websocket_is_pinned_and_counted_on_one_worker(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    upstream = _FakeTTSUpstream(
+    upstream = FakeTTSUpstream(
         [
             json.dumps({"type": "session.configured"}),
             b"pcm",
@@ -1441,7 +1441,9 @@ def test_tts_websocket_is_pinned_and_counted_on_one_worker(
         assert kwargs["compression"] is None
         assert kwargs["max_queue"] == 1
         assert kwargs["max_size"] == 512 * 1024 * 1024
-        forwarded_headers = kwargs[websocket_proxy_module._WEBSOCKET_HEADERS_ARGUMENT]
+        forwarded_headers = kwargs[
+            websocket_proxy_module._WEBSOCKET_HEADERS_ARGUMENT
+        ]  # noqa: leading-underscore  # production name
         assert ROUTE_HEADER_NAMES.isdisjoint(forwarded_headers)
         assert forwarded_headers["x-client-header"] == "kept"
         return upstream
@@ -1456,7 +1458,7 @@ def test_tts_websocket_is_pinned_and_counted_on_one_worker(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    app = create_app(_router_config(max_payload_size=1024), client=async_client)
+    app = create_app(router_config(max_payload_size=1024), client=async_client)
 
     with caplog.at_level(
         logging.INFO, logger="sglang_omni_router.python.websocket_proxy"
@@ -1514,7 +1516,7 @@ async def test_tts_websocket_cancellation_emits_one_terminal_log(
         async def send_json(self, payload: dict[str, Any]) -> None:
             raise asyncio.CancelledError
 
-    config = _router_config(max_payload_size=1)
+    config = router_config(max_payload_size=1)
     workers = build_workers(config.workers)
     async with httpx.AsyncClient() as client:
         proxy = websocket_proxy_module.TTSWebSocketProxy(
@@ -1522,7 +1524,7 @@ async def test_tts_websocket_cancellation_emits_one_terminal_log(
             workers=workers,
             selector=WorkerSelector(config.policy),
             admission=proxy_module.AdmissionController(config.effective_max_inflight),
-            voice_routing=_voice_routing(config, workers, client),
+            voice_routing=make_voice_routing(config, workers, client),
         )
         with caplog.at_level(
             logging.INFO,
@@ -1544,7 +1546,7 @@ def test_tts_websocket_overload_records_a_terminal_log(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     app = create_app(
-        _router_config(max_inflight=1),
+        router_config(max_inflight=1),
         client=httpx.AsyncClient(
             transport=httpx.MockTransport(
                 lambda request: httpx.Response(
@@ -1602,7 +1604,7 @@ def test_tts_websocket_relay_uses_the_installed_websockets_client() -> None:
                 raise AssertionError(f"unexpected HTTP request: {request.url.path}")
 
             app = create_app(
-                _router_config(
+                router_config(
                     worker_configs=[WorkerConfig(url=f"http://127.0.0.1:{port}")]
                 ),
                 client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
@@ -1622,7 +1624,7 @@ def test_tts_websocket_relay_uses_the_installed_websockets_client() -> None:
 def test_tts_websocket_explicit_reference_bypasses_uploaded_voice_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    upstream = _FakeTTSUpstream([json.dumps({"type": "session.done"})])
+    upstream = FakeTTSUpstream([json.dumps({"type": "session.done"})])
 
     def fake_connect(url: str, **kwargs):
         assert url == "ws://worker-a:8101/v1/audio/speech/stream"
@@ -1642,13 +1644,13 @@ def test_tts_websocket_explicit_reference_bypasses_uploaded_voice_owner(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(voice_owner_worker_url="http://worker-b:8102"),
+        router_config(voice_owner_worker_url="http://worker-b:8102"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     with TestClient(app) as client:
-        _wait_for_router_ready(client)
+        wait_for_router_ready(client)
         assert client.get("/v1/audio/voices").status_code == 200
-        registry = _wait_for_voice_registry_ready(client)
+        registry = wait_for_voice_registry_ready(client)
         assert registry["uploaded_voice_count"] == 1
         disabled = client.put(
             f"/workers/{worker_id_from_url('http://worker-b:8102')}",
@@ -1671,7 +1673,7 @@ def test_tts_websocket_explicit_reference_bypasses_uploaded_voice_owner(
 def test_tts_websocket_protocol_rejection_does_not_evict_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    upstream = _FakeTTSUpstream(
+    upstream = FakeTTSUpstream(
         [
             json.dumps(
                 {
@@ -1697,7 +1699,7 @@ def test_tts_websocket_protocol_rejection_does_not_evict_worker(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -1780,7 +1782,7 @@ def test_tts_websocket_sender_close_drains_terminal_success(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -1806,7 +1808,7 @@ def test_tts_websocket_sender_close_drains_terminal_success(
 def test_tts_websocket_failed_audio_is_not_counted_as_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    upstream = _FakeTTSUpstream(
+    upstream = FakeTTSUpstream(
         [
             json.dumps(
                 {
@@ -1833,7 +1835,7 @@ def test_tts_websocket_failed_audio_is_not_counted_as_success(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -1855,7 +1857,7 @@ def test_tts_websocket_failed_audio_is_not_counted_as_success(
 async def test_tts_websocket_client_disconnect_is_counted_as_aborted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class WaitingUpstream(_FakeTTSUpstream):
+    class WaitingUpstream(FakeTTSUpstream):
         def __init__(self) -> None:
             super().__init__([json.dumps({"type": "session.configured"})])
             self.closed = asyncio.Event()
@@ -1892,7 +1894,7 @@ async def test_tts_websocket_client_disconnect_is_counted_as_aborted(
             await self.downstream_send_started.wait()
             return {"type": "websocket.disconnect"}
 
-        async def send_text(self, _message: str) -> None:
+        async def send_text(self, message: str) -> None:
             self.downstream_send_started.set()
             raise OSError("client disconnected during send")
 
@@ -1906,11 +1908,11 @@ async def test_tts_websocket_client_disconnect_is_counted_as_aborted(
         lambda *args, **kwargs: upstream,
     )
 
-    config = _router_config(health_failure_threshold=1)
+    config = router_config(health_failure_threshold=1)
     workers = build_workers(config.workers)
     workers[0].state = "healthy"
     async_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
-    voice_routing = _voice_routing(config, workers, async_client)
+    voice_routing = make_voice_routing(config, workers, async_client)
     proxy = proxy_module.ProxyHandler(
         config=config,
         workers=workers,
@@ -1985,7 +1987,7 @@ def test_tts_websocket_handshake_status_controls_worker_health(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -2011,7 +2013,7 @@ def test_tts_websocket_handshake_status_controls_worker_health(
 async def test_tts_websocket_unexpected_relay_failure_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FailingUpstream(_FakeTTSUpstream):
+    class FailingUpstream(FakeTTSUpstream):
         async def __anext__(self):
             raise AssertionError("unexpected relay defect")
 
@@ -2022,14 +2024,14 @@ async def test_tts_websocket_unexpected_relay_failure_propagates(
         url = URL("ws://router/v1/audio/speech/stream")
 
         def __init__(self) -> None:
-            self._first_message = True
+            self.is_first_message = True
 
         async def accept(self) -> None:
             return None
 
         async def receive(self) -> dict[str, Any]:
-            if self._first_message:
-                self._first_message = False
+            if self.is_first_message:
+                self.is_first_message = False
                 return {
                     "type": "websocket.receive",
                     "text": json.dumps({"type": "session.config", "voice": "default"}),
@@ -2037,10 +2039,10 @@ async def test_tts_websocket_unexpected_relay_failure_propagates(
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        async def send_text(self, _message: str) -> None:
+        async def send_text(self, message: str) -> None:
             return None
 
-        async def send_bytes(self, _message: bytes) -> None:
+        async def send_bytes(self, message: bytes) -> None:
             return None
 
         async def close(self, *, code: int, reason: str = "") -> None:
@@ -2051,11 +2053,11 @@ async def test_tts_websocket_unexpected_relay_failure_propagates(
         "websocket_connect",
         lambda *args, **kwargs: FailingUpstream([]),
     )
-    config = _router_config(health_failure_threshold=1)
+    config = router_config(health_failure_threshold=1)
     workers = build_workers(config.workers)
     workers[0].state = "healthy"
     async with httpx.AsyncClient() as async_client:
-        voice_routing = _voice_routing(config, workers, async_client)
+        voice_routing = make_voice_routing(config, workers, async_client)
         proxy = proxy_module.ProxyHandler(
             config=config,
             workers=workers,
@@ -2090,7 +2092,7 @@ def test_tts_websocket_policy_close_does_not_evict_worker(
 
         rcvd = ReceivedClose()
 
-    class PolicyClosingUpstream(_FakeTTSUpstream):
+    class PolicyClosingUpstream(FakeTTSUpstream):
         def __init__(self) -> None:
             super().__init__([])
             self.close_code = 1008
@@ -2118,7 +2120,7 @@ def test_tts_websocket_policy_close_does_not_evict_worker(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
@@ -2142,7 +2144,7 @@ def test_tts_websocket_policy_close_during_initial_send_is_application_failure(
 
         rcvd = ReceivedClose()
 
-    class PolicyClosingUpstream(_FakeTTSUpstream):
+    class PolicyClosingUpstream(FakeTTSUpstream):
         async def send(self, message: str | bytes) -> None:
             raise PolicyConnectionClosed
 
@@ -2165,7 +2167,7 @@ def test_tts_websocket_policy_close_during_initial_send_is_application_failure(
         raise AssertionError(f"unexpected HTTP request path: {request.url.path}")
 
     app = create_app(
-        _router_config(health_failure_threshold=1),
+        router_config(health_failure_threshold=1),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 

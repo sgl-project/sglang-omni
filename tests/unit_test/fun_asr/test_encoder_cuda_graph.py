@@ -32,7 +32,7 @@ def test_bucket_t_rounds_up_to_step() -> None:
     assert bucket_t(513) is None
 
 
-class _EagerTower(nn.Module):
+class EagerTower(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.param = nn.Parameter(torch.zeros(1))
@@ -43,7 +43,7 @@ class _EagerTower(nn.Module):
         return xs
 
 
-class _EagerProjector(nn.Module):
+class EagerProjector(nn.Module):
     def __init__(self, llm_dim: int = 4) -> None:
         super().__init__()
         self.llm_dim = llm_dim
@@ -56,17 +56,17 @@ class _EagerProjector(nn.Module):
         )
 
 
-def _model_with(runner) -> FunAsrNanoForConditionalGeneration:
+def model_with(runner) -> FunAsrNanoForConditionalGeneration:
     model = object.__new__(FunAsrNanoForConditionalGeneration)
     nn.Module.__init__(model)
-    model.audio_tower = _EagerTower()
-    model.multi_modal_projector = _EagerProjector()
+    model.audio_tower = EagerTower()
+    model.multi_modal_projector = EagerProjector()
     if runner is not None:
         model.encoder_cuda_graph_runner = runner
     return model
 
 
-def _item(num_frames: int) -> SimpleNamespace:
+def item(num_frames: int) -> SimpleNamespace:
     return SimpleNamespace(
         feature=torch.randn(1, 560, num_frames),
         feature_attention_mask=torch.ones(1, num_frames, dtype=torch.long),
@@ -76,7 +76,7 @@ def _item(num_frames: int) -> SimpleNamespace:
 def test_get_audio_feature_routes_through_graph_runner() -> None:
     observed = {}
 
-    class _Runner:
+    class Runner:
         def run(self, xs, lengths):
             observed["xs_shape"] = tuple(xs.shape)
             observed["lengths"] = list(lengths)
@@ -84,8 +84,8 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
             t_out = xs.shape[1]
             return torch.ones(b, t_out, 4)
 
-    model = _model_with(_Runner())
-    out = model.get_audio_feature([_item(17), _item(9)])
+    model = model_with(Runner())
+    out = model.get_audio_feature([item(17), item(9)])
 
     assert observed["xs_shape"] == (2, 17, 560)
     assert observed["lengths"] == [17, 9]
@@ -96,12 +96,12 @@ def test_get_audio_feature_routes_through_graph_runner() -> None:
 
 
 def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
-    class _DecliningRunner:
+    class DecliningRunner:
         def run(self, xs, lengths):
             return None
 
-    model = _model_with(_DecliningRunner())
-    out = model.get_audio_feature([_item(17), _item(9)])
+    model = model_with(DecliningRunner())
+    out = model.get_audio_feature([item(17), item(9)])
 
     # eager path ran, with a mask (batched input)
     assert len(model.audio_tower.calls) == 1
@@ -113,8 +113,8 @@ def test_get_audio_feature_falls_back_to_eager_when_runner_declines() -> None:
 
 
 def test_get_audio_feature_without_runner_truncates_embeddings() -> None:
-    model = _model_with(None)
-    out = model.get_audio_feature([_item(12)])
+    model = model_with(None)
+    out = model.get_audio_feature([item(12)])
 
     # single unpadded item keeps the maskless fast path
     assert model.audio_tower.calls == [((1, 12, 560), None)]

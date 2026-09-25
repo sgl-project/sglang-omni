@@ -62,7 +62,7 @@ VIDEOAMME_TALKER_TP2_WER_DATASET_LABEL = format_benchmark_dataset_label(
 
 
 @dataclass
-class _TalkerEvalArtifacts:
+class TalkerEvalArtifacts:
     summary: dict
     speed: dict
     per_sample: list
@@ -109,7 +109,7 @@ def talker_eval_artifacts(
     omni_ci_model: OmniCiModelPreset,
     omni_ci_server: ServerHandle | ManagedRouterHandle,
     tmp_path_factory: pytest.TempPathFactory,
-) -> _TalkerEvalArtifacts:
+) -> TalkerEvalArtifacts:
     output_dir = str(tmp_path_factory.mktemp("videoamme_audio"))
     config = VideoEvalConfig(
         model=omni_ci_model.name,
@@ -138,7 +138,7 @@ def talker_eval_artifacts(
             )
     else:
         results = asyncio.run(run_videoamme_eval(config, compute_wer=False))
-    return _TalkerEvalArtifacts(
+    return TalkerEvalArtifacts(
         summary=results["summary"],
         speed=results["speed"],
         per_sample=results["per_sample"],
@@ -150,8 +150,8 @@ def talker_eval_artifacts(
 @pytest.fixture(scope="module")
 def wer_eval_artifacts(
     omni_ci_server: ServerHandle | ManagedRouterHandle,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
-) -> _TalkerEvalArtifacts:
+    talker_eval_artifacts: TalkerEvalArtifacts,
+) -> TalkerEvalArtifacts:
     """Reuse saved benchmark audio for WER after freeing the talker server GPU."""
     if isinstance(omni_ci_server, ManagedRouterHandle):
         omni_ci_server.stop()
@@ -164,7 +164,7 @@ def wer_eval_artifacts(
 @pytest.mark.benchmark
 def test_videoamme_talker_tp2_accuracy_and_speed(
     omni_ci_model: OmniCiModelPreset,
-    talker_eval_artifacts: _TalkerEvalArtifacts,
+    talker_eval_artifacts: TalkerEvalArtifacts,
 ) -> None:
     """Run Video-AMME with the selected model and Talker enabled."""
     topology = "TP=2" if omni_ci_model.name == "qwen3-omni" else "DP=2"
@@ -219,7 +219,7 @@ def test_videoamme_talker_tp2_accuracy_and_speed(
 @pytest.mark.benchmark
 def test_videoamme_talker_tp2_wer(
     omni_ci_model: OmniCiModelPreset,
-    wer_eval_artifacts: _TalkerEvalArtifacts,
+    wer_eval_artifacts: TalkerEvalArtifacts,
     qwen3_asr_wer_router: ManagedRouterHandle,
 ) -> None:
     """Transcribe saved talker audio after the inference server is stopped."""

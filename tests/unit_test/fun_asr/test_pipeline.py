@@ -176,7 +176,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     )
     encoder_services = []
 
-    class _EncoderService:
+    class EncoderService:
         def __init__(self) -> None:
             self.close_calls = 0
 
@@ -189,18 +189,18 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         lambda *args, **kwargs: "test-namespace",
     )
 
-    def _make_encoder_service(*args, **kwargs):
-        service = _EncoderService()
+    def make_encoder_service(*args, **kwargs):
+        service = EncoderService()
         encoder_services.append(service)
         return service
 
     monkeypatch.setattr(
         fun_asr_builder,
         "FunASRPreLMEncoderService",
-        _make_encoder_service,
+        make_encoder_service,
     )
 
-    def _fake_server_args_builder(model_path, context_length, **overrides):
+    def fake_server_args_builder(model_path, context_length, **overrides):
         expected_audio_tokens = 63  # ceil(500 / 8)
         assert (
             context_length
@@ -237,7 +237,7 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
     monkeypatch.setattr(
         sglang_backend,
         "build_sglang_server_args",
-        _fake_server_args_builder,
+        fake_server_args_builder,
     )
     monkeypatch.setattr(
         bootstrap,

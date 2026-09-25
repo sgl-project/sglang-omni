@@ -20,7 +20,7 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import (
 from sglang_omni.models.fun_cosyvoice3.utils import build_llm_prompt_embeddings
 
 
-def _speech_embed(ids: torch.Tensor) -> torch.Tensor:
+def speech_embed(ids: torch.Tensor) -> torch.Tensor:
     return ids.to(dtype=torch.float32).unsqueeze(-1).expand(*ids.shape, 4)
 
 
@@ -34,7 +34,7 @@ def test_cosyvoice3_prompt_embeddings_use_speech_control_tokens_and_reference_to
         text_token=torch.tensor([[1, 2]]),
         text_embed=text_embed,
         prompt_speech_token=prompt_tokens,
-        speech_embed=_speech_embed,
+        speech_embed=speech_embed,
         embedding=torch.full((1, 192), 999.0),
         sos_id=SOS_ID,
         task_id=TASK_ID,

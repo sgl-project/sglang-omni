@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from sglang_omni.mps.decision import collect_mps_facts
 
-_FACTORY = f"{__name__}.unused_factory"
+FACTORY = f"{__name__}.unused_factory"
 
 
 @dataclass
@@ -18,7 +18,7 @@ class ResolvedStageLaunch:
     gpu_id: int | None
     tp_size: int = 1
     placement_gpu_id: int | None = None
-    factory: str = _FACTORY
+    factory: str = FACTORY
     factory_kwargs: dict = field(default_factory=dict)
     typed_kwargs: dict = field(default_factory=dict)
     factory_arg_defaults: dict = field(default_factory=dict)

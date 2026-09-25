@@ -23,7 +23,7 @@ from sglang_omni.utils.cuda_staging import GrowablePinnedBuffer, PinnedTransferS
 from tests.unit_test.fixtures.accelerator import require_cuda
 
 
-class _FakeEvent:
+class FakeEvent:
     def __init__(self) -> None:
         self.recorded_streams: list = []
         self.synchronize_calls = 0
@@ -52,13 +52,13 @@ class _FakeEvent:
             raise self.sync_error
 
 
-def _install_fake_events(
-    monkeypatch, *, configure: Callable[[_FakeEvent], None] | None = None
-) -> list[_FakeEvent]:
-    created: list[_FakeEvent] = []
+def install_fake_events(
+    monkeypatch, *, configure: Callable[[FakeEvent], None] | None = None
+) -> list[FakeEvent]:
+    created: list[FakeEvent] = []
 
     def factory():
-        event = _FakeEvent()
+        event = FakeEvent()
         if configure is not None:
             configure(event)
         created.append(event)
@@ -68,7 +68,7 @@ def _install_fake_events(
     return created
 
 
-def _install_fake_pinned_alloc(
+def install_fake_pinned_alloc(
     monkeypatch, *, fail_after: int | None = None
 ) -> list[tuple[int, torch.dtype]]:
     calls: list[tuple[int, torch.dtype]] = []
@@ -111,7 +111,7 @@ def test_growable_pinned_buffer_allocates_outside_inference_mode(monkeypatch):
 def test_growable_pinned_buffer_grows_exactly_and_keeps_storage_on_failure(
     monkeypatch,
 ):
-    calls = _install_fake_pinned_alloc(monkeypatch, fail_after=2)
+    calls = install_fake_pinned_alloc(monkeypatch, fail_after=2)
     buffer = GrowablePinnedBuffer(torch.long)
     assert buffer.capacity == 0
     assert buffer.view(0).numel() == 0
@@ -139,8 +139,8 @@ def test_growable_pinned_buffer_grows_exactly_and_keeps_storage_on_failure(
 
 
 def test_pinned_transfer_slot_reuses_one_event(monkeypatch):
-    created = _install_fake_events(monkeypatch)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch)
+    install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32, initial_capacity=8)
     stream = object()
 
@@ -159,8 +159,8 @@ def test_pinned_transfer_slot_reuses_one_event(monkeypatch):
 
 
 def test_pinned_transfer_slot_query_probes_completion_without_blocking(monkeypatch):
-    created = _install_fake_events(monkeypatch)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch)
+    install_fake_pinned_alloc(monkeypatch)
 
     slot = PinnedTransferSlot("cpu", torch.float32)
     with pytest.raises(RuntimeError, match="not recorded"):
@@ -189,11 +189,11 @@ def test_pinned_transfer_slot_first_record_failure_rejects_completion_reads(
     """A slot whose only ``record()`` raised has no transfer to report on."""
     record_error = RuntimeError("event record failed")
 
-    def _fail_record(event: _FakeEvent) -> None:
+    def fail_record(event: FakeEvent) -> None:
         event.record_error = record_error
 
-    created = _install_fake_events(monkeypatch, configure=_fail_record)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch, configure=fail_record)
+    install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32)
 
     with pytest.raises(RuntimeError) as record_info:
@@ -223,8 +223,8 @@ def test_pinned_transfer_slot_event_construction_failure_rejects_completion_read
     monkeypatch,
 ):
     """A failed ``torch.cuda.Event()`` leaves no event; the retry creates it."""
-    created = _install_fake_events(monkeypatch)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch)
+    install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32)
     init_error = RuntimeError("event init failed")
     factory = torch.cuda.Event
@@ -255,8 +255,8 @@ def test_pinned_transfer_slot_failed_rerecord_hides_previous_completion(
     monkeypatch,
 ):
     """A failed re-record must not expose the previous transfer's completion."""
-    created = _install_fake_events(monkeypatch)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch)
+    install_fake_pinned_alloc(monkeypatch)
     slot = PinnedTransferSlot("cpu", torch.float32)
 
     first_stream = object()
@@ -292,8 +292,8 @@ def test_pinned_transfer_slot_failed_rerecord_hides_previous_completion(
 def test_pinned_transfer_slot_propagates_errors_and_rejects_foreign_stream(
     monkeypatch,
 ):
-    created = _install_fake_events(monkeypatch)
-    _install_fake_pinned_alloc(monkeypatch)
+    created = install_fake_events(monkeypatch)
+    install_fake_pinned_alloc(monkeypatch)
 
     slot = PinnedTransferSlot("cpu", torch.float32)
     with pytest.raises(RuntimeError, match="not recorded"):
@@ -366,7 +366,7 @@ def test_pinned_transfer_slot_real_cuda_query_tracks_async_copy() -> None:
     with torch.cuda.stream(stream):
         # Note (jiannan-17): ~0.5 s of queued device work keeps the copy in
         # flight; nothing between here and the probe touches CUDA.
-        torch.cuda._sleep(1_000_000_000)
+        torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
         slot.view(numel).copy_(source, non_blocking=True)
     slot.record(stream)
 
@@ -402,7 +402,9 @@ def test_pinned_transfer_slot_real_cuda_guards_slot_on_other_device() -> None:
         expected = source.cpu()
         torch.cuda.synchronize(slot_device)
         with torch.cuda.stream(stream):
-            torch.cuda._sleep(1_000_000_000)
+            torch.cuda._sleep(
+                1_000_000_000
+            )  # noqa: leading-underscore  # upstream name
             slot.view(numel).copy_(source, non_blocking=True)
         # Note (jiannan-17): the stream context restores cuda:0, so every slot
         # call below starts on the other device.
