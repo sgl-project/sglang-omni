@@ -419,7 +419,7 @@ class RealtimeTranscriptionSession:
 
             async def vad_on_stopped(end_sample: int) -> None:
                 segment = self.active_segment
-                
+
                 has_speech = end_sample > segment.start_sample
                 await self.send(
                     TranscriptionSpeechStopped(
