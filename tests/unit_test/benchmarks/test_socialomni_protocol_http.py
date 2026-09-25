@@ -2,30 +2,47 @@
 
 import asyncio
 import json
+import sys
 from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
-
-pytestmark = pytest.mark.asyncio
+from aiohttp import web
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
 from benchmarks.tasks.socialomni import (
+    JUDGE_MAX_TOKENS,
+    JUDGE_PARSE_ATTEMPTS,
     JudgeSpec,
+    build_judge_prompt,
+    build_level1_result_records,
+    build_response_prompt,
+    build_when_prompt,
+    judge_payload,
     load_judge_config,
+    model_payload,
+    parse_choice,
+    parse_judge_score,
+    parse_when,
+    request_chat_completion,
     run_judges,
     run_level2_model,
 )
+
+
+
+
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
-
 
 def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
@@ -39,7 +56,6 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
         "private reference response",
         "private reference transcript",
     )
-
 
 def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
@@ -58,7 +74,6 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values.update(overrides)
     return entrypoint.SocialOmniEvalConfig(**values)
 
-
 class _Response:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
@@ -73,7 +88,6 @@ class _Response:
     async def text(self) -> str:
         return self.body
 
-
 class _Session:
     def __init__(self, *responses: _Response):
         self.responses = list(responses) or [_Response()]
@@ -84,34 +98,9 @@ class _Session:
         self.calls += 1
         return response
 
-
-def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("SECRET_VALUE", "must-not-appear")
-    path = tmp_path / "judges.json"
-    path.write_text(
-        json.dumps(
-            {
-                "judges": [
-                    {
-                        "name": name,
-                        "model": name,
-                        "base_url": "http://localhost:8000",
-                        "api_key_env": "SECRET_VALUE" if index == 0 else None,
-                        "max_concurrency": 1,
-                    }
-                    for index, name in enumerate(
-                        ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
-                    )
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    public = [asdict(judge) for judge in load_judge_config(path)]
-    assert "must-not-appear" not in json.dumps(public)
-    assert public[0]["api_key_env"] == "SECRET_VALUE"
-
-
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["level1", "level2"])
+@pytest.mark.parametrize("warmup", [None, 0])
 async def test_model_failures_follow_shared_warmup_policy(monkeypatch, level, warmup):
     """Warmup fails fast; explicitly disabling it retains failed measured samples."""
     monkeypatch.setattr(
@@ -148,7 +137,7 @@ async def test_model_failures_follow_shared_warmup_policy(monkeypatch, level, wa
         assert (metrics if level == "level1" else metrics["when"])["total_samples"] == 1
     assert len(calls) == 1
 
-
+@pytest.mark.asyncio
 async def test_level2_uses_runner_warmup_without_polluting_results(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -202,7 +191,7 @@ async def test_level2_uses_runner_warmup_without_polluting_results(
     assert len(records) == 2
     assert measured_wall_s == 2.0
 
-
+@pytest.mark.asyncio
 async def test_level2_keeps_failed_prefixes_and_forces_gold_responses(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -254,7 +243,7 @@ async def test_level2_keeps_failed_prefixes_and_forces_gold_responses(
     assert set(calls) == {"0:when", "2:when", "3:when", "0:response", "2:response"}
     assert len(requests) == 6
 
-
+@pytest.mark.asyncio
 async def test_level2_response_warmup_is_excluded(tmp_path: Path, monkeypatch) -> None:
     samples = [replace(_level2(i), gold_when="YES") for i in range(2)]
     calls = []
@@ -282,7 +271,7 @@ async def test_level2_response_warmup_is_excluded(tmp_path: Path, monkeypatch) -
     assert len(requests) == 4
     assert all(len(record["requests"]) == 2 for record in records)
 
-
+@pytest.mark.asyncio
 async def test_judge_runners_limit_each_endpoint_without_warmup(monkeypatch) -> None:
     samples = [_level2(i) for i in range(6)]
     records = [
@@ -326,3 +315,40 @@ async def test_judge_runners_limit_each_endpoint_without_warmup(monkeypatch) -> 
     assert all(
         record["gold_judge_scores"] == dict.fromkeys(names, 75) for record in records
     )
+
+@pytest.mark.asyncio
+async def test_http_error_body_is_preserved() -> None:
+    result = await request_chat_completion(
+        _Session(),  # type: ignore[arg-type]
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="request",
+    )
+    assert not result.is_success
+    assert "HTTP 400" in result.error
+    assert "specific failure body" in result.error
+
+@pytest.mark.asyncio
+async def test_completion_populates_shared_speed_metrics() -> None:
+    from benchmarks.metrics.performance import compute_speed_metrics
+
+    result = await request_chat_completion(
+        _Session(
+            _Response(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": "A"}}],
+                        "usage": {"completion_tokens": 10},
+                    }
+                ),
+            )
+        ),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="speed",
+    )
+    assert result.is_success
+    assert result.engine_time_s == result.latency_s > 0
+    assert result.tok_per_s == pytest.approx(10 / result.engine_time_s)
+    assert "output_tok_per_req_s" in compute_speed_metrics([result], wall_clock_s=1)

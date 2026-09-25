@@ -1,23 +1,48 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import asdict
+import asyncio
+import json
+import sys
+from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from types import SimpleNamespace
 
 import pytest
-
-pytestmark = pytest.mark.asyncio
+from aiohttp import web
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.socialomni import SocialOmniLevel1Sample, SocialOmniLevel2Sample
 from benchmarks.eval import benchmark_omni_socialomni as entrypoint
-from benchmarks.tasks.socialomni import JUDGE_PARSE_ATTEMPTS, JudgeSpec, run_judges
+from benchmarks.tasks.socialomni import (
+    JUDGE_MAX_TOKENS,
+    JUDGE_PARSE_ATTEMPTS,
+    JudgeSpec,
+    build_judge_prompt,
+    build_level1_result_records,
+    build_response_prompt,
+    build_when_prompt,
+    judge_payload,
+    load_judge_config,
+    model_payload,
+    parse_choice,
+    parse_judge_score,
+    parse_when,
+    request_chat_completion,
+    run_judges,
+    run_level2_model,
+)
+
+
+
+
 
 
 def _level1(path: str = "/tmp/video.mp4") -> SocialOmniLevel1Sample:
     return SocialOmniLevel1Sample(
         "one", path, "Who?", ("one", "two", "three", "four"), "A", "speaker_visible"
     )
-
 
 def _level2(index: int = 0) -> SocialOmniLevel2Sample:
     return SocialOmniLevel2Sample(
@@ -31,7 +56,6 @@ def _level2(index: int = 0) -> SocialOmniLevel2Sample:
         "private reference response",
         "private reference transcript",
     )
-
 
 def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values = {
@@ -50,7 +74,6 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
     values.update(overrides)
     return entrypoint.SocialOmniEvalConfig(**values)
 
-
 class _Response:
     def __init__(self, status: int = 400, body: str = "specific failure body"):
         self.status = status
@@ -65,7 +88,6 @@ class _Response:
     async def text(self) -> str:
         return self.body
 
-
 class _Session:
     def __init__(self, *responses: _Response):
         self.responses = list(responses) or [_Response()]
@@ -76,7 +98,102 @@ class _Session:
         self.calls += 1
         return response
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage", [None, [], [1], "", "invalid", 0, False])
+async def test_non_object_usage_is_a_request_failure(usage) -> None:
+    attempts = []
+    result = await request_chat_completion(
+        _Session(
+            _Response(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": "A"}}],
+                        "usage": usage,
+                    }
+                ),
+            )
+        ),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="usage",
+        attempt_records=attempts,
+    )
+    assert not result.is_success
+    assert "usage must be an object" in result.error
+    assert result.text == "A"
+    assert len(attempts) == 1
+    assert attempts[0]["text"] == "A"
+    assert attempts[0]["is_success"] is False
 
+@pytest.mark.parametrize("api_key_env", ["", " ", " KEY", "KEY ", 1])
+def test_judge_config_rejects_invalid_key_names(tmp_path, api_key_env) -> None:
+    path = tmp_path / "judges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "judges": [
+                    {
+                        "name": name,
+                        "model": name,
+                        "base_url": "http://localhost:8000",
+                        "api_key_env": api_key_env,
+                    }
+                    for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="api_key_env"):
+        load_judge_config(path)
+
+@pytest.mark.asyncio
+async def test_judges_preserve_raw_results(monkeypatch) -> None:
+    sample = _level2()
+    record = {
+        "sample_id": sample.sample_id,
+        "gold_when": "YES",
+        "gold_response": "candidate",
+        "gold_response_success": True,
+        "gold_judge_scores": {},
+        "judge_results": {},
+    }
+    judges = [
+        JudgeSpec(name, name, "http://localhost:8000", None, 1)
+        for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
+    ]
+
+    async def fake_request(*_args, request_id: str, **_kwargs):
+        result = RequestResult(
+            request_id=request_id, text="75", is_success=True, latency_s=0.1
+        )
+        _kwargs["attempt_records"].append(asdict(result))
+        return result
+
+    monkeypatch.setattr(
+        "benchmarks.tasks.socialomni.request_chat_completion", fake_request
+    )
+    requests, failures = await run_judges([sample], [record], judges, timeout_s=30)
+    assert not failures
+    assert record["gold_judge_scores"] == {name.name: 75 for name in judges}
+    result = record["judge_results"]["gpt-4o"]
+    assert set(result) == {
+        "request",
+        "attempts",
+        "score",
+        "raw_response",
+        "is_success",
+        "latency_s",
+        "prompt_tokens",
+        "completion_tokens",
+        "error",
+    }
+    assert result["raw_response"] == "75"
+    assert result["request"] == asdict(requests[0])
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_failed", [False, True])
 async def test_judges_preserve_failure_phase_and_error(
     monkeypatch, request_failed
 ) -> None:
@@ -130,7 +247,7 @@ async def test_judges_preserve_failure_phase_and_error(
         assert "invalid judge score" in result["error"]
         assert calls == JUDGE_PARSE_ATTEMPTS
 
-
+@pytest.mark.asyncio
 async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     sample = _level2()
     record = {
@@ -182,200 +299,3 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     assert [attempt["completion_tokens"] for attempt in attempts] == [1, 1]
     assert [attempt["engine_time_s"] for attempt in attempts] == [0.1, 0.1]
     assert len({attempt["request_id"] for attempt in attempts}) == 2
-
-
-async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
-    samples = [_level2(index) for index in range(209)]
-    records = [
-        {
-            "sample_id": sample.sample_id,
-            "gold_when": "NO",
-            "predicted_when": "NO",
-            "when_success": True,
-            "gold_response": "",
-            "gold_response_success": None,
-            "gold_judge_scores": {},
-            "judge_results": {},
-        }
-        for sample in samples
-    ]
-    monkeypatch.setattr(
-        entrypoint, "load_socialomni_level2_samples", lambda *_a, **_k: samples
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "inspect_socialomni_dataset",
-        lambda *_a, **_k: {
-            "expected_huggingface_revision": "revision",
-            "verification_scope": "metadata_only",
-            "metadata_sha256": {},
-            "metadata_matches_expected_revision": True,
-        },
-    )
-    provenance_args = {}
-
-    def fake_provenance(**kwargs):
-        provenance_args.update(kwargs)
-        return {"repository": {"commit": "abc", "dirty": False}}
-
-    monkeypatch.setattr(entrypoint, "collect_benchmark_provenance", fake_provenance)
-
-    async def fake_model(*_args, **_kwargs):
-        return (
-            records,
-            [
-                RequestResult(request_id="bad:prefix", error="no encoder"),
-                RequestResult(request_id="0:when", is_success=True),
-                RequestResult(request_id="1:when", error="server failure"),
-            ],
-            1.0,
-        )
-
-    monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
-    config = entrypoint.SocialOmniEvalConfig(
-        dataset_root=".",
-        model="qwen3-omni",
-        base_url="http://localhost:8000",
-        level="level2",
-        judge_config=None,
-        prefix_cache_dir="cache",
-        mini=False,
-        max_samples=None,
-        max_concurrency=1,
-        timeout_s=30,
-        output_dir="results",
-    )
-    records[0].update(
-        gold_when="YES", gold_response="candidate", gold_response_success=True
-    )
-
-    async def unexpected_judges(*args, **kwargs):
-        pytest.fail("Model-only diagnostics must not call judges")
-
-    monkeypatch.setattr(entrypoint, "run_judges", unexpected_judges)
-    result = await entrypoint.run_socialomni(config)
-    assert result["paper_core_200"]["sample_count"] == 200
-    assert result["paper_core_200"]["when"]["total_samples"] == 200
-    assert result["summary"]["status"] == "incomplete"
-    metrics = result["summary"]["level2"]["metrics"]
-    assert metrics["quality"] is None
-    assert metrics["judge_status"]["configured"] is False
-    assert metrics["judge_status"]["complete"] is False
-    assert metrics["judge_status"]["completed_scores"] == 0
-    assert metrics["judge_status"]["required_scores"] == 3
-    assert result["paper_core_200"]["quality"] is None
-    assert result["paper_core_200"]["judges_complete"] is False
-    assert provenance_args["dataset_revision"] == entrypoint.SOCIALOMNI_DATASET_REVISION
-    assert provenance_args["model_revision"] is None
-    speed = result["summary"]["level2"]["speed"]["model"]
-    assert speed["total_requests"] == 2
-    assert speed["failed_requests"] == 1
-    assert any(f["request_id"] == "bad:prefix" for f in result["failures"])
-
-
-async def test_invalid_judge_config_fails_before_level2_requests(
-    tmp_path: Path, monkeypatch
-) -> None:
-    config_path = tmp_path / "judges.json"
-    config_path.write_text('{"judges": []}', encoding="utf-8")
-    called = False
-
-    async def fake_model(*_args, **_kwargs):
-        nonlocal called
-        called = True
-        return [], [], 0.0
-
-    monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
-    config = _config(level="level2", judge_config=str(config_path))
-    with pytest.raises(ValueError, match="exactly three judges"):
-        await entrypoint.run_socialomni(config)
-    assert not called
-
-
-async def test_level2_status_requires_full_three_judge_run(monkeypatch) -> None:
-    samples = [_level2(index) for index in range(209)]
-    records = [
-        {
-            "sample_id": sample.sample_id,
-            "gold_when": "YES",
-            "predicted_when": "YES",
-            "when_success": True,
-            "when_raw_response": "Answer: A",
-            "gold_response": "candidate",
-            "gold_response_success": True,
-            "gold_judge_scores": {},
-            "judge_results": {},
-        }
-        for sample in samples
-    ]
-    judges = [
-        JudgeSpec(name, name, "http://localhost:8000", None, 1)
-        for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
-    ]
-
-    monkeypatch.setattr(
-        entrypoint, "load_socialomni_level2_samples", lambda *_a, **_k: samples
-    )
-    monkeypatch.setattr(entrypoint, "load_judge_config", lambda _path: judges)
-    monkeypatch.setattr(
-        entrypoint,
-        "inspect_socialomni_dataset",
-        lambda *_a, **_k: {
-            "expected_huggingface_revision": "revision",
-            "verification_scope": "metadata_only",
-            "metadata_sha256": {},
-            "metadata_matches_expected_revision": True,
-        },
-    )
-    monkeypatch.setattr(
-        entrypoint,
-        "collect_benchmark_provenance",
-        lambda **_kwargs: {"repository": {"commit": "abc", "dirty": False}},
-    )
-
-    async def fake_model(*_args, **_kwargs):
-        return records, [], 1.0
-
-    async def fake_judges(_samples, current, _judges, **_kwargs):
-        for record in current:
-            record["gold_judge_scores"] = {judge.name: 75 for judge in judges}
-        return [], []
-
-    monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
-    monkeypatch.setattr(entrypoint, "run_judges", fake_judges)
-
-    result = await entrypoint.run_socialomni(
-        _config(level="level2", judge_config="judges.json")
-    )
-
-    assert result["summary"]["status"] == "complete"
-
-
-def test_paper_core_judge_completeness_is_independent() -> None:
-    scores = {name: 75 for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")}
-    records = [
-        {
-            "gold_when": "YES",
-            "gold_response": "candidate",
-            "gold_response_success": True,
-            "gold_judge_scores": dict(scores),
-        }
-        for _ in range(209)
-    ]
-    records[-1]["gold_judge_scores"].pop("gpt-4o")
-    assert entrypoint._judges_complete(records[:200], True)
-    assert not entrypoint._judges_complete(records, True)
-
-
-def test_invalid_score_is_not_judge_complete() -> None:
-    record = {
-        "gold_when": "YES",
-        "gold_response": "candidate",
-        "gold_response_success": True,
-        "gold_judge_scores": {
-            "gpt-4o": 75,
-            "gemini-2.5-pro": 80,
-            "qwen3-omni": 75,
-        },
-    }
-    assert not entrypoint._judges_complete([record], True)

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
