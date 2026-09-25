@@ -1687,5 +1687,12 @@ cpuset 测试里的 `_samples` 改成 `samples`。
   正本见上一条的 HF revision 与本仓库提交。保留 CI 镜像(40 GB)、HF 模型缓存(9.1 GB)与 pip 缓存,供在 CI 共载下补标 Base p95 时复用;
   `/data/luojiaxuan/tmp` 下还有约 0.5 MB 的空临时文件,下次持租约时删。容器已删、map 已清,租约 20:00 PT 释放,
   `radix machines mine` 为空。
-- #2293 已推 `e06c8d84` 并更新正文;这次推送带 `run-qwen3-tts` 标签,CI 会跑一次 Base 臂的延迟阶段,之后换
-  `run-qwen3-tts-custom-voice` 标签再跑一次 CustomVoice 臂。
+- #2293 已推 `e06c8d84` 并更新正文。
+
+**CI 验证(2026-09-25)**:`e06c8d84` 带 `run-qwen3-tts` 标签的那一轮(run `36088644967`,runner `omni-runner-h100-2`,lane
+`48-63,112-127`,`TTS_CI_MODEL: qwen3-tts`)延迟阶段通过:1 rps 中位数 63.4 ms(gate 72.6)、20 rps 中位数 110.6 ms(gate 130.1)、
+20 rps p95 187.6 ms(只打印)、c50 99.26%,1088/1088 完成,客户端排队 0,发送延迟最大 2.1 ms。1 rps 的 63.4 比五轮标定的最大值
+58.1 高 9%,也高于 runner 历史的 57.3 到 60.9,离 gate 还有 9.2 ms;记下,若再出现同样偏高就看是不是这条 lane 的系统性差异。
+同一轮里 Qwen3-Omni stage 6(MMSU Talker)在 lane `16-31,80-95` 上三次重试都没过速度 gate(吞吐 1.573 对 1.662、延迟 9.59 对 8.72 s 等,
+差 5% 到 10%);本 PR 不碰这条路径,当天别的 PR 上这个 stage 通过。09:57 PT 把标签换成 `run-qwen3-tts-custom-voice`,
+新一轮(run `36164091993`)跑 CustomVoice 臂,Omni 各 stage 也随之重跑。
