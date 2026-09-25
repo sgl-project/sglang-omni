@@ -83,6 +83,10 @@ import math
 import torch
 from torch import nn
 
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    AttentionState,
+)
+
 
 class MultiHeadedAttention(nn.Module):
 
@@ -156,19 +160,19 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         value: torch.Tensor,
         mask: torch.Tensor,
         pos_emb: torch.Tensor,
-        cache: list[torch.Tensor] | None = None,
-    ) -> torch.Tensor:
+        state: AttentionState | None = None,
+    ) -> tuple[torch.Tensor, AttentionState | None]:
         q, k, v = self.forward_qkv(query, key, value)
-        if cache is not None:
-            if cache:
-                previous_key, previous_value = cache[0].chunk(2, dim=-1)
+        if state is not None:
+            if state.history is not None:
+                previous_key, previous_value = state.history.chunk(2, dim=-1)
                 k = torch.cat((previous_key, k), dim=2)
                 v = torch.cat((previous_value, v), dim=2)
             else:
                 pass
-            cache[:] = [torch.cat((k, v), dim=-1)]
+            next_state = AttentionState(history=torch.cat((k, v), dim=-1))
         else:
-            pass
+            next_state = None
         q = q.transpose(1, 2)
         n_batch_pos = pos_emb.size(0)
         p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
@@ -182,7 +186,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         else:
             pass
         scores = (matrix_ac + matrix_bd) / math.sqrt(self.d_k)
-        return self.forward_attention(v, scores, mask)
+        return self.forward_attention(v, scores, mask), next_state
 
 
 class EspnetRelPositionalEncoding(torch.nn.Module):
@@ -303,14 +307,14 @@ class ConformerEncoderLayer(nn.Module):
         x: torch.Tensor,
         mask: torch.Tensor,
         pos_emb: torch.Tensor,
-        cache: list[torch.Tensor] | None = None,
-    ) -> torch.Tensor:
+        state: AttentionState | None = None,
+    ) -> tuple[torch.Tensor, AttentionState | None]:
         residual = x
         if self.normalize_before:
             x = self.norm_mha(x)
         else:
             pass
-        x_att = self.self_attn(x, x, x, mask, pos_emb, cache)
+        x_att, next_state = self.self_attn(x, x, x, mask, pos_emb, state)
         x = residual + self.dropout(x_att)
         if not self.normalize_before:
             x = self.norm_mha(x)
@@ -326,4 +330,4 @@ class ConformerEncoderLayer(nn.Module):
             x = self.norm_ff(x)
         else:
             pass
-        return x
+        return x, next_state

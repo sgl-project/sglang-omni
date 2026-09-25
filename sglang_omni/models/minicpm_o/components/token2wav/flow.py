@@ -26,6 +26,9 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer import (
     UpsampleConformerEncoderV2,
     make_pad_mask,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    ConformerState,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.dit import DiT
 
 
@@ -263,11 +266,19 @@ class CausalMaskedDiffWithXvec(torch.nn.Module):
         spk = F.normalize(spk, dim=1)
         spk = self.spk_embed_affine_layer(spk)
         token = self.input_embedding(token)
-        h, conformer_cnn_cache, conformer_att_cache = self.encoder.forward_chunk(
+        conformer_state = ConformerState.from_packed(
+            conformer_cnn_cache,
+            conformer_att_cache,
+            len(self.encoder.encoders),
+            self.encoder.up_layer.stride,
+        )
+        h, conformer_state = self.encoder.forward_chunk(
             xs=token,
             last_chunk=last_chunk,
-            cnn_cache=conformer_cnn_cache,
-            att_cache=conformer_att_cache,
+            state=conformer_state,
+        )
+        conformer_cnn_cache, conformer_att_cache = conformer_state.to_packed(
+            self.encoder.up_layer.stride
         )
         h = self.encoder_proj(h)
         cond = torch.zeros_like(h) if prompt_feat is None else prompt_feat

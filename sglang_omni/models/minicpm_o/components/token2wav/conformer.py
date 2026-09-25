@@ -47,6 +47,11 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_layers import (
     PositionwiseFeedForward,
     RelPositionMultiHeadedAttention,
 )
+from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
+    AttentionState,
+    ConformerState,
+    ConvState,
+)
 
 
 class Upsample1D(nn.Module):
@@ -73,19 +78,20 @@ class Upsample1D(nn.Module):
         self,
         inputs: torch.Tensor,
         input_lengths: torch.Tensor,
-        cache: list[torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        state: ConvState | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, ConvState | None]:
         outputs = F.interpolate(inputs, scale_factor=self.scale_factor, mode="nearest")
-        if cache:
-            outputs = torch.cat((cache[0], outputs), dim=2)
+        if state is not None and state.history is not None:
+            outputs = torch.cat((state.history, outputs), dim=2)
         else:
             outputs = F.pad(outputs, (self.stride * 2, 0), value=0.0)
-        if cache is not None:
-            cache[:] = [outputs[:, :, -self.stride * 2 :].clone()]
-        else:
-            pass
+        next_state = (
+            ConvState(history=outputs[:, :, -self.stride * 2 :].clone())
+            if state is not None
+            else None
+        )
         outputs = self.conv(outputs)
-        return (outputs, input_lengths * self.stride)
+        return outputs, input_lengths * self.stride, next_state
 
 
 class PreLookaheadLayer(nn.Module):
@@ -102,11 +108,11 @@ class PreLookaheadLayer(nn.Module):
     def forward(
         self,
         inputs: torch.Tensor,
-        cache: list[torch.Tensor] | None = None,
+        state: ConvState | None = None,
         last_chunk: bool = True,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, ConvState | None]:
         outputs = inputs.transpose(1, 2)
-        if cache is None:
+        if state is None:
             outputs = outputs.contiguous()
         else:
             pass
@@ -115,20 +121,19 @@ class PreLookaheadLayer(nn.Module):
         else:
             pass
         outputs = F.leaky_relu(self.conv1(outputs))
-        if cache:
-            outputs = torch.cat((cache[0], outputs), dim=2)
+        if state is not None and state.history is not None:
+            outputs = torch.cat((state.history, outputs), dim=2)
         else:
             outputs = F.pad(outputs, (2, 0))
-        if cache is not None:
-            cache[:] = [outputs[:, :, -2:].clone()]
-        else:
-            pass
+        next_state = (
+            ConvState(history=outputs[:, :, -2:].clone()) if state is not None else None
+        )
         outputs = self.conv2(outputs).transpose(1, 2)
-        if cache is None:
+        if state is None:
             outputs = outputs.contiguous()
         else:
             pass
-        return outputs + inputs[:, : outputs.shape[1]]
+        return outputs + inputs[:, : outputs.shape[1]], next_state
 
 
 class UpsampleConformerEncoderV2(torch.nn.Module):
@@ -225,72 +230,85 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
         self,
         xs: torch.Tensor,
         xs_lens: torch.Tensor,
-        cache: dict[str, torch.Tensor] | None = None,
         last_chunk: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        attention = cache.get("attention") if cache is not None else None
+        xs, masks, _ = self.run_stages(xs, xs_lens, None, last_chunk)
+        return xs, masks
+
+    def run_stages(
+        self,
+        xs: torch.Tensor,
+        xs_lens: torch.Tensor,
+        state: ConformerState | None,
+        last_chunk: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, ConformerState | None]:
+        attention = state.attention if state is not None else ()
         history_length = (
-            attention.shape[3] // self.up_layer.stride if attention is not None else 0
+            attention[0].history.shape[2]
+            if attention and attention[0].history is not None
+            else 0
         )
-        lookahead_cache = (
-            [cache["cnn"][:, :, :2]] if cache is not None and cache else []
-        )
-        upsample_cache = [cache["cnn"][:, :, 2:]] if cache is not None and cache else []
-        attention_caches = []
+        lookahead_state = state.lookahead if state is not None else None
+        upsample_state = state.upsample if state is not None else None
+        attention_states: list[AttentionState] = []
         for stage, (embedding, layers) in enumerate(
             ((self.embed, self.encoders), (self.up_embed, self.up_encoders))
         ):
             masks = (
                 ~make_pad_mask(xs_lens, xs.size(1)).unsqueeze(1)
-                if cache is None
+                if state is None
                 else xs.new_empty((0, 0, 0))
             )
             xs, positions, masks = embedding(xs, masks)
-            if cache is None:
+            if state is None:
                 xs = xs * masks.transpose(1, 2).to(xs)
             else:
                 pass
             if stage == 0:
-                xs = self.pre_lookahead_layer(
-                    xs, lookahead_cache if cache is not None else None, last_chunk
+                xs, lookahead_state = self.pre_lookahead_layer(
+                    xs, lookahead_state, last_chunk
                 )
-                if cache is None:
+                if state is None:
                     xs = xs * masks.transpose(1, 2).to(xs)
                 else:
                     pass
             else:
                 pass
-            if cache is not None:
+            if state is not None:
                 positions = embedding.pos_enc.position_embedding(xs, history_length)
             else:
                 pass
-            cache_offset = 0 if stage == 0 else len(self.encoders)
+            previous_states = (
+                (state.attention if stage == 0 else state.up_attention)
+                if state is not None
+                else ()
+            )
+            assert not previous_states or len(previous_states) == len(layers)
             for index, layer in enumerate(layers):
-                layer_cache = (
-                    [attention[cache_offset + index, :, :, :history_length]]
-                    if attention is not None
-                    else []
-                )
-                xs = layer(
-                    xs, masks, positions, layer_cache if cache is not None else None
-                )
-                if cache is not None:
-                    attention_caches.append(layer_cache[0])
+                if state is None:
+                    layer_state = None
+                else:
+                    layer_state = (
+                        previous_states[index] if previous_states else AttentionState()
+                    )
+                xs, next_layer_state = layer(xs, masks, positions, layer_state)
+                if next_layer_state is not None:
+                    attention_states.append(next_layer_state)
                 else:
                     pass
             if stage == 0:
                 xs = xs.transpose(1, 2)
-                if cache is None:
+                if state is None:
                     xs = xs.contiguous()
                 else:
                     pass
-                xs, xs_lens = self.up_layer(
+                xs, xs_lens, upsample_state = self.up_layer(
                     xs,
                     xs_lens,
-                    upsample_cache if cache is not None else None,
+                    upsample_state,
                 )
                 xs = xs.transpose(1, 2)
-                if cache is None:
+                if state is None:
                     xs = xs.contiguous()
                 else:
                     pass
@@ -301,30 +319,29 @@ class UpsampleConformerEncoderV2(torch.nn.Module):
             xs = self.after_norm(xs)
         else:
             pass
-        if cache is not None:
-            cache["cnn"] = torch.cat((lookahead_cache[0], upsample_cache[0]), dim=2)
-            first = torch.stack(attention_caches[: len(self.encoders)]).repeat(
-                1, 1, 1, self.up_layer.stride, 1
-            )
-            second = torch.stack(attention_caches[len(self.encoders) :])
-            cache["attention"] = torch.cat((first, second))
+        if state is None:
+            next_state = None
         else:
-            pass
-        return xs, masks
+            assert lookahead_state is not None and upsample_state is not None
+            next_state = ConformerState(
+                lookahead=lookahead_state,
+                upsample=upsample_state,
+                attention=tuple(attention_states[: len(self.encoders)]),
+                up_attention=tuple(attention_states[len(self.encoders) :]),
+            )
+        return xs, masks, next_state
 
     def forward_chunk(
         self,
         xs: torch.Tensor,
         last_chunk: bool = False,
-        cnn_cache: torch.Tensor | None = None,
-        att_cache: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        cache = (
-            {"cnn": cnn_cache, "attention": att_cache} if att_cache is not None else {}
-        )
+        state: ConformerState | None = None,
+    ) -> tuple[torch.Tensor, ConformerState]:
+        state = ConformerState() if state is None else state
         lengths = torch.full((xs.shape[0],), xs.shape[1], device=xs.device)
-        xs, _ = self.forward(xs, lengths, cache, last_chunk)
-        return xs, cache["cnn"], cache["attention"]
+        xs, _, next_state = self.run_stages(xs, lengths, state, last_chunk)
+        assert next_state is not None
+        return xs, next_state
 
 
 def make_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
