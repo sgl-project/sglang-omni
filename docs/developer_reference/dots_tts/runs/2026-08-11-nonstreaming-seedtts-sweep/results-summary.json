@@ -1,0 +1,224 @@
+{
+  "run_id": "dots-seedtts-nonstream-1444-20260811-065202-411912000",
+  "status": "COMPLETE",
+  "source": {
+    "repository": "https://github.com/sgl-project/sglang-omni",
+    "code_base_commit": "71022250811d3e9e1a96e46f76306eed37a27de6",
+    "pull_request": "https://github.com/sgl-project/sglang-omni/pull/1444"
+  },
+  "dataset": {
+    "repository": "zhaochenyang20/seed-tts-eval-arrow",
+    "revision": "27f4c1adee83b5b29b7c4b375f6b976324bda308",
+    "split": "en"
+  },
+  "model": "dots-studio/dots.tts-mf",
+  "asr_model": "Qwen/Qwen3-ASR-1.7B",
+  "hardware": "NVIDIA H200",
+  "stream": false,
+  "seed": 42,
+  "warmup_requests": 10,
+  "results": [
+    {
+      "concurrency": 1,
+      "host": "hyper00",
+      "physical_gpu_id": 7,
+      "samples": 50,
+      "completed": 50,
+      "failed": 0,
+      "wer_evaluated": 50,
+      "wer_skipped": 0,
+      "throughput_qps": 0.679,
+      "audio_throughput_s_per_s": 2.682,
+      "latency_mean_s": 1.473,
+      "rtf_mean": 0.3818,
+      "wer_corpus": 0.012411347517730497
+    },
+    {
+      "concurrency": 2,
+      "host": "hyper00",
+      "physical_gpu_id": 5,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "wer_skipped": 0,
+      "throughput_qps": 1.162,
+      "audio_throughput_s_per_s": 4.843,
+      "latency_mean_s": 1.721,
+      "rtf_mean": 0.42,
+      "wer_corpus": 0.012559658377292138
+    },
+    {
+      "concurrency": 4,
+      "host": "hyper01",
+      "physical_gpu_id": 7,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "wer_skipped": 0,
+      "throughput_qps": 1.778,
+      "audio_throughput_s_per_s": 7.415,
+      "latency_mean_s": 2.248,
+      "rtf_mean": 0.5471,
+      "wer_corpus": 0.012643389433140752
+    },
+    {
+      "concurrency": 8,
+      "host": "hyper01",
+      "physical_gpu_id": 6,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "wer_skipped": 0,
+      "throughput_qps": 3.019,
+      "audio_throughput_s_per_s": 12.587,
+      "latency_mean_s": 2.645,
+      "rtf_mean": 0.6462,
+      "wer_corpus": 0.013229506824081052
+    },
+    {
+      "concurrency": 16,
+      "host": "hyper00",
+      "physical_gpu_id": 7,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "wer_skipped": 0,
+      "throughput_qps": 3.618,
+      "audio_throughput_s_per_s": 15.096,
+      "latency_mean_s": 4.401,
+      "rtf_mean": 1.0704,
+      "wer_corpus": 0.013480699991626894
+    },
+    {
+      "concurrency": 32,
+      "host": "hyper00",
+      "physical_gpu_id": 5,
+      "samples": 1088,
+      "completed": 1088,
+      "failed": 0,
+      "wer_evaluated": 1088,
+      "wer_skipped": 0,
+      "throughput_qps": 4.271,
+      "audio_throughput_s_per_s": 17.836,
+      "latency_mean_s": 7.41,
+      "rtf_mean": 1.8638,
+      "wer_corpus": 0.013313237879929666
+    }
+  ],
+  "historical_comparison": {
+    "baseline": "User-provided PR #1393 cookbook run; 1x H100; not a same-card A/B",
+    "rows": [
+      {"concurrency": 1, "baseline_qps": 0.885, "qps_delta_pct": -23.3, "baseline_latency_s": 1.13, "latency_delta_pct": 30.4, "baseline_rtf": 0.29, "rtf_delta_pct": 31.7},
+      {"concurrency": 2, "baseline_qps": 1.508, "qps_delta_pct": -22.9, "baseline_latency_s": 1.33, "latency_delta_pct": 29.4, "baseline_rtf": 0.322, "rtf_delta_pct": 30.4},
+      {"concurrency": 4, "baseline_qps": 2.365, "qps_delta_pct": -24.8, "baseline_latency_s": 1.69, "latency_delta_pct": 33.0, "baseline_rtf": 0.409, "rtf_delta_pct": 33.8},
+      {"concurrency": 8, "baseline_qps": 3.896, "qps_delta_pct": -22.5, "baseline_latency_s": 2.05, "latency_delta_pct": 29.0, "baseline_rtf": 0.497, "rtf_delta_pct": 30.0},
+      {"concurrency": 16, "baseline_qps": 4.545, "qps_delta_pct": -20.4, "baseline_latency_s": 3.5, "latency_delta_pct": 25.7, "baseline_rtf": 0.846, "rtf_delta_pct": 26.5},
+      {"concurrency": 32, "baseline_qps": 4.626, "qps_delta_pct": -7.7, "baseline_latency_s": 6.84, "latency_delta_pct": 8.3, "baseline_rtf": 1.721, "rtf_delta_pct": 8.3}
+    ]
+  },
+  "diagnostic_reruns": [
+    {
+      "run_id": "dots-seedtts-nonstream-serial-1444-20260811-072531-820284000",
+      "execution": "one concurrency level at a time on hyper00 GPU 7",
+      "results": [
+        {
+          "concurrency": 1,
+          "samples": 50,
+          "completed": 50,
+          "failed": 0,
+          "wer_evaluated": 50,
+          "throughput_qps": 0.68,
+          "latency_mean_s": 1.472,
+          "rtf_mean": 0.3812,
+          "wer_corpus": 0.012411347517730497
+        }
+      ],
+      "excluded": [
+        {
+          "concurrency": 2,
+          "reason": "interrupted before completion when the requested priority changed"
+        }
+      ],
+      "conclusion": "The serial c=1 result is effectively identical to the first sweep (0.680 vs 0.679 req/s), so concurrent benchmark workers and host CPU pressure do not explain the c=1 gap."
+    },
+    {
+      "run_id": "dots-seedtts-nonstream-priority-1444-20260811-073411-196458000",
+      "execution": "two concurrent levels on hyper00, c=32 on GPU 7 and c=16 on GPU 5",
+      "results": [
+        {
+          "concurrency": 16,
+          "samples": 1088,
+          "completed": 1088,
+          "failed": 0,
+          "wer_evaluated": 1088,
+          "throughput_qps": 3.902,
+          "latency_mean_s": 4.08,
+          "rtf_mean": 0.9924,
+          "wer_corpus": 0.013564
+        },
+        {
+          "concurrency": 32,
+          "samples": 1088,
+          "completed": 1088,
+          "failed": 0,
+          "wer_evaluated": 1088,
+          "throughput_qps": 4.123,
+          "latency_mean_s": 7.675,
+          "rtf_mean": 1.9343,
+          "wer_corpus": 0.013313
+        }
+      ],
+      "conclusion": "Compared with the first two-worker-per-host sweep, c=16 improved 7.9% while c=32 declined 3.5%. This shows ordinary run/allocation variance but no recovery toward the historical H100 table."
+    }
+  ],
+  "attribution_evidence": [
+    {
+      "source": "PR #1393",
+      "hardware": "H100",
+      "source_relation": "docs-only PR based on 525d41e3",
+      "result": "c=16 request throughput 4.64 req/s"
+    },
+    {
+      "source": "PR #1374",
+      "hardware": "H200",
+      "source_relation": "opened from the same 525d41e3 base and merged eight minutes after #1393",
+      "result": "same-era mixed-length SeedTTS c=16 baseline 3.694 req/s and candidate 3.696 req/s"
+    },
+    {
+      "source": "PR #1389",
+      "hardware": "H200",
+      "source_relation": "same f4a8cd93 benchmark baseline as #1374",
+      "result": "c=16 improved from 3.694 to 3.853 req/s"
+    },
+    {
+      "source": "PR #1402",
+      "hardware": "H200",
+      "source_relation": "before PR #1420",
+      "result": "full-set c=16 measured 4.167 to 4.202 req/s; c=8 measured 3.586 to 3.508 req/s, with deltas classified as 1-2% noise"
+    },
+    {
+      "source": "PR #1445",
+      "hardware": "H200",
+      "source_relation": "baseline 2e607bc is after #1420 and before #1438/#1439/#1440/#1441/#1444",
+      "result": "non-streaming c=8 baseline 3.072 req/s; splitting the shared codec lock improves it to 3.192 req/s (+3.91%)"
+    }
+  ],
+  "conclusion": {
+    "quality": "Corpus WER stays between 1.241% and 1.348%; every sample was evaluated.",
+    "performance": "Against the historical H100 table, c=1 through c=16 show 20.4% to 24.8% lower request throughput; however, a same-era H200 benchmark in PR #1374 already measured c=16 at 3.694 req/s, before the low-fruit PRs existed.",
+    "attribution": "The apparent large regression is primarily an invalid cross-hardware/runtime comparison. PR #1444 changes only streaming vocoder methods, and current c=8 is within 1.7% of PR #1445's pre-low-fruit H200 baseline. PR #1420's max_concurrency=8 reference stage still serializes with the vocoder behind one shared codec lock; PR #1445 proves this is a smaller real non-streaming cost and recovers 3.91%, not the observed 20% gap.",
+    "next_action": "Do not revert #1438/#1439/#1440/#1441/#1444 based on this sweep. If another benchmark is authorized, use one H200, one image, and sequential commits before #1420, at 2e607bc, and current main; otherwise the lowest-risk code action is to continue #1445 rather than changing the streaming-only #1444 implementation."
+  },
+  "raw_artifacts": {
+    "status": "LOCAL_PERSISTENT_TRANSIENT",
+    "hyper00_host_root": "/data02/jaxan/dots_seedtts_runs/dots-seedtts-nonstream-1444-20260811-065202-411912000",
+    "hyper01_host_root": "/data02/jaxan/dots_seedtts_runs/dots-seedtts-nonstream-1444-20260811-065202-411912000",
+    "serial_rerun_host_root": "/data02/jaxan/dots_seedtts_runs/dots-seedtts-nonstream-serial-1444-20260811-072531-820284000",
+    "priority_rerun_host_root": "/data02/jaxan/dots_seedtts_runs/dots-seedtts-nonstream-priority-1444-20260811-073411-196458000",
+    "task_containers_removed_after_verification": true
+  }
+}
