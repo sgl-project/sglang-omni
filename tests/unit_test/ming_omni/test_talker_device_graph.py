@@ -22,17 +22,17 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
     events: list[object] = []
     graph = object()
 
-    class _FakeGraphBackend:
+    class FakeGraphBackend:
         @contextmanager
         def capture(self, *, thread_local_errors):
             events.append(("capture", thread_local_errors))
             yield graph
 
-    class _CFM:
-        def sample(self, _hidden, _history, noise, *_args, **_kwargs):
+    class CFM:
+        def sample(self, _hidden, _history, noise, *args, **_kwargs):
             return noise + 1
 
-    get_backend = Mock(return_value=_FakeGraphBackend())
+    get_backend = Mock(return_value=FakeGraphBackend())
     monkeypatch.setattr(
         talker_model,
         "current_platform",
@@ -40,7 +40,7 @@ def test_cfm_graph_capture_uses_platform_backend(monkeypatch) -> None:
     )
     executor = talker_model.CFMGraphExecutor(
         SimpleNamespace(steps=2, patch_size=2),
-        _CFM(),
+        CFM(),
         lambda latents: latents + 2,
         lambda hidden: torch.stack((hidden[:, 0], hidden[:, 0] + 1), dim=-1),
     )

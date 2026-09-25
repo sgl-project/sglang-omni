@@ -16,7 +16,7 @@ PATCH_SIZE = 2
 NFE = 2
 
 
-def _flow_head(tmp_path) -> DotsTTSFlowHead:
+def flow_head(tmp_path) -> DotsTTSFlowHead:
     torch.save(
         {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
         tmp_path / "latent_stats.pt",
@@ -57,7 +57,7 @@ def _flow_head(tmp_path) -> DotsTTSFlowHead:
 
 def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
     torch.manual_seed(1234)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     state, prompt_embeddings = flow.new_request(
         max_audio_patch_count=8,
         prompt_latents=None,
@@ -68,7 +68,7 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
     assert prompt_embeddings is None
     flow.append_hidden(state, torch.randn(1, 1, LLM_HIDDEN))
 
-    def _decode(*, append_hidden: bool):
+    def decode(*, append_hidden: bool):
         # The model runner passes rank-2 [batch, hidden] rows for decode.
         return flow.decode_batch(
             [state],
@@ -80,8 +80,8 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
             append_hidden=append_hidden,
         )
 
-    [first] = _decode(append_hidden=False)
-    [second] = _decode(append_hidden=True)
+    [first] = decode(append_hidden=False)
+    [second] = decode(append_hidden=True)
 
     for step in (first, second):
         assert step.latent_patch.shape == (1, PATCH_SIZE, LATENT_DIM)
@@ -92,7 +92,7 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
 
 
 def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     state, _ = flow.new_request(
         max_audio_patch_count=2,
         prompt_latents=None,
@@ -117,7 +117,7 @@ def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
 
 def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
     torch.manual_seed(1618)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     prefill_hidden = torch.randn(1, 1, LLM_HIDDEN)
     next_hidden = torch.randn(1, LLM_HIDDEN)
     schedule = torch.tensor([[0, 1]])
@@ -217,7 +217,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
     tmp_path, dtype: torch.dtype
 ) -> None:
     torch.manual_seed(1618)
-    flow = _flow_head(tmp_path).to(dtype=dtype)
+    flow = flow_head(tmp_path).to(dtype=dtype)
     flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
     prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM, dtype=dtype)
     prefill_hidden = torch.randn(1, 3, LLM_HIDDEN, dtype=dtype)
@@ -440,7 +440,7 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
 
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     torch.manual_seed(7)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
     prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
     states = []
@@ -490,7 +490,7 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
 
 def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
     torch.manual_seed(8)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
     state, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -547,7 +547,7 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
 
 def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
     torch.manual_seed(9)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
     state, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -596,7 +596,7 @@ def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
 
 def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
     torch.manual_seed(1618)
-    flow = _flow_head(tmp_path)
+    flow = flow_head(tmp_path)
     flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
     prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
     prefill_hidden = torch.randn(1, 3, LLM_HIDDEN)

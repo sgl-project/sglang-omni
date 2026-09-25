@@ -9,23 +9,25 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMo
 
 from sglang_omni.models.qwen3_asr import mrope_fast_path
 
-_RUNNER = SimpleNamespace(device="cpu")
-_FAST = mrope_fast_path.fast_compute_mrope_positions
-_ORIG = ForwardBatch._compute_mrope_positions
+RUNNER = SimpleNamespace(device="cpu")
+FAST = mrope_fast_path.fast_compute_mrope_positions
+ORIG = (
+    ForwardBatch._compute_mrope_positions
+)  # noqa: leading-underscore  # production name
 
 
 @pytest.fixture(autouse=True)
-def _upstream(monkeypatch):
+def upstream(monkeypatch):
     monkeypatch.setattr(
         "sglang.srt.model_executor.forward_batch_info.get_exec",
         lambda: SimpleNamespace(
             deterministic=SimpleNamespace(rl_on_policy_target=None)
         ),
     )
-    monkeypatch.setattr(mrope_fast_path, "_orig_compute_mrope_positions", _ORIG)
+    monkeypatch.setattr(mrope_fast_path, "_orig_compute_mrope_positions", ORIG)
 
 
-def _mm_input(prompt_len: int, *, delta: int = 0, degenerate: bool = True):
+def mm_input(prompt_len: int, *, delta: int = 0, degenerate: bool = True):
     """Mirror what request_builders constructs for a Qwen3-ASR request."""
     positions = torch.arange(prompt_len, dtype=torch.long)
     mm = SimpleNamespace(
@@ -38,13 +40,13 @@ def _mm_input(prompt_len: int, *, delta: int = 0, degenerate: bool = True):
     return mm
 
 
-def _run(fn, mode, seq_lens, mm_inputs, **batch_fields):
+def run(fn, mode, seq_lens, mm_inputs, **batch_fields):
     fb = object.__new__(ForwardBatch)
     fb.forward_mode = mode
     fb.seq_lens_cpu = torch.tensor(seq_lens, dtype=torch.int64)
     fb.seq_lens = torch.tensor(seq_lens, dtype=torch.int64)
     fb.mrope_positions = None
-    fn(fb, _RUNNER, SimpleNamespace(multimodal_inputs=mm_inputs, **batch_fields))
+    fn(fb, RUNNER, SimpleNamespace(multimodal_inputs=mm_inputs, **batch_fields))
     return fb.mrope_positions
 
 
@@ -58,11 +60,11 @@ def _run(fn, mode, seq_lens, mm_inputs, **batch_fields):
     ],
 )
 def test_decode_matches_upstream(seq_lens, prompt_lens):
-    mm = [None if p is None else _mm_input(p) for p in prompt_lens]
+    mm = [None if p is None else mm_input(p) for p in prompt_lens]
 
-    fast = _run(_FAST, ForwardMode.DECODE, seq_lens, mm)
+    fast = run(FAST, ForwardMode.DECODE, seq_lens, mm)
 
-    assert torch.equal(fast, _run(_ORIG, ForwardMode.DECODE, seq_lens, mm))
+    assert torch.equal(fast, run(ORIG, ForwardMode.DECODE, seq_lens, mm))
     expected = (
         (torch.tensor(seq_lens, dtype=torch.int64) - 1).unsqueeze(0).expand(3, -1)
     )
@@ -70,23 +72,23 @@ def test_decode_matches_upstream(seq_lens, prompt_lens):
 
 
 def test_non_degenerate_falls_back():
-    mm = [_mm_input(40, delta=7, degenerate=False)]
+    mm = [mm_input(40, delta=7, degenerate=False)]
 
-    fast = _run(_FAST, ForwardMode.DECODE, [50], mm)
+    fast = run(FAST, ForwardMode.DECODE, [50], mm)
 
-    assert torch.equal(fast, _run(_ORIG, ForwardMode.DECODE, [50], mm))
+    assert torch.equal(fast, run(ORIG, ForwardMode.DECODE, [50], mm))
     # delta is honoured, so the seq_len - 1 shortcut was not taken
     assert fast[0, 0].item() == 50 + 7 - 1
 
 
 def test_extend_falls_back():
-    mm = [_mm_input(20)]
+    mm = [mm_input(20)]
     fields = {
         "extend_lens": [4],
         "prefix_lens": [16],
         "reqs": [SimpleNamespace(session=None)],
     }
 
-    fast = _run(_FAST, ForwardMode.EXTEND, [20], mm, **fields)
+    fast = run(FAST, ForwardMode.EXTEND, [20], mm, **fields)
 
-    assert torch.equal(fast, _run(_ORIG, ForwardMode.EXTEND, [20], mm, **fields))
+    assert torch.equal(fast, run(ORIG, ForwardMode.EXTEND, [20], mm, **fields))

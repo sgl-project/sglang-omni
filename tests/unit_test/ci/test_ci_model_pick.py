@@ -38,7 +38,7 @@ ASR_LABELS = {
 }
 
 
-def _pick_scripts() -> tuple[str, str, str]:
+def pick_scripts() -> tuple[str, str, str]:
     jobs = yaml.load(OMNI_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)[
         "jobs"
     ]
@@ -54,7 +54,7 @@ def _pick_scripts() -> tuple[str, str, str]:
     )
 
 
-def _run_one(
+def run_one(
     script: str, tmp_path: Path, labels: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
     github_output = tmp_path / "github_output"
@@ -96,47 +96,45 @@ def _run_one(
     )
 
 
-def _run_both(
+def run_both(
     tmp_path: Path, labels: dict[str, str]
 ) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
-    asr_script, tts_script, _ = _pick_scripts()
+    asr_script, tts_script, _ = pick_scripts()
     asr_home = tmp_path / "asr"
     tts_home = tmp_path / "tts"
     asr_home.mkdir()
     tts_home.mkdir()
-    return _run_one(asr_script, asr_home, labels), _run_one(
-        tts_script, tts_home, labels
-    )
+    return run_one(asr_script, asr_home, labels), run_one(tts_script, tts_home, labels)
 
 
-def _assert_asr_random(result: subprocess.CompletedProcess[str]) -> None:
+def assert_asr_random(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Random seed for ASR CI model:" in result.stdout
     assert "Selected ASR CI model:" in result.stdout
 
 
-def _assert_tts_random(result: subprocess.CompletedProcess[str]) -> None:
+def assert_tts_random(result: subprocess.CompletedProcess[str]) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert "Selection digest for TTS CI model:" in result.stdout
     assert "Selected TTS CI model:" in result.stdout
 
 
-def _assert_asr_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
+def assert_asr_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"Selected ASR CI model: {model}" in result.stdout
     assert "Random seed for ASR CI model:" not in result.stdout
 
 
-def _assert_tts_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
+def assert_tts_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"Selected TTS CI model: {model}" in result.stdout
     assert "Selection digest for TTS CI model:" not in result.stdout
 
 
 def test_both_picks_are_random_without_labels(tmp_path: Path) -> None:
-    asr, tts = _run_both(tmp_path, {})
-    _assert_asr_random(asr)
-    _assert_tts_random(tts)
+    asr, tts = run_both(tmp_path, {})
+    assert_asr_random(asr)
+    assert_tts_random(tts)
 
 
 @pytest.mark.parametrize("asr_model,asr_label", list(ASR_LABELS.items()))
@@ -148,27 +146,27 @@ def test_both_picks_honor_labels(
     tts_model: str,
     tts_label: str,
 ) -> None:
-    asr, tts = _run_both(tmp_path, {asr_label: "true", tts_label: "true"})
-    _assert_asr_specified(asr, asr_model)
-    _assert_tts_specified(tts, tts_model)
+    asr, tts = run_both(tmp_path, {asr_label: "true", tts_label: "true"})
+    assert_asr_specified(asr, asr_model)
+    assert_tts_specified(tts, tts_model)
 
 
 @pytest.mark.parametrize("tts_model,tts_label", list(TTS_LABELS.items()))
 def test_specified_tts_leaves_asr_random(
     tmp_path: Path, tts_model: str, tts_label: str
 ) -> None:
-    asr, tts = _run_both(tmp_path, {tts_label: "true"})
-    _assert_asr_random(asr)
-    _assert_tts_specified(tts, tts_model)
+    asr, tts = run_both(tmp_path, {tts_label: "true"})
+    assert_asr_random(asr)
+    assert_tts_specified(tts, tts_model)
 
 
 @pytest.mark.parametrize("asr_model,asr_label", list(ASR_LABELS.items()))
 def test_specified_asr_leaves_tts_random(
     tmp_path: Path, asr_model: str, asr_label: str
 ) -> None:
-    asr, tts = _run_both(tmp_path, {asr_label: "true"})
-    _assert_asr_specified(asr, asr_model)
-    _assert_tts_random(tts)
+    asr, tts = run_both(tmp_path, {asr_label: "true"})
+    assert_asr_specified(asr, asr_model)
+    assert_tts_random(tts)
 
 
 @pytest.mark.parametrize(
@@ -188,7 +186,7 @@ def test_specified_asr_leaves_tts_random(
 def test_omni_pick_honors_default_labels_and_override(
     tmp_path: Path, labels: dict[str, str], expected: str
 ) -> None:
-    result = _run_one(_pick_scripts()[2], tmp_path, labels)
+    result = run_one(pick_scripts()[2], tmp_path, labels)
     assert result.returncode == 0, result.stderr + result.stdout
     assert (tmp_path / "github_output").read_text() == f"omni_ci_model={expected}\n"
 
@@ -208,15 +206,15 @@ def test_omni_pick_honors_default_labels_and_override(
 def test_omni_pick_rejects_invalid_or_conflicting_selection(
     tmp_path: Path, labels: dict[str, str]
 ) -> None:
-    result = _run_one(_pick_scripts()[2], tmp_path, labels)
+    result = run_one(pick_scripts()[2], tmp_path, labels)
     assert result.returncode != 0
     assert (tmp_path / "github_output").read_text() == ""
 
 
 def test_omni_label_does_not_change_asr_or_tts_selection(tmp_path: Path) -> None:
-    asr, tts = _run_both(tmp_path, {"RUN_MINICPMO_LABEL": "true"})
-    _assert_asr_random(asr)
-    _assert_tts_random(tts)
+    asr, tts = run_both(tmp_path, {"RUN_MINICPMO_LABEL": "true"})
+    assert_asr_random(asr)
+    assert_tts_random(tts)
 
 
 def test_workflow_passes_selected_model_and_keeps_pcm_qwen_only() -> None:

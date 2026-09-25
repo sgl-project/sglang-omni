@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-_THINKER = (
+THINKER = (
     Path(__file__).resolve().parents[3]
     / "sglang_omni"
     / "models"
@@ -13,21 +13,19 @@ _THINKER = (
 )
 
 
-def _source() -> str:
-    return _THINKER.read_text(encoding="utf-8")
+def source() -> str:
+    return THINKER.read_text(encoding="utf-8")
 
 
-def _section(src: str, start: str, end: str) -> str:
+def section(src: str, start: str, end: str) -> str:
     start_idx = src.index(start)
     return src[start_idx : src.index(end, start_idx)]
 
 
 def test_ming_attention_and_layer_boundary_tp_pattern():
-    src = _source()
-    attention_src = _section(
-        src, "class BailingMoeV2Attention", "class BailingMoeV2MLP"
-    )
-    decoder_src = _section(
+    src = source()
+    attention_src = section(src, "class BailingMoeV2Attention", "class BailingMoeV2MLP")
+    decoder_src = section(
         src,
         "class BailingMoeV2DecoderLayer",
         "class BailingMoeV2TextModel",
@@ -55,9 +53,9 @@ def test_ming_attention_and_layer_boundary_tp_pattern():
 
 
 def test_ming_mlp_and_weight_loader_tp_pattern():
-    src = _source()
-    mlp_src = _section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
-    load_src = _section(src, "    def load_weights", "# ForCausalLM Wrapper")
+    src = source()
+    mlp_src = section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
+    load_src = section(src, "    def load_weights", "# ForCausalLM Wrapper")
 
     assert "MergedColumnParallelLinear" in mlp_src
     assert "RowParallelLinear" in mlp_src
@@ -82,8 +80,8 @@ def test_ming_mlp_and_weight_loader_tp_pattern():
 
 
 def test_ming_moe_unified_reduction_pattern():
-    src = _source()
-    moe_src = _section(
+    src = source()
+    moe_src = section(
         src,
         "class BailingMoeV2SparseMoeBlock",
         "class BailingMoeV2DecoderLayer",
@@ -103,9 +101,9 @@ def test_ming_moe_unified_reduction_pattern():
 
 
 def test_ming_dense_fully_dp_pattern():
-    src = _source()
-    mlp_src = _section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
-    decoder_src = _section(
+    src = source()
+    mlp_src = section(src, "class BailingMoeV2MLP", "class BailingMoeV2SparseMoeBlock")
+    decoder_src = section(
         src,
         "class BailingMoeV2DecoderLayer",
         "class BailingMoeV2TextModel",

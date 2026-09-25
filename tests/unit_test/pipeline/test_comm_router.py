@@ -10,7 +10,7 @@ from sglang_omni.comm.router import CommRouter
 
 
 @pytest.fixture(autouse=True)
-def _force_cuda_transport_policy(monkeypatch):
+def force_cuda_transport_policy(monkeypatch):
     """Transport selection is platform policy, so these tests pin CUDA to assert the
     cuda_ipc contract on any host. XPU has its own cases below.
     """
@@ -90,10 +90,10 @@ def test_comm_router_uses_shm_for_cuda_payloads_to_cpu_targets() -> None:
     assert router.outbound_payload("decode", payload) is TransportKind.SHM
 
 
-_ACCEL = "xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "meta"
+ACCEL = "xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "meta"
 
 
-def _pin_non_cuda_platform(monkeypatch) -> None:
+def pin_non_cuda_platform(monkeypatch) -> None:
     """Pin every platform attribute the router reads, so these cases hold on a CUDA
     host too. Patching device_type alone left is_cuda_alike() reporting the host.
     """
@@ -103,16 +103,14 @@ def _pin_non_cuda_platform(monkeypatch) -> None:
         lambda: TransportKind.SHM,
         raising=False,
     )
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", _ACCEL, raising=False
-    )
+    monkeypatch.setattr(platforms.current_platform, "device_type", ACCEL, raising=False)
     monkeypatch.setattr(
         platforms.current_platform, "is_cuda_alike", lambda: False, raising=False
     )
 
 
-def _xpu_router(monkeypatch, **kwargs) -> CommRouter:
-    _pin_non_cuda_platform(monkeypatch)
+def xpu_router(monkeypatch, **kwargs) -> CommRouter:
+    pin_non_cuda_platform(monkeypatch)
     return CommRouter(
         stage_name="thinker",
         gpu_id=0,
@@ -129,7 +127,7 @@ def test_comm_router_never_selects_cuda_ipc_without_platform_support(
     """One policy: every decision point must agree. Previously outbound/inbound and
     the direct-IPC namespace still chose cuda_ipc on a platform without it.
     """
-    router = _xpu_router(monkeypatch, stage_gpu_ids={"decode": (0,)})
+    router = xpu_router(monkeypatch, stage_gpu_ids={"decode": (0,)})
 
     assert router.outbound("decode") is TransportKind.SHM
     assert router.physical_outbound("decode") is TransportKind.SHM
@@ -140,19 +138,19 @@ def test_comm_router_never_selects_cuda_ipc_without_platform_support(
 def test_comm_router_uses_shm_for_accelerator_payloads_and_streams(
     monkeypatch,
 ) -> None:
-    router = _xpu_router(monkeypatch)
-    payload = {"hidden": torch.empty(1, device=_ACCEL), "lengths": torch.empty(1)}
+    router = xpu_router(monkeypatch)
+    payload = {"hidden": torch.empty(1, device=ACCEL), "lengths": torch.empty(1)}
 
     assert router.outbound_payload("decode", payload) is TransportKind.SHM
     assert (
-        router.outbound_stream("decode", torch.empty(1, device=_ACCEL))
+        router.outbound_stream("decode", torch.empty(1, device=ACCEL))
         is TransportKind.SHM
     )
 
 
 def test_comm_router_still_routes_remote_edges_over_mooncake(monkeypatch) -> None:
     """Losing cuda_ipc must not swallow the cross-node decision."""
-    router = _xpu_router(monkeypatch, remote_stage_names={"remote_decode"})
+    router = xpu_router(monkeypatch, remote_stage_names={"remote_decode"})
 
     assert router.outbound("remote_decode") is TransportKind.MOONCAKE
     assert router.inbound("remote_decode") is TransportKind.MOONCAKE
@@ -163,7 +161,7 @@ def test_a_mooncake_relay_is_refused_on_a_non_cuda_accelerator(monkeypatch) -> N
     on a literal cuda device, so an accelerator edge must fail loudly here instead of
     allocating on CUDA at the first transfer.
     """
-    router = _xpu_router(monkeypatch, remote_stage_names={"remote_decode"})
+    router = xpu_router(monkeypatch, remote_stage_names={"remote_decode"})
 
     with pytest.raises(NotImplementedError, match="not supported yet"):
         router.relay(TransportKind.MOONCAKE)
@@ -171,7 +169,7 @@ def test_a_mooncake_relay_is_refused_on_a_non_cuda_accelerator(monkeypatch) -> N
 
 def test_a_host_only_stage_still_gets_a_mooncake_relay(monkeypatch) -> None:
     """A stage with no card uses the cpu path, which is unaffected."""
-    _pin_non_cuda_platform(monkeypatch)
+    pin_non_cuda_platform(monkeypatch)
     router = CommRouter(
         stage_name="preprocessing",
         gpu_id=None,
@@ -237,7 +235,7 @@ def test_comm_router_uses_cuda_ipc_for_cuda_stream_chunks_only() -> None:
     )
 
 
-def _cross_gpu_router() -> CommRouter:
+def cross_gpu_router() -> CommRouter:
     return CommRouter(
         stage_name="minimax_ttm_ar",
         gpu_id=0,
@@ -256,12 +254,12 @@ def test_comm_router_caches_cuda_peer_capability(
 
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
 
-    def _can_access(target: int, source: int) -> bool:
+    def can_access(target: int, source: int) -> bool:
         calls.append((target, source))
         return True
 
-    monkeypatch.setattr(torch.cuda, "can_device_access_peer", _can_access)
-    router = _cross_gpu_router()
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", can_access)
+    router = cross_gpu_router()
 
     assert router.outbound("dit_dav") is TransportKind.CUDA_IPC
     assert router.outbound("dit_dav") is TransportKind.CUDA_IPC
@@ -275,13 +273,13 @@ def test_comm_router_falls_back_to_shm_when_cuda_peer_access_is_unavailable(
 
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
 
-    def _cannot_access(_target: int, _source: int) -> bool:
+    def cannot_access(_target: int, source: int) -> bool:
         nonlocal calls
         calls += 1
         return False
 
-    monkeypatch.setattr(torch.cuda, "can_device_access_peer", _cannot_access)
-    router = _cross_gpu_router()
+    monkeypatch.setattr(torch.cuda, "can_device_access_peer", cannot_access)
+    router = cross_gpu_router()
 
     assert router.outbound("dit_dav") is TransportKind.SHM
     assert router.outbound("dit_dav") is TransportKind.SHM
@@ -292,7 +290,7 @@ def test_a_non_cuda_platform_never_runs_the_cuda_peer_probe(monkeypatch) -> None
     """The probe reads torch.cuda.device_count() and warns about a CUDA fallback, so
     a cross-device XPU edge must decide on platform policy before it is reached.
     """
-    _pin_non_cuda_platform(monkeypatch)
+    pin_non_cuda_platform(monkeypatch)
     router = CommRouter(
         stage_name="talker",
         gpu_id=0,
@@ -301,10 +299,10 @@ def test_a_non_cuda_platform_never_runs_the_cuda_peer_probe(monkeypatch) -> None
         stage_gpu_ids={"vocoder": (1,)},
     )
 
-    def _fail(target):
+    def fail(target):
         raise AssertionError(f"peer probe ran for {target!r} off CUDA")
 
-    monkeypatch.setattr(router, "cuda_ipc_peer_available", _fail)
+    monkeypatch.setattr(router, "cuda_ipc_peer_available", fail)
 
     assert router.outbound("vocoder") is TransportKind.SHM
     assert router.inbound("vocoder") is TransportKind.SHM

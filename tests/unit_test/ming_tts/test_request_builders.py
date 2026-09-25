@@ -21,7 +21,7 @@ from sglang_omni.models.ming_tts.tokenizer import (
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
-class _FakeTokenizer:
+class FakeTokenizer:
     def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
         del add_special_tokens
         if text in ("<role>HUMAN</role>", "<role>ASSISTANT</role>"):
@@ -42,9 +42,9 @@ class _FakeTokenizer:
         return 128
 
 
-def _tokenizer() -> MingTTSTokenizerBundle:
+def make_tokenizer() -> MingTTSTokenizerBundle:
     return MingTTSTokenizerBundle(
-        tokenizer=_FakeTokenizer(),
+        tokenizer=FakeTokenizer(),
         special=MingTTSSpecialTokenIds(
             bos=8,
             eos=9,
@@ -60,7 +60,7 @@ def _tokenizer() -> MingTTSTokenizerBundle:
     )
 
 
-def _payload(*, params: dict | None = None, tts_params: dict | None = None):
+def payload(*, params: dict | None = None, tts_params: dict | None = None):
     return StagePayload(
         request_id="req-ming-tts",
         request=OmniRequest(
@@ -73,7 +73,7 @@ def _payload(*, params: dict | None = None, tts_params: dict | None = None):
 
 
 def test_ming_tts_prompt_embedding_positions_match_special_tokens() -> None:
-    tokenizer = _tokenizer()
+    tokenizer = make_tokenizer()
     prompt_latent_token_count = 3
     plan = build_ming_tts_prompt(
         MingTTSState(text="target text", prompt="prompt"),
@@ -110,8 +110,8 @@ def test_ming_tts_rejects_seed_until_fl_rng_contract_exists(
 ) -> None:
     with pytest.raises(ValueError, match="seed is currently unsupported"):
         preprocess_ming_tts_payload(
-            _payload(params=params, tts_params=tts_params),
-            tokenizer=_tokenizer(),
+            payload(params=params, tts_params=tts_params),
+            tokenizer=make_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )
 
@@ -133,8 +133,8 @@ def test_ming_tts_rejects_initial_codec_chunk_frames(
         match="initial_chunk_patches.*steady_chunk_patches",
     ):
         preprocess_ming_tts_payload(
-            _payload(params=params, tts_params=tts_params),
-            tokenizer=_tokenizer(),
+            payload(params=params, tts_params=tts_params),
+            tokenizer=make_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )
 
@@ -144,13 +144,13 @@ def test_ming_tts_rejects_initial_codec_chunk_frames(
 def test_ming_tts_rejects_non_finite_sampling_params(name: str, value: float) -> None:
     with pytest.raises(ValueError, match=f"{name} must be a finite number"):
         preprocess_ming_tts_payload(
-            _payload(tts_params={name: value}),
-            tokenizer=_tokenizer(),
+            payload(tts_params={name: value}),
+            tokenizer=make_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )
 
 
-def _reference_payload(reference: dict) -> StagePayload:
+def reference_payload(reference: dict) -> StagePayload:
     return StagePayload(
         request_id="req-ming-tts",
         request=OmniRequest(
@@ -165,8 +165,8 @@ def _reference_payload(reference: dict) -> StagePayload:
 def test_ming_tts_rejects_inline_reference_audio() -> None:
     with pytest.raises(ValueError, match="local file path"):
         preprocess_ming_tts_payload(
-            _reference_payload({"data": "AAAA", "media_type": "audio/wav"}),
-            tokenizer=_tokenizer(),
+            reference_payload({"data": "AAAA", "media_type": "audio/wav"}),
+            tokenizer=make_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )
 
@@ -174,7 +174,7 @@ def test_ming_tts_rejects_inline_reference_audio() -> None:
 def test_ming_tts_rejects_reference_without_audio_path() -> None:
     with pytest.raises(ValueError, match="local reference audio path"):
         preprocess_ming_tts_payload(
-            _reference_payload({"speaker": "a"}),
-            tokenizer=_tokenizer(),
+            reference_payload({"speaker": "a"}),
+            tokenizer=make_tokenizer(),
             context_length=MING_TTS_DEFAULT_MAX_DECODE_STEPS + 64,
         )

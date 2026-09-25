@@ -33,16 +33,16 @@ def noop_factory():  # pragma: no cover - never constructed here
     raise AssertionError("factory must not run")
 
 
-class _SharingPipelineConfig(PipelineConfig):
+class SharingPipelineConfig(PipelineConfig):
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "engine": EngineStageConfig,
     }
 
 
-def _config(tmp_path, *, weight_share: str = "on") -> PipelineConfig:
+def make_config(tmp_path, *, weight_share: str = "on") -> PipelineConfig:
     engine = EngineArgs()
     engine.max_total_tokens = 30000
-    return _SharingPipelineConfig(
+    return SharingPipelineConfig(
         model_path="model",
         entry_stage="engine",
         stages=[
@@ -62,7 +62,7 @@ def _config(tmp_path, *, weight_share: str = "on") -> PipelineConfig:
     )
 
 
-class _FakeCoordinator:
+class FakeCoordinator:
     def __init__(self, events: list[str], *args, **kwargs) -> None:
         del args, kwargs
         self.events = events
@@ -89,24 +89,24 @@ class _FakeCoordinator:
         self.events.append("coordinator stop")
 
 
-class _FakeProcess:
+class FakeProcess:
     def __init__(self) -> None:
-        self._alive = False
+        self.alive = False
 
     def is_alive(self) -> bool:
-        return self._alive
+        return self.alive
 
     def terminate(self) -> None:
-        self._alive = False
+        self.alive = False
 
     def kill(self) -> None:
-        self._alive = False
+        self.alive = False
 
     def join(self, timeout=None) -> None:
         del timeout
 
 
-class _FakeGroup:
+class FakeGroup:
     process_count = 1
 
     def __init__(
@@ -120,7 +120,7 @@ class _FakeGroup:
         self.events = events
         self.group_name = process_name
         self.ready_error = ready_error
-        self.processes: list[_FakeProcess] = []
+        self.processes: list[FakeProcess] = []
         self.spawn_env = None
         self.ready_timeout: float | None = None
         self.dead = False
@@ -145,7 +145,7 @@ class _FakeGroup:
     def spawn(self, ctx, process_env_overrides=None) -> None:
         del ctx
         self.spawn_env = process_env_overrides
-        self.processes.append(_FakeProcess())
+        self.processes.append(FakeProcess())
         self.events.append(f"spawn {self.group_name}")
 
     async def wait_ready(self, timeout: float) -> None:
@@ -171,8 +171,8 @@ class _FakeGroup:
         self.events.append(f"channels closed {self.group_name}")
 
 
-def _patch(monkeypatch, events, groups) -> _FakeCoordinator:
-    coordinator = _FakeCoordinator(events)
+def patch(monkeypatch, events, groups) -> FakeCoordinator:
+    coordinator = FakeCoordinator(events)
     monkeypatch.setattr(mp_runner, "Coordinator", lambda *a, **k: coordinator)
     monkeypatch.setattr(mp_runner, "build_stage_groups", lambda *a, **k: groups)
     return coordinator
@@ -183,10 +183,10 @@ async def test_no_follower_spawns_before_every_leader_is_ready(
     tmp_path, monkeypatch
 ) -> None:
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    leader = FakeGroup(events, "gen@r0")
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     await runner.start(timeout=5.0)
     await runner.stop()
@@ -198,10 +198,10 @@ async def test_no_follower_spawns_before_every_leader_is_ready(
 async def test_each_wave_gets_the_whole_startup_budget(tmp_path, monkeypatch) -> None:
     """A slow leader load must not starve the follower attach behind it."""
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    leader = FakeGroup(events, "gen@r0")
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     await runner.start(timeout=37.0)
     await runner.stop()
@@ -215,11 +215,11 @@ async def test_a_dead_leader_stops_the_run_before_any_follower_spawns(
     tmp_path, monkeypatch
 ) -> None:
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
+    leader = FakeGroup(events, "gen@r0")
     leader.dead = True
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     with pytest.raises(RuntimeError, match="died during startup"):
         await runner.start(timeout=5.0)
@@ -235,11 +235,11 @@ async def test_a_replica_alone_on_its_gpu_still_gets_spawned(
     """replica_devices=[0, 0, 1]: the unshared replica is routable, so it runs."""
     events: list[str] = []
     groups = [
-        _FakeGroup(events, f"gen@r{index}", gpu_id=0 if index < 2 else 1)
+        FakeGroup(events, f"gen@r{index}", gpu_id=0 if index < 2 else 1)
         for index in range(3)
     ]
-    _patch(monkeypatch, events, groups)
-    config = _config(tmp_path)
+    patch(monkeypatch, events, groups)
+    config = make_config(tmp_path)
     config.processes["gen"] = ProcessConfig(num_replicas=3, replica_devices=[0, 0, 1])
     runner = MultiProcessPipelineRunner(config)
 
@@ -259,10 +259,10 @@ async def test_cancelling_startup_without_mps_still_reaps_the_children(
 ) -> None:
     """Cancellation is a BaseException; cleanup must not hang off MPS."""
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0", ready_error=asyncio.CancelledError())
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    leader = FakeGroup(events, "gen@r0", ready_error=asyncio.CancelledError())
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     with pytest.raises(asyncio.CancelledError):
         await runner.start(timeout=5.0)
@@ -276,10 +276,10 @@ async def test_roles_and_the_compat_flag_reach_the_spawn_environment(
     tmp_path, monkeypatch
 ) -> None:
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    leader = FakeGroup(events, "gen@r0")
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     await runner.start(timeout=5.0)
     try:
@@ -299,11 +299,11 @@ async def test_mps_environment_survives_the_weight_share_merge(
     tmp_path, monkeypatch
 ) -> None:
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
-    follower = _FakeGroup(events, "gen@r1")
-    _patch(monkeypatch, events, [leader, follower])
+    leader = FakeGroup(events, "gen@r0")
+    follower = FakeGroup(events, "gen@r1")
+    patch(monkeypatch, events, [leader, follower])
 
-    class _FakeMps:
+    class FakeMps:
         has_leases = False
 
         async def start(self) -> None:
@@ -325,10 +325,8 @@ async def test_mps_environment_survives_the_weight_share_merge(
             del process_start_attempts
             events.append("MPS close")
 
-    monkeypatch.setattr(
-        mp_runner, "create_for_pipeline", lambda mode, specs: _FakeMps()
-    )
-    config = _config(tmp_path)
+    monkeypatch.setattr(mp_runner, "create_for_pipeline", lambda mode, specs: FakeMps())
+    config = make_config(tmp_path)
     config.mps = "on"
     runner = MultiProcessPipelineRunner(config)
 
@@ -348,9 +346,9 @@ async def test_roles_are_planned_before_the_coordinator_binds(
 ) -> None:
     """An unshareable pipeline must fail before parent resources exist."""
     events: list[str] = []
-    group = _FakeGroup(events, "gen@r0")
-    coordinator = _patch(monkeypatch, events, [group])
-    config = _config(tmp_path)
+    group = FakeGroup(events, "gen@r0")
+    coordinator = patch(monkeypatch, events, [group])
+    config = make_config(tmp_path)
     config.processes["gen"] = ProcessConfig(num_replicas=2, replica_devices=[0, 1])
     runner = MultiProcessPipelineRunner(config)
 
@@ -364,10 +362,10 @@ async def test_roles_are_planned_before_the_coordinator_binds(
 @pytest.mark.asyncio
 async def test_followers_shut_down_before_their_leader(tmp_path, monkeypatch) -> None:
     events: list[str] = []
-    leader = _FakeGroup(events, "gen@r0")
-    follower = _FakeGroup(events, "gen@r1")
-    coordinator = _patch(monkeypatch, events, [leader, follower])
-    runner = MultiProcessPipelineRunner(_config(tmp_path))
+    leader = FakeGroup(events, "gen@r0")
+    follower = FakeGroup(events, "gen@r1")
+    coordinator = patch(monkeypatch, events, [leader, follower])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path))
 
     await runner.start(timeout=5.0)
     await runner.stop()
@@ -381,10 +379,10 @@ async def test_sharing_off_keeps_one_spawn_wave_and_one_broadcast(
     tmp_path, monkeypatch
 ) -> None:
     events: list[str] = []
-    first = _FakeGroup(events, "gen@r0")
-    second = _FakeGroup(events, "gen@r1")
-    coordinator = _patch(monkeypatch, events, [first, second])
-    runner = MultiProcessPipelineRunner(_config(tmp_path, weight_share="off"))
+    first = FakeGroup(events, "gen@r0")
+    second = FakeGroup(events, "gen@r1")
+    coordinator = patch(monkeypatch, events, [first, second])
+    runner = MultiProcessPipelineRunner(make_config(tmp_path, weight_share="off"))
 
     await runner.start(timeout=5.0)
     await runner.stop()

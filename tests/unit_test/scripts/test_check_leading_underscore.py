@@ -16,7 +16,7 @@ CHECKER_PATH = REPO_ROOT / "scripts" / "check_leading_underscore.py"
 PROBE_PACKAGE = "_lint_underscore_probe"
 
 
-def _load_checker():
+def load_checker():
     spec = importlib.util.spec_from_file_location(
         "check_leading_underscore", CHECKER_PATH
     )
@@ -27,7 +27,7 @@ def _load_checker():
     return module
 
 
-def _run_checker(*args: str) -> subprocess.CompletedProcess[str]:
+def run_checker(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(CHECKER_PATH), *args],
         check=False,
@@ -37,8 +37,8 @@ def _run_checker(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 @contextmanager
-def _probe_model_file(source: str) -> Iterator[tuple[object, Path]]:
-    checker = _load_checker()
+def probe_model_file(source: str) -> Iterator[tuple[object, Path]]:
+    checker = load_checker()
     probe_dir = checker.SOURCE_ROOT / "models" / PROBE_PACKAGE
     probe = probe_dir / "runner.py"
     probe_dir.mkdir(parents=True)
@@ -51,8 +51,8 @@ def _probe_model_file(source: str) -> Iterator[tuple[object, Path]]:
             probe_dir.rmdir()
 
 
-def _violations(source: str, tmp_path: Path) -> set[str]:
-    checker = _load_checker()
+def violations(source: str, tmp_path: Path) -> set[str]:
+    checker = load_checker()
     path = tmp_path / "sample.py"
     path.write_text(source, encoding="utf-8")
     visitor = checker.LeadingUnderscoreVisitor(path, source.splitlines())
@@ -60,9 +60,15 @@ def _violations(source: str, tmp_path: Path) -> set[str]:
     return {item.name for item in visitor.violations}
 
 
-def test_current_sglang_omni_tree_is_clean() -> None:
-    result = _run_checker()
+def test_current_tree_is_clean() -> None:
+    result = run_checker()
     assert result.returncode == 0, result.stderr
+
+
+def test_test_files_are_in_scope() -> None:
+    checker = load_checker()
+    assert checker.is_in_scope(Path(__file__))
+    assert Path(__file__).resolve() in checker.iter_default_files()
 
 
 def test_nested_function_dunder_and_noqa_are_allowed(tmp_path: Path) -> None:
@@ -76,7 +82,7 @@ class Public:
 def _kept() -> None:  # noqa: leading-underscore
     return None
 """
-    assert _violations(source, tmp_path) == set()
+    assert violations(source, tmp_path) == set()
 
 
 def test_self_attribute_assignment_and_getattr_are_reported(tmp_path: Path) -> None:
@@ -88,7 +94,7 @@ class Session:
         key = getattr(request, "_cache_key", None)
         return key
 """
-    assert _violations(source, tmp_path) == {"_cache_key"}
+    assert violations(source, tmp_path) == {"_cache_key"}
 
 
 def test_noqa_on_a_wrapped_statement_covers_the_attribute(tmp_path: Path) -> None:
@@ -97,30 +103,30 @@ value = (
     request._omni_prompt_cache_key
 )  # noqa: leading-underscore
 """
-    assert _violations(source, tmp_path) == set()
+    assert violations(source, tmp_path) == set()
 
 
 def test_upstream_attribute_read_is_reported(tmp_path: Path) -> None:
     source = "value = hf_modeling._get_feat_extract_output_lengths(lengths)\n"
-    assert _violations(source, tmp_path) == {"_get_feat_extract_output_lengths"}
+    assert violations(source, tmp_path) == {"_get_feat_extract_output_lengths"}
 
 
 def test_top_level_underscore_class_and_method_are_reported(tmp_path: Path) -> None:
     source = "class _Hidden:\n    def _method(self) -> None:\n        return None\n"
-    assert _violations(source, tmp_path) == {"_Hidden", "_method"}
+    assert violations(source, tmp_path) == {"_Hidden", "_method"}
 
 
 def test_new_model_package_file_is_checked_without_registration() -> None:
     """A newly added models/<name>/*.py file is in scope automatically."""
-    with _probe_model_file("def _load_checkpoint() -> None:\n    return None\n") as (
+    with probe_model_file("def _load_checkpoint() -> None:\n    return None\n") as (
         checker,
         probe,
     ):
         assert checker.is_in_scope(probe)
-        result = _run_checker(str(probe))
+        result = run_checker(str(probe))
         assert result.returncode == 1
         assert "_load_checkpoint" in result.stderr
-        default_scan = _run_checker()
+        default_scan = run_checker()
         assert default_scan.returncode == 1
         assert f"{PROBE_PACKAGE}/runner.py" in default_scan.stderr
 
@@ -133,8 +139,8 @@ def test_fix_renames_new_model_file_and_in_file_refs() -> None:
         "    def run(self) -> None:\n"
         "        self._setup()\n"
     )
-    with _probe_model_file(source) as (_checker, probe):
-        result = _run_checker("--fix", str(probe))
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
         assert result.returncode == 0, result.stderr
         rewritten = probe.read_text(encoding="utf-8")
         assert "def setup(self)" in rewritten
@@ -150,8 +156,8 @@ def test_fix_skips_same_scope_public_name_collision() -> None:
         "def _load_checkpoint() -> None:\n"
         "    return None\n"
     )
-    with _probe_model_file(source) as (_checker, probe):
-        result = _run_checker("--fix", str(probe))
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker("--fix", str(probe))
         assert result.returncode == 1
         assert "_load_checkpoint" in result.stderr
         assert "def _load_checkpoint" in probe.read_text(encoding="utf-8")
@@ -166,12 +172,12 @@ def _get_feat_extract_output_lengths(lengths):
 
 lengths = _get_feat_extract_output_lengths([100, 200])
 """
-    with _probe_model_file(source) as (_checker, probe):
-        result = _run_checker(str(probe))
+    with probe_model_file(source) as (_checker, probe):
+        result = run_checker(str(probe))
         assert result.returncode == 1
         assert "_get_feat_extract_output_lengths" in result.stderr
 
-        result = _run_checker("--fix", str(probe))
+        result = run_checker("--fix", str(probe))
         assert result.returncode == 1
         rewritten = probe.read_text(encoding="utf-8")
         assert "def get_feat_extract_output_lengths(" in rewritten
@@ -195,12 +201,12 @@ adapter = _ExternalAdapter()
 hook = _ExternalAdapter._required_external_hook
 """
     local = "\ndef _local_helper():\n    return None\n\n_local_helper()\n"
-    with _probe_model_file(kept) as (_checker, probe):
-        result = _run_checker(str(probe))
+    with probe_model_file(kept) as (_checker, probe):
+        result = run_checker(str(probe))
         assert result.returncode == 0, result.stderr
 
         probe.write_text(kept + local, encoding="utf-8")
-        result = _run_checker("--fix", str(probe))
+        result = run_checker("--fix", str(probe))
         assert result.returncode == 0, result.stderr
         assert probe.read_text(encoding="utf-8") == kept + local.replace(
             "_local_helper", "local_helper"

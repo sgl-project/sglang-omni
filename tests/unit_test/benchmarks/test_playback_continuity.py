@@ -98,7 +98,7 @@ def test_compute_speed_metrics_includes_continuity_gates() -> None:
     assert metrics["max_playback_underrun_mean_s"] == pytest.approx(0.135)
 
 
-_CONTINUITY_KEYS = (
+CONTINUITY_KEYS = (
     "playback_continuity_requests",
     "playback_continuity_na_requests",
     "max_playback_underrun_mean_s",
@@ -134,7 +134,7 @@ def test_compute_speed_metrics_skips_continuity_for_non_streaming_audio() -> Non
     metrics = compute_speed_metrics(outputs, wall_clock_s=2.0)
 
     assert metrics["completed_requests"] == 2
-    for key in _CONTINUITY_KEYS:
+    for key in CONTINUITY_KEYS:
         assert key not in metrics
 
 

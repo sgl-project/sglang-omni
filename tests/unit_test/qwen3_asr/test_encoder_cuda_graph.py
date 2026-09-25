@@ -19,7 +19,7 @@ def test_build_buckets_rejects_bad_limits():
         build_buckets(0, 780)
 
 
-def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
+def plan_only_runner(max_batch=8, max_tokens_per_clip=780):
     r = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
     r.max_seqlen = 104
     r.max_windows_for = lambda b: max_batch + b // 104 + 1
@@ -30,7 +30,7 @@ def _plan_only_runner(max_batch=8, max_tokens_per_clip=780):
 
 @pytest.mark.parametrize("total,windows", [(65, 1), (260, 4), (6240, 64), (104, 1)])
 def test_plan_invariants(total, windows):
-    r = _plan_only_runner()
+    r = plan_only_runner()
     bucket_size, dummies = r.plan(total, windows)
     assert total + sum(dummies) == bucket_size
     assert all(1 <= d <= r.max_seqlen for d in dummies)

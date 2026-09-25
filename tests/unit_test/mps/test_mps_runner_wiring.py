@@ -37,7 +37,7 @@ from tests.unit_test.mps.test_mps_manager import (
 )
 
 FAKE_GPU_UUID = "GPU-aaaaaaaa-bbbb-cccc-dddd-000000000000"
-_MPS_FLAG = ConfigSource(SourceKind.CLI_FLAG, "--mps")
+MPS_FLAG = ConfigSource(SourceKind.CLI_FLAG, "--mps")
 
 
 @pytest.fixture
@@ -51,7 +51,7 @@ def noop_factory():  # pragma: no cover - never constructed in these tests
     raise AssertionError("factory must not run")
 
 
-def _make_config(base_path: Path, *, mps: str = "auto") -> PipelineConfig:
+def make_config(base_path: Path, *, mps: str = "auto") -> PipelineConfig:
     base = PipelineConfig(
         model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         entry_stage="preprocessing",
@@ -65,11 +65,11 @@ def _make_config(base_path: Path, *, mps: str = "auto") -> PipelineConfig:
         ],
         endpoints=EndpointsConfig(base_path=str(base_path)),
     )
-    patch = ConfigPatch.create("mps", mps, _MPS_FLAG)
+    patch = ConfigPatch.create("mps", mps, MPS_FLAG)
     return ConfigResolver(base).resolve(ConfigPatchSet([patch])).config
 
 
-class _FakeCoordinator:
+class FakeCoordinator:
     def __init__(self, events: list[str], *args, **kwargs) -> None:
         del args, kwargs
         self.events = events
@@ -94,28 +94,28 @@ class _FakeCoordinator:
         self.events.append("coordinator stop")
 
 
-class _FakeProcess:
+class FakeProcess:
     def __init__(self, events: list[str]) -> None:
         self.events = events
-        self._alive = True
+        self.alive = True
 
     def is_alive(self) -> bool:
-        return self._alive
+        return self.alive
 
     def terminate(self) -> None:
         self.events.append("stage terminate")
-        self._alive = False
+        self.alive = False
 
     def kill(self) -> None:
         self.events.append("stage kill")
-        self._alive = False
+        self.alive = False
 
     def join(self, timeout=None) -> None:
         del timeout
         self.events.append("stage join")
 
 
-class _FakeGroup:
+class FakeGroup:
     stage_control_endpoints = {"preprocessing": "ipc://preprocessing"}
     process_count = 1
 
@@ -130,7 +130,7 @@ class _FakeGroup:
         self.events = events
         self.ready_error = ready_error
         self.shutdown_gate = shutdown_gate
-        self.processes = [_FakeProcess(events)] if direct_process else []
+        self.processes = [FakeProcess(events)] if direct_process else []
         self.spawn_env = object()
         self.before_signal = object()
         self.dead = False
@@ -181,7 +181,7 @@ class _FakeGroup:
         self.events.append("channels closed")
 
 
-class _FakeMps:
+class FakeMps:
     def __init__(
         self,
         events: list[str],
@@ -242,13 +242,13 @@ class _FakeMps:
             raise self.close_error
 
 
-def _patch_runner(
+def patch_runner(
     monkeypatch: pytest.MonkeyPatch,
     events: list[str],
-    group: _FakeGroup,
-    fake_mps: _FakeMps | None,
-) -> _FakeCoordinator:
-    coordinator = _FakeCoordinator(events)
+    group: FakeGroup,
+    fake_mps: FakeMps | None,
+) -> FakeCoordinator:
+    coordinator = FakeCoordinator(events)
     monkeypatch.setattr(
         mp_runner,
         "Coordinator",
@@ -268,12 +268,12 @@ def _patch_runner(
     return coordinator
 
 
-class _OneGpuDeviceInfo:
+class OneGpuDeviceInfo:
     def inspect(self, gpu_ids):
         return {gpu_id: MpsPhysicalDevice(GPU_UUID, None) for gpu_id in gpu_ids}
 
 
-class _SpawnQueue:
+class SpawnQueue:
     def close(self) -> None:
         return None
 
@@ -281,29 +281,29 @@ class _SpawnQueue:
         return None
 
 
-class _PreStartFailureContext:
+class PreStartFailureContext:
     def Event(self):
         raise OSError("process synchronization resource exhausted")
 
 
-class _ProcessStartFailure:
+class ProcessStartFailure:
     def start(self) -> None:
         raise OSError("Process.start failed")
 
 
-class _ProcessStartFailureContext:
+class ProcessStartFailureContext:
     def Event(self):
         return object()
 
     def Queue(self):
-        return _SpawnQueue()
+        return SpawnQueue()
 
     def Process(self, **kwargs):
         del kwargs
-        return _ProcessStartFailure()
+        return ProcessStartFailure()
 
 
-def _real_mps_group() -> StageGroup:
+def real_mps_group() -> StageGroup:
     return StageGroup(
         "pipeline",
         [
@@ -323,7 +323,7 @@ def _real_mps_group() -> StageGroup:
     )
 
 
-def _shared_mps_runtime(
+def shared_mps_runtime(
     root: Path,
     group: StageGroup,
 ) -> tuple[MpsPipelineRuntime, FakeControlClient, MpsGpuPaths]:
@@ -338,7 +338,7 @@ def _shared_mps_runtime(
     runtime = MpsPipelineRuntime.create(
         mode="on",
         process_specs=group.process_specs,
-        device_info=_OneGpuDeviceInfo(),
+        device_info=OneGpuDeviceInfo(),
         client=client,
         state_root=root,
     )
@@ -354,10 +354,10 @@ def _shared_mps_runtime(
 @pytest.mark.asyncio
 async def test_mps_hooks_follow_resolved_spawn_lifecycle(short_base, monkeypatch):
     events: list[str] = []
-    group = _FakeGroup(events)
-    fake_mps = _FakeMps(events)
-    coordinator = _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    group = FakeGroup(events)
+    fake_mps = FakeMps(events)
+    coordinator = patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
 
     await runner.start()
 
@@ -377,14 +377,14 @@ async def test_mps_hooks_follow_resolved_spawn_lifecycle(short_base, monkeypatch
 @pytest.mark.asyncio
 async def test_mps_startup_error_cleans_children_before_close(short_base, monkeypatch):
     events: list[str] = []
-    group = _FakeGroup(
+    group = FakeGroup(
         events,
         ready_error=RuntimeError("ready failed"),
         direct_process=True,
     )
-    fake_mps = _FakeMps(events)
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    fake_mps = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
 
     with pytest.raises(RuntimeError, match="ready failed"):
         await runner.start()
@@ -400,14 +400,14 @@ async def test_mps_startup_cancellation_cleans_children_before_close(
     monkeypatch,
 ):
     events: list[str] = []
-    group = _FakeGroup(
+    group = FakeGroup(
         events,
         ready_error=asyncio.CancelledError(),
         direct_process=True,
     )
-    fake_mps = _FakeMps(events)
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    fake_mps = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
 
     with pytest.raises(asyncio.CancelledError):
         await runner.start()
@@ -423,15 +423,15 @@ async def test_startup_cancellation_remains_primary_when_mps_close_is_dirty(
     monkeypatch,
 ):
     events: list[str] = []
-    group = _FakeGroup(
+    group = FakeGroup(
         events,
         ready_error=asyncio.CancelledError(),
         direct_process=True,
     )
     dirty = MpsDirtyStateError("dirty state persisted")
-    fake_mps = _FakeMps(events, close_error=dirty)
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    fake_mps = FakeMps(events, close_error=dirty)
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
 
     with pytest.raises(asyncio.CancelledError) as exc_info:
         await runner.start()
@@ -446,16 +446,16 @@ async def test_failure_before_first_mps_process_start_rolls_back_cleanly(
     monkeypatch,
 ):
     events: list[str] = []
-    group = _real_mps_group()
-    runtime, client, paths = _shared_mps_runtime(short_base, group)
+    group = real_mps_group()
+    runtime, client, paths = shared_mps_runtime(short_base, group)
     foreign_clients = client.snapshot(paths.pipe_dir)
-    _patch_runner(monkeypatch, events, group, runtime)
+    patch_runner(monkeypatch, events, group, runtime)
     monkeypatch.setattr(
         mp_runner.multiprocessing,
         "get_context",
-        lambda _method: _PreStartFailureContext(),
+        lambda _method: PreStartFailureContext(),
     )
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base, mps="on"))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base, mps="on"))
 
     with pytest.raises(OSError, match="synchronization resource exhausted"):
         await runner.start()
@@ -478,16 +478,16 @@ async def test_attempted_mps_process_start_keeps_fail_closed_cleanup(
     monkeypatch,
 ):
     events: list[str] = []
-    group = _real_mps_group()
-    runtime, client, paths = _shared_mps_runtime(short_base, group)
+    group = real_mps_group()
+    runtime, client, paths = shared_mps_runtime(short_base, group)
     foreign_clients = client.snapshot(paths.pipe_dir)
-    _patch_runner(monkeypatch, events, group, runtime)
+    patch_runner(monkeypatch, events, group, runtime)
     monkeypatch.setattr(
         mp_runner.multiprocessing,
         "get_context",
-        lambda _method: _ProcessStartFailureContext(),
+        lambda _method: ProcessStartFailureContext(),
     )
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base, mps="on"))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base, mps="on"))
 
     with pytest.raises(OSError, match="Process.start failed") as exc_info:
         await runner.start()
@@ -511,17 +511,17 @@ async def test_mps_watchdog_fails_serving_before_launcher_cleanup(
     events: list[str] = []
     entered = asyncio.Event()
     release = asyncio.Event()
-    group = _FakeGroup(events, shutdown_gate=(entered, release))
+    group = FakeGroup(events, shutdown_gate=(entered, release))
     dirty = MpsDirtyStateError("dirty state persisted")
     probe_gate = asyncio.Event()
-    fake_mps = _FakeMps(
+    fake_mps = FakeMps(
         events,
         close_error=dirty,
         probe_result={FAKE_GPU_UUID: "daemon identity changed"},
         probe_gate=probe_gate,
     )
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
     await runner.start()
 
     probe_gate.set()
@@ -546,10 +546,10 @@ async def test_mps_close_cancellation_finishes_runner_cleanup_before_propagating
     monkeypatch,
 ):
     events: list[str] = []
-    group = _FakeGroup(events)
-    fake_mps = _FakeMps(events, close_error=asyncio.CancelledError())
-    _patch_runner(monkeypatch, events, group, fake_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    group = FakeGroup(events)
+    fake_mps = FakeMps(events, close_error=asyncio.CancelledError())
+    patch_runner(monkeypatch, events, group, fake_mps)
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
     await runner.start()
 
     with pytest.raises(asyncio.CancelledError):
@@ -566,12 +566,12 @@ async def test_mps_off_keeps_merge_base_spawn_and_failure_order(
     events: list[str] = []
     entered = asyncio.Event()
     release = asyncio.Event()
-    group = _FakeGroup(events, shutdown_gate=(entered, release))
-    _patch_runner(monkeypatch, events, group, fake_mps=None)
+    group = FakeGroup(events, shutdown_gate=(entered, release))
+    patch_runner(monkeypatch, events, group, fake_mps=None)
 
     original_sleep = asyncio.sleep
 
-    async def checkpoint(_delay: float) -> None:
+    async def checkpoint(delay: float) -> None:
         await original_sleep(0)
 
     monkeypatch.setattr(mp_runner.asyncio, "sleep", checkpoint)
@@ -581,7 +581,7 @@ async def test_mps_off_keeps_merge_base_spawn_and_failure_order(
         raise AssertionError("mps=off must not create an MPS runtime")
 
     monkeypatch.setattr(mp_runner, "create_for_pipeline", unexpected_mps)
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base, mps="off"))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base, mps="off"))
     await runner.start()
     assert group.spawn_env is None
 
@@ -608,9 +608,9 @@ async def test_stop_cancelled_before_mps_close_still_releases_the_lease(
     """
 
     events: list[str] = []
-    group = _FakeGroup(events)
-    fake = _FakeMps(events)
-    coordinator = _patch_runner(monkeypatch, events, group, fake)
+    group = FakeGroup(events)
+    fake = FakeMps(events)
+    coordinator = patch_runner(monkeypatch, events, group, fake)
 
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -621,7 +621,7 @@ async def test_stop_cancelled_before_mps_close_still_releases_the_lease(
 
     monkeypatch.setattr(coordinator, "shutdown_stages", blocking_shutdown_stages)
 
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
     await runner.start()
 
     stopping = asyncio.create_task(runner.stop())
@@ -635,28 +635,28 @@ async def test_stop_cancelled_before_mps_close_still_releases_the_lease(
     assert "MPS close" in events
 
 
-class _StuckProcess:
+class StuckProcess:
     """A stage process that never exits on its own."""
 
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.pid = 4321
         self.name = "stuck"
-        self._alive = True
+        self.alive = True
 
     def is_alive(self) -> bool:
-        return self._alive
+        return self.alive
 
     def join(self, timeout=None) -> None:
         del timeout
 
     def terminate(self) -> None:
         self.events.append("SIGTERM")
-        self._alive = False
+        self.alive = False
 
     def kill(self) -> None:
         self.events.append("SIGKILL")
-        self._alive = False
+        self.alive = False
 
 
 @pytest.mark.asyncio
@@ -681,7 +681,9 @@ async def test_stuck_process_is_retired_from_mps_before_any_signal():
         ],
     )
     group = StageGroup("group", [spec])
-    group._processes = [_StuckProcess(events)]
+    group._processes = [
+        StuckProcess(events)
+    ]  # noqa: leading-underscore  # production name
 
     async def before_signal(process_name: str) -> None:
         events.append(f"retire {process_name}")
@@ -698,25 +700,25 @@ async def test_runner_supplies_the_retirement_hook_only_with_mps(
     monkeypatch,
 ):
     events: list[str] = []
-    group = _FakeGroup(events)
-    fake = _FakeMps(events)
-    _patch_runner(monkeypatch, events, group, fake)
+    group = FakeGroup(events)
+    fake = FakeMps(events)
+    patch_runner(monkeypatch, events, group, fake)
 
-    runner = mp_runner.MultiProcessPipelineRunner(_make_config(short_base))
+    runner = mp_runner.MultiProcessPipelineRunner(make_config(short_base))
     await runner.start()
     await runner.stop()
     assert group.before_signal is not None
 
     events.clear()
-    off_group = _FakeGroup(events)
-    _patch_runner(monkeypatch, events, off_group, None)
+    off_group = FakeGroup(events)
+    patch_runner(monkeypatch, events, off_group, None)
     monkeypatch.setattr(
         mp_runner,
         "create_for_pipeline",
         lambda mode, specs: None,
     )
     off_runner = mp_runner.MultiProcessPipelineRunner(
-        _make_config(short_base, mps="off")
+        make_config(short_base, mps="off")
     )
     await off_runner.start()
     await off_runner.stop()

@@ -558,7 +558,7 @@ def test_reference_encoder_serializes_codec_for_different_references(
     assert all(result.prompt for result in results)
 
 
-def _reference_service(codec: FakeCodec) -> Any:
+def reference_service(codec: FakeCodec) -> Any:
     hook = stages.AudarReferenceEncodeHook(
         codec=codec,
         device="cpu",
@@ -614,7 +614,7 @@ def test_reference_encoder_propagates_singleflight_failure() -> None:
         raise RuntimeError("codec failed")
 
     codec.encode_code = encode_code
-    service = _reference_service(codec)
+    service = reference_service(codec)
     reference_audio = {"bytes": five_second_wav()}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -651,7 +651,7 @@ def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
         return torch.tensor([[[7, 8, 9]]])
 
     codec.encode_code = encode_code
-    service = _reference_service(codec)
+    service = reference_service(codec)
     reference_audio = {"audio_path": str(reference_path)}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -670,7 +670,7 @@ def test_reference_encoder_revalidates_changed_path(tmp_path) -> None:
 
 def test_reference_encoder_reports_cache_stats() -> None:
     codec = FakeCodec()
-    service = _reference_service(codec)
+    service = reference_service(codec)
     reference_audio = {"bytes": five_second_wav()}
 
     service.get_or_encode(reference_audio)

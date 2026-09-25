@@ -10,7 +10,7 @@ import torch
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 
 
-def _runner(*, vocab_size: int, codec_eos_token_id: int) -> Qwen3TTSModelRunner:
+def make_runner(*, vocab_size: int, codec_eos_token_id: int) -> Qwen3TTSModelRunner:
     runner = object.__new__(Qwen3TTSModelRunner)
     runner.model = types.SimpleNamespace(
         config=types.SimpleNamespace(
@@ -25,7 +25,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
     configured_vocab = 3072
     codec_eos = 2150
     materialized_vocab = 6144
-    runner = _runner(
+    runner = make_runner(
         vocab_size=configured_vocab,
         codec_eos_token_id=codec_eos,
     )
@@ -45,7 +45,7 @@ def test_qwen3_tts_suppresses_configured_codec_tail_with_basic_slices() -> None:
 
 
 def test_qwen3_tts_suppression_skips_empty_request_batch() -> None:
-    runner = _runner(vocab_size=3072, codec_eos_token_id=2150)
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=2150)
     logits = torch.randn(1, 6144)
     original = logits.clone()
 
