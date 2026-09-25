@@ -102,7 +102,7 @@ RUN cd /workspace/sglang-omni \
 
 # --no-deps: qwen-tts pins Transformers 4.57.3, which would replace the stack above,
 # and resolving sox lifts numpy past the numba==0.65.1 ceiling.
-RUN pip install --no-cache-dir --no-deps sox einops \
+RUN pip install --no-cache-dir --no-deps sox \
     && pip install --no-cache-dir --no-deps qwen-tts==0.1.1
 
 WORKDIR /workspace/sglang-omni
