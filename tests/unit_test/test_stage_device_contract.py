@@ -487,10 +487,15 @@ def test_qwen3_omni_encoder_stages_resolve_none_to_the_platform(
 def test_qwen3_omni_code2wav_resolves_none_to_a_concrete_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import torch
+
     from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 
     model = SimpleNamespace(
-        total_upsample=1, config=SimpleNamespace(num_quantizers=4), eval=lambda: None
+        total_upsample=1,
+        config=SimpleNamespace(num_quantizers=4),
+        decoder=torch.nn.Module(),
+        eval=lambda: None,
     )
     model.eval = lambda: model
     monkeypatch.setattr(

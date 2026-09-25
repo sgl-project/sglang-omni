@@ -685,6 +685,23 @@ that happened to contain an older version of the test.
     and slot lifecycle across abort and failure paths. The `accelerator` cases
     cover real pinned buffers and events, eager/graph parity, in-flight
     completion queries, abort recovery, and cross-device use.
+  - Shared SnakeBeta: BF16 bitwise parity at any batch and channel count and the
+    module's own epsilon, eager fallback,
+    prewarm without runtime compilation, and factory installation before
+    graph capture. The real checkpoint gates require explicit local paths:
+
+    ```bash
+    QWEN3_OMNI_MODEL_PATH=/path/to/Qwen3-Omni-30B-A3B-Instruct \
+      pytest tests/unit_test/qwen3_omni/test_code2wav_snake_beta.py -q
+    QWEN3_TTS_TOKENIZER_PATH=/path/to/speech_tokenizer \
+      pytest tests/unit_test/qwen3_tts/test_incremental_codec.py -q
+    ```
+
+    Real checkpoint cases carry both `benchmark` and `accelerator` markers.
+    Set `QWEN3_OMNI_CODES_PATH` to a directory of saved `[B, Q, T]` codec
+    tensors (`.pt`) to additionally replay actual Talker outputs. Every
+    supported activation must launch the fused kernel; full decoder PCM,
+    exact-shape graph replay, and chunked decoding require `torch.equal`.
   - logit-shaping helpers (e.g. repetition penalty) numerical equivalence with the original per-row scalar formulas.
   - Thinker prefill contracts: `OmniPrefillInputs` adoption for text and
     audio-input → text-output prefills, whole-batch fail-closed qualification,

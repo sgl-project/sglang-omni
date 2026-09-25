@@ -29,6 +29,7 @@ from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import StreamingVocoderBase
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.cuda_staging import PinnedTransferSlot
+from sglang_omni.utils.snake_beta import fuse_vocoder_decoder
 
 logger = logging.getLogger(__name__)
 _DECOMPOSE_SIZES = (16, 8, 4, 2, 1)
@@ -1211,6 +1212,7 @@ def create_code2wav_scheduler(
     enable_output_overlap: bool = True,
     enable_cuda_graph: bool = False,
     total_gpu_memory_fraction: float | None = None,
+    fused_snake_activation: bool = True,
 ):
     """Factory: returns Code2WavScheduler."""
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1226,6 +1228,11 @@ def create_code2wav_scheduler(
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
     model = load_code2wav_model(model_path, device=device, dtype=dtype)
+    if fused_snake_activation:
+        replaced = fuse_vocoder_decoder(model.decoder)
+        logger.info(f"Code2Wav fused SnakeBeta modules: {replaced}")
+    else:
+        pass
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:

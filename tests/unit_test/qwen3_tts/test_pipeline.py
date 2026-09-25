@@ -2126,9 +2126,7 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     decode_batch_sizes: list[int] = []
 
     class FakeTokenizer:
-        model = SimpleNamespace(
-            decoder=SimpleNamespace(total_upsample=4),
-        )
+        model = SimpleNamespace(decoder=FakeQwen3TTSDecoder())
 
         def get_output_sample_rate(self):
             return 24000
@@ -2239,10 +2237,11 @@ def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
     assert captured["warmed"] is True
 
 
-class FakeQwen3TTSDecoder:
+class FakeQwen3TTSDecoder(torch.nn.Module):
     total_upsample = 4
 
     def __init__(self) -> None:
+        super().__init__()
         self.decode_inputs: list[torch.Tensor] = []
 
     def chunked_decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -3011,51 +3010,6 @@ def test_qwen3_tts_streaming_vocoder_followup_graphs_can_be_disabled() -> None:
 
     assert scheduler.followup_decode_graphs.enabled is False
     assert scheduler.initial_decode_graphs is not scheduler.followup_decode_graphs
-
-
-class StubSnakeBeta(torch.nn.Module):
-    """Stand-in with the qwen-tts SnakeBeta attribute layout."""
-
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-        self.in_features = channels
-        self.alpha = torch.nn.Parameter(torch.randn(channels) * 0.1)
-        self.beta = torch.nn.Parameter(torch.randn(channels) * 0.1)
-        self.no_div_by_zero = 1e-9
-
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        alpha = torch.exp(self.alpha.unsqueeze(0).unsqueeze(-1))
-        beta = torch.exp(self.beta.unsqueeze(0).unsqueeze(-1))
-        return hidden_states + (1.0 / (beta + self.no_div_by_zero)) * torch.pow(
-            torch.sin(hidden_states * alpha), 2
-        )
-
-
-StubSnakeBeta.__name__ = "SnakeBeta"
-
-
-def test_qwen3_tts_fuse_vocoder_decoder_replaces_snake_beta_modules() -> None:
-    from sglang_omni.models.qwen3_tts.vocoder_kernels import (
-        FusedSnakeBeta,
-        fuse_vocoder_decoder,
-        fused_snake_beta,
-    )
-
-    torch.manual_seed(0)
-    decoder = torch.nn.Sequential(
-        torch.nn.Conv1d(4, 4, 1),
-        StubSnakeBeta(4),
-        torch.nn.Sequential(StubSnakeBeta(4)),
-    )
-    x = torch.randn(2, 4, 8)
-    expected = decoder(x)
-
-    assert fuse_vocoder_decoder(decoder) == 2
-    assert fuse_vocoder_decoder(decoder) == 0
-    assert isinstance(decoder[1], FusedSnakeBeta)
-    assert isinstance(decoder[2][0], FusedSnakeBeta)
-    assert torch.equal(decoder(x), expected)
-    assert fused_snake_beta(x, decoder[1].alpha, decoder[1].beta) is None
 
 
 def test_qwen3_tts_streaming_vocoder_fused_snake_activation_flag() -> None:
