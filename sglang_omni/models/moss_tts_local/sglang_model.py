@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Callable, Iterable, Optional, Tuple, TypeVar
 
 import torch
 import torch.nn.functional as F
@@ -164,7 +164,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return self._state_pool.row_for(rid)
 
     @staticmethod
-    def _cfg_get(config: "GPT2Config", name: str, default: int | float) -> Any:
+    def _cfg_get(config: "GPT2Config", name: str, default: int | float) -> object:
         if isinstance(config, dict):
             value = config.get(name, default)
         else:

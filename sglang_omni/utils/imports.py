@@ -4,10 +4,9 @@
 from __future__ import annotations
 
 import importlib
-from typing import Any
 
 
-def import_string(path: str) -> Any:
+def import_string(path: str) -> object:
     if not path or not isinstance(path, str):
         raise ValueError("Import path must be a non-empty string")
 

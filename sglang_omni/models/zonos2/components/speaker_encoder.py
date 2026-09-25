@@ -15,7 +15,6 @@ import wave
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -303,7 +302,7 @@ class SpeakerEncoder(TensorReferenceEncodeHook[_Zonos2RefInput]):
 
     # ---- ReferenceEncodeHook ----
 
-    def normalize_input(self, raw_input: Any) -> _Zonos2RefInput:
+    def normalize_input(self, raw_input: object) -> _Zonos2RefInput:
         if isinstance(raw_input, _Zonos2RefInput):
             return raw_input
         ref_audio, sample_rate = raw_input

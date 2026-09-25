@@ -10,7 +10,7 @@ import os
 import time
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterable, Literal, Optional, Tuple, TypeAlias
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, Tuple, TypeAlias
 
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend
@@ -45,6 +45,7 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
 )
+from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
@@ -1058,7 +1059,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self._cached_params_dict = dict(self.named_parameters())
         self._sampler = None
 
-    def prepare_decode_buffers(self, requests: list[Any]) -> None:
+    def prepare_decode_buffers(self, requests: list[SchedulerRequest]) -> None:
         batch_size = len(requests)
         if batch_size > self._sub_temperature_tensor.shape[0]:
             raise RuntimeError("Qwen3-TTS sampling buffers are too small")

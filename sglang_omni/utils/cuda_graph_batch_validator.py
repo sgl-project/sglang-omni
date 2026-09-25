@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sglang.srt.runtime_context import get_exec, get_schedule
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class _BufferProbe:
     """Per-model ``(label, fn)`` extractors reading the allocated buffer first dim."""
 
-    extractors: tuple[tuple[str, Callable[[Any], int]], ...]
+    extractors: tuple[tuple[str, Callable[[object], int]], ...]
     note: str = ""
 
 

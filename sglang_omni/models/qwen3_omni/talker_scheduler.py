@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from sglang_omni.models.qwen3_omni.config import (
     ENABLE_TALKER_START_TOPOLOGY,
@@ -74,12 +74,12 @@ class QwenTalkerScheduler(OmniScheduler["SGLangARRequestData"]):
 
     def __init__(
         self,
-        *args: Any,
+        *args: object,
         enable_partial_start: bool = False,
         partial_start_min_chunks: int = MIN_PARTIAL_START_CHUNKS,
         im_end_token_id: int | None = None,
         enable_talker_start_topology: bool | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
         if partial_start_min_chunks < MIN_PARTIAL_START_CHUNKS:

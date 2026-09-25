@@ -7,7 +7,7 @@ import dataclasses
 from collections.abc import Callable, Iterable
 from dataclasses import _MISSING_TYPE as MissingType
 from dataclasses import MISSING, dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from sglang_omni.proto import StagePayload
 
@@ -113,7 +113,21 @@ def _tensor_items_from_lists(
 # from_dict time only when the key is present in the payload, so absent keys
 # fall back to the dataclass default. Decode receives the field default for
 # star_or variants that treat falsy wire values as "use the default".
-_CODECS: dict[str, tuple[Callable[[Any], Any], Callable[[Any, Any], Any]]] = {
+_CODECS: dict[
+    str,
+    tuple[
+        type[int]
+        | type[float]
+        | type[str]
+        | type[bool]
+        | type[dict[object, object]]
+        | type[list[object]]
+        | Callable[[object], object]
+        | Callable[[Iterable[object] | IndexableItems], list[object]],
+        Callable[[object, object], object]
+        | Callable[[Iterable[object] | IndexableItems | None, object], object],
+    ],
+] = {
     "raw": (lambda v: v, lambda v, d: v),
     "int": (int, lambda v, d: int(v or 0)),
     "int_or": (int, lambda v, d: int(v or d)),
@@ -158,7 +172,7 @@ def wire(
     default_factory: Callable[[], object] | MissingType = MISSING,
     emit: str | None = None,
     codec: str = "raw",
-) -> Any:
+) -> dataclasses.Field[object]:
     """dataclasses.field carrying wire metadata for DeclarativeStateBase.
 
     emit defaults by inference: fields whose default is None emit only when

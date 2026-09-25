@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -128,7 +128,7 @@ def get_rope_index_qwen3_omni_vectorized(
     image_grid_thw: torch.LongTensor | None = None,
     video_grid_thw: torch.LongTensor | None = None,
     second_per_grid_ts: torch.Tensor | None = None,
-    **kwargs: Any,
+    **kwargs: object,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Drop-in for get_rope_index_qwen3_omni with vectorized blocks."""
     del tokens_per_second

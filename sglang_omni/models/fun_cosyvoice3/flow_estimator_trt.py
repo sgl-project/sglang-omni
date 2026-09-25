@@ -7,12 +7,12 @@ import hashlib
 import logging
 import os
 import queue
-from typing import TYPE_CHECKING, Any, Protocol, SupportsIndex, SupportsInt
+from typing import TYPE_CHECKING, Protocol, SupportsIndex, SupportsInt
 
 import torch
 
 if TYPE_CHECKING:
-    from tensorrt import IBuilderConfig, ICudaEngine
+    from tensorrt import IBuilderConfig, ICudaEngine, IExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +254,9 @@ class FlowEstimatorTRT:
             stream = torch.cuda.Stream(device=self.device)
             self._pool.put([ctx, stream])
 
-    def acquire_estimator(self) -> tuple[list[Any], "ICudaEngine"]:
+    def acquire_estimator(
+        self,
+    ) -> tuple[list[IExecutionContext | torch.cuda.Stream], ICudaEngine]:
         return self._pool.get(), self.trt_engine
 
     def release_estimator(self, context: object, stream: object) -> None:

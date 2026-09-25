@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, SupportsIndex, SupportsInt
+from typing import TYPE_CHECKING, SupportsIndex, SupportsInt
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -199,7 +199,7 @@ class MingThinkerModelRunner(ModelRunner):
         return str(getattr(req, "rid", getattr(req, "request_id", "<unknown>")))
 
     def _validate_final_consumption(
-        self, req: object, omni_inputs: dict[str, Any], consumed: dict[str, int]
+        self, req: object, omni_inputs: Mapping[str, object], consumed: dict[str, int]
     ) -> None:
         req_id = self._request_id(req)
         for modality, embed_key in [

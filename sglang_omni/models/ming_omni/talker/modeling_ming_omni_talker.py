@@ -18,7 +18,7 @@ from concurrent.futures import CancelledError as FutureCancelledError
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 from threading import Lock
-from typing import Any, Iterable, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -49,6 +49,9 @@ try:
 except ImportError:
     onnxruntime = None  # type: ignore[assignment]
     _HAS_ONNX = False
+
+if TYPE_CHECKING:
+    from talker_tn.talker_tn import TalkerTN
 
 
 class _IdentityNormalizer:
@@ -307,7 +310,7 @@ class MingOmniTalker(nn.Module):
 
         # --- External dependencies (set via setters) ---
         self.tokenizer = None
-        self.normalizer: Any = _IdentityNormalizer()
+        self.normalizer: _IdentityNormalizer | TalkerTN = _IdentityNormalizer()
         self.spkemb_extractor = None
         self.voice_json_dict: dict = {}
 

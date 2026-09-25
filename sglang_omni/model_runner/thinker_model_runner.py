@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
@@ -150,7 +150,7 @@ class ThinkerModelRunner(ModelRunner):
     @staticmethod
     def _ensure_consumed_cursor(
         req: "Req",
-    ) -> dict[str, Any]:
+    ) -> dict[str, int]:
         consumed = req._omni_consumed
         if consumed is None:
             consumed = {}

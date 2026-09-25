@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -45,8 +44,8 @@ def _layer_input_capture_hook(buffer: torch.Tensor, max_tokens: int):
 
     def _capture(
         _module: nn.Module,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
+        args: tuple[object, ...],
+        kwargs: dict[str, object],
     ) -> None:
         if "hidden_states" in kwargs:
             hidden_states = kwargs["hidden_states"]
