@@ -28,7 +28,7 @@ def chunk(raw=b"\0\0" * 1280, *, eos=False):
 def test_perception_retains_history_and_eos_does_not_invent_a_frame():
     rows = []
     stream = SimpleNamespace(push=lambda x: rows.append(x.clone()) or torch.zeros(1, 4))
-    state = PerceptionState(stream)
+    state = PerceptionState(stream=stream)
     hooks = PerceptionHooks(None)
     identity = SessionIdentity("s")
     hooks.states[identity] = state
@@ -51,7 +51,7 @@ def test_perception_rejects_bad_frame_before_mutation(raw):
     stream = SimpleNamespace(push=lambda _: pytest.fail("invalid frame reached model"))
     hooks = PerceptionHooks(None)
     identity = SessionIdentity("s")
-    hooks.states[identity] = PerceptionState(stream)
+    hooks.states[identity] = PerceptionState(stream=stream)
     context = SessionContext(
         session_identity=identity, cancelled=threading.Event(), emit=lambda chunk: None
     )
@@ -84,7 +84,7 @@ def test_codec_matches_offline_streaming_with_bounded_history_and_flush():
         actual.append(out.data["pcm"])
         ref = reference.push(codes)
         expected.append((ref.numpy() * 32767).astype("<i2").tobytes())
-        assert len(hooks.states[SessionIdentity("s")].rows) <= 16
+        assert len(hooks.states[SessionIdentity("s")].code_frames) <= 16
     out = hooks.append(chunk(b"", eos=True), payload({"eos": True}), context)
     actual.append(out.data["pcm"])
     expected.append((reference.flush().numpy() * 32767).astype("<i2").tobytes())

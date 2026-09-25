@@ -120,3 +120,44 @@ The browser limits sessions to 240 seconds; the AR adapters enforce context boun
 for every client. The shared runtime has no wall-clock session timeout.
 The underlying offline talker precision and classifier-free-guidance limitations
 still apply. Do not interpret unit tests or a smoke run as a quality benchmark.
+
+## Reading the integration
+
+Follow one 80 ms input unit through these files:
+
+1. `duplex_config.py`: the stage order and placement. Each stage has its own worker;
+   the example places all four on one GPU.
+2. `duplex_stages.py`: construct the models, runners, adapters, and schedulers.
+   The existing TTS builder creates the runner, then adapters, then the scheduler.
+   The offline request/result callbacks remain part of that builder contract;
+   session units use the session adapter instead.
+3. `duplex.py`, `PerceptionHooks.append`: convert 1280 PCM16 samples into acoustic
+   features, retaining causal encoder history across units.
+4. `duplex_ar.py`, `ThinkerAdapter.build` and `result`: fuse acoustic features with
+   the previous text/function tokens, run one position, and publish new tokens.
+   The first unit also supplies the checkpoint prompt.
+5. `TalkerAdapter.build` and `result`: fuse the new text token with previous audio
+   codes, then produce the next frame of codes.
+6. `duplex.py`, `CodecHooks.append`: decode a bounded code window, emit only fresh
+   samples, and release the held-back tail when input ends.
+7. `realtime.py`: convert terminal audio/text into events for the shared WebSocket
+   runtime. The browser records and plays audio; it does not schedule model stages.
+
+### The continuation contract
+
+A unit performs one forward and samples one token. That sampled token has not yet
+been forwarded when the unit finishes. The next unit therefore appends no new
+input token IDs: the shared streaming session supplies that pending position,
+while the model adapter supplies its new fusion embedding. `attach_fusion_rows`
+selects only the suffix not already covered by KV. Historical fusion rows remain
+available if a prefix must be replayed.
+
+The shared scheduler owns requests, token history, and KV lifetime. The adapters
+own model-specific fusion history, previous model outputs, and detokenized text.
+Perception and codec hooks own their causal state. Completing a unit keeps these
+session states; closing the session releases them.
+
+For review, first check continuation alignment, EOS tail drain, and session
+cleanup. Then inspect CUDA graph capture and replay as an optimization of the same
+computation. Existing tests cover uncached suffix selection, continuation fusion,
+codec output/flush, graph replay, and WebSocket cleanup.

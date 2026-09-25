@@ -21,6 +21,7 @@ def test_sampler_replay_updates_input_and_randomness():
         return hidden + torch.rand_like(hidden)
 
     runner = object.__new__(DuplexTalkerRunner)
+    runner.sampler_graph = None
     runner.model = SimpleNamespace(
         hidden_out=torch.zeros(1, 16, device="cuda"),
         talker=SimpleNamespace(num_quantizers=8, generate_codes=sample),
@@ -71,6 +72,7 @@ def test_perception_capture_does_not_advance_history(monkeypatch):
 
     monkeypatch.setattr(StreamingPerception, "push", push)
     stream = object.__new__(GraphPerception)
+    stream.graph = None
     stream.device, stream.dtype, stream.max_keys = (
         torch.device("cuda"),
         torch.float32,

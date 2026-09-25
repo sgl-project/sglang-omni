@@ -18,7 +18,8 @@ def test_prefill_uses_exact_uncached_suffix_and_replays_fused_history(monkeypatc
         lambda batch, inputs: captured.append(inputs.input_embeds),
     )
     history = duplex_ar.FrameHistory(
-        rows=[torch.arange(12).reshape(3, 4), torch.full((1, 4), 99)], positions=4
+        fusion_rows=[torch.arange(12).reshape(3, 4), torch.full((1, 4), 99)],
+        position_count=4,
     )
     requests = [
         SimpleNamespace(
@@ -26,15 +27,15 @@ def test_prefill_uses_exact_uncached_suffix_and_replays_fused_history(monkeypatc
         )
     ]
     for prefix in (0, 2, 3):
-        duplex_ar.attach_rows(
+        duplex_ar.attach_fusion_rows(
             SimpleNamespace(
                 extend_prefix_lens_cpu=[prefix], extend_seq_lens_cpu=[4 - prefix]
             ),
             requests,
         )
-        assert torch.equal(captured[-1], torch.cat(history.rows)[prefix:])
+        assert torch.equal(captured[-1], torch.cat(history.fusion_rows)[prefix:])
     with pytest.raises(RuntimeError, match="not aligned"):
-        duplex_ar.attach_rows(
+        duplex_ar.attach_fusion_rows(
             SimpleNamespace(extend_prefix_lens_cpu=[2], extend_seq_lens_cpu=[1]),
             requests,
         )
@@ -63,8 +64,8 @@ def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
     )
     adapter = duplex_ar.ThinkerAdapter(
         SimpleNamespace(model=model),
-        prompt_ids=[1, 2],
-        pad_id=0,
+        prompt_token_ids=[1, 2],
+        pad_token_id=0,
         tokenizer=tokenizer,
         context_length=8,
     )
@@ -89,9 +90,9 @@ def test_thinker_continuation_fuses_prior_output_and_function_without_new_token(
     )
     assert second.input_ids == [] and second.max_new_tokens == 1
     history = adapter.states[ref]
-    assert history.positions == 4
+    assert history.position_count == 4
     assert torch.equal(
-        history.rows[-1],
+        history.fusion_rows[-1],
         2 * torch.full((1, 4), 7) + 3 * emb.weight[3] + 5 * emb.weight[4],
     )
     adapter.close(ref)

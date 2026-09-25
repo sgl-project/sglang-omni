@@ -33,6 +33,12 @@ class GraphPerception(StreamingPerception):
     SINGLE_BUFFERS = ("sample_buffer", "preemphasis_carry")
     LIST_BUFFERS = ("sub_caches", "key_caches", "value_caches", "conv_caches")
 
+    def __init__(self, perception: AudioPerception) -> None:
+        super().__init__(perception)
+        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph_input: torch.Tensor | None = None
+        self.graph_output: torch.Tensor | None = None
+
     def state_buffers(self) -> list[torch.Tensor]:
         return [getattr(self, name) for name in self.SINGLE_BUFFERS] + [
             tensor for name in self.LIST_BUFFERS for tensor in getattr(self, name)
@@ -44,7 +50,7 @@ class GraphPerception(StreamingPerception):
             return super().push(samples)
         else:
             pass
-        if not hasattr(self, "graph"):
+        if self.graph is None:
             inputs = self.state_buffers()
             saved = [value.clone() for value in inputs]
             attrs = {name: getattr(self, name) for name in self.SINGLE_BUFFERS}
@@ -76,14 +82,15 @@ class GraphPerception(StreamingPerception):
         else:
             pass
 
+        assert self.graph_input is not None and self.graph_output is not None
         self.graph_input.copy_(samples)
         self.graph.replay()
         return self.graph_output
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PerceptionState:
-    stream: StreamingPerception | None
+    stream: StreamingPerception
     ended: bool = False
 
 
@@ -92,8 +99,10 @@ class PerceptionHooks(SessionHooks):
         self.model = model
         self.states: dict[SessionIdentity, PerceptionState] = {}
 
-    def open(self, ref: SessionIdentity, request: OmniRequest) -> None:
-        self.states[ref] = PerceptionState(GraphPerception(self.model))
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.states[session_identity] = PerceptionState(
+            stream=GraphPerception(self.model)
+        )
 
     @torch.inference_mode()
     def append(
@@ -123,8 +132,10 @@ class PerceptionHooks(SessionHooks):
             pass
         row = None
         if raw:
-            wave = torch.from_numpy(np.frombuffer(raw, dtype="<i2").astype(np.float32))
-            row = state.stream.push(wave / 32768.0).cpu()
+            waveform = torch.from_numpy(
+                np.frombuffer(raw, dtype="<i2").astype(np.float32)
+            )
+            row = state.stream.push(waveform / 32768.0).cpu()
         else:
             pass
         state.ended = chunk.eos
@@ -133,16 +144,12 @@ class PerceptionHooks(SessionHooks):
         payload.data = {"acoustic": row, "eos": chunk.eos}
         return payload
 
-    def close(self, ref: SessionIdentity) -> None:
-        self.states.pop(ref, None)
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.states.pop(session_identity, None)
 
-    def usage(self, ref: SessionIdentity) -> ResourceUsage:
-        state = self.states.get(ref)
+    def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
+        state = self.states.get(session_identity)
         if state is None:
-            return ResourceUsage()
-        else:
-            pass
-        if state.stream is None:
             return ResourceUsage()
         else:
             pass
@@ -153,11 +160,11 @@ class PerceptionHooks(SessionHooks):
         return ResourceUsage(bytes=sum(t.numel() * t.element_size() for t in tensors))
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CodecState:
-    rows: list[torch.Tensor] = field(default_factory=list)
-    frames: int = 0
-    emitted: int = 0
+    code_frames: list[torch.Tensor] = field(default_factory=list)
+    frame_count: int = 0
+    emitted_samples: int = 0
     ended: bool = False
 
 
@@ -167,7 +174,9 @@ class CodecHooks(SessionHooks):
     def __init__(self, decoder: RVQVAEDecoder, device: str | torch.device) -> None:
         self.decoder, self.device = decoder, device
         self.states: dict[SessionIdentity, CodecState] = {}
-        self.decode_graph = None
+        self.decode_graph: torch.cuda.CUDAGraph | None = None
+        self.decode_input: torch.Tensor | None = None
+        self.decode_output: torch.Tensor | None = None
 
     @torch.inference_mode()
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -184,12 +193,13 @@ class CodecHooks(SessionHooks):
             )
         else:
             pass
+        assert self.decode_input is not None and self.decode_output is not None
         self.decode_input.copy_(codes)
         self.decode_graph.replay()
         return self.decode_output
 
-    def open(self, ref: SessionIdentity, request: OmniRequest) -> None:
-        self.states[ref] = CodecState()
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.states[session_identity] = CodecState()
 
     @torch.inference_mode()
     def append(
@@ -203,25 +213,25 @@ class CodecHooks(SessionHooks):
         data = payload.data
         codes = data.get("codes")
         if codes is not None:
-            state.rows.append(codes.reshape(-1).to(self.device))
-            state.frames += 1
-            state.rows = state.rows[-DECODE_WINDOW_FRAMES:]
+            state.code_frames.append(codes.reshape(-1).to(self.device))
+            state.frame_count += 1
+            state.code_frames = state.code_frames[-DECODE_WINDOW_FRAMES:]
         else:
             pass
         eos = bool(data.get("eos"))
         fresh = torch.zeros(0)
-        if state.rows:
-            first = state.frames - len(state.rows)
+        if state.code_frames:
+            first_frame_index = state.frame_count - len(state.code_frames)
             frame_samples = self.decoder.samples_per_frame
-            available = state.frames * frame_samples - (
+            available_samples = state.frame_count * frame_samples - (
                 0 if eos else TAIL_HOLDBACK_SAMPLES
             )
-            audio = self.decode(torch.stack(state.rows))
-            window_start = first * frame_samples
-            start = state.emitted - window_start
-            end = available - window_start
+            audio = self.decode(torch.stack(state.code_frames))
+            window_start = first_frame_index * frame_samples
+            start = state.emitted_samples - window_start
+            end = available_samples - window_start
             fresh = audio[start:end].float().cpu()
-            state.emitted = available
+            state.emitted_samples = available_samples
         else:
             pass
         pcm = (fresh.clamp(-1, 1).numpy() * 32767).astype("<i2").tobytes()
@@ -246,15 +256,15 @@ class CodecHooks(SessionHooks):
         )
         return payload
 
-    def close(self, ref: SessionIdentity) -> None:
-        self.states.pop(ref, None)
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.states.pop(session_identity, None)
 
-    def usage(self, ref: SessionIdentity) -> ResourceUsage:
-        state = self.states.get(ref)
+    def usage(self, session_identity: SessionIdentity) -> ResourceUsage:
+        state = self.states.get(session_identity)
         if state is None:
             return ResourceUsage()
         else:
             pass
         return ResourceUsage(
-            bytes=sum(t.numel() * t.element_size() for t in state.rows)
+            bytes=sum(t.numel() * t.element_size() for t in state.code_frames)
         )
