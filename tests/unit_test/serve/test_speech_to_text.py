@@ -17,7 +17,7 @@ from sglang_omni.serve.transcriptions import (
 )
 
 
-def _build_request(*, task: str = "transcribe"):
+def build_request(*, task: str = "transcribe"):
     return speech_to_text.build_speech_to_text_generate_request(
         audio_bytes=b"RIFF",
         filename="sample.wav",
@@ -47,7 +47,7 @@ def test_build_request_marks_repetition_penalty_explicit() -> None:
 
 
 def test_build_request_leaves_repetition_penalty_implicit_by_default() -> None:
-    req = _build_request()
+    req = build_request()
 
     assert "repetition_penalty" not in req.metadata.get(
         "explicit_generation_params", []
@@ -64,11 +64,11 @@ def test_transcription_builder_import_keeps_shared_callable() -> None:
 
 
 def test_build_request_defaults_to_transcribe_task() -> None:
-    assert _build_request().extra_params["task"] == "transcribe"
+    assert build_request().extra_params["task"] == "transcribe"
 
 
 def test_build_request_accepts_sibling_endpoint_task() -> None:
-    assert _build_request(task="translate").extra_params["task"] == "translate"
+    assert build_request(task="translate").extra_params["task"] == "translate"
 
 
 def test_response_format_validation_preserves_endpoint_error_contract() -> None:
@@ -200,14 +200,14 @@ def test_verbose_response_uses_requested_task() -> None:
     assert json.loads(response.body)["task"] == "translate"
 
 
-class _Upload:
+class Upload:
     def __init__(self, data: bytes, content_type: str | None, filename: str | None):
-        self._data = data
+        self.data = data
         self.content_type = content_type
         self.filename = filename
 
     async def read(self) -> bytes:
-        return self._data
+        return self.data
 
 
 @pytest.mark.asyncio
@@ -215,7 +215,7 @@ async def test_read_wraps_declared_g711_upload_in_a_wav_container() -> None:
     raw = bytes([0xFF] * 8000)
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(raw, "audio/basic", "call.bin")
+        Upload(raw, "audio/basic", "call.bin")
     )
 
     assert audio_bytes[:4] == b"RIFF"
@@ -229,7 +229,7 @@ async def test_read_passes_other_uploads_through_unchanged() -> None:
     raw = b"RIFF" + b"\x00" * 40
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(raw, "audio/wav", "clip.wav")
+        Upload(raw, "audio/wav", "clip.wav")
     )
 
     assert audio_bytes is raw
@@ -239,7 +239,7 @@ async def test_read_passes_other_uploads_through_unchanged() -> None:
 async def test_read_still_rejects_empty_g711_uploads() -> None:
     with pytest.raises(HTTPException) as exc_info:
         await speech_to_text.read_and_validate_speech_to_text_audio(
-            _Upload(b"", "audio/basic", "call.ulaw")
+            Upload(b"", "audio/basic", "call.ulaw")
         )
 
     assert exc_info.value.status_code == 400
@@ -252,7 +252,7 @@ async def test_read_keeps_sun_au_declared_as_audio_basic_intact() -> None:
     au = b".snd" + struct.pack(">IIIII", 24, len(payload), 1, 8000, 1) + payload
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(au, "audio/basic", "call.au")
+        Upload(au, "audio/basic", "call.au")
     )
 
     assert audio_bytes is au
@@ -271,7 +271,7 @@ async def test_probe_measures_wrapped_g711_without_the_av_fallback(
     )
 
     audio_bytes = await speech_to_text.read_and_validate_speech_to_text_audio(
-        _Upload(b"\xff" * 12000, content_type, "call.bin")
+        Upload(b"\xff" * 12000, content_type, "call.bin")
     )
 
     assert speech_to_text.probe_audio_duration(audio_bytes) == pytest.approx(1.5)

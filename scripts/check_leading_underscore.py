@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Lint and optionally rename leading-underscore names.
 
-Every Python file under sglang_omni/ is in scope, including files added later
-(new model packages under sglang_omni/models/, new runners, etc.). There is no
-per-directory allowlist: a new path is checked as soon as it exists.
+Every Python file under sglang_omni/ and tests/ is in scope, including files
+added later (new model packages under sglang_omni/models/, new test suites,
+etc.). There is no per-directory allowlist: a new path is checked as soon as it
+exists.
 
 Checked names:
 - class and function definitions at module or class scope
@@ -32,6 +33,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = REPO_ROOT / "sglang_omni"
+TESTS_ROOT = REPO_ROOT / "tests"
+LINTED_ROOTS = (SOURCE_ROOT, TESTS_ROOT)
 VENDOR_ROOT = SOURCE_ROOT / "vendor"
 NOQA_CODE = "leading-underscore"
 
@@ -172,7 +175,7 @@ def repo_relative(path: Path) -> str:
 
 def is_in_scope(path: Path) -> bool:
     resolved = path.resolve()
-    if not resolved.is_relative_to(SOURCE_ROOT):
+    if not any(resolved.is_relative_to(root) for root in LINTED_ROOTS):
         return False
     if resolved.is_relative_to(VENDOR_ROOT):
         return False
@@ -339,7 +342,12 @@ def check_file(path: Path) -> list[Violation]:
 
 
 def iter_default_files() -> list[Path]:
-    return sorted(path for path in SOURCE_ROOT.rglob("*.py") if is_in_scope(path))
+    return sorted(
+        path
+        for root in LINTED_ROOTS
+        for path in root.rglob("*.py")
+        if is_in_scope(path)
+    )
 
 
 def resolve_targets(raw_paths: list[str]) -> list[Path]:
@@ -677,7 +685,7 @@ def report_violations(violations: list[Violation]) -> int:
         print(format_violation(violation), file=sys.stderr)
     print(
         f"{len(violations)} leading-underscore class/function/attribute name(s) "
-        f"in sglang_omni/",
+        f"in sglang_omni/ and tests/",
         file=sys.stderr,
     )
     return 1
@@ -716,7 +724,7 @@ def run_fix(paths: list[Path]) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "paths", nargs="*", help="Python files (defaults to sglang_omni/)"
+        "paths", nargs="*", help="Python files (defaults to sglang_omni/ and tests/)"
     )
     parser.add_argument(
         "--fix",

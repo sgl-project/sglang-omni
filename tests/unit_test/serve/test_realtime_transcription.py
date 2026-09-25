@@ -39,7 +39,7 @@ class FakeVAD:
         self.reset_calls = 0
         self.config = VADConfig()
 
-    def process(self, _pcm: bytes) -> list[Any]:
+    def process(self, pcm_bytes: bytes) -> list[Any]:
         return []
 
     def reset(self) -> None:
@@ -51,7 +51,7 @@ class StartOnNextAppendVAD(FakeVAD):
         super().__init__()
         self.should_start = True
 
-    def process(self, _pcm: bytes) -> list[Emit]:
+    def process(self, pcm_bytes: bytes) -> list[Emit]:
         if not self.should_start:
             return []
         self.should_start = False
@@ -88,7 +88,7 @@ class FakeClient:
         self.aborted: list[str] = []
 
     async def completion(
-        self, _request: GenerateRequest, *, request_id: str
+        self, request: GenerateRequest, *, request_id: str
     ) -> CompletionResult:
         self.calls.append(request_id)
         text = self.outputs.pop(0) if self.outputs else f"text-{len(self.calls)}"
@@ -105,7 +105,7 @@ class BlockingClient(FakeClient):
         self.release = asyncio.Event()
 
     async def completion(
-        self, _request: GenerateRequest, *, request_id: str
+        self, request: GenerateRequest, *, request_id: str
     ) -> CompletionResult:
         self.calls.append(request_id)
         if len(self.calls) == 1:
@@ -124,7 +124,7 @@ class BlockingSecondClient(FakeClient):
         self.second_started = asyncio.Event()
 
     async def completion(
-        self, _request: GenerateRequest, *, request_id: str
+        self, request: GenerateRequest, *, request_id: str
     ) -> CompletionResult:
         self.calls.append(request_id)
         if len(self.calls) == 2:
@@ -137,25 +137,25 @@ class BlockingSecondClient(FakeClient):
         )
 
 
-def _pcm(seconds: float, amplitude: int = 1000) -> bytes:
+def make_pcm(seconds: float, amplitude: int = 1000) -> bytes:
     samples = int(16000 * seconds)
     return amplitude.to_bytes(2, "little", signed=True) * samples
 
 
-def _audio_event(pcm: bytes) -> dict[str, Any]:
+def audio_event(pcm: bytes) -> dict[str, Any]:
     return {
         "type": "input_audio_buffer.append",
         "audio": base64.b64encode(pcm).decode(),
     }
 
 
-async def _session(
+async def make_session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     outputs: list[str] | None = None,
     max_segment_s: float | None = 60.0,
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
-    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: FakeVAD())
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda config: FakeVAD())
     websocket = RecordingWebSocket()
     client = FakeClient(outputs or [])
     session = RealtimeTranscriptionSession(
@@ -183,10 +183,10 @@ async def _session(
 async def test_partial_is_replaced_by_one_final_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(
+    session, websocket, _client = await make_session(
         monkeypatch, outputs=["hello wor", "hello world"]
     )
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     for _ in range(10):
         await asyncio.sleep(0)
         if any(event["type"] == "transcription.segment" for event in websocket.events):
@@ -214,13 +214,13 @@ async def test_partial_is_replaced_by_one_final_segment(
 async def test_audio_during_decode_coalesces_to_one_followup_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _websocket, _client = await _session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     client = BlockingClient()
     session.client = client  # type: ignore[assignment]
 
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     await client.started.wait()
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     client.release.set()
     for _ in range(20):
         await asyncio.sleep(0)
@@ -235,11 +235,11 @@ async def test_audio_during_decode_coalesces_to_one_followup_refresh(
 async def test_teardown_aborts_inflight_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     client = BlockingClient()
     session.client = client  # type: ignore[assignment]
 
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     await client.started.wait()
     await session.teardown()
 
@@ -253,7 +253,7 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     vad = StartOnNextAppendVAD()
-    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: vad)
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda config: vad)
     websocket = RecordingWebSocket()
     client = BlockingSecondClient()
     strategy = FakeStrategy()
@@ -271,7 +271,7 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
         session_id="sess-clear",
     )
 
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     for _ in range(10):
         await asyncio.sleep(0)
         if any(event["type"] == "transcription.segment" for event in websocket.events):
@@ -279,7 +279,7 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
     assert session.active_segment is not None
     cleared_state = session.active_segment.strategy_state
 
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     await client.second_started.wait()
     await session.dispatch({"type": "input_audio_buffer.clear"})
 
@@ -298,7 +298,7 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
         for event in websocket.events
     )
 
-    await session.dispatch(_audio_event(_pcm(1.0)))
+    await session.dispatch(audio_event(make_pcm(1.0)))
     assert session.active_segment is not None
     assert session.active_segment.strategy_state is not cleared_state
     await session.dispatch({"type": "input_audio_buffer.commit"})
@@ -318,9 +318,9 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
 async def test_silent_final_does_not_reach_the_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, client = await _session(monkeypatch)
+    session, websocket, client = await make_session(monkeypatch)
 
-    await session.dispatch(_audio_event(_pcm(0.5, amplitude=0)))
+    await session.dispatch(audio_event(make_pcm(0.5, amplitude=0)))
     await session.dispatch({"type": "input_audio_buffer.commit"})
     await session.dispatch({"type": "transcription.done"})
 
@@ -336,8 +336,8 @@ async def test_silent_final_does_not_reach_the_model(
 async def test_hard_limit_finalizes_in_audio_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch, max_segment_s=1.0)
-    await session.dispatch(_audio_event(_pcm(2.25)))
+    session, websocket, _client = await make_session(monkeypatch, max_segment_s=1.0)
+    await session.dispatch(audio_event(make_pcm(2.25)))
     await session.dispatch({"type": "transcription.done"})
 
     finals = [
@@ -354,7 +354,7 @@ async def test_hard_limit_finalizes_in_audio_order(
 async def test_vad_idle_silence_keeps_buffer_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: FakeVAD())
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda config: FakeVAD())
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(
         websocket,  # type: ignore[arg-type]
@@ -374,7 +374,7 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
     # never drains the buffer. Streaming past max_segment_s + 4s of audio
     # must still not raise BufferOverflow.
     for _ in range(8):
-        await session.dispatch(_audio_event(_pcm(1.0, amplitude=0)))
+        await session.dispatch(audio_event(make_pcm(1.0, amplitude=0)))
 
     assert session.active_segment is None
     assert not [event for event in websocket.events if event["type"] == "error"]
@@ -391,18 +391,18 @@ class ExplodingStrategy(FakeStrategy):
 async def test_handler_exception_is_reported_and_session_survives(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    session, websocket, client = await _session(monkeypatch, outputs=["hello"])
+    session, websocket, client = await make_session(monkeypatch, outputs=["hello"])
     session.strategy = ExplodingStrategy()
 
     with caplog.at_level(logging.ERROR):
-        await session.dispatch(_audio_event(_pcm(0.5)))
+        await session.dispatch(audio_event(make_pcm(0.5)))
 
     assert websocket.events[-1]["type"] == "error"
     assert websocket.events[-1]["error"]["code"] == "internal_error"
     assert "strategy exploded" in caplog.text
 
     session.strategy = FakeStrategy()
-    await session.dispatch(_audio_event(_pcm(0.5)))
+    await session.dispatch(audio_event(make_pcm(0.5)))
     await session.dispatch({"type": "input_audio_buffer.commit"})
     await session.dispatch({"type": "transcription.done"})
     assert websocket.events[-1]["type"] == "transcription.completed"
@@ -413,7 +413,7 @@ async def test_handler_exception_is_reported_and_session_survives(
 async def test_prefix_padding_must_fit_inside_silence_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     session.transcription_config = RealtimeTranscriptionConfig(
         strategy_cls=FakeStrategy, server_vad=True
     )
@@ -455,7 +455,7 @@ async def test_prefix_padding_must_fit_inside_silence_window(
 async def test_vad_settings_reject_negative_padding_and_zero_silence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     session.transcription_config = RealtimeTranscriptionConfig(
         strategy_cls=FakeStrategy, server_vad=True
     )
@@ -489,7 +489,7 @@ async def test_failed_onset_does_not_strand_the_vad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     vad = StartOnNextAppendVAD()
-    monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: vad)
+    monkeypatch.setattr(session_module, "StreamingVAD", lambda config: vad)
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(
         websocket,  # type: ignore[arg-type]
@@ -506,14 +506,14 @@ async def test_failed_onset_does_not_strand_the_vad(
     )
 
     # First onset: the VAD flips to speech, then segment creation fails.
-    await session.dispatch(_audio_event(_pcm(0.5)))
+    await session.dispatch(audio_event(make_pcm(0.5)))
     assert websocket.events[-1]["type"] == "error"
     assert session.active_segment is None
     assert vad.reset_calls == 1  # resynced, so the VAD can report onset again
 
     # The VAD reports the (re-detected) onset on the next packet and the
     # utterance is transcribed normally.
-    await session.dispatch(_audio_event(_pcm(2.0)))
+    await session.dispatch(audio_event(make_pcm(2.0)))
     assert session.active_segment is not None
     await session.dispatch({"type": "input_audio_buffer.commit"})
     await session.dispatch({"type": "transcription.done"})
@@ -527,7 +527,7 @@ async def test_failed_onset_does_not_strand_the_vad(
     assert websocket.events[-1]["text"] == finals[0]["text"]
 
 
-def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
+def no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(
         websocket,  # type: ignore[arg-type]
@@ -545,19 +545,19 @@ def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]
 
 @pytest.mark.asyncio
 async def test_model_without_server_vad_starts_in_manual_mode() -> None:
-    session, websocket = _no_vad_session()
+    session, websocket = no_vad_session()
     await session.send(session.initial_event())
 
     assert websocket.events[-1]["session"]["turn_detection"] is None
     assert session.vad is None
-    await session.dispatch(_audio_event(_pcm(0.5)))
+    await session.dispatch(audio_event(make_pcm(0.5)))
     assert session.active_segment is not None
     await session.teardown()
 
 
 @pytest.mark.asyncio
 async def test_model_without_server_vad_rejects_turn_detection() -> None:
-    session, websocket = _no_vad_session()
+    session, websocket = no_vad_session()
     await session.dispatch(
         {
             "type": "session.update",

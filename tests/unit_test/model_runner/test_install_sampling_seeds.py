@@ -12,7 +12,7 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.sampling.seed import derive_sampling_seed
 
 
-def _req(seed, request_id="req"):
+def req(seed, request_id="req"):
     sp = SimpleNamespace(sampling_seed=seed)
     return SimpleNamespace(
         request_id=request_id,
@@ -20,7 +20,7 @@ def _req(seed, request_id="req"):
     )
 
 
-def _fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False):
+def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False):
     return SimpleNamespace(
         sampling_info=SimpleNamespace(
             device="cpu",
@@ -36,8 +36,8 @@ def test_installs_per_row_seeds_and_noops_without_one():
     runner = object.__new__(ModelRunner)
     # seeded rows -> per-row int64 seed tensor; mixed unseeded rows get a
     # rank-shared fallback derived from the request id.
-    fb = _fb()
-    requests = [_req(42, "seeded"), _req(None, "unseeded")]
+    fb = make_fb()
+    requests = [req(42, "seeded"), req(None, "unseeded")]
     runner.install_sampling_seeds(fb, requests)
     ss = fb.sampling_info.sampling_seed
     assert isinstance(ss, torch.Tensor) and ss.dtype == torch.long
@@ -45,16 +45,16 @@ def test_installs_per_row_seeds_and_noops_without_one():
     assert int(ss[1]) == derive_sampling_seed("sglang-omni-unseeded-row", "unseeded")
     assert requests[1].data.req.sampling_params.sampling_seed is None
     # no seed anywhere -> left unseeded (preserves random sampling)
-    fb2 = _fb()
-    runner.install_sampling_seeds(fb2, [_req(None), _req(None)])
+    fb2 = make_fb()
+    runner.install_sampling_seeds(fb2, [req(None), req(None)])
     assert fb2.sampling_info.sampling_seed is None
 
 
 def test_does_not_clobber_subclass_installed_seed():
     runner = object.__new__(ModelRunner)
     preset = torch.tensor([1, 2, 3])
-    fb = _fb(sampling_seed=preset)
-    runner.install_sampling_seeds(fb, [_req(42), _req(42), _req(42)])
+    fb = make_fb(sampling_seed=preset)
+    runner.install_sampling_seeds(fb, [req(42), req(42), req(42)])
     assert fb.sampling_info.sampling_seed is preset
 
 
@@ -63,18 +63,18 @@ def test_preinstalled_seed_requires_sampling_mode_contract():
     preset = torch.tensor([1, 2])
     fb = SimpleNamespace(sampling_info=SimpleNamespace(sampling_seed=preset))
     with pytest.raises(AttributeError):
-        runner.install_sampling_seeds(fb, [_req(42), _req(42)])
+        runner.install_sampling_seeds(fb, [req(42), req(42)])
 
 
 def test_unseeded_row_in_seeded_batch_uses_rank_shared_fallback():
     runner = object.__new__(ModelRunner)
-    requests = [_req(42, "seeded"), _req(None, "unseeded")]
-    fb = _fb()
+    requests = [req(42, "seeded"), req(None, "unseeded")]
+    fb = make_fb()
     runner.install_sampling_seeds(fb, requests)
     fallback = int(fb.sampling_info.sampling_seed[1])
     assert requests[1].data.req.sampling_params.sampling_seed is None
 
-    fb_next = _fb()
+    fb_next = make_fb()
     runner.install_sampling_seeds(fb_next, requests)
     assert int(fb_next.sampling_info.sampling_seed[1]) == fallback
     assert requests[1].data.req.sampling_params.sampling_seed is None
@@ -83,7 +83,7 @@ def test_unseeded_row_in_seeded_batch_uses_rank_shared_fallback():
 def test_rejects_seeded_min_p_before_upstream_sampler():
     runner = object.__new__(ModelRunner)
     with pytest.raises(ValueError, match="min_p"):
-        runner.install_sampling_seeds(_fb(min_p=True), [_req(42)])
+        runner.install_sampling_seeds(make_fb(min_p=True), [req(42)])
 
 
 def test_rejects_seeded_flashinfer_top_p_before_upstream_sampler(monkeypatch):
@@ -93,7 +93,7 @@ def test_rejects_seeded_flashinfer_top_p_before_upstream_sampler(monkeypatch):
     )
     runner = object.__new__(ModelRunner)
     with pytest.raises(ValueError, match="flashinfer"):
-        runner.install_sampling_seeds(_fb(top_p=True), [_req(42)])
+        runner.install_sampling_seeds(make_fb(top_p=True), [req(42)])
 
 
 def test_allows_seeded_pytorch_top_p(monkeypatch):
@@ -102,6 +102,6 @@ def test_allows_seeded_pytorch_top_p(monkeypatch):
         lambda: "pytorch",
     )
     runner = object.__new__(ModelRunner)
-    fb = _fb(top_p=True)
-    runner.install_sampling_seeds(fb, [_req(42)])
+    fb = make_fb(top_p=True)
+    runner.install_sampling_seeds(fb, [req(42)])
     assert int(fb.sampling_info.sampling_seed[0]) == 42

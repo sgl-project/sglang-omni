@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 
-class _CommTraceHandler(logging.Handler):
+class CommTraceHandler(logging.Handler):
     def __init__(self, events: list[dict]) -> None:
         super().__init__(level=logging.INFO)
         self.events = events
@@ -40,7 +40,7 @@ def capture_comm_trace(monkeypatch, *, enable: bool = True) -> Iterator[list[dic
     else:
         monkeypatch.delenv("SGLANG_OMNI_COMM_TRACE", raising=False)
     events: list[dict] = []
-    handler = _CommTraceHandler(events)
+    handler = CommTraceHandler(events)
     trace_logger = logging.getLogger("sglang_omni.comm_trace")
     previous_level = trace_logger.level
     trace_logger.addHandler(handler)

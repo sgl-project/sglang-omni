@@ -18,7 +18,7 @@ from examples.launchers.qwen3_omni import (
 )
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 
-_EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
+EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 
 
 @pytest.mark.parametrize(
@@ -35,7 +35,7 @@ _EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 )
 def test_unified_launcher_preset_help(preset):
     result = subprocess.run(
-        [sys.executable, str(_EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
+        [sys.executable, str(EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr.decode()
@@ -45,7 +45,7 @@ def test_qwen_speech_help_preserves_topology_contract():
     result = subprocess.run(
         [
             sys.executable,
-            str(_EXAMPLES_DIR / "run_omni.py"),
+            str(EXAMPLES_DIR / "run_omni.py"),
             "qwen3-speech-server",
             "--help",
         ],
@@ -61,9 +61,9 @@ def test_qwen_speech_help_preserves_topology_contract():
     assert "All GPU stage flags must point to the same device" in help_text
 
 
-def _preset_help(preset: str) -> str:
+def preset_help(preset: str) -> str:
     result = subprocess.run(
-        [sys.executable, str(_EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
+        [sys.executable, str(EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr.decode()
@@ -71,7 +71,7 @@ def _preset_help(preset: str) -> str:
 
 
 def test_ming_speech_server_help_preserves_pipeline_contract():
-    help_text = _preset_help("ming-speech-server")
+    help_text = preset_help("ming-speech-server")
 
     assert "8-stage streaming-TTS path" in help_text
     assert "non-streaming 7-stage speech path" in help_text
@@ -91,22 +91,22 @@ def test_ming_speech_server_help_preserves_pipeline_contract():
     ],
 )
 def test_remaining_launcher_help_preserves_examples(preset, expected_examples):
-    help_text = _preset_help(preset)
+    help_text = preset_help(preset)
 
     for expected in expected_examples:
         assert expected in help_text
 
 
 def test_offline_help_preserves_input_output_guidance():
-    ming_help = _preset_help("ming-speech")
-    qwen_help = _preset_help("qwen3-speech")
+    ming_help = preset_help("ming-speech")
+    qwen_help = preset_help("qwen3-speech")
 
     assert "Thinker GPU id. With TP > 1" in ming_help
     assert "Output WAV path (default: ./output_audio.wav)" in ming_help
     assert "Output WAV path; omit to skip saving audio" in qwen_help
 
 
-def _fresh_process_log_level(preset: str, loglevel: str | None) -> str:
+def fresh_process_log_level(preset: str, loglevel: str | None) -> str:
     code = (
         "import logging\n"
         "from examples import _omni_launcher\n"
@@ -123,7 +123,7 @@ def _fresh_process_log_level(preset: str, loglevel: str | None) -> str:
         process_env["LOGLEVEL"] = loglevel
     result = subprocess.run(
         [sys.executable, "-c", code],
-        cwd=_EXAMPLES_DIR.parent,
+        cwd=EXAMPLES_DIR.parent,
         env=process_env,
         capture_output=True,
         text=True,
@@ -145,7 +145,7 @@ def _fresh_process_log_level(preset: str, loglevel: str | None) -> str:
     ],
 )
 def test_unified_launcher_honors_loglevel_override(preset):
-    assert _fresh_process_log_level(preset, "DEBUG") == "DEBUG"
+    assert fresh_process_log_level(preset, "DEBUG") == "DEBUG"
 
 
 @pytest.mark.parametrize(
@@ -153,7 +153,7 @@ def test_unified_launcher_honors_loglevel_override(preset):
     [("qwen3-text-server", "INFO"), ("ming-text", "DEBUG")],
 )
 def test_unified_launcher_preserves_default_log_levels(preset, expected):
-    assert _fresh_process_log_level(preset, None) == expected
+    assert fresh_process_log_level(preset, None) == expected
 
 
 def test_unified_qwen_offline_launcher_applies_stage_gpus(monkeypatch):
@@ -257,13 +257,13 @@ def test_unified_ming_text_applies_thinker_max_seq_len():
 )
 def test_example_script_help(script):
     result = subprocess.run(
-        [sys.executable, str(_EXAMPLES_DIR / script), "--help"],
+        [sys.executable, str(EXAMPLES_DIR / script), "--help"],
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr.decode()
 
 
-def _make_args(**overrides) -> argparse.Namespace:
+def make_args(**overrides) -> argparse.Namespace:
     defaults = dict(
         model_path="Qwen/Qwen3-Omni-30B-A3B-Instruct",
         gpu_thinker=0,
@@ -291,7 +291,7 @@ def _make_args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**defaults)
 
 
-def _stage(config, name: str):
+def make_stage(config, name: str):
     return next(s for s in config.stages if s.name == name)
 
 
@@ -306,7 +306,7 @@ def mock_launch_server():
 
 def test_tp2_config_contract(mock_launch_server):
     """The thinker TP flags land in tp_size and the GPU list for TP=2."""
-    args = _make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
+    args = make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
     with patch(
         "sglang_omni.utils.gpu_compat.should_disable_custom_all_reduce_for_gpus",
         return_value=True,
@@ -314,7 +314,7 @@ def test_tp2_config_contract(mock_launch_server):
         _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    thinker = _stage(config, "thinker")
+    thinker = make_stage(config, "thinker")
 
     assert thinker.tp_size == 2
     assert thinker.gpu == [0, 1]
@@ -323,7 +323,7 @@ def test_tp2_config_contract(mock_launch_server):
 
 def test_tp2_enables_custom_all_reduce_on_p2p_mesh(mock_launch_server):
     """A P2P-capable (e.g. NVLink) TP thinker keeps custom all-reduce enabled."""
-    args = _make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
+    args = make_args(thinker_tp_size=2, gpu_thinker_tp="0,1")
     with patch(
         "sglang_omni.utils.gpu_compat.should_disable_custom_all_reduce_for_gpus",
         return_value=False,
@@ -331,18 +331,18 @@ def test_tp2_enables_custom_all_reduce_on_p2p_mesh(mock_launch_server):
         _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    thinker = _stage(config, "thinker")
+    thinker = make_stage(config, "thinker")
     assert thinker.engine.overrides()["disable_custom_all_reduce"] is False
 
 
 def test_tp1_default_config_contract(mock_launch_server):
-    args = _make_args()
+    args = make_args()
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    thinker = _stage(config, "thinker")
-    talker = _stage(config, "talker_ar")
-    code2wav = _stage(config, "code2wav")
+    thinker = make_stage(config, "thinker")
+    talker = make_stage(config, "talker_ar")
+    code2wav = make_stage(config, "code2wav")
 
     assert thinker.tp_size == 1
     assert thinker.gpu == 0
@@ -351,94 +351,94 @@ def test_tp1_default_config_contract(mock_launch_server):
 
 
 def test_speech_server_code2wav_follows_relocated_thinker(mock_launch_server):
-    args = _make_args(gpu_thinker=2, gpu_talker=3)
+    args = make_args(gpu_thinker=2, gpu_talker=3)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    assert _stage(config, "thinker").gpu == 2
-    assert _stage(config, "talker_ar").gpu == 3
-    assert _stage(config, "code2wav").gpu == 2
+    assert make_stage(config, "thinker").gpu == 2
+    assert make_stage(config, "talker_ar").gpu == 3
+    assert make_stage(config, "code2wav").gpu == 2
 
 
 def test_speech_server_forwards_realtime_flag(mock_launch_server):
-    args = _make_args(enable_realtime=True)
+    args = make_args(enable_realtime=True)
     _launch_speech_server(args)
 
     assert mock_launch_server.call_args.kwargs["enable_realtime"] is True
 
 
 def test_mem_fractions_applied(mock_launch_server):
-    args = _make_args(
+    args = make_args(
         thinker_mem_fraction_static=0.55,
         talker_mem_fraction_static=0.20,
     )
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    thinker = _stage(config, "thinker")
-    talker = _stage(config, "talker_ar")
+    thinker = make_stage(config, "thinker")
+    talker = make_stage(config, "talker_ar")
 
     assert thinker.engine.overrides()["mem_fraction_static"] == 0.55
     assert talker.engine.overrides()["mem_fraction_static"] == 0.20
 
 
 def test_talker_max_seq_len_applied(mock_launch_server):
-    args = _make_args(talker_max_seq_len=128)
+    args = make_args(talker_max_seq_len=128)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.max_seq_len == 128
 
 
 def test_partial_start_updates_talker_factory_args(mock_launch_server):
-    args = _make_args(enable_partial_start=True, partial_start_min_chunks=7)
+    args = make_args(enable_partial_start=True, partial_start_min_chunks=7)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is True
     assert talker.factory.partial_start_min_chunks == 7
 
 
 def test_partial_start_defaults_on(mock_launch_server):
-    args = _make_args()
+    args = make_args()
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is True
 
 
 def test_partial_start_colocated_defaults_off(mock_launch_server):
-    args = _make_args(colocated=True)
+    args = make_args(colocated=True)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is False
 
 
 def test_partial_start_colocated_can_be_enabled(mock_launch_server):
-    args = _make_args(colocated=True, enable_partial_start=True)
+    args = make_args(colocated=True, enable_partial_start=True)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is True
 
 
 def test_partial_start_can_be_disabled(mock_launch_server):
-    args = _make_args(enable_partial_start=False)
+    args = make_args(enable_partial_start=False)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is False
 
@@ -446,18 +446,18 @@ def test_partial_start_can_be_disabled(mock_launch_server):
 def test_partial_start_disabled_does_not_propagate_subfloor_min_chunks(
     mock_launch_server,
 ):
-    args = _make_args(enable_partial_start=False, partial_start_min_chunks=2)
+    args = make_args(enable_partial_start=False, partial_start_min_chunks=2)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    talker = _stage(config, "talker_ar")
+    talker = make_stage(config, "talker_ar")
 
     assert talker.factory.enable_partial_start is False
     assert talker.factory.partial_start_min_chunks >= MIN_PARTIAL_START_CHUNKS
 
 
 def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
-    args = _make_args(enable_partial_start=True, partial_start_min_chunks=2)
+    args = make_args(enable_partial_start=True, partial_start_min_chunks=2)
     with pytest.raises(ValueError, match="partial-start-min-chunks must be >= 3"):
         _launch_speech_server(args)
 
@@ -465,19 +465,19 @@ def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
 
 
 def test_colocated_defaults_use_thinker_gpu_for_gpu_stages(mock_launch_server):
-    args = _make_args(colocated=True)
+    args = make_args(colocated=True)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    assert _stage(config, "image_encoder").gpu == 0
-    assert _stage(config, "audio_encoder").gpu == 0
-    assert _stage(config, "thinker").gpu == 0
-    assert _stage(config, "talker_ar").gpu == 0
-    assert _stage(config, "code2wav").gpu == 0
+    assert make_stage(config, "image_encoder").gpu == 0
+    assert make_stage(config, "audio_encoder").gpu == 0
+    assert make_stage(config, "thinker").gpu == 0
+    assert make_stage(config, "talker_ar").gpu == 0
+    assert make_stage(config, "code2wav").gpu == 0
 
 
 def test_colocated_rejects_conflicting_stage_gpu(mock_launch_server):
-    args = _make_args(colocated=True, gpu_talker=1)
+    args = make_args(colocated=True, gpu_talker=1)
     with pytest.raises(ValueError, match="--colocated requires all GPU stage flags"):
         _launch_speech_server(args)
 
@@ -505,7 +505,7 @@ def test_parse_thinker_tp_rejects_non_integers():
 
 
 def test_tp_greater_than_1_requires_gpu_thinker_tp(mock_launch_server):
-    args = _make_args(thinker_tp_size=2, gpu_thinker_tp=None)
+    args = make_args(thinker_tp_size=2, gpu_thinker_tp=None)
     with pytest.raises(ValueError, match="requires --gpu-thinker-tp"):
         _launch_speech_server(args)
 
@@ -513,7 +513,7 @@ def test_tp_greater_than_1_requires_gpu_thinker_tp(mock_launch_server):
 
 
 def test_gpu_thinker_tp_rejected_when_tp1(mock_launch_server):
-    args = _make_args(thinker_tp_size=1, gpu_thinker_tp="0,1")
+    args = make_args(thinker_tp_size=1, gpu_thinker_tp="0,1")
     with pytest.raises(ValueError, match="only applies when.*thinker-tp-size > 1"):
         _launch_speech_server(args)
 

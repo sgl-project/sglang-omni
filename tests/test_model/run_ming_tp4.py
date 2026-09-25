@@ -141,39 +141,39 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-class _TeeStream:
+class TeeStream:
     def __init__(self, *streams):
-        self._streams = streams
+        self.streams = streams
 
     def write(self, data: str) -> int:
-        for stream in self._streams:
+        for stream in self.streams:
             stream.write(data)
             stream.flush()
         return len(data)
 
     def flush(self) -> None:
-        for stream in self._streams:
+        for stream in self.streams:
             stream.flush()
 
 
-def _url(args: argparse.Namespace, path: str) -> str:
+def url(args: argparse.Namespace, path: str) -> str:
     return f"http://{args.host}:{args.port}{path}"
 
 
-def _get_json(args: argparse.Namespace, path: str, timeout: float = 10) -> dict:
-    request = urllib.request.Request(_url(args, path), method="GET")
+def get_json(args: argparse.Namespace, path: str, timeout: float = 10) -> dict:
+    request = urllib.request.Request(url(args, path), method="GET")
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _post_json(
+def post_json(
     args: argparse.Namespace,
     path: str,
     payload: dict,
     timeout: float,
 ) -> dict:
     request = urllib.request.Request(
-        _url(args, path),
+        url(args, path),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -186,13 +186,13 @@ def _post_json(
         raise RuntimeError(f"HTTP {exc.code}: {detail[:1000]}") from exc
 
 
-def _stream_sse(
+def stream_sse(
     args: argparse.Namespace,
     payload: dict,
     timeout: float,
 ) -> list[dict]:
     request = urllib.request.Request(
-        _url(args, "/v1/chat/completions"),
+        url(args, "/v1/chat/completions"),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -213,7 +213,7 @@ def _stream_sse(
     return events
 
 
-def _start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
+def start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = args.cuda_visible_devices
     env["PYTHONPATH"] = f"{os.getcwd()}:{env.get('PYTHONPATH', '')}"
@@ -252,20 +252,20 @@ def _start_server(args: argparse.Namespace, log_path: Path) -> subprocess.Popen:
         start_new_session=True,
         text=True,
     )
-    process._log_file = log_file  # type: ignore[attr-defined]
+    process.log_file = log_file  # type: ignore[attr-defined]
     if not args.quiet_server_log:
         thread = threading.Thread(
-            target=_mirror_server_log,
+            target=mirror_server_log,
             args=(log_path, process),
             name="server-log-mirror",
             daemon=True,
         )
         thread.start()
-        process._log_thread = thread  # type: ignore[attr-defined]
+        process.log_thread = thread  # type: ignore[attr-defined]
     return process
 
 
-def _mirror_server_log(log_path: Path, process: subprocess.Popen) -> None:
+def mirror_server_log(log_path: Path, process: subprocess.Popen) -> None:
     """Mirror the server log file to stdout for one-terminal smoke runs."""
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as reader:
@@ -281,14 +281,14 @@ def _mirror_server_log(log_path: Path, process: subprocess.Popen) -> None:
         print(f"[server-log] mirror stopped: {exc}", flush=True)
 
 
-def _wait_ready(args: argparse.Namespace, process: subprocess.Popen | None) -> None:
+def wait_ready(args: argparse.Namespace, process: subprocess.Popen | None) -> None:
     deadline = time.time() + args.startup_timeout
     last_error = ""
     while time.time() < deadline:
         if process is not None and process.poll() is not None:
             raise RuntimeError(f"server exited early with code {process.returncode}")
         try:
-            health = _get_json(args, "/health", timeout=5)
+            health = get_json(args, "/health", timeout=5)
             if health.get("status") == "healthy" or health.get("running") is True:
                 print("[ready] /health OK", flush=True)
                 return
@@ -299,7 +299,7 @@ def _wait_ready(args: argparse.Namespace, process: subprocess.Popen | None) -> N
     raise TimeoutError(f"server did not become healthy: {last_error}")
 
 
-def _show_text_response(name: str, body: dict) -> str:
+def show_text_response(name: str, body: dict) -> str:
     choices = body.get("choices") or []
     if not choices:
         raise AssertionError(f"{name}: missing choices: {body}")
@@ -311,7 +311,7 @@ def _show_text_response(name: str, body: dict) -> str:
     return text
 
 
-def _show_stream_response(name: str, events: list[dict]) -> None:
+def show_stream_response(name: str, events: list[dict]) -> None:
     text_parts: list[str] = []
     for event in events:
         choices = event.get("choices") or []
@@ -327,7 +327,7 @@ def _show_stream_response(name: str, events: list[dict]) -> None:
     )
 
 
-def _run_smoke_tests(args: argparse.Namespace) -> None:
+def run_smoke_tests(args: argparse.Namespace) -> None:
     results: list[tuple[str, bool, float, str]] = []
 
     def run(name: str, fn) -> None:
@@ -341,11 +341,11 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
             print(f"[fail] {name}: {exc}", flush=True)
             raise
 
-    run("health", lambda: _get_json(args, "/health", timeout=10))
-    run("models", lambda: _get_json(args, "/v1/models", timeout=10))
+    run("health", lambda: get_json(args, "/health", timeout=10))
+    run("models", lambda: get_json(args, "/v1/models", timeout=10))
 
     def text_chat() -> None:
-        body = _post_json(
+        body = post_json(
             args,
             "/v1/chat/completions",
             {
@@ -357,12 +357,12 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
             },
             args.request_timeout,
         )
-        _show_text_response("text_chat", body)
+        show_text_response("text_chat", body)
 
     run("text_chat", text_chat)
 
     def image_text_chat() -> None:
-        body = _post_json(
+        body = post_json(
             args,
             "/v1/chat/completions",
             {
@@ -388,12 +388,12 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
             },
             args.request_timeout,
         )
-        _show_text_response("image_text_chat", body)
+        show_text_response("image_text_chat", body)
 
     run("image_text_chat", image_text_chat)
 
     def stream_text_chat() -> None:
-        events = _stream_sse(
+        events = stream_sse(
             args,
             {
                 "model": args.model_name,
@@ -408,7 +408,7 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
         if not events:
             raise AssertionError("no SSE events")
         print(f"[ok] stream_text_chat: events={len(events)}", flush=True)
-        _show_stream_response("stream_text_chat", events)
+        show_stream_response("stream_text_chat", events)
 
     run("stream_text_chat", stream_text_chat)
 
@@ -421,7 +421,7 @@ def _run_smoke_tests(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
-def _run_mmmu_benchmark(args: argparse.Namespace) -> None:
+def run_mmmu_benchmark(args: argparse.Namespace) -> None:
     output_dir = (
         Path(args.mmmu_output_dir)
         if args.mmmu_output_dir
@@ -460,7 +460,7 @@ def _run_mmmu_benchmark(args: argparse.Namespace) -> None:
     subprocess.run(command, cwd=os.getcwd(), env=env, check=True)
 
 
-def _run_mmsu_benchmark(args: argparse.Namespace) -> None:
+def run_mmsu_benchmark(args: argparse.Namespace) -> None:
     output_dir = (
         Path(args.mmsu_output_dir)
         if args.mmsu_output_dir
@@ -499,14 +499,14 @@ def _run_mmsu_benchmark(args: argparse.Namespace) -> None:
     subprocess.run(command, cwd=os.getcwd(), env=env, check=True)
 
 
-_MING_TTS_SYSTEM_PROMPT_EN = (
+MING_TTS_SYSTEM_PROMPT_EN = (
     "You are a text-to-speech engine. Read aloud only the exact text the user "
     "asks you to speak. Do not add greetings, preambles, suffixes, "
     'explanations, apologies, or refusals. Do not say phrases like "Sure", '
     '"Here is", "In English", or "I am an AI". Output the spoken text '
     "verbatim and nothing else."
 )
-_MING_TTS_SYSTEM_PROMPT_ZH = (
+MING_TTS_SYSTEM_PROMPT_ZH = (
     "你是一个文本转语音引擎。只朗读用户给出的原文，逐字朗读。"
     "不要添加任何开场白、前缀、后缀、解释、道歉或拒绝。"
     '不要说"好的"、"以下是"、"用中文"或"我是 AI"之类的话。'
@@ -514,7 +514,7 @@ _MING_TTS_SYSTEM_PROMPT_ZH = (
 )
 
 
-def _run_tts_benchmark(args: argparse.Namespace) -> None:
+def run_tts_benchmark(args: argparse.Namespace) -> None:
     output_dir = (
         Path(args.tts_output_dir)
         if args.tts_output_dir
@@ -522,9 +522,9 @@ def _run_tts_benchmark(args: argparse.Namespace) -> None:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     system_prompt = (
-        _MING_TTS_SYSTEM_PROMPT_ZH
+        MING_TTS_SYSTEM_PROMPT_ZH
         if args.tts_lang == "zh"
-        else _MING_TTS_SYSTEM_PROMPT_EN
+        else MING_TTS_SYSTEM_PROMPT_EN
     )
     command = [
         sys.executable,
@@ -566,7 +566,7 @@ def _run_tts_benchmark(args: argparse.Namespace) -> None:
     subprocess.run(command, cwd=os.getcwd(), env=env, check=True)
 
 
-def _stop_server(process: subprocess.Popen | None) -> None:
+def stop_server(process: subprocess.Popen | None) -> None:
     if process is None or process.poll() is not None:
         return
     print("[server] stopping...", flush=True)
@@ -581,15 +581,15 @@ def _stop_server(process: subprocess.Popen | None) -> None:
             os.killpg(process.pid, signal.SIGKILL)
         except Exception:
             process.kill()
-    log_thread = getattr(process, "_log_thread", None)
+    log_thread = getattr(process, "log_thread", None)
     if log_thread is not None:
         log_thread.join(timeout=2)
-    log_file = getattr(process, "_log_file", None)
+    log_file = getattr(process, "log_file", None)
     if log_file is not None:
         log_file.close()
 
 
-def _tail(path: Path, n: int = 160) -> None:
+def tail(path: Path, n: int = 160) -> None:
     if not path.exists():
         return
     lines = path.read_text(errors="replace").splitlines()
@@ -610,31 +610,31 @@ def main() -> None:
         run_log_path = Path(args.run_log) if args.run_log else output_dir / "run.log"
         run_log_path.parent.mkdir(parents=True, exist_ok=True)
         run_log_file = open(run_log_path, "w", buffering=1)
-        sys.stdout = _TeeStream(original_stdout, run_log_file)  # type: ignore[assignment]
-        sys.stderr = _TeeStream(original_stderr, run_log_file)  # type: ignore[assignment]
+        sys.stdout = TeeStream(original_stdout, run_log_file)  # type: ignore[assignment]
+        sys.stderr = TeeStream(original_stderr, run_log_file)  # type: ignore[assignment]
         print(f"[runner] log: {run_log_path}", flush=True)
 
     process: subprocess.Popen | None = None
     try:
         if not args.skip_server:
-            process = _start_server(args, log_path)
-        _wait_ready(args, process)
-        _run_smoke_tests(args)
+            process = start_server(args, log_path)
+        wait_ready(args, process)
+        run_smoke_tests(args)
         if args.run_mmmu:
-            _run_mmmu_benchmark(args)
+            run_mmmu_benchmark(args)
         if args.run_mmsu:
-            _run_mmsu_benchmark(args)
+            run_mmsu_benchmark(args)
         if args.run_tts:
-            _run_tts_benchmark(args)
+            run_tts_benchmark(args)
         if args.keep_server:
             print(f"[server] keeping server alive; log={log_path}", flush=True)
             process = None
     except Exception:
-        _tail(log_path)
+        tail(log_path)
         raise
     finally:
         if not args.keep_server:
-            _stop_server(process)
+            stop_server(process)
         if run_log_file is not None:
             sys.stdout = original_stdout
             sys.stderr = original_stderr

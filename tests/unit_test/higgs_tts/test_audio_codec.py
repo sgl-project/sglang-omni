@@ -16,7 +16,7 @@ def test_higgs_codec_uses_upstream_transformers_architecture() -> None:
     assert audio_codec.HiggsAudioV2TokenizerModel is HiggsAudioV2TokenizerModel
 
     config = HiggsAudioV2TokenizerConfig.from_json_file(
-        audio_codec._BUNDLED_CODEC_CONFIG_PATH
+        audio_codec._BUNDLED_CODEC_CONFIG_PATH  # noqa: leading-underscore  # production name
     )
     with torch.device("meta"):
         model = audio_codec.HiggsAudioV2TokenizerModel(config)
@@ -41,7 +41,7 @@ def test_higgs_codec_uses_upstream_transformers_architecture() -> None:
     assert config.num_quantizers == 8
 
 
-class _FakeQuantizerLayer:
+class FakeQuantizerLayer:
     def __init__(self, offset: float) -> None:
         self.offset = offset
 
@@ -52,9 +52,9 @@ class _FakeQuantizerLayer:
 def test_capture_safe_quantizer_decode_matches_additive_rvq() -> None:
     quantizer = SimpleNamespace(
         quantizers=[
-            _FakeQuantizerLayer(0.25),
-            _FakeQuantizerLayer(0.5),
-            _FakeQuantizerLayer(0.75),
+            FakeQuantizerLayer(0.25),
+            FakeQuantizerLayer(0.5),
+            FakeQuantizerLayer(0.75),
         ]
     )
     codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
@@ -71,7 +71,7 @@ def test_codec_decode_replays_matching_shape_graph() -> None:
     graph_input = torch.zeros((1, 2, 3), dtype=torch.long)
     graph_output = torch.zeros((1, 1, 1), dtype=torch.float32)
 
-    class _FakeGraph:
+    class FakeGraph:
         def __init__(self) -> None:
             self.replays = 0
 
@@ -79,7 +79,7 @@ def test_codec_decode_replays_matching_shape_graph() -> None:
             self.replays += 1
             graph_output.fill_(float(graph_input.sum()))
 
-    graph = _FakeGraph()
+    graph = FakeGraph()
     codec = object.__new__(audio_codec.HiggsAudioCodec)
     codec.decode_cuda_graphs = {
         3: audio_codec.DecodeCudaGraph(
@@ -108,7 +108,7 @@ def test_codec_decode_serializes_concurrent_graph_pool_use() -> None:
     failures: list[BaseException] = []
     completions: list[str] = []
 
-    class _BlockingGraph:
+    class BlockingGraph:
         def replay(self) -> None:
             replay_started.set()
             assert release_replay.wait(timeout=1)
@@ -116,7 +116,7 @@ def test_codec_decode_serializes_concurrent_graph_pool_use() -> None:
     codec = object.__new__(audio_codec.HiggsAudioCodec)
     codec.decode_cuda_graphs = {
         1: audio_codec.DecodeCudaGraph(
-            graph=_BlockingGraph(),
+            graph=BlockingGraph(),
             input_codes=torch.zeros((1, 2, 1), dtype=torch.long),
             output_audio=torch.zeros((1, 1, 1), dtype=torch.float32),
         )

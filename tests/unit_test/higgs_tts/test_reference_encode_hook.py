@@ -14,7 +14,7 @@ from sglang_omni.models.higgs_tts.utils import apply_delay_pattern
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 
-class _FakeCodec:
+class FakeCodec:
     def __init__(self, num_codebooks: int = 8) -> None:
         self.num_codebooks = num_codebooks
         self.calls = 0
@@ -28,7 +28,7 @@ class _FakeCodec:
         )
 
 
-def _service(codec: _FakeCodec) -> ReferenceEncodeService:
+def make_service(codec: FakeCodec) -> ReferenceEncodeService:
     hook = HiggsReferenceEncodeHook(
         codec, num_codebooks=codec.num_codebooks, model_identity="ckpt"
     )
@@ -36,8 +36,8 @@ def _service(codec: _FakeCodec) -> ReferenceEncodeService:
 
 
 def test_same_content_key_hits_cache_and_round_trips_long() -> None:
-    codec = _FakeCodec()
-    service = _service(codec)
+    codec = FakeCodec()
+    service = make_service(codec)
     wav = torch.zeros(1, 1, 240)
 
     first = service.get_or_encode(HiggsReferenceInput(wav, "waveform:abc"))
@@ -55,8 +55,8 @@ def test_same_content_key_hits_cache_and_round_trips_long() -> None:
 
 
 def test_missing_content_key_bypasses_cache() -> None:
-    codec = _FakeCodec()
-    service = _service(codec)
+    codec = FakeCodec()
+    service = make_service(codec)
     wav = torch.zeros(1, 1, 240)
 
     service.get_or_encode(HiggsReferenceInput(wav, None))
@@ -68,10 +68,10 @@ def test_missing_content_key_bypasses_cache() -> None:
 
 
 def test_codec_shape_mismatch_fails_loud() -> None:
-    class _WrongShapeCodec(_FakeCodec):
+    class WrongShapeCodec(FakeCodec):
         def encode_reference(self, waveform, *, sample_rate):
             return torch.zeros(3, self.num_codebooks + 1)
 
-    service = _service(_WrongShapeCodec())
+    service = make_service(WrongShapeCodec())
     with pytest.raises(ValueError, match="codec output must be"):
         service.get_or_encode(HiggsReferenceInput(torch.zeros(1, 1, 240), "k"))

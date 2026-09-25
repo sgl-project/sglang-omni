@@ -11,11 +11,11 @@ from sglang_omni.vendor.sglang.layers import RMSNorm
 
 
 @pytest.fixture(autouse=True)
-def _cuda_dispatch(monkeypatch: pytest.MonkeyPatch):
+def cuda_dispatch(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(fused_op, "_platform_key", lambda: "cuda")
 
 
-def _inputs(residual_dtype: torch.dtype, post_dtype: torch.dtype | None):
+def inputs(residual_dtype: torch.dtype, post_dtype: torch.dtype | None):
     torch.manual_seed(0)
     x = torch.randn(4, 8, dtype=torch.bfloat16)
     residual = torch.randn(4, 8, dtype=residual_dtype)
@@ -25,7 +25,7 @@ def _inputs(residual_dtype: torch.dtype, post_dtype: torch.dtype | None):
 
 def test_residual_dtype_mismatch_takes_the_native_path():
     norm = RMSNorm(8, eps=1e-6)
-    x, residual, _ = _inputs(torch.float32, None)
+    x, residual, _ = inputs(torch.float32, None)
 
     out, out_residual = norm(x.clone(), residual.clone())
 
@@ -36,7 +36,7 @@ def test_residual_dtype_mismatch_takes_the_native_path():
 
 def test_post_residual_addition_dtype_mismatch_takes_the_native_path():
     norm = RMSNorm(8, eps=1e-6)
-    x, residual, post = _inputs(torch.bfloat16, torch.float32)
+    x, residual, post = inputs(torch.bfloat16, torch.float32)
 
     out, out_residual = norm(
         x.clone(), residual.clone(), post_residual_addition=post.clone()
@@ -63,7 +63,7 @@ def test_zero_tokens_keep_the_upstream_contract_across_dtypes():
 
 def test_forward_kwargs_reach_the_native_fallback():
     norm = RMSNorm(8, eps=1e-6)
-    x, residual, _ = _inputs(torch.float32, None)
+    x, residual, _ = inputs(torch.float32, None)
 
     out, out_residual = norm(
         x.clone(), residual.clone(), quant_linear=torch.nn.Linear(8, 8)

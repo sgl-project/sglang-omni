@@ -12,7 +12,7 @@ from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
 )
 
 
-class _Encoder(torch.nn.Module):
+class Encoder(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.weight = torch.nn.Parameter(torch.ones(1))
@@ -23,25 +23,25 @@ class _Encoder(torch.nn.Module):
         return features.sum(dim=1, keepdim=False) * self.weight
 
 
-class _Graph:
+class Graph:
     def __init__(
         self,
-        encoder: _Encoder,
+        encoder: Encoder,
         static_features: torch.Tensor,
         static_output: torch.Tensor,
     ) -> None:
         self.encoder = encoder
-        self._static_features = static_features
-        self._static_output = static_output
+        self.static_features = static_features
+        self.static_output = static_output
         self.replays = 0
 
     def replay(self) -> None:
         self.replays += 1
-        self._static_output.copy_(self.encoder(self._static_features))
+        self.static_output.copy_(self.encoder(self.static_features))
 
 
 def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:
-    encoder = _Encoder()
+    encoder = Encoder()
     runner = WhisperEncoderCudaGraphRunner(
         encoder,
         num_mel_bins=2,
@@ -49,7 +49,7 @@ def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:
     )
     static_features = torch.full((4, 2, 5), 99.0)
     static_output = torch.empty((4, 5))
-    graph = _Graph(encoder, static_features, static_output)
+    graph = Graph(encoder, static_features, static_output)
     runner.graphs[4] = CapturedGraph(
         graph=graph,
         input_features=static_features,
@@ -82,7 +82,7 @@ def test_run_uses_smallest_bucket_and_zeroes_padding(caplog) -> None:
 
 
 def test_run_falls_back_for_uncaptured_or_wrong_feature_shape() -> None:
-    encoder = _Encoder()
+    encoder = Encoder()
     runner = WhisperEncoderCudaGraphRunner(
         encoder,
         num_mel_bins=2,
@@ -104,7 +104,7 @@ def test_run_falls_back_for_uncaptured_or_wrong_feature_shape() -> None:
 
 def test_capture_is_noop_for_cpu_encoder() -> None:
     runner = WhisperEncoderCudaGraphRunner(
-        _Encoder(),
+        Encoder(),
         num_mel_bins=2,
         input_feature_len=5,
     )

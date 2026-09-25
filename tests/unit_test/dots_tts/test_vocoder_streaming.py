@@ -16,7 +16,7 @@ from sglang_omni.models.dots_tts.vocoder_slot_pool import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 
 
-class _RecordingSlotPool:
+class RecordingSlotPool:
     def __init__(self, *, num_slots: int = 4) -> None:
         self.num_slots = num_slots
         self.free = list(reversed(range(num_slots)))
@@ -52,7 +52,7 @@ class _RecordingSlotPool:
         return torch.full((1, 1, 4), float(slot + 1))
 
 
-class _FakeInference:
+class FakeInference:
     """Minimal VocoderInference surface for DotsVocoderSlotPool unit tests."""
 
     def __init__(self, *, latent_dim: int = 5, hop_size: int = 2) -> None:
@@ -61,39 +61,47 @@ class _FakeInference:
             h=SimpleNamespace(latent_dim=latent_dim, causal=True),
         )
         self.batch_steps: list[tuple[int, int]] = []
-        self._latent_dim = latent_dim
+        self.latent_dim = latent_dim
         self.hop_size = hop_size
 
     def init_stream_state(self, *, batch_size: int, chunk_size: int):
-        window = torch.zeros(batch_size, self._latent_dim, chunk_size + 4)
+        window = torch.zeros(batch_size, self.latent_dim, chunk_size + 4)
         hidden = torch.zeros(1, batch_size, 8)
         return SimpleNamespace(
             lstm_hidden=(hidden, hidden.clone()),
             decoder=SimpleNamespace(window=window, chunk_size=chunk_size),
         )
 
-    def _decoder_stream_lookahead(self) -> int:
+    def _decoder_stream_lookahead(
+        self,
+    ) -> int:  # noqa: leading-underscore  # upstream name
         return 1
 
-    def _validate_stream_latents(self, latents: torch.Tensor) -> None:
-        if latents.ndim != 3 or int(latents.shape[1]) != self._latent_dim:
+    def _validate_stream_latents(
+        self, latents: torch.Tensor
+    ) -> None:  # noqa: leading-underscore  # upstream name
+        if latents.ndim != 3 or int(latents.shape[1]) != self.latent_dim:
             raise ValueError(f"bad latents {tuple(latents.shape)}")
 
-    def _decode_stream_latents(self, latents, hidden):
-        batch, _channels, frames = latents.shape
+    def _decode_stream_latents(
+        self, latents, hidden
+    ):  # noqa: leading-underscore  # upstream name
+        batch, channels, frames = latents.shape
         self.batch_steps.append((batch, frames))
         decoder_input = latents.clone()
         return decoder_input, (hidden[0].clone(), hidden[1].clone())
 
-    def _decode_stream_window(self, window: torch.Tensor) -> torch.Tensor:
+    def _decode_stream_window(
+        self, window: torch.Tensor
+    ) -> torch.Tensor:  # noqa: leading-underscore  # upstream name
         return torch.zeros(
             window.size(0), 1, window.size(-1) * self.hop_size, dtype=window.dtype
         )
 
 
-def _codec(*, latent_dim: int = 5, patch_size: int = 3) -> SimpleNamespace:
+def make_codec(*, latent_dim: int = 5, patch_size: int = 3) -> SimpleNamespace:
     return SimpleNamespace(
-        inference=_FakeInference(latent_dim=latent_dim),
+        inference=FakeInference(latent_dim=latent_dim),
         lock=threading.RLock(),
         sample_rate=48000,
         patch_size=patch_size,
@@ -103,7 +111,7 @@ def _codec(*, latent_dim: int = 5, patch_size: int = 3) -> SimpleNamespace:
     )
 
 
-def _patch(value: float = 0.0, *, frames: int = 3, dim: int = 5) -> torch.Tensor:
+def patch(value: float = 0.0, *, frames: int = 3, dim: int = 5) -> torch.Tensor:
     return torch.full((1, frames, dim), value)
 
 
@@ -130,7 +138,7 @@ def test_append_decoder_input_keeps_independent_row_ages() -> None:
 
 
 def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
-    inference = _FakeInference()
+    inference = FakeInference()
     pool = DotsVocoderSlotPool(inference, num_slots=4, chunk_size=6)
     s0 = pool.acquire()
     s1 = pool.acquire()
@@ -154,7 +162,7 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
-    pool = DotsVocoderSlotPool(_FakeInference(), num_slots=2, chunk_size=6)
+    pool = DotsVocoderSlotPool(FakeInference(), num_slots=2, chunk_size=6)
     a = pool.acquire()
     b = pool.acquire()
     with pytest.raises(ValueError, match="uniform latent length"):
@@ -162,9 +170,9 @@ def test_slot_pool_rejects_mixed_step_lengths() -> None:
 
 
 def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
-    pool = _RecordingSlotPool()
+    pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         merge_steps=2,
         max_batch_size=4,
@@ -177,7 +185,7 @@ def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
     for request_id in ("a", "b"):
         state = vocoder.create_stream_state(request_id)
         vocoder.stream_states[request_id] = state
-        vocoder.ingest(request_id, state, _patch(1.0 if request_id == "a" else 2.0))
+        vocoder.ingest(request_id, state, patch(1.0 if request_id == "a" else 2.0))
 
     participants = vocoder.select_step_participants()
     assert {request_id for request_id, _ in participants} == {"a", "b"}
@@ -192,9 +200,9 @@ def test_streaming_coalesces_equal_t_requests_into_one_pool_step() -> None:
 
 
 def test_select_step_participants_respects_max_batch_size() -> None:
-    pool = _RecordingSlotPool(num_slots=8)
+    pool = RecordingSlotPool(num_slots=8)
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         merge_steps=2,
         max_batch_size=2,
@@ -206,7 +214,7 @@ def test_select_step_participants_respects_max_batch_size() -> None:
     for request_id in ("a", "b", "c", "d"):
         state = vocoder.create_stream_state(request_id)
         vocoder.stream_states[request_id] = state
-        vocoder.ingest(request_id, state, _patch(float(ord(request_id))))
+        vocoder.ingest(request_id, state, patch(float(ord(request_id))))
 
     participants = vocoder.select_step_participants()
     assert len(participants) == 2
@@ -221,20 +229,20 @@ def test_select_step_participants_respects_max_batch_size() -> None:
 
 def test_stream_chunk_batch_cap_follows_max_batch_size_not_slots() -> None:
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         max_batch_size=8,
         stream_slots=1,
-        slot_pool=_RecordingSlotPool(num_slots=1),
+        slot_pool=RecordingSlotPool(num_slots=1),
     )
     assert vocoder.stream_chunk_batch_max == 8
     assert vocoder.stream_slots == 1
 
 
 def test_streaming_groups_by_exact_frame_count() -> None:
-    pool = _RecordingSlotPool()
+    pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         merge_steps=2,
         stream_slots=4,
@@ -245,11 +253,11 @@ def test_streaming_groups_by_exact_frame_count() -> None:
     vocoder.stream_states["early"] = early
     vocoder.stream_states["steady"] = steady
 
-    vocoder.ingest("early", early, _patch(1.0))
+    vocoder.ingest("early", early, patch(1.0))
     # note (guozhihao-224): past the first-two-patch fast path so take_patches
     # diverges from early.
     steady.received_patches = 3
-    steady.pending = [_patch(2.0), _patch(3.0)]
+    steady.pending = [patch(2.0), patch(3.0)]
     steady.slot = pool.acquire()
 
     participants = vocoder.select_step_participants()
@@ -260,15 +268,15 @@ def test_streaming_groups_by_exact_frame_count() -> None:
 
 
 def test_stream_done_flushes_and_releases_slot() -> None:
-    pool = _RecordingSlotPool()
+    pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         merge_steps=2,
         slot_pool=pool,
     )
     state = vocoder.create_stream_state("req")
-    vocoder.ingest("req", state, _patch(1.0))
+    vocoder.ingest("req", state, patch(1.0))
     slot = state.slot
     assert slot is not None
     waveform = vocoder.decode_delta("req", state, is_final=True)
@@ -279,14 +287,14 @@ def test_stream_done_flushes_and_releases_slot() -> None:
 
 
 def test_release_stream_resources_returns_slot() -> None:
-    pool = _RecordingSlotPool()
+    pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=False,
         slot_pool=pool,
     )
     state = vocoder.create_stream_state("req")
-    vocoder.ingest("req", state, _patch())
+    vocoder.ingest("req", state, patch())
     slot = state.slot
     vocoder.release_stream_resources("req", state)
     assert state.slot is None
@@ -294,23 +302,23 @@ def test_release_stream_resources_returns_slot() -> None:
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:
-    pool = _RecordingSlotPool(num_slots=1)
+    pool = RecordingSlotPool(num_slots=1)
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         stream_slots=1,
         slot_pool=pool,
     )
     first = vocoder.create_stream_state("a")
-    vocoder.ingest("a", first, _patch())
+    vocoder.ingest("a", first, patch())
     second = vocoder.create_stream_state("b")
     with pytest.raises(RuntimeError, match="ran out of slots"):
-        vocoder.ingest("b", second, _patch())
+        vocoder.ingest("b", second, patch())
 
 
 def test_on_stream_chunk_batch_uses_pool_not_compiled_stream_step() -> None:
-    pool = _RecordingSlotPool()
-    codec = _codec()
+    pool = RecordingSlotPool()
+    codec = make_codec()
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=True,
@@ -327,7 +335,7 @@ def test_on_stream_chunk_batch_uses_pool_not_compiled_stream_step() -> None:
 
     item = StreamItem(
         chunk_id=0,
-        data=_patch(1.0),
+        data=patch(1.0),
         from_stage="latent_engine",
         metadata={"modality": "audio_latents", "stream": True},
     )
@@ -338,15 +346,15 @@ def test_on_stream_chunk_batch_uses_pool_not_compiled_stream_step() -> None:
 
 
 def test_decode_delta_non_final_is_a_no_op() -> None:
-    pool = _RecordingSlotPool()
+    pool = RecordingSlotPool()
     vocoder = DotsTTSStreamingVocoder(
-        _codec(),
+        make_codec(),
         optimize=True,
         merge_steps=2,
         slot_pool=pool,
     )
     state = vocoder.create_stream_state("req")
-    vocoder.ingest("req", state, _patch(1.0))
+    vocoder.ingest("req", state, patch(1.0))
     assert vocoder.decode_delta("req", state, is_final=False) is None
     assert state.pending
     assert state.slot is not None

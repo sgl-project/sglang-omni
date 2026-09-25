@@ -1513,10 +1513,10 @@ def test_single_process_startup_survives_an_unusable_state_dir(
     blocker.write_text("not a directory", encoding="utf-8")
     served: dict = {}
 
-    def _fake_run(app, **kwargs):
+    def fake_run(app, **kwargs):
         served["app"] = app
 
-    monkeypatch.setattr(serve_module.uvicorn, "run", _fake_run)
+    monkeypatch.setattr(serve_module.uvicorn, "run", fake_run)
     serve_module.main(
         [
             "--worker-urls",
@@ -1534,7 +1534,7 @@ def test_router_processes_multiprocess_runs_the_supervisor(
 ) -> None:
     calls: dict = {}
 
-    class _FakeSupervisor:
+    class FakeSupervisor:
         def __init__(self, config, *, router_processes):
             calls["config"] = config
             calls["router_processes"] = router_processes
@@ -1547,7 +1547,7 @@ def test_router_processes_multiprocess_runs_the_supervisor(
 
         stopped_by_interrupt = False
 
-    monkeypatch.setattr(serve_module, "RouterSupervisor", _FakeSupervisor)
+    monkeypatch.setattr(serve_module, "RouterSupervisor", FakeSupervisor)
     # Note (Jiaxin Deng): setenv-then-delenv makes monkeypatch own
     # SGLANG_OMNI_ADMIN_KEY, so the key serve.main writes into os.environ is restored at
     # teardown.

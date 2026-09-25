@@ -23,7 +23,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
 )
 
 
-class _FakeLayerScale(nn.Module):
+class FakeLayerScale(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.scale = nn.Parameter(torch.ones(hidden_size))
@@ -32,7 +32,7 @@ class _FakeLayerScale(nn.Module):
         return self.scale * x
 
 
-class _FakeAttention(nn.Module):
+class FakeAttention(nn.Module):
     def __init__(self, hidden_size: int, *, num_heads: int = 2) -> None:
         super().__init__()
         self.embed_dim = hidden_size
@@ -45,14 +45,14 @@ class _FakeAttention(nn.Module):
         self.in_proj = nn.Linear(hidden_size, 3 * hidden_size, bias=False)
         self.out_proj = nn.Linear(hidden_size, hidden_size, bias=False)
 
-    def _get_backend_check_dtype(self, x: torch.Tensor) -> torch.dtype:
+    def get_backend_check_dtype(self, x: torch.Tensor) -> torch.dtype:
         return x.dtype
 
     def forward(self, x: torch.Tensor, **_: object) -> torch.Tensor:
         return x
 
 
-class _ReferenceAttention(_FakeAttention):
+class ReferenceAttention(FakeAttention):
     def forward(self, x: torch.Tensor, *, input_lengths: torch.Tensor) -> torch.Tensor:
         batch_size, max_seqlen, _ = x.shape
         projected = self.in_proj(x).reshape(
@@ -85,35 +85,35 @@ class _ReferenceAttention(_FakeAttention):
         return self.out_proj(out)
 
 
-class _FakeLayer(nn.Module):
+class FakeLayer(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size)
-        self.self_attn = _FakeAttention(hidden_size)
-        self.layer_scale_1 = _FakeLayerScale(hidden_size)
+        self.self_attn = FakeAttention(hidden_size)
+        self.layer_scale_1 = FakeLayerScale(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
         self.ffn = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * 2),
             nn.GELU(),
             nn.Linear(hidden_size * 2, hidden_size),
         )
-        self.layer_scale_2 = _FakeLayerScale(hidden_size)
+        self.layer_scale_2 = FakeLayerScale(hidden_size)
 
 
-class _FallbackTransformer(nn.Module):
+class FallbackTransformer(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
-        self.layers = nn.ModuleList([_FakeLayer(hidden_size)])
+        self.layers = nn.ModuleList([FakeLayer(hidden_size)])
         self.positional_embedding = "rope"
         self.positional_scale = 1.0
         self.max_period = 10000.0
 
 
-class _FallbackProjectedStage(nn.Module):
+class FallbackProjectedStage(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.input_proj = nn.Linear(3, 6)
-        self.transformer = _FallbackTransformer(6)
+        self.transformer = FallbackTransformer(6)
         self.output_proj = nn.Linear(6, 7)
         self.is_streaming = False
         self.module_type = "Transformer"
@@ -129,7 +129,7 @@ class _FallbackProjectedStage(nn.Module):
         return x + 10, input_lengths + 1
 
 
-class _PatchStage(nn.Module):
+class PatchStage(nn.Module):
     def __init__(self, *, patch_size: int = 2, is_downsample: bool = False) -> None:
         super().__init__()
         self.patch_size = patch_size
@@ -145,7 +145,7 @@ class _PatchStage(nn.Module):
         return x, input_lengths
 
 
-class _CountingLinear(nn.Linear):
+class CountingLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int) -> None:
         super().__init__(in_features, out_features)
         self.calls = 0
@@ -155,7 +155,7 @@ class _CountingLinear(nn.Linear):
         return super().forward(x)
 
 
-class _CountingLayerNorm(nn.LayerNorm):
+class CountingLayerNorm(nn.LayerNorm):
     def __init__(self, hidden_size: int) -> None:
         super().__init__(hidden_size)
         self.calls = 0
@@ -165,7 +165,7 @@ class _CountingLayerNorm(nn.LayerNorm):
         return super().forward(x)
 
 
-class _CountingLayerScale(_FakeLayerScale):
+class CountingLayerScale(FakeLayerScale):
     def __init__(self, hidden_size: int) -> None:
         super().__init__(hidden_size)
         self.calls = 0
@@ -175,22 +175,22 @@ class _CountingLayerScale(_FakeLayerScale):
         return super().forward(x)
 
 
-class _CountingLayer(_FakeLayer):
+class CountingLayer(FakeLayer):
     def __init__(self, hidden_size: int) -> None:
         nn.Module.__init__(self)
-        self.norm1 = _CountingLayerNorm(hidden_size)
-        self.self_attn = _FakeAttention(hidden_size)
-        self.layer_scale_1 = _CountingLayerScale(hidden_size)
-        self.norm2 = _CountingLayerNorm(hidden_size)
+        self.norm1 = CountingLayerNorm(hidden_size)
+        self.self_attn = FakeAttention(hidden_size)
+        self.layer_scale_1 = CountingLayerScale(hidden_size)
+        self.norm2 = CountingLayerNorm(hidden_size)
         self.ffn = nn.Sequential(
-            _CountingLinear(hidden_size, hidden_size * 2),
+            CountingLinear(hidden_size, hidden_size * 2),
             nn.GELU(),
-            _CountingLinear(hidden_size * 2, hidden_size),
+            CountingLinear(hidden_size * 2, hidden_size),
         )
-        self.layer_scale_2 = _CountingLayerScale(hidden_size)
+        self.layer_scale_2 = CountingLayerScale(hidden_size)
 
 
-class _MossAudioTokenizerV1Attention(nn.Module):
+class MossAudioTokenizerV1Attention(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.embed_dim = hidden_size
@@ -215,33 +215,33 @@ class _MossAudioTokenizerV1Attention(nn.Module):
         return query
 
 
-class _MossAudioTokenizerV1Layer(nn.Module):
+class MossAudioTokenizerV1Layer(nn.Module):
     def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size)
-        self.self_attn = _MossAudioTokenizerV1Attention(hidden_size)
-        self.layer_scale_1 = _FakeLayerScale(hidden_size)
+        self.self_attn = MossAudioTokenizerV1Attention(hidden_size)
+        self.layer_scale_1 = FakeLayerScale(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
         self.linear1 = nn.Linear(hidden_size, hidden_size * 2)
         self.linear2 = nn.Linear(hidden_size * 2, hidden_size)
         self.activation = F.gelu
-        self.layer_scale_2 = _FakeLayerScale(hidden_size)
+        self.layer_scale_2 = FakeLayerScale(hidden_size)
 
 
-class _MossAudioTokenizerV1Transformer(_FallbackTransformer):
+class MossAudioTokenizerV1Transformer(FallbackTransformer):
     def __init__(self, hidden_size: int) -> None:
         nn.Module.__init__(self)
-        self.layers = nn.ModuleList([_MossAudioTokenizerV1Layer(hidden_size)])
+        self.layers = nn.ModuleList([MossAudioTokenizerV1Layer(hidden_size)])
         self.positional_embedding = "rope"
         self.positional_scale = 1.0
         self.max_period = 10000.0
 
 
-class _MossAudioTokenizerV1ProjectedStage(_FallbackProjectedStage):
+class MossAudioTokenizerV1ProjectedStage(FallbackProjectedStage):
     def __init__(self) -> None:
         nn.Module.__init__(self)
         self.input_proj = nn.Linear(3, 6)
-        self.transformer = _MossAudioTokenizerV1Transformer(6)
+        self.transformer = MossAudioTokenizerV1Transformer(6)
         self.output_proj = nn.Linear(6, 7)
         self.is_streaming = False
         self.module_type = "Transformer"
@@ -249,7 +249,7 @@ class _MossAudioTokenizerV1ProjectedStage(_FallbackProjectedStage):
 
 
 def test_projected_transformer_sdpa_path_does_not_reenter_source_stage() -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     wrapper = MossAudioTokenizerProjectedTransformer.from_module(source)
     x = torch.randn(2, 3, 4)
     lengths = torch.tensor([4, 3])
@@ -262,8 +262,8 @@ def test_projected_transformer_sdpa_path_does_not_reenter_source_stage() -> None
 
 
 def test_projected_transformer_shares_attention_caches_across_layers() -> None:
-    source = _FallbackProjectedStage()
-    source.transformer.layers.append(_FakeLayer(6))
+    source = FallbackProjectedStage()
+    source.transformer.layers.append(FakeLayer(6))
 
     wrapper = MossAudioTokenizerProjectedTransformer.from_module(source)
     caches = [layer.self_attn.packed_rope_cache for layer in wrapper.transformer.layers]
@@ -273,7 +273,7 @@ def test_projected_transformer_shares_attention_caches_across_layers() -> None:
 
 
 def test_projected_transformer_uses_sglang_packed_flash_path() -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -354,7 +354,7 @@ def test_local_causal_flash_plan_skips_identity_kv_gather() -> None:
 
 
 def test_projected_transformer_chunks_local_packed_flash_queries() -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -414,7 +414,7 @@ def test_projected_transformer_chunks_local_packed_flash_queries() -> None:
 def test_projected_transformer_skips_local_plan_for_direct_sm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -462,8 +462,8 @@ def test_projected_transformer_skips_local_plan_for_direct_sm(
 
 
 def test_projected_transformer_reuses_local_flash_plan_across_layers() -> None:
-    source = _FallbackProjectedStage()
-    source.transformer.layers.append(_FakeLayer(6))
+    source = FallbackProjectedStage()
+    source.transformer.layers.append(FakeLayer(6))
     for layer in source.transformer.layers:
         layer.self_attn.attention_implementation = "flash_attention_2"
         layer.self_attn.context = 125
@@ -502,7 +502,7 @@ def test_projected_transformer_reuses_local_flash_plan_across_layers() -> None:
 def test_projected_transformer_uses_host_lengths_without_tensor_max(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -531,7 +531,7 @@ def test_attention_backend_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         "packed_flash_device_unavailable_reason",
         lambda device: "test kernel unavailable",
     )
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.attention_implementation = "flash_attention_2"
 
     automatic = MossAudioTokenizerAttention.from_module(source)
@@ -655,7 +655,7 @@ def test_auto_backend_falls_back_when_sglang_fa3_is_unavailable(
         lambda: False,
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.attention_implementation = "flash_attention_2"
     attention = MossAudioTokenizerAttention.from_module(source)
     resolution = attention.resolve_attention_backend(
@@ -678,7 +678,7 @@ def test_attention_backend_auto_falls_back_for_cuda_float32(
         "packed_flash_device_unavailable_reason",
         lambda device: None,
     )
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.attention_implementation = "flash_attention_2"
     attention = MossAudioTokenizerAttention.from_module(source)
     attention.flash_attn_varlen = lambda *args, **kwargs: None
@@ -701,7 +701,7 @@ def test_query_chunked_sdpa_matches_dense_reference(
     context: int | None,
 ) -> None:
     torch.manual_seed(0)
-    source = _ReferenceAttention(hidden_size=12, num_heads=3)
+    source = ReferenceAttention(hidden_size=12, num_heads=3)
     source.causal = causal
     source.context = context
     wrapper = MossAudioTokenizerAttention.from_module(
@@ -723,7 +723,7 @@ def test_query_chunked_sdpa_matches_dense_reference_cuda() -> None:
         pytest.skip("requires CUDA")
 
     torch.manual_seed(0)
-    source = _ReferenceAttention(hidden_size=128, num_heads=2).to(
+    source = ReferenceAttention(hidden_size=128, num_heads=2).to(
         device="cuda",
         dtype=torch.bfloat16,
     )
@@ -747,7 +747,7 @@ def test_auto_backend_runs_query_chunked_sdpa_for_cuda_float32() -> None:
         pytest.skip("requires CUDA")
 
     torch.manual_seed(0)
-    source = _ReferenceAttention(hidden_size=128, num_heads=2).to(device="cuda")
+    source = ReferenceAttention(hidden_size=128, num_heads=2).to(device="cuda")
     source.attention_implementation = "flash_attention_2"
     source.context = 125
     wrapper = MossAudioTokenizerAttention.from_module(source)
@@ -764,7 +764,7 @@ def test_auto_backend_runs_query_chunked_sdpa_for_cuda_float32() -> None:
 def test_query_chunked_sdpa_bounds_local_attention_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.context = 125
     wrapper = MossAudioTokenizerAttention.from_module(
         source,
@@ -796,7 +796,7 @@ def test_query_chunked_sdpa_bounds_local_attention_shapes(
 
 
 def test_query_chunked_sdpa_handles_empty_and_zero_length_inputs() -> None:
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     wrapper = MossAudioTokenizerAttention.from_module(
         source,
         attention_backend="sdpa",
@@ -821,7 +821,7 @@ def test_local_causal_attention_keeps_packed_flash_cuda() -> None:
     if not torch.cuda.is_available():
         pytest.skip("requires CUDA")
 
-    source = _FakeAttention(hidden_size=6).to(device="cuda", dtype=torch.bfloat16)
+    source = FakeAttention(hidden_size=6).to(device="cuda", dtype=torch.bfloat16)
     source.attention_implementation = "flash_attention_2"
     source.causal = True
     source.context = 4
@@ -839,7 +839,7 @@ def test_local_causal_attention_keeps_packed_flash_cuda() -> None:
 
 
 def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -878,7 +878,7 @@ def test_projected_transformer_skips_flash_for_zero_valid_length(monkeypatch) ->
 def test_flash_window_size_matches_moss_local_mask(
     context: int | None, causal: bool, expected: tuple[int, int]
 ) -> None:
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.context = context
     source.causal = causal
     attn = MossAudioTokenizerAttention.from_module(source)
@@ -889,7 +889,7 @@ def test_flash_window_size_matches_moss_local_mask(
 def test_flash_window_size_keeps_same_keys_as_moss_mask() -> None:
     context = 4
     seqlen = 7
-    source = _FakeAttention(hidden_size=6)
+    source = FakeAttention(hidden_size=6)
     source.context = context
     attn = MossAudioTokenizerAttention.from_module(source)
     left_window, right_window = attention_impl.flash_window_size(
@@ -912,7 +912,7 @@ def test_flash_window_size_keeps_same_keys_as_moss_mask() -> None:
 def test_projected_transformer_uses_single_unpadded_pack_fast_path(
     monkeypatch,
 ) -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -1013,7 +1013,7 @@ def test_host_length_pack_and_unpack_matches_masked_path() -> None:
 
 
 def test_projected_transformer_single_padded_input_uses_masked_pack() -> None:
-    source = _FallbackProjectedStage()
+    source = FallbackProjectedStage()
     source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -1077,7 +1077,7 @@ def test_sglang_packed_flash_matches_sdpa_reference_cuda() -> None:
 
     torch.manual_seed(0)
     device = torch.device("cuda")
-    source = _ReferenceAttention(hidden_size=128, num_heads=2).to(
+    source = ReferenceAttention(hidden_size=128, num_heads=2).to(
         device=device, dtype=torch.bfloat16
     )
     source.attention_implementation = "flash_attention_2"
@@ -1115,7 +1115,7 @@ def test_sglang_local_packed_flash_matches_sdpa_reference_cuda() -> None:
 
     torch.manual_seed(0)
     device = torch.device("cuda")
-    source = _ReferenceAttention(hidden_size=128, num_heads=2).to(
+    source = ReferenceAttention(hidden_size=128, num_heads=2).to(
         device=device, dtype=torch.bfloat16
     )
     source.attention_implementation = "flash_attention_2"
@@ -1299,7 +1299,7 @@ def test_residual_lfq_decode_cache_is_bit_identical(
 
 def test_streaming_attention_matches_dense_reference() -> None:
     torch.manual_seed(19)
-    reference = _ReferenceAttention(8)
+    reference = ReferenceAttention(8)
     reference.rope = RotaryEmbedding(10000.0)
     attention = MossAudioTokenizerAttention.from_module(
         reference,
@@ -1326,7 +1326,7 @@ def test_streaming_attention_matches_dense_reference() -> None:
 @pytest.mark.parametrize("context", [4, None])
 def test_indexed_attention_preserves_inactive_slots(context: int | None) -> None:
     torch.manual_seed(29)
-    reference = _ReferenceAttention(8)
+    reference = ReferenceAttention(8)
     reference.context = context
     reference.rope = RotaryEmbedding(10000.0)
     attention = MossAudioTokenizerAttention.from_module(
@@ -1401,7 +1401,7 @@ def test_indexed_attention_preserves_inactive_slots(context: int | None) -> None
 
 
 def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
-    source = _CountingLayer(hidden_size=6)
+    source = CountingLayer(hidden_size=6)
     wrapper = MossAudioTokenizerTransformerLayer.from_module(source)
     x = torch.randn(2, 4, 6)
 
@@ -1416,8 +1416,8 @@ def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:
 
 
 def test_vocoder_decoder_wraps_supported_stage_types() -> None:
-    patch_stage = _PatchStage(patch_size=2, is_downsample=False)
-    decoder = nn.ModuleList([_FallbackProjectedStage(), patch_stage])
+    patch_stage = PatchStage(patch_size=2, is_downsample=False)
+    decoder = nn.ModuleList([FallbackProjectedStage(), patch_stage])
     wrapped = MossAudioTokenizerVocoderDecoder.from_module(decoder)
 
     assert len(wrapped) == 2
@@ -1428,10 +1428,10 @@ def test_vocoder_decoder_wraps_supported_stage_types() -> None:
 def test_vocoder_decoder_computes_output_lengths_on_host() -> None:
     decoder = nn.ModuleList(
         [
-            _PatchStage(patch_size=2, is_downsample=False),
-            _FallbackProjectedStage(),
-            _PatchStage(patch_size=4, is_downsample=False),
-            _PatchStage(patch_size=2, is_downsample=True),
+            PatchStage(patch_size=2, is_downsample=False),
+            FallbackProjectedStage(),
+            PatchStage(patch_size=4, is_downsample=False),
+            PatchStage(patch_size=2, is_downsample=True),
         ]
     )
     wrapped = MossAudioTokenizerVocoderDecoder.from_module(decoder)
@@ -1447,7 +1447,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
         "packed_flash_device_unavailable_reason",
         lambda device: None if device.type == "cuda" else "not CUDA",
     )
-    moss_audio_tokenizer_v1_source = _MossAudioTokenizerV1ProjectedStage()
+    moss_audio_tokenizer_v1_source = MossAudioTokenizerV1ProjectedStage()
     moss_audio_tokenizer_v1_decoder = MossAudioTokenizerVocoderDecoder.from_module(
         nn.ModuleList([moss_audio_tokenizer_v1_source])
     )
@@ -1467,7 +1467,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
     )
     assert not moss_audio_tokenizer_v1_decoder.supports_packed_attention("cuda", None)
 
-    local_source = _FallbackProjectedStage()
+    local_source = FallbackProjectedStage()
     local_source.transformer.layers[0].self_attn.attention_implementation = (
         "flash_attention_2"
     )
@@ -1480,7 +1480,7 @@ def test_vocoder_decoder_requires_packed_attention_for_every_transformer(
 
 
 def test_vocoder_decoder_wraps_moss_audio_tokenizer_v1_weight_fields() -> None:
-    source = _MossAudioTokenizerV1ProjectedStage()
+    source = MossAudioTokenizerV1ProjectedStage()
     wrapped = MossAudioTokenizerVocoderDecoder.from_module(nn.ModuleList([source]))
     source_layer = source.transformer.layers[0]
     wrapped_layer = wrapped[0].transformer.layers[0]

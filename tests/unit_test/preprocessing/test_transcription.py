@@ -19,11 +19,11 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.utils.audio import audio_fingerprint, audio_fingerprint_int
 
 
-def _payload(inputs) -> StagePayload:
+def make_payload(inputs) -> StagePayload:
     return StagePayload(request_id="req", request=OmniRequest(inputs=inputs), data={})
 
 
-def _wav_bytes(
+def wav_bytes(
     num_samples: int = 1600, sample_rate: int = 16000, num_channels: int = 1
 ) -> bytes:
     rng = np.random.default_rng(1268)
@@ -39,22 +39,22 @@ def _wav_bytes(
 
 def test_resolve_audio_source_prefers_bytes_like_over_path_like() -> None:
     inputs = {"audio_path": "/tmp/a.wav", "audio_bytes": b"wav"}
-    assert resolve_audio_source(_payload(inputs)) == b"wav"
+    assert resolve_audio_source(make_payload(inputs)) == b"wav"
 
 
 def test_resolve_audio_source_key_precedence_within_groups() -> None:
-    assert resolve_audio_source(_payload({"bytes": b"b", "file": b"f"})) == b"b"
-    assert resolve_audio_source(_payload({"url": "u", "path": "p"})) == "p"
+    assert resolve_audio_source(make_payload({"bytes": b"b", "file": b"f"})) == b"b"
+    assert resolve_audio_source(make_payload({"url": "u", "path": "p"})) == "p"
 
 
 def test_resolve_audio_source_passes_non_dict_inputs_through() -> None:
-    assert resolve_audio_source(_payload(b"raw")) == b"raw"
-    assert resolve_audio_source(_payload("/tmp/a.wav")) == "/tmp/a.wav"
+    assert resolve_audio_source(make_payload(b"raw")) == b"raw"
+    assert resolve_audio_source(make_payload("/tmp/a.wav")) == "/tmp/a.wav"
 
 
 def test_prepare_audio_derives_duration_and_fingerprint() -> None:
     prepared = prepare_audio(
-        _payload({"audio_bytes": _wav_bytes(num_samples=1600)}), source_name="Test"
+        make_payload({"audio_bytes": wav_bytes(num_samples=1600)}), source_name="Test"
     )
     assert isinstance(prepared, PreparedAudio)
     assert prepared.sample_rate == 16000
@@ -65,7 +65,7 @@ def test_prepare_audio_derives_duration_and_fingerprint() -> None:
 
 def test_prepare_audio_uses_custom_source_resolver() -> None:
     prepared = prepare_audio(
-        _payload({"nested": {"clip": _wav_bytes()}}),
+        make_payload({"nested": {"clip": wav_bytes()}}),
         source_name="Test",
         source_resolver=lambda payload: payload.request.inputs["nested"]["clip"],
     )
@@ -82,7 +82,7 @@ def test_prepare_audio_enforces_duration_limit_with_custom_message(monkeypatch) 
 
     with pytest.raises(ValueError, match="model-specific limit text"):
         prepare_audio(
-            _payload({"audio_bytes": _wav_bytes(num_samples=16000 * 2)}),
+            make_payload({"audio_bytes": wav_bytes(num_samples=16000 * 2)}),
             source_name="Test",
             max_duration_s=1.0,
             max_duration_message="model-specific limit text",
@@ -94,7 +94,7 @@ def test_prepare_audio_enforces_duration_limit_with_custom_message(monkeypatch) 
 def test_prepare_audio_default_limit_message_names_the_model() -> None:
     with pytest.raises(ValueError, match="Test accepts audio up to 1.0 seconds"):
         prepare_audio(
-            _payload({"audio_bytes": _wav_bytes(num_samples=16000 * 2)}),
+            make_payload({"audio_bytes": wav_bytes(num_samples=16000 * 2)}),
             source_name="Test",
             max_duration_s=1.0,
         )
@@ -102,10 +102,10 @@ def test_prepare_audio_default_limit_message_names_the_model() -> None:
 
 def test_prepare_audio_surfaces_source_name_in_load_errors() -> None:
     with pytest.raises(ValueError, match="Unsupported Test audio input"):
-        prepare_audio(_payload({"audio_bytes": 123}), source_name="Test")
+        prepare_audio(make_payload({"audio_bytes": 123}), source_name="Test")
 
 
-def _source_forms(data: bytes, tmp_path) -> dict[str, object]:
+def source_forms(data: bytes, tmp_path) -> dict[str, object]:
     """Every source form load_audio supported pre-refactor, minus HTTP URLs
     (exercised separately with a stubbed transport)."""
     path = tmp_path / "clip.wav"
@@ -126,11 +126,11 @@ def _source_forms(data: bytes, tmp_path) -> dict[str, object]:
     ["raw_bytes", "bytearray", "memoryview", "filesystem_path", "file_uri", "data_uri"],
 )
 def test_prepare_audio_accepts_every_legacy_source_form(form, tmp_path) -> None:
-    data = _wav_bytes()
-    reference = prepare_audio(_payload({"audio_bytes": data}), source_name="Test")
+    data = wav_bytes()
+    reference = prepare_audio(make_payload({"audio_bytes": data}), source_name="Test")
 
     prepared = prepare_audio(
-        _payload({"audio_bytes": _source_forms(data, tmp_path)[form]}),
+        make_payload({"audio_bytes": source_forms(data, tmp_path)[form]}),
         source_name="Test",
     )
 
@@ -140,9 +140,9 @@ def test_prepare_audio_accepts_every_legacy_source_form(form, tmp_path) -> None:
 
 
 def test_prepare_audio_accepts_http_url(monkeypatch) -> None:
-    data = _wav_bytes()
+    data = wav_bytes()
 
-    class _Response:
+    class Response:
         content = data
 
         @staticmethod
@@ -150,12 +150,12 @@ def test_prepare_audio_accepts_http_url(monkeypatch) -> None:
             pass
 
     monkeypatch.setattr(
-        "sglang_omni.utils.audio.httpx.get", lambda url, **kwargs: _Response()
+        "sglang_omni.utils.audio.httpx.get", lambda url, **kwargs: Response()
     )
-    reference = prepare_audio(_payload({"audio_bytes": data}), source_name="Test")
+    reference = prepare_audio(make_payload({"audio_bytes": data}), source_name="Test")
 
     prepared = prepare_audio(
-        _payload({"url": "https://example.com/clip.wav"}), source_name="Test"
+        make_payload({"url": "https://example.com/clip.wav"}), source_name="Test"
     )
 
     assert prepared.fingerprint == reference.fingerprint
@@ -164,14 +164,14 @@ def test_prepare_audio_accepts_http_url(monkeypatch) -> None:
 def test_prepare_audio_resamples_and_downmixes_like_before() -> None:
     # 8 kHz clip: resampled to the 16 kHz target, so duration is preserved
     prepared = prepare_audio(
-        _payload({"audio_bytes": _wav_bytes(num_samples=800, sample_rate=8000)}),
+        make_payload({"audio_bytes": wav_bytes(num_samples=800, sample_rate=8000)}),
         source_name="Test",
     )
     assert prepared.duration_s == pytest.approx(0.1)
 
     # stereo clip: downmixed to mono at the same length
     prepared = prepare_audio(
-        _payload({"audio_bytes": _wav_bytes(num_channels=2)}), source_name="Test"
+        make_payload({"audio_bytes": wav_bytes(num_channels=2)}), source_name="Test"
     )
     assert prepared.waveform.ndim == 1
     assert prepared.duration_s == pytest.approx(0.1)
@@ -181,7 +181,7 @@ def test_resolve_audio_source_wraps_declared_g711_bytes() -> None:
     raw = bytes([0xFF] * 800)
 
     wrapped = resolve_audio_source(
-        _payload({"audio_bytes": raw, "content_type": "audio/basic"})
+        make_payload({"audio_bytes": raw, "content_type": "audio/basic"})
     )
 
     assert wrapped[:4] == b"RIFF"
@@ -191,10 +191,10 @@ def test_resolve_audio_source_wraps_declared_g711_bytes() -> None:
 def test_resolve_audio_source_leaves_undeclared_bytes_alone() -> None:
     raw = bytes([0xFF] * 800)
 
-    assert resolve_audio_source(_payload({"audio_bytes": raw})) is raw
+    assert resolve_audio_source(make_payload({"audio_bytes": raw})) is raw
     assert (
         resolve_audio_source(
-            _payload({"audio_bytes": raw, "content_type": "audio/wav"})
+            make_payload({"audio_bytes": raw, "content_type": "audio/wav"})
         )
         is raw
     )
@@ -203,7 +203,7 @@ def test_resolve_audio_source_leaves_undeclared_bytes_alone() -> None:
 def test_prepare_audio_decodes_headerless_mulaw_from_the_offline_inputs() -> None:
     # 0.5 s of µ-law silence at 8 kHz becomes 0.5 s at the model's 16 kHz.
     prepared = prepare_audio(
-        _payload({"audio_bytes": bytes([0xFF] * 4000), "filename": "call.ulaw"}),
+        make_payload({"audio_bytes": bytes([0xFF] * 4000), "filename": "call.ulaw"}),
         source_name="Test",
     )
 

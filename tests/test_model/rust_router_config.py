@@ -34,9 +34,9 @@ def render_router_config(
     from the text alone; the speech profiles then advertise ``text_to_speech``
     without a reference instead of ``voice_clone``.
     """
-    preamble = _router_preamble(topology, router_port)
+    preamble = router_preamble(topology, router_port)
     worker_blocks = [
-        _worker_block(
+        worker_block(
             topology=topology,
             ordinal=ordinal,
             worker_url=worker_url,
@@ -49,7 +49,7 @@ def render_router_config(
     return f"{preamble.rstrip()}\n\n" + "\n\n".join(worker_blocks) + "\n"
 
 
-def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
+def router_preamble(topology: CiRouterTopology, router_port: int) -> str:
     strategy = "round_robin" if topology is CiRouterTopology.ASR else "least_requests"
     admission = {
         CiRouterTopology.ASR: (
@@ -79,7 +79,7 @@ def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
         "schema_version = 1",
         "",
         "[server]",
-        f'listen = {_toml_string(f"127.0.0.1:{router_port}")}',
+        f'listen = {toml_string(f"127.0.0.1:{router_port}")}',
         "",
         "[shutdown]",
         "drain_timeout_ms = 30000",
@@ -89,7 +89,7 @@ def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
         'filter = "info"',
         "",
         "[router]",
-        f"strategy = {_toml_string(strategy)}",
+        f"strategy = {toml_string(strategy)}",
     ]
     if topology is CiRouterTopology.TTS_SERVING:
         lines.append('voice_owner_worker_id = "tts-serving-1"')
@@ -120,7 +120,7 @@ def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
     lines.extend(
         [
             "[http_media]",
-            f"routes = {_toml_array(routes)}",
+            f"routes = {toml_array(routes)}",
             'trust_domain = "local"',
         ]
     )
@@ -129,7 +129,7 @@ def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
     return "\n".join(lines)
 
 
-def _worker_block(
+def worker_block(
     *,
     topology: CiRouterTopology,
     ordinal: int,
@@ -148,10 +148,10 @@ def _worker_block(
     worker_id = f"{prefix}-{ordinal}"
     lines = [
         "[[workers]]",
-        f"worker_id = {_toml_string(worker_id)}",
-        f"base_url = {_toml_string(worker_url.rstrip('/') + '/')}",
+        f"worker_id = {toml_string(worker_id)}",
+        f"base_url = {toml_string(worker_url.rstrip('/') + '/')}",
         'trust_domain = "local"',
-        f"default_model_id = {_toml_string(model_name)}",
+        f"default_model_id = {toml_string(model_name)}",
     ]
     if topology is CiRouterTopology.TTS_SERVING:
         lines.extend(
@@ -164,7 +164,7 @@ def _worker_block(
     lines.extend(
         [
             "",
-            _service_profiles(
+            service_profiles(
                 topology,
                 model_name,
                 named_voice,
@@ -175,16 +175,16 @@ def _worker_block(
     return "\n".join(lines)
 
 
-def _service_profiles(
+def service_profiles(
     topology: CiRouterTopology,
     model_name: str,
     named_voice: bool,
     *,
     generation_streaming: bool,
 ) -> str:
-    model_ids = _toml_array([model_name])
+    model_ids = toml_array([model_name])
     if topology is CiRouterTopology.ASR:
-        return _transcription_profile(
+        return transcription_profile(
             model_ids,
             task="transcribe",
             formats=["json", "verbose_json", "sse"],
@@ -200,7 +200,7 @@ def _service_profiles(
             voice_name_policy = "uploaded"
         return "\n\n".join(
             [
-                _speech_profile(
+                speech_profile(
                     service="speech_http",
                     model_ids=model_ids,
                     response_formats=["wav"],
@@ -209,7 +209,7 @@ def _service_profiles(
                     reference_forms=reference_forms,
                     voice_name_policy=voice_name_policy,
                 ),
-                _speech_profile(
+                speech_profile(
                     service="speech_http",
                     model_ids=model_ids,
                     response_formats=["pcm"],
@@ -222,7 +222,7 @@ def _service_profiles(
         )
     if topology is CiRouterTopology.TTS_SERVING:
         profiles = [
-            _speech_profile(
+            speech_profile(
                 service="speech_http",
                 model_ids=model_ids,
                 response_formats=["mp3", "opus", "aac", "flac", "wav"],
@@ -231,7 +231,7 @@ def _service_profiles(
                 reference_forms=["none", "direct", "list"],
                 voice_name_policy="uploaded",
             ),
-            _speech_profile(
+            speech_profile(
                 service="speech_http",
                 model_ids=model_ids,
                 response_formats=["pcm"],
@@ -240,8 +240,8 @@ def _service_profiles(
                 reference_forms=["none", "direct", "list"],
                 voice_name_policy="uploaded",
             ),
-            _speech_batch_profile(model_ids),
-            _speech_profile(
+            speech_batch_profile(model_ids),
+            speech_profile(
                 service="speech_websocket",
                 model_ids=model_ids,
                 response_formats=["pcm"],
@@ -252,14 +252,14 @@ def _service_profiles(
             ),
         ]
         return "\n\n".join(profiles)
-    return _generation_profile(
+    return generation_profile(
         model_ids=model_ids,
         audio_output=topology is CiRouterTopology.OMNI_AUDIO,
         streaming=generation_streaming,
     )
 
 
-def _transcription_profile(
+def transcription_profile(
     model_ids: str,
     *,
     task: str,
@@ -270,14 +270,14 @@ def _transcription_profile(
             "[[workers.service_profiles]]",
             'service = "transcription_http"',
             f"model_ids = {model_ids}",
-            f"task = {_toml_string(task)}",
-            f"response_formats = {_toml_array(formats)}",
+            f"task = {toml_string(task)}",
+            f"response_formats = {toml_array(formats)}",
             'stream_modes = ["non_streaming", "streaming"]',
         ]
     )
 
 
-def _speech_profile(
+def speech_profile(
     *,
     service: str,
     model_ids: str,
@@ -290,18 +290,18 @@ def _speech_profile(
     return "\n".join(
         [
             "[[workers.service_profiles]]",
-            f"service = {_toml_string(service)}",
+            f"service = {toml_string(service)}",
             f"model_ids = {model_ids}",
-            f"response_formats = {_toml_array(response_formats)}",
-            f"stream_modes = {_toml_array(stream_modes)}",
-            f"tasks = {_toml_array(tasks)}",
-            f"reference_forms = {_toml_array(reference_forms)}",
-            f"voice_name_policy = {_toml_string(voice_name_policy)}",
+            f"response_formats = {toml_array(response_formats)}",
+            f"stream_modes = {toml_array(stream_modes)}",
+            f"tasks = {toml_array(tasks)}",
+            f"reference_forms = {toml_array(reference_forms)}",
+            f"voice_name_policy = {toml_string(voice_name_policy)}",
         ]
     )
 
 
-def _speech_batch_profile(model_ids: str) -> str:
+def speech_batch_profile(model_ids: str) -> str:
     return "\n".join(
         [
             "[[workers.service_profiles]]",
@@ -316,7 +316,7 @@ def _speech_batch_profile(model_ids: str) -> str:
     )
 
 
-def _generation_profile(*, model_ids: str, audio_output: bool, streaming: bool) -> str:
+def generation_profile(*, model_ids: str, audio_output: bool, streaming: bool) -> str:
     output_modalities = ["text", "audio"] if audio_output else ["text"]
     audio_formats = ["wav", "mp3", "flac", "pcm", "aac", "opus"] if audio_output else []
     stream_modes = ["non_streaming", "streaming"] if streaming else ["non_streaming"]
@@ -328,16 +328,16 @@ def _generation_profile(*, model_ids: str, audio_output: bool, streaming: bool) 
             'message_content_forms = ["string", "typed_parts"]',
             'media_placements = ["top_level", "typed_parts"]',
             'input_modalities = ["text", "image", "audio", "video"]',
-            f"output_modalities = {_toml_array(output_modalities)}",
-            f"chat_audio_formats = {_toml_array(audio_formats)}",
-            f"stream_modes = {_toml_array(stream_modes)}",
+            f"output_modalities = {toml_array(output_modalities)}",
+            f"chat_audio_formats = {toml_array(audio_formats)}",
+            f"stream_modes = {toml_array(stream_modes)}",
         ]
     )
 
 
-def _toml_string(value: str) -> str:
+def toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _toml_array(values: list[str]) -> str:
-    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
+def toml_array(values: list[str]) -> str:
+    return "[" + ", ".join(toml_string(value) for value in values) + "]"

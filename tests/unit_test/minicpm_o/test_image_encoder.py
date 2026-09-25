@@ -22,7 +22,7 @@ from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageE
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _checkpoint_dir() -> Path | None:
+def checkpoint_dir() -> Path | None:
     env = os.environ.get("MINICPMO_CHECKPOINT")
     candidates = [Path(env)] if env else []
     candidates += [REPO_ROOT / "MiniCPM-o-4_6", REPO_ROOT / "MiniCPM-o-4_5"]
@@ -68,7 +68,7 @@ def test_padding_does_not_change_image_embeddings() -> None:
     torch.testing.assert_close(batched[:, 0], torch.tensor([1.0, 2.0, 3.0]))
 
 
-def _build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):
+def build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):
     """The pre-srt remote-code path this component replaced, as golden."""
     from transformers import AutoConfig
     from transformers.dynamic_module_utils import get_class_from_dynamic_module
@@ -84,7 +84,9 @@ def _build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.d
         "modeling_minicpmo.Resampler", model_dir
     )
     vision_config = config.vision_config
-    vision_config._attn_implementation = "eager"
+    vision_config._attn_implementation = (
+        "eager"  # noqa: leading-underscore  # production name
+    )
     vpm = siglip_cls(vision_config)
     if getattr(config, "drop_vision_last_layer", False):
         vpm.encoder.layers = vpm.encoder.layers[:-1]
@@ -101,11 +103,13 @@ def _build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.d
     resampler = load_module(
         resampler, model_dir, prefix=("resampler.",), dtype=dtype, device=str(device)
     )
-    resampler._set_2d_pos_cache(resampler.max_size, device=str(device))
+    resampler._set_2d_pos_cache(
+        resampler.max_size, device=str(device)
+    )  # noqa: leading-underscore  # upstream name
     return config, vpm.eval(), resampler.eval()
 
 
-def _remote_forward(vpm, resampler, pixel_values, tgt_sizes, device, dtype):
+def remote_forward(vpm, resampler, pixel_values, tgt_sizes, device, dtype):
     from torch.nn.utils.rnn import pad_sequence
 
     tgt_sizes = tgt_sizes.to(device, dtype=torch.int32)
@@ -131,7 +135,7 @@ def _remote_forward(vpm, resampler, pixel_values, tgt_sizes, device, dtype):
 
 
 def test_golden_parity_vs_remote_code() -> None:
-    checkpoint = _checkpoint_dir()
+    checkpoint = checkpoint_dir()
     if checkpoint is None:
         pytest.skip("no MiniCPM-o checkpoint with weights")
     if not torch.cuda.is_available():
@@ -150,9 +154,7 @@ def test_golden_parity_vs_remote_code() -> None:
     device = torch.device("cuda")
 
     torch.manual_seed(0)
-    config, vpm32, resampler32 = _build_remote_encoder(
-        checkpoint, device, torch.float32
-    )
+    config, vpm32, resampler32 = build_remote_encoder(checkpoint, device, torch.float32)
     patch = config.vision_config.patch_size
     # Variable-resolution slices (h, w) in patch units, incl. a 1-patch-high one.
     tgt_sizes = torch.tensor([[8, 12], [3, 5], [1, 9]], dtype=torch.int32)
@@ -160,17 +162,17 @@ def test_golden_parity_vs_remote_code() -> None:
         torch.randn(3, patch, int(h * w) * patch) for h, w in tgt_sizes.tolist()
     ]
     with torch.no_grad():
-        golden = _remote_forward(
+        golden = remote_forward(
             vpm32, resampler32, pixel_values, tgt_sizes, device, torch.float32
         ).float()
     del vpm32, resampler32
     torch.cuda.empty_cache()
 
-    config, vpm16, resampler16 = _build_remote_encoder(
+    config, vpm16, resampler16 = build_remote_encoder(
         checkpoint, device, torch.bfloat16
     )
     with torch.no_grad():
-        remote_bf16 = _remote_forward(
+        remote_bf16 = remote_forward(
             vpm16, resampler16, pixel_values, tgt_sizes, device, torch.bfloat16
         ).float()
     del vpm16, resampler16

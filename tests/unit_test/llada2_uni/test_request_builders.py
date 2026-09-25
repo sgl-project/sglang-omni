@@ -26,7 +26,7 @@ def test_dllm_thinker_request_uses_upstream_token_array() -> None:
         request_id="req-dllm",
     )
 
-    data.req._init_fill_ids_for_dllm()
+    data.req._init_fill_ids_for_dllm()  # noqa: leading-underscore  # upstream name
 
     assert isinstance(data.req.origin_input_ids, array)
     assert data.req.full_untruncated_fill_ids == array("q", [11, 12, 13, 99, 99])

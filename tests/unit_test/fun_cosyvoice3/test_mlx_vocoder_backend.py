@@ -38,7 +38,7 @@ from sglang_omni.models.fun_cosyvoice3.mlx.vocoder.loader import (  # noqa: E402
 )
 
 
-def _write_tiny_artifact(tmp_path, *, hift_prefix="hifigan"):
+def write_tiny_artifact(tmp_path, *, hift_prefix="hifigan"):
     flow_config = FlowConfig(
         input_size=4,
         output_size=4,
@@ -205,7 +205,7 @@ def test_flow_noise_is_cast_to_model_dtype():
 
 
 def test_load_and_decode_tiny_converted_artifact(tmp_path):
-    _write_tiny_artifact(tmp_path)
+    write_tiny_artifact(tmp_path)
     vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
 
     waveform = vocoder.decode(
@@ -225,7 +225,7 @@ def test_load_and_decode_tiny_converted_artifact(tmp_path):
 
 
 def test_loaded_vocoder_decodes_on_scheduler_thread(tmp_path):
-    _write_tiny_artifact(tmp_path)
+    write_tiny_artifact(tmp_path)
     vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
     stream = mx.new_thread_local_stream(mx.gpu)
     results = []
@@ -257,7 +257,7 @@ def test_loaded_vocoder_decodes_on_scheduler_thread(tmp_path):
 
 
 def test_loader_accepts_canonical_hift_prefix(tmp_path):
-    _write_tiny_artifact(tmp_path, hift_prefix="hift")
+    write_tiny_artifact(tmp_path, hift_prefix="hift")
 
     vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
 
@@ -265,7 +265,7 @@ def test_loader_accepts_canonical_hift_prefix(tmp_path):
 
 
 def test_loader_validates_explicit_dtype_against_artifact(tmp_path):
-    _write_tiny_artifact(tmp_path)
+    write_tiny_artifact(tmp_path)
 
     FunCosyVoice3MlxVocoder.from_pretrained(
         str(tmp_path),
@@ -279,7 +279,7 @@ def test_loader_validates_explicit_dtype_against_artifact(tmp_path):
 
 
 def test_decode_validates_prompt_alignment(tmp_path):
-    _write_tiny_artifact(tmp_path)
+    write_tiny_artifact(tmp_path)
     vocoder = FunCosyVoice3MlxVocoder.from_pretrained(str(tmp_path))
 
     with pytest.raises(ValueError, match="token_mel_ratio"):

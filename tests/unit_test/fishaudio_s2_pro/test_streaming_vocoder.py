@@ -23,7 +23,7 @@ from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 
 
-class _FakeCodec:
+class FakeCodec:
     sample_rate = 44100
     frame_length = 4
     delay = 0
@@ -42,7 +42,7 @@ class _FakeCodec:
         return torch.stack(rows, dim=0)
 
 
-class _ContextCodec:
+class ContextCodec:
     sample_rate = 44100
     frame_length = 3
     delay = 3
@@ -66,7 +66,7 @@ class _ContextCodec:
         return audio.reshape(indices.shape[0], 1, -1)
 
 
-def _payload(
+def make_payload(
     request_id: str,
     *,
     stream: bool = True,
@@ -87,7 +87,7 @@ def _payload(
     )
 
 
-def _empty_payload(request_id: str) -> StagePayload:
+def empty_payload(request_id: str) -> StagePayload:
     return StagePayload(
         request_id=request_id,
         request=OmniRequest(inputs="hello", params={"stream": False}),
@@ -95,7 +95,7 @@ def _empty_payload(request_id: str) -> StagePayload:
     )
 
 
-def _zero_length_payload(request_id: str) -> StagePayload:
+def zero_length_payload(request_id: str) -> StagePayload:
     output_codes = torch.empty((11, 0), dtype=torch.long)
     return StagePayload(
         request_id=request_id,
@@ -104,31 +104,31 @@ def _zero_length_payload(request_id: str) -> StagePayload:
     )
 
 
-def _code(value: int = 1) -> torch.Tensor:
+def code(value: int = 1) -> torch.Tensor:
     return torch.full((11, 1), value, dtype=torch.long)
 
 
-def _chunk(value: int = 1) -> StreamItem:
-    return StreamItem(chunk_id=value, data=_code(value), from_stage="tts_engine")
+def make_chunk(value: int = 1) -> StreamItem:
+    return StreamItem(chunk_id=value, data=code(value), from_stage="tts_engine")
 
 
-def _audio_tensor(payload: dict) -> torch.Tensor:
+def audio_tensor(payload: dict) -> torch.Tensor:
     audio = np.frombuffer(payload["audio_waveform"], dtype=np.float32)
     return torch.from_numpy(audio.copy()).reshape(payload["audio_waveform_shape"])
 
 
-def _audio_len(payload: dict) -> int:
+def audio_len(payload: dict) -> int:
     return int(np.prod(payload["audio_waveform_shape"]))
 
 
-def _start_scheduler(
+def start_scheduler(
     *,
     stream_stride: int = 3,
     stream_followup_stride: int = 5,
     stream_crossfade_samples: int = 0,
 ) -> tuple[S2ProVocoderScheduler, threading.Thread]:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
@@ -141,36 +141,38 @@ def _start_scheduler(
     return scheduler, thread
 
 
-def _stop_scheduler(scheduler: S2ProVocoderScheduler, thread: threading.Thread) -> None:
+def stop_scheduler(scheduler: S2ProVocoderScheduler, thread: threading.Thread) -> None:
     scheduler.stop()
     thread.join(timeout=2.0)
 
 
 def test_streaming_vocoder_chunk_cadence() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
-        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(2)))
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.1)
 
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(3)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(3)))
         first = scheduler.outbox.get(timeout=2.0)
         assert first.type == "stream"
         assert first.data["modality"] == "audio"
-        assert _audio_len(first.data) == 12
+        assert audio_len(first.data) == 12
 
         for value in range(4, 8):
-            scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(value)))
+            scheduler.inbox.put(
+                IncomingMessage("req", "stream_chunk", make_chunk(value))
+            )
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.1)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None:
-    codec = _ContextCodec()
+    codec = ContextCodec()
     state = StreamVocoderState()
     full_codes = torch.arange(11 * 7, dtype=torch.long).reshape(11, 7)
     chunks = []
@@ -187,7 +189,7 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
             stream_crossfade_samples=0,
         )
         if output is not None:
-            chunks.append(_audio_tensor(output))
+            chunks.append(audio_tensor(output))
 
     output = flush_stream_vocoder_chunk(
         state,
@@ -197,7 +199,7 @@ def test_streaming_vocoder_sample_level_matches_contextual_full_decode() -> None
         stream_crossfade_samples=0,
     )
     if output is not None:
-        chunks.append(_audio_tensor(output))
+        chunks.append(audio_tensor(output))
 
     streaming_audio = torch.cat(chunks)
     full_audio = codec.from_indices(full_codes[1:][None])[0, 0]
@@ -224,7 +226,7 @@ def test_streaming_vocoder_crossfade_blends_tail_and_retains_next_tail() -> None
 
 
 def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> None:
-    codec = _FakeCodec()
+    codec = FakeCodec()
     state = StreamVocoderState()
 
     first = build_stream_vocoder_chunk(
@@ -251,12 +253,12 @@ def test_streaming_vocoder_zero_overlap_final_flush_emits_retained_tail() -> Non
 
     assert flush is not None
     assert flush["modality"] == "audio"
-    assert _audio_len(flush) == 3
+    assert audio_len(flush) == 3
     assert state.pending_tail is None
 
 
 def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
-    codec = _FakeCodec()
+    codec = FakeCodec()
     state = StreamVocoderState(
         codes=[torch.arange(11, dtype=torch.long).reshape(11, 1)],
         last_vocode_tokens=1,
@@ -273,20 +275,20 @@ def test_streaming_vocoder_final_flush_clears_tail_when_codes_remain() -> None:
     )
 
     assert flush is not None
-    assert _audio_tensor(flush).tolist() == [1.0, 2.0, 3.0]
+    assert audio_tensor(flush).tolist() == [1.0, 2.0, 3.0]
     assert state.pending_tail is None
 
 
 def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:
-    scheduler, thread = _start_scheduler(stream_stride=2, stream_followup_stride=10)
+    scheduler, thread = start_scheduler(stream_stride=2, stream_followup_stride=10)
     try:
-        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(2)))
         first = scheduler.outbox.get(timeout=2.0)
         assert first.type == "stream"
 
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(3)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(3)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
         flush = scheduler.outbox.get(timeout=2.0)
         final = scheduler.outbox.get(timeout=2.0)
@@ -294,15 +296,15 @@ def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:
         assert final.type == "result"
         assert final.data.data["modality"] == "audio"
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
-        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
+        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
         stream = scheduler.outbox.get(timeout=2.0)
         final = scheduler.outbox.get(timeout=2.0)
         assert stream.type == "stream"
@@ -311,13 +313,13 @@ def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> 
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
-    payload = _payload("req", stream=True, code_len=4, usage=usage)
+    payload = make_payload("req", stream=True, code_len=4, usage=usage)
     payload.data["finish_reason"] = "length"
     try:
         scheduler.inbox.put(
@@ -327,10 +329,10 @@ def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> N
                 payload,
             )
         )
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(3)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(4)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(3)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(4)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
         first = scheduler.outbox.get(timeout=2.0)
         flush = scheduler.outbox.get(timeout=2.0)
@@ -347,14 +349,14 @@ def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> N
         assert "audio_waveform" not in data
         assert len(scheduler.codec.calls) == 2
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
         scheduler.inbox.put(
-            IncomingMessage("req", "new_request", _payload("req", code_len=4))
+            IncomingMessage("req", "new_request", make_payload("req", code_len=4))
         )
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
 
@@ -370,49 +372,49 @@ def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
         }
         assert scheduler.codec.calls == [(1, 10, 4)]
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_non_streaming_vocoder_clears_static_stream_done_signal() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
         scheduler.inbox.put(
-            IncomingMessage("req", "new_request", _payload("req", stream=False))
+            IncomingMessage("req", "new_request", make_payload("req", stream=False))
         )
         final = scheduler.outbox.get(timeout=2.0)
         assert final.type == "result"
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
 
         scheduler.inbox.put(
-            IncomingMessage("req", "new_request", _payload("req", stream=True))
+            IncomingMessage("req", "new_request", make_payload("req", stream=True))
         )
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(3)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(3)))
         stream = scheduler.outbox.get(timeout=2.0)
         assert stream.type == "stream"
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_non_streaming_vocoder_clears_prefetched_stream_done_signal() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
         scheduler.inbox.put(
-            IncomingMessage("req", "new_request", _payload("req", stream=False))
+            IncomingMessage("req", "new_request", make_payload("req", stream=False))
         )
         final = scheduler.outbox.get(timeout=2.0)
         assert final.type == "result"
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_stride=3,
         stream_followup_stride=5,
@@ -422,11 +424,11 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
     )
     thread = threading.Thread(target=scheduler.start, daemon=True)
     try:
-        scheduler.payloads["req"] = _payload("req")
+        scheduler.payloads["req"] = make_payload("req")
         scheduler.pending_done.add("req")
-        scheduler.handle_stream_chunk("req", _chunk(1))
+        scheduler.handle_stream_chunk("req", make_chunk(1))
         scheduler.pending_messages.append(IncomingMessage("req", "stream_done"))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(2)))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(2)))
         scheduler.inbox.put(IncomingMessage("req", "stream_done"))
 
         scheduler.abort("req")
@@ -439,20 +441,22 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_abort_does_not_block_other_request() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
         scheduler.inbox.put(
-            IncomingMessage("aborted", "new_request", _payload("aborted"))
+            IncomingMessage("aborted", "new_request", make_payload("aborted"))
         )
-        scheduler.inbox.put(IncomingMessage("aborted", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("other", "new_request", _payload("other")))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", _chunk(1)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", _chunk(2)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", _chunk(3)))
+        scheduler.inbox.put(IncomingMessage("aborted", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(
+            IncomingMessage("other", "new_request", make_payload("other"))
+        )
+        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(1)))
+        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(2)))
+        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(3)))
 
         scheduler.abort("aborted")
 
@@ -462,20 +466,20 @@ def test_streaming_vocoder_abort_does_not_block_other_request() -> None:
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
 
-    def _raise_on_chunk(request_id, chunk) -> None:
+    def raise_on_chunk(request_id, chunk) -> None:
         del request_id, chunk
         raise RuntimeError("chunk failed")
 
-    scheduler.handle_stream_chunk = _raise_on_chunk
+    scheduler.handle_stream_chunk = raise_on_chunk
     try:
-        scheduler.inbox.put(IncomingMessage("req", "new_request", _payload("req")))
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", _chunk(1)))
+        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
+        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
         error = scheduler.outbox.get(timeout=2.0)
 
         assert error.request_id == "req"
@@ -487,23 +491,23 @@ def test_streaming_vocoder_chunk_failure_emits_one_error_and_no_success() -> Non
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
 
 def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
     )
-    scheduler.handle_streaming_new_request("req", _payload("req"))
+    scheduler.handle_streaming_new_request("req", make_payload("req"))
 
-    def _abort_during_vocode(payload):
+    def abort_during_vocode(payload):
         scheduler.abort(payload.request_id)
         return payload
 
-    scheduler.vocode_payload = _abort_during_vocode
+    scheduler.vocode_payload = abort_during_vocode
 
     scheduler.handle_stream_done("req")
 
@@ -512,14 +516,14 @@ def test_streaming_vocoder_abort_during_final_vocode_suppresses_result() -> None
 
 
 def test_non_streaming_vocoder_rejects_missing_output_codes() -> None:
-    scheduler, thread = _start_scheduler()
+    scheduler, thread = start_scheduler()
     try:
         scheduler.inbox.put(
-            IncomingMessage("req-empty", "new_request", _empty_payload("req-empty"))
+            IncomingMessage("req-empty", "new_request", empty_payload("req-empty"))
         )
         output = scheduler.outbox.get(timeout=2.0)
     finally:
-        _stop_scheduler(scheduler, thread)
+        stop_scheduler(scheduler, thread)
 
     assert output.request_id == "req-empty"
     assert output.type == "error"
@@ -530,7 +534,7 @@ def test_non_streaming_vocoder_rejects_missing_output_codes() -> None:
 
 def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
@@ -538,8 +542,8 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
     with pytest.raises(ValueError, match="req-zero"):
         scheduler.vocode_payloads(
             [
-                _payload("req-good", stream=False),
-                _zero_length_payload("req-zero"),
+                make_payload("req-good", stream=False),
+                zero_length_payload("req-zero"),
             ]
         )
     assert scheduler.codec.calls == []
@@ -547,17 +551,19 @@ def test_non_streaming_vocoder_batch_rejects_zero_length_before_decode() -> None
 
 def test_non_streaming_vocoder_batch_isolates_invalid_payload() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
     )
     messages = [
-        IncomingMessage("req-good", "new_request", _payload("req-good", stream=False)),
+        IncomingMessage(
+            "req-good", "new_request", make_payload("req-good", stream=False)
+        ),
         IncomingMessage(
             "req-zero",
             "new_request",
-            _zero_length_payload("req-zero"),
+            zero_length_payload("req-zero"),
         ),
     ]
 
@@ -585,7 +591,7 @@ def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:
         data=state.to_dict(),
     )
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
@@ -598,16 +604,16 @@ def test_vocoder_preserves_finish_reason_from_tts_payload() -> None:
 
 def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
         max_batch_wait_ms=0,
     )
     scheduler.abort("aborted")
-    first = IncomingMessage("other", "new_request", _payload("other", stream=False))
+    first = IncomingMessage("other", "new_request", make_payload("other", stream=False))
     scheduler.inbox.put(
-        IncomingMessage("aborted", "new_request", _payload("aborted", stream=False))
+        IncomingMessage("aborted", "new_request", make_payload("aborted", stream=False))
     )
 
     batch = scheduler.collect_new_request_batch(first)
@@ -621,21 +627,23 @@ def test_non_streaming_vocoder_batch_skips_aborted_request() -> None:
 
 def test_non_streaming_vocoder_abort_during_batch_decode_suppresses_result() -> None:
     scheduler = S2ProVocoderScheduler(
-        _FakeCodec(),
+        FakeCodec(),
         device="cpu",
         stream_overlap_tokens=1,
         stream_crossfade_samples=0,
     )
     messages = [
-        IncomingMessage("other", "new_request", _payload("other", stream=False)),
-        IncomingMessage("aborted", "new_request", _payload("aborted", stream=False)),
+        IncomingMessage("other", "new_request", make_payload("other", stream=False)),
+        IncomingMessage(
+            "aborted", "new_request", make_payload("aborted", stream=False)
+        ),
     ]
 
-    def _abort_during_decode(payloads):
+    def abort_during_decode(payloads):
         scheduler.abort("aborted")
         return payloads
 
-    scheduler.batch_fn = _abort_during_decode
+    scheduler.batch_fn = abort_during_decode
 
     scheduler.handle_new_request_batch(messages)
 

@@ -19,7 +19,7 @@ from sglang_omni.scheduling.typed_tensor import decode_typed_tensor, encode_type
 
 
 @dataclass
-class _DummyState(PipelineStateBase):
+class DummyState(PipelineStateBase):
     value: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,7 +28,7 @@ class _DummyState(PipelineStateBase):
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "_DummyState":
+    def from_dict(cls, data: dict[str, Any]) -> "DummyState":
         return cls(
             value=data.get("value", ""),
             sample_rate=int(data.get("sample_rate", 24000)),
@@ -39,11 +39,11 @@ class _DummyState(PipelineStateBase):
 
 
 def test_build_usage_omits_empty_usage() -> None:
-    assert build_usage(_DummyState()) is None
+    assert build_usage(DummyState()) is None
 
 
 def test_build_usage_includes_total_and_rounded_engine_time() -> None:
-    state = _DummyState(prompt_tokens=3, completion_tokens=5, engine_time_s=1.23456789)
+    state = DummyState(prompt_tokens=3, completion_tokens=5, engine_time_s=1.23456789)
 
     assert build_usage(state) == {
         "prompt_tokens": 3,
@@ -60,7 +60,7 @@ def test_load_and_store_state_round_trip_stage_payload() -> None:
         data={"value": "ok", "prompt_tokens": 2},
     )
 
-    state = load_state(payload, _DummyState)
+    state = load_state(payload, DummyState)
     state.completion_tokens = 4
     stored = store_state(payload, state)
 
@@ -126,7 +126,7 @@ def test_tts_pipeline_states_share_base_usage_contract() -> None:
         assert callable(getattr(state_cls, "from_dict", None)), state_cls.__name__
 
 
-def _normalize_payload_value(value: Any) -> Any:
+def normalize_payload_value(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
         return {
             "dtype": str(value.dtype),
@@ -134,22 +134,22 @@ def _normalize_payload_value(value: Any) -> Any:
             "data": value.detach().cpu().tolist(),
         }
     if isinstance(value, dict):
-        return {key: _normalize_payload_value(item) for key, item in value.items()}
+        return {key: normalize_payload_value(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_normalize_payload_value(item) for item in value]
+        return [normalize_payload_value(item) for item in value]
     return value
 
 
-def _assert_round_trip_preserves_payload(state: PipelineStateBase) -> None:
+def assert_round_trip_preserves_payload(state: PipelineStateBase) -> None:
     before = state.to_dict()
     restored = type(state).from_dict(before)
     after = restored.to_dict()
 
     assert set(after) == set(before), type(state).__name__
-    assert _normalize_payload_value(after) == _normalize_payload_value(before)
+    assert normalize_payload_value(after) == normalize_payload_value(before)
 
 
-def _assert_restored_fields(
+def assert_restored_fields(
     state: PipelineStateBase, overrides: dict[str, Any] | None = None
 ) -> None:
     """Field-complete check on the *restored object's attributes*.
@@ -174,7 +174,7 @@ def _assert_restored_fields(
     for field in dataclasses.fields(state):
         expected_value = overrides.get(field.name, getattr(state, field.name))
         actual_value = getattr(restored, field.name)
-        assert _normalize_payload_value(actual_value) == _normalize_payload_value(
+        assert normalize_payload_value(actual_value) == normalize_payload_value(
             expected_value
         ), (
             f"{type(state).__name__}.{field.name}: "
@@ -407,8 +407,8 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     ]
 
     for state, overrides in cases:
-        _assert_round_trip_preserves_payload(state)
-        _assert_restored_fields(state, overrides)
+        assert_round_trip_preserves_payload(state)
+        assert_restored_fields(state, overrides)
 
 
 def test_base_requires_to_dict_and_from_dict() -> None:
@@ -475,11 +475,11 @@ def test_typed_tensor_legacy_list_fallback_and_missing() -> None:
 
 def test_declarative_typed_tensor_missing_payload_keeps_default() -> None:
     @dataclass
-    class _TypedDefaultState(DeclarativeStateBase):
+    class TypedDefaultState(DeclarativeStateBase):
         audio_codes: Any = wire(default_factory=lambda: [[9, 10]], codec="typed_tensor")
 
-    assert _TypedDefaultState.from_dict({}).audio_codes == [[9, 10]]
-    assert _TypedDefaultState.from_dict({"audio_codes": None}).audio_codes is None
+    assert TypedDefaultState.from_dict({}).audio_codes == [[9, 10]]
+    assert TypedDefaultState.from_dict({"audio_codes": None}).audio_codes is None
 
 
 @pytest.mark.parametrize(
@@ -504,22 +504,22 @@ def test_declarative_typed_tensor_rejects_partial_payload(
     payload: dict[str, Any],
 ) -> None:
     @dataclass
-    class _TypedState(DeclarativeStateBase):
+    class TypedState(DeclarativeStateBase):
         audio_codes: Any = wire(None, codec="typed_tensor")
 
     with pytest.raises(ValueError, match="typed_tensor payload"):
-        _TypedState.from_dict(payload)
+        TypedState.from_dict(payload)
 
 
 def test_declarative_typed_tensor_allows_omitted_dtype() -> None:
     @dataclass
-    class _TypedState(DeclarativeStateBase):
+    class TypedState(DeclarativeStateBase):
         audio_codes: Any = wire(None, codec="typed_tensor")
 
     payload = encode_typed_tensor(torch.tensor([1, 2]), key="audio_codes")
     del payload["audio_codes_dtype"]
 
-    assert _TypedState.from_dict(payload).audio_codes.tolist() == [1, 2]
+    assert TypedState.from_dict(payload).audio_codes.tolist() == [1, 2]
 
 
 def test_declarative_default_factory_is_lazy() -> None:
@@ -531,10 +531,10 @@ def test_declarative_default_factory_is_lazy() -> None:
         return [1]
 
     @dataclass
-    class _FactoryState(DeclarativeStateBase):
+    class FactoryState(DeclarativeStateBase):
         items: list[int] = wire(default_factory=make_items, codec="list")
 
-    state = _FactoryState()
+    state = FactoryState()
     assert calls == 1
 
     calls_before_to_dict = calls
@@ -542,7 +542,7 @@ def test_declarative_default_factory_is_lazy() -> None:
     assert calls == calls_before_to_dict
 
     calls_before_restore = calls
-    restored = _FactoryState.from_dict(payload)
+    restored = FactoryState.from_dict(payload)
     assert calls == calls_before_restore
     assert restored.items == [1]
 

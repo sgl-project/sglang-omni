@@ -96,7 +96,7 @@ def test_a_stream_ref_without_a_device_stays_wire_compatible() -> None:
     assert DataRef.from_dict(payload).device is None
 
 
-async def _stream_round_trip(local_device: str | None, *, with_metadata: bool):
+async def stream_round_trip(local_device: str | None, *, with_metadata: bool):
     """Write a chunk through a host-shm relay and read it back."""
     from sglang_omni.comm import stage_io
     from sglang_omni.comm.data_ref import TransportKind
@@ -128,7 +128,7 @@ def test_a_metadata_bearing_chunk_keeps_its_source_device() -> None:
     import asyncio
 
     data_ref, (data, metadata) = asyncio.run(
-        _stream_round_trip(None, with_metadata=True)
+        stream_round_trip(None, with_metadata=True)
     )
 
     assert data_ref.device == "cpu"
@@ -140,7 +140,7 @@ def test_a_metadata_tensor_records_its_own_source_device() -> None:
     """Nested refs are restored from their own recorded device, not the outer one."""
     import asyncio
 
-    data_ref, _ = asyncio.run(_stream_round_trip(None, with_metadata=True))
+    data_ref, _ = asyncio.run(stream_round_trip(None, with_metadata=True))
 
     assert data_ref.metadata_tensors
     assert all(ref.ref.device == "cpu" for ref in data_ref.metadata_tensors)
@@ -149,6 +149,6 @@ def test_a_metadata_tensor_records_its_own_source_device() -> None:
 def test_a_chunk_without_metadata_still_records_its_device() -> None:
     import asyncio
 
-    data_ref, _ = asyncio.run(_stream_round_trip(None, with_metadata=False))
+    data_ref, _ = asyncio.run(stream_round_trip(None, with_metadata=False))
 
     assert data_ref.device == "cpu"
