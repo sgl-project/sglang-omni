@@ -40,6 +40,10 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
+    CausalConv1d,
+    ConvState,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_layers import (
     ConformerEncoderLayer,
     EspnetRelPositionalEncoding,
@@ -50,7 +54,6 @@ from sglang_omni.models.minicpm_o.components.token2wav.conformer_layers import (
 from sglang_omni.models.minicpm_o.components.token2wav.conformer_state import (
     AttentionState,
     ConformerState,
-    ConvState,
 )
 
 
@@ -67,7 +70,7 @@ class Upsample1D(nn.Module):
         self.channels = channels
         self.out_channels = out_channels
         self.stride = stride
-        self.conv = nn.Conv1d(
+        self.conv = CausalConv1d(
             self.channels, self.out_channels, stride * 2 + 1, stride=1, padding=0
         )
         self.scale_factor = (
@@ -81,16 +84,7 @@ class Upsample1D(nn.Module):
         state: ConvState | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, ConvState | None]:
         outputs = F.interpolate(inputs, scale_factor=self.scale_factor, mode="nearest")
-        if state is not None and state.history is not None:
-            outputs = torch.cat((state.history, outputs), dim=2)
-        else:
-            outputs = F.pad(outputs, (self.stride * 2, 0), value=0.0)
-        next_state = (
-            ConvState(history=outputs[:, :, -self.stride * 2 :].clone())
-            if state is not None
-            else None
-        )
-        outputs = self.conv(outputs)
+        outputs, next_state = self.conv(outputs, state)
         return outputs, input_lengths * self.stride, next_state
 
 
@@ -103,7 +97,9 @@ class PreLookaheadLayer(nn.Module):
         self.conv1 = nn.Conv1d(
             channels, channels, kernel_size=pre_lookahead_len + 1, stride=1, padding=0
         )
-        self.conv2 = nn.Conv1d(channels, channels, kernel_size=3, stride=1, padding=0)
+        self.conv2 = CausalConv1d(
+            channels, channels, kernel_size=3, stride=1, padding=0
+        )
 
     def forward(
         self,
@@ -121,14 +117,8 @@ class PreLookaheadLayer(nn.Module):
         else:
             pass
         outputs = F.leaky_relu(self.conv1(outputs))
-        if state is not None and state.history is not None:
-            outputs = torch.cat((state.history, outputs), dim=2)
-        else:
-            outputs = F.pad(outputs, (2, 0))
-        next_state = (
-            ConvState(history=outputs[:, :, -2:].clone()) if state is not None else None
-        )
-        outputs = self.conv2(outputs).transpose(1, 2)
+        outputs, next_state = self.conv2(outputs, state)
+        outputs = outputs.transpose(1, 2)
         if state is None:
             outputs = outputs.contiguous()
         else:

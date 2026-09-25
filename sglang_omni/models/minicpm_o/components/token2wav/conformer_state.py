@@ -7,12 +7,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-
-@dataclass(frozen=True, kw_only=True)
-class ConvState:
-    """Empty history enables streaming; no state disables caching."""
-
-    history: torch.Tensor | None = None
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import ConvState
 
 
 @dataclass(frozen=True, kw_only=True)

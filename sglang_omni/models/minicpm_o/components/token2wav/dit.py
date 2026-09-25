@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import pack, repeat
+
+from sglang_omni.models.minicpm_o.components.token2wav.causal_conv import (
+    CausalConv1d,
+    ConvState,
+)
 
 
 class MLP(torch.nn.Module):
@@ -173,16 +179,10 @@ class Transpose(torch.nn.Module):
         return x
 
 
-class CausalConv1d(torch.nn.Conv1d):
-
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int) -> None:
-        super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size)
-        self.causal_padding = (kernel_size - 1, 0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.pad(x, self.causal_padding)
-        x = super(CausalConv1d, self).forward(x)
-        return x
+@dataclass(frozen=True, kw_only=True)
+class ConvBlockState:
+    first: ConvState = field(default_factory=ConvState)
+    second: ConvState = field(default_factory=ConvState)
 
 
 class CausalConvBlock(nn.Module):
@@ -209,39 +209,35 @@ class CausalConvBlock(nn.Module):
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
-        cache: list[torch.Tensor] | None = None,
-    ) -> torch.Tensor:
+        state: ConvBlockState | None = None,
+    ) -> tuple[torch.Tensor, ConvBlockState | None]:
         if mask is not None:
             x = x * mask
         else:
             pass
-        if cache is None:
-            x = self.block(x)
-        else:
-            previous = (
-                cache[0].split((self.in_channels, self.out_channels), dim=1)
-                if cache
-                else (None, None)
-            )
-            next_cache = []
-            for index, module in enumerate(self.block):
-                if isinstance(module, CausalConv1d):
-                    history = previous[len(next_cache)]
-                    x = (
-                        F.pad(x, module.causal_padding)
-                        if history is None
-                        else torch.cat((history, x), dim=2)
-                    )
-                    next_cache.append(x[:, :, -module.causal_padding[0] :].clone())
-                    x = F.conv1d(x, module.weight, module.bias)
+        previous = iter(
+            (state.first, state.second) if state is not None else (None, None)
+        )
+        histories: list[ConvState] = []
+        for module in self.block:
+            if isinstance(module, CausalConv1d):
+                x, history = module(x, next(previous))
+                if history is not None:
+                    histories.append(history)
                 else:
-                    x = module(x)
-            cache[:] = [torch.cat(next_cache, dim=1)]
+                    pass
+            else:
+                x = module(x)
+        next_state = (
+            ConvBlockState(first=histories[0], second=histories[1])
+            if state is not None
+            else None
+        )
         if mask is not None:
             x = x * mask
         else:
             pass
-        return x
+        return x, next_state
 
 
 class DiTBlock(nn.Module):
@@ -280,9 +276,9 @@ class DiTBlock(nn.Module):
         x: torch.Tensor,
         c: torch.Tensor,
         attn_mask: torch.Tensor | None,
-        cnn_cache: list[torch.Tensor] | None = None,
+        cnn_state: ConvBlockState | None = None,
         att_cache: list[torch.Tensor] | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, ConvBlockState | None]:
         (
             shift_msa,
             scale_msa,
@@ -297,11 +293,12 @@ class DiTBlock(nn.Module):
         x = x + gate_msa * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa), attn_mask, att_cache
         )
-        x = x + gate_conv * self.conv(
-            modulate(self.norm3(x), shift_conv, scale_conv), cache=cnn_cache
+        convolution, next_state = self.conv(
+            modulate(self.norm3(x), shift_conv, scale_conv), state=cnn_state
         )
+        x = x + gate_conv * convolution
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        return x
+        return x, next_state
 
 
 class FinalLayer(nn.Module):
@@ -397,12 +394,24 @@ class DiT(nn.Module):
         next_cnn, next_attention = [], []
         for index, block in enumerate(self.blocks):
             if cache is None:
-                x = block(x, t, attn_mask)
+                x, _ = block(x, t, attn_mask)
             else:
-                cnn = [cache["cnn"][index]] if cache else []
+                if cache:
+                    first, second = cache["cnn"][index].split(
+                        (block.conv.in_channels, block.conv.out_channels), dim=1
+                    )
+                    cnn = ConvBlockState(
+                        first=ConvState(history=first), second=ConvState(history=second)
+                    )
+                else:
+                    cnn = ConvBlockState()
                 attention = [cache["attention"][index]] if cache else []
-                x = block(x, t, attn_mask, cnn, attention)
-                next_cnn.append(cnn[0])
+                x, cnn = block(x, t, attn_mask, cnn, attention)
+                assert cnn is not None
+                assert cnn.first.history is not None and cnn.second.history is not None
+                next_cnn.append(
+                    torch.cat((cnn.first.history, cnn.second.history), dim=1)
+                )
                 next_attention.append(attention[0])
         if cache is not None:
             cache.update(
