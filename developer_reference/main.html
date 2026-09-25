@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.6" />
-    <meta name="docbuild:last-update" content="Sep 24, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 25, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -595,8 +595,9 @@ runners.</p>
 <section id="naming-and-lint-checks">
 <h2>Naming and lint checks<a class="headerlink" href="#naming-and-lint-checks" title="Link to this heading">#</a></h2>
 <p>Use public names for classes, functions, methods, and attributes defined in
-<code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code>. The leading-underscore lint hook checks every Python file under
-that directory, including new model packages. It flags class and function
+<code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code> and <code class="docutils literal notranslate"><span class="pre">tests/</span></code>. The leading-underscore lint hook checks every Python
+file under those directories, including new model packages and test suites. It
+flags class and function
 definitions, every attribute read or write, and string names passed to
 <code class="docutils literal notranslate"><span class="pre">getattr</span></code>. It ignores vendor copies, dunder names such as <code class="docutils literal notranslate"><span class="pre">__init__</span></code>, a lone
 <code class="docutils literal notranslate"><span class="pre">_</span></code>, and definitions inside functions.</p>
@@ -616,13 +617,15 @@ requires it, put <code class="docutils literal notranslate"><span class="pre">#<
 <p>The exemption keeps the definition out of lint violations and automatic renames.
 Its references retain the same name. A comment such as
 <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">skip</span> <span class="pre">leading-underscore</span> <span class="pre">class</span> <span class="pre">and</span> <span class="pre">function</span> <span class="pre">names</span></code> is not an exemption.</p>
-<p>The pre-commit hook runs <code class="docutils literal notranslate"><span class="pre">scripts/check_leading_underscore.py</span> <span class="pre">--fix</span></code>, which renames
-violating definitions and supported references within the same file. It does not
-update callers in other files. Review the diff, preserve third-party API names,
-and update any affected cross-file callers explicitly. To check without editing:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/check_leading_underscore.py
+<p>The pre-commit hook runs <code class="docutils literal notranslate"><span class="pre">scripts/check_leading_underscore.py</span></code> and only reports
+violations. It does not rewrite files. To rename violating definitions and
+supported references within one file, run the fixer:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>scripts/check_leading_underscore.py<span class="w"> </span>--fix
 </pre></div>
 </div>
+<p>The fixer does not update callers in other files, pytest fixture parameters, or
+string references such as <code class="docutils literal notranslate"><span class="pre">monkeypatch.setattr(module,</span> <span class="pre">&quot;_name&quot;,</span> <span class="pre">...)</span></code>. Review the
+diff, preserve third-party API names, and update those references explicitly.</p>
 <p>Every <code class="docutils literal notranslate"><span class="pre">if</span></code> under <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code> must have an <code class="docutils literal notranslate"><span class="pre">else</span></code>, or belong to an <code class="docutils literal notranslate"><span class="pre">if</span></code>/<code class="docutils literal notranslate"><span class="pre">elif</span></code>
 chain that ends in <code class="docutils literal notranslate"><span class="pre">else</span></code>. Returning, raising, or a one-line body does not
 exempt it. There is no <code class="docutils literal notranslate"><span class="pre">#</span> <span class="pre">noqa</span></code> exemption. Prefer an <code class="docutils literal notranslate"><span class="pre">else</span></code> branch that does
@@ -721,7 +724,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 24, 2026.
+  Last updated on Sep 25, 2026.
   <br/>
 </p>
   </div>
